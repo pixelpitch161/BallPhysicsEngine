@@ -369,3 +369,45 @@ fn sweep_gpu_layers() {
         }
     }
 }
+
+/// Rough timings on whatever adapter is around: run with `--ignored --nocapture`. In the cloud
+/// this is software Vulkan, so compare ratios, not absolute numbers.
+#[test]
+#[ignore]
+fn timings() {
+    let Some((device, queue)) = gpu() else { return };
+    let time = |scene: &Scene, from: f64, to: f64| {
+        let mut renderer = Renderer::new(&device, 540, 960);
+        render(&device, &queue, &mut renderer, scene, &[from]);
+        let started = std::time::Instant::now();
+        render(&device, &queue, &mut renderer, scene, &[to]);
+        let steps = ((to - from) * STEP_RATE as f64).max(1.0);
+        started.elapsed().as_secs_f64() * 1000.0 / steps
+    };
+    println!("swarm 20k points: {:.2} ms per step", time(&swarm_scene(20_000), 1.0, 3.0));
+    println!("liquid 8k drops: {:.2} ms per step", time(&fluid_scene(8_000), 1.0, 3.0));
+    let frame_ms = |scene: &Scene| {
+        let mut renderer = Renderer::new(&device, 540, 960);
+        let mut playback = Playback::new(scene);
+        let mut frame = FrameData::default();
+        let mut total = 0.0;
+        for i in 0..60 {
+            let t = 5.0 + i as f64 / 60.0;
+            playback.seek(t);
+            frame.fill(scene, &playback, renderer.pixel_size(scene));
+            let started = std::time::Instant::now();
+            renderer.render(&device, &queue, scene, t, &frame);
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            total += started.elapsed().as_secs_f64() * 1000.0;
+        }
+        total / 60.0
+    };
+    let plain = Scene::plinko();
+    let mut sparks = Scene::plinko();
+    sparks.particles = vec![ParticlePreset::Sparks.emitter(EventMatch::AnyHit)];
+    let mut bouncing = sparks.clone();
+    bouncing.particles[0].bounce = true;
+    println!("plinko frame, nothing new on: {:.2} ms", frame_ms(&plain));
+    println!("plinko frame, sparks on every hit: {:.2} ms", frame_ms(&sparks));
+    println!("plinko frame, bouncing sparks (wall field baked each frame): {:.2} ms", frame_ms(&bouncing));
+}
