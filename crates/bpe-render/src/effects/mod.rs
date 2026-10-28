@@ -449,17 +449,13 @@ impl EffectLibrary {
         changed
     }
 
-<<<<<<< HEAD
-    /// A number that changes whenever the custom effects change.
+    /// A number that changes whenever the custom effects or the scene's node effects change.
     pub fn revision(&self) -> u64 {
         self.inner.read().unwrap().revision
     }
 
-    /// Looks up an effect by id. A custom file overrides a built-in of the same name.
-=======
     /// Looks up an effect by id. A custom file overrides a built-in of the same name, and a
     /// scene's node effect overrides a built-in node effect.
->>>>>>> 509a9e0 (WIP shader graph compiler)
     pub fn get(&self, id: &str) -> Option<Arc<EffectInfo>> {
         let inner = self.inner.read().unwrap();
         inner
