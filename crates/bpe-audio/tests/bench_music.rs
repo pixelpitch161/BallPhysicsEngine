@@ -43,6 +43,7 @@ fn mixing_5000_hits_in_30_seconds() {
         .map(|i| Event {
             time: i as f64 * 30.0 / 5000.0,
             ball: (i % 40) as u32,
+            group: 0,
             position: Vec2::new((i % 13) as f32 * 60.0 - 360.0, 0.0),
             depth: 0.0,
             speed: 300.0 + (i % 17) as f32 * 80.0,

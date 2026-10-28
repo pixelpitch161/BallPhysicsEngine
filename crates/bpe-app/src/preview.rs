@@ -845,6 +845,7 @@ mod tests {
             depth: 0.0,
             depth_velocity: 0.0,
             style: None,
+            sound: None,
         });
         let view = view(&scene);
         let handle = hit_test(&scene, &view, view.to_screen(Vec2::new(0.0, -500.0)));

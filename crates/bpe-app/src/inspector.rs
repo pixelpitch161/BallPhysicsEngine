@@ -27,7 +27,7 @@ use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
     ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, List, Look, Obstacle, Physics, PresetKind,
-    Property, Scene, Spawner, Vec2,
+    Property, Scene, Sound, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -230,6 +230,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         &mut inspector.selected,
                         &mut inspector.looks,
                         &scene.look,
+                        (&scene.sound, &mut inspector.music),
                         &mut roll,
                         space,
                     );
@@ -786,6 +787,7 @@ fn new_grid() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -798,6 +800,7 @@ fn new_ball() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -813,6 +816,7 @@ fn new_stream() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -822,6 +826,7 @@ fn balls(
     selected: &mut Option<usize>,
     looks: &mut ball_look::State,
     look: &Look,
+    (scene_sound, music): (&Sound, &mut music::State),
     roll: &mut Option<Roll>,
     space: bool,
 ) -> Option<ListEdit> {
@@ -1000,6 +1005,7 @@ fn balls(
                     view3d::spawner_depth(ui, spawner); // 3D (WS4)
                 }
                 ball_look::section(ui, index, spawner.style_mut(), look, looks);
+                music::ball_section(ui, index, spawner.sound_mut(), scene_sound, music);
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
             // colour buttons and menus inside still get their clicks.

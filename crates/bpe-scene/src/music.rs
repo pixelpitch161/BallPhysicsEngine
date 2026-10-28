@@ -234,6 +234,45 @@ pub enum PitchMode {
     Fixed(u8),
 }
 
+/// A ball group's own sound, set in its card. Every hit and escape of these balls plays it
+/// instead of the Sound tab's instrument and voices. Spawns, beats and rule notes still play
+/// as the Sound tab says.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BallSound {
+    /// None plays the Sound tab's instrument.
+    pub instrument: Option<Instrument>,
+    pub notes: BallNotes,
+    /// Volume of these balls in dB. 0 is as loud as the rest of the scene.
+    pub gain: f32,
+    /// Where the sound sits, from -1 (left) to 1 (right). None follows where the hit happens,
+    /// as the rest of the scene does.
+    pub pan: Option<f32>,
+    /// These balls make no sound at all.
+    pub muted: bool,
+}
+
+impl Default for BallSound {
+    fn default() -> Self {
+        Self { instrument: None, notes: BallNotes::Scene, gain: 0.0, pan: None, muted: false }
+    }
+}
+
+/// Which notes a ball group plays.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum BallNotes {
+    /// The same notes as the rest of the scene: the chords, or the scene's melody (which these
+    /// balls move on with everyone else).
+    #[default]
+    Scene,
+    /// Notes from the scene's chords, but only between these two MIDI notes.
+    Range { low: u8, high: u8 },
+    /// Always this MIDI note. For the drum kit, the note picks the drum.
+    Fixed(u8),
+    /// The group's own melody, which moves on only when these balls hit something.
+    Melody(Melody),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +293,20 @@ mod tests {
         assert_eq!(voice.on, NoteTrigger::Escapes);
         assert_eq!(voice.pitch, PitchMode::Fixed(49));
         assert!(voice.enabled);
+    }
+
+    #[test]
+    fn ball_sounds_round_trip_and_fill_in_what_is_missing() {
+        let sound = BallSound {
+            instrument: Some(Instrument::library("Bells")),
+            notes: BallNotes::Melody(Melody { transpose: 12, ..Melody::default() }),
+            gain: -3.0,
+            pan: Some(-0.5),
+            muted: false,
+        };
+        let text = ron::to_string(&sound).unwrap();
+        assert_eq!(ron::from_str::<BallSound>(&text).unwrap(), sound);
+        let short: BallSound = ron::from_str("(notes: Range(low: 72, high: 84))").unwrap();
+        assert_eq!(short, BallSound { notes: BallNotes::Range { low: 72, high: 84 }, ..BallSound::default() });
     }
 }

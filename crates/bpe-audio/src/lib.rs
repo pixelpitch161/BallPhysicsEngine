@@ -372,8 +372,13 @@ pub(crate) struct Progression {
 
 impl Progression {
     pub(crate) fn new(scene: &Scene) -> anyhow::Result<Self> {
+        Self::in_range(scene, scene.sound.low_note, scene.sound.high_note)
+    }
+
+    /// The scene's chords, with only the notes from `low` to `high`.
+    pub(crate) fn in_range(scene: &Scene, low: u8, high: u8) -> anyhow::Result<Self> {
         let sound = &scene.sound;
-        let (low, high) = (sound.low_note.min(sound.high_note), sound.high_note.max(sound.low_note));
+        let (low, high) = (low.min(high), high.max(low));
         let mut steps = Vec::new();
         let mut end = 0.0;
         for step in &sound.progression {

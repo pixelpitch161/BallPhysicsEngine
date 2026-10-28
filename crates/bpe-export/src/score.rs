@@ -607,6 +607,7 @@ mod tests {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             ..Scene::default()
         };

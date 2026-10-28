@@ -206,6 +206,7 @@ fn single_ball(velocity: Vec2) -> Scene {
         depth: 0.0,
         depth_velocity: 0.0,
         style: None,
+        sound: None,
     }];
     Scene { spawners, ..Scene::default() }
 }

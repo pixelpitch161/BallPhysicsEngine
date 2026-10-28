@@ -8,6 +8,8 @@ use bpe_scene::Vec2;
 
 /// [`Event::ball`] for events that don't belong to a ball, such as beats.
 pub const NO_BALL: u32 = u32::MAX;
+/// [`Event::group`] for events that don't belong to a ball.
+pub const NO_GROUP: u16 = u16::MAX;
 
 /// What happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -43,6 +45,9 @@ pub struct Event {
     pub time: f64,
     /// The ball involved, or [`NO_BALL`].
     pub ball: u32,
+    /// Which spawner made the ball, by its place in the scene's list (as [`crate::Ball::group`]),
+    /// or [`NO_GROUP`].
+    pub group: u16,
     /// Where it happened: where the ball touched the wall, or where the ball is.
     pub position: Vec2,
     /// Distance into the screen in 3D, 0 in 2D.
@@ -73,7 +78,7 @@ impl EventKind {
 impl Event {
     /// An event with no ball, such as a beat or timer.
     pub fn global(time: f64, kind: EventKind) -> Self {
-        Self { time, ball: NO_BALL, position: Vec2::ZERO, depth: 0.0, speed: 0.0, kind }
+        Self { time, ball: NO_BALL, group: NO_GROUP, position: Vec2::ZERO, depth: 0.0, speed: 0.0, kind }
     }
 
     pub fn is_hit(&self) -> bool {
