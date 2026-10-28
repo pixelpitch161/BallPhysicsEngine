@@ -215,6 +215,7 @@ impl Inspector {
 pub const ARROW_SECONDS: f32 = 0.35;
 
 pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
+    crate::setting_locks::publish(ui.ctx(), scene);
     tab_bar(ui, &mut inspector.tab);
     crate::command_palette::drawing_tab(ui.ctx(), inspector.tab);
     let mut roll = None;
@@ -381,7 +382,7 @@ fn tip(ui: &mut Ui) {
     ui.label(
         RichText::new(
             "Tip: double-click a setting's name or slider, or Alt+click it, to reset it. \
-             Hold Shift while dragging a slider for fine changes. A dice rolls random settings for its group.",
+             Hold Shift while dragging a slider for fine changes. A dice rolls random settings for its group; right-click a setting to lock it.",
         )
         .small()
         .color(theme::MUTED),
@@ -455,6 +456,9 @@ fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) 
 pub fn dice_button(ui: &mut Ui, what: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::click());
     let response = response.on_hover_text(format!("{what}. Ctrl+Z puts them back."));
+    if response.clicked() {
+        crate::setting_locks::note_roll(ui.ctx());
+    }
     paint_dice(ui.painter(), rect, response.hovered());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -539,10 +543,31 @@ fn reset_clicked(response: &Response) -> bool {
 
 /// Puts a setting back to its default on a double-click, an Alt+click or the right-click menu.
 fn resettable<T: PartialEq>(response: Response, value: &mut T, default: T) -> Response {
+    let lock = crate::setting_locks::path_of(&response.ctx, value);
+    resettable_locking(response, value, default, lock)
+}
+
+/// [`resettable`] for a value that is shown converted (launch speed from a velocity): `lock` is
+/// the path of the setting it is converted from.
+fn resettable_locking<T: PartialEq>(
+    response: Response,
+    value: &mut T,
+    default: T,
+    lock: Option<crate::setting_locks::Path>,
+) -> Response {
     let mut reset = reset_clicked(&response);
+    if let Some(path) = &lock
+        && crate::setting_locks::is_locked(&response.ctx, path)
+    {
+        crate::setting_locks::paint_marker(
+            &response.ctx.layer_painter(response.layer_id),
+            response.rect.left_center() - egui::vec2(7.0, 0.0),
+        );
+    }
     let target = crate::setting_menu::Target {
         property: crate::setting_menu::take_row_property(&response.ctx),
         label: String::new(),
+        lock,
     };
     response.context_menu(|ui| {
         reset |= crate::setting_menu::items(ui, &target, *value != default);
@@ -700,7 +725,14 @@ fn plain_color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
 }
 
 fn color_list_with(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str, alpha: Alpha) {
+    let lock = crate::setting_locks::path_of(ui.ctx(), colors);
     ui.horizontal_wrapped(|ui| {
+        if let Some(path) = &lock
+            && crate::setting_locks::is_locked(ui.ctx(), path)
+        {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 18.0), Sense::hover());
+            crate::setting_locks::paint_marker(ui.painter(), rect.center());
+        }
         let mut remove = None;
         for (i, c) in colors.iter_mut().enumerate() {
             ui.push_id(i, |ui| {
@@ -711,6 +743,9 @@ fn color_list_with(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str, alpha:
                     if ui.button("Remove colour").clicked() {
                         remove = Some(i);
                         ui.close();
+                    }
+                    if let Some(path) = &lock {
+                        crate::setting_locks::menu_item(ui, path);
                     }
                 });
             });
@@ -764,8 +799,10 @@ fn launch_rows(ui: &mut Ui, velocity: &mut Vec2, default: Vec2) {
         -180.0..=180.0,
         units("°", 0),
     );
-    let speed_response = resettable(speed_response, &mut speed, default_speed);
-    let angle_response = resettable(angle_response, &mut angle, default_angle);
+    // Speed and direction both come from the velocity, so they lock together.
+    let lock = crate::setting_locks::path_of(&speed_response.ctx, velocity);
+    let speed_response = resettable_locking(speed_response, &mut speed, default_speed, lock.clone());
+    let angle_response = resettable_locking(angle_response, &mut angle, default_angle, lock);
     // Only on a real edit: the sliders round the numbers they show, which would nudge the velocity.
     if speed_response.changed() || angle_response.changed() || (speed, angle) != before {
         let radians = angle.to_radians();

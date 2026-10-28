@@ -333,6 +333,7 @@ impl DicePanel {
             false,
         );
         if response.clicked() {
+            crate::setting_locks::note_roll(&ctx);
             let count = roll_unlocked(scene, &locked, self.next_seed(), self.amount, library);
             rolled = Some(format!("Rolled {count} unlocked parts."));
         }
@@ -355,6 +356,18 @@ impl DicePanel {
                 all.iter().for_each(|&p| set_locked(&ctx, p, false));
             }
             ui.label(RichText::new(format!("{} locked", all.len() - free)).small().color(theme::MUTED));
+        });
+        let settings = crate::setting_locks::locked(&ctx).len();
+        ui.horizontal_wrapped(|ui| {
+            let text = match settings {
+                0 => "To lock one setting, like ball size, right-click it in the tabs.".to_string(),
+                1 => "1 single setting is locked too.".to_string(),
+                n => format!("{n} single settings are locked too."),
+            };
+            ui.label(RichText::new(text).small().color(theme::MUTED));
+            if settings > 0 && ui.small_button("Unlock them").clicked() {
+                crate::setting_locks::unlock_all(&ctx);
+            }
         });
         ui.separator();
         egui::ScrollArea::vertical()
