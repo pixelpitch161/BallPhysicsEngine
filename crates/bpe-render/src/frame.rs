@@ -12,6 +12,8 @@ const PEG_GLOW: f32 = 0.04;
 const SHATTER_SECONDS: f32 = 1.8;
 /// Most string-art lines drawn in one frame.
 const MAX_STRING_LINES: usize = 20_000;
+/// Most recent hits searched for string-art lines in one frame.
+const MAX_STRING_SCAN: usize = 100_000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -236,15 +238,14 @@ impl FrameData {
                 let (from, to) = (broken.outline.point(u0), broken.outline.point(u1));
                 let middle = (from + to) * 0.5;
                 let outward = (middle - center).normalize_or_zero();
-                let speed = 160.0 + 260.0 * noise(seed * 3);
-                let velocity = outward * speed + outward.perp() * 120.0 * (noise(seed * 3 + 1) - 0.5);
-                let spin = 8.0 * (noise(seed * 3 + 2) - 0.5) * age;
+                let speed = 160.0 + 260.0 * bpe_sim::noise(seed * 3);
+                let velocity = outward * speed + outward.perp() * 120.0 * (bpe_sim::noise(seed * 3 + 1) - 0.5);
+                let spin = 8.0 * (bpe_sim::noise(seed * 3 + 2) - 0.5) * age;
                 let moved = middle + velocity * age + gravity * (0.5 * age * age);
-                let (sin, cos) = spin.sin_cos();
-                let half = (to - from) * 0.5;
-                let half = Vec2::new(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
+                let half = Vec2::from_angle(spin).rotate((to - from) * 0.5);
                 let radius = (thickness * 0.5).max(1.0);
-                self.shapes.push(ShapeInstance::capsule(moved - half, moved + half, radius, color, WALL_GLOW * 2.0));
+                let glow = WALL_GLOW * 2.0 * fade * fade;
+                self.shapes.push(ShapeInstance::capsule(moved - half, moved + half, radius, color, glow));
             }
         }
     }
@@ -260,7 +261,8 @@ impl FrameData {
         let mut counts = vec![0usize; balls.len()];
         let mut full = 0;
         let mut total = 0;
-        for hit in playback.hits().iter().rev() {
+        // Only look this far back, so long clips with many balls stay quick to draw.
+        for hit in playback.hits().iter().rev().take(MAX_STRING_SCAN) {
             if matches!(hit.kind, HitKind::Escape(_)) {
                 continue;
             }
@@ -297,15 +299,6 @@ fn wall_color(container: &Container, ring: Option<u32>) -> [f32; 4] {
 
 fn scaled(c: [f32; 4], k: f32) -> [f32; 4] {
     [c[0] * k, c[1] * k, c[2] * k, c[3]]
-}
-
-/// A repeatable pseudo-random number from 0 to 1.
-fn noise(seed: u64) -> f32 {
-    let mut x = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^= x >> 31;
-    (x >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// Appends a tapered, fading streak through `points` (newest first) as a triangle list.

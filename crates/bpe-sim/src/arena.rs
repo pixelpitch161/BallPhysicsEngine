@@ -398,15 +398,29 @@ pub fn collide_piece(
     bounce(ball, normal, wall, restitution).map(|speed| (contact, speed))
 }
 
-/// Bounces a ball off a round peg from outside.
-pub fn collide_disc(ball: &mut Ball, center: Vec2, radius: f32, restitution: f32) -> Option<(Vec2, f32)> {
+/// Bounces a ball off a round peg from outside. `prev` is where the ball was before this step,
+/// so a small, fast ball that jumped over the peg in one step still hits it.
+pub fn collide_disc(ball: &mut Ball, prev: Vec2, center: Vec2, radius: f32, restitution: f32) -> Option<(Vec2, f32)> {
     let reach = radius + ball.radius;
     let offset = ball.position - center;
     let distance_squared = offset.length_squared();
     if distance_squared >= reach * reach {
-        return None;
+        // Did the path from `prev` pass through the peg? Find where it first touched.
+        let path = ball.position - prev;
+        let start = prev - center;
+        let (a, b, c) = (path.length_squared(), start.dot(path), start.length_squared() - reach * reach);
+        let discriminant = b * b - a * c;
+        if a < 1e-9 || c <= 0.0 || b >= 0.0 || discriminant < 0.0 {
+            return None;
+        }
+        let t = (-b - discriminant.sqrt()) / a;
+        if t > 1.0 {
+            return None;
+        }
+        ball.position = prev + path * t;
     }
-    let distance = distance_squared.sqrt();
+    let offset = ball.position - center;
+    let distance = offset.length();
     let normal = if distance > 1e-6 { offset / distance } else { Vec2::NEG_Y };
     ball.position = center + normal * reach;
     bounce(ball, normal, Vec2::ZERO, restitution).map(|speed| (center + normal * radius, speed))
@@ -492,5 +506,19 @@ mod tests {
         ball.velocity = Vec2::new(-500.0, 0.0);
         assert!(collide_piece(&mut ball, Vec2::new(-96.0, 0.0), &pieces[0], 2.0, Vec2::ZERO, 0.0, 0.0, 1.0).is_some());
         assert!(ball.position.x > -100.0 && ball.velocity.x > 0.0);
+    }
+
+    #[test]
+    fn small_fast_ball_cannot_skip_a_small_peg() {
+        let mut ball = Ball {
+            position: Vec2::new(8.0, 0.0),
+            velocity: Vec2::new(3000.0, 0.0),
+            radius: 0.5,
+            color: [1.0; 4],
+            wall_hits: 0,
+        };
+        let hit = collide_disc(&mut ball, Vec2::new(-4.5, 0.0), Vec2::ZERO, 1.0, 1.0);
+        assert!(hit.is_some());
+        assert!(ball.position.x < 0.0 && ball.velocity.x < 0.0);
     }
 }

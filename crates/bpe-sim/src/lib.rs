@@ -16,6 +16,20 @@ const TRAIL_SAMPLE_RATE: u32 = 120;
 const MAX_TRAIL_SAMPLES: usize = 256;
 /// The arena never grows past this multiple of its starting size.
 const MAX_ARENA_SCALE: f32 = 4.0;
+/// Roughly how long the arena takes to shrink by a hit's amount.
+const SHRINK_EASE_SECONDS: f32 = 0.06;
+
+/// An unbroken escape ring during one step.
+struct RingNow {
+    index: u32,
+    outline: Outline,
+    /// Radians per second it turns.
+    spin: f32,
+    /// Rotation and scale it went through in the last step.
+    moved: Vec2,
+    /// Its wall pieces in `Simulation::pieces`.
+    pieces: std::ops::Range<usize>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ball {
@@ -74,8 +88,10 @@ pub struct Simulation {
     obstacles: Vec<ObstaclePart>,
     /// Balls that appear later, as (step, ball), latest first.
     pending: Vec<(u64, Ball)>,
+    /// Arena size still to shrink away from hits, eased in over a few steps.
+    shrink_owed: f32,
     /// Scratch space for wall pieces and positions before the step.
-    pieces: Vec<(u32, Piece)>,
+    pieces: Vec<Piece>,
     previous: Vec<Vec2>,
     /// Ball positions sampled every `trail_every` steps, `trail_len` per ball, as a ring.
     trail: Vec<Vec2>,
@@ -110,6 +126,7 @@ impl Simulation {
             breaks: vec![None; rings],
             obstacles: scene.obstacle_parts(),
             pending,
+            shrink_owed: 0.0,
             pieces: Vec::new(),
             previous: Vec::new(),
             trail_len,
@@ -151,14 +168,18 @@ impl Simulation {
 
     /// Outlines of the arena as it is now: the closed arena, or each unbroken ring with its index.
     pub fn outlines(&self) -> Vec<(Option<u32>, Outline)> {
-        let container = &self.scene.container;
-        if let Some(outline) = closed_outline(container, self.arena) {
-            return vec![(None, outline)];
+        match closed_outline(&self.scene.container, self.arena) {
+            Some(outline) => vec![(None, outline)],
+            None => self.ring_outlines().into_iter().map(|(k, o)| (Some(k), o)).collect(),
         }
-        let time = self.time();
+    }
+
+    /// Each unbroken escape ring as it is now, with its index.
+    fn ring_outlines(&self) -> Vec<(u32, Outline)> {
+        let (container, time) = (&self.scene.container, self.time());
         (0..self.breaks.len() as u32)
             .filter(|&k| self.breaks[k as usize].is_none())
-            .filter_map(|k| ring_outline(container, k, time, self.arena).map(|o| (Some(k), o)))
+            .filter_map(|k| ring_outline(container, k, time, self.arena).map(|o| (k, o)))
             .collect()
     }
 
@@ -208,22 +229,23 @@ impl Simulation {
         let time = self.time();
         let container = &self.scene.container;
         let closed = closed_outline(container, self.arena);
-        let ring_outlines: Vec<(u32, Outline)> = if closed.is_none() {
-            (0..self.breaks.len() as u32)
-                .filter(|&k| self.breaks[k as usize].is_none())
-                .filter_map(|k| ring_outline(container, k, time, self.arena).map(|o| (k, o)))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.pieces.clear();
-        for (k, outline) in &ring_outlines {
-            let mut pieces = Vec::new();
-            outline_pieces(outline, &mut pieces);
-            self.pieces.extend(pieces.into_iter().map(|p| (*k, p)));
-        }
         let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
         let pivot = container.center();
+        let mut rings = Vec::new();
+        self.pieces.clear();
+        if closed.is_none() {
+            for (k, outline) in self.ring_outlines() {
+                let spin = arena::ring_spin(container, k, self.arena);
+                // How the ring moved since the last step, to see the ball's last position from
+                // where the ring is now. Otherwise a ring that swept past a ball would make it
+                // look as if the ball came from the other side.
+                let moved = Vec2::from_angle(spin * dt) * (1.0 + growth * dt);
+                let start = self.pieces.len();
+                outline_pieces(&outline, &mut self.pieces);
+                rings.push(RingNow { index: k, outline, spin, moved, pieces: start..self.pieces.len() });
+            }
+        }
+        let thickness = container.thickness();
 
         // Touches slower than this are balls resting on something, not bounces. They still push
         // the ball out but don't count as hits, so resting balls don't buzz or flicker.
@@ -235,19 +257,19 @@ impl Simulation {
                 Some(outline) => arena::collide_closed(ball, outline, self.arena, restitution),
                 None => None,
             };
-            for (k, piece) in &self.pieces {
-                let spin = arena::ring_spin(container, *k, self.arena);
-                // Where the ball was last step as seen by the turning ring, so a ring that swept
-                // past the ball can't make it look as if the ball came from the other side.
-                let (sin, cos) = (spin * dt).sin_cos();
-                let r = (prev - pivot) * (1.0 + growth * dt);
-                let prev = pivot + Vec2::new(r.x * cos - r.y * sin, r.x * sin + r.y * cos);
-                let thickness = container.thickness();
-                if let Some((position, speed)) =
-                    arena::collide_piece(ball, prev, piece, thickness, pivot, spin, growth, restitution)
-                    && wall_hit.is_none_or(|(_, s)| speed > s)
-                {
-                    wall_hit = Some((position, speed));
+            for ring in &rings {
+                // A ring that broke earlier in this step is already gone.
+                if self.breaks[ring.index as usize].is_some() {
+                    continue;
+                }
+                let seen = pivot + ring.moved.rotate(prev - pivot);
+                for piece in &self.pieces[ring.pieces.clone()] {
+                    if let Some((position, speed)) =
+                        arena::collide_piece(ball, seen, piece, thickness, pivot, ring.spin, growth, restitution)
+                        && wall_hit.is_none_or(|(_, s)| speed > s)
+                    {
+                        wall_hit = Some((position, speed));
+                    }
                 }
             }
             if let Some((position, impact_speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
@@ -255,7 +277,9 @@ impl Simulation {
             }
             for (part, obstacle) in self.obstacles.iter().enumerate() {
                 let hit = match *obstacle {
-                    ObstaclePart::Disc { center, radius, .. } => arena::collide_disc(ball, center, radius, restitution),
+                    ObstaclePart::Disc { center, radius, .. } => {
+                        arena::collide_disc(ball, prev, center, radius, restitution)
+                    }
                     ObstaclePart::Segment { from, to, thickness, .. } => {
                         let piece = Piece::Segment { from, to };
                         arena::collide_piece(ball, prev, &piece, thickness, Vec2::ZERO, 0.0, 0.0, restitution)
@@ -266,9 +290,10 @@ impl Simulation {
                     events.push(WallHit { time, ball: index as u32, position, impact_speed, kind });
                 }
             }
-            for (k, outline) in &ring_outlines {
-                let k = *k as usize;
-                if self.breaks[k].is_none() && arena::inside(outline, prev) && !arena::inside(outline, ball.position) {
+            for ring in &rings {
+                let (k, outline) = (ring.index as usize, &ring.outline);
+                let seen = pivot + ring.moved.rotate(prev - pivot);
+                if self.breaks[k].is_none() && arena::inside(outline, seen) && !arena::inside(outline, ball.position) {
                     self.breaks[k] = Some(RingBreak { time, outline: *outline });
                     let impact_speed = ball.velocity.length();
                     let kind = HitKind::Escape(k as u32);
@@ -326,19 +351,19 @@ impl Simulation {
         if self.step == 0 {
             return;
         }
-        let rate = -motion.shrink_speed / self.arena_size;
+        // Shrinking from hits is eased in rather than done in one jump, so walls move smoothly
+        // and push balls instead of jumping past them.
+        let owed = self.shrink_owed * (self.dt / SHRINK_EASE_SECONDS).min(1.0);
+        self.shrink_owed -= owed;
+        let change = -motion.shrink_speed / self.arena_size * self.dt - owed;
         let (low, high) = self.scale_limits();
-        let scale = (self.arena.scale + rate * self.dt).clamp(low, high);
-        self.arena.scale_rate = if scale == self.arena.scale { 0.0 } else { rate };
+        let scale = (self.arena.scale + change).clamp(low, high);
+        self.arena.scale_rate = (scale - self.arena.scale) / self.dt;
         self.arena.scale = scale;
     }
 
     fn shrink_on_hit(&mut self) {
-        let amount = self.scene.arena_motion.shrink_per_hit / self.arena_size;
-        if amount != 0.0 {
-            let (low, high) = self.scale_limits();
-            self.arena.scale = (self.arena.scale - amount).clamp(low, high);
-        }
+        self.shrink_owed += self.scene.arena_motion.shrink_per_hit / self.arena_size;
     }
 
     fn scale_limits(&self) -> (f32, f32) {
@@ -452,11 +477,9 @@ pub fn spawn_balls(scene: &Scene) -> Vec<Ball> {
 /// A new ball split off `parent`, heading off at a repeatable random angle with a new colour.
 fn split_ball(parent: &Ball, index: usize, spread: f32) -> Ball {
     let angle = (unit_noise(index as u64) * spread).to_radians();
-    let (sin, cos) = angle.sin_cos();
-    let v = parent.velocity;
     Ball {
         position: parent.position,
-        velocity: Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos),
+        velocity: Vec2::from_angle(angle).rotate(parent.velocity),
         radius: parent.radius,
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
@@ -475,13 +498,18 @@ fn rotate_hue(color: [f32; 4], angle: f32) -> [f32; 4] {
     [(r * a + g * b + bl * c).max(0.0), (r * c + g * a + bl * b).max(0.0), (r * b + g * c + bl * a).max(0.0), alpha]
 }
 
-/// A repeatable pseudo-random number between -1 and 1.
-fn unit_noise(seed: u64) -> f32 {
+/// A repeatable pseudo-random number from 0 up to 1 (SplitMix64).
+pub fn noise(seed: u64) -> f32 {
     let mut x = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^= x >> 31;
-    (x >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+    (x >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// A repeatable pseudo-random number from -1 up to 1.
+fn unit_noise(seed: u64) -> f32 {
+    noise(seed) * 2.0 - 1.0
 }
 
 fn apply_bounce_rules(ball: &mut Ball, scene: &Scene) {
@@ -792,6 +820,20 @@ mod tests {
         assert!(turned.iter().zip(grey).all(|(a, b)| (a - b).abs() < 1e-5));
     }
 
+    /// Runs an escape-rings scene and checks that every ball stays inside the smallest unbroken
+    /// ring: the only way out is through a gap, which breaks the ring.
+    fn assert_no_leaks(scene: &Scene, seconds: f32) {
+        let mut sim = Simulation::new(scene);
+        let mut hits = Vec::new();
+        for step in 0..(seconds * 240.0) as usize {
+            sim.step(&mut hits);
+            let Some((_, outline)) = sim.outlines().into_iter().next() else { break };
+            for (i, ball) in sim.balls().iter().enumerate() {
+                assert!(arena::inside(&outline, ball.position), "ball {i} leaked at step {step}");
+            }
+        }
+    }
+
     #[test]
     fn fast_spinning_polygon_rings_never_leak() {
         let mut scene = Scene::escape_and_multiply();
@@ -800,15 +842,21 @@ mod tests {
             *spin_step = -40.0;
             *gap = 20.0;
         }
-        let mut sim = Simulation::new(&scene);
-        let mut hits = Vec::new();
-        for _ in 0..(10.0 * 240.0) as usize {
-            sim.step(&mut hits);
-            let Some((_, outline)) = sim.outlines().into_iter().next() else { break };
-            let escaped = escapes(&hits).len();
-            for (i, ball) in sim.balls().iter().enumerate() {
-                assert!(arena::inside(&outline, ball.position), "ball {i} leaked after {escaped} escapes");
-            }
-        }
+        assert_no_leaks(&scene, 10.0);
+    }
+
+    #[test]
+    fn spinning_arena_rings_never_leak() {
+        let mut scene = Scene::escape_and_multiply();
+        scene.arena_motion.spin = 120.0;
+        assert_no_leaks(&scene, scene.video.duration);
+    }
+
+    #[test]
+    fn rings_that_shrink_on_every_hit_never_leak() {
+        let mut scene = Scene::escape_rings();
+        scene.arena_motion.shrink_per_hit = 5.0;
+        scene.arena_motion.min_size = 100.0;
+        assert_no_leaks(&scene, scene.video.duration);
     }
 }
