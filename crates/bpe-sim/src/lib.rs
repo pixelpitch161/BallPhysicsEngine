@@ -6,10 +6,12 @@
 //! in sync.
 
 mod arena;
+mod grid;
 
 pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring_outline};
 
 use bpe_scene::{Color, Container, ObstaclePart, Scene, Spawner, Vec2};
+use grid::{BallGrid, ObstacleGrid};
 
 /// How often ball positions are recorded for drawing trails, in samples per second.
 const TRAIL_SAMPLE_RATE: u32 = 120;
@@ -93,6 +95,11 @@ pub struct Simulation {
     /// One entry per ring of a `Container::Rings` arena, set once it breaks.
     breaks: Vec<Option<RingBreak>>,
     obstacles: Vec<ObstaclePart>,
+    /// Finds the pegs and wall pieces near a ball.
+    obstacle_grid: ObstacleGrid,
+    /// Scratch space for obstacle lookups and for pairing up balls that collide.
+    nearby: Vec<u32>,
+    ball_grid: BallGrid,
     /// Balls that appear later, as (step, ball), latest first.
     pending: Vec<(u64, Ball)>,
     /// Arena size still to shrink away from hits, eased in over a few steps.
@@ -139,6 +146,9 @@ impl Simulation {
             arena_size: scene.container.size().max(1.0),
             breaks: vec![None; rings],
             obstacles: scene.obstacle_parts(),
+            obstacle_grid: ObstacleGrid::default(),
+            nearby: Vec::new(),
+            ball_grid: BallGrid::default(),
             pending,
             shrink_owed: 0.0,
             shrunk: 1.0,
@@ -151,6 +161,7 @@ impl Simulation {
             trail_head: 0,
             trail_filled: 0,
         };
+        sim.obstacle_grid = ObstacleGrid::new(&sim.obstacles);
         sim.update_arena();
         sim.record_trail();
         sim
@@ -198,6 +209,15 @@ impl Simulation {
             .filter(|&k| self.breaks[k as usize].is_none())
             .filter_map(|k| ring_outline(container, k, time, self.arena).map(|o| (k, o)))
             .collect()
+    }
+
+    /// Roughly how many bytes this simulation takes up.
+    fn memory(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.balls.capacity() * std::mem::size_of::<Ball>()
+            + self.trail.capacity() * std::mem::size_of::<Vec2>()
+            + self.previous.capacity() * std::mem::size_of::<Vec2>()
+            + self.pending.capacity() * std::mem::size_of::<(u64, Ball)>()
     }
 
     /// Seconds between trail samples.
@@ -295,7 +315,7 @@ impl Simulation {
             ball.position += ball.velocity * dt;
         }
         if physics.ball_collisions {
-            collide_balls(&mut self.balls, restitution);
+            collide_balls(&mut self.balls, restitution, &mut self.ball_grid);
         }
         let container = &self.scene.container;
         let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
@@ -330,8 +350,8 @@ impl Simulation {
             if let Some((position, impact_speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
                 events.push(WallHit { time, ball: index as u32, position, impact_speed, kind: HitKind::Wall });
             }
-            for (part, obstacle) in self.obstacles.iter().enumerate() {
-                let hit = match *obstacle {
+            let mut obstacle = |ball: &mut Ball, part: usize| {
+                let hit = match self.obstacles[part] {
                     ObstaclePart::Disc { center, radius, .. } => {
                         arena::collide_disc(ball, prev, center, radius, restitution)
                     }
@@ -344,6 +364,24 @@ impl Simulation {
                     let kind = HitKind::Obstacle(part as u32);
                     events.push(WallHit { time, ball: index as u32, position, impact_speed, kind });
                 }
+            };
+            if self.obstacle_grid.enabled() {
+                // Only the pegs and walls near the ball's path, in the same order as checking all
+                // of them. Bouncing off one moves the ball, so the rest are looked up again.
+                let nearby = &mut self.nearby;
+                self.obstacle_grid.query(prev, ball.position, ball.radius, None, nearby);
+                let mut next = 0;
+                while let Some(&part) = nearby.get(next) {
+                    let before = ball.position;
+                    obstacle(ball, part as usize);
+                    next += 1;
+                    if ball.position != before {
+                        self.obstacle_grid.query(prev, ball.position, ball.radius, Some(part), nearby);
+                        next = 0;
+                    }
+                }
+            } else {
+                (0..self.obstacles.len()).for_each(|part| obstacle(ball, part));
             }
             for ring in rings {
                 let (k, outline) = (ring.index as usize, &ring.outline);
@@ -450,17 +488,32 @@ impl Simulation {
     }
 }
 
+/// Seconds of simulation between saved snapshots, at first. Snapshots let a seek backwards
+/// start from just before the new time instead of from the very start.
+const CHECKPOINT_SECONDS: f64 = 0.5;
+/// Most memory the snapshots of one playback may use. Past this, every other one is dropped
+/// and they are taken half as often.
+const CHECKPOINT_BYTES: usize = 192 << 20;
+
 /// A simulation plus every wall hit so far, which can be moved to any point in time.
-/// Seeking backwards replays from the start, which is cheap and keeps results exact.
+/// Seeking backwards restarts from the latest snapshot before that time. The simulation is
+/// deterministic, so this gives exactly the same result as replaying from the start.
 #[derive(Clone)]
 pub struct Playback {
     sim: Simulation,
     hits: Vec<WallHit>,
+    /// Snapshots taken every `checkpoint_every` steps, oldest first, with how many hits there
+    /// were at the time.
+    checkpoints: Vec<(Simulation, usize)>,
+    checkpoint_every: u64,
 }
 
 impl Playback {
     pub fn new(scene: &Scene) -> Self {
-        Self { sim: Simulation::new(scene), hits: Vec::new() }
+        let sim = Simulation::new(scene);
+        let checkpoint_every = (CHECKPOINT_SECONDS * scene.physics.steps_per_second.max(1) as f64).ceil() as u64;
+        let checkpoints = vec![(sim.clone(), 0)];
+        Self { sim, hits: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1) }
     }
 
     pub fn simulation(&self) -> &Simulation {
@@ -480,10 +533,48 @@ impl Playback {
     }
 
     pub fn seek(&mut self, time: f64) {
-        if time < self.sim.time() {
-            *self = Self::new(self.sim.scene());
+        self.seek_within(time, None);
+    }
+
+    /// Like [`Playback::seek`], but stops after about `budget` of work if it hasn't got there
+    /// yet, so the editor can keep drawing while a long stretch is worked out. Returns whether
+    /// the playback reached `time`.
+    pub fn seek_within(&mut self, time: f64, budget: Option<std::time::Duration>) -> bool {
+        let rate = self.sim.scene.physics.steps_per_second.max(1) as f64;
+        let target = (time * rate).floor() as u64;
+        if target < self.sim.step {
+            let index = self.checkpoints.partition_point(|(sim, _)| sim.step <= target).max(1) - 1;
+            let (sim, hits) = &self.checkpoints[index];
+            self.sim = sim.clone();
+            self.hits.truncate(*hits);
         }
-        self.sim.advance_to(time, &mut self.hits);
+        let started = budget.map(|_| std::time::Instant::now());
+        while self.sim.step < target {
+            self.sim.step(&mut self.hits);
+            if self.sim.step.is_multiple_of(self.checkpoint_every)
+                && self.checkpoints.last().is_some_and(|(sim, _)| sim.step < self.sim.step)
+            {
+                self.save_checkpoint();
+            }
+            if let (Some(started), Some(budget)) = (started, budget)
+                && self.sim.step.is_multiple_of(8)
+                && started.elapsed() >= budget
+            {
+                return self.sim.step >= target;
+            }
+        }
+        true
+    }
+
+    fn save_checkpoint(&mut self) {
+        self.checkpoints.push((self.sim.clone(), self.hits.len()));
+        let bytes: usize = self.checkpoints.iter().map(|(sim, _)| sim.memory()).sum();
+        if bytes > CHECKPOINT_BYTES && self.checkpoints.len() > 2 {
+            // Keep the first one and every other one after it, and take them half as often.
+            self.checkpoint_every *= 2;
+            let every = self.checkpoint_every;
+            self.checkpoints.retain(|(sim, _)| sim.step.is_multiple_of(every));
+        }
     }
 }
 
@@ -602,34 +693,13 @@ fn apply_bounce_rules(ball: &mut Ball, scene: &Scene, ceiling: f32) {
 }
 
 /// Elastic collisions between balls, found with a uniform grid. Heavier (bigger) balls move less.
-fn collide_balls(balls: &mut [Ball], restitution: f32) {
+fn collide_balls(balls: &mut [Ball], restitution: f32, grid: &mut BallGrid) {
     let max_radius = balls.iter().map(|b| b.radius).fold(0.0f32, f32::max);
     if balls.len() < 2 || max_radius <= 0.0 {
         return;
     }
-    let cell = max_radius * 2.0;
-    let key = |p: Vec2| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
-    let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
-    for (i, ball) in balls.iter().enumerate() {
-        grid.entry(key(ball.position)).or_default().push(i);
-    }
-    let mut cells: Vec<_> = grid.keys().copied().collect();
-    cells.sort_unstable();
-    for (cx, cy) in cells {
-        let members = &grid[&(cx, cy)];
-        for &i in members {
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    let Some(others) = grid.get(&(cx + dx, cy + dy)) else { continue };
-                    for &j in others {
-                        if j > i {
-                            resolve_pair(balls, i, j, restitution);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    grid.build(balls.iter().map(|b| b.position), max_radius * 2.0);
+    grid.for_each_pair(|i, j| resolve_pair(balls, i, j, restitution));
 }
 
 fn resolve_pair(balls: &mut [Ball], i: usize, j: usize, restitution: f32) {
@@ -688,6 +758,136 @@ mod tests {
             }
         }
         eprintln!("rolled scenes took {:?}", started.elapsed());
+    }
+
+    /// The ball-pair search as it was before the grid: a hash map of cells, visited in sorted order.
+    fn collide_balls_reference(balls: &mut [Ball], restitution: f32) {
+        let max_radius = balls.iter().map(|b| b.radius).fold(0.0f32, f32::max);
+        if balls.len() < 2 || max_radius <= 0.0 {
+            return;
+        }
+        let cell = max_radius * 2.0;
+        let key = |p: Vec2| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        for (i, ball) in balls.iter().enumerate() {
+            grid.entry(key(ball.position)).or_default().push(i);
+        }
+        let mut cells: Vec<_> = grid.keys().copied().collect();
+        cells.sort_unstable();
+        for (cx, cy) in cells {
+            for &i in &grid[&(cx, cy)] {
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let Some(others) = grid.get(&(cx + dx, cy + dy)) else { continue };
+                        for &j in others {
+                            if j > i {
+                                resolve_pair(balls, i, j, restitution);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ball_grid_matches_the_plain_search() {
+        // Packed (the lookup table) and spread out (the hash table), small and large.
+        for (count, spread, seed) in [(40, 60.0, 1u64), (900, 300.0, 2), (900, 30000.0, 3), (3000, 900.0, 4)] {
+            let balls: Vec<Ball> = (0..count)
+                .map(|i| Ball {
+                    position: Vec2::new(unit_noise(seed * 7919 + i * 2), unit_noise(seed * 7919 + i * 2 + 1)) * spread,
+                    velocity: Vec2::new(unit_noise(i * 3 + 9), unit_noise(i * 5 + 4)) * 300.0,
+                    radius: 3.0 + 4.0 * noise(i + seed),
+                    color: [1.0; 4],
+                    wall_hits: 0,
+                })
+                .collect();
+            let (mut a, mut b) = (balls.clone(), balls);
+            collide_balls(&mut a, 0.9, &mut BallGrid::default());
+            collide_balls_reference(&mut b, 0.9);
+            assert_eq!(a, b, "{count} balls over {spread} px");
+        }
+    }
+
+    /// Runs `scene` with and without the peg lookup and checks every hit and ball matches.
+    fn assert_grid_matches(scene: &Scene, seconds: f64) {
+        let mut fast = Simulation::new(scene);
+        let mut plain = Simulation::new(scene);
+        plain.obstacle_grid = ObstacleGrid::default();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        fast.advance_to(seconds, &mut a);
+        plain.advance_to(seconds, &mut b);
+        assert_eq!(a, b, "{}", scene.name);
+        assert_eq!(fast.balls(), plain.balls(), "{}", scene.name);
+    }
+
+    #[test]
+    fn peg_lookup_matches_checking_every_peg() {
+        let mut scenes = vec![Scene::plinko()];
+        let mut fast = Scene::plinko();
+        fast.rules.limit_speed = false;
+        fast.rules.speed_gain = 1.2;
+        scenes.push(fast);
+        let mut colliding = Scene::plinko();
+        colliding.physics.ball_collisions = false;
+        colliding.physics.gravity = Vec2::new(150.0, 900.0);
+        scenes.push(colliding);
+        // Rolled obstacles and balls, so pegs and lines of all sizes get tried.
+        for seed in 0..8 {
+            let base = Scene::plinko();
+            let mut groups: Vec<bpe_scene::Group> = (0..base.spawners.len()).map(bpe_scene::Group::Balls).collect();
+            groups.extend([bpe_scene::Group::Shape, bpe_scene::Group::World, bpe_scene::Group::Bounces]);
+            scenes.push(base.variation(&groups, seed, 1.0));
+        }
+        for scene in &scenes {
+            assert_grid_matches(scene, scene.video.duration.min(12.0) as f64);
+        }
+    }
+
+    #[test]
+    fn seeking_back_gives_the_same_as_replaying() {
+        for scene in [Scene::plinko(), Scene::multiplying_balls(), Scene::escape_rings()] {
+            let mut playback = Playback::new(&scene);
+            playback.seek(9.3);
+            for time in [2.71, 0.0, 6.02, 0.5, 8.9, 3.333] {
+                playback.seek(time);
+                let mut fresh = Playback::new(&scene);
+                fresh.seek(time);
+                assert_eq!(playback.hits(), fresh.hits(), "{} at {time}", scene.name);
+                assert_eq!(playback.simulation().balls(), fresh.simulation().balls(), "{} at {time}", scene.name);
+                assert_eq!(playback.simulation().time(), fresh.simulation().time());
+                let trail: Vec<_> = playback.simulation().trail(0).collect();
+                let fresh_trail: Vec<_> = fresh.simulation().trail(0).collect();
+                assert_eq!(trail, fresh_trail);
+            }
+        }
+    }
+
+    #[test]
+    fn a_seek_with_a_budget_gets_there_in_the_end() {
+        let scene = Scene::plinko();
+        let mut playback = Playback::new(&scene);
+        let mut rounds = 0;
+        while !playback.seek_within(20.0, Some(std::time::Duration::from_micros(200))) {
+            rounds += 1;
+            assert!(playback.simulation().time() < 20.0);
+        }
+        assert!(rounds > 0, "a tiny budget should take more than one go");
+        let mut fresh = Playback::new(&scene);
+        fresh.seek(20.0);
+        assert_eq!(playback.hits(), fresh.hits());
+    }
+
+    #[test]
+    fn snapshots_stay_within_their_memory_limit() {
+        let mut scene = Scene::default();
+        scene.video.duration = 120.0;
+        let mut playback = Playback::new(&scene);
+        playback.seek(120.0);
+        let bytes: usize = playback.checkpoints.iter().map(|(sim, _)| sim.memory()).sum();
+        assert!(bytes <= CHECKPOINT_BYTES + playback.sim.memory(), "{bytes} bytes of snapshots");
+        assert!(playback.checkpoints.len() > 10);
     }
 
     #[test]

@@ -239,6 +239,8 @@ struct Inner {
     builtins: BTreeMap<String, Arc<EffectInfo>>,
     custom: BTreeMap<String, (Arc<EffectInfo>, Option<SystemTime>)>,
     folders: Vec<PathBuf>,
+    /// Goes up whenever a custom effect is added, changed or removed.
+    revision: u64,
 }
 
 impl std::fmt::Debug for EffectLibrary {
@@ -260,7 +262,9 @@ impl EffectLibrary {
             .iter()
             .map(|(id, source)| (id.to_string(), Arc::new(EffectInfo::parse(id, source, None))))
             .collect();
-        Self { inner: Arc::new(RwLock::new(Inner { builtins, custom: BTreeMap::new(), folders: Vec::new() })) }
+        Self {
+            inner: Arc::new(RwLock::new(Inner { builtins, custom: BTreeMap::new(), folders: Vec::new(), revision: 0 })),
+        }
     }
 
     /// Sets the folders searched for custom `.wgsl` effects (earlier folders win) and loads them.
@@ -272,7 +276,9 @@ impl EffectLibrary {
             changed
         };
         if changed {
-            self.inner.write().unwrap().custom.clear();
+            let mut inner = self.inner.write().unwrap();
+            inner.custom.clear();
+            inner.revision += 1;
         }
         self.refresh();
     }
@@ -323,7 +329,15 @@ impl EffectLibrary {
             inner.custom.insert(id, (Arc::new(info), modified));
             changed = true;
         }
+        if changed {
+            inner.revision += 1;
+        }
         changed
+    }
+
+    /// A number that changes whenever the custom effects change.
+    pub fn revision(&self) -> u64 {
+        self.inner.read().unwrap().revision
     }
 
     /// Looks up an effect by id. A custom file overrides a built-in of the same name.

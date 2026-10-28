@@ -631,6 +631,104 @@ impl GrowableBuffer {
     }
 }
 
+/// Copies finished frames back to the CPU a few frames behind the drawing, so the graphics card
+/// draws the next frame while the last one is being read and encoded. Frames come back in the
+/// order they were drawn, as tightly packed RGBA bytes (sRGB-encoded).
+pub struct Readback {
+    slots: Vec<ReadbackSlot>,
+    next: usize,
+    width: u32,
+    height: u32,
+    padded_row: usize,
+}
+
+struct ReadbackSlot {
+    buffer: wgpu::Buffer,
+    /// The copy in flight: its submission and the result of mapping the buffer.
+    pending: Option<(wgpu::SubmissionIndex, std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>)>,
+}
+
+impl Readback {
+    /// `depth` frames can be in flight at once.
+    pub fn new(device: &wgpu::Device, width: u32, height: u32, depth: usize) -> Self {
+        let padded_row = (width as usize * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let slots = (0..depth.max(1))
+            .map(|_| ReadbackSlot {
+                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("readback"),
+                    size: (padded_row * height as usize) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                pending: None,
+            })
+            .collect();
+        Self { slots, next: 0, width, height, padded_row }
+    }
+
+    /// Starts copying the renderer's current output. If all slots are busy, the oldest frame is
+    /// finished first and returned.
+    pub fn push(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &Renderer,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::ensure!(renderer.size() == (self.width, self.height), "readback size doesn't match the renderer");
+        let index = self.next;
+        let oldest = self.take(device, index)?;
+        let slot = &mut self.slots[index];
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
+        encoder.copy_texture_to_buffer(
+            renderer.output_texture().as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &slot.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_row as u32),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        slot.pending = Some((submission, receiver));
+        self.next = (index + 1) % self.slots.len();
+        Ok(oldest)
+    }
+
+    /// Waits for every frame still in flight and returns them, oldest first.
+    pub fn finish(&mut self, device: &wgpu::Device) -> anyhow::Result<Vec<Vec<u8>>> {
+        let mut frames = Vec::new();
+        for k in 0..self.slots.len() {
+            let index = (self.next + k) % self.slots.len();
+            frames.extend(self.take(device, index)?);
+        }
+        Ok(frames)
+    }
+
+    fn take(&mut self, device: &wgpu::Device, index: usize) -> anyhow::Result<Option<Vec<u8>>> {
+        let slot = &mut self.slots[index];
+        let Some((submission, receiver)) = slot.pending.take() else { return Ok(None) };
+        device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None })?;
+        receiver.recv()??;
+        let row = self.width as usize * 4;
+        let mut pixels = Vec::with_capacity(row * self.height as usize);
+        {
+            let mapped = slot.buffer.slice(..).get_mapped_range()?;
+            for chunk in mapped.chunks(self.padded_row) {
+                pixels.extend_from_slice(&chunk[..row]);
+            }
+        }
+        slot.buffer.unmap();
+        Ok(Some(pixels))
+    }
+}
+
 /// Creates a GPU device without a window, for exporting from the command line.
 pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());

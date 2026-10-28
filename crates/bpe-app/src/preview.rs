@@ -13,6 +13,66 @@ pub struct Preview {
     texture: egui::TextureId,
     frame_data: FrameData,
     drag: Option<Drag>,
+    /// What the picture on screen was drawn from, so it is only drawn again when that changes.
+    drawn: Option<Drawn>,
+    /// How long the parts of the last frame took.
+    pub stats: Stats,
+}
+
+#[derive(PartialEq)]
+struct Drawn {
+    scene: Scene,
+    time: f64,
+    step_time: f64,
+    size: (u32, u32),
+    effects: u64,
+}
+
+/// How long the parts of a preview frame took, in milliseconds.
+#[derive(Clone, Copy, Default)]
+pub struct Stats {
+    pub simulate: f32,
+    pub build: f32,
+    pub draw: f32,
+    /// Whether the picture was drawn this frame, or the last one was still current.
+    pub drew: bool,
+    pub balls: usize,
+    /// Extra lines and shapes sent to the graphics card.
+    pub shapes: usize,
+}
+
+/// Most time spent catching the simulation up in one editor frame. A long stretch, such as
+/// after an edit with the playhead far in, is worked out over several frames instead of
+/// freezing the editor.
+const CATCH_UP_BUDGET: std::time::Duration = std::time::Duration::from_millis(14);
+
+/// How sharp the preview is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewQuality {
+    #[default]
+    Full,
+    Half,
+    Quarter,
+}
+
+impl PreviewQuality {
+    pub const ALL: [PreviewQuality; 3] = [PreviewQuality::Full, PreviewQuality::Half, PreviewQuality::Quarter];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewQuality::Full => "Full",
+            PreviewQuality::Half => "Half",
+            PreviewQuality::Quarter => "Quarter",
+        }
+    }
+
+    fn scale(self) -> f32 {
+        match self {
+            PreviewQuality::Full => 1.0,
+            PreviewQuality::Half => 0.5,
+            PreviewQuality::Quarter => 0.25,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -41,6 +101,8 @@ pub struct Outcome {
     pub clicked: bool,
     /// A ball group was clicked or dragged.
     pub selected: Option<usize>,
+    /// The simulation hasn't reached the playhead yet, and the picture shows an earlier moment.
+    pub catching_up: bool,
 }
 
 /// Converts between world pixels (origin at the video centre, y down) and screen points.
@@ -77,6 +139,7 @@ impl Preview {
         playing: bool,
         selected: Option<usize>,
         effects: &EffectLibrary,
+        quality: PreviewQuality,
     ) -> Outcome {
         let Some(render_state) = frame.wgpu_render_state() else {
             ui.label("The preview needs the wgpu renderer.");
@@ -91,7 +154,7 @@ impl Preview {
         }
         let rect = Rect::from_center_size(area.center(), size);
         // Render at the screen's real pixel size, but never above the video's own size.
-        let scale = (size.x * ui.ctx().pixels_per_point() / video.width as f32).min(1.0);
+        let scale = (size.x * ui.ctx().pixels_per_point() / video.width as f32).min(1.0) * quality.scale();
         let (width, height) = bpe_export::output_size(scene, scale);
 
         let device = &render_state.device;
@@ -103,7 +166,14 @@ impl Preview {
                 renderer.output_view(),
                 bpe_render::wgpu::FilterMode::Linear,
             );
-            Preview { renderer, texture, frame_data: FrameData::default(), drag: None }
+            Preview {
+                renderer,
+                texture,
+                frame_data: FrameData::default(),
+                drag: None,
+                drawn: None,
+                stats: Stats::default(),
+            }
         });
         if preview.renderer.size() != (width, height) {
             preview.renderer.resize(device, width, height);
@@ -113,18 +183,44 @@ impl Preview {
                 bpe_render::wgpu::FilterMode::Linear,
                 preview.texture,
             );
+            preview.drawn = None;
         }
 
-        playback.seek(time);
-        let pixel = preview.renderer.pixel_size(scene);
-        preview.frame_data.fill(scene, playback, pixel);
-        preview.renderer.render(device, &render_state.queue, scene, time, &preview.frame_data);
+        let mut outcome = Outcome::default();
+        let started = std::time::Instant::now();
+        outcome.catching_up = !playback.seek_within(time, Some(CATCH_UP_BUDGET));
+        let simulate = started.elapsed();
+        // While catching up, the picture shows the moment the simulation has got to.
+        let shown_time = if outcome.catching_up { playback.simulation().time() } else { time };
+        let drawn = Drawn {
+            scene: scene.clone(),
+            time: shown_time,
+            step_time: playback.simulation().time(),
+            size: (width, height),
+            effects: effects.revision(),
+        };
+        let stats = &mut preview.stats;
+        stats.simulate = simulate.as_secs_f32() * 1000.0;
+        stats.drew = preview.drawn.as_ref() != Some(&drawn);
+        if stats.drew {
+            let started = std::time::Instant::now();
+            let pixel = preview.renderer.pixel_size(scene);
+            preview.frame_data.fill(scene, playback, pixel);
+            stats.build = started.elapsed().as_secs_f32() * 1000.0;
+            let started = std::time::Instant::now();
+            preview.renderer.render(device, &render_state.queue, scene, shown_time, &preview.frame_data);
+            stats.draw = started.elapsed().as_secs_f32() * 1000.0;
+            stats.balls = preview.frame_data.balls.len();
+            stats.shapes = preview.frame_data.shapes.len() + preview.frame_data.trails.len() / 6;
+            preview.drawn = Some(drawn);
+        } else {
+            (stats.build, stats.draw) = (0.0, 0.0);
+        }
 
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
 
-        let mut outcome = Outcome::default();
         if playing {
             preview.drag = None;
             outcome.clicked = response.clicked();
