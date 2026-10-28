@@ -149,11 +149,12 @@ fn cell_hash((x, y): (i32, i32)) -> u64 {
 }
 
 impl BallGrid {
-    /// Sorts balls at `positions` into cells of `cell` pixels.
-    pub fn build(&mut self, positions: impl Iterator<Item = Vec2>, cell: f32) {
+    /// Sorts balls into cells of `cell` pixels. Each item is a ball's index and position; balls
+    /// left out are never visited.
+    pub fn build(&mut self, balls: impl Iterator<Item = (u32, Vec2)>, cell: f32) {
         let key = |p: Vec2| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
         self.keyed.clear();
-        self.keyed.extend(positions.enumerate().map(|(i, p)| (key(p), i as u32)));
+        self.keyed.extend(balls.map(|(i, p)| (key(p), i)));
         self.size = (0, 0);
         let n = self.keyed.len();
         let (mut low, mut high) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));

@@ -144,7 +144,8 @@ fn classic_layer(
     played: &mut Vec<PlayedNote>,
 ) -> anyhow::Result<()> {
     let sound = &scene.sound;
-    if !events.iter().any(|e| e.kind.is_bounce()) {
+    let rule_events = events.iter().any(|e| matches!(e.kind, EventKind::Action { .. }));
+    if !rule_events && !events.iter().any(|e| e.kind.is_bounce()) {
         return Ok(());
     }
     let progression = Progression::new(scene)?;
@@ -191,6 +192,13 @@ fn classic_layer(
         }
     }
 
+    if rule_events {
+        for note in rule_notes(scene, events, options, &progression, frames) {
+            notes.push(Placed { start: note.start, note: note.key, left: note.left, right: note.right });
+            played.push(PlayedNote { time: note.time, key: note.key, velocity: note.volume, voice: 0, step: None });
+        }
+    }
+
     // Each note's sound is made once, all of them side by side.
     let mut wanted: Vec<u8> = notes.iter().map(|n| n.note).collect();
     wanted.sort_unstable();
@@ -200,6 +208,44 @@ fn classic_layer(
         (placed.start, voice.get(placed.note), placed.left, placed.right, 0)
     });
     Ok(())
+}
+
+/// A note played by a "Play a note" rule.
+pub(crate) struct RuleNote {
+    pub start: usize,
+    pub time: f64,
+    pub key: u8,
+    pub volume: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+/// Notes played by rules: the chord's lowest note at that moment, moved by the rule's pitch,
+/// panned to where it happened.
+pub(crate) fn rule_notes(
+    scene: &Scene,
+    events: &[Event],
+    options: &MixOptions,
+    progression: &Progression,
+    frames: usize,
+) -> Vec<RuleNote> {
+    let rules = bpe_sim::rules::RuleState::new(scene);
+    let (center, half_width) = (scene.container.center().x, scene.container.half_width());
+    let mut notes = Vec::new();
+    for event in events {
+        let Some(&bpe_sim::rules::RuleOutput::Note { pitch, volume }) = rules.output(event) else { continue };
+        let time = options.video_time(event);
+        let start = (time * SAMPLE_RATE as f64).round() as usize;
+        if start >= frames {
+            break;
+        }
+        let Some(&root) = progression.notes_at(time).first() else { continue };
+        let key = (root as f32 + pitch.round()).clamp(0.0, 127.0) as u8;
+        let pan = ((event.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * scene.sound.stereo_width;
+        let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+        notes.push(RuleNote { start, time, key, volume, left: volume * angle.cos(), right: volume * angle.sin() });
+    }
+    notes
 }
 
 /// One note placed in the mix.
@@ -464,6 +510,32 @@ pub(crate) fn mix64(mut x: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scene that plays a rule note every second, from a timer.
+    fn ticking(instrument: Instrument) -> Scene {
+        let catalog = bpe_sim::rules::catalog();
+        let mut scene = Scene::default();
+        scene.video.duration = 4.0;
+        scene.sound.instrument = instrument;
+        let mut graph = bpe_scene::Graph::new("Tick");
+        let timer = graph.add(bpe_graph::Catalog::spec(catalog, "timer").unwrap(), [0.0, 0.0]);
+        let note = graph.add(bpe_graph::Catalog::spec(catalog, "note").unwrap(), [200.0, 0.0]);
+        graph.connect(bpe_graph::Link { from: (timer, 0), to: (note, 0) }, catalog);
+        scene.logic = vec![graph];
+        scene
+    }
+
+    #[test]
+    fn rule_notes_play_with_classic_and_new_instruments() {
+        for instrument in [Scene::default().sound.instrument, Instrument::library("Marimba")] {
+            let scene = ticking(instrument.clone());
+            let with = render_scene(&scene, None).unwrap();
+            let mut quiet = scene.clone();
+            quiet.logic.clear();
+            let without = render_scene(&quiet, None).unwrap();
+            assert!(with.mix.notes.len() >= without.mix.notes.len() + 4, "{instrument:?}: rule notes missing");
+        }
+    }
 
     fn default_track() -> (Scene, Vec<Event>, Soundtrack) {
         let scene = Scene::default();

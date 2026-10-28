@@ -259,6 +259,17 @@ impl Simulation {
         &self.inputs
     }
 
+    /// Runs the scene's rules on this step's events from `first_event` on, acting on `balls`.
+    /// The flat simulation does this itself at the end of [`Simulation::step`]; 3D mode calls
+    /// it after its own balls have stepped.
+    pub fn run_rules(&mut self, first_event: usize, events: &mut Vec<Event>, balls: &mut dyn rules::RuleBalls) {
+        if self.rules.is_empty() {
+            return;
+        }
+        let now = self.time();
+        rules::run(&mut self.rules, now, first_event, events, balls);
+    }
+
     /// Rule state: compiled rules, counters and how often each block fired.
     pub fn rules(&self) -> &rules::RuleState {
         &self.rules
@@ -382,7 +393,13 @@ impl Simulation {
             self.announce_beats(time, events);
             self.substep(dt / substeps as f32, time, closed, &rings, events);
         }
-        rules::run(self, first_event, events);
+        // In 3D the 3D balls step after this, and their side runs the rules once both are done.
+        if matches!(self.scene.view, bpe_scene::View::Flat) && !self.rules.is_empty() {
+            let mut state = std::mem::take(&mut self.rules);
+            let now = self.time();
+            rules::run(&mut state, now, first_event, events, &mut rules::FlatBalls(self));
+            self.rules = state;
+        }
         if self.step.is_multiple_of(self.trail_every) {
             self.record_trail();
         }
@@ -949,8 +966,8 @@ impl Playback {
     fn count(&self, counts: &mut Counts, events: &[Event]) {
         for event in events {
             counts.add(event);
-            if let EventKind::Action { rule, action } = event.kind
-                && let Some((counter, amount)) = self.sim.rules.counter_change(rule, action)
+            if matches!(event.kind, EventKind::Action { .. })
+                && let Some((counter, amount)) = self.sim.rules.counter_change(event)
             {
                 if counts.counters.len() <= counter {
                     counts.counters.resize(counter + 1, 0.0);
@@ -996,6 +1013,8 @@ impl Playback {
             self.sim.step(&mut self.events);
             if let Some(space) = &mut self.space {
                 space.step(&mut self.events, from);
+                // 3D (WS4): rules see both sides' events and act on the 3D balls.
+                self.sim.run_rules(from, &mut self.events, &mut space.sim);
             }
             if self.sim.step.is_multiple_of(self.checkpoint_every)
                 && self.checkpoints.last().is_some_and(|(sim, _)| sim.step < self.sim.step)
@@ -1051,6 +1070,7 @@ pub fn collect_events_until(scene: &Scene, inputs: &SimInputs, until: f64) -> Ve
             let from = events.len();
             keeper.step(&mut events);
             space.step(&mut events, from);
+            keeper.run_rules(from, &mut events, &mut space.sim);
         }
         return events;
     }

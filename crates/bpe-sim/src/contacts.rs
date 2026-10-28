@@ -139,7 +139,10 @@ impl Contacts {
             self.integrate_spin(dt, settings);
             return;
         }
-        self.grid.build(balls.iter().map(|b| b.position), max_radius * 2.0);
+        self.grid.build(
+            balls.iter().enumerate().filter(|(_, b)| b.alive).map(|(i, b)| (i as u32, b.position)),
+            max_radius * 2.0,
+        );
 
         // Find touching pairs.
         self.contacts.clear();

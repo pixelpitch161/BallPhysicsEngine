@@ -27,6 +27,9 @@ pub struct Ball3 {
     /// Linear-light RGBA.
     pub color: [f32; 4],
     pub wall_hits: u32,
+    /// False once a rule removed the ball. It keeps its place in the list so ball numbers in
+    /// events stay valid.
+    pub alive: bool,
 }
 
 /// One of the tunnel's rings at the current moment.
@@ -197,6 +200,11 @@ impl SpaceSimulation {
         self.step
     }
 
+    /// Balls not removed by a rule.
+    pub fn alive_count(&self) -> usize {
+        self.balls.iter().filter(|b| b.alive).count()
+    }
+
     /// Roughly how many bytes this simulation holds, for limiting snapshots.
     pub fn memory(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -293,7 +301,7 @@ impl SpaceSimulation {
     }
 
     fn substeps(&self) -> u32 {
-        let fastest = self.balls.iter().map(|b| b.velocity.length()).fold(0.0f32, f32::max);
+        let fastest = self.balls.iter().filter(|b| b.alive).map(|b| b.velocity.length()).fold(0.0f32, f32::max);
         let travel = (fastest + self.gravity().length() * self.dt + self.arena.back_rate.abs()) * self.dt;
         ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS)
     }
@@ -307,7 +315,7 @@ impl SpaceSimulation {
         let resting = gravity.length() * self.dt * 4.0 + 1.0;
         self.previous.clear();
         self.previous.extend(self.balls.iter().map(|b| b.position));
-        for ball in &mut self.balls {
+        for ball in self.balls.iter_mut().filter(|b| b.alive) {
             ball.velocity = (ball.velocity + gravity * dt) * drag;
             ball.position += ball.velocity * dt;
         }
@@ -321,6 +329,9 @@ impl SpaceSimulation {
         let growth = arena.scale_rate / arena.scale.max(1e-3);
         let frontier = self.gates().next();
         for (index, ball) in self.balls.iter_mut().enumerate() {
+            if !ball.alive {
+                continue;
+            }
             let hit = match self.space.container {
                 Container3d::Sphere { radius } => collide_sphere(ball, radius * arena.scale, growth, restitution),
                 Container3d::Cube { size } => collide_cube(ball, size * 0.5 * arena.scale, arena, growth, restitution),
@@ -374,7 +385,7 @@ impl SpaceSimulation {
             events.push(event(time, ball_index, position, speed, kind));
         }
         for parent in spawns {
-            if self.balls.len() >= self.scene.rules.max_balls as usize {
+            if self.alive_count() >= self.scene.rules.max_balls as usize {
                 break;
             }
             let child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
@@ -427,7 +438,7 @@ impl SpaceSimulation {
         if self.step == 0 {
             return;
         }
-        let biggest = self.balls.iter().map(|b| b.radius).fold(0.0f32, f32::max);
+        let biggest = self.balls.iter().filter(|b| b.alive).map(|b| b.radius).fold(0.0f32, f32::max);
         let stop = match self.gates().next() {
             Some(gate) => gate.z - (biggest * 2.0 * TUNNEL_ROOM).max(40.0),
             None => f32::INFINITY,
@@ -597,6 +608,7 @@ fn split_ball(parent: &Ball3, index: usize, spread: f32) -> Ball3 {
         radius: parent.radius,
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
+        alive: true,
     }
 }
 
@@ -619,7 +631,14 @@ fn spawn_plan(scene: &Scene, space: &Space, steps_per_second: u32) -> Vec<(u64, 
         let seed = plan.len() as u64 * 7 + 0xd3;
         let z = depth.0 + unit_noise(seed) * reach * scatter;
         let vz = depth.1 + unit_noise(seed + 1) * velocity.length() * scatter;
-        let ball = Ball3 { position: position.extend(z), velocity: velocity.extend(vz), radius, color, wall_hits: 0 };
+        let ball = Ball3 {
+            position: position.extend(z),
+            velocity: velocity.extend(vz),
+            radius,
+            color,
+            wall_hits: 0,
+            alive: true,
+        };
         plan.push((step, ball));
     };
     for spawner in &scene.spawners {
@@ -654,6 +673,85 @@ fn spawn_plan(scene: &Scene, space: &Space, steps_per_second: u32) -> Vec<(u64, 
     // Stable, so balls that appear together keep the spawners' order.
     plan.sort_by_key(|(step, _)| *step);
     plan
+}
+
+/// Lets node rules work on the 3D balls: they see and set x and y, and leave depth alone.
+impl crate::rules::RuleBalls for SpaceSimulation {
+    fn len(&self) -> usize {
+        self.balls.len()
+    }
+
+    fn alive(&self, i: usize) -> bool {
+        self.balls.get(i).is_some_and(|b| b.alive)
+    }
+
+    fn alive_count(&self) -> usize {
+        SpaceSimulation::alive_count(self)
+    }
+
+    fn max_balls(&self) -> usize {
+        self.scene.rules.max_balls as usize
+    }
+
+    fn position(&self, i: usize) -> Vec2 {
+        self.balls[i].position.truncate()
+    }
+
+    fn velocity(&self, i: usize) -> Vec2 {
+        self.balls[i].velocity.truncate()
+    }
+
+    fn set_velocity(&mut self, i: usize, velocity: Vec2) {
+        let ball = &mut self.balls[i];
+        ball.velocity = velocity.extend(ball.velocity.z);
+    }
+
+    fn color(&self, i: usize) -> [f32; 4] {
+        self.balls[i].color
+    }
+
+    fn set_color(&mut self, i: usize, color: [f32; 4]) {
+        self.balls[i].color = color;
+    }
+
+    fn radius(&self, i: usize) -> f32 {
+        self.balls[i].radius
+    }
+
+    fn set_radius(&mut self, i: usize, radius: f32) {
+        self.balls[i].radius = radius.max(0.5);
+    }
+
+    fn remove(&mut self, i: usize, time: f64, events: &mut Vec<Event>) {
+        let Some(ball) = self.balls.get_mut(i).filter(|b| b.alive) else { return };
+        ball.alive = false;
+        events.push(event(time, i as u32, ball.position, 0.0, EventKind::Remove));
+    }
+
+    fn spawn_from(&mut self, parent: usize, spread: f32, at: Option<Vec2>, time: f64, events: &mut Vec<Event>) -> bool {
+        if self.alive_count() >= self.scene.rules.max_balls as usize || !self.alive(parent) {
+            return false;
+        }
+        let mut child = split_ball(&self.balls[parent], self.balls.len(), spread);
+        if let Some(at) = at {
+            child.position = at.extend(child.position.z);
+        }
+        self.place_inside(&mut child);
+        self.add_ball(child, time, events);
+        true
+    }
+
+    fn gravity(&self) -> Vec2 {
+        self.scene.physics.gravity
+    }
+
+    fn set_gravity(&mut self, gravity: Vec2) {
+        self.scene.physics.gravity = gravity;
+    }
+
+    fn center(&self) -> Vec2 {
+        Vec2::ZERO
+    }
 }
 
 /// The 3D side of a [`crate::Playback`]: the 3D simulation, with snapshots taken at the same
@@ -805,6 +903,9 @@ impl BallGrid {
 /// speed if they were moving together.
 fn resolve_pair(balls: &mut [Ball3], i: usize, j: usize, restitution: f32) -> Option<(Vec3, f32)> {
     let (left, right) = balls.split_at_mut(j);
+    if !left[i].alive || !right[0].alive {
+        return None;
+    }
     let (a, b) = (&mut left[i], &mut right[0]);
     let offset = b.position - a.position;
     let distance = offset.length();
@@ -892,6 +993,43 @@ mod tests {
                 whole.events().to_vec()
             });
         }
+    }
+
+    /// Node rules see 3D hits and act on the 3D balls: escapes in the tunnel spawn balls, and
+    /// "last ball standing" removes balls on wall hits until one is left.
+    #[test]
+    fn rules_work_in_3d() {
+        let recipe = |name: &str| crate::rules::recipes().into_iter().find(|r| r.name == name).expect("recipe").graph;
+        let mut scene = space_scene(Container3d::tunnel(300.0));
+        scene.spawners = vec![single(Vec2::ZERO, Vec2::new(300.0, -200.0), 20.0, 100.0, 300.0)];
+        scene.physics.gravity = Vec2::new(0.0, 600.0);
+        scene.rules.spawn_per_escape = 0;
+        scene.video.duration = 20.0;
+        scene.logic = vec![recipe("Escape and multiply")];
+        let events = crate::collect_wall_hits(&scene);
+        let escapes = events.iter().filter(|e| matches!(e.kind, EventKind::Escape(_))).count();
+        let spawns = events.iter().filter(|e| e.kind == EventKind::Spawn).count();
+        assert!(escapes >= 2, "only {escapes} escapes");
+        assert!(spawns >= escapes * 2 - 2, "{spawns} spawns for {escapes} escapes");
+
+        let mut scene = space_scene(Container3d::Sphere { radius: 400.0 });
+        scene.logic = vec![recipe("Last ball standing")];
+        let mut playback = crate::Playback::new(&scene);
+        playback.seek(10.0);
+        let sim = playback.space().unwrap();
+        let removed = playback.events().iter().filter(|e| e.kind == EventKind::Remove).count();
+        assert!(removed > 0);
+        assert_eq!(sim.alive_count(), sim.balls().len() - removed);
+        assert_eq!(playback.counts_at(10.0).balls as usize, sim.alive_count());
+        // Removed balls stay where they were and are not hit any more.
+        let gone = playback.events().iter().find(|e| e.kind == EventKind::Remove).unwrap();
+        assert!(!playback.events().iter().any(|e| e.time > gone.time && e.ball == gone.ball && e.kind.is_hit()));
+        // Seeking back and forth agrees with the straight run.
+        let mut jumpy = crate::Playback::new(&scene);
+        for time in [4.0, 1.0, 7.0, 10.0] {
+            jumpy.seek(time);
+        }
+        assert_eq!(jumpy.events(), playback.events());
     }
 
     /// Balls that appear later, from a stream or split off on a hit, are counted.
