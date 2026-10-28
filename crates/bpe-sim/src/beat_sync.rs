@@ -222,16 +222,20 @@ struct Probe {
 
 impl Probe {
     fn new(sim: &mut Simulation, lead: usize) -> Self {
-        // Copy everything but the balls, trails and later spawns, which the look-ahead doesn't need.
+        // Copy everything but the balls, trails and later spawns, which the look-ahead doesn't
+        // need. Soft bodies and liquid are left out too: moving them for every guess took a
+        // quarter of a second per bounce, and the lead ball mostly meets the walls.
         let balls = std::mem::take(&mut sim.balls);
         let trail = std::mem::take(&mut sim.trail);
         let pending = std::mem::take(&mut sim.pending);
         let beats = std::mem::take(&mut sim.inputs.beats);
+        let bodies = std::mem::replace(&mut sim.bodies, crate::bodies::BodyState::empty());
         let mut start = sim.clone();
         sim.balls = balls;
         sim.trail = trail;
         sim.pending = pending;
         sim.inputs.beats = beats;
+        sim.bodies = bodies;
         start.balls = vec![sim.balls[lead].clone()];
         start.trail_len = 0;
         start.trail_filled = 0;

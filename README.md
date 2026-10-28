@@ -17,6 +17,7 @@ Mix and match these in the editor, or start from a preset of each:
 | Shrinking arena | Arena tab, **Shrink** (per second) or **Shrink per hit** under Movement. Negative shrink grows the arena. | Shrinking ring |
 | String art | Look tab, **Lines per ball**: a line from each ball to its latest hit points. | String art |
 | Pegs (Plinko) | Arena tab, **Pegs and walls**, plus Balls tab **Add a stream** to drop balls one by one. | Plinko |
+| Everything at once | The **Everything at once** and **Everything in 3D** presets combine rules, jelly, rope, liquid, a swarm, particles, node shaders that pulse with the music, a MIDI melody locked to the beat and captions. They are saved in `scenes/showcase/` and tested together by `crates/bpe-export/tests/showcase.rs`. | Everything at once, Everything in 3D |
 
 ## Requirements
 

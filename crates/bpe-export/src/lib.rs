@@ -354,6 +354,8 @@ fn export_with(
     };
 
     let mut renderer = Renderer::new(device, width, height);
+    // Node effects saved in the scene, which the editor reads in as it opens the scene.
+    options.effects.sync_graphs(&scene.shader_graphs);
     renderer.set_effect_library(options.effects.clone());
     renderer.set_font_folder(options.base_dir.clone());
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
@@ -439,6 +441,7 @@ pub fn export_still(
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, scale);
     let mut renderer = Renderer::new(device, width, height);
+    effects.sync_graphs(&scene.shader_graphs);
     renderer.set_effect_library(effects.clone());
     // Music workstream: a scene that follows a beat is simulated with it, on beat sync's clock.
     let clock = bpe_audio::scene_clock(scene, base_dir);

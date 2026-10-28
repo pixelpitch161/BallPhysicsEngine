@@ -7,10 +7,12 @@
 use crate::frame::FrameData;
 use crate::gpu::GpuLayers;
 use crate::gpu::util::{self, StorageBuffer};
+use crate::space::SpaceFrame;
 use bpe_scene::{
     Blend, Color, Container, Emitter, EventMatch, ObstaclePart, ParticleColor, ParticlePreset, Scene, Vec2,
     particle_hash,
 };
+use bpe_sim::rules::RuleOutput;
 use bpe_sim::{Event, EventKind, Playback};
 use bytemuck::{Pod, Zeroable};
 
@@ -81,9 +83,10 @@ impl ParticleFrame {
         self.additive + self.covering
     }
 
-    /// Lists the bursts for this frame. `_events` is the frame's recent events; particles can
-    /// live longer than those reach, so this reads the playback's whole log instead.
-    pub fn fill(&mut self, scene: &Scene, playback: &Playback, _events: &[Event]) {
+    /// Lists the bursts for this frame from the playback's whole event log, since particles can
+    /// outlive the frame's recent events. In 3D, `space` places each burst where its hit shows
+    /// on screen and gives it its ball's colour.
+    pub fn fill(&mut self, scene: &Scene, playback: &Playback, space: Option<&SpaceFrame>) {
         self.bursts.clear();
         self.emitters.clear();
         self.additive = 0;
@@ -94,7 +97,25 @@ impl ParticleFrame {
             scene.particles.iter().enumerate().filter(|(_, e)| e.is_active()).map(|(i, e)| (i, e.clone())).collect();
         // A rule's "Burst particles" with no emitter set up for it uses its preset as it comes.
         let longest = emitters.iter().map(|(_, e)| e.max_age()).fold(0.0, f32::max).max(4.0);
+        let rules = playback.simulation().rules();
         for event in playback.recent_events(longest as f64) {
+            // "Burst of confetti" carries its own size and colour, so each of those blocks gets
+            // its own emitter unless the scene has one set up for confetti.
+            if let EventKind::Action { rule, action } = event.kind
+                && let Some(&RuleOutput::Confetti { count, color }) = rules.output(event)
+            {
+                let key = confetti_key(rule, action);
+                let taken = emitters.iter().any(|(_, e)| {
+                    e.on.kind == EventMatch::Action
+                        && (e.on.action.is_empty()
+                            || e.on.action.eq_ignore_ascii_case(ParticlePreset::Confetti.name())
+                            || e.on.action == key)
+                });
+                if !taken {
+                    emitters.push((scene.particles.len() + emitters.len(), rule_confetti(key, count, color)));
+                }
+                continue;
+            }
             if let EventKind::Action { rule, action } = event.kind
                 && let Some(name) = burst_name(scene, rule, action)
                 && !emitters.iter().any(|(_, e)| {
@@ -136,9 +157,18 @@ impl ParticleFrame {
                 let strength = if event.speed > 0.0 { (event.speed / full_speed).min(1.5) } else { 1.0 };
                 let count = emitter.burst_count(strength).min(budget);
                 budget -= count;
-                let normal = event_normal(scene, &parts, event, (first_id + offset) as u32);
-                let color = burst_color(scene, playback, emitter, event);
-                let place = event_place(scene, event);
+                let mut normal = event_normal(scene, &parts, event, (first_id + offset) as u32);
+                let mut color = burst_color(scene, playback, emitter, event);
+                let mut place = event_place(scene, event);
+                if let Some(space) = space {
+                    let Some(placed) = place_in_space(space, scene, event, place, normal) else { continue };
+                    (place, normal) = placed;
+                    if matches!(emitter.color, ParticleColor::FromBall | ParticleColor::Wall)
+                        && let Some(ball) = event.ball_index().and_then(|b| space.balls.get(b))
+                    {
+                        color = ball.color;
+                    }
+                }
                 let id = (first_id + offset) as u32;
                 list.push(BurstGpu {
                     place: [place.x, place.y, normal.x, normal.y],
@@ -167,10 +197,35 @@ impl ParticleFrame {
     }
 }
 
-/// The particle preset a rule's action bursts, if that action is a "Burst particles" block.
+/// The emitter name of one "Burst of confetti" block.
+fn confetti_key(rule: u16, action: u16) -> String {
+    format!("confetti#{rule}:{action}")
+}
+
+/// The confetti preset with a rule block's piece count, in shades of its colour.
+fn rule_confetti(key: String, count: u32, color: [f32; 4]) -> Emitter {
+    let base = Color::from_linear(color);
+    let mut emitter = ParticlePreset::Confetti.emitter(EventMatch::Action);
+    emitter.on.action = key;
+    emitter.count = count.min(bpe_scene::MAX_BURST);
+    emitter.follow_impact = false;
+    emitter.color = ParticleColor::Gradient(vec![
+        base.shift_hue(-0.06),
+        base,
+        Color::mix(base, Color::rgb(0xff, 0xff, 0xff), 0.55),
+        base.shift_hue(0.06),
+    ]);
+    emitter
+}
+
+/// The particle preset a rule's action bursts, if that action is a "Burst particles" or
+/// "Burst of confetti" block.
 fn burst_name(scene: &Scene, rule: u16, action: u16) -> Option<String> {
     let node = scene.logic.get(rule as usize)?.nodes.iter().find(|n| n.id == action as u32)?;
     let kind = node.kind.to_ascii_lowercase();
+    if kind == "confetti" {
+        return Some(ParticlePreset::Confetti.name().to_string());
+    }
     if !(kind.contains("burst") || kind.contains("particle")) {
         return None;
     }
@@ -195,11 +250,25 @@ fn matches(scene: &Scene, emitter: &Emitter, event: &Event) -> bool {
         EventMatch::Spawn => event.kind == EventKind::Spawn,
         EventMatch::Beat => matches!(event.kind, EventKind::Beat { .. }),
         EventMatch::Action => match event.kind {
+            EventKind::Action { rule, action } if emitter.on.action.starts_with("confetti#") => {
+                emitter.on.action == confetti_key(rule, action)
+            }
             EventKind::Action { rule, action } => burst_name(scene, rule, action)
                 .is_some_and(|name| emitter.on.action.is_empty() || emitter.on.action.eq_ignore_ascii_case(&name)),
             _ => false,
         },
     }
+}
+
+/// Where a 3D hit and its outward direction show on screen, in the flat picture's units (video
+/// pixels from the middle, y down). None if the hit is behind the camera.
+fn place_in_space(space: &SpaceFrame, scene: &Scene, event: &Event, place: Vec2, normal: Vec2) -> Option<(Vec2, Vec2)> {
+    let video = Vec2::new(scene.video.width as f32, scene.video.height as f32);
+    let depth = if event.ball_index().is_none() && event.position == Vec2::ZERO { 0.0 } else { event.depth };
+    let point = place.extend(depth);
+    let at = space.to_screen(point, video)?;
+    let ahead = space.to_screen(point + normal.extend(0.0) * 20.0, video).unwrap_or(at + normal);
+    Some((at, (ahead - at).try_normalize().unwrap_or(normal)))
 }
 
 /// Where a burst starts. Events without a place of their own, such as beats, burst from the
@@ -409,7 +478,7 @@ mod tests {
         let mut playback = Playback::new(scene);
         playback.seek(time);
         let mut frame = ParticleFrame::default();
-        frame.fill(scene, &playback, &[]);
+        frame.fill(scene, &playback, None);
         frame
     }
 
@@ -442,6 +511,65 @@ mod tests {
         assert!(frame.bursts[..split].iter().all(|b| b.ids[0] == 0));
     }
 
+    /// Every wall hit fires a "Burst of confetti" rule block with `count` pieces.
+    fn confetti_rule(scene: &mut Scene, count: f32) {
+        use bpe_graph::Catalog;
+        let catalog = bpe_sim::rules::catalog();
+        let mut graph = bpe_graph::Graph::new("Confetti");
+        let wall = graph.add(catalog.spec("wall").unwrap(), [0.0, 0.0]);
+        let confetti = graph.add(catalog.spec("confetti").unwrap(), [260.0, 0.0]);
+        graph.node_mut(confetti).unwrap().params.insert("count".into(), bpe_graph::Param::Number(count));
+        graph.connect(bpe_graph::Link { from: (wall, 0), to: (confetti, 0) }, catalog);
+        scene.logic = vec![graph];
+    }
+
+    #[test]
+    fn confetti_rules_burst_with_their_own_count_and_colour() {
+        let mut scene = Scene::rainbow_trails();
+        confetti_rule(&mut scene, 77.0);
+        let frame = frame_at(&scene, 3.0);
+        assert!(!frame.bursts.is_empty(), "the rule's confetti is drawn");
+        assert!(frame.bursts.iter().all(|b| b.count() == 77));
+        assert_eq!(frame.emitters.len(), 1, "one emitter for the one block");
+        // Covering confetti, coloured from a gradient around the block's colour.
+        assert_eq!(frame.additive, 0);
+        assert_eq!(frame.emitters[0].kind[1], 1);
+        // A confetti emitter in the scene takes over from the block's own look.
+        let mut own = ParticlePreset::Stars.emitter(EventMatch::Action);
+        own.on.action = "confetti".into();
+        own.count = 5;
+        own.follow_impact = false;
+        scene.particles.push(own);
+        let frame = frame_at(&scene, 3.0);
+        assert_eq!(frame.emitters.len(), 1);
+        assert!(!frame.bursts.is_empty() && frame.bursts.iter().all(|b| b.count() == 5));
+    }
+
+    #[test]
+    fn bursts_in_3d_show_where_the_hit_is_on_screen() {
+        let mut scene = Scene::neon_cube();
+        scene.particles.push(ParticlePreset::Sparks.emitter(EventMatch::Wall));
+        let mut playback = Playback::new(&scene);
+        playback.seek(3.0);
+        let mut space = SpaceFrame::default();
+        space.fill(&scene, &playback);
+        assert!(space.active);
+        let mut flat = ParticleFrame::default();
+        flat.fill(&scene, &playback, None);
+        let mut placed = ParticleFrame::default();
+        placed.fill(&scene, &playback, Some(&space));
+        assert!(!placed.bursts.is_empty());
+        let video = Vec2::new(scene.video.width as f32, scene.video.height as f32);
+        let all = playback.events();
+        for burst in &placed.bursts {
+            let event = &all[burst.ids[1] as usize];
+            let at = space.to_screen(event.position.extend(event.depth), video).unwrap();
+            assert!((Vec2::new(burst.place[0], burst.place[1]) - at).length() < 0.01);
+            assert!((Vec2::new(burst.place[2], burst.place[3]).length() - 1.0).abs() < 1e-3);
+        }
+        assert_ne!(flat.bursts, placed.bursts, "3D hits are moved by the camera");
+    }
+
     #[test]
     fn scrubbing_back_gives_the_same_bursts() {
         let mut scene = Scene::escape_rings();
@@ -452,7 +580,7 @@ mod tests {
         playback.seek(12.0);
         playback.seek(8.0);
         let mut scrubbed = ParticleFrame::default();
-        scrubbed.fill(&scene, &playback, &[]);
+        scrubbed.fill(&scene, &playback, None);
         assert_eq!(straight.bursts, scrubbed.bursts);
     }
 
