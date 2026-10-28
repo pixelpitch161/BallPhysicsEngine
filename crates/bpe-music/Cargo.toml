@@ -1,0 +1,19 @@
+[package]
+name = "bpe-music"
+description = "Song analysis for the ball physics engine: decoding, beats, tempo and bass/mid/treble levels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["decode"]
+# Reading mp3, wav, ogg and flac files. Without it the crate only analyses samples it is given.
+decode = ["dep:symphonia"]
+
+[dependencies]
+anyhow.workspace = true
+realfft = "3.4"
+symphonia = { version = "0.5", optional = true, default-features = false, features = ["mp3", "wav", "pcm", "ogg", "vorbis", "flac"] }
+
+[dev-dependencies]
+hound.workspace = true

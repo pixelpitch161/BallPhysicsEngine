@@ -10,3 +10,4 @@ serde.workspace = true
 ron.workspace = true
 glam.workspace = true
 anyhow.workspace = true
+bpe-graph.workspace = true

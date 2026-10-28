@@ -39,6 +39,8 @@ impl Scene {
                 velocity: Vec2::new(260.0, -340.0),
                 radius: 13.0,
                 color: Color::WHITE,
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 800.0), ..Physics::default() },
             rules: BounceRules { speed_gain: 1.01, max_speed: 1500.0, ..BounceRules::default() },
@@ -96,6 +98,8 @@ impl Scene {
             velocity: Vec2::new(-280.0, -300.0),
             radius: 10.0,
             color: Color::rgb(0x2e, 0xd8, 0xe6),
+            depth: 0.0,
+            depth_velocity: 0.0,
         }];
         scene.rules = BounceRules { spawn_per_escape: 2, max_balls: 200, spawn_spread: 40.0, ..scene.rules };
         scene.sound.progression = chords(&["Dm", "Bb", "F", "C"], 2.5);
@@ -113,6 +117,8 @@ impl Scene {
                 velocity: Vec2::new(150.0 - i as f32 * 60.0, -200.0),
                 radius: 16.0,
                 color,
+                depth: 0.0,
+                depth_velocity: 0.0,
             })
             .collect();
         Self {
@@ -150,6 +156,8 @@ impl Scene {
                 velocity: Vec2::new(320.0, 0.0),
                 radius: 11.0,
                 color: Color::rgb(0xff, 0x3e, 0x5e),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
             rules: BounceRules { spawn_per_hit: 1, max_balls: 300, spawn_spread: 25.0, ..BounceRules::default() },
@@ -182,6 +190,8 @@ impl Scene {
                 velocity: Vec2::new(380.0, 0.0),
                 radius: 22.0,
                 color: Color::rgb(0x2e, 0xd8, 0xe6),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 700.0), ..Physics::default() },
             rules: BounceRules {
@@ -218,6 +228,8 @@ impl Scene {
                 velocity: Vec2::new(650.0, 240.0),
                 radius: 14.0,
                 color: Color::rgb(0xff, 0x5c, 0xa8),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
             rules: BounceRules {
@@ -286,6 +298,8 @@ impl Scene {
                 interval: 0.12,
                 jitter: 40.0,
                 gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics {
                 gravity: Vec2::new(0.0, 1400.0),
@@ -322,6 +336,8 @@ impl Scene {
                     velocity: Vec2::from_angle(angle + 1.2) * 420.0,
                     radius: 14.0,
                     color,
+                    depth: 0.0,
+                    depth_velocity: 0.0,
                 }
             })
             .collect();

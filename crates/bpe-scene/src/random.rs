@@ -279,6 +279,7 @@ impl Scene {
                 Room::Circle { center, radius: (inner - wall).max(1.0) }
             }
             Container::Rect { center, size, .. } => Room::Box { center, half: (size * 0.5 - wall).max(Vec2::ONE) },
+            Container::Custom { center, .. } => Room::Circle { center, radius: (self.container.size() - wall).max(1.0) },
         }
     }
 
@@ -389,7 +390,7 @@ impl Scene {
         let start = room.point(dice);
         let Some(spawner) = self.spawners.get_mut(index) else { return };
         match spawner {
-            Spawner::Grid { center, columns, rows, spacing, radius, velocity: v, gradient } => {
+            Spawner::Grid { center, columns, rows, spacing, radius, velocity: v, gradient, .. } => {
                 set_vec(center, start, amount);
                 set_whole(columns, dice.int(4, 32), amount);
                 set_whole(rows, dice.int(4, 32), amount);
@@ -400,13 +401,13 @@ impl Scene {
                 set_vec(v, velocity(dice, 0.0, 700.0), amount);
                 roll_colors(gradient, dice, amount, 2, 5);
             }
-            Spawner::Single { position, velocity: v, radius, color } => {
+            Spawner::Single { position, velocity: v, radius, color, .. } => {
                 set_vec(position, start, amount);
                 set(radius, dice.log_range(8.0, (room_size * 0.15).clamp(9.0, 70.0)), amount);
                 set_vec(v, velocity(dice, 250.0, 1100.0), amount);
                 roll_color(color, dice, amount);
             }
-            Spawner::Stream { position, velocity: v, radius, count, interval, jitter, gradient } => {
+            Spawner::Stream { position, velocity: v, radius, count, interval, jitter, gradient, .. } => {
                 set_vec(position, start, amount);
                 set(radius, dice.range(4.0, 18.0), amount);
                 set_whole(count, dice.log_range(10.0, 300.0).round() as u32, amount);
@@ -483,6 +484,10 @@ impl Scene {
                     let fits = ((MAX_ARENA_RADIUS - *inner_radius) / *spacing).floor().max(0.0) as u32 + 1;
                     *count = (*count).min(fits).max(1);
                 }
+            }
+            Container::Custom { thickness: t, color, .. } => {
+                set(t, thickness, amount);
+                set_color(color, line, dice, amount);
             }
         }
     }

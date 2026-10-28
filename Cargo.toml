@@ -9,6 +9,8 @@ license = "MIT"
 
 [workspace.dependencies]
 bpe-scene = { path = "crates/bpe-scene" }
+bpe-graph = { path = "crates/bpe-graph" }
+bpe-music = { path = "crates/bpe-music", default-features = false }
 bpe-sim = { path = "crates/bpe-sim" }
 bpe-audio = { path = "crates/bpe-audio" }
 bpe-render = { path = "crates/bpe-render" }
