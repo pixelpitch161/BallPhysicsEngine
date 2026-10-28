@@ -1,0 +1,310 @@
+//! Presets for the newer scene types: escape rings, spinning shapes, multiplying balls,
+//! a shrinking arena, string art and a peg board.
+
+use crate::*;
+
+const RAINBOW: [Color; 6] = [
+    Color::rgb(0xff, 0x3e, 0x5e),
+    Color::rgb(0xff, 0x8a, 0x2e),
+    Color::rgb(0xff, 0xd8, 0x2e),
+    Color::rgb(0x5c, 0xe6, 0x5c),
+    Color::rgb(0x2e, 0xb8, 0xff),
+    Color::rgb(0x9a, 0x5c, 0xff),
+];
+
+fn chords(names: &[&str], seconds: f32) -> Vec<ChordStep> {
+    names.iter().map(|&chord| ChordStep { chord: chord.into(), seconds }).collect()
+}
+
+impl Scene {
+    /// One ball inside ten spinning rings, each with a gap. Every escape shatters a ring.
+    pub fn escape_rings() -> Self {
+        Self {
+            name: "Escape rings".into(),
+            container: Container::Rings {
+                center: Vec2::ZERO,
+                count: 10,
+                inner_radius: 110.0,
+                spacing: 38.0,
+                sides: 0,
+                gap: 50.0,
+                spin: 70.0,
+                spin_step: 9.0,
+                gap_offset: 20.0,
+                thickness: 6.0,
+                gradient: RAINBOW.to_vec(),
+            },
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(0.0, -20.0),
+                velocity: Vec2::new(260.0, -340.0),
+                radius: 13.0,
+                color: Color::WHITE,
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 800.0), ..Physics::default() },
+            rules: BounceRules { speed_gain: 1.01, max_speed: 1500.0, ..BounceRules::default() },
+            look: Look {
+                trail_seconds: 0.35,
+                trail_width: 0.8,
+                trail_opacity: 0.5,
+                ball_glow: 0.4,
+                flash_size: 34.0,
+                bloom_strength: 0.25,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["Am", "F", "C", "G"], 2.5),
+                low_note: 57,
+                high_note: 84,
+                instrument: Instrument::Pluck { decay: 1.2, brightness: 0.55 },
+                full_volume_speed: 900.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 24.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Many hexagon rings, where every escape adds two new balls in the middle.
+    pub fn escape_and_multiply() -> Self {
+        let mut scene = Self::escape_rings();
+        scene.name = "Escape and multiply".into();
+        if let Container::Rings {
+            sides,
+            count,
+            inner_radius,
+            spacing,
+            thickness,
+            gap,
+            spin,
+            spin_step,
+            gap_offset,
+            ..
+        } = &mut scene.container
+        {
+            *sides = 6;
+            *count = 18;
+            *inner_radius = 90.0;
+            *spacing = 23.0;
+            *thickness = 4.0;
+            *gap = 30.0;
+            *spin = 45.0;
+            *spin_step = 6.0;
+            *gap_offset = 25.0;
+        }
+        scene.spawners = vec![Spawner::Single {
+            position: Vec2::new(0.0, -20.0),
+            velocity: Vec2::new(-280.0, -300.0),
+            radius: 10.0,
+            color: Color::rgb(0x2e, 0xd8, 0xe6),
+        }];
+        scene.rules = BounceRules { spawn_per_escape: 2, max_balls: 200, spawn_spread: 40.0, ..scene.rules };
+        scene.sound.progression = chords(&["Dm", "Bb", "F", "C"], 2.5);
+        scene.video.duration = 18.0;
+        scene
+    }
+
+    /// A spinning hexagon with six balls bouncing inside.
+    pub fn spinning_hexagon() -> Self {
+        let spawners = RAINBOW
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| Spawner::Single {
+                position: Vec2::new(-200.0 + i as f32 * 80.0, -120.0),
+                velocity: Vec2::new(150.0 - i as f32 * 60.0, -200.0),
+                radius: 16.0,
+                color,
+            })
+            .collect();
+        Self {
+            name: "Spinning hexagon".into(),
+            container: Container::Polygon {
+                center: Vec2::ZERO,
+                radius: 470.0,
+                sides: 6,
+                rotation: 0.0,
+                thickness: 5.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            arena_motion: ArenaMotion { spin: 40.0, ..ArenaMotion::default() },
+            spawners,
+            physics: Physics { gravity: Vec2::new(0.0, 900.0), ..Physics::default() },
+            rules: BounceRules { max_speed: 1800.0, ..BounceRules::default() },
+            look: Look { trail_seconds: 0.5, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Fmaj7", "Em7", "Dm7", "Cmaj7"], 3.0),
+                low_note: 55,
+                high_note: 84,
+                ..Sound::default()
+            },
+            video: Video { duration: 25.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// One ball that splits off a new ball on every bounce.
+    pub fn multiplying_balls() -> Self {
+        Self {
+            name: "Multiplying balls".into(),
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(0.0, -200.0),
+                velocity: Vec2::new(320.0, 0.0),
+                radius: 11.0,
+                color: Color::rgb(0xff, 0x3e, 0x5e),
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
+            rules: BounceRules { spawn_per_hit: 1, max_balls: 300, spawn_spread: 25.0, ..BounceRules::default() },
+            look: Look { trail_seconds: 0.3, trail_width: 0.8, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["C", "Am", "F", "G"], 3.0),
+                low_note: 60,
+                high_note: 88,
+                instrument: Instrument::Pluck { decay: 0.7, brightness: 0.5 },
+                ..Sound::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A ring that slowly closes in, so the bounces get faster and the notes denser.
+    pub fn shrinking_ring() -> Self {
+        Self {
+            name: "Shrinking ring".into(),
+            container: Container::Circle {
+                center: Vec2::ZERO,
+                radius: 500.0,
+                thickness: 5.0,
+                color: Color::rgb(0xff, 0xb8, 0x2e),
+            },
+            arena_motion: ArenaMotion { shrink_speed: 13.0, min_size: 130.0, ..ArenaMotion::default() },
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(0.0, -150.0),
+                velocity: Vec2::new(380.0, 0.0),
+                radius: 22.0,
+                color: Color::rgb(0x2e, 0xd8, 0xe6),
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 700.0), ..Physics::default() },
+            rules: BounceRules {
+                max_speed: 2600.0,
+                recolor: vec![Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xd8, 0x2e)],
+                ..BounceRules::default()
+            },
+            look: Look { trail_seconds: 0.4, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Em", "C", "G", "D"], 3.0),
+                low_note: 52,
+                high_note: 86,
+                instrument: Instrument::Pluck { decay: 0.8, brightness: 0.55 },
+                full_volume_speed: 1200.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 30.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// One ball that draws a line to every point it has hit, building up a web.
+    pub fn string_art() -> Self {
+        Self {
+            name: "String art".into(),
+            container: Container::Circle {
+                center: Vec2::ZERO,
+                radius: 440.0,
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(-60.0, -220.0),
+                velocity: Vec2::new(650.0, 240.0),
+                radius: 14.0,
+                color: Color::rgb(0xff, 0x5c, 0xa8),
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
+            rules: BounceRules {
+                speed_gain: 1.04,
+                max_speed: 2400.0,
+                recolor: RAINBOW.to_vec(),
+                ..BounceRules::default()
+            },
+            look: Look {
+                trail_seconds: 0.2,
+                trail_width: 0.8,
+                ball_glow: 0.4,
+                string_lines: 400,
+                string_opacity: 0.3,
+                string_width: 1.5,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["Cmaj7", "Am7", "Fmaj7", "G"], 3.0),
+                low_note: 60,
+                high_note: 88,
+                instrument: Instrument::Pluck { decay: 1.5, brightness: 0.45 },
+                ..Sound::default()
+            },
+            video: Video { duration: 25.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Balls dropped one by one through a board of pegs into bins.
+    pub fn plinko() -> Self {
+        let wall = Color::rgb(0xd8, 0xdc, 0xd0);
+        let bottom = 760.0;
+        let mut obstacles = vec![Obstacle::PegGrid {
+            center: Vec2::new(0.0, -60.0),
+            columns: 11,
+            rows: 12,
+            spacing: Vec2::new(84.0, 76.0),
+            radius: 7.0,
+            stagger: true,
+            color: Color::rgb(0xc8, 0xd8, 0xff),
+        }];
+        for i in -5..=5 {
+            let x = i as f32 * 84.0;
+            obstacles.push(Obstacle::Line {
+                from: Vec2::new(x, 560.0),
+                to: Vec2::new(x, bottom),
+                thickness: 4.0,
+                color: wall,
+            });
+        }
+        Self {
+            name: "Plinko".into(),
+            container: Container::Rect {
+                center: Vec2::new(0.0, 0.0),
+                size: Vec2::new(940.0, 2.0 * bottom),
+                thickness: 4.0,
+                color: wall,
+            },
+            obstacles,
+            spawners: vec![Spawner::Stream {
+                position: Vec2::new(0.0, -700.0),
+                velocity: Vec2::ZERO,
+                radius: 10.0,
+                count: 160,
+                interval: 0.12,
+                jitter: 40.0,
+                gradient: RAINBOW.to_vec(),
+            }],
+            physics: Physics {
+                gravity: Vec2::new(0.0, 1400.0),
+                restitution: 0.5,
+                ball_collisions: true,
+                ..Physics::default()
+            },
+            look: Look { trail_seconds: 0.15, trail_width: 0.7, ball_glow: 0.3, flash_size: 20.0, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["C", "G", "Am", "F"], 3.0),
+                low_note: 64,
+                high_note: 96,
+                instrument: Instrument::Pluck { decay: 0.5, brightness: 0.6 },
+                min_impact_speed: 120.0,
+                full_volume_speed: 1400.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 30.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+}

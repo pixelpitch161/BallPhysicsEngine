@@ -9,10 +9,11 @@ mod frame;
 
 pub use effects::EffectLibrary;
 pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
+pub use frame::ShapeInstance;
 pub use frame::{BallInstance, FlashInstance, FrameData, RecentHit, TrailVertex};
 pub use wgpu;
 
-use bpe_scene::{Container, Scene};
+use bpe_scene::Scene;
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -25,9 +26,6 @@ struct Globals {
     view: [f32; 4],
     bg_top: [f32; 4],
     bg_bottom: [f32; 4],
-    container: [f32; 4],
-    container_extra: [f32; 4],
-    container_color: [f32; 4],
     look: [f32; 4],
     look2: [f32; 4],
 }
@@ -37,21 +35,10 @@ impl Globals {
         let video = &scene.video;
         let look = &scene.look;
         let pixel = video.width as f32 / output_width.max(1) as f32;
-        let (container, container_extra, color) = match &scene.container {
-            Container::Circle { center, radius, thickness, color } => {
-                ([center.x, center.y, *radius, *thickness], [0.0; 4], color)
-            }
-            Container::Rect { center, size, thickness, color } => {
-                ([center.x, center.y, size.x * 0.5, *thickness], [1.0, size.y * 0.5, 0.0, 0.0], color)
-            }
-        };
         Self {
             view: [2.0 / video.width as f32, 2.0 / video.height as f32, pixel, time as f32],
             bg_top: look.background_top.to_linear(),
             bg_bottom: look.background_bottom.to_linear(),
-            container,
-            container_extra,
-            container_color: color.to_linear(),
             look: [look.ball_glow, look.trail_opacity, look.flash_strength, look.bloom_strength],
             look2: [look.exposure, 0.0, 0.0, 0.0],
         }
@@ -80,12 +67,14 @@ pub struct Renderer {
     composite_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
+    shape: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    shape_buffer: GrowableBuffer,
     trail_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
@@ -220,6 +209,12 @@ impl Renderer {
 
         let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2];
         let instance_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
+        let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+        let shape_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ShapeInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &shape_attributes,
+        };
         let trail_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<TrailVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -242,6 +237,17 @@ impl Renderer {
             TriangleList,
             HDR_FORMAT,
             None,
+        );
+        let shape = make(
+            "shapes",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_shape",
+            "fs_shape",
+            &[Some(shape_layout)],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
         );
         let trail = make(
             "trails",
@@ -318,12 +324,14 @@ impl Renderer {
             composite_layout,
             sampler,
             background,
+            shape,
             trail,
             ball,
             flash,
             downsample,
             upsample,
             composite,
+            shape_buffer: GrowableBuffer::new("shape instances"),
             trail_buffer: GrowableBuffer::new("trail vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
@@ -380,6 +388,7 @@ impl Renderer {
     /// Draws one frame into the output texture.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, time: f64, frame: &FrameData) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));
+        self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
@@ -391,6 +400,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
+            if !frame.shapes.is_empty() {
+                pass.set_pipeline(&self.shape);
+                pass.set_vertex_buffer(0, self.shape_buffer.slice());
+                pass.draw(0..4, 0..frame.shapes.len() as u32);
+            }
             if !frame.trails.is_empty() {
                 pass.set_pipeline(&self.trail);
                 pass.set_vertex_buffer(0, self.trail_buffer.slice());
@@ -732,5 +746,42 @@ mod tests {
         let pixels = render_at(&device, &queue, &mut renderer, &scene, &[1.04, 1.06]);
         assert_eq!(pixels.len(), 90 * 160 * 4);
         assert!(brightness(&pixels) > 0);
+    }
+
+    #[test]
+    fn renders_every_preset() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut renderer = Renderer::new(&device, 135, 240);
+        for preset in Scene::presets() {
+            let scene = preset.scene;
+            let mut playback = Playback::new(&scene);
+            playback.seek(2.0);
+            let frame = FrameData::build(&scene, &playback, renderer.pixel_size(&scene));
+            assert!(!frame.shapes.is_empty(), "{} draws no walls", preset.name);
+            renderer.render(&device, &queue, &scene, 2.0, &frame);
+            renderer.read_output(&device, &queue).unwrap();
+        }
+    }
+
+    #[test]
+    fn string_art_and_shards_appear() {
+        let scene = Scene::string_art();
+        let mut playback = Playback::new(&scene);
+        playback.seek(10.0);
+        let frame = FrameData::build(&scene, &playback, 1.0);
+        let lines = frame.shapes.iter().filter(|s| s.c[0] == 2.0).count();
+        assert_eq!(lines, playback.hits().len().min(scene.look.string_lines as usize));
+
+        let scene = Scene::escape_rings();
+        let mut playback = Playback::new(&scene);
+        let first_escape = bpe_sim::collect_wall_hits(&scene)
+            .iter()
+            .find(|h| matches!(h.kind, bpe_sim::HitKind::Escape(_)))
+            .unwrap()
+            .time;
+        playback.seek(first_escape + 0.2);
+        let frame = FrameData::build(&scene, &playback, 1.0);
+        let shards = frame.shapes.iter().filter(|s| s.c[0] == 2.0).count();
+        assert_eq!(shards, scene.look.shatter_pieces as usize);
     }
 }

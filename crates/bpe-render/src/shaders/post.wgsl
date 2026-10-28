@@ -4,9 +4,6 @@ struct Globals {
     view: vec4<f32>,
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
-    container: vec4<f32>,
-    container_extra: vec4<f32>,
-    container_color: vec4<f32>,
     look: vec4<f32>,
     look2: vec4<f32>,
 };

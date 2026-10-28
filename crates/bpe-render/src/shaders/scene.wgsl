@@ -6,11 +6,6 @@ struct Globals {
     view: vec4<f32>,
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
-    // xy: centre, z: radius (circle) or half width (rect), w: line thickness
-    container: vec4<f32>,
-    // x: 0 circle / 1 rect, y: half height (rect)
-    container_extra: vec4<f32>,
-    container_color: vec4<f32>,
     // x: ball glow, y: trail opacity, z: flash strength, w: bloom strength
     look: vec4<f32>,
     // x: exposure
@@ -23,7 +18,7 @@ fn to_clip(p: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(p.x * g.view.x, -p.y * g.view.y, 0.0, 1.0);
 }
 
-// ---- Background gradient and container outline (fullscreen) ----
+// ---- Background gradient (fullscreen) ----
 
 struct BgOut {
     @builtin(position) pos: vec4<f32>,
@@ -40,26 +35,140 @@ fn vs_background(@builtin(vertex_index) i: u32) -> BgOut {
     return out;
 }
 
-fn container_distance(p: vec2<f32>) -> f32 {
-    let c = g.container.xy;
-    if g.container_extra.x < 0.5 {
-        return abs(length(p - c) - g.container.z);
-    }
-    let q = abs(p - c) - vec2<f32>(g.container.z, g.container_extra.y);
-    return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
-}
-
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
     let t = clamp(in.world.y * g.view.y * 0.5 + 0.5, 0.0, 1.0);
-    var color = mix(g.bg_top.rgb, g.bg_bottom.rgb, t);
+    return vec4<f32>(mix(g.bg_top.rgb, g.bg_bottom.rgb, t), 1.0);
+}
+
+// ---- Walls, pegs, lines and shards (instanced quads with a distance function) ----
+
+const PI: f32 = 3.14159265;
+const TAU: f32 = 6.28318531;
+// How far a wall's glow reaches, in world pixels.
+const GLOW_REACH: f32 = 36.0;
+
+struct ShapeIn {
+    // Outlines: centre xy, angle. Capsules: both end points.
+    @location(0) a: vec4<f32>,
+    // Ring: radius, sides, half gap. Box: half size.
+    @location(1) b: vec4<f32>,
+    // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
+    @location(2) c: vec4<f32>,
+    @location(3) color: vec4<f32>,
+};
+
+struct ShapeOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) world: vec2<f32>,
+    @location(1) @interpolate(flat) a: vec4<f32>,
+    @location(2) @interpolate(flat) b: vec4<f32>,
+    @location(3) @interpolate(flat) c: vec4<f32>,
+    @location(4) @interpolate(flat) color: vec4<f32>,
+};
+
+@vertex
+fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
+    let corner = quad_corner(i);
     let px = g.view.z;
-    let d = container_distance(in.world);
-    let half_thickness = max(g.container.w * 0.5, 0.5 * px);
-    let line = clamp((half_thickness - d) / px + 0.5, 0.0, 1.0) * min(g.container.w / px, 1.0);
-    let glow = exp(-max(d - half_thickness, 0.0) / 6.0) * 0.015;
-    color = mix(color, g.container_color.rgb, line * g.container_color.a) + g.container_color.rgb * glow;
-    return vec4<f32>(color, 1.0);
+    var reach = max(s.c.y, 0.5 * px) + 2.0 * px;
+    if s.c.z > 0.0 {
+        reach += GLOW_REACH;
+    }
+    var world: vec2<f32>;
+    if s.c.x > 1.5 {
+        // A capsule: a box around the segment, lined up with it.
+        let along = s.a.zw - s.a.xy;
+        let len = length(along);
+        var dir = vec2<f32>(1.0, 0.0);
+        if len > 1e-4 {
+            dir = along / len;
+        }
+        let side = vec2<f32>(-dir.y, dir.x);
+        let middle = (s.a.xy + s.a.zw) * 0.5;
+        world = middle + dir * corner.x * (len * 0.5 + reach) + side * corner.y * reach;
+    } else {
+        var extent = s.b.x;
+        if s.c.x > 0.5 {
+            extent = length(s.b.xy);
+        }
+        world = s.a.xy + corner * (extent + reach);
+    }
+    var out: ShapeOut;
+    out.pos = to_clip(world);
+    out.world = world;
+    out.a = s.a;
+    out.b = s.b;
+    out.c = s.c;
+    out.color = s.color;
+    return out;
+}
+
+fn rotate(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+    return length(p - a - ab * t);
+}
+
+// Point on a ring or regular polygon `u` radians clockwise from the gap's middle, relative to its centre.
+fn outline_point(radius: f32, sides: f32, angle: f32, u: f32) -> vec2<f32> {
+    let d = vec2<f32>(cos(angle + u), sin(angle + u));
+    if sides < 2.5 {
+        return d * radius;
+    }
+    let step = TAU / sides;
+    let side = round(u / step);
+    return d * (radius * cos(PI / sides) / cos(u - side * step));
+}
+
+// Distance from p (relative to the centre) to a ring or polygon outline with a gap.
+fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32, gap_half: f32) -> f32 {
+    // Angle of p clockwise from the gap's middle, in -PI..PI.
+    let u = atan2(p.y, p.x) - angle;
+    let u_wrapped = u - TAU * floor((u + PI) / TAU);
+    if gap_half > 0.0 && abs(u_wrapped) < gap_half {
+        let a = outline_point(radius, sides, angle, gap_half);
+        let b = outline_point(radius, sides, angle, -gap_half);
+        return min(length(p - a), length(p - b));
+    }
+    if sides < 2.5 {
+        return abs(length(p) - radius);
+    }
+    // The nearest side of a regular polygon is the one in p's own sector.
+    let step = TAU / sides;
+    let side = round(u_wrapped / step);
+    let a = outline_point(radius, sides, angle, (side - 0.5) * step);
+    let b = outline_point(radius, sides, angle, (side + 0.5) * step);
+    return segment_distance(p, a, b);
+}
+
+@fragment
+fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
+    let px = g.view.z;
+    var d: f32;
+    if in.c.x < 0.5 {
+        d = ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z, in.b.z);
+    } else if in.c.x < 1.5 {
+        let q = abs(rotate(in.world - in.a.xy, -in.a.z)) - in.b.xy;
+        d = abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
+    } else {
+        d = segment_distance(in.world, in.a.xy, in.a.zw);
+    }
+    let width = in.c.y * 2.0;
+    let half_width = max(in.c.y, 0.5 * px);
+    // Lines thinner than a pixel get dimmer instead of aliasing.
+    let cover = clamp((half_width - d) / px + 0.5, 0.0, 1.0) * min(width / px, 1.0) * in.color.a;
+    let glow = exp(-max(d - half_width, 0.0) / 6.0) * in.c.z;
+    if cover <= 0.0 && glow < 1e-4 {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb * (cover + glow), cover);
 }
 
 // ---- Motion streaks (triangle list built on the CPU) ----

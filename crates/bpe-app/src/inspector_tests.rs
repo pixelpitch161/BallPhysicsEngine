@@ -2,7 +2,8 @@
 
 use crate::inspector::{self, Inspector, Tab};
 use bpe_scene::{
-    BounceRules, ChordStep, Color, Container, Effect, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2,
+    ArenaMotion, BounceRules, ChordStep, Color, Container, Effect, Instrument, Look, Physics, Scene, Sound, Spawner,
+    Vec2,
 };
 use eframe::egui::{self, Modifiers, PointerButton};
 use egui_kittest::{
@@ -190,7 +191,9 @@ fn alt_clicking_a_number_box_resets_it_without_typing() {
 
 fn launch(scene: &Scene) -> Vec2 {
     match &scene.spawners[0] {
-        Spawner::Grid { velocity, .. } | Spawner::Single { velocity, .. } => *velocity,
+        Spawner::Grid { velocity, .. } | Spawner::Single { velocity, .. } | Spawner::Stream { velocity, .. } => {
+            *velocity
+        }
     }
 }
 
@@ -489,4 +492,52 @@ fn whole_number_sliders_reset() {
         Spawner::Grid { columns, .. } => assert_eq!(*columns, 10),
         _ => unreachable!(),
     }
+}
+
+#[test]
+fn opening_a_tab_changes_no_preset() {
+    for preset in Scene::presets() {
+        for tab in [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Sound] {
+            let harness = harness(tab, preset.scene.clone());
+            assert!(harness.state().scene == preset.scene, "showing a tab must not edit {}", preset.name);
+        }
+    }
+}
+
+#[test]
+fn reset_this_tab_keeps_the_polygon_and_pegs() {
+    let mut scene = Scene::plinko();
+    scene.container = Container::Polygon {
+        center: Vec2::new(5.0, 5.0),
+        radius: 300.0,
+        sides: 5,
+        rotation: 30.0,
+        thickness: 9.0,
+        color: Color::WHITE,
+    };
+    scene.arena_motion.spin = 90.0;
+    // Just the pegs, so the whole tab fits in the test window.
+    scene.obstacles.truncate(1);
+    let pegs = scene.obstacles.clone();
+    let mut harness = harness(Tab::Arena, scene);
+    harness.get_by_label("Reset this tab").click();
+    harness.run();
+    let state = harness.state();
+    assert_eq!(state.scene.arena_motion, ArenaMotion::default());
+    assert_eq!(state.scene.obstacles, pegs);
+    assert!(matches!(state.scene.container, Container::Polygon { center: Vec2::ZERO, sides: 6, .. }));
+}
+
+#[test]
+fn picking_escape_rings_keeps_the_arena_position() {
+    let mut scene = Scene::default();
+    *scene.container.center_mut() = Vec2::new(0.0, 100.0);
+    let mut harness = harness(Tab::Arena, scene);
+    harness.get_by_label("Escape rings").click();
+    harness.run();
+    let container = &harness.state().scene.container;
+    assert!(matches!(container, Container::Rings { .. }));
+    assert_eq!(container.center(), Vec2::new(0.0, 100.0));
+    // The ring settings show up straight away.
+    harness.get_by_label("Gap size");
 }

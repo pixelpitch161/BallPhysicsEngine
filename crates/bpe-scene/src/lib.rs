@@ -6,6 +6,7 @@
 
 mod color;
 mod effect;
+mod presets;
 
 pub use color::Color;
 pub use effect::Effect;
@@ -21,6 +22,10 @@ pub struct Scene {
     pub video: Video,
     pub physics: Physics,
     pub container: Container,
+    /// How the arena turns and shrinks over time.
+    pub arena_motion: ArenaMotion,
+    /// Pegs and walls inside the arena.
+    pub obstacles: Vec<Obstacle>,
     pub spawners: Vec<Spawner>,
     pub rules: BounceRules,
     pub look: Look,
@@ -56,8 +61,100 @@ pub struct Physics {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Container {
-    Circle { center: Vec2, radius: f32, thickness: f32, color: Color },
-    Rect { center: Vec2, size: Vec2, thickness: f32, color: Color },
+    Circle {
+        center: Vec2,
+        radius: f32,
+        thickness: f32,
+        color: Color,
+    },
+    Rect {
+        center: Vec2,
+        size: Vec2,
+        thickness: f32,
+        color: Color,
+    },
+    /// A regular polygon such as a triangle, square or hexagon.
+    Polygon {
+        center: Vec2,
+        /// Distance from the centre to each corner.
+        radius: f32,
+        sides: u32,
+        /// Degrees. At 0 the polygon has a flat side at the bottom.
+        rotation: f32,
+        thickness: f32,
+        color: Color,
+    },
+    /// Rings nested inside each other, each with a gap. When a ball escapes through a ring's
+    /// gap, that ring shatters. Balls start inside the smallest ring.
+    Rings {
+        center: Vec2,
+        count: u32,
+        /// Radius of the smallest ring.
+        inner_radius: f32,
+        /// Distance from one ring to the next.
+        spacing: f32,
+        /// 0 for round rings, or 3 and up for polygon rings.
+        sides: u32,
+        /// Width of each ring's gap, in degrees.
+        gap: f32,
+        /// Degrees per second the smallest ring turns. Positive is clockwise.
+        spin: f32,
+        /// Added to the spin of each ring further out, so the rings drift apart.
+        spin_step: f32,
+        /// Degrees each ring's gap is turned from the one inside it at the start.
+        gap_offset: f32,
+        thickness: f32,
+        /// Colours from the smallest ring to the biggest, spread evenly.
+        gradient: Vec<Color>,
+    },
+}
+
+/// Turning and shrinking applied to the whole arena.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArenaMotion {
+    /// Degrees per second the arena turns. Positive is clockwise.
+    pub spin: f32,
+    /// Pixels per second the arena's radius shrinks. Negative values make it grow.
+    pub shrink_speed: f32,
+    /// Pixels the arena's radius shrinks each time a ball hits it.
+    pub shrink_per_hit: f32,
+    /// The arena never shrinks below this radius in pixels.
+    pub min_size: f32,
+}
+
+/// Something fixed inside the arena that balls bounce off, from either side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Obstacle {
+    Peg {
+        position: Vec2,
+        radius: f32,
+        color: Color,
+    },
+    /// Rows of pegs, every other row shifted half a step when `stagger` is on, like a Plinko board.
+    PegGrid {
+        center: Vec2,
+        columns: u32,
+        rows: u32,
+        spacing: Vec2,
+        radius: f32,
+        stagger: bool,
+        color: Color,
+    },
+    /// A straight wall between two points.
+    Line {
+        from: Vec2,
+        to: Vec2,
+        thickness: f32,
+        color: Color,
+    },
+}
+
+/// One peg or wall piece, with grids expanded into single pegs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ObstaclePart {
+    Disc { center: Vec2, radius: f32, color: Color },
+    Segment { from: Vec2, to: Vec2, thickness: f32, color: Color },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,6 +176,20 @@ pub enum Spawner {
         radius: f32,
         color: Color,
     },
+    /// Balls dropped one after another from the same spot.
+    Stream {
+        position: Vec2,
+        velocity: Vec2,
+        radius: f32,
+        count: u32,
+        /// Seconds between one ball and the next.
+        interval: f32,
+        /// Each ball starts up to this many pixels left or right of `position`, so they don't
+        /// all follow the same path.
+        jitter: f32,
+        /// Colours from the first ball to the last, spread evenly.
+        gradient: Vec<Color>,
+    },
 }
 
 /// Changes applied to a ball each time it hits the wall.
@@ -94,6 +205,14 @@ pub struct BounceRules {
     pub max_radius: f32,
     /// Colours a ball steps through on each wall hit. Empty keeps its colour.
     pub recolor: Vec<Color>,
+    /// New balls that split off a ball each time it hits the wall or a peg.
+    pub spawn_per_hit: u32,
+    /// New balls that split off a ball each time it escapes a ring.
+    pub spawn_per_escape: u32,
+    /// No more balls are added once there are this many.
+    pub max_balls: u32,
+    /// New balls fly off up to this many degrees either side of their parent's direction.
+    pub spawn_spread: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -116,6 +235,14 @@ pub struct Look {
     /// How much bright areas bleed light around them.
     pub bloom_strength: f32,
     pub exposure: f32,
+    /// String art: lines from each ball to the points where it hit things. This is how many of
+    /// its most recent hits get a line. 0 turns it off.
+    pub string_lines: u32,
+    pub string_opacity: f32,
+    /// Line width in pixels.
+    pub string_width: f32,
+    /// How many pieces a ring breaks into when a ball escapes it.
+    pub shatter_pieces: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -175,6 +302,8 @@ impl Default for Scene {
                 thickness: 3.0,
                 color: Color::rgb(0xd8, 0xdc, 0xd0),
             },
+            arena_motion: ArenaMotion::default(),
+            obstacles: Vec::new(),
             spawners: vec![Spawner::Grid {
                 center: Vec2::new(37.0, -127.0),
                 columns: 28,
@@ -218,7 +347,23 @@ impl Default for Physics {
 
 impl Default for BounceRules {
     fn default() -> Self {
-        Self { speed_gain: 1.0, max_speed: 3000.0, grow: 0.0, max_radius: 60.0, recolor: Vec::new() }
+        Self {
+            speed_gain: 1.0,
+            max_speed: 3000.0,
+            grow: 0.0,
+            max_radius: 60.0,
+            recolor: Vec::new(),
+            spawn_per_hit: 0,
+            spawn_per_escape: 0,
+            max_balls: 500,
+            spawn_spread: 30.0,
+        }
+    }
+}
+
+impl Default for ArenaMotion {
+    fn default() -> Self {
+        Self { spin: 0.0, shrink_speed: 0.0, shrink_per_hit: 0.0, min_size: 60.0 }
     }
 }
 
@@ -236,6 +381,10 @@ impl Default for Look {
             flash_size: 26.0,
             bloom_strength: 0.15,
             exposure: 1.0,
+            string_lines: 0,
+            string_opacity: 0.35,
+            string_width: 1.5,
+            shatter_pieces: 24,
         }
     }
 }
@@ -265,7 +414,108 @@ impl Default for Sound {
     }
 }
 
+impl Container {
+    pub fn center(&self) -> Vec2 {
+        match *self {
+            Container::Circle { center, .. }
+            | Container::Rect { center, .. }
+            | Container::Polygon { center, .. }
+            | Container::Rings { center, .. } => center,
+        }
+    }
+
+    pub fn center_mut(&mut self) -> &mut Vec2 {
+        match self {
+            Container::Circle { center, .. }
+            | Container::Rect { center, .. }
+            | Container::Polygon { center, .. }
+            | Container::Rings { center, .. } => center,
+        }
+    }
+
+    pub fn thickness(&self) -> f32 {
+        match *self {
+            Container::Circle { thickness, .. }
+            | Container::Rect { thickness, .. }
+            | Container::Polygon { thickness, .. }
+            | Container::Rings { thickness, .. } => thickness,
+        }
+    }
+
+    /// The arena's main colour (the smallest ring's colour for rings).
+    pub fn color(&self) -> Color {
+        match self {
+            Container::Circle { color, .. } | Container::Rect { color, .. } | Container::Polygon { color, .. } => {
+                *color
+            }
+            Container::Rings { gradient, .. } => gradient.first().copied().unwrap_or(Color::WHITE),
+        }
+    }
+
+    /// The arena's radius at its starting size, which `ArenaMotion` shrinks from. For a box it
+    /// is half its longer side, and for rings the biggest ring's radius.
+    pub fn size(&self) -> f32 {
+        match *self {
+            Container::Circle { radius, .. } | Container::Polygon { radius, .. } => radius,
+            Container::Rect { size, .. } => size.x.max(size.y) * 0.5,
+            Container::Rings { count, inner_radius, spacing, .. } => {
+                ring_radius(inner_radius, spacing, count.max(1) - 1)
+            }
+        }
+    }
+
+    /// Half the arena's width, used to pan sounds left and right.
+    pub fn half_width(&self) -> f32 {
+        match *self {
+            Container::Rect { size, .. } => size.x * 0.5,
+            _ => self.size(),
+        }
+    }
+}
+
+/// Radius of ring number `index` (0 is the smallest).
+pub fn ring_radius(inner_radius: f32, spacing: f32, index: u32) -> f32 {
+    inner_radius + spacing * index as f32
+}
+
+impl Obstacle {
+    /// Appends this obstacle's pegs and wall pieces to `out`.
+    pub fn parts(&self, out: &mut Vec<ObstaclePart>) {
+        match *self {
+            Obstacle::Peg { position, radius, color } => {
+                out.push(ObstaclePart::Disc { center: position, radius, color })
+            }
+            Obstacle::PegGrid { center, columns, rows, spacing, radius, stagger, color } => {
+                let size = Vec2::new(columns.saturating_sub(1) as f32, rows.saturating_sub(1) as f32) * spacing;
+                let origin = center - size * 0.5;
+                for row in 0..rows {
+                    let shifted = stagger && row % 2 == 1;
+                    // A shifted row has one peg fewer so it stays inside the grid's outline.
+                    let count = if shifted { columns.saturating_sub(1) } else { columns };
+                    let shift = if shifted { spacing.x * 0.5 } else { 0.0 };
+                    for column in 0..count {
+                        let position = origin + Vec2::new(column as f32 * spacing.x + shift, row as f32 * spacing.y);
+                        out.push(ObstaclePart::Disc { center: position, radius, color });
+                    }
+                }
+            }
+            Obstacle::Line { from, to, thickness, color } => {
+                out.push(ObstaclePart::Segment { from, to, thickness, color })
+            }
+        }
+    }
+}
+
 impl Scene {
+    /// Every peg and wall piece, in a fixed order that the simulation and renderer share.
+    pub fn obstacle_parts(&self) -> Vec<ObstaclePart> {
+        let mut parts = Vec::new();
+        for obstacle in &self.obstacles {
+            obstacle.parts(&mut parts);
+        }
+        parts
+    }
+
     /// Built-in starting points shown in the editor's preset gallery, each with a one-line description.
     pub fn presets() -> Vec<Preset> {
         vec![
@@ -293,6 +543,41 @@ impl Scene {
                 name: "One big ball",
                 description: "A single large ball bouncing with a deep, slow sound.",
                 scene: Scene::big_ball(),
+            },
+            Preset {
+                name: "Escape rings",
+                description: "A ball breaks out of ten spinning rings, shattering each one.",
+                scene: Scene::escape_rings(),
+            },
+            Preset {
+                name: "Escape and multiply",
+                description: "Every escape through the hexagons adds two new balls in the middle.",
+                scene: Scene::escape_and_multiply(),
+            },
+            Preset {
+                name: "Spinning hexagon",
+                description: "Six balls tumble inside a turning hexagon.",
+                scene: Scene::spinning_hexagon(),
+            },
+            Preset {
+                name: "Multiplying balls",
+                description: "One ball splits off a new ball on every bounce.",
+                scene: Scene::multiplying_balls(),
+            },
+            Preset {
+                name: "Shrinking ring",
+                description: "The ring closes in, so the bounces get faster and faster.",
+                scene: Scene::shrinking_ring(),
+            },
+            Preset {
+                name: "String art",
+                description: "Lines from the ball to every point it hit build up a web.",
+                scene: Scene::string_art(),
+            },
+            Preset {
+                name: "Plinko",
+                description: "Balls drop one by one through a board of pegs into bins.",
+                scene: Scene::plinko(),
             },
         ]
     }
@@ -493,5 +778,35 @@ mod tests {
         let scene = Scene::from_ron("(name: \"Sparse\")").unwrap();
         assert_eq!(scene.name, "Sparse");
         assert_eq!(scene.video, Video::default());
+    }
+
+    #[test]
+    fn scene_files_from_before_new_scene_types_still_load() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenes");
+        for name in ["reference-reel.ron", "growing-ball.ron"] {
+            let scene = Scene::load(dir.join(name)).unwrap();
+            assert_eq!(scene.arena_motion, ArenaMotion::default(), "{name}");
+            assert!(scene.obstacles.is_empty());
+            assert_eq!(scene.rules.spawn_per_hit, 0);
+            assert_eq!(scene.look.string_lines, 0);
+        }
+    }
+
+    #[test]
+    fn staggered_peg_rows_have_one_peg_fewer() {
+        let grid = Obstacle::PegGrid {
+            center: Vec2::ZERO,
+            columns: 5,
+            rows: 3,
+            spacing: Vec2::new(10.0, 10.0),
+            radius: 1.0,
+            stagger: true,
+            color: Color::WHITE,
+        };
+        let mut parts = Vec::new();
+        grid.parts(&mut parts);
+        assert_eq!(parts.len(), 5 + 4 + 5);
+        let ObstaclePart::Disc { center, .. } = parts[5] else { panic!() };
+        assert_eq!(center, Vec2::new(-15.0, 0.0));
     }
 }
