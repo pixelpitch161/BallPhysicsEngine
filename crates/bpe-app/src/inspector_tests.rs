@@ -826,3 +826,30 @@ fn a_look_change_on_one_picked_group_reaches_the_others() {
     looks.share_changes(&before, &mut scene.spawners);
     assert_eq!(scene.spawners[1].style().unwrap().glow, 0.0);
 }
+
+#[test]
+fn a_locked_ball_size_stays_when_the_balls_dice_rolls() {
+    let mut harness = harness(Tab::Balls, Scene::default());
+    harness.get_by_label("Ball size").click_secondary();
+    harness.run();
+    harness.get_by_label("Lock when randomizing").click();
+    harness.run();
+    let ctx = harness.ctx.clone();
+    assert_eq!(crate::setting_locks::locked(&ctx).len(), 1);
+
+    let before = harness.state().scene.clone();
+    harness.get_by_label("Roll random settings for these balls").click();
+    harness.run();
+    // The app puts locked settings back after a roll; do the same here.
+    assert!(crate::setting_locks::take_roll(&ctx));
+    let locked = crate::setting_locks::locked(&ctx);
+    let mut rolled = harness.state().scene.clone();
+    crate::setting_locks::restore(&locked, &before, &mut rolled);
+    let (Spawner::Grid { radius: old, gradient: old_colors, .. }, Spawner::Grid { radius, gradient, .. }) =
+        (&before.spawners[0], &rolled.spawners[0])
+    else {
+        panic!("still a block of balls")
+    };
+    assert_eq!(radius, old, "ball size kept");
+    assert_ne!(gradient, old_colors, "colours rolled");
+}

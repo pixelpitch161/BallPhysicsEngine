@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn every_setting_can_pulse() {
-        let target = Target { property: Some(Property::Exposure), label: String::new() };
+        let target = Target { property: Some(Property::Exposure), label: String::new(), lock: None };
         assert!(available(&target));
         assert!(!available(&Target::default()));
         for property in Property::PLAIN {

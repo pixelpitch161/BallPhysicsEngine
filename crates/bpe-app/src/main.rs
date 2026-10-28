@@ -21,6 +21,7 @@ mod node_editor;
 mod orbit;
 mod preview;
 mod rules_workspace;
+mod setting_locks;
 mod setting_menu;
 mod settings;
 mod shader_workspace;

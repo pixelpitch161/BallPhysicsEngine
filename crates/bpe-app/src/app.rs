@@ -1087,6 +1087,11 @@ impl eframe::App for StudioApp {
             self.run_command(command, &ctx);
         }
 
+        // A dice rolled: put back the single settings that are locked.
+        if crate::setting_locks::take_roll(&ctx) && !self.swapped {
+            let locked = crate::setting_locks::locked(&ctx);
+            crate::setting_locks::restore(&locked, &before, &mut self.scene);
+        }
         if std::mem::take(&mut self.swapped) {
             // Already handled by undo, redo or opening a scene.
         } else if self.scene != before {
