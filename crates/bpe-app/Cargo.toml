@@ -1,0 +1,22 @@
+[package]
+name = "bpe-app"
+description = "Editor for designing, previewing and exporting ball physics videos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ball-studio"
+path = "src/main.rs"
+
+[dependencies]
+bpe-scene.workspace = true
+bpe-sim.workspace = true
+bpe-audio.workspace = true
+bpe-render.workspace = true
+bpe-export.workspace = true
+eframe.workspace = true
+egui-wgpu.workspace = true
+cpal.workspace = true
+rfd.workspace = true
+anyhow.workspace = true

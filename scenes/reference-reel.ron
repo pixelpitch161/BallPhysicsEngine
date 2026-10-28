@@ -1,0 +1,99 @@
+Scene(
+    name: "Reference reel",
+    video: Video(
+        width: 1080,
+        height: 1920,
+        fps: 60,
+        duration: 23.0,
+    ),
+    physics: Physics(
+        gravity: Vec2(0.0, 160.0),
+        steps_per_second: 240,
+        restitution: 1.0,
+        air_drag: 0.0,
+        ball_collisions: false,
+    ),
+    container: Circle(
+        center: Vec2(0.0, 0.0),
+        radius: 508.0,
+        thickness: 3.0,
+        color: "#d8dcd0",
+    ),
+    spawners: [
+        Grid(
+            center: Vec2(37.0, -127.0),
+            columns: 28,
+            rows: 28,
+            spacing: 19.0,
+            radius: 4.5,
+            velocity: Vec2(-480.0, 265.0),
+            gradient: [
+                "#3e9bff",
+                "#8a4dff",
+                "#ff3ec8",
+                "#ff6a5c",
+                "#ffb82e",
+            ],
+        ),
+    ],
+    rules: BounceRules(
+        speed_gain: 1.0,
+        max_speed: 3000.0,
+        grow: 0.0,
+        max_radius: 60.0,
+        recolor: [],
+    ),
+    look: Look(
+        background_top: "#02022a",
+        background_bottom: "#010006",
+        trail_seconds: 0.3,
+        trail_width: 0.3,
+        trail_opacity: 0.4,
+        ball_glow: 0.12,
+        flash_strength: 0.4,
+        flash_seconds: 0.25,
+        flash_size: 26.0,
+        bloom_strength: 0.15,
+        exposure: 1.0,
+    ),
+    sound: Sound(
+        enabled: true,
+        progression: [
+            ChordStep(
+                chord: "C",
+                seconds: 4.2,
+            ),
+            ChordStep(
+                chord: "Dsus4",
+                seconds: 4.0,
+            ),
+            ChordStep(
+                chord: "Am",
+                seconds: 5.0,
+            ),
+            ChordStep(
+                chord: "C",
+                seconds: 4.0,
+            ),
+            ChordStep(
+                chord: "Am",
+                seconds: 3.1,
+            ),
+            ChordStep(
+                chord: "Dsus4",
+                seconds: 3.0,
+            ),
+        ],
+        low_note: 48,
+        high_note: 84,
+        instrument: Pluck(
+            decay: 0.9,
+            brightness: 0.5,
+        ),
+        min_impact_speed: 20.0,
+        full_volume_speed: 600.0,
+        stereo_width: 0.6,
+        target_loudness: -14.0,
+        seed: 1,
+    ),
+)

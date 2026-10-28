@@ -1,0 +1,82 @@
+Scene(
+    name: "Growing ball",
+    video: Video(
+        width: 1080,
+        height: 1920,
+        fps: 60,
+        duration: 20.0,
+    ),
+    physics: Physics(
+        gravity: Vec2(0.0, 900.0),
+        steps_per_second: 240,
+        restitution: 1.0,
+        air_drag: 0.0,
+        ball_collisions: false,
+    ),
+    container: Circle(
+        center: Vec2(0.0, 0.0),
+        radius: 508.0,
+        thickness: 3.0,
+        color: "#d8dcd0",
+    ),
+    spawners: [
+        Single(
+            position: Vec2(-120.0, -200.0),
+            velocity: Vec2(420.0, 0.0),
+            radius: 18.0,
+            color: "#ff5ca8",
+        ),
+    ],
+    rules: BounceRules(
+        speed_gain: 1.02,
+        max_speed: 3000.0,
+        grow: 2.5,
+        max_radius: 300.0,
+        recolor: [],
+    ),
+    look: Look(
+        background_top: "#02022a",
+        background_bottom: "#010006",
+        trail_seconds: 0.5,
+        trail_width: 0.9,
+        trail_opacity: 0.5,
+        ball_glow: 0.3,
+        flash_strength: 0.4,
+        flash_seconds: 0.25,
+        flash_size: 26.0,
+        bloom_strength: 0.15,
+        exposure: 1.0,
+    ),
+    sound: Sound(
+        enabled: true,
+        progression: [
+            ChordStep(
+                chord: "Am",
+                seconds: 2.0,
+            ),
+            ChordStep(
+                chord: "F",
+                seconds: 2.0,
+            ),
+            ChordStep(
+                chord: "C",
+                seconds: 2.0,
+            ),
+            ChordStep(
+                chord: "G",
+                seconds: 2.0,
+            ),
+        ],
+        low_note: 57,
+        high_note: 81,
+        instrument: Pluck(
+            decay: 1.4,
+            brightness: 0.45,
+        ),
+        min_impact_speed: 20.0,
+        full_volume_speed: 1200.0,
+        stereo_width: 0.6,
+        target_loudness: -14.0,
+        seed: 1,
+    ),
+)

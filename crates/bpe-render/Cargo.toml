@@ -1,0 +1,14 @@
+[package]
+name = "bpe-render"
+description = "wgpu renderer for ball scenes: glowing balls, motion streaks, wall flashes and bloom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-scene.workspace = true
+bpe-sim.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+pollster.workspace = true

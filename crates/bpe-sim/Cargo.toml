@@ -1,0 +1,10 @@
+[package]
+name = "bpe-sim"
+description = "Deterministic fixed-step 2D ball physics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-scene.workspace = true
+glam.workspace = true
