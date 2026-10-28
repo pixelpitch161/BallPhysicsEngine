@@ -13,7 +13,7 @@ use crate::theme;
 use bpe_audio::instruments::{self, Builtin, Piece};
 use bpe_audio::midi::MidiFile;
 use bpe_scene::{
-    Advance, BeatSync, ChordStep, EventFilter, Group, Instrument, Melody, Music, PitchMode, Scene, Sound, SyncMode,
+    Advance, BeatSync, ChordStep, Group, Instrument, Melody, Music, NoteTrigger, PitchMode, Scene, Sound, SyncMode,
     VoiceMap,
 };
 use bpe_sim::beat_sync;
@@ -702,13 +702,13 @@ fn voice_ideas() -> [(&'static str, VoiceMap); 5] {
         ..VoiceMap::default()
     };
     [
-        ("Kick drum on wall hits", drum(EventFilter::Walls, 36)),
-        ("Snare when balls meet", drum(EventFilter::BallHits, 38)),
-        ("Crash cymbal on escapes", drum(EventFilter::Escapes, 49)),
+        ("Kick drum on wall hits", drum(NoteTrigger::Walls, 36)),
+        ("Snare when balls meet", drum(NoteTrigger::BallHits, 38)),
+        ("Crash cymbal on escapes", drum(NoteTrigger::Escapes, 49)),
         (
             "Bass on every bar",
             VoiceMap {
-                on: EventFilter::Downbeats,
+                on: NoteTrigger::Downbeats,
                 instrument: Instrument::library("Synth bass"),
                 ..VoiceMap::default()
             },
@@ -716,7 +716,7 @@ fn voice_ideas() -> [(&'static str, VoiceMap); 5] {
         (
             "Bells on peg hits",
             VoiceMap {
-                on: EventFilter::Obstacles,
+                on: NoteTrigger::Obstacles,
                 instrument: Instrument::library("Bells"),
                 gain: -4.0,
                 ..VoiceMap::default()
@@ -739,7 +739,7 @@ fn voices_section(ui: &mut Ui, voices: &mut Vec<VoiceMap>, state: &mut State) {
                 let on = ui.checkbox(&mut voice.enabled, "").on_hover_text("Turn this voice on or off");
                 named(&on, egui::Role::CheckBox, "Voice on");
                 combo(ui, "Plays on", egui::ComboBox::from_id_salt(("voice-on", i)).selected_text(voice.on.name()).width(120.0), |ui| {
-                        for filter in EventFilter::ALL {
+                        for filter in NoteTrigger::ALL {
                             ui.selectable_value(&mut voice.on, filter, filter.name());
                         }
                     },
@@ -1185,7 +1185,7 @@ mod tests {
 
     mod ui {
         use crate::inspector::{self, Inspector, Tab};
-        use bpe_scene::{EventFilter, Instrument, Music, Scene, SyncMode};
+        use bpe_scene::{Instrument, Music, NoteTrigger, Scene, SyncMode};
         use eframe::egui;
         use egui_kittest::{Harness, kittest::Queryable};
 
@@ -1243,7 +1243,7 @@ mod tests {
             click(&mut harness, "Crash cymbal on escapes");
             let voices = &harness.state().scene.sound.voices;
             assert_eq!(voices.len(), 1);
-            assert_eq!(voices[0].on, EventFilter::Escapes);
+            assert_eq!(voices[0].on, NoteTrigger::Escapes);
             click(&mut harness, "Remove");
             assert!(harness.state().scene.sound.voices.is_empty());
         }

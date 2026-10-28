@@ -7,7 +7,7 @@ use crate::{
     ESCAPE_STRUM, MixOptions, PlayedNote, Progression, SAMPLE_RATE, STRUM_SPACING, Soundtrack, mix_notes, mix64,
 };
 use bpe_music::midi::Step;
-use bpe_scene::{Advance, EventFilter, Instrument, PitchMode, Scene};
+use bpe_scene::{Advance, Instrument, NoteTrigger, PitchMode, Scene};
 use bpe_sim::{Event, EventKind};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -57,19 +57,19 @@ impl Class {
         matches!(self, Class::Wall | Class::Obstacle | Class::Ball | Class::Soft | Class::Escape)
     }
 
-    fn matches(self, filter: EventFilter) -> bool {
+    fn matches(self, filter: NoteTrigger) -> bool {
         match filter {
-            EventFilter::AllHits => self.is_impact(),
-            EventFilter::Walls => self == Class::Wall,
-            EventFilter::Obstacles => self == Class::Obstacle,
-            EventFilter::BallHits => self == Class::Ball,
-            EventFilter::SoftHits => self == Class::Soft,
-            EventFilter::Escapes => self == Class::Escape,
-            EventFilter::Spawns => self == Class::Spawn,
-            EventFilter::Beats => matches!(self, Class::Beat { .. }),
-            EventFilter::Downbeats => self == Class::Beat { downbeat: true },
+            NoteTrigger::AllHits => self.is_impact(),
+            NoteTrigger::Walls => self == Class::Wall,
+            NoteTrigger::Obstacles => self == Class::Obstacle,
+            NoteTrigger::BallHits => self == Class::Ball,
+            NoteTrigger::SoftHits => self == Class::Soft,
+            NoteTrigger::Escapes => self == Class::Escape,
+            NoteTrigger::Spawns => self == Class::Spawn,
+            NoteTrigger::Beats => matches!(self, Class::Beat { .. }),
+            NoteTrigger::Downbeats => self == Class::Beat { downbeat: true },
             // Rule notes arrive with the rules; until then nothing matches them.
-            EventFilter::RuleNotes => false,
+            NoteTrigger::RuleNotes => false,
         }
     }
 }
@@ -159,7 +159,7 @@ struct Row {
     index: u16,
     voice: Voice,
     /// The events it plays; None for the scene's instrument, which plays what no row does.
-    filter: Option<EventFilter>,
+    filter: Option<NoteTrigger>,
     pitch: PitchMode,
     gain: f32,
 }
@@ -419,13 +419,13 @@ mod tests {
         let mut scene = Scene::escape_rings();
         scene.sound.voices = vec![
             VoiceMap {
-                on: EventFilter::Walls,
+                on: NoteTrigger::Walls,
                 instrument: Instrument::library("Drum kit"),
                 pitch: PitchMode::Fixed(36),
                 ..VoiceMap::default()
             },
             VoiceMap {
-                on: EventFilter::Escapes,
+                on: NoteTrigger::Escapes,
                 instrument: Instrument::library("Drum kit"),
                 pitch: PitchMode::Fixed(49),
                 ..VoiceMap::default()
@@ -448,7 +448,7 @@ mod tests {
         let mut scene = Scene::escape_rings();
         scene.sound.instrument = Instrument::library("Marimba");
         scene.sound.voices = vec![VoiceMap {
-            on: EventFilter::Escapes,
+            on: NoteTrigger::Escapes,
             instrument: Instrument::library("Drum kit"),
             pitch: PitchMode::Fixed(49),
             ..VoiceMap::default()

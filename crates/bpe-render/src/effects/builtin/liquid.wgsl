@@ -3,10 +3,11 @@
 // param amount = 0.03 [0, 0.15] How far the picture bends
 // param scale = 3 [0.5, 12] Swirl count; higher makes smaller swirls
 // param speed = 0.3 [0, 3] How fast the swirls flow
+// param music = 0 [0, 1] Pulse with music: how much the bass bends the picture further
 
 fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
     let q = to_centered(uv);
     let t = fx.time * p.speed;
     let n = vec2<f32>(fbm(q * p.scale + vec2<f32>(t, 0.0)), fbm(q * p.scale + vec2<f32>(5.2, 1.3 - t))) - 0.5;
-    return sample(from_centered(q + n * p.amount * 2.0));
+    return sample(from_centered(q + n * p.amount * 2.0 * (1.0 + p.music * bass() * 3.0)));
 }

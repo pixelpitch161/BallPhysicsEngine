@@ -13,4 +13,9 @@ bytemuck.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 pollster.workspace = true
+bpe-graph.workspace = true
+bpe-music.workspace = true
 naga = { version = "30", features = ["wgsl-in"] }
+
+[dev-dependencies]
+png = "0.18"

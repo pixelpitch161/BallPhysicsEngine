@@ -2,7 +2,7 @@
 //! `cargo test --release -p bpe-audio --test bench_music -- --ignored --nocapture`.
 
 use bpe_audio::{MixOptions, SAMPLE_RATE};
-use bpe_scene::{EventFilter, Instrument, Melody, PitchMode, Scene, SyncMode, Vec2, VoiceMap};
+use bpe_scene::{Instrument, Melody, NoteTrigger, PitchMode, Scene, SyncMode, Vec2, VoiceMap};
 use bpe_sim::{Event, EventKind};
 use std::time::Instant;
 
@@ -26,13 +26,13 @@ fn mixing_5000_hits_in_30_seconds() {
     scene.sound.instrument = Instrument::library("Grand piano");
     scene.sound.voices = vec![
         VoiceMap {
-            on: EventFilter::Escapes,
+            on: NoteTrigger::Escapes,
             instrument: Instrument::library("Drum kit"),
             pitch: PitchMode::Fixed(49),
             ..VoiceMap::default()
         },
         VoiceMap {
-            on: EventFilter::Walls,
+            on: NoteTrigger::Walls,
             instrument: Instrument::library("Marimba"),
             gain: -6.0,
             ..VoiceMap::default()

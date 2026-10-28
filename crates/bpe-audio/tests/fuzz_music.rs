@@ -2,7 +2,7 @@
 //! scale, has no NaNs, and its notes come in time order.
 
 use bpe_scene::{
-    Advance, BeatSync, Dice, EventFilter, Group, Instrument, Melody, PitchMode, Scene, SyncMode, VoiceMap,
+    Advance, BeatSync, Dice, Group, Instrument, Melody, NoteTrigger, PitchMode, Scene, SyncMode, VoiceMap,
 };
 
 const SEEDS: u64 = 500;
@@ -32,7 +32,7 @@ fn random_scene(seed: u64) -> Scene {
     if dice.chance(0.5) {
         scene.sound.instrument = Instrument::library(dice.pick(&LIBRARY));
     }
-    let filters = EventFilter::ALL;
+    let filters = NoteTrigger::ALL;
     for _ in 0..dice.int(0, 4) {
         scene.sound.voices.push(VoiceMap {
             on: dice.pick(&filters),

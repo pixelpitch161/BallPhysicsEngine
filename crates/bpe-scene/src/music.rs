@@ -148,7 +148,7 @@ pub enum Advance {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceMap {
-    pub on: EventFilter,
+    pub on: NoteTrigger,
     pub instrument: Instrument,
     /// Volume of this voice in dB.
     pub gain: f32,
@@ -159,7 +159,7 @@ pub struct VoiceMap {
 impl Default for VoiceMap {
     fn default() -> Self {
         Self {
-            on: EventFilter::AllHits,
+            on: NoteTrigger::AllHits,
             instrument: Instrument::library("Marimba"),
             gain: 0.0,
             pitch: PitchMode::Tune,
@@ -170,7 +170,7 @@ impl Default for VoiceMap {
 
 /// Which events a voice plays for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EventFilter {
+pub enum NoteTrigger {
     /// Every hit of a ball on a wall, peg, other ball or soft body, and escapes.
     #[default]
     AllHits,
@@ -194,32 +194,32 @@ pub enum EventFilter {
     RuleNotes,
 }
 
-impl EventFilter {
-    pub const ALL: [EventFilter; 10] = [
-        EventFilter::AllHits,
-        EventFilter::Walls,
-        EventFilter::Obstacles,
-        EventFilter::BallHits,
-        EventFilter::SoftHits,
-        EventFilter::Escapes,
-        EventFilter::Spawns,
-        EventFilter::Beats,
-        EventFilter::Downbeats,
-        EventFilter::RuleNotes,
+impl NoteTrigger {
+    pub const ALL: [NoteTrigger; 10] = [
+        NoteTrigger::AllHits,
+        NoteTrigger::Walls,
+        NoteTrigger::Obstacles,
+        NoteTrigger::BallHits,
+        NoteTrigger::SoftHits,
+        NoteTrigger::Escapes,
+        NoteTrigger::Spawns,
+        NoteTrigger::Beats,
+        NoteTrigger::Downbeats,
+        NoteTrigger::RuleNotes,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
-            EventFilter::AllHits => "Every hit",
-            EventFilter::Walls => "Wall hits",
-            EventFilter::Obstacles => "Peg hits",
-            EventFilter::BallHits => "Ball meets ball",
-            EventFilter::SoftHits => "Jelly hits",
-            EventFilter::Escapes => "Escapes",
-            EventFilter::Spawns => "New balls",
-            EventFilter::Beats => "Every beat",
-            EventFilter::Downbeats => "Every bar",
-            EventFilter::RuleNotes => "Rule notes",
+            NoteTrigger::AllHits => "Every hit",
+            NoteTrigger::Walls => "Wall hits",
+            NoteTrigger::Obstacles => "Peg hits",
+            NoteTrigger::BallHits => "Ball meets ball",
+            NoteTrigger::SoftHits => "Jelly hits",
+            NoteTrigger::Escapes => "Escapes",
+            NoteTrigger::Spawns => "New balls",
+            NoteTrigger::Beats => "Every beat",
+            NoteTrigger::Downbeats => "Every bar",
+            NoteTrigger::RuleNotes => "Rule notes",
         }
     }
 }
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(ron::from_str::<Music>("()").unwrap(), Music::default());
         let voice: VoiceMap =
             ron::from_str("(on: Escapes, instrument: Library(name: \"Drum kit\"), pitch: Fixed(49))").unwrap();
-        assert_eq!(voice.on, EventFilter::Escapes);
+        assert_eq!(voice.on, NoteTrigger::Escapes);
         assert_eq!(voice.pitch, PitchMode::Fixed(49));
         assert!(voice.enabled);
     }

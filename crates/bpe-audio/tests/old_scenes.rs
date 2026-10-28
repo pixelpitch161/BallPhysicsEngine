@@ -26,6 +26,12 @@ const GOLDEN: &[(&str, u64)] = &[
     ("Glass sphere", 0x91695d8bc61e6b54),
     ("Neon cube", 0xb85dd979e416ad10),
     ("Endless tunnel", 0x6e6338544ed1027d),
+    // Particle and GPU presets, recorded on main at ec95c8e.
+    ("Spark storm", 0x7aa54cf17390c6e6),
+    ("Confetti escape", 0x907bf8c324787352),
+    ("Smoke rings", 0x25786636c35c9c93),
+    ("Liquid fill", 0xf788edc3a22cc412),
+    ("Million swarm", 0xa7f7b25358aaf2f7),
     ("reference-reel.ron", 0xdcee90b73c18a4ad),
     ("growing-ball.ron", 0x4e22ede5124f46bc),
 ];

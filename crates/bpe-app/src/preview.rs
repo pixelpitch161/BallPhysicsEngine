@@ -125,6 +125,19 @@ impl View {
 }
 
 impl Preview {
+    /// (WS5) The finished soundtrack's analysis, for visuals that pulse with the mix.
+    pub fn set_mix(&mut self, mix: Option<std::sync::Arc<bpe_music::AudioFeatures>>) {
+        let same = match (&mix, &self.frame_data.mix) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.frame_data.mix = mix;
+            self.drawn = None;
+        }
+    }
+
     /// Effects the GPU refused even though they passed the shader check, as (id, message).
     pub fn effect_gpu_errors(&self) -> &[(String, String)] {
         self.renderer.effect_gpu_errors()
@@ -211,11 +224,14 @@ impl Preview {
             preview.frame_data.fill(scene, playback, pixel);
             stats.build = started.elapsed().as_secs_f32() * 1000.0;
             let started = std::time::Instant::now();
+            preview.frame_data.gpu.budget = Some(CATCH_UP_BUDGET);
             preview.renderer.render(device, &render_state.queue, scene, shown_time, &preview.frame_data);
             stats.draw = started.elapsed().as_secs_f32() * 1000.0;
+            // While the swarm or liquid is still catching up, draw this moment again next frame.
+            outcome.catching_up |= preview.frame_data.gpu.behind();
             stats.balls = preview.frame_data.balls.len();
             stats.shapes = preview.frame_data.shapes.len() + preview.frame_data.trails.len() / 6;
-            preview.drawn = Some(drawn);
+            preview.drawn = (!preview.frame_data.gpu.behind()).then_some(drawn);
         } else {
             (stats.build, stats.draw) = (0.0, 0.0);
         }

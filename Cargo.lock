@@ -218,6 +218,7 @@ dependencies = [
  "bpe-audio",
  "bpe-export",
  "bpe-graph",
+ "bpe-music",
  "bpe-render",
  "bpe-scene",
  "bpe-sim",
@@ -276,11 +277,14 @@ name = "bpe-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bpe-graph",
+ "bpe-music",
  "bpe-scene",
  "bpe-sim",
  "bytemuck",
  "glam",
  "naga",
+ "png",
  "pollster 1.0.1",
  "wgpu",
 ]
