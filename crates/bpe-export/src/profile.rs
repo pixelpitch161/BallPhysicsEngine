@@ -72,8 +72,13 @@ pub struct Report {
     pub slowest_frame: Duration,
     /// Jumping back 10% from the end, as when scrubbing the timeline backwards.
     pub scrub_back: Duration,
-    /// Drawing and reading back `gpu_frames` frames.
+    /// Drawing and reading back `gpu_frames` frames spread over the video. Each one has to
+    /// step the swarm and liquid all the way from the one before, so this is the cost of
+    /// jumping around the timeline, not of playing.
     pub gpu: Option<Duration>,
+    /// Drawing and reading back `gpu_frames` frames in a row from the middle, as when the
+    /// video plays or exports.
+    pub gpu_play: Option<Duration>,
     pub gpu_frames: u32,
     pub fingerprint: Fingerprint,
 }
@@ -130,6 +135,7 @@ pub fn profile_scene(
 
     let mut pixels_hash = None;
     let mut gpu_time = None;
+    let mut gpu_play = None;
     if let Some((device, queue)) = gpu {
         let (width, height) = crate::output_size(scene, scale);
         let mut renderer = Renderer::new(device, width, height);
@@ -149,6 +155,23 @@ pub fn profile_scene(
         }
         gpu_time = Some(started.elapsed());
         pixels_hash = Some(hash.finish());
+
+        let first = frame_count / 2;
+        let mut draw = |index: u32| -> anyhow::Result<()> {
+            let time = index as f64 / fps;
+            playback.seek(time);
+            frame.fill(scene, &playback, renderer.pixel_size(scene));
+            renderer.render(device, queue, scene, time, &frame);
+            renderer.read_output(device, queue)?;
+            Ok(())
+        };
+        // The first frame catches the swarm and liquid up to the middle; time the ones after.
+        draw(first)?;
+        let started = Instant::now();
+        for index in (first + 1..frame_count).take(gpu_frames as usize) {
+            draw(index)?;
+        }
+        gpu_play = Some(started.elapsed());
     }
 
     Ok(Report {
@@ -162,6 +185,7 @@ pub fn profile_scene(
         slowest_frame,
         scrub_back,
         gpu: gpu_time,
+        gpu_play,
         gpu_frames,
         fingerprint: Fingerprint {
             hits: hash_hits(&hits),
@@ -175,17 +199,29 @@ pub fn profile_scene(
 impl Report {
     pub fn header() -> String {
         format!(
-            "{:38} {:>5} {:>7} {:>9} {:>9} {:>9} {:>9} {:>9} {:>11}  fingerprint",
-            "scene", "balls", "hits", "sim ms", "sound ms", "frames ms", "worst ms", "scrub ms", "gpu ms/frame"
+            "{:38} {:>5} {:>7} {:>9} {:>9} {:>9} {:>9} {:>9} {:>13} {:>13}  fingerprint",
+            "scene",
+            "balls",
+            "hits",
+            "sim ms",
+            "sound ms",
+            "frames ms",
+            "worst ms",
+            "scrub ms",
+            "play ms/frame",
+            "jump ms/frame"
         )
     }
 
     pub fn row(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        let gpu = self.gpu.map_or("-".to_string(), |d| format!("{:.1}", ms(d) / self.gpu_frames.max(1) as f64));
+        let per_frame = |d: Option<Duration>| {
+            d.map_or("-".to_string(), |d| format!("{:.1}", ms(d) / self.gpu_frames.max(1) as f64))
+        };
+        let (play, jump) = (per_frame(self.gpu_play), per_frame(self.gpu));
         let f = &self.fingerprint;
         format!(
-            "{:38} {:>5} {:>7} {:>9.0} {:>9.0} {:>9.0} {:>9.1} {:>9.0} {:>11}  {:016x}-{:016x}-{:016x}-{}",
+            "{:38} {:>5} {:>7} {:>9.0} {:>9.0} {:>9.0} {:>9.1} {:>9.0} {:>13} {:>13}  {:016x}-{:016x}-{:016x}-{}",
             self.name,
             self.balls,
             self.hits,
@@ -194,7 +230,8 @@ impl Report {
             ms(self.frames),
             ms(self.slowest_frame),
             ms(self.scrub_back),
-            gpu,
+            play,
+            jump,
             f.hits,
             f.sound,
             f.frames,
