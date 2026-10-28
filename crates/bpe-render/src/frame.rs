@@ -116,6 +116,13 @@ impl FrameData {
     }
 
     pub fn fill(&mut self, scene: &Scene, playback: &Playback, pixel: f32) {
+        let animated;
+        let scene = if scene.animation.is_empty() {
+            scene
+        } else {
+            animated = scene.at_time(playback.simulation().time() as f32);
+            &animated
+        };
         self.balls.clear();
         self.trails.clear();
         self.flashes.clear();

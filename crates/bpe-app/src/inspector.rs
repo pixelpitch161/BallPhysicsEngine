@@ -10,11 +10,13 @@
 pub mod effects;
 
 pub use effects::EffectsPanel;
+pub(crate) use effects::pretty_name;
 
+use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BounceRules, ChordStep, Color, Container, Dice, Group, Instrument, Look, Obstacle, Physics, Scene,
-    Sound, Spawner, Vec2,
+    ArenaMotion, BounceRules, ChordStep, Color, Container, Dice, Group, Instrument, Look, Obstacle, Physics, Property,
+    Scene, Sound, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, PopupCloseBehavior, Response, RichText, Sense, Slider, Ui, emath::Numeric,
@@ -176,9 +178,10 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
-                    effects::show(ui, &mut inspector.effects, &mut scene.effects, &mut roll);
+                    effects::show(ui, &mut inspector.effects, scene, &mut roll);
                     if reset_tab(ui, !scene.effects.is_empty()) {
                         scene.effects.clear();
+                        scene.remap_effect_tracks(|_| None);
                     }
                 }
                 Tab::Sound => {
@@ -337,13 +340,18 @@ fn help_icon(ui: &mut Ui, help: &str) {
     response.on_hover_text(help);
 }
 
-/// A setting's name. It senses clicks so that double-clicking it resets the setting.
+/// A setting's name. It senses clicks so that double-clicking it resets the setting. A setting
+/// marked with [`key`] just before gets a keyframe diamond.
 fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
+    let animatable = crate::keys::take_next(ui);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         let response = hint(ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())), help);
         if !help.is_empty() {
             help_icon(ui, help);
+        }
+        if let Some(property) = animatable {
+            crate::keys::diamond(ui, property);
         }
         response
     })
@@ -906,6 +914,7 @@ fn arena(
                 0.0..=40.0,
                 units(" px", 1),
             );
+            key(ui, Property::ArenaColor);
             color_row(ui, "Line colour", "", color, LINE_COLOR);
         }
         Container::Rect { size, thickness, color, .. } => {
@@ -936,6 +945,7 @@ fn arena(
                 0.0..=40.0,
                 units(" px", 1),
             );
+            key(ui, Property::ArenaColor);
             color_row(ui, "Line colour", "", color, LINE_COLOR);
         }
         Container::Polygon { radius, sides, rotation, thickness, color, .. } => {
@@ -959,6 +969,7 @@ fn arena(
                 units("°", 0),
             );
             slider(ui, "Line width", "Thickness of the line. 0 hides it.", thickness, 3.0, 0.0..=40.0, units(" px", 1));
+            key(ui, Property::ArenaColor);
             color_row(ui, "Line colour", "", color, LINE_COLOR);
         }
         Container::Rings { count, inner_radius, spacing, gap, spin, spin_step, thickness, gradient, .. } => {
@@ -1048,6 +1059,17 @@ fn arena(
     let d = ArenaMotion::default();
     heading_dice(ui, "Movement", Group::Movement, roll);
     grid(ui, "motion", |ui| {
+        key(ui, Property::ArenaSize);
+        slider(
+            ui,
+            "Size over time",
+            "Grows or shrinks the whole arena, 100% being the size set above. Click the diamond to animate it, so the arena pulses or closes in.",
+            &mut motion.size,
+            d.size,
+            0.05..=3.0,
+            percent,
+        );
+        key(ui, Property::ArenaSpin);
         slider(
             ui,
             "Arena spin",
@@ -1057,6 +1079,7 @@ fn arena(
             -360.0..=360.0,
             units("°/s", 0),
         );
+        key(ui, Property::ShrinkSpeed);
         slider(
             ui,
             "Shrink",
@@ -1092,6 +1115,7 @@ fn arena(
     let defaults = Physics::default();
     heading_dice(ui, "World", Group::World, roll);
     grid(ui, "world", |ui| {
+        key(ui, Property::Gravity);
         slider(
             ui,
             "Gravity",
@@ -1101,6 +1125,7 @@ fn arena(
             -3000.0..=3000.0,
             units("", 0),
         );
+        key(ui, Property::Bounciness);
         slider(
             ui,
             "Bounciness",
@@ -1110,6 +1135,7 @@ fn arena(
             0.0..=1.5,
             percent,
         );
+        key(ui, Property::AirDrag);
         slider(
             ui,
             "Air drag",
@@ -1124,6 +1150,7 @@ fn arena(
         .on_hover_text("When off, balls pass through one another and only bounce off the wall.");
     more(ui, "arena-more", |ui| {
         grid(ui, "arena-more-grid", |ui| {
+            key(ui, Property::SidewaysGravity);
             slider(
                 ui,
                 "Sideways gravity",
@@ -1293,6 +1320,7 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules, roll: &mut Option<Roll>) {
     ui.add_space(6.0);
     grid(ui, "rules", |ui| {
         let mut gain = (rules.speed_gain - 1.0) * 100.0;
+        key(ui, Property::SpeedGain);
         let response = slider_row(
             ui,
             "Speed up",
@@ -1403,6 +1431,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
     let d = Look::default();
     heading_dice(ui, "Background", Group::Background, roll);
     grid(ui, "background", |ui| {
+        key(ui, Property::BackgroundTop);
         color_row(
             ui,
             "Top colour",
@@ -1410,6 +1439,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             &mut look.background_top,
             d.background_top,
         );
+        key(ui, Property::BackgroundBottom);
         color_row(
             ui,
             "Bottom colour",
@@ -1429,6 +1459,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             0.0..=2.0,
             units(" s", 2),
         );
+        key(ui, Property::TrailWidth);
         slider(
             ui,
             "Width",
@@ -1438,6 +1469,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             0.0..=2.0,
             percent,
         );
+        key(ui, Property::TrailOpacity);
         slider(
             ui,
             "Brightness",
@@ -1450,6 +1482,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
     });
     heading_dice(ui, "Glow", Group::Glow, roll);
     grid(ui, "glow", |ui| {
+        key(ui, Property::BallGlow);
         slider(
             ui,
             "Ball glow",
@@ -1459,6 +1492,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             0.0..=2.0,
             percent,
         );
+        key(ui, Property::FlashStrength);
         slider(
             ui,
             "Wall flash",
@@ -1468,6 +1502,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             0.0..=5.0,
             percent,
         );
+        key(ui, Property::Bloom);
         slider(
             ui,
             "Overall glow",
@@ -1490,6 +1525,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             |s| s,
         );
         if look.string_lines > 0 {
+            key(ui, Property::StringOpacity);
             slider(
                 ui,
                 "Line brightness",
@@ -1499,6 +1535,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
                 0.0..=1.0,
                 percent,
             );
+            key(ui, Property::StringWidth);
             slider(
                 ui,
                 "Line width",
@@ -1530,6 +1567,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
                 0.0..=2.0,
                 units(" s", 2),
             );
+            key(ui, Property::FlashSize);
             slider(
                 ui,
                 "Flash size",
@@ -1539,6 +1577,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
                 1.0..=300.0,
                 units(" px", 0),
             );
+            key(ui, Property::Exposure);
             slider(
                 ui,
                 "Brightness",

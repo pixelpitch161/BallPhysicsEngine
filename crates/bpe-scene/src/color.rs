@@ -84,6 +84,28 @@ impl Color {
         [channel(self.r), channel(self.g), channel(self.b), self.a as f32 / 255.0]
     }
 
+    /// The sRGB colour for linear-light RGBA, rounded to the nearest step.
+    pub fn from_linear(c: [f32; 4]) -> Self {
+        let channel = |c: f32| {
+            let c = c.clamp(0.0, 1.0);
+            let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+            (s * 255.0).round() as u8
+        };
+        Self { r: channel(c[0]), g: channel(c[1]), b: channel(c[2]), a: (c[3].clamp(0.0, 1.0) * 255.0).round() as u8 }
+    }
+
+    /// Blends from `a` to `b` in linear light. `t` runs 0 to 1.
+    pub fn mix(a: Color, b: Color, t: f32) -> Color {
+        if t <= 0.0 {
+            return a;
+        }
+        if t >= 1.0 {
+            return b;
+        }
+        let (a, b) = (a.to_linear(), b.to_linear());
+        Self::from_linear(std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t))
+    }
+
     /// Picks a colour along evenly spaced stops, blending in linear light. `t` runs 0 to 1.
     pub fn sample_gradient(stops: &[Color], t: f32) -> [f32; 4] {
         match stops {
@@ -133,5 +155,12 @@ mod tests {
             assert_eq!(Color::from_hsv(h, s, v), color);
         }
         assert_eq!(Color::rgb(255, 0, 0).shift_hue(1.0 / 3.0), Color::rgb(0, 255, 0));
+    }
+
+    #[test]
+    fn linear_round_trip() {
+        for c in [Color::rgb(0, 0, 0), Color::rgb(1, 128, 254), Color { r: 3, g: 77, b: 200, a: 90 }] {
+            assert_eq!(Color::from_linear(c.to_linear()), c);
+        }
     }
 }

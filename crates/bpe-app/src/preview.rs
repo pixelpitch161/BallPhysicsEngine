@@ -186,13 +186,19 @@ fn spawner_velocity(spawner: &Spawner) -> Vec2 {
 
 /// The round or polygon outline that the arena's edge handle resizes: the arena itself, or the
 /// smallest of the escape rings. None for a box, which has its own handles.
-fn edge_outline(container: &Container) -> Option<Outline> {
-    let start = ArenaState::default();
+fn edge_outline(scene: &Scene) -> Option<Outline> {
+    let container = &scene.container;
+    let start = ArenaState { scale: arena_size(scene), ..ArenaState::default() };
     match container {
         Container::Rect { .. } => None,
         Container::Rings { .. } => bpe_sim::ring_outline(container, 0, 0.0, start),
         _ => bpe_sim::closed_outline(container, start),
     }
+}
+
+/// How big the arena is drawn compared to its shape's own size.
+fn arena_size(scene: &Scene) -> f32 {
+    scene.arena_motion.size.max(0.01)
 }
 
 /// The point on a ring or polygon outline in the direction of `world` from its centre.
@@ -228,7 +234,7 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
             return Some(Handle::Aim(i));
         }
     }
-    if let Some(outline) = edge_outline(&scene.container) {
+    if let Some(outline) = edge_outline(scene) {
         let edge = outline_point_towards(&outline, world);
         if edge.distance(world) <= reach {
             return Some(Handle::Edge { x: true, y: true });
@@ -238,7 +244,7 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
         Container::Circle { .. } | Container::Polygon { .. } | Container::Rings { .. } => {}
         Container::Rect { center, size, .. } => {
             let d = (world - center).abs();
-            let half = size / 2.0;
+            let half = size * arena_size(scene) / 2.0;
             let x = (d.x - half.x).abs() <= reach && d.y <= half.y + reach;
             let y = (d.y - half.y).abs() <= reach && d.x <= half.x + reach;
             if x || y {
@@ -281,7 +287,8 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
         }
         Handle::Edge { x, y } => {
             // Scale the outline so it passes under the pointer.
-            let scale = edge_outline(&scene.container).map(|outline| {
+            let shown_size = arena_size(scene);
+            let scale = edge_outline(scene).map(|outline| {
                 let edge = outline_point_towards(&outline, world);
                 let center = outline.center();
                 (world - center).length() / (edge - center).length().max(1.0)
@@ -294,7 +301,9 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
                     *inner_radius = (*inner_radius * scale.unwrap_or(1.0)).clamp(10.0, 1000.0).round()
                 }
                 Container::Rect { center, size, .. } => {
-                    let d = ((world - *center).abs() * 2.0).clamp(Vec2::splat(40.0), Vec2::splat(2400.0)).round();
+                    let d = ((world - *center).abs() * 2.0 / shown_size)
+                        .clamp(Vec2::splat(40.0), Vec2::splat(2400.0))
+                        .round();
                     if x {
                         size.x = d.x;
                     }
@@ -314,13 +323,14 @@ fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, sel
     // Arena edge.
     let edge_active = matches!(active, Some(Handle::Edge { .. }));
     let edge_stroke = Stroke::new(if edge_active { 2.5 } else { 1.0 }, if edge_active { theme::ACCENT } else { faint });
-    let edge_dot = match (&scene.container, edge_outline(&scene.container)) {
+    let edge_dot = match (&scene.container, edge_outline(scene)) {
         (Container::Rect { center, size, .. }, _) => {
+            let size = *size * arena_size(scene);
             if edge_active {
                 let r = Rect::from_center_size(view.to_screen(*center), egui::vec2(size.x, size.y) * view.scale);
                 painter.rect_stroke(r, 0.0, edge_stroke, egui::StrokeKind::Middle);
             }
-            Some(view.to_screen(*center + *size / 2.0))
+            Some(view.to_screen(*center + size / 2.0))
         }
         (_, Some(outline)) => {
             let center = outline.center();

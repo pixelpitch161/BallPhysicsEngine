@@ -3,10 +3,12 @@ use crate::explorer::Explorer;
 use crate::export::ExportPanel;
 use crate::gallery::Gallery;
 use crate::inspector::{self, Inspector, Tab};
+use crate::keys;
 use crate::preview::Preview;
+use crate::timeline::{HitSummary, Timeline};
 use crate::{settings, theme};
 use bpe_audio::Soundtrack;
-use bpe_scene::Scene;
+use bpe_scene::{Property, Scene, Value};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke};
 use std::path::PathBuf;
@@ -40,6 +42,14 @@ pub struct StudioApp {
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
+    timeline: Timeline,
+    /// Playing was paused to scrub the timeline, and starts again when scrubbing stops.
+    resume_after_scrub: bool,
+    /// A toolbar button that was clicked. It is acted on once the panels are drawn, because
+    /// while settings are animated the panels edit a copy of the scene.
+    clicked: Option<ToolbarClick>,
+    /// Whether the scene had unsaved changes at the start of this frame.
+    was_unsaved: bool,
     /// An action waiting on "Save changes?".
     confirm: Option<Pending>,
     /// Set once the user has agreed to close, so the next close request goes through.
@@ -47,6 +57,16 @@ pub struct StudioApp {
     /// The scene was swapped wholesale this frame (undo, redo, open), so it is not a new edit.
     swapped: bool,
     status: String,
+}
+
+#[derive(Clone, Copy)]
+enum ToolbarClick {
+    Open,
+    Save,
+    SaveAs,
+    Undo,
+    Redo,
+    Explore,
 }
 
 /// Something that would throw away unsaved changes.
@@ -84,8 +104,8 @@ struct SoundJob {
     generation: u64,
     dirty_since: Option<Instant>,
     running: bool,
-    sender: Sender<(u64, anyhow::Result<Soundtrack>)>,
-    receiver: Receiver<(u64, anyhow::Result<Soundtrack>)>,
+    sender: Sender<(u64, anyhow::Result<Soundtrack>, HitSummary)>,
+    receiver: Receiver<(u64, anyhow::Result<Soundtrack>, HitSummary)>,
     error: Option<String>,
 }
 
@@ -142,6 +162,10 @@ impl StudioApp {
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
+            timeline: Timeline::default(),
+            resume_after_scrub: false,
+            clicked: None,
+            was_unsaved: false,
             confirm: None,
             closing: false,
             swapped: false,
@@ -159,6 +183,7 @@ impl StudioApp {
 
     fn scene_changed(&mut self) {
         self.playback = Playback::new(&self.scene);
+        self.timeline.clear_hits();
         self.time = self.time.min(self.scene.video.duration as f64);
         self.sound.dirty_since = Some(Instant::now());
     }
@@ -214,6 +239,12 @@ impl StudioApp {
 
     // ---------- playback ----------
 
+    /// The playhead's time on the nearest video frame, where keyframes are added.
+    fn key_time(&self) -> f32 {
+        let fps = self.scene.video.fps.max(1) as f64;
+        ((self.time * fps).round() / fps) as f32
+    }
+
     fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
         self.last_tick = None;
@@ -255,11 +286,12 @@ impl StudioApp {
     }
 
     fn update_soundtrack(&mut self, ctx: &egui::Context) {
-        while let Ok((generation, result)) = self.sound.receiver.try_recv() {
+        while let Ok((generation, result, hits)) = self.sound.receiver.try_recv() {
             self.sound.running = false;
             if generation != self.sound.generation {
                 continue;
             }
+            self.timeline.set_hits(hits);
             match result {
                 Ok(track) => {
                     self.sound.error = None;
@@ -283,7 +315,7 @@ impl StudioApp {
             std::thread::spawn(move || {
                 let hits = bpe_sim::collect_wall_hits(&scene);
                 let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref());
-                let _ = sender.send((generation, result));
+                let _ = sender.send((generation, result, HitSummary::new(&hits)));
                 ctx.request_repaint();
             });
         } else if self.sound.dirty_since.is_some() {
@@ -387,36 +419,65 @@ impl StudioApp {
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
         }
+        // Arrow keys belong to a slider or button that has the keyboard focus.
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let fps = self.scene.video.fps.max(1) as f64;
+        let (left, right, home, end, delete, shift) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::ArrowLeft),
+                i.key_pressed(Key::ArrowRight),
+                i.key_pressed(Key::Home),
+                i.key_pressed(Key::End),
+                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
+                i.modifiers.shift,
+            )
+        });
+        let step = if shift { 1.0 } else { 1.0 / fps };
+        if left || right {
+            // Land on whole frames, so keyframes added here line up with the video's frames.
+            let frame = (self.time * fps).round() / fps;
+            self.seek(if left { frame - step } else { frame + step });
+        }
+        if home {
+            self.seek(0.0);
+        }
+        if end {
+            self.seek(self.scene.video.duration as f64);
+        }
+        if delete && self.timeline.selected() {
+            self.timeline.delete_selected(&mut self.scene);
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
             if ui.button("New").on_hover_text("Start a new scene from a preset").clicked() {
                 self.gallery.open();
             }
             if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
-                self.guard(Pending::Open, &ctx);
+                self.clicked = Some(ToolbarClick::Open);
             }
             if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
-                self.save(false);
+                self.clicked = Some(ToolbarClick::Save);
             }
             if ui.button("Save as…").on_hover_text("Save this scene under a new name").clicked() {
-                self.save(true);
+                self.clicked = Some(ToolbarClick::SaveAs);
             }
             ui.separator();
             let undo = egui::Button::new("Undo");
             if ui.add_enabled(!self.history.undo.is_empty(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
-                self.undo();
+                self.clicked = Some(ToolbarClick::Undo);
             }
             let redo = egui::Button::new("Redo");
             if ui.add_enabled(!self.history.redo.is_empty(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
-                self.redo();
+                self.clicked = Some(ToolbarClick::Redo);
             }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
-            let saved_label = match (&self.scene_path, self.unsaved()) {
+            let saved_label = match (&self.scene_path, self.was_unsaved) {
                 (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
                 (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
                 (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
@@ -442,8 +503,7 @@ impl StudioApp {
                 );
                 inspector::paint_dice(ui.painter(), icon, false);
                 if explore.clicked() {
-                    self.set_playing(false);
-                    self.explorer.open(&self.scene, &self.inspector.effects.library);
+                    self.clicked = Some(ToolbarClick::Explore);
                 }
             });
         });
@@ -451,35 +511,52 @@ impl StudioApp {
 
     fn transport(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if round_button(ui, 40.0, if self.playing { Icon::Pause } else { Icon::Play })
+            if round_button(ui, 34.0, if self.playing { Icon::Pause } else { Icon::Play })
                 .on_hover_text("Play or pause (Space)")
                 .clicked()
             {
                 self.set_playing(!self.playing);
             }
-            if round_button(ui, 30.0, Icon::Restart).on_hover_text("Back to the start").clicked() {
+            if round_button(ui, 28.0, Icon::Restart).on_hover_text("Back to the start (Home)").clicked() {
                 self.seek(0.0);
             }
             let duration = self.scene.video.duration as f64;
             ui.monospace(format!("{} / {}", clock(self.time), clock(duration)));
-            let right_side = 330.0;
-            let mut time = self.time;
-            ui.style_mut().spacing.slider_width = (ui.available_width() - right_side).max(100.0);
-            let response = ui.add(egui::Slider::new(&mut time, 0.0..=duration).show_value(false));
-            if response.changed() {
-                self.seek(time);
-            }
             ui.add_space(8.0);
             ui.label(RichText::new("Length").color(theme::MUTED));
             ui.add(egui::DragValue::new(&mut self.scene.video.duration).range(1.0..=600.0).speed(0.1).suffix(" s"))
-                .on_hover_text("How long the video is, in seconds. Click to type, or drag.");
+                .on_hover_text(
+                    "How long the video is, in seconds. Click to type, drag, or drag the end of the timeline.",
+                );
             ui.checkbox(&mut self.looping, "Loop");
             if ui.checkbox(&mut self.muted, "Mute").changed()
                 && let Some(audio) = &self.audio
             {
                 audio.set_muted(self.muted);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new("Arrow keys step a frame, Shift+arrow a second").small().color(theme::MUTED));
+            });
         });
+        let outcome = self.timeline.show(ui, &mut self.scene, self.time);
+        match outcome.scrubbing {
+            Some(true) => {
+                self.resume_after_scrub = self.playing;
+                self.set_playing(false);
+            }
+            Some(false) => {
+                if std::mem::take(&mut self.resume_after_scrub) {
+                    self.set_playing(true);
+                }
+            }
+            None => {}
+        }
+        if let Some(time) = outcome.seek {
+            self.seek(time);
+        }
+        if let Some(tab) = outcome.show_tab {
+            self.inspector.tab = tab;
+        }
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small().color(theme::MUTED));
             if self.sound.running || self.sound.dirty_since.is_some() {
@@ -544,8 +621,22 @@ impl eframe::App for StudioApp {
         self.update_soundtrack(&ctx);
 
         let before = self.scene.clone();
+        self.was_unsaved = self.unsaved();
+        // While settings are animated, the panels show and edit them as they are at the playhead.
+        let key_time = self.key_time();
+        let shown = (!self.scene.animation.is_empty()).then(|| self.scene.at_time(key_time));
+        if let Some(shown) = &shown {
+            self.scene = shown.clone();
+        }
+        keys::publish(&ctx, &self.scene, key_time);
         egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("transport").frame(bar_frame()).show(ui, |ui| self.transport(ui));
+        egui::Panel::bottom("transport")
+            .frame(bar_frame())
+            .resizable(true)
+            .default_size(236.0)
+            .min_size(150.0)
+            .max_size(640.0)
+            .show(ui, |ui| self.transport(ui));
         egui::Panel::left("inspector")
             .default_size(460.0)
             .min_size(340.0)
@@ -584,6 +675,38 @@ impl eframe::App for StudioApp {
             self.inspector.selected = Some(index);
             self.inspector.tab = Tab::Balls;
         }
+        if let Some(shown) = shown
+            && !self.swapped
+        {
+            let edited = std::mem::take(&mut self.scene);
+            self.scene = keys::write_back(&before, &shown, edited, key_time);
+        }
+        let requests = keys::take_requests(&ctx);
+        if !requests.is_empty() {
+            let library = &self.inspector.effects.library;
+            let effects = self.scene.effects.clone();
+            keys::apply_requests(&mut self.scene, requests, key_time, |property| match property {
+                Property::EffectParam(i, name) => {
+                    let effect = effects.get(*i as usize)?;
+                    let info = library.get(&effect.shader)?;
+                    let param = info.params.iter().find(|p| p.name == *name)?;
+                    Some(Value::Number(param.default))
+                }
+                _ => None,
+            });
+        }
+        match self.clicked.take() {
+            Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
+            Some(ToolbarClick::Save) => _ = self.save(false),
+            Some(ToolbarClick::SaveAs) => _ = self.save(true),
+            Some(ToolbarClick::Undo) => self.undo(),
+            Some(ToolbarClick::Redo) => self.redo(),
+            Some(ToolbarClick::Explore) => {
+                self.set_playing(false);
+                self.explorer.open(&self.scene, &self.inspector.effects.library);
+            }
+            None => {}
+        }
 
         let base_dir = self.base_dir();
         self.export.show(&ctx, frame, &mut self.scene, base_dir, &self.inspector.effects.library);
@@ -605,10 +728,11 @@ impl eframe::App for StudioApp {
         if std::mem::take(&mut self.swapped) {
             // Already handled by undo, redo or opening a scene.
         } else if self.scene != before {
-            // Effects only change the picture, so the simulation and sound can stay as they are.
-            let effects_only = Scene { effects: before.effects.clone(), ..self.scene.clone() } == before;
+            // Effects and animated looks only change the picture, so the simulation and sound
+            // can stay as they are.
+            let picture_only = moving_parts(&self.scene) == moving_parts(&before);
             self.record_edit(before, separate);
-            if !effects_only {
+            if !picture_only {
                 self.scene_changed();
             }
         }
@@ -618,6 +742,13 @@ impl eframe::App for StudioApp {
             ctx.request_repaint();
         }
     }
+}
+
+/// The parts of a scene that decide how balls move and sound.
+fn moving_parts(scene: &Scene) -> Scene {
+    let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
+    parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    parts
 }
 
 fn bar_frame() -> egui::Frame {
@@ -631,8 +762,8 @@ fn file_label(path: &std::path::Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
 
-/// Seconds as m:ss.
-fn clock(seconds: f64) -> String {
+/// Seconds as m:ss.t.
+pub(crate) fn clock(seconds: f64) -> String {
     let tenths = (seconds.max(0.0) * 10.0).floor() as u64;
     format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }
