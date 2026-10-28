@@ -753,14 +753,7 @@ impl TextGpu {
 impl Captions {
     /// Lays out this frame's captions and uploads anything new. Call before [`Self::draw_under`]
     /// and [`Self::draw_over`].
-    pub fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene: &Scene,
-        text: &TextFrame,
-        pixel: f32,
-    ) {
+    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, text: &TextFrame, pixel: f32) {
         self.quads.over.clear();
         self.quads.under.clear();
         if scene.captions.iter().all(|c| !c.enabled) && text.rule_captions.is_empty() {
