@@ -8,6 +8,8 @@ mod audio_out;
 mod export;
 mod gallery;
 mod inspector;
+#[cfg(test)]
+mod inspector_tests;
 mod preview;
 mod settings;
 mod theme;
