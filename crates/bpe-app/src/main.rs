@@ -15,6 +15,7 @@ mod inspector;
 mod inspector_tests;
 mod keys;
 mod node_editor;
+mod orbit;
 mod preview;
 mod rules_workspace;
 mod setting_menu;

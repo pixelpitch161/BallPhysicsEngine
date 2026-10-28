@@ -26,6 +26,8 @@ struct Drawn {
     step_time: f64,
     size: (u32, u32),
     effects: u64,
+    /// 3D (WS4): whether the playback is 3D, so the frame after switching Flat/3D is drawn again.
+    space: bool,
 }
 
 /// How long the parts of a preview frame took, in milliseconds.
@@ -211,6 +213,7 @@ impl Preview {
             step_time: playback.simulation().time(),
             size: (width, height),
             effects: effects.revision(),
+            space: playback.space().is_some(),
         };
         let stats = &mut preview.stats;
         stats.simulate = simulate.as_secs_f32() * 1000.0;
@@ -234,6 +237,13 @@ impl Preview {
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
 
+        // ---- 3D (WS4): dragging turns the camera instead of moving balls. ----
+        if crate::orbit::interact(ui, &response, scene, rect) {
+            preview.drag = None;
+            outcome.clicked = playing && response.clicked();
+            draw_hint(ui, rect, crate::orbit::HINT);
+            return outcome;
+        }
         if playing {
             preview.drag = None;
             outcome.clicked = response.clicked();

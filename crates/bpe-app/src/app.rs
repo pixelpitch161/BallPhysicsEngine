@@ -1038,6 +1038,10 @@ fn moving_parts(scene: &Scene) -> Scene {
     // WS5: node effects and pulses on the picture only change the picture.
     parts.shader_graphs = Vec::new();
     parts.modulators = scene.modulators.iter().filter(|m| m.property.affects_simulation()).cloned().collect();
+    // 3D (WS4): the camera, lights and looks only change the picture.
+    if let bpe_scene::View::Space(space) = &mut parts.view {
+        **space = space.moving_parts();
+    }
     parts
 }
 

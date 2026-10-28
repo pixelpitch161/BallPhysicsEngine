@@ -194,8 +194,9 @@ pub fn write_back(base: &Scene, shown: &Scene, mut edited: Scene, time: f32) -> 
             continue;
         }
         let now = property.get(&edited);
+        // Rounding errors are not edits: a 3D camera angle can read back a hair off (WS4).
         if let Some(value) = now
-            && now != property.get(shown)
+            && !property.get(shown).is_some_and(|shown| shown.same(value))
             && let Some(track) = edited.track_mut(&property)
         {
             track.set_key(time, value);
@@ -245,6 +246,16 @@ pub fn name(property: &Property, scene: &Scene) -> String {
         Property::EffectParam(i, param) => {
             format!("{} {}", effect_name(i), crate::inspector::pretty_name(param).to_lowercase())
         }
+        // 3D (WS4)
+        Property::CameraTurn => "Camera turn".into(),
+        Property::CameraHeight => "Camera height".into(),
+        Property::CameraDistance => "Camera distance".into(),
+        Property::CameraFov => "Zoom".into(),
+        Property::LightTurn => "Light direction".into(),
+        Property::LightHeight => "Light height".into(),
+        Property::LightBrightness => "Light brightness".into(),
+        Property::Glass => "Glass".into(),
+        Property::EdgeGlow => "Edge glow".into(),
     }
 }
 
