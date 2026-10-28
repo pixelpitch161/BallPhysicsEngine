@@ -167,7 +167,8 @@ fn clap() -> Vec<f32> {
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         // Three quick slaps, then the tail.
-        let burst = (0..3).map(|k| t - k as f32 * 0.011).filter(|&d| d >= 0.0).map(|d| (-d / 0.006).exp()).fold(0.0, f32::max);
+        let burst =
+            (0..3).map(|k| t - k as f32 * 0.011).filter(|&d| d >= 0.0).map(|d| (-d / 0.006).exp()).fold(0.0, f32::max);
         let env = burst.max(if t > 0.022 { (-(t - 0.022) / 0.09).exp() * 0.7 } else { 0.0 });
         *s = svf.run(noise.next(), 1200.0, 1.5).band * env * 2.0;
     }

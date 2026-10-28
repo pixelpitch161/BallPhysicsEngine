@@ -14,8 +14,8 @@
 
 use crate::{Event, SimInputs, Simulation};
 use bpe_music::AudioFeatures;
-use std::sync::Arc;
 use bpe_scene::{Container, Scene, Spawner, SyncMode};
+use std::sync::Arc;
 
 /// Tempo used when there is no song and no tempo set.
 const DEFAULT_BPM: f32 = 120.0;
@@ -183,7 +183,9 @@ impl Controller {
         }
         targets.sort_by(|a, b| (a - reach.natural).abs().total_cmp(&(b - reach.natural).abs()));
         targets.iter().take(2).any(|&target| {
-            probe.solve(target, &reach).is_some_and(|(scale, _)| self.can_land(probe.after_hit(scale), max_change, depth - 1))
+            probe
+                .solve(target, &reach)
+                .is_some_and(|(scale, _)| self.can_land(probe.after_hit(scale), max_change, depth - 1))
         })
     }
 
@@ -281,7 +283,8 @@ impl Probe {
             let guess = if (b.1 - a.1).abs() > 1e-9 { a.0 + (target - a.1) * (b.0 - a.0) / (b.1 - a.1) } else { lo };
             let margin = (hi - lo) * 0.1;
             // Halve instead when the secant guess hugs an end, and every third try regardless.
-            let scale = if i % 3 == 2 || guess <= lo + margin || guess >= hi - margin { (lo + hi) * 0.5 } else { guess };
+            let scale =
+                if i % 3 == 2 || guess <= lo + margin || guess >= hi - margin { (lo + hi) * 0.5 } else { guess };
             let Some(time) = self.next_hit(scale) else { break };
             if (time - target).abs() < (best.1 - target).abs() {
                 best = (scale, time);

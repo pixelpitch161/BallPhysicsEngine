@@ -10,13 +10,15 @@ mod song;
 mod voices;
 
 pub use bpe_music::{AudioFeatures, midi};
-pub use scene_sound::{SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs};
+pub use scene_sound::{
+    SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs,
+};
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
 use bpe_sim::{Event, EventKind};
-use std::collections::HashMap;
 use instruments::{load_mono, pluck, repitch};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -193,7 +195,9 @@ fn classic_layer(
     wanted.sort_unstable();
     wanted.dedup();
     voice.prepare(&wanted);
-    mix_notes(&mut track.samples, &notes, |placed| (placed.start, voice.get(placed.note), placed.left, placed.right, 0));
+    mix_notes(&mut track.samples, &notes, |placed| {
+        (placed.start, voice.get(placed.note), placed.left, placed.right, 0)
+    });
     Ok(())
 }
 

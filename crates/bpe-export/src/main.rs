@@ -109,7 +109,17 @@ fn run() -> anyhow::Result<()> {
     let (device, queue) = bpe_render::headless_device().context("no usable GPU found")?;
 
     if let Some(time) = still {
-        return export_still(&device, &queue, &scene, &options.effects, time, options.scale, &options.ffmpeg, &output, base_dir.as_deref());
+        return export_still(
+            &device,
+            &queue,
+            &scene,
+            &options.effects,
+            time,
+            options.scale,
+            &options.ffmpeg,
+            &output,
+            base_dir.as_deref(),
+        );
     }
 
     options.output = output;

@@ -25,8 +25,18 @@ fn mixing_5000_hits_in_30_seconds() {
     scene.video.duration = 30.0;
     scene.sound.instrument = Instrument::library("Grand piano");
     scene.sound.voices = vec![
-        VoiceMap { on: EventFilter::Escapes, instrument: Instrument::library("Drum kit"), pitch: PitchMode::Fixed(49), ..VoiceMap::default() },
-        VoiceMap { on: EventFilter::Walls, instrument: Instrument::library("Marimba"), gain: -6.0, ..VoiceMap::default() },
+        VoiceMap {
+            on: EventFilter::Escapes,
+            instrument: Instrument::library("Drum kit"),
+            pitch: PitchMode::Fixed(49),
+            ..VoiceMap::default()
+        },
+        VoiceMap {
+            on: EventFilter::Walls,
+            instrument: Instrument::library("Marimba"),
+            gain: -6.0,
+            ..VoiceMap::default()
+        },
     ];
     scene.music.melody = Some(Melody::default());
     let events: Vec<Event> = (0..5000)

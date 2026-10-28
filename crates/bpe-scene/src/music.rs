@@ -49,7 +49,15 @@ pub struct Music {
 
 impl Default for Music {
     fn default() -> Self {
-        Self { song: None, offset: 0.0, gain: -3.0, duck_amount: 0.3, bpm: 0.0, beat_sync: BeatSync::default(), melody: None }
+        Self {
+            song: None,
+            offset: 0.0,
+            gain: -3.0,
+            duck_amount: 0.3,
+            bpm: 0.0,
+            beat_sync: BeatSync::default(),
+            melody: None,
+        }
     }
 }
 
@@ -72,7 +80,14 @@ pub struct BeatSync {
 
 impl Default for BeatSync {
     fn default() -> Self {
-        Self { mode: SyncMode::Off, lead_balls: 1, max_change: 0.15, subdivisions: 2, tolerance: 0.04, warp_strength: 0.35 }
+        Self {
+            mode: SyncMode::Off,
+            lead_balls: 1,
+            max_change: 0.15,
+            subdivisions: 2,
+            tolerance: 0.04,
+            warp_strength: 0.35,
+        }
     }
 }
 
@@ -233,7 +248,8 @@ mod tests {
         let text = ron::to_string(&music).unwrap();
         assert_eq!(ron::from_str::<Music>(&text).unwrap(), music);
         assert_eq!(ron::from_str::<Music>("()").unwrap(), Music::default());
-        let voice: VoiceMap = ron::from_str("(on: Escapes, instrument: Library(name: \"Drum kit\"), pitch: Fixed(49))").unwrap();
+        let voice: VoiceMap =
+            ron::from_str("(on: Escapes, instrument: Library(name: \"Drum kit\"), pitch: Fixed(49))").unwrap();
         assert_eq!(voice.on, EventFilter::Escapes);
         assert_eq!(voice.pitch, PitchMode::Fixed(49));
         assert!(voice.enabled);

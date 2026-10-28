@@ -185,7 +185,12 @@ pub(crate) mod tests {
     }
 
     fn write_sine(path: &Path, freq: f32, rate: u32) {
-        let spec = hound::WavSpec { channels: 1, sample_rate: rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
         let mut writer = hound::WavWriter::create(path, spec).unwrap();
         for i in 0..rate / 2 {
             let s = (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin() * 0.5;
@@ -249,7 +254,8 @@ pub(crate) mod tests {
             smpl.extend((s as i16).to_le_bytes());
         }
         smpl.extend([0u8; 92]); // 46 zero samples after the sample, as the format asks
-        let info = list(b"INFO", &[chunk(b"ifil", &[2, 0, 1, 0]), chunk(b"isng", b"EMU8000\0"), chunk(b"INAM", b"Tiny\0\0")]);
+        let info =
+            list(b"INFO", &[chunk(b"ifil", &[2, 0, 1, 0]), chunk(b"isng", b"EMU8000\0"), chunk(b"INAM", b"Tiny\0\0")]);
         let sdta = list(b"sdta", &[chunk(b"smpl", &smpl)]);
         let mut phdr = Vec::new();
         for (preset_name, bag) in [("Sine", 0u16), ("EOP", 1)] {

@@ -401,12 +401,14 @@ impl Scene {
             name: "Marimba melody".into(),
             physics: Physics { gravity: Vec2::new(0.0, 520.0), ..Physics::default() },
             spawners,
-            look: Look { trail_seconds: 0.8, trail_width: 0.9, trail_opacity: 0.55, ball_glow: 0.45, ..Look::default() },
-            sound: Sound {
-                instrument: Instrument::library("Marimba"),
-                full_volume_speed: 1100.0,
-                ..Sound::default()
+            look: Look {
+                trail_seconds: 0.8,
+                trail_width: 0.9,
+                trail_opacity: 0.55,
+                ball_glow: 0.45,
+                ..Look::default()
             },
+            sound: Sound { instrument: Instrument::library("Marimba"), full_volume_speed: 1100.0, ..Sound::default() },
             music: Music { melody: Some(Melody::default()), ..Music::default() },
             video: Video { duration: 30.0, ..Video::default() },
             ..Self::default()
@@ -492,7 +494,12 @@ impl Scene {
             drum(EventFilter::BallHits, 38, -2.0),
             drum(EventFilter::Escapes, 49, -3.0),
             drum(EventFilter::Beats, 42, -12.0),
-            VoiceMap { on: EventFilter::Downbeats, instrument: Instrument::library("Synth bass"), gain: -4.0, ..VoiceMap::default() },
+            VoiceMap {
+                on: EventFilter::Downbeats,
+                instrument: Instrument::library("Synth bass"),
+                gain: -4.0,
+                ..VoiceMap::default()
+            },
         ];
         scene.music.bpm = 110.0;
         scene

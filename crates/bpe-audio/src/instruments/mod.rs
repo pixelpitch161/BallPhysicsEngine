@@ -2,8 +2,8 @@
 //! WAV samples and SoundFonts. Everything renders single notes as mono waves at
 //! [`SAMPLE_RATE`](crate::SAMPLE_RATE), cached by note and strength.
 
-mod dsp;
 pub mod drums;
+mod dsp;
 mod samples;
 mod synth;
 
@@ -258,7 +258,16 @@ pub fn preview(instrument: &Instrument, base_dir: Option<&Path>) -> anyhow::Resu
     let drums = matches!(instrument, Instrument::Library { name } if Builtin::from_name(name) == Some(Builtin::DrumKit))
         || matches!(instrument, Instrument::SoundFont { bank, .. } if *bank >= 128);
     let phrase: &[(f32, u8, f32)] = if drums {
-        &[(0.0, 36, 1.0), (0.25, 42, 0.6), (0.5, 38, 0.9), (0.75, 42, 0.6), (1.0, 36, 1.0), (1.25, 36, 0.8), (1.5, 38, 0.9), (1.75, 49, 0.8)]
+        &[
+            (0.0, 36, 1.0),
+            (0.25, 42, 0.6),
+            (0.5, 38, 0.9),
+            (0.75, 42, 0.6),
+            (1.0, 36, 1.0),
+            (1.25, 36, 0.8),
+            (1.5, 38, 0.9),
+            (1.75, 49, 0.8),
+        ]
     } else {
         &[(0.0, 60, 0.8), (0.18, 64, 0.8), (0.36, 67, 0.8), (0.54, 72, 1.0)]
     };
@@ -336,9 +345,9 @@ mod tests {
                 d[lag] * lag as f32 / running.max(1e-12)
             })
             .collect();
-        let mut lag = (sr / 2000..max_lag).find(|&lag| normalized[lag] < 0.15).unwrap_or_else(|| {
-            (sr / 2000..max_lag).min_by(|&a, &b| normalized[a].total_cmp(&normalized[b])).unwrap()
-        });
+        let mut lag = (sr / 2000..max_lag)
+            .find(|&lag| normalized[lag] < 0.15)
+            .unwrap_or_else(|| (sr / 2000..max_lag).min_by(|&a, &b| normalized[a].total_cmp(&normalized[b])).unwrap());
         while lag + 1 < max_lag && normalized[lag + 1] < normalized[lag] {
             lag += 1;
         }
@@ -352,7 +361,8 @@ mod tests {
     fn notes_are_in_tune() {
         // Glass and bells have deliberately out-of-tune overtones, which confuse a pitch
         // detector, and drums have no pitch.
-        let pitched = Builtin::ALL.into_iter().filter(|b| ![Builtin::DrumKit, Builtin::Glass, Builtin::Bells].contains(b));
+        let pitched =
+            Builtin::ALL.into_iter().filter(|b| ![Builtin::DrumKit, Builtin::Glass, Builtin::Bells].contains(b));
         for builtin in pitched {
             for note in [45u8, 57, 69] {
                 let wave = builtin.render(note, 0.5);

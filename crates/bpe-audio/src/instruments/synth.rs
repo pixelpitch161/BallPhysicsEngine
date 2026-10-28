@@ -139,7 +139,12 @@ pub fn glass(note: u8, velocity: f32) -> Vec<f32> {
     let bright = 0.2 + 0.3 * velocity;
     add_partials(
         &mut out,
-        &[(f, 1.0, ring), (f * 2.32, bright, ring * 0.5), (f * 4.25, bright * 0.4, ring * 0.3), (f * 6.63, bright * 0.2, ring * 0.15)],
+        &[
+            (f, 1.0, ring),
+            (f * 2.32, bright, ring * 0.5),
+            (f * 4.25, bright * 0.4, ring * 0.3),
+            (f * 6.63, bright * 0.2, ring * 0.15),
+        ],
     );
     attack(&mut out, 0.03);
     out
@@ -239,8 +244,11 @@ pub fn pad(note: u8, velocity: f32) -> Vec<f32> {
     let f = midi_to_hz(note as f32);
     let (hold, release) = (1.4, 1.2);
     let mut out = buffer(hold + release);
-    let mut saws: Vec<(Saw, f32)> =
-        [-0.08f32, -0.03, 0.03, 0.08].iter().enumerate().map(|(i, d)| (Saw::new(i as f32 * 0.29), f * (1.0 + d * 0.12))).collect();
+    let mut saws: Vec<(Saw, f32)> = [-0.08f32, -0.03, 0.03, 0.08]
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (Saw::new(i as f32 * 0.29), f * (1.0 + d * 0.12)))
+        .collect();
     let mut svf = Svf::default();
     let cutoff = f * (2.0 + 1.5 * velocity);
     for (i, s) in out.iter_mut().enumerate() {

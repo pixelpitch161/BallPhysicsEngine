@@ -3,7 +3,9 @@
 //! a new note needs room, the oldest one fades out quickly.
 
 use crate::instruments::Voice;
-use crate::{ESCAPE_STRUM, MixOptions, PlayedNote, Progression, SAMPLE_RATE, STRUM_SPACING, Soundtrack, mix_notes, mix64};
+use crate::{
+    ESCAPE_STRUM, MixOptions, PlayedNote, Progression, SAMPLE_RATE, STRUM_SPACING, Soundtrack, mix_notes, mix64,
+};
 use bpe_music::midi::Step;
 use bpe_scene::{Advance, EventFilter, Instrument, PitchMode, Scene};
 use bpe_sim::{Event, EventKind};
@@ -394,11 +396,21 @@ mod tests {
         assert_eq!(played[len], played[0]);
 
         // Only wall hits move on; a peg hit repeats the last note.
-        let mixed = [hit(0.5, 0, EventKind::Wall), hit(0.6, 0, EventKind::Obstacle(0)), hit(0.7, 0, EventKind::Wall), hit(0.8, 0, EventKind::Wall)];
+        let mixed = [
+            hit(0.5, 0, EventKind::Wall),
+            hit(0.6, 0, EventKind::Obstacle(0)),
+            hit(0.7, 0, EventKind::Wall),
+            hit(0.8, 0, EventKind::Wall),
+        ];
         assert_eq!(keys(&melody_scene(Advance::WallHits), &mixed), vec![64, 64, 64, 65]);
 
         // Each ball plays the tune on its own.
-        let balls = [hit(0.5, 0, EventKind::Wall), hit(0.6, 1, EventKind::Wall), hit(0.7, 0, EventKind::Wall), hit(0.8, 0, EventKind::Wall)];
+        let balls = [
+            hit(0.5, 0, EventKind::Wall),
+            hit(0.6, 1, EventKind::Wall),
+            hit(0.7, 0, EventKind::Wall),
+            hit(0.8, 0, EventKind::Wall),
+        ];
         assert_eq!(keys(&melody_scene(Advance::PerBall), &balls), vec![64, 64, 64, 65]);
     }
 
@@ -406,8 +418,18 @@ mod tests {
     fn voices_split_events_by_kind() {
         let mut scene = Scene::escape_rings();
         scene.sound.voices = vec![
-            VoiceMap { on: EventFilter::Walls, instrument: Instrument::library("Drum kit"), pitch: PitchMode::Fixed(36), ..VoiceMap::default() },
-            VoiceMap { on: EventFilter::Escapes, instrument: Instrument::library("Drum kit"), pitch: PitchMode::Fixed(49), ..VoiceMap::default() },
+            VoiceMap {
+                on: EventFilter::Walls,
+                instrument: Instrument::library("Drum kit"),
+                pitch: PitchMode::Fixed(36),
+                ..VoiceMap::default()
+            },
+            VoiceMap {
+                on: EventFilter::Escapes,
+                instrument: Instrument::library("Drum kit"),
+                pitch: PitchMode::Fixed(49),
+                ..VoiceMap::default()
+            },
             VoiceMap { enabled: false, ..VoiceMap::default() },
         ];
         let hits = bpe_sim::collect_wall_hits(&scene);
