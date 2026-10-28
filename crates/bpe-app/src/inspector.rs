@@ -246,7 +246,9 @@ fn log_units(suffix: &'static str) -> impl FnOnce(Slider<'_>) -> Slider<'_> {
 
 fn color_row(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Color) {
     label(ui, text, help);
-    let response = hint(color_button(ui, value), help);
+    // The right-click menu goes on a wrapper: on the button itself it would share the colour
+    // picker's popup and close it as soon as it opens.
+    let response = ui.scope(|ui| hint(color_button(ui, value), help)).response;
     resettable(response, value, default);
     ui.end_row();
 }
@@ -266,7 +268,9 @@ fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
         let mut remove = None;
         for (i, c) in colors.iter_mut().enumerate() {
             ui.push_id(i, |ui| {
-                let response = color_button(ui, c).on_hover_text("Click to change. Right-click to remove.");
+                let response = ui
+                    .scope(|ui| color_button(ui, c).on_hover_text("Click to change. Right-click to remove."))
+                    .response;
                 response.context_menu(|ui| {
                     if ui.button("Remove colour").clicked() {
                         remove = Some(i);
@@ -369,18 +373,12 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(title).strong().color(theme::TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button("Options", |ui| {
-                            if ui.button("Duplicate").clicked() {
-                                duplicate = Some(index);
-                                ui.close();
-                            }
-                            if ui.button("Remove").clicked() {
-                                remove = Some(index);
-                                ui.close();
-                            }
-                        })
-                        .response
-                        .on_hover_text("Duplicate or remove");
+                        if ui.small_button("Remove").on_hover_text("Delete these balls").clicked() {
+                            remove = Some(index);
+                        }
+                        if ui.small_button("Duplicate").on_hover_text("Add a copy of these balls").clicked() {
+                            duplicate = Some(index);
+                        }
                     });
                 });
                 ui.add_space(4.0);
@@ -450,7 +448,9 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
                     }
                 }
             });
-            if card.response.interact(Sense::click()).clicked() {
+            // Watch for a click anywhere on the card without claiming it, so the sliders,
+            // colour buttons and menus inside still get their clicks.
+            if card.response.contains_pointer() && ui.input(|i| i.pointer.primary_clicked()) {
                 *selected = Some(index);
             }
         });
