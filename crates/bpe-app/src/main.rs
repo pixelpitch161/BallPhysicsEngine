@@ -5,6 +5,8 @@
 
 mod app;
 mod audio_out;
+mod batch;
+mod command_palette;
 mod explorer;
 mod export;
 mod gallery;
@@ -12,11 +14,15 @@ mod inspector;
 #[cfg(test)]
 mod inspector_tests;
 mod keys;
+mod node_editor;
 mod preview;
+mod rules_workspace;
 mod setting_menu;
 mod settings;
+mod shader_workspace;
 mod theme;
 mod timeline;
+mod workspace;
 
 fn main() -> eframe::Result {
     let scene_path = std::env::args().nth(1).map(std::path::PathBuf::from);

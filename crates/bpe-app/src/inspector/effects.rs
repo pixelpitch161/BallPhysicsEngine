@@ -21,8 +21,8 @@ pub struct EffectsPanel {
     /// The folder of the open scene, whose `effects` folder is searched first.
     scene_dir: Option<Option<PathBuf>>,
     note: Option<(String, bool)>,
-    /// The node effect open in the Shaders workspace.
-    pub workspace: Option<crate::shader_workspace::ShaderWorkspace>,
+    /// A node effect to open in the Shaders workspace, for the app to pick up.
+    pub open_graph: Option<String>,
 }
 
 impl Default for EffectsPanel {
@@ -33,7 +33,7 @@ impl Default for EffectsPanel {
             last_refresh: Instant::now(),
             scene_dir: None,
             note: None,
-            workspace: None,
+            open_graph: None,
         }
     }
 }
@@ -216,7 +216,7 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
                 for effect in scene.effects.iter_mut().filter(|e| e.shader == shader) {
                     effect.shader = fx::graph::effect_id(&name);
                 }
-                panel.workspace = Some(crate::shader_workspace::ShaderWorkspace::new(name));
+                panel.open_graph = Some(name);
             }
         }
         Some((i, CardAction::SaveCode)) => {
@@ -591,40 +591,12 @@ fn graph_problems(ui: &mut Ui, graph: &fx::GraphInfo, broken: bool) {
     }
 }
 
-/// A graph name not used by the scene's node effects or the ones that come with the program.
-fn free_graph_name(panel: &EffectsPanel, scene: &Scene, stem: &str) -> String {
-    (1..)
-        .map(|n| if n == 1 { stem.to_string() } else { format!("{stem} {n}") })
-        .find(|name| {
-            !scene.shader_graphs.iter().any(|g| g.name == *name)
-                && panel.library.get(&fx::graph::effect_id(name)).is_none()
-        })
-        .unwrap()
-}
-
 /// Adds a node effect to the scene, from `template` or empty, and opens it in the workspace.
 fn new_node_effect(panel: &mut EffectsPanel, scene: &mut Scene, template: Option<fx::graph::Graph>) {
-    let mut graph = template.unwrap_or_else(blank_graph);
+    let graph = template.unwrap_or_else(crate::shader_workspace::blank_graph);
     let stem = if graph.name.is_empty() { "My effect".to_string() } else { format!("My {}", graph.name.to_lowercase()) };
-    graph.name = free_graph_name(panel, scene, &stem);
-    let name = graph.name.clone();
-    scene.shader_graphs.push(graph);
-    panel.library.sync_graphs(&scene.shader_graphs);
-    scene.effects.push(Effect::new(fx::graph::effect_id(&name)));
-    panel.workspace = Some(crate::shader_workspace::ShaderWorkspace::new(name));
-}
-
-/// The picture wired straight to the output: an effect that changes nothing yet.
-pub(crate) fn blank_graph() -> fx::graph::Graph {
-    let mut b = fx::graph::Builder::new("");
-    let picture = b.add("picture");
-    let out = b.add("output");
-    b.wire(picture, "out", out, "color");
-    let mut graph = b.finish();
-    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == out) {
-        node.pos = [260.0, 0.0];
-    }
-    graph
+    let name = crate::shader_workspace::add_graph(scene, &panel.library, graph, &stem);
+    panel.open_graph = Some(name);
 }
 
 /// The graph to open for `shader`: the scene's own node effect, or a copy of a node effect that
@@ -642,7 +614,7 @@ fn edit_as_nodes(panel: &mut EffectsPanel, scene: &mut Scene, shader: &str) -> O
         None => fx::templates::rebuild(shader)?,
     };
     let stem = if info.is_graph() { format!("{} (my copy)", graph.name) } else { graph.name.clone() };
-    graph.name = free_graph_name(panel, scene, &stem);
+    graph.name = crate::shader_workspace::free_name(scene, &panel.library, &stem);
     let name = graph.name.clone();
     scene.shader_graphs.push(graph);
     panel.library.sync_graphs(&scene.shader_graphs);

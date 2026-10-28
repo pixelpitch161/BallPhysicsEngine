@@ -22,18 +22,18 @@ pub use animation::{
     Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
     apply_modulators, remap_effect_modulators,
 };
-pub use bodies::Bodies;
+pub use bodies::*;
 pub use bpe_graph::Graph;
-pub use captions::Caption;
+pub use captions::*;
 pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
-pub use gpu::GpuLayers;
+pub use gpu::*;
 pub use music::*;
-pub use particles::Emitter;
+pub use particles::*;
 pub use random::{Dice, Group, palette};
-pub use shapes::Shape;
-pub use view::View;
+pub use shapes::*;
+pub use view::*;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

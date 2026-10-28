@@ -107,11 +107,12 @@ impl bpe_graph::Catalog for Catalog {
     /// Wires may be type-checked loosely: the compiler converts numbers to positions and colours
     /// and colours to brightness, works out what flows through "any value" pins, and reports
     /// anything that still doesn't fit on the block.
-    #[cfg(any())] // TEMPORARY until bpe-graph's Catalog::accepts lands.
     fn accepts(&self, to: bpe_graph::PinType, from: bpe_graph::PinType) -> bool {
         use bpe_graph::PinType::*;
         let value = |t| matches!(t, Number | Vector | Color | Field | Bool);
-        value(to) && value(from) && !matches!((to, from), (Vector, Color) | (Color, Vector))
+        // Numbers spread to positions and colours, and colours give their brightness; a
+        // position has no sensible number or colour. "Any value" pins take anything.
+        value(to) && value(from) && !matches!((to, from), (Number | Color | Bool, Vector) | (Vector, Color))
     }
 }
 
