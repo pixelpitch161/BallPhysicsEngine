@@ -5,19 +5,30 @@ use bpe_render::{FrameData, Renderer};
 use bpe_scene::{Preset, Scene};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, RichText, Sense};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Thumbnail size in screen points.
 const THUMB: egui::Vec2 = egui::vec2(135.0, 240.0);
 /// Each thumbnail loops over the first this many seconds of its scene.
 const LOOP_SECONDS: f64 = 10.0;
 /// Most time one preview spends catching its simulation up in an editor frame.
-const THUMB_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
+const THUMB_BUDGET: Duration = Duration::from_millis(3);
+/// Most time all the previews together spend in an editor frame. Previews past it wait for the
+/// next frame, starting where this one stopped.
+const FRAME_BUDGET: Duration = Duration::from_millis(8);
+/// Previews move at about 30 frames a second, however fast the screen refreshes.
+const FRAME_EVERY: Duration = Duration::from_millis(33);
 
 pub struct Gallery {
     pub open: bool,
     presets: Vec<Preset>,
-    thumbs: Vec<Thumb>,
+    /// A preview for each preset, made the first time its card scrolls into view.
+    thumbs: Vec<Option<Thumb>>,
+    /// Which cards were on screen last frame. Only those are simulated and drawn.
+    visible: Vec<bool>,
+    /// The card to start from next frame, so a long list shares the budget fairly.
+    next: usize,
+    last_drawn: Option<Instant>,
     opened: Instant,
 }
 
@@ -30,12 +41,23 @@ struct Thumb {
 
 impl Gallery {
     pub fn new(open: bool) -> Self {
-        Self { open, presets: Scene::presets(), thumbs: Vec::new(), opened: Instant::now() }
+        let presets = Scene::presets();
+        let count = presets.len();
+        Self {
+            open,
+            presets,
+            thumbs: (0..count).map(|_| None).collect(),
+            visible: vec![false; count],
+            next: 0,
+            last_drawn: None,
+            opened: Instant::now(),
+        }
     }
 
     pub fn open(&mut self) {
         self.open = true;
         self.opened = Instant::now();
+        self.last_drawn = None;
     }
 
     /// Shows the gallery if it is open. Returns the preset the user picked.
@@ -58,7 +80,10 @@ impl Gallery {
             egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
                 egui::Grid::new("presets").spacing([14.0, 14.0]).show(ui, |ui| {
                     for (i, preset) in self.presets.iter().enumerate() {
-                        if card(ui, preset, self.thumbs.get(i).map(|t| t.texture)).clicked() {
+                        let texture = self.thumbs[i].as_ref().map(|t| t.texture);
+                        let response = card(ui, preset, texture);
+                        self.visible[i] = ui.is_rect_visible(response.rect);
+                        if response.clicked() {
                             picked = Some(preset.scene.clone());
                         }
                         if i % 3 == 2 {
@@ -77,16 +102,32 @@ impl Gallery {
         if modal.should_close() || picked.is_some() {
             self.open = false;
         }
-        ctx.request_repaint();
+        if self.open {
+            let wait = self.last_drawn.map_or(Duration::ZERO, |t| FRAME_EVERY.saturating_sub(t.elapsed()));
+            ctx.request_repaint_after(wait);
+        }
         picked
     }
 
     fn render_thumbnails(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let Some(render_state) = frame.wgpu_render_state() else { return };
+        if self.last_drawn.is_some_and(|t| t.elapsed() < FRAME_EVERY) {
+            return;
+        }
+        self.last_drawn = Some(Instant::now());
         let device = &render_state.device;
         let pixels = ctx.pixels_per_point();
-        if self.thumbs.is_empty() {
-            for preset in &self.presets {
+        let started = Instant::now();
+        let count = self.presets.len();
+        let time = self.opened.elapsed().as_secs_f64();
+        let mut stopped_at = None;
+        for i in (0..count).map(|k| (self.next + k) % count).filter(|&i| self.visible[i]) {
+            if started.elapsed() >= FRAME_BUDGET {
+                stopped_at = Some(i);
+                break;
+            }
+            let preset = &self.presets[i];
+            let thumb = self.thumbs[i].get_or_insert_with(|| {
                 let scale = THUMB.x * pixels / preset.scene.video.width as f32;
                 let (width, height) = bpe_export::output_size(&preset.scene, scale);
                 let mut renderer = Renderer::new(device, width, height);
@@ -101,25 +142,22 @@ impl Gallery {
                     renderer.output_view(),
                     bpe_render::wgpu::FilterMode::Linear,
                 );
-                self.thumbs.push(Thumb {
+                Thumb {
                     renderer,
                     texture,
                     playback: Playback::with_inputs(&preset.scene, &bpe_audio::sim_inputs(&preset.scene, None)),
                     frame: FrameData::default(),
-                });
-            }
-        }
-        let time = self.opened.elapsed().as_secs_f64();
-        for (preset, thumb) in self.presets.iter().zip(&mut self.thumbs) {
+                }
+            });
             let time = time % LOOP_SECONDS.min(preset.scene.video.duration as f64);
             // A heavy variation catches up over a few frames rather than holding up the others.
-            if !thumb.playback.seek_within(time, Some(THUMB_BUDGET)) {
-                ctx.request_repaint();
-            }
+            let budget = THUMB_BUDGET.min(FRAME_BUDGET.saturating_sub(started.elapsed()));
+            thumb.playback.seek_within(time, Some(budget));
             let time = thumb.playback.simulation().time();
             thumb.frame.fill(&preset.scene, &thumb.playback, thumb.renderer.pixel_size(&preset.scene));
             thumb.renderer.render(device, &render_state.queue, &preset.scene, time, &thumb.frame);
         }
+        self.next = stopped_at.unwrap_or(0);
     }
 }
 

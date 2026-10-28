@@ -6,6 +6,7 @@ use bpe_scene::Scene;
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 pub const MAX_HITS: usize = 16;
 /// Size of one block preview in the thumbnail atlas: a 9:16 picture.
@@ -67,6 +68,7 @@ struct Thumbnails {
     request: Option<ThumbnailRequest>,
     atlas: Option<(wgpu::Texture, wgpu::TextureView)>,
     pipeline: Option<(Arc<EffectInfo>, Option<wgpu::RenderPipeline>)>,
+    building: Option<Building>,
     uniforms: Vec<wgpu::Buffer>,
     /// Whether the atlas holds this request's pictures.
     drawn: bool,
@@ -76,6 +78,90 @@ struct Pipeline {
     info: Arc<EffectInfo>,
     /// `None` when the GPU refused the shader even though naga accepted it.
     pipeline: Option<wgpu::RenderPipeline>,
+}
+
+/// A new version of a pipeline being built on another thread, see
+/// [`EffectChain::set_background_builds`].
+struct Building {
+    info: Arc<EffectInfo>,
+    done: Receiver<Result<wgpu::RenderPipeline, String>>,
+}
+
+impl Building {
+    /// Starts building `info`'s pipeline with fragment entry point `entry` on another thread.
+    fn start(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        info: &Arc<EffectInfo>,
+        entry: &'static str,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let (sender, done) = std::sync::mpsc::channel();
+        let (device, layout, job) = (device.clone(), layout.clone(), info.clone());
+        std::thread::spawn(move || {
+            if let Ok(code) = &job.compiled {
+                _ = sender.send(build_pipeline(&device, &layout, &job.id, code, entry, format));
+            }
+        });
+        Self { info: info.clone(), done }
+    }
+
+    /// The finished pipeline, `Some(Err)` if the GPU refused it or the build died, or `None`
+    /// while it is still building.
+    fn poll(&self) -> Option<Result<wgpu::RenderPipeline, String>> {
+        match self.done.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("the shader build stopped unexpectedly".into())),
+        }
+    }
+}
+
+/// Whether a pipeline built for `a` also draws `b`: the same shader code. Moving a block or a
+/// note around a node effect makes a new effect with the same code.
+fn same_code(a: &Arc<EffectInfo>, b: &Arc<EffectInfo>) -> bool {
+    Arc::ptr_eq(a, b) || (a.id == b.id && a.compiled == b.compiled)
+}
+
+/// Builds the render pipeline for one effect shader, or says why the GPU refused it.
+fn build_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    label: &str,
+    code: &str,
+    entry: &str,
+    format: wgpu::TextureFormat,
+) -> Result<wgpu::RenderPipeline, String> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(code.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(entry),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    match pollster::block_on(scope.pop()) {
+        None => Ok(pipeline),
+        Some(error) => Err(error.to_string()),
+    }
 }
 
 /// Per-position state: the uniform buffer and, for feedback effects, last frame's output.
@@ -93,6 +179,10 @@ pub(crate) struct EffectChain {
     sampler: wgpu::Sampler,
     black: wgpu::TextureView,
     pipelines: HashMap<String, Pipeline>,
+    /// New versions of pipelines being built on other threads, by effect id.
+    building: HashMap<String, Building>,
+    /// Whether changed effects are rebuilt on other threads, see [`EffectChain::set_background_builds`].
+    background: bool,
     slots: Vec<Slot>,
     scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
     last_time: Option<f64>,
@@ -154,6 +244,8 @@ impl EffectChain {
             sampler,
             black,
             pipelines: HashMap::new(),
+            building: HashMap::new(),
+            background: false,
             slots: Vec::new(),
             scratch: None,
             last_time: None,
@@ -192,7 +284,44 @@ impl EffectChain {
     pub fn set_library(&mut self, library: EffectLibrary) {
         self.library = library;
         self.pipelines.clear();
+        self.building.clear();
         self.gpu_errors.clear();
+    }
+
+    /// With `true`, an effect that changes keeps drawing its last version while the new one is
+    /// built on another thread, so editing a node effect doesn't stall the editor while the GPU
+    /// driver compiles it. A new effect is still built straight away. Exports leave this off so
+    /// every frame uses the effects exactly as they are.
+    pub fn set_background_builds(&mut self, on: bool) {
+        self.background = on;
+    }
+
+    /// Whether a changed effect or block preview is still being built on another thread, so the
+    /// picture will change once it is ready.
+    pub fn building(&self) -> bool {
+        !self.building.is_empty() || self.thumbnails.building.is_some()
+    }
+
+    /// Puts pipelines finished on other threads to use.
+    fn finish_builds(&mut self) {
+        let finished: Vec<_> = self.building.iter().filter_map(|(id, b)| Some((id.clone(), b.poll()?))).collect();
+        for (id, result) in finished {
+            let building = self.building.remove(&id).unwrap();
+            self.install(building.info, result);
+        }
+        let thumbs = &mut self.thumbnails;
+        if let Some(result) = thumbs.building.as_ref().and_then(|b| b.poll()) {
+            let info = thumbs.building.take().unwrap().info;
+            thumbs.pipeline = Some((info, result.ok()));
+        }
+    }
+
+    fn install(&mut self, info: Arc<EffectInfo>, result: Result<wgpu::RenderPipeline, String>) {
+        self.gpu_errors.retain(|(id, _)| *id != info.id);
+        if let Err(error) = &result {
+            self.gpu_errors.push((info.id.clone(), error.clone()));
+        }
+        self.pipelines.insert(info.id.clone(), Pipeline { info, pipeline: result.ok() });
     }
 
     /// Effects that passed the shader check but that the GPU still refused, as (id, message).
@@ -228,11 +357,19 @@ impl EffectChain {
                 info.compiled.is_ok().then_some((index, effect, info))
             })
             .collect();
+        self.finish_builds();
         for (_, _, info) in &active {
             self.prepare(device, info);
         }
-        let active: Vec<_> =
-            active.into_iter().filter(|(_, _, info)| self.pipelines[&info.id].pipeline.is_some()).collect();
+        // Each effect draws with the version its pipeline was built from, which can be the one
+        // before while a changed effect builds on another thread.
+        let active: Vec<_> = active
+            .into_iter()
+            .filter_map(|(index, effect, info)| {
+                let built = self.pipelines.get(&info.id)?;
+                built.pipeline.is_some().then(|| (index, effect, built.info.clone()))
+            })
+            .collect();
         self.thumbnails.drawn = false;
         let thumbs_here = self.thumbnails.request.as_ref().map(|r| r.effect);
         let thumbs_in_chain = active.iter().any(|(index, _, _)| Some(*index) == thumbs_here);
@@ -380,44 +517,28 @@ impl EffectChain {
     ) {
         let Some(request) = self.thumbnails.request.clone() else { return };
         let Ok(code) = &request.info.compiled else { return };
-        let current = self.thumbnails.pipeline.as_ref().is_some_and(|(info, _)| Arc::ptr_eq(info, &request.info));
-        if !current {
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("block previews"),
-                source: wgpu::ShaderSource::Wgsl(code.as_str().into()),
-            });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("block previews"),
-                layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs_thumb"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: THUMB_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let pipeline = pollster::block_on(scope.pop()).is_none().then_some(pipeline);
-            self.thumbnails.pipeline = Some((request.info.clone(), pipeline));
+        let current = self.thumbnails.pipeline.as_ref().is_some_and(|(info, _)| same_code(info, &request.info));
+        if current {
+            self.thumbnails.pipeline.as_mut().unwrap().0 = request.info.clone();
+        } else if self.background && self.thumbnails.pipeline.is_some() {
+            if self.thumbnails.building.is_none() {
+                let building = Building::start(device, &self.pipeline_layout, &request.info, "fs_thumb", THUMB_FORMAT);
+                self.thumbnails.building = Some(building);
+            }
+        } else {
+            let result =
+                build_pipeline(device, &self.pipeline_layout, "block previews", code, "fs_thumb", THUMB_FORMAT);
+            self.thumbnails.pipeline = Some((request.info.clone(), result.ok()));
         }
-        if !matches!(self.thumbnails.pipeline, Some((_, Some(_)))) {
+        let Some((built, Some(_))) = &self.thumbnails.pipeline else { return };
+        // While a new version builds, the old one stands in only if it has the same blocks in
+        // the same order; otherwise the previews would land on the wrong blocks.
+        let blocks =
+            |info: &EffectInfo| info.graph.as_ref().and_then(|g| g.generated.as_ref()).map(|g| g.thumbnails.clone());
+        if blocks(built) != blocks(&request.info) {
             return;
         }
+        let built = built.clone();
         self.thumbnail_atlas(device);
         let thumbs = &mut self.thumbnails;
         while thumbs.uniforms.len() < request.views.len() {
@@ -428,7 +549,7 @@ impl EffectChain {
                 mapped_at_creation: false,
             }));
         }
-        let params = scene.effects.get(request.effect).map(|e| request.info.values(&e.params)).unwrap_or_default();
+        let params = scene.effects.get(request.effect).map(|e| built.values(&e.params)).unwrap_or_default();
         let groups: Vec<_> = request
             .views
             .iter()
@@ -469,49 +590,27 @@ impl EffectChain {
 
     /// Builds the pipeline for an effect, or rebuilds it when the library has a newer version.
     fn prepare(&mut self, device: &wgpu::Device, info: &Arc<EffectInfo>) {
-        let current = self.pipelines.get(&info.id).is_some_and(|p| Arc::ptr_eq(&p.info, info));
-        if !current {
-            self.gpu_errors.retain(|(id, _)| *id != info.id);
-            let Ok(source) = &info.compiled else { return };
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&info.id),
-                source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
-            });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&info.id),
-                layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: crate::HDR_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let pipeline = match pollster::block_on(scope.pop()) {
-                None => Some(pipeline),
-                Some(error) => {
-                    self.gpu_errors.push((info.id.clone(), error.to_string()));
-                    None
-                }
-            };
-            self.pipelines.insert(info.id.clone(), Pipeline { info: info.clone(), pipeline });
+        if let Some(built) = self.pipelines.get_mut(&info.id)
+            && same_code(&built.info, info)
+        {
+            built.info = info.clone();
+            return;
         }
+        if info.compiled.is_err() {
+            return;
+        }
+        if self.background && self.pipelines.contains_key(&info.id) {
+            // Keep drawing the old version until the new one is ready. Once a build finishes
+            // and the effect has changed again since, the next frame starts another.
+            if !self.building.contains_key(&info.id) {
+                let building = Building::start(device, &self.pipeline_layout, info, "fs_main", crate::HDR_FORMAT);
+                self.building.insert(info.id.clone(), building);
+            }
+            return;
+        }
+        let Ok(source) = &info.compiled else { return };
+        let result = build_pipeline(device, &self.pipeline_layout, &info.id, source, "fs_main", crate::HDR_FORMAT);
+        self.install(info.clone(), result);
     }
 }
 

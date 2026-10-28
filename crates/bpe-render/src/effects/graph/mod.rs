@@ -158,6 +158,18 @@ fn catalog_label(name: &str) -> String {
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
+/// Whether two graphs make the same shader: the same blocks, settings and wires, wherever the
+/// blocks and notes sit on the canvas. Dragging blocks around then rebuilds nothing.
+pub fn same_shader(a: &Graph, b: &Graph) -> bool {
+    a.name == b.name
+        && a.enabled == b.enabled
+        && a.links == b.links
+        && a.nodes.len() == b.nodes.len()
+        && a.nodes.iter().zip(&b.nodes).all(|(x, y)| {
+            x.id == y.id && x.kind == y.kind && x.enabled == y.enabled && x.params == y.params && x.exposed == y.exposed
+        })
+}
+
 /// The effect id a scene uses for the graph called `name`.
 pub fn effect_id(name: &str) -> String {
     format!("{PREFIX}{name}")

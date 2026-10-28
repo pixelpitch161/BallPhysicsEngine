@@ -358,3 +358,106 @@ fn modulators_pulse_settings_in_the_picture() {
     let brighter = loud.iter().map(|&v| v as u64).sum::<u64>() > quiet.iter().map(|&v| v as u64).sum::<u64>();
     assert!(brighter, "loud bass should raise the exposure");
 }
+
+/// Prints what one editor frame costs while a node effect is being edited in the Shaders
+/// workspace: rebuilding the effect, its block previews and their GPU pipelines. Times are until
+/// the frame is handed to the GPU, like the editor's own frame. `BPE_BENCH_FOREGROUND=1` builds
+/// changed shaders straight away, as exports do.
+/// Run with `cargo test -p bpe-render --release graph_edit_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn graph_edit_cost() {
+    use crate::effects::{EffectInfo, EffectLibrary, ThumbnailRequest};
+    use std::sync::Arc;
+    let Some((device, queue)) = gpu() else { return };
+    for graph in templates::graphs().into_iter().chain([big_graph()]) {
+        let library = EffectLibrary::new();
+        let mut scene = Scene { effects: vec![Effect::new(super::effect_id(&graph.name))], ..Scene::default() };
+        scene.shader_graphs = vec![graph.clone()];
+        let background = std::env::var("BPE_BENCH_FOREGROUND").is_err();
+        let mut renderer = Renderer::new(&device, 270, 480);
+        renderer.set_effect_library(library.clone());
+        renderer.set_effect_background_builds(background);
+        let mut playback = Playback::new(&scene);
+        playback.seek(2.0);
+        let frame = FrameData::build(&scene, &playback, renderer.pixel_size(&scene));
+        let mut previews = Renderer::new(&device, crate::effects::THUMB_SIZE.0, crate::effects::THUMB_SIZE.1);
+        previews.set_effect_library(library.clone());
+        previews.set_effect_background_builds(background);
+        // Like the Shaders workspace: block previews are rebuilt when the graph changes.
+        let mut cached: Option<(super::Graph, Arc<EffectInfo>)> = None;
+        let mut frame_cost = |scene: &Scene| {
+            let start = std::time::Instant::now();
+            library.sync_graphs(&scene.shader_graphs);
+            let graph = &scene.shader_graphs[0];
+            if cached.as_ref().is_none_or(|(g, _)| g != graph) {
+                cached = Some((graph.clone(), Arc::new(EffectInfo::graph_thumbnails(graph))));
+            }
+            let info = cached.as_ref().unwrap().1.clone();
+            let views = (1..=8).collect();
+            previews.set_effect_thumbnails(Some(ThumbnailRequest { effect: 0, info, views }));
+            let cpu = start.elapsed();
+            renderer.render(&device, &queue, scene, 2.0, &frame);
+            previews.render(&device, &queue, scene, 2.0, &frame);
+            let handed_over = start.elapsed();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            (cpu.as_secs_f64() * 1000.0, handed_over.as_secs_f64() * 1000.0)
+        };
+        frame_cost(&scene);
+        let (_, still) = frame_cost(&scene);
+        scene.shader_graphs[0].nodes[0].pos[0] += 10.0;
+        let (moved_cpu, moved) = frame_cost(&scene);
+        scene.shader_graphs[0] = super::tests::with_setting_changed(&scene.shader_graphs[0]);
+        let (slid_cpu, slid) = frame_cost(&scene);
+        println!(
+            "{:<22} unchanged {still:6.1} ms | block moved {moved:6.1} ms ({moved_cpu:.1} cpu) | slider moved {slid:6.1} ms ({slid_cpu:.1} cpu)",
+            graph.name
+        );
+    }
+}
+
+/// While a changed node effect builds on another thread, the preview keeps drawing the old
+/// version; once it is built, the picture is exactly what a fresh renderer draws.
+#[test]
+fn changed_effects_build_in_the_background() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut b = super::Builder::new("Mine");
+    let hue = b.add("hue_shift");
+    let out = b.add("output");
+    b.wire(hue, "out", out, "color");
+    let graph = b.finish();
+    let mut scene = Scene { effects: vec![Effect::new(super::effect_id("Mine"))], ..Scene::default() };
+    scene.shader_graphs = vec![graph];
+    let mut playback = Playback::new(&scene);
+    playback.seek(2.0);
+
+    let draw = |renderer: &mut Renderer, scene: &Scene| {
+        let frame = FrameData::build(scene, &playback, renderer.pixel_size(scene));
+        renderer.reset_effects();
+        renderer.render(&device, &queue, scene, 2.0, &frame);
+        renderer.read_output(&device, &queue).unwrap()
+    };
+    let mut live = Renderer::new(&device, 108, 192);
+    live.set_effect_background_builds(true);
+    let old = draw(&mut live, &scene);
+    assert!(!live.effects_building(), "a new effect is built straight away");
+
+    scene.shader_graphs[0].nodes[0].params.insert("turns".into(), bpe_graph::Param::Number(0.6));
+    let mut fresh = Renderer::new(&device, 108, 192);
+    let new = draw(&mut fresh, &scene);
+    assert_ne!(old, new, "the setting should change the picture");
+
+    let mut frames = 0;
+    let mut building = true;
+    while building {
+        let picture = draw(&mut live, &scene);
+        building = live.effects_building();
+        if building {
+            assert_eq!(picture, old, "the old version stands in while the new one builds");
+        }
+        frames += 1;
+        assert!(frames < 2000, "the build never finished");
+    }
+    assert_eq!(draw(&mut live, &scene), new);
+    assert!(live.effect_gpu_errors().is_empty(), "{:?}", live.effect_gpu_errors());
+}

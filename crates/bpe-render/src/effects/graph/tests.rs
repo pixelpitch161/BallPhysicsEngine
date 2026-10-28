@@ -419,3 +419,49 @@ fn template_values_are_within_their_slider_ranges() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// `graph` with one block's number setting moved, picked so that the shader code changes (a
+/// setting shown as a slider on the effect card doesn't change the code).
+pub(super) fn with_setting_changed(graph: &Graph) -> Graph {
+    use bpe_graph::Catalog as _;
+    let code = info(graph).compiled;
+    for (i, node) in graph.nodes.iter().enumerate() {
+        let Some(spec) = Catalog::get().spec(&node.kind) else { continue };
+        for param in spec.params.iter().filter(|p| matches!(p.default, Param::Number(_))) {
+            let (lo, hi) = param.range;
+            let mut changed = graph.clone();
+            changed.nodes[i].params.insert(param.name.clone(), Param::Number(lo + (hi - lo) * 0.83));
+            if info(&changed).compiled != code {
+                return changed;
+            }
+        }
+    }
+    panic!("{}: no setting changes the code", graph.name)
+}
+
+#[test]
+fn moving_blocks_and_notes_rebuilds_nothing() {
+    let library = EffectLibrary::new();
+    let mut graph = templates::graphs().remove(0);
+    graph.name = "Mine".into();
+    library.sync_graphs(std::slice::from_ref(&graph));
+    let before = library.get("graph:Mine").unwrap();
+    let revision = library.revision();
+
+    graph.nodes[0].pos[0] += 120.0;
+    graph.nodes[1].pos[1] -= 40.0;
+    graph.notes.push(Note { pos: [10.0, 10.0], size: [0.0, 0.0], text: "hi".into(), color: [1.0; 4] });
+    assert!(same_shader(&graph, &before.graph.as_ref().unwrap().graph));
+    assert!(!library.sync_graphs(std::slice::from_ref(&graph)));
+    assert_eq!(library.revision(), revision);
+    assert!(std::sync::Arc::ptr_eq(&before, &library.get("graph:Mine").unwrap()));
+    assert!(std::sync::Arc::ptr_eq(&before, &library.get_in("graph:Mine", std::slice::from_ref(&graph)).unwrap()));
+    // Moving blocks really doesn't change the code.
+    assert_eq!(info(&graph).compiled, before.compiled);
+
+    // A setting does change the shader.
+    let graph = with_setting_changed(&graph);
+    assert!(!same_shader(&graph, &before.graph.as_ref().unwrap().graph));
+    assert!(library.sync_graphs(std::slice::from_ref(&graph)));
+    assert_ne!(library.get("graph:Mine").unwrap().compiled, before.compiled);
+}

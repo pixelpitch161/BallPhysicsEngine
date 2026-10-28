@@ -398,6 +398,19 @@ impl Renderer {
         self.effects.set_library(library);
     }
 
+    /// With `true`, a changed effect keeps drawing its last version while the new one builds on
+    /// another thread, so the editor doesn't stall while the GPU driver compiles it. For the
+    /// editor's previews only: exports need every frame drawn with the effects as they are.
+    pub fn set_effect_background_builds(&mut self, on: bool) {
+        self.effects.set_background_builds(on);
+    }
+
+    /// Whether a changed effect is still building on another thread, so drawing the same frame
+    /// again will look different once it is ready.
+    pub fn effects_building(&self) -> bool {
+        self.effects.building()
+    }
+
     /// Effects the GPU refused even though they passed the shader check, as (id, message).
     pub fn effect_gpu_errors(&self) -> &[(String, String)] {
         self.effects.gpu_errors()

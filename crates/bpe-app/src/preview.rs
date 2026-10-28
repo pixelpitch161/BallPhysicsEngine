@@ -186,6 +186,8 @@ impl Preview {
         let preview = slot.get_or_insert_with(|| {
             let mut renderer = Renderer::new(device, width, height);
             renderer.set_effect_library(effects.clone());
+            // Editing an effect shows its last version until the new one is built.
+            renderer.set_effect_background_builds(true);
             let texture = render_state.renderer.write().register_native_texture(
                 device,
                 renderer.output_view(),
@@ -241,7 +243,12 @@ impl Preview {
             outcome.catching_up |= preview.frame_data.gpu.behind();
             stats.balls = preview.frame_data.balls.len();
             stats.shapes = preview.frame_data.shapes.len() + preview.frame_data.trails.len() / 6;
-            preview.drawn = (!preview.frame_data.gpu.behind()).then_some(drawn);
+            // A changed effect still building elsewhere: draw again once it's ready.
+            let building = preview.renderer.effects_building();
+            if building {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            preview.drawn = (!preview.frame_data.gpu.behind() && !building).then_some(drawn);
         } else {
             (stats.build, stats.draw) = (0.0, 0.0);
         }
