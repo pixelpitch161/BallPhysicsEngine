@@ -770,6 +770,8 @@ impl Playback {
             self.sim.step(&mut self.events);
             if let Some(space) = &mut self.space {
                 space.step(&mut self.events, from);
+                // 3D (WS4): rules see both sides' events and act on the 3D balls.
+                self.sim.run_rules(from, &mut self.events, &mut space.sim);
             }
             if self.sim.step.is_multiple_of(self.checkpoint_every)
                 && self.checkpoints.last().is_some_and(|(sim, _)| sim.step < self.sim.step)
@@ -825,6 +827,7 @@ pub fn collect_events_until(scene: &Scene, inputs: &SimInputs, until: f64) -> Ve
             let from = events.len();
             keeper.step(&mut events);
             space.step(&mut events, from);
+            keeper.run_rules(from, &mut events, &mut space.sim);
         }
         return events;
     }
