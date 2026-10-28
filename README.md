@@ -5,6 +5,19 @@ Written in Rust with wgpu. The output is a vertical 1080x1920 mp4 with sound. De
 
 The default scene recreates a reference reel: a 28 x 28 grid of glowing balls falls into a ring, and every wall hit plays a note from a chord progression.
 
+## Scene types
+
+Mix and match these in the editor, or start from a preset of each:
+
+| Scene type | How to make it | Preset |
+| --- | --- | --- |
+| Escape rings | Arena tab, shape **Escape rings**. Nested spinning rings each have a gap; a ball that gets out through a gap shatters that ring and plays a strum. Rings can be round or polygons. | Escape rings, Escape and multiply |
+| Spinning shapes | Arena tab, shape **Polygon** (or any shape) and **Arena spin** under Movement. | Spinning hexagon |
+| Multiplying balls | Bounces tab, **New balls per hit** or **per escape**, up to a ball limit. | Multiplying balls |
+| Shrinking arena | Arena tab, **Shrink** (per second) or **Shrink per hit** under Movement. Negative shrink grows the arena. | Shrinking ring |
+| String art | Look tab, **Lines per ball**: a line from each ball to its latest hit points. | String art |
+| Pegs (Plinko) | Arena tab, **Pegs and walls**, plus Balls tab **Add a stream** to drop balls one by one. | Plinko |
+
 ## Requirements
 
 ### Windows 11
@@ -72,6 +85,8 @@ cargo run --release -p bpe-export -- scenes/reference-reel.ron out.mp4
 cargo run --release -p bpe-export -- scenes/reference-reel.ron out.mp4 --scale 0.5 --preset veryfast   # quick draft
 cargo run --release -p bpe-export -- scenes/reference-reel.ron --still 3.5 frame.png                  # one frame
 cargo run --release -p bpe-export -- scenes/reference-reel.ron --wav sound.wav                        # just the audio
+cargo run --release -p bpe-export -- escape-rings out.mp4                                              # a built-in preset
+cargo run --release -p bpe-export -- --presets                                                         # list the presets
 ```
 
 ## How it fits together
@@ -79,9 +94,9 @@ cargo run --release -p bpe-export -- scenes/reference-reel.ron --wav sound.wav  
 | Crate | Job |
 | --- | --- |
 | `bpe-scene` | The scene description: video size, container, balls, physics, rules, look and sound. Saved as RON. |
-| `bpe-sim` | Deterministic physics at a fixed 240 steps per second. It records every wall hit with its exact time. |
+| `bpe-sim` | Deterministic physics at a fixed 240 steps per second: closed arenas that spin and shrink, rings with gaps, pegs and walls, balls that appear or split mid-clip. It records every hit and escape with its exact time. |
 | `bpe-audio` | Turns wall hits into a soundtrack. Each hit plays a note from the current chord at the exact sample, then the mix is loudness-normalised and peak-limited. |
-| `bpe-render` | wgpu renderer: background, container, motion streaks, shaded balls, wall flashes, then the shader effect chain, HDR bloom and tone mapping. |
+| `bpe-render` | wgpu renderer: background, walls and pegs (instanced shapes with distance functions), string art, ring shards, motion streaks, shaded balls, wall flashes, then the shader effect chain, HDR bloom and tone mapping. |
 | `bpe-export` | Pipes rendered frames and the soundtrack into ffmpeg (H.264 and AAC in an mp4). Also the `bpe-render` command-line tool. |
 | `bpe-app` | The egui editor (`ball-studio`). |
 
