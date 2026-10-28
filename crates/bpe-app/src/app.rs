@@ -1,4 +1,5 @@
 use crate::audio_out::AudioOut;
+use crate::batch::BatchPanel;
 use crate::command_palette::{Action, Command, CommandPalette};
 use crate::explorer::Explorer;
 use crate::export::ExportPanel;
@@ -8,7 +9,7 @@ use crate::keys;
 use crate::preview::{Preview, PreviewQuality};
 use crate::timeline::{HitSummary, Timeline};
 use crate::workspace::Workspace;
-use crate::{batch, node_editor, rules_workspace, shader_workspace};
+use crate::{node_editor, rules_workspace, shader_workspace};
 use crate::{settings, theme};
 use bpe_audio::Soundtrack;
 use bpe_scene::{Property, Scene, Value};
@@ -45,6 +46,9 @@ pub struct StudioApp {
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
+    batch: BatchPanel,
+    /// The Batch workspace was showing last frame.
+    in_batch: bool,
     timeline: Timeline,
     /// Playing was paused to scrub the timeline, and starts again when scrubbing stops.
     resume_after_scrub: bool,
@@ -71,7 +75,6 @@ pub struct StudioApp {
     workspace: Workspace,
     rules: rules_workspace::State,
     shaders: shader_workspace::State,
-    batch: batch::State,
     palette: CommandPalette,
     /// Whether the preview floats over the Rules, Shaders and Batch workspaces.
     floating_preview: bool,
@@ -200,6 +203,8 @@ impl StudioApp {
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
+            batch: BatchPanel::default(),
+            in_batch: false,
             timeline: Timeline::default(),
             resume_after_scrub: false,
             clicked: None,
@@ -215,7 +220,6 @@ impl StudioApp {
             workspace: Workspace::default(),
             rules: rules_workspace::State::default(),
             shaders: shader_workspace::State::default(),
-            batch: batch::State::default(),
             palette: CommandPalette::default(),
             floating_preview: true,
         }
@@ -589,11 +593,13 @@ impl StudioApp {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (i, workspace) in Workspace::ALL.into_iter().enumerate() {
             let selected = self.workspace == workspace;
-            let text = if selected {
-                RichText::new(workspace.name()).color(Color32::WHITE)
+            // A dot on Batch while a batch runs, wherever the user is.
+            let name = if workspace == Workspace::Batch && self.batch.busy() {
+                format!("{} ●", workspace.name())
             } else {
-                RichText::new(workspace.name())
+                workspace.name().to_string()
             };
+            let text = if selected { RichText::new(name).color(Color32::WHITE) } else { RichText::new(name) };
             let button = egui::Button::selectable(selected, text);
             if ui.add(button).on_hover_text(format!("{} (Ctrl+{})", workspace.help(), i + 1)).clicked() {
                 self.workspace = workspace;
@@ -749,6 +755,9 @@ impl StudioApp {
         if let Some(tab) = outcome.show_tab {
             self.inspector.tab = tab;
         }
+        if let Some(index) = outcome.caption {
+            self.inspector.text.focus = Some(index);
+        }
     }
 
     fn status_line(&mut self, ui: &mut egui::Ui) {
@@ -854,6 +863,12 @@ impl eframe::App for StudioApp {
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| inspector::show(ui, &mut self.inspector, &mut self.scene));
 
+        // Coming into the Batch workspace makes batches from the scene as it is now.
+        if self.workspace == Workspace::Batch && !self.in_batch {
+            let base_dir = self.base_dir();
+            self.batch.open(&self.scene, &self.inspector.effects.library, base_dir);
+        }
+        self.in_batch = self.workspace == Workspace::Batch;
         let central = egui::Frame::new().fill(theme::BACKGROUND);
         let outcome = egui::CentralPanel::default()
             .frame(central)
@@ -872,7 +887,7 @@ impl eframe::App for StudioApp {
                             &self.playback,
                             self.time,
                         ),
-                        _ => batch::show(ui, &mut self.scene, &mut self.batch),
+                        _ => self.batch.contents(ui),
                     });
                     self.floating_preview(&ctx, area, frame)
                 }
@@ -882,9 +897,12 @@ impl eframe::App for StudioApp {
         if outcome.catching_up {
             ctx.request_repaint();
         }
+        let base_dir = self.base_dir();
         if let Some(preview) = &mut self.preview {
             self.inspector.effects.gpu_errors = preview.effect_gpu_errors().to_vec();
             preview.set_mix(self.mix.clone());
+            preview.set_font_folder(base_dir);
+            self.inspector.text.font_errors = preview.font_errors().to_vec();
         }
         if outcome.clicked {
             self.set_playing(false);
@@ -958,6 +976,18 @@ impl eframe::App for StudioApp {
         if let Some(picked) = self.explorer.show(&ctx, frame) {
             self.scene = picked.scene;
             self.status = format!("Using the variation from seed {}. Ctrl+Z puts your scene back.", picked.seed);
+            separate = true;
+        }
+        if let Some(request) = self.explorer.make_batch.take() {
+            let base_dir = self.base_dir();
+            self.batch.open_from_explorer(request, &self.inspector.effects.library, base_dir);
+            self.workspace = Workspace::Batch;
+            self.in_batch = true;
+        }
+        if let Some((scene, seed)) = self.batch.update(&ctx, frame) {
+            self.scene = scene;
+            self.status = format!("Editing the batch's variation from seed {seed}. Ctrl+Z puts your scene back.");
+            self.workspace = Workspace::Scene;
             separate = true;
         }
         if let Some(rolled) = self.inspector.rolled.take() {

@@ -564,7 +564,13 @@ impl Scene {
             name: "Spark storm".into(),
             physics: Physics { gravity: Vec2::new(0.0, 500.0), ..Physics::default() },
             spawners,
-            look: Look { trail_seconds: 0.3, trail_width: 0.7, ball_glow: 0.4, bloom_strength: 0.35, ..Look::default() },
+            look: Look {
+                trail_seconds: 0.3,
+                trail_width: 0.7,
+                ball_glow: 0.4,
+                bloom_strength: 0.35,
+                ..Look::default()
+            },
             particles: vec![sparks, ParticlePreset::Stars.emitter(EventMatch::AnyHit)],
             sound: Sound {
                 progression: chords(&["Dm", "Bb", "F", "C"], 3.0),

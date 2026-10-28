@@ -5,7 +5,9 @@
 //! H.264 video and AAC audio into one mp4. Export does not run in real time: a slow
 //! machine just takes longer, and the result is identical.
 
+pub mod batch;
 pub mod profile;
+pub mod score;
 
 use anyhow::{Context, bail};
 use bpe_render::{EffectLibrary, FrameData, Readback, Renderer, wgpu};
@@ -240,12 +242,27 @@ pub fn export_video(
     queue: &wgpu::Queue,
     scene: &Scene,
     options: &ExportOptions,
+    progress: impl FnMut(u32, u32) -> bool,
+) -> anyhow::Result<Encoder> {
+    export_video_with(device, queue, scene, options, None, progress, |_, _| {})
+}
+
+/// [`export_video`] with a soundtrack that was already mixed (so a batch can mix the next video
+/// while this one encodes), and `on_frame` called with each finished frame's index and RGBA
+/// pixels, in order, for sampling frames to score.
+pub fn export_video_with(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    options: &ExportOptions,
+    soundtrack: Option<&bpe_audio::Soundtrack>,
     mut progress: impl FnMut(u32, u32) -> bool,
+    mut on_frame: impl FnMut(u32, &[u8]),
 ) -> anyhow::Result<Encoder> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
-    match export_with(device, queue, scene, options, encoder, &mut progress) {
+    match export_with(device, queue, scene, options, encoder, soundtrack, &mut progress, &mut on_frame) {
         Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
-            export_with(device, queue, scene, options, Encoder::Cpu, &mut progress)
+            export_with(device, queue, scene, options, Encoder::Cpu, soundtrack, &mut progress, &mut on_frame)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
             Ok(Encoder::Cpu)
         }
@@ -259,13 +276,16 @@ const FRAMES_IN_FLIGHT: usize = 3;
 /// Finished frames that can wait for ffmpeg at once.
 const FRAMES_QUEUED: usize = 4;
 
+#[allow(clippy::too_many_arguments)]
 fn export_with(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     scene: &Scene,
     options: &ExportOptions,
     encoder: Encoder,
+    soundtrack: Option<&bpe_audio::Soundtrack>,
     progress: &mut impl FnMut(u32, u32) -> bool,
+    on_frame: &mut impl FnMut(u32, &[u8]),
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, options.scale);
     let fps = scene.video.fps.max(1);
@@ -275,8 +295,15 @@ fn export_with(
     }
     let total = options.max_frames.map_or(scene.frame_count(), |m| m.min(scene.frame_count()));
 
-    let hits = bpe_sim::collect_wall_hits(scene);
-    let soundtrack = bpe_audio::render_soundtrack(scene, &hits, options.base_dir.as_deref())?;
+    let mixed;
+    let soundtrack = match soundtrack {
+        Some(track) => track,
+        None => {
+            let hits = bpe_sim::collect_wall_hits(scene);
+            mixed = bpe_audio::render_soundtrack(scene, &hits, options.base_dir.as_deref())?;
+            &mixed
+        }
+    };
     let wav = TempFile::new("wav");
     soundtrack.write_wav(&wav.0)?;
 
@@ -324,6 +351,7 @@ fn export_with(
 
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(options.effects.clone());
+    renderer.set_font_folder(options.base_dir.clone());
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
     let mut playback = Playback::new(scene);
     // Effects and modulators that pulse with the music follow the finished soundtrack.
@@ -331,6 +359,8 @@ fn export_with(
     let mut frame = FrameData { mix: Some(mix), ..FrameData::default() };
     let pixel = renderer.pixel_size(scene);
     let mut failed = None;
+    // Frames handed to ffmpeg so far; read-back runs a few frames behind drawing.
+    let mut sent = 0;
     for index in 0..total {
         let time = index as f64 / fps as f64;
         playback.seek(time);
@@ -343,10 +373,12 @@ fn export_with(
                 break;
             }
         };
-        if let Some(pixels) = ready
-            && frames.send(pixels).is_err()
-        {
-            break;
+        if let Some(pixels) = ready {
+            on_frame(sent, &pixels);
+            sent += 1;
+            if frames.send(pixels).is_err() {
+                break;
+            }
         }
         if !progress(index + 1, total) {
             drop(frames);
@@ -359,6 +391,8 @@ fn export_with(
         match readback.finish(device) {
             Ok(rest) => {
                 for pixels in rest {
+                    on_frame(sent, &pixels);
+                    sent += 1;
                     if frames.send(pixels).is_err() {
                         break;
                     }

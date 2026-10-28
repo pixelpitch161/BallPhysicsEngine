@@ -1,0 +1,7 @@
+// Bad: a soft, draggy bounce that loses its energy in a few seconds and then rolls silently.
+Scene(
+    name: "Dies down",
+    video: Video(duration: 20.0),
+    physics: Physics(gravity: Vec2(0.0, 900.0), restitution: 0.55, air_drag: 0.6),
+    spawners: [Single(position: Vec2(-100.0, -200.0), velocity: Vec2(300.0, 0.0), radius: 25.0, color: "#ffb82e")],
+)

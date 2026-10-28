@@ -1,13 +1,17 @@
 //! The seed explorer: moving previews of random variations of the scene, side by side, so the
 //! user can pick the one they like best. Each variation comes from a numbered seed, so the same
-//! starting scene, settings and seed always make the same variation.
+//! starting scene, settings and seed always make the same variation. Each preview gets a score
+//! from simulating it, and thumbs up or down teach the scorer what the user likes.
 
-use crate::inspector::{effects::roll_effect, paint_dice};
+use crate::inspector::paint_dice;
 use crate::theme;
+use bpe_export::batch::{self, Vary};
+use bpe_export::score::{self, Score, ScoreInputs, Weights};
 use bpe_render::{EffectLibrary, FrameData, Renderer};
-use bpe_scene::{Dice, Group, Scene};
+use bpe_scene::{Dice, Scene};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, RichText, Sense};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Thumbnail size in screen points.
@@ -23,43 +27,6 @@ const LOOP_SECONDS: f64 = 10.0;
 const THUMB_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
 /// "More like this" keeps changes at most this big, so the new batch stays close to the pick.
 const CLOSER: f32 = 0.3;
-
-/// Which parts of the scene the variations change.
-#[derive(Clone, Copy, PartialEq)]
-struct Vary {
-    balls: bool,
-    arena: bool,
-    bounces: bool,
-    look: bool,
-    effects: bool,
-    sound: bool,
-}
-
-impl Vary {
-    fn groups(self, scene: &Scene) -> Vec<Group> {
-        let mut groups = Vec::new();
-        if self.balls {
-            groups.extend((0..scene.spawners.len()).map(Group::Balls));
-        }
-        if self.arena {
-            groups.extend([Group::Shape, Group::Movement, Group::World]);
-        }
-        if self.bounces {
-            groups.extend([Group::Bounces, Group::NewBalls]);
-        }
-        if self.look {
-            groups.extend([Group::Background, Group::Trails, Group::Glow, Group::Strings]);
-        }
-        if self.sound {
-            groups.extend([Group::Chords, Group::Notes]);
-        }
-        groups
-    }
-
-    fn any(self) -> bool {
-        self.balls || self.arena || self.bounces || self.look || self.effects || self.sound
-    }
-}
 
 pub struct Explorer {
     pub open: bool,
@@ -79,6 +46,29 @@ pub struct Explorer {
     /// The variations need making again because a setting changed.
     stale: bool,
     started: Instant,
+    /// Scores of the cells, filled in by a background thread after each rebuild.
+    scores: Arc<Mutex<Scores>>,
+    /// How the scorer weighs each part, learned from thumbs up and down.
+    weights: Weights,
+    /// Thumbs given in this batch, by seed, so each can only be given once.
+    thumbs_given: std::collections::HashMap<u64, bool>,
+    /// Set when the user asks for a batch of videos like the current variations.
+    pub make_batch: Option<BatchRequest>,
+}
+
+/// Everything the batch factory needs to carry on from the explorer.
+pub struct BatchRequest {
+    pub base: Scene,
+    pub vary: Vary,
+    pub amount: f32,
+    pub seed: u64,
+}
+
+#[derive(Default)]
+struct Scores {
+    /// Which rebuild these scores are for; a newer rebuild makes older results stale.
+    generation: u64,
+    scores: Vec<Option<Score>>,
 }
 
 struct Cell {
@@ -105,7 +95,7 @@ impl Default for Explorer {
             open: false,
             original: Scene::default(),
             base: Scene::default(),
-            vary: Vary { balls: true, arena: true, bounces: true, look: true, effects: false, sound: false },
+            vary: Vary { balls: true, arena: true, bounces: true, look: true, ..Vary::default() },
             amount: 0.6,
             seed: 1,
             library: EffectLibrary::new(),
@@ -113,6 +103,10 @@ impl Default for Explorer {
             thumbs: Vec::new(),
             stale: true,
             started: Instant::now(),
+            scores: Arc::default(),
+            weights: Weights::default(),
+            thumbs_given: Default::default(),
+            make_batch: None,
         }
     }
 }
@@ -126,17 +120,13 @@ impl Explorer {
         self.library = library.clone();
         self.seed = fresh_seed();
         self.stale = true;
+        self.weights = batch::load_weights();
     }
 
-    /// The variation made from `seed` with the current settings.
+    /// The variation made from `seed` with the current settings: the same scene a batch with
+    /// these settings makes for that seed.
     fn variation(&self, seed: u64) -> Scene {
-        let mut scene = self.base.variation(&self.vary.groups(&self.base), seed, self.amount);
-        if self.vary.effects {
-            for (index, effect) in scene.effects.iter_mut().enumerate() {
-                roll_effect(effect, &self.library, &mut Dice::mixed(seed, 1000 + index as u64), self.amount);
-            }
-        }
-        scene
+        batch::variation(&self.base, &self.vary, seed, self.amount, &self.library, &[]).0
     }
 
     fn rebuild(&mut self) {
@@ -152,6 +142,41 @@ impl Explorer {
         }
         self.stale = false;
         self.started = Instant::now();
+        self.thumbs_given.clear();
+        self.score_in_background();
+    }
+
+    /// Simulates and scores the cells on a few threads, so the badges fill in while the previews
+    /// play. A newer rebuild makes the threads stop after the cell they are on.
+    fn score_in_background(&self) {
+        let generation = {
+            let mut scores = self.scores.lock().unwrap();
+            scores.generation += 1;
+            scores.scores = vec![None; self.cells.len()];
+            scores.generation
+        };
+        let scenes: Arc<Vec<Scene>> = Arc::new(self.cells.iter().map(|c| c.scene.clone()).collect());
+        let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, scenes.len().max(1));
+        for _ in 0..threads {
+            let (scenes, next, shared, weights) = (scenes.clone(), next.clone(), self.scores.clone(), self.weights);
+            std::thread::spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(scene) = scenes.get(index) else { return };
+                    if shared.lock().unwrap().generation != generation {
+                        return;
+                    }
+                    let stats = score::simulate(scene);
+                    let score = weights.score(score::parts(scene, &stats, &ScoreInputs::default()));
+                    let mut scores = shared.lock().unwrap();
+                    if scores.generation != generation {
+                        return;
+                    }
+                    scores.scores[index] = Some(score);
+                }
+            });
+        }
     }
 
     /// Shows the explorer if it is open. Returns the variation the user picked.
@@ -165,6 +190,10 @@ impl Explorer {
         self.render_thumbnails(ctx, frame);
         let mut picked = None;
         let mut closer = None;
+        let mut thumb = None;
+        // Totals use the latest weights, so a Like or Nope changes every badge straight away.
+        let scores: Vec<Option<Score>> =
+            self.scores.lock().unwrap().scores.iter().map(|s| s.map(|s| self.weights.score(s.parts))).collect();
         let modal = egui::Modal::new(egui::Id::unique("seed-explorer")).show(ctx, |ui| {
             // Five previews a row, or fewer in a small window.
             let room = ctx.content_rect().width() - 80.0;
@@ -187,11 +216,14 @@ impl Explorer {
                     for (i, cell) in self.cells.iter().enumerate() {
                         let texture = self.thumbs.get(i).map(|t| t.texture);
                         let starting = if self.base == self.original { "Your scene now" } else { "Starting point" };
-                        match card(ui, cell, texture, starting) {
+                        let score = scores.get(i).copied().flatten();
+                        let given = cell.seed.and_then(|seed| self.thumbs_given.get(&seed).copied());
+                        match card(ui, cell, texture, starting, score, given) {
                             Some(CardChoice::Use) => {
                                 picked = cell.seed.map(|seed| Picked { scene: cell.scene.clone(), seed })
                             }
                             Some(CardChoice::Closer) => closer = Some(i),
+                            Some(CardChoice::Thumb(liked)) => thumb = Some((i, liked)),
                             None => {}
                         }
                         if i % columns == columns - 1 {
@@ -215,16 +247,43 @@ impl Explorer {
                     if ui.button("Close").on_hover_text("Keep your scene as it is").clicked() {
                         self.open = false;
                     }
+                    let enabled = self.vary.any();
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Make a batch of these…"))
+                        .on_hover_text(
+                            "Render many videos with these settings, overnight if you like, and keep the best \
+                             ones. Opens the batch factory.",
+                        )
+                        .clicked()
+                    {
+                        self.make_batch = Some(BatchRequest {
+                            base: self.base.clone(),
+                            vary: self.vary,
+                            amount: self.amount,
+                            seed: self.seed,
+                        });
+                    }
+                    if let Some(best) = best_seed(&self.cells, &scores) {
+                        ui.label(RichText::new(format!("Top score: seed {best}")).color(theme::MUTED)).on_hover_text(
+                            "The badge on each preview is how satisfying the scorer thinks it is, from 0 to 100",
+                        );
+                    }
                 });
             });
         });
+        if let Some((i, liked)) = thumb
+            && let (Some(seed), Some(score)) = (self.cells[i].seed, scores.get(i).copied().flatten())
+        {
+            crate::batch::learn(&mut self.weights, &score.parts, liked);
+            self.thumbs_given.insert(seed, liked);
+        }
         if let Some(i) = closer {
             self.base = self.cells[i].scene.clone();
             self.amount = self.amount.min(CLOSER);
             self.seed = fresh_seed();
             self.stale = true;
         }
-        if modal.should_close() || picked.is_some() {
+        if modal.should_close() || picked.is_some() || self.make_batch.is_some() {
             self.close(frame);
         }
         ctx.request_repaint();
@@ -234,6 +293,8 @@ impl Explorer {
     fn close(&mut self, frame: &eframe::Frame) {
         self.open = false;
         self.cells.clear();
+        // Stops the scoring threads after the cell they are on.
+        self.scores.lock().unwrap().generation += 1;
         // Frees the previews' graphics memory until the explorer opens again.
         self.close_thumbs(frame);
     }
@@ -257,6 +318,14 @@ impl Explorer {
             ui.checkbox(&mut vary.sound, "Sound").on_hover_text(
                 "Chords and notes. The previews are silent, so you hear the new sound after you pick one.",
             );
+            ui.checkbox(&mut vary.instrument, "Instrument")
+                .on_hover_text("How the instrument sounds: how long its notes ring and how bright they are");
+            let has_captions = !self.base.captions.is_empty();
+            ui.checkbox(&mut vary.captions, "Captions").on_hover_text(if has_captions {
+                "The captions' words, colours and animations"
+            } else {
+                "Adds a hook caption such as \"Can it escape?\" to some variations"
+            });
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("How different").color(theme::MUTED));
@@ -342,12 +411,70 @@ fn fresh_seed() -> u64 {
     Dice::new(nanos as u64).next_u64() % 100_000
 }
 
+/// The seed of the best-scoring variation, once every variation has a score.
+fn best_seed(cells: &[Cell], scores: &[Option<Score>]) -> Option<u64> {
+    if cells.len() < 2 || scores.len() != cells.len() || scores.iter().any(Option::is_none) {
+        return None;
+    }
+    cells
+        .iter()
+        .zip(scores)
+        .filter_map(|(cell, score)| Some((cell.seed?, score.as_ref()?.total)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(seed, _)| seed)
+}
+
 enum CardChoice {
     Use,
     Closer,
+    /// Thumbs up (true) or down.
+    Thumb(bool),
 }
 
-fn card(ui: &mut egui::Ui, cell: &Cell, texture: Option<egui::TextureId>, starting: &str) -> Option<CardChoice> {
+/// Paints a score badge, 0 to 100, in the top right corner of `rect`. Hovering it lists the parts.
+pub fn score_badge(ui: &egui::Ui, rect: egui::Rect, score: Option<Score>, id: egui::Id) {
+    let size = egui::vec2(38.0, 22.0);
+    let badge = egui::Rect::from_min_size(rect.right_top() + egui::vec2(-size.x - 6.0, 6.0), size);
+    let painter = ui.painter();
+    let (text, fill) = match score {
+        Some(score) => {
+            let value = (score.total * 100.0).round();
+            let fill = if value >= 70.0 {
+                Color32::from_rgb(40, 150, 90)
+            } else if value >= 45.0 {
+                Color32::from_rgb(170, 130, 40)
+            } else {
+                Color32::from_rgb(160, 60, 60)
+            };
+            (format!("{value:.0}"), fill)
+        }
+        None => ("···".to_string(), Color32::from_black_alpha(160)),
+    };
+    painter.rect_filled(badge, 11.0, fill);
+    painter.text(badge.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), Color32::WHITE);
+    let response = ui.interact(badge, id, Sense::hover());
+    response.on_hover_ui(|ui| match score {
+        Some(score) => {
+            ui.label(RichText::new(format!("Score {:.0} of 100", score.total * 100.0)).strong());
+            for (name, value, meaning) in score.parts.list() {
+                if let Some(value) = value {
+                    ui.label(format!("{name}: {:.0}  ({meaning})", value * 100.0));
+                }
+            }
+            ui.label(RichText::new("Like and Nope teach the scorer what you like.").small().color(theme::MUTED));
+        }
+        None => _ = ui.label("Scoring…"),
+    });
+}
+
+fn card(
+    ui: &mut egui::Ui,
+    cell: &Cell,
+    texture: Option<egui::TextureId>,
+    starting: &str,
+    score: Option<Score>,
+    given: Option<bool>,
+) -> Option<CardChoice> {
     let mut choice = None;
     let inner = egui::Frame::new().fill(theme::CARD).corner_radius(10.0).inner_margin(8.0).show(ui, |ui| {
         ui.set_width(CARD);
@@ -359,6 +486,7 @@ fn card(ui: &mut egui::Ui, cell: &Cell, texture: Option<egui::TextureId>, starti
                 None => ui.allocate_exact_size(THUMB, Sense::hover()).1,
             };
             let image = image.interact(Sense::click());
+            score_badge(ui, image.rect, score, image.id.with("score"));
             ui.add_space(2.0);
             match cell.seed {
                 None => {
@@ -385,6 +513,25 @@ fn card(ui: &mut egui::Ui, cell: &Cell, texture: Option<egui::TextureId>, starti
                             choice = Some(CardChoice::Closer);
                         }
                     });
+                    // Like and Nope sit on the preview's bottom corners once it has a score.
+                    if score.is_some() {
+                        let corner = image.rect.left_bottom() + egui::vec2(6.0, -26.0);
+                        let up = egui::Rect::from_min_size(corner, egui::vec2(46.0, 20.0));
+                        let down = up.translate(egui::vec2(image.rect.width() - 12.0 - 46.0, 0.0));
+                        let enabled = given.is_none();
+                        let like = egui::Button::new(RichText::new("Like").small())
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .selected(given == Some(true));
+                        if ui.put(up, like).on_hover_text("Score ones like this higher").clicked() && enabled {
+                            choice = Some(CardChoice::Thumb(true));
+                        }
+                        let nope = egui::Button::new(RichText::new("Nope").small())
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .selected(given == Some(false));
+                        if ui.put(down, nope).on_hover_text("Score ones like this lower").clicked() && enabled {
+                            choice = Some(CardChoice::Thumb(false));
+                        }
+                    }
                     if image.clicked() {
                         choice = Some(CardChoice::Use);
                     }

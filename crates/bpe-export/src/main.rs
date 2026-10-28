@@ -13,6 +13,7 @@ Usage:
   bpe-render <scene.ron | preset> --wav <out.wav>
   bpe-render <preset> --save-scene <out.ron>
   bpe-render <scene.ron | preset | all> --profile [--scale F] [--gpu-frames N]
+  bpe-render batch <scene.ron | preset> --out <folder> [batch options]
 
 A preset is a built-in scene named in lower case with dashes, such as escape-rings or plinko.
 `default` is the reference reel. `bpe-render --presets` lists them all.
@@ -27,7 +28,24 @@ Options:
                    encoder when ffmpeg can, which is much faster, and the CPU otherwise
   --profile        time the simulation, sound, frames and drawing, and print a fingerprint
                    of the result (`all` profiles every preset plus some extra-heavy scenes)
-  --gpu-frames N   frames to draw on the graphics card when profiling (default 30, 0 skips)";
+  --gpu-frames N   frames to draw on the graphics card when profiling (default 30, 0 skips)
+
+Batch options (render many random variations and keep the best; run the same command again
+to carry on with a batch that was stopped):
+  --out DIR        folder for the videos and the batch record (required)
+  --count N        videos to render (default 50)
+  --keep N         best videos to keep (default 10)
+  --vary LIST      what to change, comma-separated (default balls,arena,bounces,look):
+                   balls, arena, bounces, look, effects, sound, song, instrument, captions, all
+  --amount F       how different the variations are, 0 to 1 (default 0.5)
+  --songs DIR      folder of songs to pick from when varying the song
+  --quality Q      draft, good or best (default good)
+  --seed N         first seed (default 1)
+  --prescreen N    seeds simulated per video rendered, to find the best (default 4)
+  --rejected WHAT  move (default) or delete the videos that don't make the cut
+  --seconds S      make each video at most S seconds long
+  --scale F        size compared with the quality's size
+  --encoder NAME   as above";
 
 fn main() {
     if let Err(error) = run() {
@@ -50,6 +68,9 @@ fn run() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--profile") {
         return profile(&args);
+    }
+    if args[0] == "batch" {
+        return batch(&args[1..]);
     }
     let preset = Scene::presets().into_iter().find(|p| slug(p.name) == args[0]);
     let (scene, base_dir) = if args[0] == "default" {
@@ -156,6 +177,127 @@ fn profile(args: &[String]) -> anyhow::Result<()> {
         println!("{}", report.row());
     }
     Ok(())
+}
+
+fn batch(args: &[String]) -> anyhow::Result<()> {
+    use bpe_export::batch::{self, BatchSpec, Phase, Quality, Rejected, Status, Vary};
+    let base = args.first().filter(|a| !a.starts_with("--")).context("batch needs a scene file or preset")?;
+    let (scene, base_dir) = load_scene(base)?;
+    let mut spec = BatchSpec { base: base.clone(), ..BatchSpec::default() };
+    let mut options = ExportOptions::new("unused.mp4");
+    options.base_dir = base_dir.clone();
+    options.effects.set_folders(bpe_render::effects::default_folders(base_dir.as_deref()));
+    let mut folder = None;
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().with_context(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--out" => folder = Some(PathBuf::from(value()?)),
+            "--count" => spec.count = value()?.parse()?,
+            "--keep" => spec.keep = value()?.parse()?,
+            "--vary" => spec.vary = Vary::parse(value()?)?,
+            "--amount" => spec.amount = value()?.parse::<f32>()?.clamp(0.0, 1.0),
+            "--songs" => spec.songs = Some(PathBuf::from(value()?)),
+            "--quality" => {
+                let name = value()?;
+                spec.quality =
+                    Quality::parse(name).with_context(|| format!("unknown quality {name}: use draft, good or best"))?;
+            }
+            "--seed" => spec.first_seed = value()?.parse()?,
+            "--prescreen" => spec.prescreen = value()?.parse::<u32>()?.max(1),
+            "--rejected" => {
+                spec.rejected = match value()?.as_str() {
+                    "move" => Rejected::Move,
+                    "delete" => Rejected::Delete,
+                    other => bail!("unknown --rejected {other}: use move or delete"),
+                }
+            }
+            "--seconds" => spec.max_seconds = Some(value()?.parse()?),
+            "--scale" => spec.scale = value()?.parse()?,
+            "--ffmpeg" => options.ffmpeg = value()?.into(),
+            "--encoder" => {
+                let name = value()?;
+                options.encoder = bpe_export::Encoder::from_name(name)
+                    .with_context(|| format!("unknown encoder {name}: use auto, cpu, nvidia, amd or intel"))?;
+            }
+            other => bail!("unknown batch option {other}\n\n{USAGE}"),
+        }
+    }
+    let folder = folder.context("batch needs --out <folder>")?;
+    if !spec.vary.any() {
+        bail!("--vary needs at least one thing to change");
+    }
+    let weights = batch::load_weights();
+    let mut manifest = batch::open(&folder, &spec, &scene, weights)?;
+    if manifest.phase == Phase::Done {
+        println!("This batch is already finished.");
+    } else if manifest.jobs.iter().any(|j| j.status != Status::Waiting) {
+        println!("Carrying on with the batch in {}.", folder.display());
+    }
+    let (device, queue) = bpe_render::headless_device().context("no usable GPU found")?;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let runner = batch::Runner { device: &device, queue: &queue, folder: folder.clone(), options, cancel: &cancel };
+    let started = std::time::Instant::now();
+    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    runner.run(&mut manifest, |_, progress| {
+        if last.elapsed().as_millis() < 250 && progress.done < progress.total {
+            return;
+        }
+        last = std::time::Instant::now();
+        let eta = progress.eta.map_or(String::new(), |eta| format!(", about {} left", minutes(eta.as_secs())));
+        let line = match progress.phase {
+            Phase::Prescreen => format!("Trying seeds: {}/{}", progress.done, progress.total),
+            Phase::Render => match progress.seed {
+                Some(seed) => format!(
+                    "Rendering video {}/{} (seed {seed}): frame {}/{}{eta}",
+                    progress.done + 1,
+                    progress.total,
+                    progress.frame.0,
+                    progress.frame.1
+                ),
+                None => format!("Rendered {}/{}{eta}", progress.done, progress.total),
+            },
+            Phase::Pick | Phase::Done => "Picking the best".into(),
+        };
+        print!("\r{line:<78}");
+        let _ = std::io::stdout().flush();
+    })?;
+    println!();
+    let kept = manifest.kept();
+    if manifest.phase == Phase::Done {
+        println!("Kept {} videos in {} ({}):", kept.len(), folder.display(), minutes(started.elapsed().as_secs()));
+        for job in kept {
+            let score = job.score.unwrap_or_default();
+            println!(
+                "  {:5.1}  {}  ({})",
+                score.total * 100.0,
+                job.video.as_deref().unwrap_or("?"),
+                batch::describe(&score.parts)
+            );
+        }
+        let failed: Vec<_> = manifest.jobs.iter().filter(|j| j.status == Status::Failed).collect();
+        for job in failed {
+            println!("  seed {} failed: {}", job.seed, job.error.as_deref().unwrap_or("?"));
+        }
+    }
+    Ok(())
+}
+
+fn minutes(seconds: u64) -> String {
+    if seconds < 90 { format!("{seconds} s") } else { format!("{} min", seconds.div_ceil(60)) }
+}
+
+/// A scene from a file or a preset's name, with the folder its relative paths start from.
+fn load_scene(name: &str) -> anyhow::Result<(Scene, Option<PathBuf>)> {
+    if name == "default" {
+        return Ok((Scene::default(), None));
+    }
+    if let Some(preset) = Scene::presets().into_iter().find(|p| slug(p.name) == name) {
+        return Ok((preset.scene, None));
+    }
+    let path = PathBuf::from(name);
+    let scene = Scene::load(&path).with_context(|| format!("loading {}", path.display()))?;
+    Ok((scene, path.parent().map(PathBuf::from)))
 }
 
 /// A preset's name as typed on the command line: "Escape rings" is `escape-rings`.

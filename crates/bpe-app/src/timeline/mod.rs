@@ -98,6 +98,8 @@ pub struct Timeline {
     held_span: Option<f32>,
     /// How many settings were animated last frame, to scroll to a newly animated one.
     rows_seen: usize,
+    /// Caption clips (WS7).
+    text: text::TextLane,
 }
 
 /// What the app should do after the timeline is drawn.
@@ -108,6 +110,8 @@ pub struct Outcome {
     pub scrubbing: Option<bool>,
     /// A setting's name was clicked: show the tab it lives in.
     pub show_tab: Option<Tab>,
+    /// A caption's clip was clicked: show it in the Text tab.
+    pub caption: Option<usize>,
 }
 
 /// Rounds to the nearest video frame.
@@ -126,8 +130,8 @@ impl Default for Timeline {
                 Box::new(bounces::BouncesLane),
                 Box::new(pulse::PulseLane::default()),
                 Box::new(rules::RulesLane::default()),
-                Box::new(text::TextLane::default()),
             ],
+            text: text::TextLane::default(),
             collapsed: Default::default(),
             drag: None,
             selected: None,
@@ -241,6 +245,13 @@ impl Timeline {
                 self.selected = None;
                 outcome.scrubbing = Some(true);
             }
+        }
+
+        // Caption clips.
+        let text = self.text.show(ui, scene, scale.left, scale.width, scale.span);
+        if let Some(index) = text.clicked {
+            outcome.show_tab = Some(Tab::Text);
+            outcome.caption = Some(index);
         }
 
         // Keyframe rows.

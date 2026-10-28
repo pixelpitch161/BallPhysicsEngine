@@ -147,7 +147,8 @@ impl ParticlePreset {
 
     /// An emitter with settings that suit this kind of particle.
     pub fn emitter(self, on: EventMatch) -> Emitter {
-        let base = Emitter { on: EventFilter { kind: on, ..EventFilter::default() }, preset: self, ..Emitter::default() };
+        let base =
+            Emitter { on: EventFilter { kind: on, ..EventFilter::default() }, preset: self, ..Emitter::default() };
         match self {
             ParticlePreset::Sparks => base,
             ParticlePreset::Smoke => Emitter {
@@ -202,16 +203,9 @@ impl ParticlePreset {
                 color: ParticleColor::Wall,
                 ..base
             },
-            ParticlePreset::Rings => Emitter {
-                count: 1,
-                speed: 0.0,
-                spread: 0.0,
-                size: 60.0,
-                life: 0.5,
-                gravity: 0.0,
-                drag: 0.0,
-                ..base
-            },
+            ParticlePreset::Rings => {
+                Emitter { count: 1, speed: 0.0, spread: 0.0, size: 60.0, life: 0.5, gravity: 0.0, drag: 0.0, ..base }
+            }
         }
     }
 }

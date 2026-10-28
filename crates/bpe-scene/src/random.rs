@@ -5,7 +5,7 @@
 //! from the current values: 1 rolls completely new ones, smaller numbers nudge the current
 //! values part of the way towards a roll, and yes/no choices flip only some of the time.
 
-use crate::{ChordStep, Color, Container, Instrument, Scene, Spawner, Vec2};
+use crate::{Anim, Caption, CaptionStyle, ChordStep, Color, Container, Instrument, React, Scene, Spawner, Vec2};
 use std::f32::consts::{PI, TAU};
 
 /// A small repeatable random number generator (SplitMix64), so a seed always rolls the same values.
@@ -83,6 +83,12 @@ pub enum Group {
     Strings,
     Chords,
     Notes,
+    // Groups below were added after the explorer shipped. New groups go at the end with new salts,
+    // so seeds saved with the groups above keep making the same scenes.
+    /// Caption words, colours and animations, or a new hook caption if there are none.
+    Captions,
+    /// The instrument's character.
+    Instrument,
 }
 
 impl Group {
@@ -101,6 +107,8 @@ impl Group {
             Group::Strings => "string art",
             Group::Chords => "chord",
             Group::Notes => "note",
+            Group::Captions => "caption",
+            Group::Instrument => "instrument",
         }
     }
 
@@ -120,6 +128,8 @@ impl Group {
             Group::Strings => 9,
             Group::Chords => 10,
             Group::Notes => 11,
+            Group::Captions => 12,
+            Group::Instrument => 13,
         }
     }
 }
@@ -377,9 +387,85 @@ impl Scene {
                     sound.seed = seed;
                 }
             }
+            Group::Captions => self.roll_captions(dice, amount),
+            Group::Instrument => {
+                let (decay, brightness) = (dice.log_range(0.25, 3.0), dice.range(0.15, 0.95));
+                match &mut self.sound.instrument {
+                    Instrument::Pluck { decay: d, brightness: b } => {
+                        set(d, decay, amount);
+                        set(b, brightness, amount);
+                    }
+                    // A sample or a library instrument keeps its sound; the music workstream rolls those.
+                    Instrument::Sample { .. } | Instrument::Library { .. } => {}
+                }
+            }
         }
         if matches!(group, Group::Balls(_) | Group::Shape) {
             self.keep_balls_inside();
+        }
+    }
+
+    /// New words, colours and animations for the captions. A scene without captions gets a hook
+    /// at the top, more often the bigger `amount` is.
+    fn roll_captions(&mut self, dice: &mut Dice, amount: f32) {
+        const HOOKS: [&str; 8] = [
+            "Can it escape?",
+            "Wait for the end...",
+            "Watch till the end",
+            "How many balls at the end?",
+            "So satisfying",
+            "Day {seed}",
+            "Guess the last bounce",
+            "This one is different",
+        ];
+        const ESCAPE_HOOKS: [&str; 3] = ["Can it escape?", "Which ring breaks last?", "Will it break free?"];
+        const ANIMS: [Anim; 6] = [Anim::Pop, Anim::Slide, Anim::Typewriter, Anim::Bounce, Anim::Glitch, Anim::Fade];
+        let rings = matches!(self.container, Container::Rings { .. });
+        let hook = if rings && dice.chance(0.6) { dice.pick(&ESCAPE_HOOKS) } else { dice.pick(&HOOKS) };
+        let counter = if rings {
+            dice.pick(&["Ring {escapes}/{rings}", "{rings_left} rings left", "{escapes} escaped"])
+        } else if self.rules.spawn_per_hit > 0 || self.rules.spawn_per_escape > 0 {
+            dice.pick(&["{balls} balls", "{balls}"])
+        } else {
+            dice.pick(&["{hits} bounces", "{hits}"])
+        };
+        let add_counter = dice.chance(0.5);
+        let color =
+            if dice.chance(0.5) { Color::WHITE } else { Color::from_hsv(dice.unit(), dice.range(0.5, 0.8), 1.0) };
+        let anim = dice.pick(&ANIMS);
+        let glow = dice.range(0.0, 0.7);
+        let add = dice.chance(amount);
+        if self.captions.is_empty() {
+            if add {
+                let caption = Caption { color, glow, anim_in: anim, ..Caption::new(hook, CaptionStyle::Hook) };
+                self.captions.push(caption);
+                if add_counter {
+                    self.captions.push(Caption::new(counter, CaptionStyle::Counter));
+                }
+            }
+            return;
+        }
+        for (index, caption) in self.captions.iter_mut().enumerate() {
+            // Each caption rolls from its own dice, so adding a caption leaves the others alone.
+            let mut dice = Dice::mixed(dice.next_u64(), index as u64);
+            let change_words = dice.chance(amount);
+            let anim = dice.pick(&ANIMS);
+            let hue_turn = dice.range(-0.5, 0.5) * amount;
+            let glow = dice.range(0.0, 0.7);
+            let react = dice.pick(&[React::None, React::PulseOnHit, React::PulseOnHit]);
+            if change_words {
+                match caption.style {
+                    CaptionStyle::Hook | CaptionStyle::BigCentre => caption.text = hook.into(),
+                    CaptionStyle::Counter => caption.text = counter.into(),
+                    CaptionStyle::Timer | CaptionStyle::Subtitle => {}
+                }
+                caption.anim_in = anim;
+                if caption.style == CaptionStyle::Counter {
+                    caption.react = react;
+                }
+            }
+            caption.color = caption.color.shift_hue(hue_turn);
+            set(&mut caption.glow, glow, amount);
         }
     }
 
@@ -635,7 +721,7 @@ fn chords(dice: &mut Dice) -> Vec<ChordStep> {
 mod tests {
     use super::*;
 
-    const ALL: [Group; 11] = [
+    const ALL: [Group; 13] = [
         Group::Shape,
         Group::Movement,
         Group::World,
@@ -647,6 +733,8 @@ mod tests {
         Group::Strings,
         Group::Chords,
         Group::Notes,
+        Group::Captions,
+        Group::Instrument,
     ];
 
     fn every_group(scene: &Scene) -> Vec<Group> {
@@ -789,5 +877,58 @@ mod tests {
         assert!(balls_inside(&scene));
         let Spawner::Grid { spacing, .. } = scene.spawners[0] else { panic!() };
         assert!(spacing < 19.0);
+    }
+
+    #[test]
+    fn old_seeds_still_make_the_same_scenes() {
+        // Variations of every preset made by the explorer before new groups were added (one scene
+        // per line). Adding groups must never change what the old ones roll.
+        let old = include_str!("../tests/old-variations.ron.txt");
+        let old_groups = &ALL[..11];
+        let presets = Scene::presets();
+        let mut lines = old.lines().peekable();
+        let mut checked = 0;
+        while lines.peek().is_some() {
+            for (seed, amount) in [(1u64, 1.0f32), (77, 0.6), (31337, 0.3)] {
+                let expected: Scene = ron::from_str(lines.next().unwrap()).unwrap();
+                // Presets added since then aren't in the file.
+                let preset = presets.iter().find(|p| p.name == expected.name).expect("an old preset was removed");
+                let groups: Vec<Group> =
+                    (0..preset.scene.spawners.len()).map(Group::Balls).chain(old_groups.iter().copied()).collect();
+                assert_eq!(preset.scene.variation(&groups, seed, amount), expected, "{} seed {seed}", preset.name);
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 39);
+    }
+
+    #[test]
+    fn caption_rolls_add_a_hook_or_restyle_existing_captions() {
+        let scene = Scene::escape_rings();
+        let rolled = scene.variation(&[Group::Captions], 4, 1.0);
+        assert!(!rolled.captions.is_empty());
+        assert_eq!(rolled.captions[0].style, CaptionStyle::Hook);
+        // Nothing else changes.
+        assert_eq!(Scene { captions: Vec::new(), ..rolled.clone() }, scene);
+        // A small amount rarely adds captions, and never touches other settings.
+        let nudged = scene.variation(&[Group::Captions], 4, 0.0);
+        assert!(nudged.captions.is_empty());
+        // Existing captions keep their style and get a new hook.
+        let mut with = scene.clone();
+        with.captions.push(Caption::new("Hello", CaptionStyle::Hook));
+        with.captions.push(Caption::new("{time}", CaptionStyle::Timer));
+        let changed: Vec<String> =
+            (0..20).map(|seed| with.variation(&[Group::Captions], seed, 1.0).captions[0].text.clone()).collect();
+        assert!(changed.iter().any(|t| t != "Hello"));
+        assert!((0..20).all(|seed| with.variation(&[Group::Captions], seed, 1.0).captions[1].text == "{time}"));
+    }
+
+    #[test]
+    fn instrument_rolls_change_the_pluck_only() {
+        let scene = Scene::default();
+        let rolled = scene.variation(&[Group::Instrument], 9, 1.0);
+        assert_ne!(rolled.sound.instrument, scene.sound.instrument);
+        assert_eq!(Scene { sound: scene.sound.clone(), ..rolled.clone() }, scene);
+        assert_eq!(rolled.sound.progression, scene.sound.progression);
     }
 }

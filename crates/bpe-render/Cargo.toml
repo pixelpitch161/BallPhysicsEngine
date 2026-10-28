@@ -12,6 +12,7 @@ wgpu.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 anyhow.workspace = true
+fontdue = "0.9"
 pollster.workspace = true
 bpe-graph.workspace = true
 bpe-music.workspace = true

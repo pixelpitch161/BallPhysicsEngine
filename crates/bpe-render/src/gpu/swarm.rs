@@ -244,7 +244,8 @@ impl SwarmSim {
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
         self.flocking = params.steer[1] > 0.0 || params.steer[2] > 0.0;
         self.ensure_group(device, sdf);
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm start"), timestamp_writes: None });
+        let mut pass = encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm start"), timestamp_writes: None });
         pass.set_pipeline(&self.init);
         pass.set_bind_group(0, inputs, &[0]);
         pass.set_bind_group(1, self.group.as_ref().unwrap(), &[]);
@@ -280,7 +281,8 @@ impl SwarmSim {
     ) {
         self.ensure_group(device, sdf);
         let flocking = self.flocking;
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm step"), timestamp_writes: None });
+        let mut pass = encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm step"), timestamp_writes: None });
         pass.set_bind_group(0, inputs, &[offset]);
         pass.set_bind_group(1, self.group.as_ref().unwrap(), &[]);
         if flocking {

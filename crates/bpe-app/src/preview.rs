@@ -143,6 +143,16 @@ impl Preview {
         self.renderer.effect_gpu_errors()
     }
 
+    /// Caption font files that couldn't be read, as (path, reason).
+    pub fn font_errors(&self) -> &[(String, String)] {
+        self.renderer.font_errors()
+    }
+
+    /// Sets the folder captions' relative font paths are looked up in.
+    pub fn set_font_folder(&mut self, folder: Option<std::path::PathBuf>) {
+        self.renderer.set_font_folder(folder);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn show(
         slot: &mut Option<Self>,

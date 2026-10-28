@@ -208,7 +208,10 @@ impl FluidSim {
         use wgpu::ShaderStages as S;
         let mut entries = vec![util::uniform_entry(0, S::COMPUTE, false)];
         entries.extend((1..=7).map(|b| util::storage_entry(b, S::COMPUTE, false)));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("fluid layout"), entries: &entries });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fluid layout"),
+            entries: &entries,
+        });
         let extra_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fluid extra layout"),
             entries: &[
@@ -222,8 +225,11 @@ impl FluidSim {
             bind_group_layouts: &[Some(inputs_layout), Some(&layout), Some(&extra_layout)],
             immediate_size: 0,
         });
-        let module =
-            util::shader(device, "fluid", &[util::COMMON_WGSL, super::STEP_WGSL, include_str!("../shaders/gpu/fluid.wgsl")]);
+        let module = util::shader(
+            device,
+            "fluid",
+            &[util::COMMON_WGSL, super::STEP_WGSL, include_str!("../shaders/gpu/fluid.wgsl")],
+        );
         let passes = PASSES.map(|entry| util::compute_pipeline(device, entry, &pipeline_layout, &module, entry));
 
         let surface_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -241,7 +247,8 @@ impl FluidSim {
             bind_group_layouts: &[Some(&surface_layout)],
             immediate_size: 0,
         });
-        let surface_module = util::shader(device, "fluid surface", &[include_str!("../shaders/gpu/fluid_surface.wgsl")]);
+        let surface_module =
+            util::shader(device, "fluid surface", &[include_str!("../shaders/gpu/fluid_surface.wgsl")]);
         let make = |label, vs, fs, format, blend, topology| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -430,8 +437,11 @@ impl FluidSim {
                     .enumerate()
                     .map(|(k, b)| wgpu::BindGroupEntry { binding: k as u32 + 2, resource: b.as_entire_binding() }),
             );
-            self.group =
-                Some(device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("fluid"), layout: &self.layout, entries: &entries }));
+            self.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fluid"),
+                layout: &self.layout,
+                entries: &entries,
+            }));
         }
         if self.extra.is_none() {
             self.extra = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -460,7 +470,8 @@ impl FluidSim {
             return;
         }
         self.ensure_groups(device, sdf);
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fluid step"), timestamp_writes: None });
+        let mut pass = encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fluid step"), timestamp_writes: None });
         pass.set_bind_group(0, inputs, &[offset]);
         pass.set_bind_group(1, self.group.as_ref().unwrap(), &[]);
         pass.set_bind_group(2, self.extra.as_ref().unwrap(), &[]);
@@ -527,8 +538,10 @@ impl FluidSim {
         };
         let draw = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let (tw, th) = (size.0.div_ceil(2), size.1.div_ceil(2));
-        let thick_a = texture("fluid thickness", tw, th, wgpu::TextureFormat::R16Float, draw).create_view(&Default::default());
-        let thick_b = texture("fluid thickness blur", tw, th, wgpu::TextureFormat::R16Float, draw).create_view(&Default::default());
+        let thick_a =
+            texture("fluid thickness", tw, th, wgpu::TextureFormat::R16Float, draw).create_view(&Default::default());
+        let thick_b = texture("fluid thickness blur", tw, th, wgpu::TextureFormat::R16Float, draw)
+            .create_view(&Default::default());
         let behind = texture(
             "behind the liquid",
             size.0,

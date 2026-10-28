@@ -4,7 +4,7 @@ use super::{Roll, dice_button, grid, heading, hint, key, label, percent, resetta
 use crate::theme;
 use bpe_render::EffectLibrary;
 use bpe_render::effects::{self as fx, EffectInfo, ParamKind};
-use bpe_scene::{Dice, Effect, Property, Scene};
+use bpe_scene::{Effect, Property, Scene};
 use eframe::egui::{self, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -115,37 +115,7 @@ fn looks() -> Vec<(&'static str, &'static str, Vec<Effect>)> {
     ]
 }
 
-/// Rolls new slider values for an effect. Values land nearer the effect's defaults than its
-/// slider ends, which are often extreme, and some sliders are left alone because most values
-/// look broken. See [`Scene::roll`] for `amount`.
-pub fn roll_effect(effect: &mut Effect, library: &EffectLibrary, dice: &mut Dice, amount: f32) {
-    let Some(info) = library.get(&effect.shader) else { return };
-    // Echo's zoom smears anything that doesn't move, like the arena's wall, into a grey disc.
-    const KEEP: [&str; 1] = ["zoom"];
-    for param in &info.params {
-        let rolled = dice.range(param.min, param.max);
-        let flip = dice.chance(0.3);
-        if KEEP.contains(&param.name.as_str()) {
-            continue;
-        }
-        let current = effect.params.get(&param.name).copied().filter(|v| v.is_finite()).unwrap_or(param.default);
-        let value = match param.kind {
-            ParamKind::Toggle => {
-                if flip && dice.chance(amount) {
-                    1.0 - current.round()
-                } else {
-                    current
-                }
-            }
-            ParamKind::Whole | ParamKind::Slider => {
-                let target = param.default + (rolled - param.default) * 0.6;
-                let value = current + (target - current) * amount;
-                if param.kind == ParamKind::Whole { value.round() } else { value }
-            }
-        };
-        effect.params.insert(param.name.clone(), value.clamp(param.min.min(param.max), param.max.max(param.min)));
-    }
-}
+pub use bpe_export::batch::roll_effect;
 
 pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut Option<Roll>) {
     let effects = &mut scene.effects;
