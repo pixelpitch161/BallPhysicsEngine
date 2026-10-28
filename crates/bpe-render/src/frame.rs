@@ -1,6 +1,6 @@
 //! What to draw for one video frame, built on the CPU from the simulation.
 
-use bpe_scene::{Color, Container, ObstaclePart, Scene, Vec2};
+use bpe_scene::{BallFill, BallShape, BallStyle, Color, Container, ObstaclePart, Scene, Vec2};
 use bpe_sim::{Counts, Event, EventKind, Outline, Playback, Simulation};
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::TAU;
@@ -21,6 +21,125 @@ pub struct BallInstance {
     pub center: [f32; 2],
     pub radius: f32,
     pub color: [f32; 4],
+    /// A style's second colour (patterns and gradients), linear light.
+    pub color2: [f32; 4],
+    pub outline_color: [f32; 4],
+    /// Shape, fill (-1 draws the classic shiny ball that follows the Look tab), pattern size,
+    /// corner roundness.
+    pub form: [f32; 4],
+    /// Outline width in pixels, glow, opacity, pattern angle in radians.
+    pub look: [f32; 4],
+    /// Unit direction the ball is stretched along, its length along that direction and across
+    /// it, both as multiples of the radius.
+    pub stretch: [f32; 4],
+    /// How far the drawn quad reaches, in radii; glow reach in radii.
+    pub extent: [f32; 4],
+}
+
+impl BallInstance {
+    /// A ball drawn the classic way, following the scene's Look settings.
+    pub fn classic(center: Vec2, radius: f32, color: [f32; 4]) -> Self {
+        Self {
+            center: center.into(),
+            radius,
+            color,
+            color2: color,
+            outline_color: color,
+            form: [0.0, -1.0, 1.0, 0.0],
+            look: [0.0, 0.0, 1.0, 0.0],
+            stretch: [1.0, 0.0, 1.0, 1.0],
+            extent: [3.0, 0.8, 0.0, 0.0],
+        }
+    }
+
+    /// A ball drawn with its own style at `time` seconds, moving at `velocity`.
+    pub fn styled(center: Vec2, velocity: Vec2, radius: f32, color: [f32; 4], style: &BallStyle, time: f32) -> Self {
+        let (color, color2, outline) = style_colors(style, color, time);
+        let speed = velocity.length();
+        let heading = if speed > 1e-3 { velocity / speed } else { Vec2::X };
+        // Fast balls stretch along their path and thin out across it, keeping about the same area.
+        let amount = style.stretch.clamp(0.0, 1.0) * (speed / 1500.0).min(1.5);
+        let along = 1.0 + amount;
+        let across = 1.0 / along.sqrt();
+        let stretches = amount > 1e-4 || style.face_motion;
+        let dir = if stretches { heading } else { Vec2::X };
+        let mut angle = (style.turn + style.spin * time).to_radians();
+        if style.face_motion {
+            // Shapes point up at no turn; a quarter turn points them along the motion.
+            angle += std::f32::consts::FRAC_PI_2;
+        } else if stretches {
+            // Keep the pattern still on screen while the quad lines up with the motion.
+            angle -= heading.to_angle();
+        }
+        let glow_size = style.glow_size.max(0.05);
+        let outline_px = style.outline.max(0.0);
+        // The quad covers the shape (stars and hearts poke a little past the radius) and its glow.
+        let reach = if style.glow > 0.0 { 1.3 + glow_size * 2.5 } else { 1.3 };
+        Self {
+            center: center.into(),
+            radius,
+            color,
+            color2,
+            outline_color: outline,
+            form: [
+                shape_code(style.shape),
+                fill_code(style.fill),
+                style.pattern_size.max(0.1),
+                style.roundness.clamp(0.0, 1.0),
+            ],
+            look: [outline_px, style.glow.max(0.0), style.opacity.clamp(0.0, 1.0), angle],
+            stretch: [dir.x, dir.y, along, across],
+            extent: [reach, glow_size, 0.0, 0.0],
+        }
+    }
+}
+
+fn shape_code(shape: BallShape) -> f32 {
+    match shape {
+        BallShape::Circle => 0.0,
+        BallShape::Square => 1.0,
+        BallShape::Triangle => 2.0,
+        BallShape::Diamond => 3.0,
+        BallShape::Hexagon => 4.0,
+        BallShape::Star => 5.0,
+        BallShape::Heart => 6.0,
+        BallShape::Donut => 7.0,
+    }
+}
+
+fn fill_code(fill: BallFill) -> f32 {
+    match fill {
+        BallFill::Solid => 0.0,
+        BallFill::Shiny => 1.0,
+        BallFill::Radial => 2.0,
+        BallFill::Linear => 3.0,
+        BallFill::Stripes => 4.0,
+        BallFill::Rings => 5.0,
+        BallFill::Dots => 6.0,
+        BallFill::Checker => 7.0,
+        BallFill::Halves => 8.0,
+        BallFill::Slices => 9.0,
+        BallFill::Swirl => 10.0,
+        BallFill::Face => 11.0,
+    }
+}
+
+/// A styled ball's fill, second and outline colours at `time`, turned around the colour wheel
+/// when the style cycles through the rainbow. All linear light.
+fn style_colors(style: &BallStyle, color: [f32; 4], time: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+    let second = style.second_color.to_linear();
+    let outline = style.outline_color.to_linear();
+    if style.rainbow == 0.0 {
+        return (color, second, outline);
+    }
+    let turn = style.rainbow * time;
+    (shift_linear_hue(color, turn), shift_linear_hue(second, turn), outline)
+}
+
+/// Turns a linear-light colour `turn` of the way around the colour wheel.
+fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
+    let shifted = Color::from_linear([color[0], color[1], color[2], 1.0]).shift_hue(turn).to_linear();
+    [shifted[0], shifted[1], shifted[2], color[3]]
 }
 
 #[repr(C)]
@@ -97,6 +216,8 @@ impl ShapeInstance {
 pub struct FrameData {
     pub balls: Vec<BallInstance>,
     pub trails: Vec<TrailVertex>,
+    /// Trails of balls with their own style, which set their own brightness.
+    pub styled_trails: Vec<TrailVertex>,
     pub flashes: Vec<FlashInstance>,
     /// The newest wall hits, newest first, at most [`crate::MAX_EFFECT_HITS`].
     pub hits: Vec<RecentHit>,
@@ -181,6 +302,7 @@ impl FrameData {
         };
         self.balls.clear();
         self.trails.clear();
+        self.styled_trails.clear();
         self.flashes.clear();
         self.hits.clear();
         self.shapes.clear();
@@ -196,23 +318,53 @@ impl FrameData {
             self.push_walls(scene, playback);
             self.push_strings(scene, playback);
 
+            let time = sim.time() as f32;
+            let style_of = |ball: &bpe_sim::Ball| scene.spawners.get(ball.group as usize).and_then(|s| s.style());
             for ball in sim.balls().iter().filter(|b| b.alive) {
-                self.balls.push(BallInstance { center: ball.position.into(), radius: ball.radius, color: ball.color });
+                self.balls.push(match style_of(ball) {
+                    None => BallInstance::classic(ball.position, ball.radius, ball.color),
+                    Some(style) => {
+                        BallInstance::styled(ball.position, ball.velocity, ball.radius, ball.color, style, time)
+                    }
+                });
             }
             // Soft bodies, billiard pockets and spinning balls' glints (physics workstream).
             self.push_soft(scene, sim, pixel);
 
-            if look.trail_seconds > 0.0 && look.trail_opacity > 0.0 {
-                let mut points = Vec::new();
-                for (index, ball) in sim.balls().iter().enumerate() {
-                    if !ball.alive {
-                        continue;
+            let classic_trails = look.trail_seconds > 0.0 && look.trail_opacity > 0.0;
+            // The simulation keeps enough trail for the longest one drawn; the scene's own trails
+            // stop where they always did.
+            let classic_samples = sim.trail_samples(sim.scene().look.trail_seconds);
+            let mut points = Vec::new();
+            for (index, ball) in sim.balls().iter().enumerate() {
+                if !ball.alive {
+                    continue;
+                }
+                match style_of(ball) {
+                    None if classic_trails => {
+                        points.clear();
+                        points.push(ball.position);
+                        points.extend(sim.trail(index).take(classic_samples));
+                        let half_width = ball.radius * look.trail_width;
+                        push_streak(&mut self.trails, &points, half_width, ball.color, pixel);
                     }
-                    points.clear();
-                    points.push(ball.position);
-                    points.extend(sim.trail(index));
-                    let half_width = ball.radius * look.trail_width;
-                    push_streak(&mut self.trails, &points, half_width, ball.color, pixel);
+                    Some(style) if style.trail_seconds > 0.0 && style.trail_opacity > 0.0 => {
+                        points.clear();
+                        points.push(ball.position);
+                        points.extend(sim.trail(index).take(sim.trail_samples(style.trail_seconds)));
+                        let (fill, second, outline) = style_colors(style, ball.color, time);
+                        let c = match style.trail_color {
+                            bpe_scene::TrailColor::Ball => fill,
+                            bpe_scene::TrailColor::Second => second,
+                            bpe_scene::TrailColor::Outline => outline,
+                        };
+                        // Styled trails carry their own brightness instead of the scene's.
+                        let o = style.trail_opacity.clamp(0.0, 1.0) * style.opacity.clamp(0.0, 1.0);
+                        let color = [c[0] * o, c[1] * o, c[2] * o, 1.0];
+                        let half_width = ball.radius * style.trail_width;
+                        push_streak(&mut self.styled_trails, &points, half_width, color, pixel);
+                    }
+                    _ => {}
                 }
             }
 

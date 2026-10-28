@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     fn ball(position: Vec2, velocity: Vec2) -> Ball {
-        Ball { position, velocity, radius: 5.0, color: [1.0; 4], wall_hits: 0, alive: true }
+        Ball { position, velocity, radius: 5.0, color: [1.0; 4], wall_hits: 0, group: 0, alive: true }
     }
 
     const STILL: (Vec2, f32, f32) = (Vec2::ZERO, 0.0, 0.0);

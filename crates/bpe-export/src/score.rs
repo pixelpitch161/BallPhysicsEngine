@@ -606,6 +606,7 @@ mod tests {
                 color: bpe_scene::Color::WHITE,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             ..Scene::default()
         };

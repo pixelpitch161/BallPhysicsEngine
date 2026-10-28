@@ -170,6 +170,7 @@ pub(crate) fn step(
                 radius: p.radius,
                 color: [0.0; 4],
                 wall_hits: 0,
+                group: 0,
                 alive: true,
             };
             let hit = sim.bounce_point(&mut ball, p.prev, &frame, rings);

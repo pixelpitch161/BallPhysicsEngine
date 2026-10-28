@@ -941,7 +941,7 @@ mod tests {
     }
 
     fn single(position: Vec2, velocity: Vec2, radius: f32, depth: f32, depth_velocity: f32) -> Spawner {
-        Spawner::Single { position, velocity, radius, color: Color::WHITE, depth, depth_velocity }
+        Spawner::Single { position, velocity, radius, color: Color::WHITE, depth, depth_velocity, style: None }
     }
 
     fn run(scene: &Scene, seconds: f64) -> (SpaceSimulation, Vec<Event>) {
@@ -1046,6 +1046,7 @@ mod tests {
             gradient: vec![Color::WHITE],
             depth: 0.0,
             depth_velocity: 0.0,
+            style: None,
         }];
         scene.rules.spawn_per_hit = 1;
         scene.rules.max_balls = 40;

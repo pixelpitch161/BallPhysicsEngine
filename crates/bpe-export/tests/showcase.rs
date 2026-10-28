@@ -202,6 +202,7 @@ pub fn everything() -> Scene {
             gradient: vec![Color::rgb(0xff, 0x3e, 0x8e), Color::rgb(0xff, 0xb8, 0x2e), Color::rgb(0x2e, 0xb8, 0xff)],
             depth: 0.0,
             depth_velocity: 0.0,
+            style: None,
         }],
         physics: Physics {
             gravity: Vec2::new(0.0, 500.0),

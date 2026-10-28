@@ -205,6 +205,7 @@ fn single_ball(velocity: Vec2) -> Scene {
         color: Color::WHITE,
         depth: 0.0,
         depth_velocity: 0.0,
+        style: None,
     }];
     Scene { spawners, ..Scene::default() }
 }
@@ -749,4 +750,78 @@ fn switching_a_rule_set_off_keeps_it() {
     let logic = &harness.state().scene.logic;
     assert_eq!(logic.len(), 1);
     assert!(!logic[0].enabled);
+}
+
+// ---- Ball looks ----
+
+fn two_plain_balls() -> Scene {
+    let mut scene = single_ball(Vec2::new(300.0, -200.0));
+    *scene.spawners[0].style_mut() = Some(bpe_scene::BallStyle::default());
+    let mut other = scene.spawners[0].clone();
+    if let Spawner::Single { color, .. } = &mut other {
+        *color = Color::rgb(0x20, 0x80, 0xff);
+    }
+    scene.spawners.push(other);
+    scene
+}
+
+#[test]
+fn new_balls_start_plain_and_old_ones_keep_the_classic_look() {
+    let mut harness = harness(Tab::Balls, Scene::default());
+    harness.get_by_label("These balls use the classic look.");
+    for button in ["+ Add one ball", "+ Add a block of balls", "+ Add a stream"] {
+        harness.get_by_label(button).click();
+        harness.run();
+        let added = harness.state().scene.spawners.last().unwrap().style().cloned();
+        assert_eq!(added, Some(bpe_scene::BallStyle::default()), "{button}");
+    }
+    assert_eq!(harness.state().scene.spawners[0].style(), None);
+}
+
+#[test]
+fn customising_a_classic_ball_starts_from_how_it_looks() {
+    let mut harness = harness(Tab::Balls, Scene::default());
+    harness.get_by_label("Customise").click();
+    harness.run();
+    let scene = &harness.state().scene;
+    assert_eq!(scene.spawners[0].style(), Some(&bpe_scene::BallStyle::like_classic(&scene.look)));
+}
+
+#[test]
+fn ctrl_click_picks_several_ball_groups() {
+    let mut harness = harness(Tab::Balls, two_plain_balls());
+    let cards: Vec<egui::Rect> = harness.get_all_by_label("Single ball").map(|n| n.rect()).collect();
+    assert_eq!(cards.len(), 2);
+    click_at(&mut harness, cards[0].center());
+    harness.run();
+    harness.event(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+    harness.step();
+    click_at(&mut harness, cards[1].center());
+    harness.step();
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run();
+    assert_eq!(harness.state().inspector.looks.picked, vec![0, 1]);
+    harness.get_by_label("2 groups picked: a change to one's look is made to all of them.");
+}
+
+#[test]
+fn a_look_change_on_one_picked_group_reaches_the_others() {
+    use bpe_scene::{BallFill, BallShape, BallStyle};
+    let mut scene = two_plain_balls();
+    *scene.spawners[1].style_mut() = Some(BallStyle { fill: BallFill::Dots, ..BallStyle::default() });
+    let before: Vec<_> = scene.spawners.iter().map(|s| s.style().cloned()).collect();
+    scene.spawners[0].style_mut().as_mut().unwrap().shape = BallShape::Star;
+    let looks = inspector::ball_look::State { picked: vec![0, 1], ..Default::default() };
+    looks.share_changes(&before, &mut scene.spawners);
+    let other = scene.spawners[1].style().unwrap();
+    assert_eq!(other.shape, BallShape::Star, "the change is shared");
+    assert_eq!(other.fill, BallFill::Dots, "settings that weren't changed stay as they were");
+
+    // Groups that aren't picked are left alone.
+    let mut scene = two_plain_balls();
+    let before: Vec<_> = scene.spawners.iter().map(|s| s.style().cloned()).collect();
+    scene.spawners[0].style_mut().as_mut().unwrap().glow = 1.0;
+    let looks = inspector::ball_look::State { picked: vec![0], ..Default::default() };
+    looks.share_changes(&before, &mut scene.spawners);
+    assert_eq!(scene.spawners[1].style().unwrap().glow, 0.0);
 }

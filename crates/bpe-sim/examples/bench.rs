@@ -42,6 +42,7 @@ fn grid(columns: u32, rows: u32, spacing: f32, radius: f32, center: Vec2) -> Spa
         gradient: vec![Color::WHITE],
         depth: 0.0,
         depth_velocity: 0.0,
+        style: None,
     }
 }
 
