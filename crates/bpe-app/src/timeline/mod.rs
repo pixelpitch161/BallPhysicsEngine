@@ -15,6 +15,7 @@ mod song;
 mod text;
 
 pub use lanes::{Lane, LaneContext, Scale};
+pub use song::MusicView;
 
 use crate::inspector::Tab;
 use crate::keys::{self, KeyState};
@@ -45,6 +46,8 @@ pub struct HitSummary {
     /// The whole video's event log, for lanes that show more than bounces.
     #[allow(dead_code)] // read by the rules, notes and text lanes as they fill in
     pub events: std::sync::Arc<Vec<Event>>,
+    /// Music workstream: the song, beats and notes for the Song and Notes lanes.
+    pub music: Option<std::sync::Arc<song::MusicView>>,
 }
 
 impl HitSummary {
@@ -64,7 +67,7 @@ impl HitSummary {
             }
             counts[bucket] += 1;
         }
-        Self { counts, escapes, total, events: std::sync::Arc::new(events.to_vec()) }
+        Self { counts, escapes, total, events: std::sync::Arc::new(events.to_vec()), music: None }
     }
 
     /// The most hits in any slice from `from` to `to` seconds.

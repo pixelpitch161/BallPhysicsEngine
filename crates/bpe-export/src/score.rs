@@ -207,8 +207,13 @@ pub struct SimStats {
 
 /// Simulates `scene` once, without drawing or mixing sound.
 pub fn simulate(scene: &Scene) -> SimStats {
+    simulate_with(scene, &bpe_sim::SimInputs::default())
+}
+
+/// [`simulate`] with the song's beats, as the finished video plays it.
+pub fn simulate_with(scene: &Scene, inputs: &bpe_sim::SimInputs) -> SimStats {
     let duration = scene.video.duration.max(0.0) as f64;
-    let mut sim = Simulation::new(scene);
+    let mut sim = Simulation::with_inputs(scene, inputs);
     let mut stats = SimStats {
         duration,
         rings: match scene.container {
@@ -220,7 +225,7 @@ pub fn simulate(scene: &Scene) -> SimStats {
     };
     if scene.space().is_some() {
         // 3D: only the hits are measured; the balls live in the 3D simulation.
-        stats.hits = bpe_sim::collect_wall_hits(scene);
+        stats.hits = bpe_sim::collect_events(scene, inputs);
         return stats;
     }
     let (half_w, half_h) = (scene.video.width as f32 * 0.5, scene.video.height as f32 * 0.5);

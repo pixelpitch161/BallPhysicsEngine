@@ -191,9 +191,11 @@ pub fn variation(
     (scene, song)
 }
 
-/// Makes `scene` play `song`. Scenes gain a song track with the music workstream; until then the
-/// song is only recorded in the batch.
-fn apply_song(_scene: &mut Scene, _song: &str) {}
+/// Makes `scene` play `song` (a full path) from its start.
+fn apply_song(scene: &mut Scene, song: &str) {
+    scene.music.song = Some(song.to_string());
+    scene.music.offset = 0.0;
+}
 
 /// How good and how slow the rendered videos are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,7 +348,7 @@ pub struct Manifest {
     /// change a batch that is half done.
     pub base_scene: String,
     pub weights: Weights,
-    /// Song file names, from the songs folder, sorted.
+    /// Song files from the songs folder, as full paths, sorted.
     pub songs: Vec<String>,
     pub phase: Phase,
     pub jobs: Vec<Job>,
@@ -404,7 +406,7 @@ pub struct Progress {
     pub eta: Option<Duration>,
 }
 
-/// Song files in `folder`, sorted by name.
+/// Song files in `folder` as full paths, sorted by name.
 pub fn list_songs(folder: &Path) -> anyhow::Result<Vec<String>> {
     let mut songs: Vec<String> = std::fs::read_dir(folder)
         .with_context(|| format!("reading the songs folder {}", folder.display()))?
@@ -413,7 +415,7 @@ pub fn list_songs(folder: &Path) -> anyhow::Result<Vec<String>> {
         .filter(|path| {
             path.extension().is_some_and(|e| SONG_TYPES.iter().any(|t| e.to_string_lossy().eq_ignore_ascii_case(t)))
         })
-        .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .map(|path| path.to_string_lossy().into_owned())
         .collect();
     songs.sort();
     Ok(songs)
@@ -481,7 +483,7 @@ struct Prepared {
     index: usize,
     scene: Scene,
     stats: score::SimStats,
-    soundtrack: anyhow::Result<bpe_audio::Soundtrack>,
+    sound: anyhow::Result<bpe_audio::SceneSound>,
 }
 
 impl Runner<'_> {
@@ -615,9 +617,13 @@ impl Runner<'_> {
             let (spec, songs, base_dir, library) = (spec.clone(), songs.clone(), base_dir.clone(), library.clone());
             std::thread::spawn(move || {
                 let (scene, _) = variation(&base, &spec.vary, seed, spec.amount, &library, &songs);
-                let stats = score::simulate(&scene);
-                let soundtrack = bpe_audio::render_soundtrack(&scene, &stats.hits, base_dir.as_deref());
-                Prepared { index, scene, stats, soundtrack }
+                let sound = bpe_audio::render_scene(&scene, base_dir.as_deref());
+                // Scored as the video plays, beats and all.
+                let stats = match &sound {
+                    Ok(sound) => score::simulate_with(&scene, &sound.inputs),
+                    Err(_) => score::simulate(&scene),
+                };
+                Prepared { index, scene, stats, sound }
             })
         };
         let mut rendered_seconds = Vec::new();
@@ -638,8 +644,8 @@ impl Runner<'_> {
             let partial = self.folder.join(format!("{name}.partial.mp4"));
             let _ = std::fs::remove_file(&partial);
             options.output = partial.clone();
-            let soundtrack = match &prepared.soundtrack {
-                Ok(track) => track,
+            let sound = match &prepared.sound {
+                Ok(sound) => sound,
                 Err(error) => {
                     fail(&mut manifest.jobs[index], error);
                     manifest.save(&self.folder)?;
@@ -664,7 +670,7 @@ impl Runner<'_> {
                 self.queue,
                 &prepared.scene,
                 &options,
-                Some(soundtrack),
+                Some(sound),
                 |frame, of| {
                     if frame % 10 == 0 || frame == of {
                         progress(
@@ -715,7 +721,8 @@ impl Runner<'_> {
                     let video = format!("{name}.mp4");
                     std::fs::rename(&partial, self.folder.join(&video))?;
                     prepared.scene.save(self.folder.join(format!("{name}.ron")))?;
-                    let inputs = ScoreInputs { beats: &[], soundtrack: Some(soundtrack), frames: &frames };
+                    let inputs =
+                        ScoreInputs { beats: &sound.beats, soundtrack: Some(&sound.mix.track), frames: &frames };
                     let parts = score::parts(&prepared.scene, &prepared.stats, &inputs);
                     job.score = Some(manifest.weights.score(parts));
                     job.video = Some(video);
@@ -1037,7 +1044,11 @@ mod tests {
         std::fs::write(songs.join("a.WAV"), b"").unwrap();
         std::fs::write(songs.join("notes.txt"), b"").unwrap();
         let manifest = open(&dir.join("out"), &spec, &Scene::default(), Weights::default()).unwrap();
-        assert_eq!(manifest.songs, ["a.WAV", "b.mp3"]);
+        let names: Vec<_> = manifest.songs.iter().map(|s| Path::new(s).file_name().unwrap().to_owned()).collect();
+        assert_eq!(names, ["a.WAV", "b.mp3"]);
+        let (scene, song) = variation(&Scene::default(), &spec.vary, 1, 0.5, &EffectLibrary::new(), &manifest.songs);
+        assert_eq!(scene.music.song, song);
+        assert!(Path::new(&song.unwrap()).is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

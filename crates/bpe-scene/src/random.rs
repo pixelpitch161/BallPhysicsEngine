@@ -390,13 +390,10 @@ impl Scene {
             Group::Captions => self.roll_captions(dice, amount),
             Group::Instrument => {
                 let (decay, brightness) = (dice.log_range(0.25, 3.0), dice.range(0.15, 0.95));
-                match &mut self.sound.instrument {
-                    Instrument::Pluck { decay: d, brightness: b } => {
-                        set(d, decay, amount);
-                        set(b, brightness, amount);
-                    }
-                    // A sample or a library instrument keeps its sound; the music workstream rolls those.
-                    Instrument::Sample { .. } | Instrument::Library { .. } => {}
+                // Instruments made from files or the built-in library keep their sound.
+                if let Instrument::Pluck { decay: d, brightness: b } = &mut self.sound.instrument {
+                    set(d, decay, amount);
+                    set(b, brightness, amount);
                 }
             }
         }

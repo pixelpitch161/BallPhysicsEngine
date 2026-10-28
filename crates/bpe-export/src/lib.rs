@@ -255,14 +255,14 @@ pub fn export_video_with(
     queue: &wgpu::Queue,
     scene: &Scene,
     options: &ExportOptions,
-    soundtrack: Option<&bpe_audio::Soundtrack>,
+    sound: Option<&bpe_audio::SceneSound>,
     mut progress: impl FnMut(u32, u32) -> bool,
     mut on_frame: impl FnMut(u32, &[u8]),
 ) -> anyhow::Result<Encoder> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
-    match export_with(device, queue, scene, options, encoder, soundtrack, &mut progress, &mut on_frame) {
+    match export_with(device, queue, scene, options, encoder, sound, &mut progress, &mut on_frame) {
         Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
-            export_with(device, queue, scene, options, Encoder::Cpu, soundtrack, &mut progress, &mut on_frame)
+            export_with(device, queue, scene, options, Encoder::Cpu, sound, &mut progress, &mut on_frame)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
             Ok(Encoder::Cpu)
         }
@@ -283,7 +283,7 @@ fn export_with(
     scene: &Scene,
     options: &ExportOptions,
     encoder: Encoder,
-    soundtrack: Option<&bpe_audio::Soundtrack>,
+    sound: Option<&bpe_audio::SceneSound>,
     progress: &mut impl FnMut(u32, u32) -> bool,
     on_frame: &mut impl FnMut(u32, &[u8]),
 ) -> anyhow::Result<()> {
@@ -295,17 +295,21 @@ fn export_with(
     }
     let total = options.max_frames.map_or(scene.frame_count(), |m| m.min(scene.frame_count()));
 
-    let mixed;
-    let soundtrack = match soundtrack {
-        Some(track) => track,
+    // Music workstream: the song, beat sync and its clock, worked out with the soundtrack. A
+    // batch passes it in, mixed while the video before rendered.
+    let rendered;
+    let sound = match sound {
+        Some(sound) => sound,
         None => {
-            let hits = bpe_sim::collect_wall_hits(scene);
-            mixed = bpe_audio::render_soundtrack(scene, &hits, options.base_dir.as_deref())?;
-            &mixed
+            rendered = bpe_audio::render_scene(scene, options.base_dir.as_deref())?;
+            &rendered
         }
     };
+    if let Some(error) = &sound.song_error {
+        bail!("the song can't be used: {error}");
+    }
     let wav = TempFile::new("wav");
-    soundtrack.write_wav(&wav.0)?;
+    sound.mix.track.write_wav(&wav.0)?;
 
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
@@ -353,9 +357,9 @@ fn export_with(
     renderer.set_effect_library(options.effects.clone());
     renderer.set_font_folder(options.base_dir.clone());
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
-    let mut playback = Playback::new(scene);
+    let mut playback = Playback::with_inputs(scene, &sound.inputs);
     // Effects and modulators that pulse with the music follow the finished soundtrack.
-    let mix = bpe_render::effects::mix_features(&soundtrack.samples, bpe_audio::SAMPLE_RATE, 2);
+    let mix = bpe_render::effects::mix_features(&sound.mix.track.samples, bpe_audio::SAMPLE_RATE, 2);
     let mut frame = FrameData { mix: Some(mix), ..FrameData::default() };
     let pixel = renderer.pixel_size(scene);
     let mut failed = None;
@@ -363,7 +367,7 @@ fn export_with(
     let mut sent = 0;
     for index in 0..total {
         let time = index as f64 / fps as f64;
-        playback.seek(time);
+        playback.seek(sound.sim_time(time));
         frame.fill(scene, &playback, pixel);
         renderer.render(device, queue, scene, time, &frame);
         let ready = match readback.push(device, queue, &renderer) {
@@ -431,11 +435,18 @@ pub fn export_still(
     scale: f32,
     ffmpeg: &Path,
     output: &Path,
+    base_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, scale);
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(effects.clone());
-    let mut playback = Playback::new(scene);
+    // Music workstream: a scene that follows a beat is simulated with it, on beat sync's clock.
+    let clock = bpe_audio::scene_clock(scene, base_dir);
+    if let Some(error) = &clock.song_error {
+        bail!("the song can't be used: {error}");
+    }
+    let sim_time = |t: f64| clock.sim_time(t);
+    let mut playback = Playback::with_inputs(scene, &clock.inputs);
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
     // Effects like Echo build up over many frames, so play the moments before `time` first.
@@ -445,11 +456,11 @@ pub fn export_still(
     let last = (time * fps).round() as u64;
     for index in first..last {
         let t = index as f64 / fps;
-        playback.seek(t);
+        playback.seek(sim_time(t));
         frame.fill(scene, &playback, pixel);
         renderer.render(device, queue, scene, t, &frame);
     }
-    playback.seek(time);
+    playback.seek(sim_time(time));
     frame.fill(scene, &playback, pixel);
     renderer.render(device, queue, scene, time, &frame);
     let pixels = renderer.read_output(device, queue)?;

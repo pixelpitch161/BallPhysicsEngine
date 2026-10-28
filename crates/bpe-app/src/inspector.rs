@@ -23,12 +23,9 @@ pub(crate) use effects::pretty_name;
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BounceRules, ChordStep, Color, Container, Dice, Group, Instrument, Look, Obstacle, Physics, Property,
-    Scene, Sound, Spawner, Vec2,
+    ArenaMotion, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene, Spawner, Vec2,
 };
-use eframe::egui::{
-    self, Color32, DragValue, Popup, PopupCloseBehavior, Response, RichText, Sense, Slider, Ui, emath::Numeric,
-};
+use eframe::egui::{self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, emath::Numeric};
 use std::ops::RangeInclusive;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,10 +268,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Sound => {
-                    sound(ui, &mut scene.sound, &mut roll);
-                    music::section(ui, scene, &mut inspector.music);
-                    let fresh = default_sound(&scene.sound);
-                    reset_tab_to(ui, &mut scene.sound, fresh);
+                    // Music workstream: the whole Sound tab, its reset button included, lives in music.rs.
+                    music::section(ui, scene, &mut inspector.music, &mut roll);
                 }
                 Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
                 Tab::Text => {
@@ -305,15 +300,6 @@ fn reset_tab_to<T: PartialEq>(ui: &mut Ui, value: &mut T, default: T) {
     if reset_tab(ui, *value != default) {
         *value = default;
     }
-}
-
-/// Default sound settings that keep the user's own chords, note shuffle and WAV file.
-fn default_sound(current: &Sound) -> Sound {
-    let instrument = match &current.instrument {
-        Instrument::Pluck { .. } | Instrument::Library { .. } => Sound::default().instrument,
-        Instrument::Sample { path, .. } => Instrument::Sample { path: path.clone(), root_note: SAMPLE_ROOT_NOTE },
-    };
-    Sound { progression: current.progression.clone(), seed: current.seed, instrument, ..Sound::default() }
 }
 
 fn tip(ui: &mut Ui) {
@@ -906,7 +892,6 @@ const BOX_SIZE: Vec2 = Vec2::new(1000.0, 1000.0);
 const POLYGON_RADIUS: f32 = 480.0;
 const LINE_WIDTH: f32 = 3.0;
 const LINE_COLOR: Color = Color::rgb(0xd8, 0xdc, 0xd0);
-const SAMPLE_ROOT_NOTE: u8 = 60;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Shape {
@@ -1751,248 +1736,6 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
     });
 }
 
-const ROOTS: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
-const QUALITIES: [(&str, &str); 10] = [
-    ("", "Major"),
-    ("m", "Minor"),
-    ("7", "7"),
-    ("m7", "m7"),
-    ("maj7", "maj7"),
-    ("sus2", "sus2"),
-    ("sus4", "sus4"),
-    ("add9", "add9"),
-    ("dim", "dim"),
-    ("aug", "aug"),
-];
-
-/// Splits a chord name into its root ("F#") and quality ("m7").
-fn split_chord(chord: &str) -> (&str, &str) {
-    let len = chord.chars().next().map_or(0, char::len_utf8);
-    let len = match chord[len..].chars().next() {
-        Some('#') | Some('b') => len + 1,
-        _ => len,
-    };
-    chord.split_at(len.min(chord.len()))
-}
-
-fn sound(ui: &mut Ui, sound: &mut Sound, roll: &mut Option<Roll>) {
-    let d = Sound::default();
-    ui.checkbox(&mut sound.enabled, "Play a note on every wall hit");
-    ui.add_enabled_ui(sound.enabled, |ui| {
-        heading_dice(ui, "Chords", Group::Chords, roll);
-        ui.label(
-            RichText::new("Each hit plays a note from the current chord. Click a chord to change it.")
-                .color(theme::MUTED),
-        );
-        chords(ui, &mut sound.progression);
-        ui.add_space(6.0);
-        heading_dice(ui, "Notes", Group::Notes, roll);
-        grid(ui, "sound", |ui| {
-            label(ui, "Sound", "A built-in plucked string, or your own WAV file.");
-            ui.horizontal(|ui| {
-                let is_pluck = matches!(sound.instrument, Instrument::Pluck { .. });
-                if ui.add(egui::Button::selectable(is_pluck, "Pluck")).clicked() && !is_pluck {
-                    sound.instrument = Instrument::Pluck { decay: 0.9, brightness: 0.5 };
-                }
-                if ui.add(egui::Button::selectable(!is_pluck, "My WAV file")).clicked() && is_pluck {
-                    sound.instrument = Instrument::Sample { path: String::new(), root_note: SAMPLE_ROOT_NOTE };
-                }
-            });
-            ui.end_row();
-            match &mut sound.instrument {
-                Instrument::Pluck { decay, brightness } => {
-                    slider(
-                        ui,
-                        "Ring time",
-                        "How long each note rings before fading out.",
-                        decay,
-                        0.9,
-                        0.05..=6.0,
-                        units(" s", 2),
-                    );
-                    slider(
-                        ui,
-                        "Brightness",
-                        "Higher sounds sharper, lower sounds softer.",
-                        brightness,
-                        0.5,
-                        0.0..=1.0,
-                        percent,
-                    );
-                }
-                Instrument::Sample { path, root_note } => {
-                    label(ui, "File", "The WAV file to play on each hit. It is pitched up or down to match the chord.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Choose…").clicked()
-                            && let Some(file) = rfd::FileDialog::new().add_filter("WAV audio", &["wav"]).pick_file()
-                        {
-                            *path = file.display().to_string();
-                        }
-                        let name = std::path::Path::new(path.as_str())
-                            .file_name()
-                            .map_or("No file chosen".into(), |n| n.to_string_lossy().into_owned());
-                        ui.label(name).on_hover_text(path.as_str());
-                    });
-                    ui.end_row();
-                    slider(
-                        ui,
-                        "Note in the file",
-                        "The note your recording plays, so it can be tuned to the chords. Middle C is C4.",
-                        root_note,
-                        SAMPLE_ROOT_NOTE,
-                        24..=108,
-                        note_names,
-                    );
-                }
-                Instrument::Library { name } => {
-                    label(ui, "Instrument", "A built-in instrument from the library.");
-                    ui.label(name.as_str());
-                    ui.end_row();
-                }
-            }
-            slider(
-                ui,
-                "Lowest note",
-                "The lowest note a hit can play. Middle C is C4.",
-                &mut sound.low_note,
-                d.low_note,
-                24..=108,
-                note_names,
-            );
-            slider(
-                ui,
-                "Highest note",
-                "The highest note a hit can play.",
-                &mut sound.high_note,
-                d.high_note,
-                24..=108,
-                note_names,
-            );
-            if sound.high_note < sound.low_note {
-                sound.high_note = sound.low_note;
-            }
-            slider(
-                ui,
-                "Loudness",
-                "Overall loudness of the soundtrack. -14 is the usual level for TikTok, Reels and Shorts.",
-                &mut sound.target_loudness,
-                d.target_loudness,
-                -40.0..=-6.0,
-                units(" dB", 0),
-            );
-        });
-        ui.add_space(4.0);
-        if ui
-            .button("Shuffle notes")
-            .on_hover_text("Pick a different set of notes for the same chords. Keep clicking until you like it.")
-            .clicked()
-        {
-            let nanos =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.subsec_nanos());
-            sound.seed = sound.seed.wrapping_mul(6364136223846793005).wrapping_add(nanos as u64 | 1) % 1_000_000;
-        }
-        more(ui, "sound-more", |ui| {
-            grid(ui, "sound-more-grid", |ui| {
-                slider(
-                    ui,
-                    "Quietest hit heard",
-                    "Gentle hits slower than this make no sound, which avoids a buzz when balls roll along the wall.",
-                    &mut sound.min_impact_speed,
-                    d.min_impact_speed,
-                    0.0..=2000.0,
-                    units(" px/s", 0),
-                );
-                slider(
-                    ui,
-                    "Full volume at",
-                    "Hits at this speed or faster play at full volume.",
-                    &mut sound.full_volume_speed,
-                    d.full_volume_speed,
-                    1.0..=10000.0,
-                    log_units(" px/s"),
-                );
-                slider(
-                    ui,
-                    "Stereo width",
-                    "Pans hits left and right by where they happen. 0% is mono.",
-                    &mut sound.stereo_width,
-                    d.stereo_width,
-                    0.0..=1.0,
-                    percent,
-                );
-            });
-        });
-    });
-}
-
-fn note_names(slider: Slider<'_>) -> Slider<'_> {
-    slider.custom_formatter(|n, _| note_name(n as u8)).custom_parser(parse_note)
-}
-
-/// Chord buttons. Clicking one opens a small editor for its root, type and length.
-fn chords(ui: &mut Ui, progression: &mut Vec<ChordStep>) {
-    let mut remove = None;
-    let mut swap = None;
-    let count = progression.len();
-    ui.horizontal_wrapped(|ui| {
-        for (i, step) in progression.iter_mut().enumerate() {
-            let text = RichText::new(format!("{}  ", step.chord)).strong();
-            let response = ui
-                .add(egui::Button::new((
-                    text,
-                    RichText::new(format!("{:.1}s", step.seconds)).small().color(theme::MUTED),
-                )))
-                .on_hover_text("Click to change this chord");
-            Popup::menu(&response).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                ui.set_min_width(300.0);
-                let (root, quality) = split_chord(&step.chord);
-                let (root, quality) = (root.to_string(), quality.to_string());
-                ui.label(RichText::new("Note").color(theme::MUTED));
-                ui.horizontal_wrapped(|ui| {
-                    for name in ROOTS {
-                        if ui.add(egui::Button::selectable(root == name, name)).clicked() {
-                            step.chord = format!("{name}{quality}");
-                        }
-                    }
-                });
-                ui.label(RichText::new("Type").color(theme::MUTED));
-                ui.horizontal_wrapped(|ui| {
-                    for (suffix, name) in QUALITIES {
-                        if ui.add(egui::Button::selectable(quality == suffix, name)).clicked() {
-                            step.chord = format!("{root}{suffix}");
-                        }
-                    }
-                });
-                ui.label(RichText::new("Length").color(theme::MUTED));
-                ui.add(units(" s", 1)(Slider::new(&mut step.seconds, 0.25..=16.0)));
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(i > 0, egui::Button::new("Move earlier")).clicked() {
-                        swap = Some((i - 1, i));
-                    }
-                    if ui.add_enabled(i + 1 < count, egui::Button::new("Move later")).clicked() {
-                        swap = Some((i, i + 1));
-                    }
-                    if ui.add_enabled(count > 1, egui::Button::new("Remove")).clicked() {
-                        remove = Some(i);
-                        ui.close();
-                    }
-                });
-            });
-        }
-        if ui.button("+").on_hover_text("Add a chord").clicked() {
-            let next = progression.last().cloned().unwrap_or(ChordStep { chord: "C".into(), seconds: 4.0 });
-            progression.push(next);
-        }
-    });
-    if let Some((a, b)) = swap {
-        progression.swap(a, b);
-    }
-    if let Some(i) = remove {
-        progression.remove(i);
-    }
-}
-
 pub fn note_name(note: u8) -> String {
     const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     format!("{}{}", NAMES[note as usize % 12], note as i32 / 12 - 1)
@@ -2021,18 +1764,6 @@ fn parse_note(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn chord_names_split_into_root_and_type() {
-        assert_eq!(split_chord("F#m7"), ("F#", "m7"));
-        assert_eq!(split_chord("Bb"), ("Bb", ""));
-        assert_eq!(split_chord("Dsus4"), ("D", "sus4"));
-        for root in ROOTS {
-            for (quality, _) in QUALITIES {
-                assert!(bpe_audio::chord::pitch_classes(&format!("{root}{quality}")).is_some(), "{root}{quality}");
-            }
-        }
-    }
 
     #[test]
     fn note_names() {

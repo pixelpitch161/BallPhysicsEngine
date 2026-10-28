@@ -659,6 +659,7 @@ fn job_card(ui: &mut egui::Ui, job: &Job, given: Option<bool>, weights: &Weights
     if let Some(error) = &job.error {
         ui.add(egui::Label::new(RichText::new(error).small().color(theme::ERROR)).truncate());
     } else if let Some(song) = &job.song {
+        let song = std::path::Path::new(song).file_name().map_or(song.clone(), |n| n.to_string_lossy().into_owned());
         ui.add(egui::Label::new(RichText::new(song).small().color(theme::MUTED)).truncate());
     } else if let Some(score) = score {
         ui.add(egui::Label::new(RichText::new(strongest(&score)).small().color(theme::MUTED)).truncate());

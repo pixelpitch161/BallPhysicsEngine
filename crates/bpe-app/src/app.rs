@@ -11,7 +11,6 @@ use crate::timeline::{HitSummary, Timeline};
 use crate::workspace::Workspace;
 use crate::{node_editor, rules_workspace, shader_workspace};
 use crate::{settings, theme};
-use bpe_audio::Soundtrack;
 use bpe_scene::{Property, Scene, Value};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke};
@@ -43,6 +42,9 @@ pub struct StudioApp {
     audio: Option<AudioOut>,
     audio_error: Option<String>,
     sound: SoundJob,
+    /// Music workstream: beat sync's Warp clock from the latest soundtrack. The preview shows
+    /// simulation time `warp.sim_time(t)` at video time `t`.
+    warp: Option<bpe_sim::beat_sync::TimeWarp>,
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
@@ -135,10 +137,10 @@ impl History {
     }
 }
 
-/// A finished soundtrack: its generation, the result, the hits it was made from, and how long
-/// it took in milliseconds.
+/// A finished soundtrack: its generation, the result with the hits it was made from, and how
+/// long it took in milliseconds.
 /// (WS5) Also the soundtrack's analysis, for visuals that pulse with the finished mix.
-type SoundResult = (u64, anyhow::Result<(Soundtrack, Arc<bpe_music::AudioFeatures>)>, HitSummary, f32);
+type SoundResult = (u64, anyhow::Result<(bpe_audio::SceneSound, Arc<bpe_music::AudioFeatures>)>, HitSummary, f32);
 
 /// Mixes the soundtrack on a background thread whenever the scene changes.
 struct SoundJob {
@@ -178,7 +180,7 @@ impl StudioApp {
         };
         let (sender, receiver) = channel();
         Self {
-            playback: Playback::new(&scene),
+            playback: Playback::with_inputs(&scene, &bpe_audio::sim_inputs(&scene, None)),
             saved_scene: scene.clone(),
             scene,
             scene_path,
@@ -200,6 +202,7 @@ impl StudioApp {
                 receiver,
                 error: None,
             },
+            warp: None,
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
@@ -234,7 +237,14 @@ impl StudioApp {
     }
 
     fn scene_changed(&mut self) {
-        self.playback = Playback::new(&self.scene);
+        // Music workstream: follow the song's beats straight away when the song is already
+        // loaded. Warp's clock and a song read for the first time arrive with the soundtrack.
+        let base_dir = self.base_dir();
+        let song = bpe_audio::cached_song(&self.scene, base_dir.as_deref());
+        self.playback = Playback::with_inputs(&self.scene, &bpe_audio::sim_inputs(&self.scene, song.as_ref()));
+        if self.scene.music.beat_sync.mode != bpe_scene::SyncMode::Warp {
+            self.warp = None;
+        }
         self.timeline.clear_hits();
         self.time = self.time.min(self.scene.video.duration as f64);
         self.sound.dirty_since = Some(Instant::now());
@@ -346,11 +356,20 @@ impl StudioApp {
             self.meter.sound_ms = Some(took);
             self.timeline.set_hits(hits);
             match result {
-                Ok((track, mix)) => {
+                Ok((sound, mix)) => {
                     self.sound.error = None;
                     self.mix = Some(mix);
+                    // Music workstream: the preview follows the same beats and clock as the sound.
+                    self.inspector.music.report = inspector::music::Report::new(&sound);
+                    let inputs = self.playback.simulation().inputs();
+                    let same_music = inputs.music.as_ref().map(|m| m.duration())
+                        == sound.inputs.music.as_ref().map(|m| m.duration());
+                    if inputs.beats != sound.inputs.beats || !same_music {
+                        self.playback = Playback::with_inputs(&self.scene, &sound.inputs);
+                    }
+                    self.warp = sound.warp;
                     if let Some(audio) = &self.audio {
-                        audio.set_track(Arc::new(track.samples));
+                        audio.set_track(Arc::new(sound.mix.track.samples));
                         if self.playing {
                             audio.play_from(self.time);
                         }
@@ -358,6 +377,12 @@ impl StudioApp {
                 }
                 Err(error) => {
                     self.sound.error = Some(format!("{error:#}"));
+                    self.inspector.music.report = Default::default();
+                    if self.warp.take().is_some() {
+                        let song = bpe_audio::cached_song(&self.scene, self.base_dir().as_deref());
+                        self.playback =
+                            Playback::with_inputs(&self.scene, &bpe_audio::sim_inputs(&self.scene, song.as_ref()));
+                    }
                     // WS5: don't keep pulsing to a soundtrack that is gone.
                     self.mix = None;
                 }
@@ -372,14 +397,22 @@ impl StudioApp {
                 (self.sound.generation, self.scene.clone(), self.base_dir(), self.sound.sender.clone(), ctx.clone());
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let hits = bpe_sim::collect_wall_hits(&scene);
-                let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref()).map(|track| {
+                let result = bpe_audio::render_scene(&scene, base_dir.as_deref()).map(|sound| {
                     // WS5: what the finished mix sounds like, for visuals that pulse with it.
-                    let mix = bpe_render::effects::mix_features(&track.samples, bpe_audio::SAMPLE_RATE, 2);
-                    (track, mix)
+                    let mix = bpe_render::effects::mix_features(&sound.mix.track.samples, bpe_audio::SAMPLE_RATE, 2);
+                    (sound, mix)
                 });
+                let hits = match &result {
+                    Ok((sound, _)) => {
+                        let mut hits = HitSummary::new(&sound.video_events());
+                        hits.music = Some(Arc::new(crate::timeline::MusicView::new(&scene, sound)));
+                        hits
+                    }
+                    // The bounces still show when a sound file is missing.
+                    Err(_) => HitSummary::new(&bpe_sim::collect_wall_hits(&scene)),
+                };
                 let took = started.elapsed().as_secs_f32() * 1000.0;
-                let _ = sender.send((generation, result, HitSummary::new(&hits), took));
+                let _ = sender.send((generation, result, hits, took));
                 ctx.request_repaint();
             });
         } else if self.sound.dirty_since.is_some() {
@@ -616,7 +649,8 @@ impl StudioApp {
             frame,
             &mut self.scene,
             &mut self.playback,
-            self.time,
+            // Music workstream: Warp shows the simulation on its bent clock.
+            self.warp.as_ref().map_or(self.time, |w| w.sim_time(self.time)),
             self.playing,
             self.inspector.selected,
             &self.inspector.effects.library,
@@ -861,7 +895,10 @@ impl eframe::App for StudioApp {
             .max_size(600.0)
             .resizable(true)
             .frame(egui::Frame::new().fill(theme::PANEL))
-            .show(ui, |ui| inspector::show(ui, &mut self.inspector, &mut self.scene));
+            .show(ui, |ui| {
+                self.inspector.music.base_dir = self.base_dir();
+                inspector::show(ui, &mut self.inspector, &mut self.scene)
+            });
 
         // Coming into the Batch workspace makes batches from the scene as it is now.
         if self.workspace == Workspace::Batch && !self.in_batch {

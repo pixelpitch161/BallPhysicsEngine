@@ -4,10 +4,21 @@
 //! is mixed offline, so the preview and the exported video play the very same audio.
 
 pub mod chord;
+pub mod instruments;
+mod scene_sound;
+mod song;
+mod voices;
+
+pub use bpe_music::{AudioFeatures, midi};
+pub use scene_sound::{
+    SceneClock, SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, scene_clock,
+    sim_inputs,
+};
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
 use bpe_sim::{Event, EventKind};
+use instruments::{load_mono, pluck, repitch};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,7 +27,9 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// Peak ceiling for the final mix, about -1 dBFS, which streaming platforms expect.
 const PEAK_CEILING: f32 = 0.89;
 /// Notes in the strum that plays when a ball escapes a ring.
-const ESCAPE_STRUM: usize = 4;
+pub(crate) const ESCAPE_STRUM: usize = 4;
+/// Frames between the notes of a strum.
+pub(crate) const STRUM_SPACING: usize = SAMPLE_RATE as usize * 35 / 1000;
 
 /// Interleaved stereo audio at [`SAMPLE_RATE`].
 #[derive(Clone, Debug, Default)]
@@ -49,17 +62,93 @@ impl Soundtrack {
     }
 }
 
+/// One note the soundtrack played, for drawing the timeline's notes lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayedNote {
+    /// Seconds into the video.
+    pub time: f64,
+    pub key: u8,
+    /// 0 to 1.
+    pub velocity: f32,
+    /// Row of the voices table that played it (0 when the table is empty).
+    pub voice: u16,
+    /// Which step of the melody it was, when a melody is playing.
+    pub step: Option<u32>,
+}
+
+/// A finished soundtrack and the notes in it.
+#[derive(Clone, Debug, Default)]
+pub struct Mix {
+    pub track: Soundtrack,
+    /// Every note played, by time.
+    pub notes: Vec<PlayedNote>,
+}
+
+/// What the mixer needs besides the scene and its events.
+#[derive(Clone, Copy, Default)]
+pub struct MixOptions<'a> {
+    /// Folder that relative sample, SoundFont and MIDI paths start from, normally the scene
+    /// file's folder.
+    pub base_dir: Option<&'a Path>,
+    /// The decoded song (interleaved stereo at [`SAMPLE_RATE`]), when the scene has one.
+    pub song: Option<&'a [f32]>,
+    /// Turns simulation time into video time, for beat sync's Warp mode. None keeps them equal.
+    pub time_map: Option<&'a (dyn Fn(f64) -> f64 + Sync)>,
+}
+
+impl MixOptions<'_> {
+    /// When an event is heard. Every event, beats included, happened in simulation time.
+    fn video_time(&self, event: &Event) -> f64 {
+        self.time_map.map_or(event.time, |map| map(event.time))
+    }
+}
+
 /// Builds the soundtrack for a scene from its event log: a note for each hit and a strum for
 /// each escape. Relative sample paths are resolved against `base_dir`, normally the folder the
 /// scene file lives in.
 pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path>) -> anyhow::Result<Soundtrack> {
+    Ok(mix(scene, events, &MixOptions { base_dir, ..MixOptions::default() })?.track)
+}
+
+/// Builds the soundtrack for a scene from its events: the bounce sounds, then the song mixed
+/// under them, levelled to the scene's loudness target.
+pub fn mix(scene: &Scene, events: &[Event], options: &MixOptions) -> anyhow::Result<Mix> {
     let sound = &scene.sound;
     let mut track = Soundtrack::silent(scene.video.duration);
-    if !sound.enabled || !events.iter().any(|e| e.kind.is_bounce()) {
-        return Ok(track);
+    let mut notes = Vec::new();
+    if sound.enabled {
+        if voices::plays_like_before(scene) {
+            classic_layer(scene, events, options, &mut track, &mut notes)?;
+        } else {
+            voices::layer(scene, events, options, &mut track, &mut notes)?;
+        }
+    }
+    match options.song {
+        Some(song) if scene.music.song.is_some() => {
+            song::mix_in(&mut track.samples, song, &scene.music, sound.target_loudness);
+        }
+        _ => normalize_loudness(&mut track.samples, sound.target_loudness),
+    }
+    limit_peaks(&mut track.samples);
+    notes.sort_by(|a, b| a.time.total_cmp(&b.time));
+    Ok(Mix { track, notes })
+}
+
+/// The bounce sounds as they always were: one instrument, notes from the chord progression,
+/// escapes strumming the chord. Kept sample for sample so older scenes sound the same.
+fn classic_layer(
+    scene: &Scene,
+    events: &[Event],
+    options: &MixOptions,
+    track: &mut Soundtrack,
+    played: &mut Vec<PlayedNote>,
+) -> anyhow::Result<()> {
+    let sound = &scene.sound;
+    if !events.iter().any(|e| e.kind.is_bounce()) {
+        return Ok(());
     }
     let progression = Progression::new(scene)?;
-    let mut voice = Voice::new(&sound.instrument, base_dir)?;
+    let mut voice = Voice::new(&sound.instrument, options.base_dir)?;
     let (center, half_width) = (scene.container.center().x, scene.container.half_width());
     let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
@@ -71,11 +160,12 @@ pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path
         if hit.speed < sound.min_impact_speed {
             continue;
         }
-        let start = (hit.time * SAMPLE_RATE as f64).round() as usize;
+        let time = options.video_time(hit);
+        let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;
         }
-        let candidates = progression.notes_at(hit.time);
+        let candidates = progression.notes_at(time);
         if candidates.is_empty() {
             continue;
         }
@@ -85,7 +175,7 @@ pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // An escape plays a quick rising strum of the chord, from the picked note upwards.
         let (count, gain, spacing) = match hit.kind {
-            EventKind::Escape(_) => (ESCAPE_STRUM, 0.8, SAMPLE_RATE as usize * 35 / 1000),
+            EventKind::Escape(_) => (ESCAPE_STRUM, 0.8, STRUM_SPACING),
             _ => (1, velocity * velocity.sqrt(), 0),
         };
         let (left, right) = (gain * angle.cos(), gain * angle.sin());
@@ -96,6 +186,8 @@ pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path
                 break;
             }
             notes.push(Placed { start, note, left, right });
+            let time = start as f64 / SAMPLE_RATE as f64;
+            played.push(PlayedNote { time, key: note, velocity: gain, voice: 0, step: None });
         }
     }
 
@@ -104,10 +196,10 @@ pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path
     wanted.sort_unstable();
     wanted.dedup();
     voice.prepare(&wanted);
-    mix(&mut track.samples, &notes, &voice);
-    normalize_loudness(&mut track.samples, sound.target_loudness);
-    limit_peaks(&mut track.samples);
-    Ok(track)
+    mix_notes(&mut track.samples, &notes, |placed| {
+        (placed.start, voice.get(placed.note), placed.left, placed.right, 0)
+    });
+    Ok(())
 }
 
 /// One note placed in the mix.
@@ -120,14 +212,20 @@ struct Placed {
 }
 
 /// How many threads to share work between.
-fn threads() -> usize {
+pub(crate) fn threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32)
 }
 
-/// Adds every note into `samples` (interleaved stereo). The clip is cut into stretches that are
-/// mixed side by side on all cores. Within a stretch the notes are added in their listed order,
-/// so each sample gets exactly the same sum, in the same order, as mixing them one by one.
-fn mix(samples: &mut [f32], notes: &[Placed], voice: &Voice) {
+/// Adds every note into `samples` (interleaved stereo). `place` gives a note's first frame,
+/// its sound, its left and right gains, and how many frames at the end of the sound to fade
+/// out (for notes cut short). The clip is cut into stretches that are mixed side by side on all
+/// cores. Within a stretch the notes are added in their listed order, so each sample gets
+/// exactly the same sum, in the same order, as mixing them one by one.
+pub(crate) fn mix_notes<'w, N: Sync>(
+    samples: &mut [f32],
+    notes: &'w [N],
+    place: impl Fn(&'w N) -> (usize, &'w [f32], f32, f32, usize) + Sync,
+) {
     let frames = samples.len() / 2;
     let pieces = (threads() * 4).min(frames.div_ceil(4096)).max(1);
     let stretch = frames.div_ceil(pieces).max(1);
@@ -140,18 +238,28 @@ fn mix(samples: &mut [f32], notes: &[Placed], voice: &Voice) {
             let Some(chunk) = chunks.get(k) else { break };
             let mut out = chunk.lock().unwrap();
             let (first, last) = (k * stretch, k * stretch + out.len() / 2);
-            for placed in notes {
-                let wave = voice.get(placed.note);
-                let end = (placed.start + wave.len()).min(frames);
-                if placed.start >= last || end <= first {
+            for note in notes {
+                let (start, wave, left, right, fade) = place(note);
+                let end = (start + wave.len()).min(frames);
+                if start >= last || end <= first {
                     continue;
                 }
-                let (from, to) = (placed.start.max(first), end.min(last));
-                let wave = &wave[from - placed.start..to - placed.start];
-                let out = &mut out[(from - first) * 2..(to - first) * 2];
-                for (frame, &s) in out.chunks_exact_mut(2).zip(wave) {
-                    frame[0] += s * placed.left;
-                    frame[1] += s * placed.right;
+                let (from, to) = (start.max(first), end.min(last));
+                // The faded tail is mixed separately so plain notes keep the simplest loop.
+                let fade_from = (start + wave.len()).saturating_sub(fade).clamp(from, to);
+                let plain = &wave[from - start..fade_from - start];
+                let target = &mut out[(from - first) * 2..(fade_from - first) * 2];
+                for (frame, &s) in target.chunks_exact_mut(2).zip(plain) {
+                    frame[0] += s * left;
+                    frame[1] += s * right;
+                }
+                let tail = &wave[fade_from - start..to - start];
+                let target = &mut out[(fade_from - first) * 2..(to - first) * 2];
+                let remaining = start + wave.len() - fade_from;
+                for (i, (frame, &s)) in target.chunks_exact_mut(2).zip(tail).enumerate() {
+                    let s = s * (remaining - i) as f32 / fade.max(1) as f32;
+                    frame[0] += s * left;
+                    frame[1] += s * right;
                 }
             }
         }
@@ -165,13 +273,13 @@ fn mix(samples: &mut [f32], notes: &[Placed], voice: &Voice) {
 }
 
 /// Chord progression laid out in time, with the playable notes of each chord precomputed.
-struct Progression {
+pub(crate) struct Progression {
     steps: Vec<(f64, Vec<u8>)>,
     cycle: f64,
 }
 
 impl Progression {
-    fn new(scene: &Scene) -> anyhow::Result<Self> {
+    pub(crate) fn new(scene: &Scene) -> anyhow::Result<Self> {
         let sound = &scene.sound;
         let (low, high) = (sound.low_note.min(sound.high_note), sound.high_note.max(sound.low_note));
         let mut steps = Vec::new();
@@ -191,7 +299,7 @@ impl Progression {
         Ok(Self { steps, cycle: end })
     }
 
-    fn notes_at(&self, time: f64) -> &[u8] {
+    pub(crate) fn notes_at(&self, time: f64) -> &[u8] {
         let t = time.rem_euclid(self.cycle);
         let index = self.steps.iter().position(|(end, _)| t < *end).unwrap_or(self.steps.len() - 1);
         &self.steps[index].1
@@ -222,8 +330,6 @@ impl Voice {
             Instrument::Pluck { decay, brightness } => {
                 Source::Pluck { decay: decay.max(0.02), brightness: brightness.clamp(0.0, 1.0) }
             }
-            // The instrument library isn't in yet, so library instruments play the pluck.
-            Instrument::Library { .. } => Source::Pluck { decay: 0.9, brightness: 0.5 },
             Instrument::Sample { path, root_note } => {
                 let full = match base_dir {
                     Some(dir) if Path::new(path).is_relative() => dir.join(path),
@@ -232,6 +338,8 @@ impl Voice {
                 let (wave, rate) = load_mono(&full).with_context(|| format!("loading sample {}", full.display()))?;
                 Source::Sample { wave, rate, root_note: *root_note }
             }
+            // The library's instruments play through the voices table instead.
+            other => anyhow::bail!("{other:?} doesn't play through the classic sound"),
         };
         Ok(Self { source, cache: HashMap::new() })
     }
@@ -293,75 +401,10 @@ impl Voice {
     }
 }
 
-fn midi_to_hz(note: f32) -> f32 {
-    440.0 * 2f32.powf((note - 69.0) / 12.0)
-}
-
-/// A soft plucked tone: a few harmonics that fade faster the higher they are.
-fn pluck(note: u8, decay: f32, brightness: f32) -> Vec<f32> {
-    let freq = midi_to_hz(note as f32);
-    let sr = SAMPLE_RATE as f32;
-    let len = (decay * sr) as usize;
-    let attack = 0.003 * sr;
-    let partials: Vec<(f32, f32, f32)> = (1..=8)
-        .map(|k| {
-            let k = k as f32;
-            let amp = brightness.powf(k - 1.0) / k;
-            // -60 dB (ln 1000 = 6.9) over `decay`, faster for higher partials.
-            let rate = 6.9 * (1.0 + (k - 1.0) * 0.8) / decay;
-            (freq * k, amp, rate)
-        })
-        .filter(|(f, amp, _)| *f < sr * 0.45 && *amp > 1e-3)
-        .collect();
-    let norm: f32 = partials.iter().map(|p| p.1).sum();
-    (0..len)
-        .map(|i| {
-            let t = i as f32 / sr;
-            let onset = (i as f32 / attack).min(1.0);
-            let s: f32 = partials
-                .iter()
-                .map(|(f, amp, rate)| amp * (-rate * t).exp() * (std::f32::consts::TAU * f * t).sin())
-                .sum();
-            s * onset / norm
-        })
-        .collect()
-}
-
-/// Resamples a mono sample so it plays `semitones` higher (or lower) at [`SAMPLE_RATE`].
-fn repitch(wave: &[f32], rate: f32, semitones: f32) -> Vec<f32> {
-    let step = 2f32.powf(semitones / 12.0) * rate / SAMPLE_RATE as f32;
-    let len = (wave.len() as f32 / step) as usize;
-    (0..len)
-        .map(|i| {
-            let x = i as f32 * step;
-            let j = x as usize;
-            let f = x - j as f32;
-            let a = wave.get(j).copied().unwrap_or(0.0);
-            let b = wave.get(j + 1).copied().unwrap_or(0.0);
-            a + (b - a) * f
-        })
-        .collect()
-}
-
-fn load_mono(path: &Path) -> anyhow::Result<(Vec<f32>, f32)> {
-    let mut reader = hound::WavReader::open(path)?;
-    let spec = reader.spec();
-    let channels = spec.channels.max(1) as usize;
-    let interleaved: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
-        hound::SampleFormat::Int => {
-            let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
-            reader.samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect::<Result<_, _>>()?
-        }
-    };
-    let mono = interleaved.chunks(channels).map(|c| c.iter().sum::<f32>() / channels as f32).collect();
-    Ok((mono, spec.sample_rate as f32))
-}
-
 /// Scales the mix so its loud passages sit at `target_db` RMS (roughly LUFS for this kind of
 /// dense, even material). Uses the 90th percentile of 400 ms windows so quiet starts and
 /// endings do not drag the level around.
-fn normalize_loudness(samples: &mut [f32], target_db: f32) {
+pub(crate) fn normalize_loudness(samples: &mut [f32], target_db: f32) {
     let window = (SAMPLE_RATE as usize * 2 * 4) / 10;
     let mut levels: Vec<f32> = samples
         .chunks(window)
@@ -411,7 +454,7 @@ fn limit_peaks(samples: &mut [f32]) {
 }
 
 /// SplitMix64: a small, well-mixed hash, so note choice is random-looking but repeatable.
-fn mix64(mut x: u64) -> u64 {
+pub(crate) fn mix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -462,7 +505,7 @@ mod tests {
             let wanted: Vec<u8> = (50..80).collect();
             voice.prepare(&wanted);
             let mut parallel = Soundtrack::silent(scene.video.duration).samples;
-            mix(&mut parallel, &notes, &voice);
+            mix_notes(&mut parallel, &notes, |p| (p.start, voice.get(p.note), p.left, p.right, 0));
             let mut serial = Soundtrack::silent(scene.video.duration).samples;
             let frames = serial.len() / 2;
             for placed in &notes {
