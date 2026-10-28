@@ -541,3 +541,16 @@ fn picking_escape_rings_keeps_the_arena_position() {
     // The ring settings show up straight away.
     harness.get_by_label("Gap size");
 }
+
+#[test]
+fn turning_off_the_speed_limit_hides_top_speed() {
+    let mut harness = harness(Tab::Bounces, Scene::default());
+    assert!(harness.query_by_label("Top speed").is_some());
+    harness.get_by_label("Cap the top speed").click();
+    harness.run();
+    assert!(!harness.state().scene.rules.limit_speed);
+    assert!(harness.query_by_label("Top speed").is_none());
+    harness.get_by_label("Cap the top speed").click();
+    harness.run();
+    assert!(harness.state().scene.rules.limit_speed);
+}
