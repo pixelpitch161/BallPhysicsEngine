@@ -189,26 +189,56 @@ impl Voice {
         !matches!(self.source, Source::Pluck { .. } | Source::Sample { .. })
     }
 
+    /// The cache slot for a note at a strength.
+    fn slot(&self, note: u8, velocity: f32) -> (u8, u8) {
+        let layer = if self.layered() { (velocity.clamp(0.0, 1.0) * (LAYERS - 1) as f32).round() as u8 } else { 0 };
+        (note.min(127), layer)
+    }
+
+    fn render(&self, (note, layer): (u8, u8)) -> Vec<f32> {
+        let v = layer as f32 / (LAYERS - 1) as f32;
+        match &self.source {
+            Source::Pluck { decay, brightness } => synth::pluck(note, *decay, *brightness),
+            Source::Sample { wave, rate, root_note } => samples::repitch(wave, *rate, note as f32 - *root_note as f32),
+            Source::Builtin(builtin) => builtin.render(note, v),
+            Source::Folder(folder) => folder.note(note, v),
+            Source::SoundFont(font) => font.note(note, v),
+        }
+    }
+
+    /// Makes every note in `wanted` (note, strength) that isn't made yet, on all cores.
+    pub fn prepare(&mut self, wanted: &[(u8, f32)]) {
+        let mut missing: Vec<(u8, u8)> =
+            wanted.iter().map(|&(n, v)| self.slot(n, v)).filter(|slot| !self.cache.contains_key(slot)).collect();
+        missing.sort_unstable();
+        missing.dedup();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let made = std::sync::Mutex::new(Vec::new());
+        let this = &*self;
+        let work = || {
+            while let Some(&slot) = missing.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                let wave: Arc<[f32]> = this.render(slot).into();
+                made.lock().unwrap().push((slot, wave));
+            }
+        };
+        std::thread::scope(|scope| {
+            for _ in 1..crate::threads().min(missing.len()) {
+                scope.spawn(work);
+            }
+            work();
+        });
+        self.cache.extend(made.into_inner().unwrap());
+    }
+
     /// One note at `velocity` (0 to 1). The wave starts at the note's onset.
     pub fn note(&mut self, note: u8, velocity: f32) -> Arc<[f32]> {
-        let layer = if self.layered() { (velocity.clamp(0.0, 1.0) * (LAYERS - 1) as f32).round() as u8 } else { 0 };
-        let source = &self.source;
-        self.cache
-            .entry((note.min(127), layer))
-            .or_insert_with(|| {
-                let v = layer as f32 / (LAYERS - 1) as f32;
-                let wave = match source {
-                    Source::Pluck { decay, brightness } => synth::pluck(note, *decay, *brightness),
-                    Source::Sample { wave, rate, root_note } => {
-                        samples::repitch(wave, *rate, note as f32 - *root_note as f32)
-                    }
-                    Source::Builtin(builtin) => builtin.render(note, v),
-                    Source::Folder(folder) => folder.note(note, v),
-                    Source::SoundFont(font) => font.note(note, v),
-                };
-                wave.into()
-            })
-            .clone()
+        let slot = self.slot(note, velocity);
+        if let Some(wave) = self.cache.get(&slot) {
+            return wave.clone();
+        }
+        let wave: Arc<[f32]> = self.render(slot).into();
+        self.cache.insert(slot, wave.clone());
+        wave
     }
 }
 
