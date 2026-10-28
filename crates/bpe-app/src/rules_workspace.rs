@@ -74,6 +74,7 @@ pub fn show(ui: &mut Ui, scene: &mut Scene, state: &mut State, rules: Option<(&R
             ui.checkbox(&mut graph.enabled, "On").on_hover_text("Rule sets that are off do nothing");
             if ui.button("Delete").on_hover_text("Remove this rule set (Ctrl+Z brings it back)").clicked() {
                 scene.logic.remove(state.graph);
+                scene.removed_item(bpe_scene::List::Rules, state.graph);
                 state.graph = state.graph.saturating_sub(1);
             }
         }
@@ -107,5 +108,7 @@ pub fn show(ui: &mut Ui, scene: &mut Scene, state: &mut State, rules: Option<(&R
     }
     state.graph = state.graph.min(scene.logic.len() - 1);
     let graph = &mut scene.logic[state.graph];
+    crate::keys::set_canvas(ui.ctx(), Some(crate::keys::Canvas::Rule(state.graph as u32)));
     state.editor.show(ui, graph, catalog(), live);
+    crate::keys::set_canvas(ui.ctx(), None);
 }

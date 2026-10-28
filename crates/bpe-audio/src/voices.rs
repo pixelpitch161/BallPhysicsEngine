@@ -312,14 +312,12 @@ pub(crate) fn layer(
     track: &mut Soundtrack,
     played: &mut Vec<PlayedNote>,
 ) -> anyhow::Result<()> {
-    let sound = &scene.sound;
     let mut tune = Tune::new(scene, options)?;
     let mut rows = rows(scene, options)?;
     // The scene's own instrument comes after the voices table, then the groups' instruments.
     let main = rows.len() - 1;
     let mut groups = group_sounds(scene, options, &mut rows, main)?;
     let (center, half_width) = (scene.container.center().x, scene.container.half_width());
-    let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
     let mut pending = Vec::new();
 
@@ -328,9 +326,11 @@ pub(crate) fn layer(
     for event in events {
         let Some(class) = Class::of(event.kind) else { continue };
         let index = bounces;
+        let time = options.video_time(event);
+        let now = crate::HitSound::at(scene, time);
         if class.is_impact() {
             bounces += 1;
-            if event.speed < sound.min_impact_speed {
+            if event.speed < now.min_speed {
                 continue;
             }
         }
@@ -347,13 +347,12 @@ pub(crate) fn layer(
         if !plays.contains(&true) {
             continue;
         }
-        let time = options.video_time(event);
         let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;
         }
         let impact = if class.is_impact() {
-            let v = ((event.speed - sound.min_impact_speed) / speed_range).clamp(0.0, 1.0);
+            let v = now.velocity(event.speed);
             v * v.sqrt()
         } else {
             PLAIN_VELOCITY
@@ -373,7 +372,7 @@ pub(crate) fn layer(
         let (group_gain, group_pan) = group.map_or((1.0, None), |g| (g.gain, g.pan));
         // Beats and other events without a ball sit in the middle.
         let x = if event.ball_index().is_some() { event.position.x - center } else { 0.0 };
-        let pan = group_pan.unwrap_or((x / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width);
+        let pan = group_pan.unwrap_or((x / half_width.max(1.0)).clamp(-1.0, 1.0) * now.stereo_width);
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         for (r, row) in rows.iter().enumerate() {
             if !plays[r] {

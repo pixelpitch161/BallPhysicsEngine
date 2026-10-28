@@ -1067,6 +1067,7 @@ fn loudness_section(ui: &mut Ui, sound: &mut Sound) {
     });
     more(ui, "sound-more", |ui| {
         grid(ui, "sound-more-grid", |ui| {
+            crate::keys::mark_next(ui, bpe_scene::Property::QuietestHit);
             slider(
                 ui,
                 "Quietest hit heard",
@@ -1076,6 +1077,7 @@ fn loudness_section(ui: &mut Ui, sound: &mut Sound) {
                 0.0..=2000.0,
                 units(" px/s", 0),
             );
+            crate::keys::mark_next(ui, bpe_scene::Property::LoudestHit);
             slider(
                 ui,
                 "Full volume at",
@@ -1085,6 +1087,7 @@ fn loudness_section(ui: &mut Ui, sound: &mut Sound) {
                 1.0..=10000.0,
                 log_units(" px/s"),
             );
+            crate::keys::mark_next(ui, bpe_scene::Property::StereoWidth);
             slider(
                 ui,
                 "Stereo width",
@@ -1133,6 +1136,7 @@ fn song_section(ui: &mut Ui, music: &mut Music, state: &mut State) {
                 0.0..=longest,
                 units(" s", 2),
             );
+            crate::keys::mark_next(ui, bpe_scene::Property::SongVolume);
             slider(
                 ui,
                 "Song volume",
@@ -1142,6 +1146,7 @@ fn song_section(ui: &mut Ui, music: &mut Music, state: &mut State) {
                 -24.0..=6.0,
                 units(" dB", 1),
             );
+            crate::keys::mark_next(ui, bpe_scene::Property::SongDucking);
             slider(
                 ui,
                 "Dip under hits",

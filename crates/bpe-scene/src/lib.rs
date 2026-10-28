@@ -16,14 +16,15 @@ mod music;
 mod particles;
 mod presets;
 mod random;
+mod saved;
 #[cfg(feature = "import")]
 pub mod shape_import;
 pub mod shapes;
 mod view;
 
 pub use animation::{
-    Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
-    remap_effect_modulators,
+    Audio, AudioBand, AudioFrom, BallSetting, Bezier, CaptionSetting, Curve, Ease, Key, Levels, List, Listener,
+    Modulator, Property, SAME_TIME, Track, Value, remap_effect_modulators,
 };
 pub use ball_style::*;
 pub use bodies::*;
@@ -37,6 +38,7 @@ pub use gpu::*;
 pub use music::*;
 pub use particles::*;
 pub use random::{Dice, Group, palette};
+pub use saved::{PresetData, PresetKind, SavedPreset, file_name as saved_file_name};
 pub use shapes::{Placement, Shape};
 pub use view::*;
 

@@ -16,7 +16,7 @@ pub use scene_sound::{
 };
 
 use anyhow::Context;
-use bpe_scene::{Instrument, Scene};
+use bpe_scene::{Instrument, List, Property, Scene};
 use bpe_sim::{Event, EventKind};
 use instruments::{load_mono, pluck, repitch};
 use std::collections::HashMap;
@@ -103,6 +103,43 @@ impl MixOptions<'_> {
     }
 }
 
+/// The sound settings that can be keyframed, as they are at one moment of the video.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HitSound {
+    /// Hits slower than this make no sound.
+    pub min_speed: f32,
+    /// Hits this fast play at full volume.
+    pub full_speed: f32,
+    pub stereo_width: f32,
+}
+
+impl HitSound {
+    /// The settings at `time` seconds into the video.
+    pub fn at(scene: &Scene, time: f64) -> Self {
+        let sound = &scene.sound;
+        let plain = Self {
+            min_speed: sound.min_impact_speed,
+            full_speed: sound.full_volume_speed,
+            stereo_width: sound.stereo_width,
+        };
+        if !scene.animation.iter().any(|t| t.property.affects_sound()) {
+            return plain;
+        }
+        let at = |property, plain| scene.number_at(&property, time as f32).unwrap_or(plain);
+        Self {
+            min_speed: at(Property::QuietestHit, plain.min_speed),
+            full_speed: at(Property::LoudestHit, plain.full_speed),
+            stereo_width: at(Property::StereoWidth, plain.stereo_width),
+        }
+    }
+
+    /// How hard a hit at `speed` plays, from 0 to 1, before shaping.
+    pub fn velocity(&self, speed: f32) -> f32 {
+        let range = (self.full_speed - self.min_speed).max(1.0);
+        ((speed - self.min_speed) / range).clamp(0.0, 1.0)
+    }
+}
+
 /// Builds the soundtrack for a scene from its event log: a note for each hit and a strum for
 /// each escape. Relative sample paths are resolved against `base_dir`, normally the folder the
 /// scene file lives in.
@@ -125,7 +162,7 @@ pub fn mix(scene: &Scene, events: &[Event], options: &MixOptions) -> anyhow::Res
     }
     match options.song {
         Some(song) if scene.music.song.is_some() => {
-            song::mix_in(&mut track.samples, song, &scene.music, sound.target_loudness);
+            song::mix_in(&mut track.samples, song, scene, sound.target_loudness);
         }
         _ => normalize_loudness(&mut track.samples, sound.target_loudness),
     }
@@ -151,17 +188,17 @@ fn classic_layer(
     let progression = Progression::new(scene)?;
     let mut voice = Voice::new(&sound.instrument, options.base_dir)?;
     let (center, half_width) = (scene.container.center().x, scene.container.half_width());
-    let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
 
     // First list every note to play, in the order of the hits.
     let mut notes: Vec<Placed> = Vec::new();
     // Counted over bounces only, so other events (spawns, beats) don't change which notes play.
     for (index, hit) in events.iter().filter(|e| e.kind.is_bounce()).enumerate() {
-        if hit.speed < sound.min_impact_speed {
+        let time = options.video_time(hit);
+        let now = HitSound::at(scene, time);
+        if hit.speed < now.min_speed {
             continue;
         }
-        let time = options.video_time(hit);
         let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;
@@ -171,8 +208,8 @@ fn classic_layer(
             continue;
         }
         let pick = (mix64(sound.seed ^ index as u64) % candidates.len() as u64) as usize;
-        let velocity = ((hit.speed - sound.min_impact_speed) / speed_range).clamp(0.0, 1.0);
-        let pan = ((hit.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
+        let velocity = now.velocity(hit.speed);
+        let pan = ((hit.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * now.stereo_width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // An escape plays a quick rising strum of the chord, from the picked note upwards.
         let (count, gain, spacing) = match hit.kind {
@@ -229,19 +266,28 @@ pub(crate) fn rule_notes(
     progression: &Progression,
     frames: usize,
 ) -> Vec<RuleNote> {
-    let rules = bpe_sim::rules::RuleState::new(scene);
+    let mut rules = bpe_sim::rules::RuleState::new(scene);
+    let animated = scene.animates(List::Rules);
     let (center, half_width) = (scene.container.center().x, scene.container.half_width());
     let mut notes = Vec::new();
     for event in events {
-        let Some(&bpe_sim::rules::RuleOutput::Note { pitch, volume }) = rules.output(event) else { continue };
+        if rules.output(event).is_none() {
+            continue;
+        }
         let time = options.video_time(event);
+        if animated {
+            // A note's keyframed pitch and volume as they were when it played.
+            rules.retune(&scene.at_time(event.time as f32));
+        }
+        let Some(&bpe_sim::rules::RuleOutput::Note { pitch, volume }) = rules.output(event) else { continue };
         let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;
         }
         let Some(&root) = progression.notes_at(time).first() else { continue };
         let key = (root as f32 + pitch.round()).clamp(0.0, 127.0) as u8;
-        let pan = ((event.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * scene.sound.stereo_width;
+        let width = HitSound::at(scene, time).stereo_width;
+        let pan = ((event.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         notes.push(RuleNote { start, time, key, volume, left: volume * angle.cos(), right: volume * angle.sin() });
     }
@@ -539,6 +585,27 @@ mod tests {
             quiet.logic.clear();
             let without = render_scene(&quiet, None).unwrap();
             assert!(with.mix.notes.len() >= without.mix.notes.len() + 4, "{instrument:?}: rule notes missing");
+        }
+    }
+
+    #[test]
+    fn keyframed_sound_settings_change_hits_from_their_moment_on() {
+        use bpe_scene::{Ease, Key, Track, Value};
+        for instrument in [Scene::default().sound.instrument, Instrument::library("Marimba")] {
+            let mut scene = ticking(instrument.clone());
+            scene.logic.clear();
+            let events = bpe_sim::collect_wall_hits(&scene);
+            let plain = mix(&scene, &events, &MixOptions::default()).unwrap();
+            let half = scene.video.duration / 2.0;
+            assert!(plain.notes.iter().any(|n| n.time > half as f64 + 0.1), "{instrument:?}");
+            // From halfway on, no hit is hard enough to be heard.
+            let key = |time, v| Key { time, value: Value::Number(v), ease: Ease::Hold };
+            let low = scene.sound.min_impact_speed;
+            scene.animation.push(Track { property: Property::QuietestHit, keys: vec![key(0.0, low), key(half, 1e9)] });
+            let muted = mix(&scene, &events, &MixOptions::default()).unwrap();
+            let before = |m: &Mix| m.notes.iter().filter(|n| n.time < half as f64).count();
+            assert_eq!(before(&muted), before(&plain), "{instrument:?}");
+            assert!(muted.notes.iter().all(|n| n.time < half as f64 + 0.05), "{instrument:?}");
         }
     }
 

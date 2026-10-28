@@ -1,7 +1,8 @@
 //! The video preview, plus the handles that let you set up a scene by dragging in it:
-//! move a ball group, aim it by its arrow tip, and resize the arena by its edge.
+//! move a ball group or soft thing, aim it by its arrow tip, and resize the arena by its edge.
 
 use crate::inspector::ARROW_SECONDS;
+use crate::inspector::soft::SoftPick;
 use crate::theme;
 use bpe_render::{EffectLibrary, FrameData, Renderer};
 use bpe_scene::{Container, Scene, Spawner, Vec2};
@@ -77,14 +78,35 @@ impl PreviewQuality {
     }
 }
 
+/// Something in the scene that can be picked and moved in the preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// A ball group, by its place in the Balls tab.
+    Balls(usize),
+    /// Jelly balls, a rope, cloth or the liquid.
+    Soft(SoftPick),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Handle {
-    /// Move a ball group.
-    Body(usize),
-    /// Aim a ball group by its launch arrow.
-    Aim(usize),
+    /// Move a ball group or soft thing.
+    Body(Pick),
+    /// Aim it by its launch arrow.
+    Aim(Pick),
+    /// Move one end of a rope: the start, or the end when `end` is true.
+    RopeEnd { rope: usize, end: bool },
     /// Resize the arena. For a box, which sides are being dragged.
     Edge { x: bool, y: bool },
+}
+
+impl Handle {
+    fn pick(self) -> Option<Pick> {
+        match self {
+            Handle::Body(pick) | Handle::Aim(pick) => Some(pick),
+            Handle::RopeEnd { rope, .. } => Some(Pick::Soft(SoftPick::Rope(rope))),
+            Handle::Edge { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -101,8 +123,8 @@ pub struct Outcome {
     pub drag_started: bool,
     /// The preview was clicked while playing.
     pub clicked: bool,
-    /// A ball group was clicked or dragged.
-    pub selected: Option<usize>,
+    /// A ball group or soft thing was clicked or dragged.
+    pub selected: Option<Pick>,
     /// The simulation hasn't reached the playhead yet, and the picture shows an earlier moment.
     pub catching_up: bool,
 }
@@ -162,7 +184,7 @@ impl Preview {
         playback: &mut Playback,
         time: f64,
         playing: bool,
-        selected: Option<usize>,
+        selected: Option<Pick>,
         effects: &EffectLibrary,
         quality: PreviewQuality,
     ) -> Outcome {
@@ -284,7 +306,11 @@ impl Preview {
             && let Some(handle) = hit_test(scene, &view, press)
         {
             let anchor = match handle {
-                Handle::Body(i) => spawner_center(&scene.spawners[i]),
+                Handle::Body(pick) => pick_center(scene, pick).unwrap_or_else(|| view.to_world(press)),
+                Handle::RopeEnd { rope, end } => {
+                    let rope = &scene.bodies.ropes[rope];
+                    if end { rope.to } else { rope.from }
+                }
                 Handle::Aim(_) | Handle::Edge { .. } => view.to_world(press),
             };
             preview.drag = Some(Drag { handle, offset: view.to_world(press) - anchor });
@@ -295,13 +321,11 @@ impl Preview {
         }
         if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
             apply_drag(scene, drag, view.to_world(pos));
-            if let Handle::Body(i) | Handle::Aim(i) = drag.handle {
-                outcome.selected = Some(i);
-            }
+            outcome.selected = drag.handle.pick();
         } else if response.clicked()
-            && let Some(Handle::Body(i) | Handle::Aim(i)) = hovered
+            && let Some(pick) = hovered.and_then(Handle::pick)
         {
-            outcome.selected = Some(i);
+            outcome.selected = Some(pick);
         }
 
         let active = preview.drag.map(|d| d.handle).or(hovered);
@@ -309,7 +333,11 @@ impl Preview {
             ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
         }
         draw_handles(ui, scene, &view, active, outcome.selected.or(selected));
-        draw_hint(ui, rect, "Drag balls to move them · drag arrow tips to aim · drag the edge to resize");
+        draw_hint(
+            ui,
+            rect,
+            "Drag balls and soft things to move them · drag arrow tips to aim · drag the edge to resize",
+        );
         outcome
     }
 }
@@ -327,6 +355,79 @@ fn spawner_velocity(spawner: &Spawner) -> Vec2 {
             *velocity
         }
     }
+}
+
+/// Every ball group and soft thing, in the order their handles are drawn.
+fn picks(scene: &Scene) -> impl Iterator<Item = Pick> + '_ {
+    let bodies = &scene.bodies;
+    let soft = (0..bodies.cloths.len())
+        .map(SoftPick::Cloth)
+        .chain((bodies.fluid.count > 0).then_some(SoftPick::Liquid))
+        .chain((0..bodies.ropes.len()).map(SoftPick::Rope))
+        .chain((0..bodies.jelly.len()).map(SoftPick::Jelly))
+        .map(Pick::Soft);
+    soft.chain((0..scene.spawners.len()).map(Pick::Balls))
+}
+
+/// The middle of a ball group or soft thing, or None if it is gone.
+fn pick_center(scene: &Scene, pick: Pick) -> Option<Vec2> {
+    let bodies = &scene.bodies;
+    Some(match pick {
+        Pick::Balls(i) => spawner_center(scene.spawners.get(i)?),
+        Pick::Soft(SoftPick::Jelly(i)) => bodies.jelly.get(i)?.center,
+        Pick::Soft(SoftPick::Rope(i)) => {
+            let rope = bodies.ropes.get(i)?;
+            (rope.from + rope.to) / 2.0
+        }
+        Pick::Soft(SoftPick::Cloth(i)) => bodies.cloths.get(i)?.center,
+        Pick::Soft(SoftPick::Liquid) => bodies.fluid.center,
+    })
+}
+
+/// The launch speed of a ball group or soft thing, or None for one that isn't launched.
+fn pick_velocity(scene: &Scene, pick: Pick) -> Option<Vec2> {
+    match pick {
+        Pick::Balls(i) => scene.spawners.get(i).map(spawner_velocity),
+        Pick::Soft(SoftPick::Jelly(i)) => scene.bodies.jelly.get(i).map(|j| j.velocity),
+        Pick::Soft(SoftPick::Liquid) => Some(scene.bodies.fluid.velocity),
+        Pick::Soft(SoftPick::Rope(_) | SoftPick::Cloth(_)) => None,
+    }
+}
+
+/// How a ball group or soft thing is grabbed and outlined: its half width and height in world
+/// pixels, and whether it is a box (or else a circle). None for a rope, which is a line.
+fn pick_extent(scene: &Scene, pick: Pick) -> Option<(Vec2, bool)> {
+    let bodies = &scene.bodies;
+    match pick {
+        Pick::Balls(i) => {
+            let spawner = scene.spawners.get(i)?;
+            Some((spawner_half_size(spawner), matches!(spawner, Spawner::Grid { .. })))
+        }
+        Pick::Soft(SoftPick::Jelly(i)) => {
+            let jelly = bodies.jelly.get(i)?;
+            let cells = Vec2::new(jelly.columns.saturating_sub(1) as f32, jelly.rows.saturating_sub(1) as f32);
+            Some((cells * jelly.spacing / 2.0 + Vec2::splat(jelly.radius), jelly.count() > 1))
+        }
+        Pick::Soft(SoftPick::Cloth(i)) => Some((bodies.cloths.get(i)?.size / 2.0, true)),
+        Pick::Soft(SoftPick::Liquid) => {
+            // The block the drops start in, laid out as the simulation lays them out.
+            let fluid = &bodies.fluid;
+            let spacing = fluid.radius.max(1.0) * 2.0;
+            let count = fluid.count.max(1);
+            let columns = ((fluid.size.x / spacing).floor() as u32).clamp(1, count);
+            let rows = count.div_ceil(columns);
+            let half = Vec2::new(columns as f32 * spacing, rows as f32 * spacing * 0.866) / 2.0;
+            Some((half + Vec2::splat(fluid.radius), true))
+        }
+        Pick::Soft(SoftPick::Rope(_)) => None,
+    }
+}
+
+/// Distance from `p` to the line from `a` to `b`.
+fn distance_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
 }
 
 /// The round or polygon outline that the arena's edge handle resizes: the arena itself, or the
@@ -364,8 +465,8 @@ fn spawner_half_size(spawner: &Spawner) -> Vec2 {
     }
 }
 
-fn arrow_tip(spawner: &Spawner) -> Vec2 {
-    spawner_center(spawner) + spawner_velocity(spawner) * ARROW_SECONDS
+fn arrow_tip(scene: &Scene, pick: Pick) -> Option<Vec2> {
+    Some(pick_center(scene, pick)? + pick_velocity(scene, pick)? * ARROW_SECONDS)
 }
 
 /// Screen points within which a handle can be grabbed.
@@ -374,9 +475,19 @@ const GRAB: f32 = 10.0;
 fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
     let world = view.to_world(pos);
     let reach = GRAB / view.scale;
-    for (i, spawner) in scene.spawners.iter().enumerate().rev() {
-        if view.to_screen(arrow_tip(spawner)).distance(pos) <= GRAB + 2.0 {
-            return Some(Handle::Aim(i));
+    let all: Vec<Pick> = picks(scene).collect();
+    for &pick in all.iter().rev() {
+        if let Some(tip) = arrow_tip(scene, pick)
+            && view.to_screen(tip).distance(pos) <= GRAB + 2.0
+        {
+            return Some(Handle::Aim(pick));
+        }
+    }
+    for (rope, r) in scene.bodies.ropes.iter().enumerate().rev() {
+        for (end, at) in [(true, r.to), (false, r.from)] {
+            if view.to_screen(at).distance(pos) <= GRAB + 2.0 {
+                return Some(Handle::RopeEnd { rope, end });
+            }
         }
     }
     if let Some(outline) = edge_outline(scene) {
@@ -397,15 +508,23 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
             }
         }
     }
-    for (i, spawner) in scene.spawners.iter().enumerate().rev() {
-        let d = (world - spawner_center(spawner)).abs();
-        let half = spawner_half_size(spawner).max(Vec2::splat(reach));
-        let inside = match spawner {
-            Spawner::Grid { .. } => d.x <= half.x && d.y <= half.y,
-            Spawner::Single { .. } | Spawner::Stream { .. } => d.length() <= half.x,
+    // Ball groups first, then the smaller soft things before the big cloth and liquid.
+    for &pick in all.iter().rev() {
+        let inside = match (pick, pick_extent(scene, pick)) {
+            (Pick::Soft(SoftPick::Rope(i)), _) => {
+                let rope = &scene.bodies.ropes[i];
+                distance_to_segment(world, rope.from, rope.to) <= rope.thickness / 2.0 + reach
+            }
+            (_, Some((half, boxy))) => {
+                let Some(center) = pick_center(scene, pick) else { continue };
+                let d = (world - center).abs();
+                let half = half.max(Vec2::splat(reach));
+                if boxy { d.x <= half.x && d.y <= half.y } else { d.length() <= half.x }
+            }
+            (_, None) => false,
         };
         if inside {
-            return Some(Handle::Body(i));
+            return Some(Handle::Body(pick));
         }
     }
     None
@@ -413,21 +532,61 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
 
 fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
     match drag.handle {
-        Handle::Body(i) => {
+        Handle::Body(pick) => {
             let target = (world - drag.offset).round();
-            match &mut scene.spawners[i] {
-                Spawner::Grid { center, .. } => *center = target,
-                Spawner::Single { position, .. } | Spawner::Stream { position, .. } => *position = target,
+            let bodies = &mut scene.bodies;
+            match pick {
+                Pick::Balls(i) => match scene.spawners.get_mut(i) {
+                    Some(Spawner::Grid { center, .. }) => *center = target,
+                    Some(Spawner::Single { position, .. } | Spawner::Stream { position, .. }) => *position = target,
+                    None => {}
+                },
+                Pick::Soft(SoftPick::Jelly(i)) => {
+                    if let Some(jelly) = bodies.jelly.get_mut(i) {
+                        jelly.center = target;
+                    }
+                }
+                Pick::Soft(SoftPick::Rope(i)) => {
+                    // The whole rope moves, keeping its length and slant.
+                    if let Some(rope) = bodies.ropes.get_mut(i) {
+                        let shift = target - (rope.from + rope.to) / 2.0;
+                        rope.from = (rope.from + shift).round();
+                        rope.to = (rope.to + shift).round();
+                    }
+                }
+                Pick::Soft(SoftPick::Cloth(i)) => {
+                    if let Some(cloth) = bodies.cloths.get_mut(i) {
+                        cloth.center = target;
+                    }
+                }
+                Pick::Soft(SoftPick::Liquid) => bodies.fluid.center = target,
             }
         }
-        Handle::Aim(i) => {
-            let spawner = &mut scene.spawners[i];
-            let center = spawner_center(spawner);
+        Handle::Aim(pick) => {
+            let Some(center) = pick_center(scene, pick) else { return };
             let velocity = ((world - center) / ARROW_SECONDS).clamp_length_max(3000.0).round();
-            match spawner {
-                Spawner::Grid { velocity: v, .. }
-                | Spawner::Single { velocity: v, .. }
-                | Spawner::Stream { velocity: v, .. } => *v = velocity,
+            match pick {
+                Pick::Balls(i) => match scene.spawners.get_mut(i) {
+                    Some(
+                        Spawner::Grid { velocity: v, .. }
+                        | Spawner::Single { velocity: v, .. }
+                        | Spawner::Stream { velocity: v, .. },
+                    ) => *v = velocity,
+                    None => {}
+                },
+                Pick::Soft(SoftPick::Jelly(i)) => {
+                    if let Some(jelly) = scene.bodies.jelly.get_mut(i) {
+                        jelly.velocity = velocity;
+                    }
+                }
+                Pick::Soft(SoftPick::Liquid) => scene.bodies.fluid.velocity = velocity,
+                Pick::Soft(SoftPick::Rope(_) | SoftPick::Cloth(_)) => {}
+            }
+        }
+        Handle::RopeEnd { rope, end } => {
+            if let Some(r) = scene.bodies.ropes.get_mut(rope) {
+                let at = if end { &mut r.to } else { &mut r.from };
+                *at = (world - drag.offset).round();
             }
         }
         Handle::Edge { x, y } => {
@@ -463,7 +622,7 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
     }
 }
 
-fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, selected: Option<usize>) {
+fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, selected: Option<Pick>) {
     let painter = ui.painter_at(view.rect);
     let faint = Color32::from_white_alpha(110);
 
@@ -503,29 +662,46 @@ fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, sel
         );
     }
 
-    for (i, spawner) in scene.spawners.iter().enumerate() {
-        let highlighted = selected == Some(i) || matches!(active, Some(Handle::Body(j) | Handle::Aim(j)) if j == i);
+    for pick in picks(scene) {
+        let Some(world_center) = pick_center(scene, pick) else { continue };
+        let highlighted = selected == Some(pick) || active.and_then(Handle::pick) == Some(pick);
         let color = if highlighted { theme::ACCENT } else { faint };
-        let center = view.to_screen(spawner_center(spawner));
-        let half = spawner_half_size(spawner) * view.scale + Vec2::splat(4.0);
-        match spawner {
-            Spawner::Grid { .. } => {
-                let r = Rect::from_center_size(center, egui::vec2(half.x, half.y) * 2.0);
-                let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
-                painter.extend(egui::Shape::dashed_line(&corners, Stroke::new(1.2, color), 5.0, 4.0));
+        let center = view.to_screen(world_center);
+        match (pick, pick_extent(scene, pick)) {
+            (Pick::Soft(SoftPick::Rope(i)), _) => {
+                let rope = &scene.bodies.ropes[i];
+                let ends = [view.to_screen(rope.from), view.to_screen(rope.to)];
+                painter.extend(egui::Shape::dashed_line(&ends, Stroke::new(1.2, color), 5.0, 4.0));
+                for (end, at) in [(false, ends[0]), (true, ends[1])] {
+                    let end_active = active == Some(Handle::RopeEnd { rope: i, end });
+                    painter.circle(
+                        at,
+                        if end_active { 7.0 } else { 5.5 },
+                        if end_active || highlighted { theme::ACCENT } else { theme::TEXT },
+                        Stroke::new(1.5, Color32::BLACK),
+                    );
+                }
             }
-            Spawner::Single { .. } => {
-                painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
+            (_, Some((half, boxy))) => {
+                let half = half * view.scale + Vec2::splat(4.0);
+                if boxy {
+                    let r = Rect::from_center_size(center, egui::vec2(half.x, half.y) * 2.0);
+                    let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                    painter.extend(egui::Shape::dashed_line(&corners, Stroke::new(1.2, color), 5.0, 4.0));
+                } else {
+                    painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
+                }
+                if matches!(pick, Pick::Balls(i) if matches!(scene.spawners[i], Spawner::Stream { .. })) {
+                    painter.circle_stroke(center, half.x + 5.0, Stroke::new(1.0, color.gamma_multiply(0.6)));
+                }
             }
-            Spawner::Stream { .. } => {
-                painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
-                painter.circle_stroke(center, half.x + 5.0, Stroke::new(1.0, color.gamma_multiply(0.6)));
-            }
+            (_, None) => {}
         }
 
         // Launch arrow.
-        let tip = view.to_screen(arrow_tip(spawner));
-        let aim_active = active == Some(Handle::Aim(i));
+        let Some(tip) = arrow_tip(scene, pick) else { continue };
+        let tip = view.to_screen(tip);
+        let aim_active = active == Some(Handle::Aim(pick));
         let arrow_color = if aim_active { theme::ACCENT } else { Color32::WHITE };
         painter.line_segment([center, tip], Stroke::new(2.0, arrow_color));
         let dir = (tip - center).normalized();
@@ -540,7 +716,7 @@ fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, sel
         }
         painter.circle(tip, if aim_active { 7.0 } else { 5.5 }, theme::ACCENT, Stroke::new(1.5, Color32::WHITE));
         if aim_active || highlighted {
-            let speed = spawner_velocity(spawner).length();
+            let speed = pick_velocity(scene, pick).unwrap_or_default().length();
             painter.text(
                 tip + egui::vec2(10.0, -10.0),
                 Align2::LEFT_BOTTOM,
@@ -562,4 +738,117 @@ fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
     let pill = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, size.y / 2.0 + 10.0), size);
     painter.rect_filled(pill, size.y / 2.0, Color32::from_black_alpha(190));
     painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, theme::TEXT);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bpe_scene::{Cloth, Jelly, Rope};
+
+    /// A view showing the whole 1080 × 1920 video at its real size.
+    fn view(scene: &Scene) -> View {
+        let size = egui::vec2(scene.video.width as f32, scene.video.height as f32);
+        View { rect: Rect::from_min_size(Pos2::ZERO, size), scale: 1.0 }
+    }
+
+    fn scene_with_soft_things() -> Scene {
+        // A box bigger than the video, so its edge handles are out of the way.
+        let container = Container::Rect {
+            center: Vec2::ZERO,
+            size: Vec2::new(3000.0, 4000.0),
+            thickness: 4.0,
+            color: bpe_scene::Color::rgb(255, 255, 255),
+        };
+        let mut scene = Scene { spawners: Vec::new(), container, ..Scene::default() };
+        scene.bodies.jelly.push(Jelly {
+            center: Vec2::new(-200.0, 0.0),
+            velocity: Vec2::new(200.0, 0.0),
+            ..Jelly::default()
+        });
+        scene.bodies.ropes.push(Rope {
+            from: Vec2::new(-300.0, 500.0),
+            to: Vec2::new(300.0, 500.0),
+            ..Rope::default()
+        });
+        scene.bodies.cloths.push(Cloth { center: Vec2::new(0.0, -500.0), ..Cloth::default() });
+        scene
+    }
+
+    fn drag(scene: &mut Scene, from: Vec2, to: Vec2) -> Handle {
+        let view = view(scene);
+        let handle = hit_test(scene, &view, view.to_screen(from)).expect("something to grab");
+        let anchor = match handle {
+            Handle::Body(pick) => pick_center(scene, pick).unwrap(),
+            Handle::RopeEnd { rope, end } => {
+                let rope = &scene.bodies.ropes[rope];
+                if end { rope.to } else { rope.from }
+            }
+            _ => from,
+        };
+        apply_drag(scene, Drag { handle, offset: from - anchor }, to);
+        handle
+    }
+
+    #[test]
+    fn jelly_balls_can_be_dragged_and_aimed() {
+        let mut scene = scene_with_soft_things();
+        let jelly = Pick::Soft(SoftPick::Jelly(0));
+        // Grab a little off the middle: it keeps that offset rather than jumping.
+        let handle = drag(&mut scene, Vec2::new(-190.0, 10.0), Vec2::new(10.0, 110.0));
+        assert!(handle == Handle::Body(jelly));
+        assert_eq!(scene.bodies.jelly[0].center, Vec2::new(0.0, 100.0));
+
+        let tip = arrow_tip(&scene, jelly).unwrap();
+        let handle = drag(&mut scene, tip, Vec2::new(0.0, 100.0 - 0.35 * 400.0));
+        assert!(handle == Handle::Aim(jelly));
+        assert_eq!(scene.bodies.jelly[0].velocity, Vec2::new(0.0, -400.0));
+    }
+
+    #[test]
+    fn ropes_move_by_their_ends_or_as_a_whole() {
+        let mut scene = scene_with_soft_things();
+        let handle = drag(&mut scene, Vec2::new(300.0, 500.0), Vec2::new(250.0, 400.0));
+        assert!(handle == Handle::RopeEnd { rope: 0, end: true });
+        assert_eq!(scene.bodies.ropes[0].to, Vec2::new(250.0, 400.0));
+        assert_eq!(scene.bodies.ropes[0].from, Vec2::new(-300.0, 500.0));
+
+        // Grabbing the line itself moves both ends together.
+        let on_line = (scene.bodies.ropes[0].from + scene.bodies.ropes[0].to) / 2.0;
+        let handle = drag(&mut scene, on_line, on_line + Vec2::new(0.0, 100.0));
+        assert!(handle == Handle::Body(Pick::Soft(SoftPick::Rope(0))));
+        assert_eq!(scene.bodies.ropes[0].from, Vec2::new(-300.0, 600.0));
+        assert_eq!(scene.bodies.ropes[0].to, Vec2::new(250.0, 500.0));
+    }
+
+    #[test]
+    fn cloth_and_liquid_can_be_dragged() {
+        let mut scene = scene_with_soft_things();
+        let handle = drag(&mut scene, Vec2::new(100.0, -500.0), Vec2::new(100.0, -400.0));
+        assert!(handle == Handle::Body(Pick::Soft(SoftPick::Cloth(0))));
+        assert_eq!(scene.bodies.cloths[0].center, Vec2::new(0.0, -400.0));
+
+        scene.bodies.fluid = bpe_scene::Fluid { count: 500, center: Vec2::new(0.0, 300.0), ..Default::default() };
+        // Off the middle, where a still liquid's arrow tip sits.
+        let handle = drag(&mut scene, Vec2::new(40.0, 300.0), Vec2::new(-60.0, 300.0));
+        assert!(handle == Handle::Body(Pick::Soft(SoftPick::Liquid)));
+        assert_eq!(scene.bodies.fluid.center, Vec2::new(-100.0, 300.0));
+    }
+
+    #[test]
+    fn ball_groups_win_over_soft_things_under_them() {
+        let mut scene = scene_with_soft_things();
+        scene.spawners.push(Spawner::Single {
+            position: Vec2::new(0.0, -500.0),
+            velocity: Vec2::new(300.0, 0.0),
+            radius: 20.0,
+            color: bpe_scene::Color::rgb(255, 255, 255),
+            depth: 0.0,
+            depth_velocity: 0.0,
+            style: None,
+            sound: None,
+        });
+        let view = view(&scene);
+        let handle = hit_test(&scene, &view, view.to_screen(Vec2::new(0.0, -500.0)));
+        assert!(handle == Some(Handle::Body(Pick::Balls(0))));
+    }
 }

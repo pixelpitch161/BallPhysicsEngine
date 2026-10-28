@@ -1,12 +1,13 @@
 use crate::audio_out::AudioOut;
 use crate::batch::BatchPanel;
 use crate::command_palette::{Action, Command, CommandPalette};
+use crate::dice_panel::DicePanel;
 use crate::explorer::Explorer;
 use crate::export::ExportPanel;
 use crate::gallery::Gallery;
 use crate::inspector::{self, Inspector, Tab};
 use crate::keys;
-use crate::preview::{Preview, PreviewQuality};
+use crate::preview::{Pick, Preview, PreviewQuality};
 use crate::timeline::{HitSummary, Timeline};
 use crate::workspace::Workspace;
 use crate::{node_editor, rules_workspace, shader_workspace};
@@ -48,6 +49,8 @@ pub struct StudioApp {
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
+    /// The Randomize panel: every dice in one list, with locks.
+    dice_panel: DicePanel,
     batch: BatchPanel,
     /// The Batch workspace was showing last frame.
     in_batch: bool,
@@ -206,6 +209,7 @@ impl StudioApp {
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
+            dice_panel: DicePanel::default(),
             batch: BatchPanel::default(),
             in_batch: false,
             timeline: Timeline::default(),
@@ -257,6 +261,7 @@ impl StudioApp {
         self.history = History::default();
         self.swapped = true;
         self.inspector.selected = None;
+        self.inspector.soft.selected = None;
         self.time = 0.0;
         self.set_playing(false);
         self.scene_changed();
@@ -587,7 +592,7 @@ impl StudioApp {
             ui.separator();
             self.workspace_switch(ui);
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
+            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
             let saved_label = match (&self.scene_path, self.was_unsaved) {
                 (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
@@ -603,8 +608,23 @@ impl StudioApp {
                 if ui.add(export).on_hover_text("Make an mp4 you can upload").clicked() {
                     self.export.open = true;
                 }
-                if ui.button("Presets").on_hover_text("Start a new scene from a preset").clicked() {
+                if ui
+                    .button("Presets")
+                    .on_hover_text("Start a new scene from a preset, or save this scene as one of your own")
+                    .clicked()
+                {
                     self.gallery.open();
+                }
+                let randomize = ui
+                    .add(egui::Button::selectable(self.dice_panel.open, "       Randomize"))
+                    .on_hover_text("Every dice in one panel: lock the parts you like and roll the rest");
+                let icon = egui::Rect::from_center_size(
+                    randomize.rect.left_center() + egui::vec2(16.0, 0.0),
+                    egui::vec2(20.0, 20.0),
+                );
+                inspector::paint_dice(ui.painter(), icon, false);
+                if randomize.clicked() {
+                    self.dice_panel.open = !self.dice_panel.open;
                 }
                 let explore = ui
                     .add(egui::Button::new("       Explore…"))
@@ -652,7 +672,7 @@ impl StudioApp {
             // Music workstream: Warp shows the simulation on its bent clock.
             self.warp.as_ref().map_or(self.time, |w| w.sim_time(self.time)),
             self.playing,
-            self.inspector.selected,
+            self.inspector.selected.map(Pick::Balls).or(self.inspector.soft.selected.map(Pick::Soft)),
             &self.inspector.effects.library,
             self.preview_quality,
         );
@@ -686,6 +706,7 @@ impl StudioApp {
                 Action::Redo => self.clicked = Some(ToolbarClick::Redo),
                 Action::Export => self.export.open = true,
                 Action::Explore => self.clicked = Some(ToolbarClick::Explore),
+                Action::Randomize => self.dice_panel.open = true,
                 Action::PlayPause => self.set_playing(!self.playing),
                 Action::Restart => self.seek(0.0),
                 Action::SpeedMeter => self.show_stats = !self.show_stats,
@@ -897,8 +918,15 @@ impl eframe::App for StudioApp {
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| {
                 self.inspector.music.base_dir = self.base_dir();
+                crate::my_presets::publish_base_dir(ui.ctx(), self.base_dir());
                 inspector::show(ui, &mut self.inspector, &mut self.scene)
             });
+        // Hidden while a dialog is up, so its dice can't change the scene behind the dialog.
+        if !modal_open
+            && let Some(rolled) = self.dice_panel.show(&ctx, &mut self.scene, &self.inspector.effects.library)
+        {
+            self.inspector.rolled = Some(rolled);
+        }
 
         // Coming into the Batch workspace makes batches from the scene as it is now.
         if self.workspace == Workspace::Batch && !self.in_batch {
@@ -951,9 +979,19 @@ impl eframe::App for StudioApp {
         if outcome.drag_started {
             self.seek(0.0);
         }
-        if let Some(index) = outcome.selected {
-            self.inspector.selected = Some(index);
-            self.inspector.tab = Tab::Balls;
+        match outcome.selected {
+            Some(Pick::Balls(index)) => {
+                self.inspector.selected = Some(index);
+                self.inspector.soft.selected = None;
+                self.inspector.tab = Tab::Balls;
+            }
+            Some(Pick::Soft(pick)) => {
+                self.inspector.selected = None;
+                self.inspector.looks.picked.clear();
+                self.inspector.soft.pick(pick);
+                self.inspector.tab = Tab::Balls;
+            }
+            None => {}
         }
         if let Some(shown) = shown
             && !self.swapped
@@ -965,6 +1003,7 @@ impl eframe::App for StudioApp {
         if !requests.is_empty() {
             let library = &self.inspector.effects.library;
             let effects = self.scene.effects.clone();
+            let rules = Scene { logic: self.scene.logic.clone(), ..Scene::default() };
             keys::apply_requests(&mut self.scene, requests, key_time, |property| match property {
                 Property::EffectParam(i, name) => {
                     let effect = effects.get(*i as usize)?;
@@ -972,6 +1011,7 @@ impl eframe::App for StudioApp {
                     let param = info.params.iter().find(|p| p.name == *name)?;
                     Some(Value::Number(param.default))
                 }
+                Property::Rule(..) => keys::rule_default(&rules, property),
                 _ => None,
             });
         }
@@ -980,11 +1020,13 @@ impl eframe::App for StudioApp {
         if !requests.is_empty() {
             let library = &self.inspector.effects.library;
             let effects = self.scene.effects.clone();
+            let rules = Scene { logic: self.scene.logic.clone(), ..Scene::default() };
             crate::setting_menu::pulse::apply_requests(&ctx, &mut self.scene, requests, |property| match property {
                 Property::EffectParam(i, name) => {
                     let info = library.get(&effects.get(*i as usize)?.shader)?;
                     Some(Value::Number(info.params.iter().find(|p| p.name == *name)?.default))
                 }
+                Property::Rule(..) => keys::rule_default(&rules, property),
                 _ => None,
             });
         }
@@ -1009,8 +1051,8 @@ impl eframe::App for StudioApp {
         }
 
         let base_dir = self.base_dir();
-        self.export.show(&ctx, frame, &mut self.scene, base_dir, &self.inspector.effects.library);
-        if let Some(scene) = self.gallery.show(&ctx, frame) {
+        self.export.show(&ctx, frame, &mut self.scene, base_dir.clone(), &self.inspector.effects.library);
+        if let Some(scene) = self.gallery.show(&ctx, frame, &self.scene, base_dir.as_deref()) {
             self.guard(Pending::Replace(Box::new(scene)), &ctx);
         }
         let mut separate = false;
@@ -1110,7 +1152,9 @@ fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits:
 /// The parts of a scene that decide how balls move and sound.
 fn moving_parts(scene: &Scene) -> Scene {
     let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
-    parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    // Sound settings change the soundtrack, which is worked out with the simulation.
+    let moves = |p: &Property| p.affects_simulation() || p.affects_sound();
+    parts.animation = scene.animation.iter().filter(|t| moves(&t.property)).cloned().collect();
     // WS5: node effects and pulses on the picture only change the picture.
     parts.shader_graphs = Vec::new();
     parts.modulators = scene.modulators.iter().filter(|m| m.property.affects_simulation()).cloned().collect();

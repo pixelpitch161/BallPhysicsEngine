@@ -7,6 +7,7 @@ mod app;
 mod audio_out;
 mod batch;
 mod command_palette;
+mod dice_panel;
 mod draw_shape;
 mod explorer;
 mod export;
@@ -15,6 +16,7 @@ mod inspector;
 #[cfg(test)]
 mod inspector_tests;
 mod keys;
+mod my_presets;
 mod node_editor;
 mod orbit;
 mod preview;

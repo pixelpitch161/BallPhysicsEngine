@@ -10,6 +10,7 @@
 pub mod ball_look;
 pub mod effects;
 pub mod gpu;
+pub mod liquid;
 pub mod music;
 pub mod particles;
 pub mod rules;
@@ -21,11 +22,12 @@ pub mod view3d;
 pub use effects::EffectsPanel;
 pub(crate) use effects::pretty_name;
 
+use crate::dice_panel::{Part, lock_button};
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene,
-    Sound, Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, List, Look, Obstacle, Physics, PresetKind,
+    Property, Scene, Sound, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -146,6 +148,7 @@ pub struct Inspector {
     pub shapes: shapes::State,
     pub particles: particles::State,
     pub gpu: gpu::State,
+    pub liquid: liquid::State,
     pub view3d: view3d::State,
     pub music: music::State,
     /// Ball groups' own looks: which groups are picked together, and a copied look.
@@ -166,6 +169,7 @@ impl Default for Inspector {
             shapes: Default::default(),
             particles: Default::default(),
             gpu: Default::default(),
+            liquid: Default::default(),
             view3d: Default::default(),
             music: Default::default(),
             looks: Default::default(),
@@ -219,7 +223,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
-                    balls(
+                    let picked_before = (inspector.selected, inspector.soft.selected);
+                    let edit = balls(
                         ui,
                         &mut scene.spawners,
                         &mut inspector.selected,
@@ -229,8 +234,25 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         &mut roll,
                         space,
                     );
+                    if let Some(edit) = edit {
+                        edit.apply(scene, List::BallGroups);
+                    }
                     soft::section(ui, scene, &mut inspector.soft);
+                    // One thing is selected at a time: a ball group or a soft thing.
+                    if inspector.soft.selected.is_some() && inspector.soft.selected != picked_before.1 {
+                        inspector.selected = None;
+                        inspector.looks.picked.clear();
+                    } else if inspector.selected.is_some() && inspector.selected != picked_before.0 {
+                        inspector.soft.selected = None;
+                    }
                     gpu::section(ui, scene, &mut inspector.gpu);
+                    let liquid = ui.scope(|ui| liquid::section(ui, scene, &mut inspector.liquid)).response;
+                    // Liquid picked in the preview: bring its section into view.
+                    if inspector.soft.selected == Some(soft::SoftPick::Liquid)
+                        && std::mem::take(&mut inspector.soft.scroll_to)
+                    {
+                        liquid.scroll_to_me(Some(egui::Align::Center));
+                    }
                 }
                 Tab::Arena => {
                     // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
@@ -286,6 +308,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Bounces => {
+                    crate::my_presets::bar(ui, PresetKind::Bounces, scene);
                     bounces(ui, &mut scene.rules, &mut roll);
                     soft::bounces_section(ui, scene, &mut inspector.soft);
                     let fresh = Physics::default();
@@ -299,11 +322,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Look => {
+                    crate::my_presets::bar(ui, PresetKind::Look, scene);
                     look(ui, &mut scene.look, &mut roll);
                     particles::section(ui, scene, &mut inspector.particles);
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
+                    crate::my_presets::bar(ui, PresetKind::Effects, scene);
                     effects::show(ui, &mut inspector.effects, scene, &mut roll);
                     if reset_tab(ui, !scene.effects.is_empty()) {
                         scene.effects.clear();
@@ -312,13 +337,19 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 }
                 Tab::Sound => {
                     // Music workstream: the whole Sound tab, its reset button included, lives in music.rs.
+                    crate::my_presets::bar(ui, PresetKind::Sound, scene);
                     music::section(ui, scene, &mut inspector.music, &mut roll);
                 }
-                Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
+                Tab::Rules => {
+                    crate::my_presets::bar(ui, PresetKind::Rules, scene);
+                    rules::section(ui, scene, &mut inspector.rules)
+                }
                 Tab::Text => {
+                    crate::my_presets::bar(ui, PresetKind::Captions, scene);
                     text::show(ui, &mut inspector.text, scene, &mut roll);
                     if reset_tab(ui, !scene.captions.is_empty()) {
                         scene.captions.clear();
+                        scene.remap_tracks(List::Captions, |_| None);
                     }
                 }
             }
@@ -415,6 +446,7 @@ fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) 
             if dice_button(ui, &format!("Roll random {} settings", group.name())).clicked() {
                 *roll = Some(Roll::Group(group));
             }
+            lock_button(ui, Part::Group(group));
         });
     });
 }
@@ -797,7 +829,7 @@ fn balls(
     (scene_sound, music): (&Sound, &mut music::State),
     roll: &mut Option<Roll>,
     space: bool,
-) {
+) -> Option<ListEdit> {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -854,6 +886,7 @@ fn balls(
                         if dice_button(ui, "Roll random settings for these balls").clicked() {
                             *roll = Some(Roll::Group(Group::Balls(index)));
                         }
+                        lock_button(ui, Part::Group(Group::Balls(index)));
                     });
                 });
                 ui.add_space(4.0);
@@ -983,16 +1016,19 @@ fn balls(
         ui.add_space(8.0);
     }
     looks.share_changes(&styles_before, spawners);
+    let mut edit = None;
     if let Some(index) = duplicate {
         let copy = spawners[index].clone();
         spawners.insert(index + 1, copy);
         *selected = Some(index + 1);
         looks.picked.clear();
+        edit = Some(ListEdit::Duplicated(index));
     }
     if let Some(index) = remove {
         spawners.remove(index);
         *selected = None;
         looks.picked.clear();
+        edit = Some(ListEdit::Removed(index));
     }
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Add a block of balls").clicked() {
@@ -1008,6 +1044,27 @@ fn balls(
             *selected = Some(spawners.len() - 1);
         }
     });
+    edit
+}
+
+/// A change to the order of a list whose items can have animated settings, so their
+/// keyframes can follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListEdit {
+    Removed(usize),
+    /// A copy was put just after this item.
+    Duplicated(usize),
+    Swapped(usize, usize),
+}
+
+impl ListEdit {
+    pub fn apply(self, scene: &mut Scene, list: List) {
+        match self {
+            ListEdit::Removed(i) => scene.removed_item(list, i),
+            ListEdit::Duplicated(i) => scene.duplicated_item(list, i),
+            ListEdit::Swapped(a, b) => scene.swapped_items(list, a, b),
+        }
+    }
 }
 
 const RING_RADIUS: f32 = 508.0;
