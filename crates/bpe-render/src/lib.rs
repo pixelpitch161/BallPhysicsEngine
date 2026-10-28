@@ -446,7 +446,7 @@ impl Renderer {
         self.gpu.prepare(device, queue, &mut encoder, scene, frame, time, size);
         self.particles.prepare(device, queue, scene, frame, &self.gpu);
         let pixel = self.pixel_size(scene);
-        self.captions.prepare(device, queue, scene, &frame.text.values, pixel);
+        self.captions.prepare(device, queue, scene, &frame.text, pixel);
         // Render order: background, walls and shapes (or the whole 3D picture), swarms and
         // fluids, trails, balls, flashes, particles; then effects, bloom and captions.
         if self.space.active(scene, frame) {

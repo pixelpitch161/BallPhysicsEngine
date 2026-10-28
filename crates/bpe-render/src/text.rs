@@ -539,11 +539,33 @@ fn values_with(scene: &Scene, playback: &bpe_sim::Playback, counts: &Counts) -> 
 #[derive(Clone, Debug, Default)]
 pub struct TextFrame {
     pub values: TextValues,
+    /// Words from rules' "Show text" blocks on screen now, in the big centre style.
+    pub rule_captions: Vec<Caption>,
 }
+
+/// How far back to look for rules' text still on screen.
+const RULE_CAPTION_MAX_SECONDS: f64 = 30.0;
 
 impl TextFrame {
     pub fn fill(&mut self, scene: &Scene, playback: &bpe_sim::Playback, counts: &Counts) {
-        if !scene.captions.is_empty() {
+        self.rule_captions.clear();
+        let time = playback.simulation().time();
+        let rules = playback.simulation().rules();
+        for event in playback.recent_events(RULE_CAPTION_MAX_SECONDS) {
+            if let Some(bpe_sim::rules::RuleOutput::Caption { text, seconds }) = rules.output(event)
+                && !text.trim().is_empty()
+                && time < event.time + seconds.max(0.1) as f64
+            {
+                let mut caption = Caption::new(text, bpe_scene::CaptionStyle::BigCentre);
+                caption.show_from = event.time as f32;
+                caption.show_to = (event.time + seconds.max(0.1) as f64) as f32;
+                caption.anim_seconds = caption.anim_seconds.min(seconds.max(0.1) * 0.3);
+                // A newer one takes the place of an older one that is still showing.
+                self.rule_captions.retain(|c| c.text != caption.text);
+                self.rule_captions.push(caption);
+            }
+        }
+        if !scene.captions.is_empty() || !self.rule_captions.is_empty() {
             self.values = values_with(scene, playback, counts);
         }
     }
@@ -736,12 +758,12 @@ impl Captions {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &Scene,
-        values: &TextValues,
+        text: &TextFrame,
         pixel: f32,
     ) {
         self.quads.over.clear();
         self.quads.under.clear();
-        if scene.captions.iter().all(|c| !c.enabled) {
+        if scene.captions.iter().all(|c| !c.enabled) && text.rule_captions.is_empty() {
             return;
         }
         let (output_format, hdr_format) = self.formats;
@@ -751,7 +773,12 @@ impl Captions {
             TextGlobals { view: [2.0 / video.width.max(1) as f32, 2.0 / video.height.max(1) as f32, pixel, 0.0] };
         queue.write_buffer(&gpu.globals, 0, bytemuck::bytes_of(&globals));
         self.layout.fit_width = video.width as f32;
-        self.layout.layout(&scene.captions, values, pixel, &mut self.quads);
+        if text.rule_captions.is_empty() {
+            self.layout.layout(&scene.captions, &text.values, pixel, &mut self.quads);
+        } else {
+            let all: Vec<Caption> = scene.captions.iter().chain(&text.rule_captions).cloned().collect();
+            self.layout.layout(&all, &text.values, pixel, &mut self.quads);
+        }
         // After the atlas starts afresh, old letters left in the texture are harmless: nothing
         // points at them any more, and new ones are written over them.
         for (at, width, height, pixels) in self.layout.atlas.uploads.drain(..) {
@@ -976,6 +1003,27 @@ mod tests {
         assert_eq!(&text[..row * 100], &plain[..row * 100]);
         // The default outline puts a dark ring around the letters.
         assert!(text.chunks(4).any(|p| p[0] < 5 && p[1] < 5 && p[2] < 12));
+    }
+
+    #[test]
+    fn show_text_rules_draw_their_words_for_a_while() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut scene = empty_scene();
+        scene.video.duration = 6.0;
+        use bpe_graph::Catalog;
+        let catalog = bpe_sim::rules::catalog();
+        let mut graph = bpe_graph::Graph::new("Say it");
+        let at = graph.add(catalog.spec("at").unwrap(), [0.0, 0.0]);
+        graph.node_mut(at).unwrap().params.insert("time".into(), bpe_graph::Param::Number(2.0));
+        let say = graph.add(catalog.spec("caption").unwrap(), [260.0, 0.0]);
+        graph.node_mut(say).unwrap().params.insert("seconds".into(), bpe_graph::Param::Number(2.0));
+        graph.connect(bpe_graph::Link { from: (at, 0), to: (say, 0) }, catalog);
+        scene.logic = vec![graph];
+        let white = |p: Vec<u8>| p.chunks(4).filter(|p| p[0] > 240 && p[1] > 240 && p[2] > 240).count();
+        let before = white(render(&device, &queue, &scene, 1.0));
+        let during = white(render(&device, &queue, &scene, 3.0));
+        let after = white(render(&device, &queue, &scene, 5.0));
+        assert!(during > before + 300 && during > after + 300, "{before} {during} {after}");
     }
 
     #[test]
