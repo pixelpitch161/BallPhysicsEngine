@@ -831,6 +831,9 @@ impl Simulation {
             let song = self.inputs.music.as_deref().map(|music| move |t: f64| music_levels(music, t));
             let audio = Audio { song: song.as_ref().map(|f| f as Listener), mix: None };
             self.scene.apply_animation_with(time as f32, true, &audio);
+            if self.scene.animates(bpe_scene::List::Rules) {
+                self.rules.retune(&self.scene);
+            }
         }
         let motion = &self.scene.arena_motion;
         self.arena.spin = motion.spin.to_radians();

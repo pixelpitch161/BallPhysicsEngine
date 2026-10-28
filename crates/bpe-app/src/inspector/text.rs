@@ -1,9 +1,11 @@
 //! The Text tab: captions over the video, such as a "Can it escape?" hook, a ball counter or a
 //! timer. Each caption is a card; its words can hold live values like {balls}.
 
-use super::{Roll, color_row, grid, heading_dice, label, more, percent, position_row, resettable, slider};
+use super::{ListEdit, Roll, color_row, grid, heading_dice, label, more, percent, resettable, slider};
 use crate::theme;
-use bpe_scene::{Align, Anim, Caption, CaptionStyle, Font, Group, React, Scene, TEMPLATES, TOKENS};
+use bpe_scene::{
+    Align, Anim, Caption, CaptionSetting, CaptionStyle, Font, Group, List, Property, React, Scene, TEMPLATES, TOKENS,
+};
 use eframe::egui::{self, RichText, Ui};
 
 /// Text tab state that is not part of the scene.
@@ -49,10 +51,19 @@ pub fn show(ui: &mut Ui, panel: &mut State, scene: &mut Scene, roll: &mut Option
         });
         ui.add_space(8.0);
     }
-    match action {
-        Some((i, CardAction::Up)) if i > 0 => scene.captions.swap(i, i - 1),
-        Some((i, CardAction::Down)) if i + 1 < count => scene.captions.swap(i, i + 1),
-        Some((i, CardAction::Remove)) => _ = scene.captions.remove(i),
+    let edit = match action {
+        Some((i, CardAction::Up)) if i > 0 => {
+            scene.captions.swap(i, i - 1);
+            Some(ListEdit::Swapped(i, i - 1))
+        }
+        Some((i, CardAction::Down)) if i + 1 < count => {
+            scene.captions.swap(i, i + 1);
+            Some(ListEdit::Swapped(i, i + 1))
+        }
+        Some((i, CardAction::Remove)) => {
+            scene.captions.remove(i);
+            Some(ListEdit::Removed(i))
+        }
         Some((i, CardAction::Duplicate)) => {
             let mut copy = scene.captions[i].clone();
             copy.keep_clear_of(&scene.captions, scene.video.height as f32 * 0.5);
@@ -60,8 +71,12 @@ pub fn show(ui: &mut Ui, panel: &mut State, scene: &mut Scene, roll: &mut Option
                 copy.name.push_str(" copy");
             }
             scene.captions.insert(i + 1, copy);
+            Some(ListEdit::Duplicated(i))
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some(edit) = edit {
+        edit.apply(scene, List::Captions);
     }
     for (path, error) in &panel.font_errors {
         ui.label(
@@ -151,7 +166,7 @@ fn card(
         });
         state.store(ui.ctx());
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
-            .show_body_unindented(ui, |ui| body(ui, caption, duration));
+            .show_body_unindented(ui, |ui| body(ui, caption, index, duration));
         header.response
     });
     if focus {
@@ -160,7 +175,8 @@ fn card(
     action
 }
 
-fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
+fn body(ui: &mut Ui, caption: &mut Caption, index: usize, duration: f32) {
+    let key = |ui: &Ui, setting| crate::keys::mark_next(ui, Property::Caption(index as u32, setting));
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let edit = egui::TextEdit::multiline(&mut caption.text)
@@ -206,6 +222,7 @@ fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
         ui.end_row();
 
         font_row(ui, caption);
+        key(ui, CaptionSetting::Size);
         slider(
             ui,
             "Size",
@@ -215,7 +232,9 @@ fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
             12.0..=400.0,
             super::units(" px", 0),
         );
+        key(ui, CaptionSetting::Color);
         color_row(ui, "Colour", "Colour of the letters.", &mut caption.color, bpe_scene::Color::WHITE);
+        key(ui, CaptionSetting::Outline);
         slider(
             ui,
             "Outline",
@@ -225,6 +244,7 @@ fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
             0.0..=20.0,
             super::units(" px", 1),
         );
+        key(ui, CaptionSetting::Glow);
         slider(ui, "Glow", "Soft light around the letters.", &mut caption.glow, 0.25, 0.0..=1.0, percent);
 
         label(ui, "Appears", "How the caption comes in.");
@@ -269,12 +289,11 @@ fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
     });
     more(ui, "caption more", |ui| {
         grid(ui, "caption more grid", |ui| {
-            position_row(
-                ui,
-                "Position",
-                "Where the middle of the first line sits, from the centre of the video.",
-                &mut caption.position,
-            );
+            let help = "Where the middle of the first line sits, from the centre of the video.";
+            key(ui, CaptionSetting::X);
+            offset_row(ui, "Across", help, &mut caption.position.x);
+            key(ui, CaptionSetting::Y);
+            offset_row(ui, "Down", help, &mut caption.position.y);
             label(ui, "Line up", "Which side lines of text line up on.");
             ui.horizontal(|ui| {
                 for (a, name) in [(Align::Left, "Left"), (Align::Centre, "Centre"), (Align::Right, "Right")] {
@@ -282,6 +301,7 @@ fn body(ui: &mut Ui, caption: &mut Caption, duration: f32) {
                 }
             });
             ui.end_row();
+            key(ui, CaptionSetting::OutlineColor);
             color_row(
                 ui,
                 "Outline colour",
@@ -425,4 +445,13 @@ fn react_name(react: React) -> &'static str {
         React::PulseOnHit => "On each bounce",
         React::PulseOnBeat => "On each beat",
     }
+}
+
+/// One of a caption's two position numbers, in pixels from the centre of the video.
+fn offset_row(ui: &mut Ui, text: &str, help: &str, value: &mut f32) {
+    let name = label(ui, text, help);
+    let number = ui.add(egui::DragValue::new(value).speed(1.0).suffix(" px")).on_hover_text(help);
+    resettable(name, value, 0.0);
+    resettable(number, value, 0.0);
+    ui.end_row();
 }

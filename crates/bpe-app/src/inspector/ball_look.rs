@@ -2,7 +2,7 @@
 
 use super::{color_row, dice_button, grid, label, percent, slider, units};
 use crate::theme;
-use bpe_scene::{BallFill, BallShape, BallStyle, Color, Dice, Look, Spawner, TrailColor};
+use bpe_scene::{BallFill, BallSetting, BallShape, BallStyle, Color, Dice, Look, Property, Spawner, TrailColor};
 use eframe::egui::{self, RichText, Ui};
 
 /// Panel state for ball looks that is not part of the scene.
@@ -210,6 +210,7 @@ pub fn section(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &
 }
 
 fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, state: &mut State) {
+    let key = |ui: &Ui, setting| crate::keys::mark_next(ui, Property::Ball(index as u32, setting));
     ui.horizontal_wrapped(|ui| {
         let presets = BallStyle::presets();
         let shown = match style {
@@ -276,6 +277,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
         named(&combo.response, "Shape");
         ui.end_row();
         if !matches!(s.shape, BallShape::Circle | BallShape::Donut | BallShape::Heart) {
+            key(ui, BallSetting::Roundness);
             slider(
                 ui,
                 "Round corners",
@@ -296,9 +298,11 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
         named(&combo.response, "Fill");
         ui.end_row();
         if uses_second_color(s.fill) {
+            key(ui, BallSetting::SecondColor);
             color_row(ui, "Second colour", "The pattern's other colour.", &mut s.second_color, d.second_color);
         }
         if has_pattern_size(s.fill) {
+            key(ui, BallSetting::PatternSize);
             slider(
                 ui,
                 "Pattern size",
@@ -309,6 +313,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
                 units("", 1),
             );
         }
+        key(ui, BallSetting::Outline);
         slider(
             ui,
             "Outline",
@@ -319,10 +324,13 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
             units(" px", 1),
         );
         if s.outline > 0.0 {
+            key(ui, BallSetting::OutlineColor);
             color_row(ui, "Outline colour", "", &mut s.outline_color, d.outline_color);
         }
+        key(ui, BallSetting::Glow);
         slider(ui, "Glow", "A soft halo of light around each ball.", &mut s.glow, d.glow, 0.0..=2.0, percent);
         if s.glow > 0.0 {
+            key(ui, BallSetting::GlowSize);
             slider(
                 ui,
                 "Glow size",
@@ -333,6 +341,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
                 percent,
             );
         }
+        key(ui, BallSetting::Opacity);
         slider(
             ui,
             "Opacity",
@@ -357,6 +366,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
         .default_open(false)
         .show(ui, |ui| {
             grid(ui, "look-more-grid", |ui| {
+                key(ui, BallSetting::Turn);
                 slider(
                     ui,
                     "Turn",
@@ -378,6 +388,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
                 label(ui, "Point where it's going", "Turns the shape so its top points the way the ball is moving.");
                 ui.checkbox(&mut s.face_motion, "");
                 ui.end_row();
+                key(ui, BallSetting::Stretch);
                 slider(
                     ui,
                     "Stretch with speed",
@@ -397,6 +408,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
                     units("/s", 2),
                 );
                 if s.trail_seconds > 0.0 {
+                    key(ui, BallSetting::TrailWidth);
                     slider(
                         ui,
                         "Trail width",
@@ -406,6 +418,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
                         0.05..=2.0,
                         percent,
                     );
+                    key(ui, BallSetting::TrailOpacity);
                     slider(
                         ui,
                         "Trail brightness",

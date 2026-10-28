@@ -4,7 +4,8 @@
 //! along the first keyframe's [`Ease`]; before the first and after the last it stays put. While a
 //! setting is animated its plain value in the scene is not used.
 
-use crate::{Color, Container, Scene};
+use crate::{BallStyle, Caption, Color, Container, Scene};
+use bpe_graph::Param;
 use serde::{Deserialize, Serialize};
 
 /// Two keyframes closer together than this, in seconds, count as the same moment.
@@ -54,6 +55,66 @@ pub enum Property {
     Glass,
     /// Glow of the container's edges and tunnel rings.
     EdgeGlow,
+    // ---- Sound. They change the soundtrack, not how balls move. ----
+    /// [`crate::Music::gain`]: the song's volume in dB.
+    SongVolume,
+    /// [`crate::Music::duck_amount`].
+    SongDucking,
+    /// [`crate::Sound::stereo_width`].
+    StereoWidth,
+    /// [`crate::Sound::min_impact_speed`]: hits slower than this make no sound.
+    QuietestHit,
+    /// [`crate::Sound::full_volume_speed`].
+    LoudestHit,
+    /// A setting of the own look of the ball group at this index in [`Scene::spawners`]. Groups
+    /// drawn the classic way have none.
+    Ball(u32, BallSetting),
+    /// A setting of the caption at this index in [`Scene::captions`].
+    Caption(u32, CaptionSetting),
+    /// A number or colour setting of a rule block: the rule's index in [`Scene::logic`], the
+    /// block's id and the setting's name.
+    Rule(u32, u32, String),
+}
+
+/// The settings of a ball group's look that can be animated. Spin and rainbow are left out:
+/// they are speeds, and animating a speed makes the ball jump. Animate the turn instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BallSetting {
+    SecondColor,
+    OutlineColor,
+    Roundness,
+    PatternSize,
+    Turn,
+    Outline,
+    Glow,
+    GlowSize,
+    Opacity,
+    Stretch,
+    TrailWidth,
+    TrailOpacity,
+}
+
+/// The settings of a caption that can be animated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum CaptionSetting {
+    Size,
+    Color,
+    Outline,
+    OutlineColor,
+    Glow,
+    /// Left and right position.
+    X,
+    /// Up and down position.
+    Y,
+}
+
+/// A list in the scene whose items have their own animated settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum List {
+    Effects,
+    BallGroups,
+    Captions,
+    Rules,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,6 +137,104 @@ pub enum Ease {
     EaseOut,
     /// Stays at this keyframe's value, then jumps to the next.
     Hold,
+    /// Goes a little past the next value, then settles back.
+    Overshoot,
+    /// Lands on the next value and bounces like a dropped ball.
+    Bounce,
+    /// Springs past the next value and wobbles to a stop.
+    Spring,
+    /// A curve of your own, drawn with two handles like in video editors.
+    Curve(Bezier),
+}
+
+/// A cubic Bézier easing curve from (0, 0) to (1, 1) with handles at (x1, y1) and (x2, y2), the
+/// same as CSS's `cubic-bezier`. The x of each handle stays between 0 and 1 so the curve never
+/// goes back in time; y can go outside to overshoot.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bezier {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+impl Eq for Bezier {}
+
+impl std::hash::Hash for Bezier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        [self.x1, self.y1, self.x2, self.y2].map(f32::to_bits).hash(state);
+    }
+}
+
+impl Default for Bezier {
+    /// Starts and ends gently, like [`Ease::Smooth`].
+    fn default() -> Self {
+        Self { x1: 0.42, y1: 0.0, x2: 0.58, y2: 1.0 }
+    }
+}
+
+impl Bezier {
+    /// Furthest a handle's y may go, above 1 or below 0.
+    pub const REACH: f32 = 1.5;
+
+    pub fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self { x1, y1, x2, y2 }.tidy()
+    }
+
+    /// Keeps the handles where they make a usable curve.
+    pub fn tidy(self) -> Self {
+        let x = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
+        let y = |v: f32, fallback| if v.is_finite() { v.clamp(-Self::REACH, 1.0 + Self::REACH) } else { fallback };
+        Self { x1: x(self.x1), y1: y(self.y1, 0.0), x2: x(self.x2), y2: y(self.y2, 1.0) }
+    }
+
+    fn axis(a: f32, b: f32, t: f32) -> f32 {
+        // B(t) for control values 0, a, b, 1.
+        let u = 1.0 - t;
+        3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
+    }
+
+    fn slope(a: f32, b: f32, t: f32) -> f32 {
+        let u = 1.0 - t;
+        3.0 * u * u * a + 6.0 * u * t * (b - a) + 3.0 * t * t * (1.0 - b)
+    }
+
+    /// How far the value has moved at progress `x` (0 to 1) between two keyframes.
+    pub fn apply(self, x: f32) -> f32 {
+        let c = self.tidy();
+        let x = x.clamp(0.0, 1.0);
+        if x <= 0.0 || x >= 1.0 {
+            return x;
+        }
+        // Find the curve's own t where its x is `x`: a few Newton steps, then halving if needed.
+        let mut t = x;
+        for _ in 0..8 {
+            let err = Self::axis(c.x1, c.x2, t) - x;
+            if err.abs() < 1e-6 {
+                return Self::axis(c.y1, c.y2, t);
+            }
+            let d = Self::slope(c.x1, c.x2, t);
+            if d.abs() < 1e-6 {
+                break;
+            }
+            t = (t - err / d).clamp(0.0, 1.0);
+        }
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        t = x;
+        for _ in 0..40 {
+            let at = Self::axis(c.x1, c.x2, t);
+            if (at - x).abs() < 1e-6 {
+                break;
+            }
+            if at < x {
+                lo = t
+            } else {
+                hi = t
+            }
+            t = (lo + hi) * 0.5;
+        }
+        Self::axis(c.y1, c.y2, t)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -95,7 +254,17 @@ pub struct Track {
 }
 
 impl Ease {
-    pub const ALL: [Ease; 5] = [Ease::Smooth, Ease::Linear, Ease::EaseIn, Ease::EaseOut, Ease::Hold];
+    /// The ready-made eases, without [`Ease::Curve`].
+    pub const ALL: [Ease; 8] = [
+        Ease::Smooth,
+        Ease::Linear,
+        Ease::EaseIn,
+        Ease::EaseOut,
+        Ease::Overshoot,
+        Ease::Bounce,
+        Ease::Spring,
+        Ease::Hold,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -104,6 +273,10 @@ impl Ease {
             Ease::EaseIn => "Ease in",
             Ease::EaseOut => "Ease out",
             Ease::Hold => "Hold",
+            Ease::Overshoot => "Overshoot",
+            Ease::Bounce => "Bounce",
+            Ease::Spring => "Spring",
+            Ease::Curve(_) => "Own curve",
         }
     }
 
@@ -116,6 +289,48 @@ impl Ease {
             Ease::EaseIn => t * t * t,
             Ease::EaseOut => 1.0 - (1.0 - t).powi(3),
             Ease::Hold => 0.0,
+            _ if t >= 1.0 => 1.0,
+            Ease::Overshoot => {
+                let (c1, u) = (1.70158f32, t - 1.0);
+                1.0 + (c1 + 1.0) * u * u * u + c1 * u * u
+            }
+            Ease::Bounce => {
+                let (n, d) = (7.5625f32, 2.75f32);
+                if t < 1.0 / d {
+                    n * t * t
+                } else if t < 2.0 / d {
+                    let t = t - 1.5 / d;
+                    n * t * t + 0.75
+                } else if t < 2.5 / d {
+                    let t = t - 2.25 / d;
+                    n * t * t + 0.9375
+                } else {
+                    let t = t - 2.625 / d;
+                    n * t * t + 0.984375
+                }
+            }
+            Ease::Spring => {
+                if t <= 0.0 {
+                    0.0
+                } else {
+                    let turn = std::f32::consts::TAU / 3.0;
+                    2f32.powf(-10.0 * t) * ((t * 10.0 - 0.75) * turn).sin() + 1.0
+                }
+            }
+            Ease::Curve(curve) => curve.apply(t),
+        }
+    }
+
+    /// This ease as a curve with handles, to start editing it from. Eases a cubic Bézier can't
+    /// draw (bounce, spring, hold) start from the plain smooth curve.
+    pub fn as_curve(self) -> Bezier {
+        match self {
+            Ease::Curve(c) => c,
+            Ease::Linear => Bezier::new(0.0, 0.0, 1.0, 1.0),
+            Ease::EaseIn => Bezier::new(0.55, 0.0, 1.0, 0.45),
+            Ease::EaseOut => Bezier::new(0.0, 0.55, 0.45, 1.0),
+            Ease::Overshoot => Bezier::new(0.34, 1.56, 0.64, 1.0),
+            _ => Bezier::default(),
         }
     }
 }
@@ -265,18 +480,77 @@ impl Property {
                 | Property::ArenaSize
                 | Property::ArenaSpin
                 | Property::ShrinkSpeed
+                // Rules run inside the simulation.
+                | Property::Rule(..)
         )
     }
 
+    /// Whether changing it changes the soundtrack but not how balls move.
+    pub fn affects_sound(&self) -> bool {
+        matches!(
+            self,
+            Property::SongVolume
+                | Property::SongDucking
+                | Property::StereoWidth
+                | Property::QuietestHit
+                | Property::LoudestHit
+        )
+    }
+
+    /// Whether this is a colour. A rule block's setting is a colour if the scene's value is one.
     pub fn is_color(&self) -> bool {
-        matches!(self, Property::ArenaColor | Property::BackgroundTop | Property::BackgroundBottom)
+        matches!(
+            self,
+            Property::ArenaColor
+                | Property::BackgroundTop
+                | Property::BackgroundBottom
+                | Property::Ball(_, BallSetting::SecondColor | BallSetting::OutlineColor)
+                | Property::Caption(_, CaptionSetting::Color | CaptionSetting::OutlineColor)
+        )
     }
 
     /// The effect this belongs to, if any.
     pub fn effect(&self) -> Option<u32> {
-        match self {
-            Property::EffectAmount(i) | Property::EffectParam(i, _) => Some(*i),
+        match self.item() {
+            Some((List::Effects, i)) => Some(i),
             _ => None,
+        }
+    }
+
+    /// The list item this setting belongs to (an effect, a ball group, a caption or a rule),
+    /// by its index in that list.
+    pub fn item(&self) -> Option<(List, u32)> {
+        match *self {
+            Property::EffectAmount(i) | Property::EffectParam(i, _) => Some((List::Effects, i)),
+            Property::Ball(i, _) => Some((List::BallGroups, i)),
+            Property::Caption(i, _) => Some((List::Captions, i)),
+            Property::Rule(i, ..) => Some((List::Rules, i)),
+            _ => None,
+        }
+    }
+
+    fn item_mut(&mut self) -> Option<(List, &mut u32)> {
+        match self {
+            Property::EffectAmount(i) | Property::EffectParam(i, _) => Some((List::Effects, i)),
+            Property::Ball(i, _) => Some((List::BallGroups, i)),
+            Property::Caption(i, _) => Some((List::Captions, i)),
+            Property::Rule(i, ..) => Some((List::Rules, i)),
+            _ => None,
+        }
+    }
+
+    /// Points the setting at the item that moved to `map(old index)` in `list`. False when its
+    /// item is gone.
+    pub fn remap(&mut self, list: List, map: impl Fn(u32) -> Option<u32>) -> bool {
+        match self.item_mut() {
+            Some((of, index)) if of == list => match map(*index) {
+                Some(new) => {
+                    *index = new;
+                    true
+                }
+                None => false,
+            },
+            _ => true,
         }
     }
 
@@ -311,6 +585,20 @@ impl Property {
             Property::StringWidth => number(look.string_width),
             Property::EffectAmount(i) => number(scene.effects.get(*i as usize)?.amount),
             Property::EffectParam(i, name) => number(*scene.effects.get(*i as usize)?.params.get(name)?),
+            Property::SongVolume => number(scene.music.gain),
+            Property::SongDucking => number(scene.music.duck_amount),
+            Property::StereoWidth => number(scene.sound.stereo_width),
+            Property::QuietestHit => number(scene.sound.min_impact_speed),
+            Property::LoudestHit => number(scene.sound.full_volume_speed),
+            Property::Ball(i, setting) => setting.get(scene.spawners.get(*i as usize)?.style()?),
+            Property::Caption(i, setting) => Some(setting.get(scene.captions.get(*i as usize)?)),
+            Property::Rule(rule, node, name) => {
+                match scene.logic.get(*rule as usize)?.node(*node)?.params.get(name)? {
+                    Param::Number(v) => number(*v),
+                    Param::Color(c) => Some(Value::Color(Color::from_linear(*c))),
+                    _ => None,
+                }
+            }
             // 3D (WS4)
             property => number(scene.space()?.number(property)?),
         }
@@ -319,6 +607,15 @@ impl Property {
     /// Sets the setting's plain value. Values of the wrong kind, and settings the scene doesn't
     /// have, are ignored.
     pub fn set(&self, scene: &mut Scene, value: Value) {
+        if let Property::Rule(rule, node, name) = self {
+            let Some(node) = scene.logic.get_mut(*rule as usize).and_then(|g| g.node_mut(*node)) else { return };
+            let param = match value {
+                Value::Number(v) => Param::Number(v),
+                Value::Color(c) => Param::Color(c.to_linear()),
+            };
+            node.params.insert(name.clone(), param);
+            return;
+        }
         match value {
             Value::Number(v) => {
                 if let Some(slot) = self.number_mut(scene) {
@@ -337,6 +634,17 @@ impl Property {
 
     /// Copies this setting from `from` to `to` exactly, including an effect slider being unset.
     pub fn copy(&self, from: &Scene, to: &mut Scene) {
+        if let Property::Rule(rule, node, name) = self {
+            // Copied as stored: a colour would come back a hair off after a trip through `Value`.
+            let stored = from.logic.get(*rule as usize).and_then(|g| g.node(*node)).and_then(|n| n.params.get(name));
+            if let Some(node) = to.logic.get_mut(*rule as usize).and_then(|g| g.node_mut(*node)) {
+                match stored {
+                    Some(param) => _ = node.params.insert(name.clone(), param.clone()),
+                    None => _ = node.params.remove(name),
+                }
+            }
+            return;
+        }
         match (self, self.get(from)) {
             (_, Some(value)) => self.set(to, value),
             (Property::EffectParam(i, name), None) => {
@@ -372,6 +680,15 @@ impl Property {
             Property::EffectParam(i, name) => {
                 scene.effects.get_mut(*i as usize)?.params.entry(name.clone()).or_insert(0.0)
             }
+            Property::SongVolume => &mut scene.music.gain,
+            Property::SongDucking => &mut scene.music.duck_amount,
+            Property::StereoWidth => &mut scene.sound.stereo_width,
+            Property::QuietestHit => &mut scene.sound.min_impact_speed,
+            Property::LoudestHit => &mut scene.sound.full_volume_speed,
+            Property::Ball(i, setting) => {
+                setting.number_mut(scene.spawners.get_mut(*i as usize)?.style_mut().as_mut()?)?
+            }
+            Property::Caption(i, setting) => setting.number_mut(scene.captions.get_mut(*i as usize)?)?,
             _ => return None,
         })
     }
@@ -387,7 +704,138 @@ impl Property {
                 | Container::Custom { color, .. } => Some(color),
                 Container::Rings { .. } => None,
             },
+            Property::Ball(i, setting) => {
+                let style = scene.spawners.get_mut(*i as usize)?.style_mut().as_mut()?;
+                match setting {
+                    BallSetting::SecondColor => Some(&mut style.second_color),
+                    BallSetting::OutlineColor => Some(&mut style.outline_color),
+                    _ => None,
+                }
+            }
+            Property::Caption(i, setting) => {
+                let caption = scene.captions.get_mut(*i as usize)?;
+                match setting {
+                    CaptionSetting::Color => Some(&mut caption.color),
+                    CaptionSetting::OutlineColor => Some(&mut caption.outline_color),
+                    _ => None,
+                }
+            }
             _ => None,
+        }
+    }
+}
+
+impl BallSetting {
+    pub const ALL: [BallSetting; 12] = [
+        BallSetting::SecondColor,
+        BallSetting::OutlineColor,
+        BallSetting::Roundness,
+        BallSetting::PatternSize,
+        BallSetting::Turn,
+        BallSetting::Outline,
+        BallSetting::Glow,
+        BallSetting::GlowSize,
+        BallSetting::Opacity,
+        BallSetting::Stretch,
+        BallSetting::TrailWidth,
+        BallSetting::TrailOpacity,
+    ];
+
+    fn get(self, style: &BallStyle) -> Option<Value> {
+        let number = |v: f32| Some(Value::Number(v));
+        match self {
+            BallSetting::SecondColor => Some(Value::Color(style.second_color)),
+            BallSetting::OutlineColor => Some(Value::Color(style.outline_color)),
+            BallSetting::Roundness => number(style.roundness),
+            BallSetting::PatternSize => number(style.pattern_size),
+            BallSetting::Turn => number(style.turn),
+            BallSetting::Outline => number(style.outline),
+            BallSetting::Glow => number(style.glow),
+            BallSetting::GlowSize => number(style.glow_size),
+            BallSetting::Opacity => number(style.opacity),
+            BallSetting::Stretch => number(style.stretch),
+            BallSetting::TrailWidth => number(style.trail_width),
+            BallSetting::TrailOpacity => number(style.trail_opacity),
+        }
+    }
+
+    fn number_mut(self, style: &mut BallStyle) -> Option<&mut f32> {
+        Some(match self {
+            BallSetting::Roundness => &mut style.roundness,
+            BallSetting::PatternSize => &mut style.pattern_size,
+            BallSetting::Turn => &mut style.turn,
+            BallSetting::Outline => &mut style.outline,
+            BallSetting::Glow => &mut style.glow,
+            BallSetting::GlowSize => &mut style.glow_size,
+            BallSetting::Opacity => &mut style.opacity,
+            BallSetting::Stretch => &mut style.stretch,
+            BallSetting::TrailWidth => &mut style.trail_width,
+            BallSetting::TrailOpacity => &mut style.trail_opacity,
+            BallSetting::SecondColor | BallSetting::OutlineColor => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BallSetting::SecondColor => "second colour",
+            BallSetting::OutlineColor => "outline colour",
+            BallSetting::Roundness => "round corners",
+            BallSetting::PatternSize => "pattern size",
+            BallSetting::Turn => "turn",
+            BallSetting::Outline => "outline",
+            BallSetting::Glow => "glow",
+            BallSetting::GlowSize => "glow size",
+            BallSetting::Opacity => "opacity",
+            BallSetting::Stretch => "stretch",
+            BallSetting::TrailWidth => "trail width",
+            BallSetting::TrailOpacity => "trail brightness",
+        }
+    }
+}
+
+impl CaptionSetting {
+    pub const ALL: [CaptionSetting; 7] = [
+        CaptionSetting::Size,
+        CaptionSetting::Color,
+        CaptionSetting::Outline,
+        CaptionSetting::OutlineColor,
+        CaptionSetting::Glow,
+        CaptionSetting::X,
+        CaptionSetting::Y,
+    ];
+
+    fn get(self, caption: &Caption) -> Value {
+        match self {
+            CaptionSetting::Size => Value::Number(caption.size),
+            CaptionSetting::Color => Value::Color(caption.color),
+            CaptionSetting::Outline => Value::Number(caption.outline),
+            CaptionSetting::OutlineColor => Value::Color(caption.outline_color),
+            CaptionSetting::Glow => Value::Number(caption.glow),
+            CaptionSetting::X => Value::Number(caption.position.x),
+            CaptionSetting::Y => Value::Number(caption.position.y),
+        }
+    }
+
+    fn number_mut(self, caption: &mut Caption) -> Option<&mut f32> {
+        Some(match self {
+            CaptionSetting::Size => &mut caption.size,
+            CaptionSetting::Outline => &mut caption.outline,
+            CaptionSetting::Glow => &mut caption.glow,
+            CaptionSetting::X => &mut caption.position.x,
+            CaptionSetting::Y => &mut caption.position.y,
+            CaptionSetting::Color | CaptionSetting::OutlineColor => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CaptionSetting::Size => "size",
+            CaptionSetting::Color => "colour",
+            CaptionSetting::Outline => "outline",
+            CaptionSetting::OutlineColor => "outline colour",
+            CaptionSetting::Glow => "glow",
+            CaptionSetting::X => "left and right",
+            CaptionSetting::Y => "up and down",
         }
     }
 }
@@ -482,50 +930,94 @@ impl Scene {
     /// `map` gives each old effect index its new one, or None if the effect is gone.
     /// Modulators on effects move with them too.
     pub fn remap_effect_tracks(&mut self, map: impl Fn(u32) -> Option<u32>) {
-        remap_effect_modulators(&mut self.modulators, &map);
-        self.animation.retain_mut(|track| {
-            let Some(old) = track.property.effect() else { return true };
-            let Some(new) = map(old) else { return false };
-            match &mut track.property {
-                Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = new,
-                _ => {}
-            }
-            true
-        });
+        self.remap_tracks(List::Effects, map);
+    }
+
+    /// Keeps the animations and modulators of a list's items (effects, ball groups, captions or
+    /// rules) attached to them after the list changes: `map` gives each old index its new one,
+    /// or None if the item is gone.
+    pub fn remap_tracks(&mut self, list: List, map: impl Fn(u32) -> Option<u32>) {
+        self.modulators.retain_mut(|m| m.property.remap(list, &map));
+        self.animation.retain_mut(|t| t.property.remap(list, &map));
+    }
+
+    /// Whether any setting of an item of `list` is animated or pulses with the music.
+    pub fn animates(&self, list: List) -> bool {
+        let of_list = |p: &Property| p.item().is_some_and(|(l, _)| l == list);
+        self.animation.iter().any(|t| of_list(&t.property)) || self.modulators.iter().any(|m| of_list(&m.property))
+    }
+
+    /// The keyframed number of `property` at `time`, or its plain value when it isn't animated.
+    /// For settings read one moment at a time, such as sound settings at each hit.
+    pub fn number_at(&self, property: &Property, time: f32) -> Option<f32> {
+        match self.track(property).and_then(|t| t.value_at(time)) {
+            Some(value) => value.number(),
+            None => property.get(self)?.number(),
+        }
     }
 
     /// Copies the animations of effect `from` onto effect `to`, replacing any it had.
     pub fn copy_effect_tracks(&mut self, from: u32, to: u32) {
-        self.modulators.retain(|m| m.property.effect() != Some(to));
+        self.copy_tracks(List::Effects, from, to);
+    }
+
+    /// Copies the animations and modulators of item `from` of `list` onto item `to`, replacing
+    /// any it had.
+    pub fn copy_tracks(&mut self, list: List, from: u32, to: u32) {
+        let on = |p: &Property, i: u32| p.item() == Some((list, i));
+        let moved = |p: &Property| {
+            let mut p = p.clone();
+            p.remap(list, |_| Some(to));
+            p
+        };
+        self.modulators.retain(|m| !on(&m.property, to));
         let modulators: Vec<Modulator> = self
             .modulators
             .iter()
-            .filter(|m| m.property.effect() == Some(from))
-            .map(|m| {
-                let mut copy = m.clone();
-                match &mut copy.property {
-                    Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = to,
-                    _ => {}
-                }
-                copy
-            })
+            .filter(|m| on(&m.property, from))
+            .map(|m| Modulator { property: moved(&m.property), ..m.clone() })
             .collect();
         self.modulators.extend(modulators);
-        self.animation.retain(|t| t.property.effect() != Some(to));
+        self.animation.retain(|t| !on(&t.property, to));
         let copies: Vec<Track> = self
             .animation
             .iter()
-            .filter(|t| t.property.effect() == Some(from))
-            .map(|t| {
-                let mut copy = t.clone();
-                match &mut copy.property {
-                    Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = to,
-                    _ => {}
-                }
-                copy
-            })
+            .filter(|t| on(&t.property, from))
+            .map(|t| Track { property: moved(&t.property), keys: t.keys.clone() })
             .collect();
         self.animation.extend(copies);
+    }
+
+    /// Keeps animations attached to a list's items after item `index` is removed.
+    pub fn removed_item(&mut self, list: List, index: usize) {
+        let index = index as u32;
+        self.remap_tracks(list, |k| match k {
+            k if k == index => None,
+            k if k > index => Some(k - 1),
+            k => Some(k),
+        });
+    }
+
+    /// Keeps animations attached after a copy of item `index` is put just after it; the copy
+    /// gets the same animations.
+    pub fn duplicated_item(&mut self, list: List, index: usize) {
+        let index = index as u32;
+        self.remap_tracks(list, |k| Some(if k > index { k + 1 } else { k }));
+        self.copy_tracks(list, index, index + 1);
+    }
+
+    /// Keeps animations attached after items `a` and `b` swap places.
+    pub fn swapped_items(&mut self, list: List, a: usize, b: usize) {
+        let (a, b) = (a as u32, b as u32);
+        self.remap_tracks(list, |k| {
+            Some(if k == a {
+                b
+            } else if k == b {
+                a
+            } else {
+                k
+            })
+        });
     }
 }
 
@@ -772,9 +1264,17 @@ impl Property {
             | Property::SidewaysGravity
             | Property::ArenaSpin
             | Property::ShrinkSpeed
-            | Property::EffectParam(..) => value,
+            | Property::EffectParam(..)
+            | Property::SongVolume
+            | Property::Ball(_, BallSetting::Turn)
+            | Property::Caption(_, CaptionSetting::X | CaptionSetting::Y)
+            | Property::Rule(..) => value,
             Property::ArenaSize => value.max(0.05),
-            Property::EffectAmount(_) => value.clamp(0.0, 1.0),
+            Property::EffectAmount(_)
+            | Property::SongDucking
+            | Property::Ball(_, BallSetting::Opacity | BallSetting::Roundness | BallSetting::Stretch) => {
+                value.clamp(0.0, 1.0)
+            }
             _ => value.max(0.0),
         }
     }
@@ -800,15 +1300,7 @@ fn apply_modulators(scene: &mut Scene, modulators: &[Modulator], time: f64, simu
 /// Keeps modulators attached to their effects after the effect list changes, like
 /// [`Scene::remap_effect_tracks`] does for keyframes.
 pub fn remap_effect_modulators(modulators: &mut Vec<Modulator>, map: impl Fn(u32) -> Option<u32>) {
-    modulators.retain_mut(|m| {
-        let Some(old) = m.property.effect() else { return true };
-        let Some(new) = map(old) else { return false };
-        match &mut m.property {
-            Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = new,
-            _ => {}
-        }
-        true
-    });
+    modulators.retain_mut(|m| m.property.remap(List::Effects, &map));
 }
 
 #[cfg(test)]
@@ -1145,6 +1637,174 @@ mod tests {
         colour.set_key(0.5, Value::Color(Color::rgb(10, 20, 30)));
         colour.keys[0].ease = Ease::Hold;
         scene.animation.push(colour);
+        let text = scene.to_ron().unwrap();
+        assert_eq!(Scene::from_ron(&text).unwrap(), scene);
+    }
+
+    fn scene_with_lists() -> Scene {
+        let mut scene = Scene::default();
+        for spawner in &mut scene.spawners {
+            *spawner.style_mut() = Some(crate::BallStyle::default());
+        }
+        scene.captions.push(Caption::new("Can it escape?", crate::CaptionStyle::Hook));
+        let mut graph = crate::Graph::new("Rules");
+        graph.nodes.push(bpe_graph::Node { id: 4, kind: "flash".into(), ..Default::default() });
+        graph.nodes[0].params.insert("strength".into(), Param::Number(0.5));
+        graph.nodes[0].params.insert("color".into(), Param::Color([0.25, 0.5, 1.0, 1.0]));
+        scene.logic.push(graph);
+        scene
+    }
+
+    fn every_new_property(scene: &Scene) -> Vec<Property> {
+        let mut all = vec![
+            Property::SongVolume,
+            Property::SongDucking,
+            Property::StereoWidth,
+            Property::QuietestHit,
+            Property::LoudestHit,
+            Property::Rule(0, 4, "strength".into()),
+            Property::Rule(0, 4, "color".into()),
+        ];
+        for i in 0..scene.spawners.len() as u32 {
+            all.extend(BallSetting::ALL.map(|s| Property::Ball(i, s)));
+        }
+        all.extend(CaptionSetting::ALL.map(|s| Property::Caption(0, s)));
+        all
+    }
+
+    #[test]
+    fn every_new_setting_round_trips_and_animates() {
+        let scene = scene_with_lists();
+        assert!(!scene.spawners.is_empty());
+        for property in every_new_property(&scene) {
+            let value = property.get(&scene).unwrap_or_else(|| panic!("{property:?}"));
+            assert_eq!(
+                property.is_color() || matches!(property, Property::Rule(_, _, ref n) if n == "color"),
+                matches!(value, Value::Color(_)),
+                "{property:?}"
+            );
+            let changed = match value {
+                Value::Number(v) => Value::Number(v + 1.5),
+                Value::Color(_) => Value::Color(Color::rgb(1, 2, 3)),
+            };
+            let mut copy = scene.clone();
+            property.set(&mut copy, changed);
+            assert_eq!(property.get(&copy), Some(changed), "{property:?}");
+            property.copy(&scene, &mut copy);
+            assert_eq!(copy, scene, "{property:?}");
+            // Keyframed, the scene shows the value at each moment.
+            let mut animated = scene.clone();
+            let mut track = Track::new(property.clone());
+            track.set_key(1.0, value);
+            track.set_key(3.0, changed);
+            track.keys[0].ease = Ease::Hold;
+            animated.animation.push(track);
+            assert_eq!(property.get(&animated.at_time(2.0)), Some(value), "{property:?}");
+            assert_eq!(property.get(&animated.at_time(3.0)), Some(changed), "{property:?}");
+            assert_eq!(animated.number_at(&property, 3.0), changed.number(), "{property:?}");
+        }
+    }
+
+    #[test]
+    fn classic_balls_and_missing_items_have_no_settings() {
+        let mut scene = Scene::default();
+        *scene.spawners[0].style_mut() = None;
+        assert_eq!(Property::Ball(0, BallSetting::Glow).get(&scene), None);
+        assert_eq!(Property::Caption(3, CaptionSetting::Size).get(&scene), None);
+        assert_eq!(Property::Rule(0, 1, "count".into()).get(&scene), None);
+        // Setting them is quietly ignored.
+        let before = scene.clone();
+        Property::Ball(0, BallSetting::Glow).set(&mut scene, Value::Number(1.0));
+        Property::Caption(3, CaptionSetting::Size).set(&mut scene, Value::Number(1.0));
+        Property::Rule(0, 1, "count".into()).set(&mut scene, Value::Number(1.0));
+        assert_eq!(scene, before);
+    }
+
+    #[test]
+    fn settings_of_list_items_follow_their_items() {
+        let mut scene = scene_with_lists();
+        scene.captions.push(Caption::new("{balls}", crate::CaptionStyle::Counter));
+        for property in [
+            Property::Caption(0, CaptionSetting::Size),
+            Property::Caption(1, CaptionSetting::Glow),
+            Property::Ball(0, BallSetting::Glow),
+            Property::Bloom,
+        ] {
+            scene.animation.push(Track::new(property));
+        }
+        scene.modulators.push(Modulator::new(Property::Caption(1, CaptionSetting::Y), AudioBand::Beat));
+        let list = |scene: &Scene| scene.animation.iter().map(|t| t.property.clone()).collect::<Vec<_>>();
+        scene.swapped_items(List::Captions, 0, 1);
+        assert_eq!(
+            list(&scene)[..2],
+            [Property::Caption(1, CaptionSetting::Size), Property::Caption(0, CaptionSetting::Glow)]
+        );
+        assert_eq!(scene.modulators[0].property, Property::Caption(0, CaptionSetting::Y));
+        scene.duplicated_item(List::Captions, 0);
+        assert_eq!(
+            scene.animation.iter().filter(|t| t.property == Property::Caption(1, CaptionSetting::Glow)).count(),
+            1
+        );
+        assert!(scene.track(&Property::Caption(2, CaptionSetting::Size)).is_some());
+        scene.removed_item(List::Captions, 0);
+        scene.removed_item(List::BallGroups, 0);
+        assert_eq!(
+            list(&scene),
+            [Property::Caption(1, CaptionSetting::Size), Property::Bloom, Property::Caption(0, CaptionSetting::Glow)]
+        );
+        assert!(scene.animates(List::Captions));
+        assert!(!scene.animates(List::Rules));
+    }
+
+    #[test]
+    fn sound_and_rule_settings_know_what_they_change() {
+        assert!(Property::SongVolume.affects_sound() && !Property::SongVolume.affects_simulation());
+        assert!(Property::Rule(0, 0, "count".into()).affects_simulation());
+        assert!(!Property::Ball(0, BallSetting::Glow).affects_simulation());
+        assert!(!Property::Caption(0, CaptionSetting::X).affects_sound());
+    }
+
+    #[test]
+    fn new_eases_start_and_land_on_their_keyframes() {
+        for ease in
+            Ease::ALL.into_iter().chain([Ease::Curve(Bezier::default()), Ease::Curve(Bezier::new(0.3, 1.6, 0.7, -0.4))])
+        {
+            assert_eq!(ease.apply(0.0), 0.0, "{ease:?}");
+            assert_eq!(ease.apply(1.0), if ease == Ease::Hold { 0.0 } else { 1.0 }, "{ease:?}");
+            assert!(ease.apply(0.5).is_finite());
+        }
+        // Overshoot and spring go past the target; bounce never does.
+        let peak = |ease: Ease| (0..=100).map(|i| ease.apply(i as f32 / 100.0)).fold(f32::MIN, f32::max);
+        assert!(peak(Ease::Overshoot) > 1.05 && peak(Ease::Spring) > 1.05);
+        assert!(peak(Ease::Bounce) <= 1.0 + 1e-5);
+        // The plain curve matches the classic smooth ease closely; a straight one is linear.
+        let line = Ease::Curve(Bezier::new(0.0, 0.0, 1.0, 1.0));
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            assert!((line.apply(t) - t).abs() < 1e-4, "{t}");
+            assert!((Ease::Curve(Bezier::default()).apply(t) - Ease::Smooth.apply(t)).abs() < 0.03, "{t}");
+        }
+        // Ease in starts slow, ease out starts fast, as curves too.
+        assert!(Ease::Curve(Ease::EaseIn.as_curve()).apply(0.25) < 0.25);
+        assert!(Ease::Curve(Ease::EaseOut.as_curve()).apply(0.25) > 0.25);
+    }
+
+    #[test]
+    fn new_settings_and_curves_save_and_load() {
+        let mut scene = scene_with_lists();
+        let mut track = Track::new(Property::Ball(0, BallSetting::Glow));
+        track.set_key(0.0, Value::Number(0.2));
+        track.set_key(2.0, Value::Number(0.8));
+        track.keys[0].ease = Ease::Curve(Bezier::new(0.1, 1.3, 0.4, 0.9));
+        scene.animation.push(track);
+        for property in
+            [Property::Rule(0, 4, "color".into()), Property::Caption(0, CaptionSetting::X), Property::SongVolume]
+        {
+            let mut track = Track::new(property);
+            track.set_key(1.0, Value::Number(1.0));
+            track.keys[0].ease = Ease::Spring;
+            scene.animation.push(track);
+        }
         let text = scene.to_ron().unwrap();
         assert_eq!(Scene::from_ron(&text).unwrap(), scene);
     }

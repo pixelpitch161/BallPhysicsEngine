@@ -1003,6 +1003,7 @@ impl eframe::App for StudioApp {
         if !requests.is_empty() {
             let library = &self.inspector.effects.library;
             let effects = self.scene.effects.clone();
+            let rules = Scene { logic: self.scene.logic.clone(), ..Scene::default() };
             keys::apply_requests(&mut self.scene, requests, key_time, |property| match property {
                 Property::EffectParam(i, name) => {
                     let effect = effects.get(*i as usize)?;
@@ -1010,6 +1011,7 @@ impl eframe::App for StudioApp {
                     let param = info.params.iter().find(|p| p.name == *name)?;
                     Some(Value::Number(param.default))
                 }
+                Property::Rule(..) => keys::rule_default(&rules, property),
                 _ => None,
             });
         }
@@ -1018,11 +1020,13 @@ impl eframe::App for StudioApp {
         if !requests.is_empty() {
             let library = &self.inspector.effects.library;
             let effects = self.scene.effects.clone();
+            let rules = Scene { logic: self.scene.logic.clone(), ..Scene::default() };
             crate::setting_menu::pulse::apply_requests(&ctx, &mut self.scene, requests, |property| match property {
                 Property::EffectParam(i, name) => {
                     let info = library.get(&effects.get(*i as usize)?.shader)?;
                     Some(Value::Number(info.params.iter().find(|p| p.name == *name)?.default))
                 }
+                Property::Rule(..) => keys::rule_default(&rules, property),
                 _ => None,
             });
         }
@@ -1148,7 +1152,9 @@ fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits:
 /// The parts of a scene that decide how balls move and sound.
 fn moving_parts(scene: &Scene) -> Scene {
     let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
-    parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    // Sound settings change the soundtrack, which is worked out with the simulation.
+    let moves = |p: &Property| p.affects_simulation() || p.affects_sound();
+    parts.animation = scene.animation.iter().filter(|t| moves(&t.property)).cloned().collect();
     // WS5: node effects and pulses on the picture only change the picture.
     parts.shader_graphs = Vec::new();
     parts.modulators = scene.modulators.iter().filter(|m| m.property.affects_simulation()).cloned().collect();

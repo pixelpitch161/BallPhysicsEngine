@@ -26,8 +26,8 @@ use crate::dice_panel::{Part, lock_button};
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, PresetKind, Property,
-    Scene, Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, List, Look, Obstacle, Physics, PresetKind,
+    Property, Scene, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -224,7 +224,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
                     let picked_before = (inspector.selected, inspector.soft.selected);
-                    balls(
+                    let edit = balls(
                         ui,
                         &mut scene.spawners,
                         &mut inspector.selected,
@@ -233,6 +233,9 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         &mut roll,
                         space,
                     );
+                    if let Some(edit) = edit {
+                        edit.apply(scene, List::BallGroups);
+                    }
                     soft::section(ui, scene, &mut inspector.soft);
                     // One thing is selected at a time: a ball group or a soft thing.
                     if inspector.soft.selected.is_some() && inspector.soft.selected != picked_before.1 {
@@ -345,6 +348,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     text::show(ui, &mut inspector.text, scene, &mut roll);
                     if reset_tab(ui, !scene.captions.is_empty()) {
                         scene.captions.clear();
+                        scene.remap_tracks(List::Captions, |_| None);
                     }
                 }
             }
@@ -820,7 +824,7 @@ fn balls(
     look: &Look,
     roll: &mut Option<Roll>,
     space: bool,
-) {
+) -> Option<ListEdit> {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -1006,16 +1010,19 @@ fn balls(
         ui.add_space(8.0);
     }
     looks.share_changes(&styles_before, spawners);
+    let mut edit = None;
     if let Some(index) = duplicate {
         let copy = spawners[index].clone();
         spawners.insert(index + 1, copy);
         *selected = Some(index + 1);
         looks.picked.clear();
+        edit = Some(ListEdit::Duplicated(index));
     }
     if let Some(index) = remove {
         spawners.remove(index);
         *selected = None;
         looks.picked.clear();
+        edit = Some(ListEdit::Removed(index));
     }
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Add a block of balls").clicked() {
@@ -1031,6 +1038,27 @@ fn balls(
             *selected = Some(spawners.len() - 1);
         }
     });
+    edit
+}
+
+/// A change to the order of a list whose items can have animated settings, so their
+/// keyframes can follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListEdit {
+    Removed(usize),
+    /// A copy was put just after this item.
+    Duplicated(usize),
+    Swapped(usize, usize),
+}
+
+impl ListEdit {
+    pub fn apply(self, scene: &mut Scene, list: List) {
+        match self {
+            ListEdit::Removed(i) => scene.removed_item(list, i),
+            ListEdit::Duplicated(i) => scene.duplicated_item(list, i),
+            ListEdit::Swapped(a, b) => scene.swapped_items(list, a, b),
+        }
+    }
 }
 
 const RING_RADIUS: f32 = 508.0;
