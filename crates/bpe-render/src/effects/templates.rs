@@ -4,7 +4,7 @@
 //! version of a built-in code effect, used by "Edit as nodes" and by the tests that prove the
 //! block set can make every built-in effect.
 
-use super::graph::{Builder, Graph};
+use super::graph::{Builder, Control, Graph};
 
 /// The node effects offered in the effect list.
 pub fn graphs() -> Vec<Graph> {
@@ -33,14 +33,14 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         "color_cycle" => {
             b = Builder::new(&title("Colour cycle"));
             let time = b.add("time");
-            b.set(time, "speed", 0.05).expose(time, "speed", None);
+            b.set(time, "speed", 0.05).expose(time, "speed", None).range(time, "speed", -1.0, 1.0);
             let pulse = b.add("pulse");
             let kick = b.add("multiply");
-            b.set(kick, "b", 0.0).expose(kick, "b", Some("kick"));
+            b.set(kick, "b", 0.0).expose(kick, "b", Some("kick")).range(kick, "b", 0.0, 0.5);
             let turns = b.add("add");
             let hue = b.add("hue_shift");
             let sat = b.add("saturation");
-            b.set(sat, "amount", 1.0).expose(sat, "amount", Some("saturation"));
+            b.set(sat, "amount", 1.0).expose(sat, "amount", Some("saturation")).range(sat, "amount", 0.0, 2.0);
             let contrast = b.add("brightness_contrast");
             b.expose(contrast, "contrast", None);
             let out = b.add("output");
@@ -91,7 +91,7 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             }
             let pic = b.add("picture");
             let glow = b.add("multiply");
-            b.set(glow, "a", 0.4).expose(glow, "a", Some("glow")).set(glow, "b", 0.25);
+            b.set(glow, "a", 0.4).expose(glow, "a", Some("glow")).range(glow, "a", 0.0, 2.0).set(glow, "b", 0.25);
             let add = b.add("blend_add");
             let out = b.add("output");
             b.wire(wave, "out", pic, "at")
@@ -104,11 +104,11 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             b = Builder::new(&title("Colour split"));
             let pulse = b.add("pulse");
             let kick = b.add("multiply");
-            b.set(kick, "b", 2.0).expose(kick, "b", Some("kick"));
+            b.set(kick, "b", 2.0).expose(kick, "b", Some("kick")).range(kick, "b", 0.0, 10.0);
             let one_plus = b.add("add");
             b.set(one_plus, "a", 1.0);
             let amount = b.add("multiply");
-            b.set(amount, "a", 0.004).expose(amount, "a", Some("amount"));
+            b.set(amount, "a", 0.004).expose(amount, "a", Some("amount")).range(amount, "a", 0.0, 0.03);
             let split = b.add("chromatic_split");
             b.expose(split, "radial", None);
             let out = b.add("output");
@@ -154,7 +154,7 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             let pic = b.add("picture");
             // Dot radius 0.5 - gap / 2, faded over its last 0.08; the same edge for squares.
             let gap = b.add("number");
-            b.set(gap, "value", 0.15).expose(gap, "value", Some("gap"));
+            b.set(gap, "value", 0.15).expose(gap, "value", Some("gap")).range(gap, "value", 0.0, 0.6);
             let edge = b.add("remap");
             b.set(edge, "in_low", 0.0).set(edge, "in_high", 1.0).set(edge, "out_low", 0.46).set(edge, "out_high", -0.04);
             let dot = b.add("circle");
@@ -164,7 +164,7 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             let side = b.add("remap");
             b.set(side, "in_low", 0.0).set(side, "in_high", 1.0).set(side, "out_low", 0.96).set(side, "out_high", -0.04);
             let dots = b.add("number");
-            b.set(dots, "value", 0.0).expose(dots, "value", Some("dots"));
+            b.set(dots, "value", 0.0).expose(dots, "value", Some("dots")).control(dots, "value", Control::Toggle);
             let shape = b.add("mix");
             let lit = b.add("multiply");
             let out = b.add("output");
@@ -193,7 +193,7 @@ fn bass_tunnel() -> Graph {
     let mut b = Builder::new("Bass tunnel");
     let music = b.add("music");
     let punch = b.add("multiply");
-    b.set(punch, "b", 0.04).expose(punch, "b", Some("punch"));
+    b.set(punch, "b", 0.04).expose(punch, "b", Some("punch")).range(punch, "b", 0.0, 0.2);
     let zoom = b.add("add");
     b.set(zoom, "a", 1.005);
     let feedback = b.add("feedback");
@@ -206,7 +206,7 @@ fn bass_tunnel() -> Graph {
     b.set(sharp, "exponent", 12.0);
     let ramp = b.add("ramp");
     let glow = b.add("multiply");
-    b.set(glow, "b", 0.6).expose(glow, "b", Some("glow"));
+    b.set(glow, "b", 0.6).expose(glow, "b", Some("glow")).range(glow, "b", 0.0, 3.0);
     let add = b.add("blend_add");
     let out = b.add("output");
     b.wire(music, "bass", punch, "a")
@@ -232,7 +232,7 @@ fn treble_sparkle() -> Graph {
     let sharp = b.add("power");
     b.set(sharp, "exponent", 60.0);
     let amount = b.add("multiply");
-    b.set(amount, "b", 6.0).expose(amount, "b", Some("sparkle"));
+    b.set(amount, "b", 6.0).expose(amount, "b", Some("sparkle")).range(amount, "b", 0.0, 20.0);
     let colour = b.add("rainbow");
     b.set(colour, "saturation", 0.35).set(colour, "brightness", 2.0);
     let time = b.add("time");
@@ -241,7 +241,7 @@ fn treble_sparkle() -> Graph {
     let hue = b.add("hue_shift");
     b.set(hue, "turns", 0.0);
     let shimmer = b.add("multiply");
-    b.set(shimmer, "b", 0.15).expose(shimmer, "b", Some("shimmer"));
+    b.set(shimmer, "b", 0.15).expose(shimmer, "b", Some("shimmer")).range(shimmer, "b", 0.0, 1.0);
     let out = b.add("output");
     let scaled = b.add("multiply");
     b.wire(specks, "out", sharp, "x")
@@ -263,7 +263,7 @@ fn beat_kaleido() -> Graph {
     let mut b = Builder::new("Beat kaleido");
     let beat = b.add("beat");
     let kick = b.add("multiply");
-    b.set(kick, "b", 0.35).expose(kick, "b", Some("kick"));
+    b.set(kick, "b", 0.35).expose(kick, "b", Some("kick")).range(kick, "b", 0.0, 1.0);
     let zoom = b.add("add");
     b.set(zoom, "a", 1.0);
     let k = b.add("kaleidoscope");
@@ -290,13 +290,13 @@ fn liquid_pulse() -> Graph {
     let mut b = Builder::new("Liquid pulse");
     let music = b.add("music");
     let depth = b.add("multiply");
-    b.set(depth, "b", 0.08).expose(depth, "b", Some("depth"));
+    b.set(depth, "b", 0.08).expose(depth, "b", Some("depth")).range(depth, "b", 0.0, 0.3);
     let bend = b.add("add");
     b.set(bend, "a", 0.01);
     let flow = b.add("flow");
     b.expose(flow, "scale", None).expose(flow, "speed", None);
     let fringe = b.add("multiply");
-    b.set(fringe, "b", 0.012).expose(fringe, "b", Some("fringe"));
+    b.set(fringe, "b", 0.012).expose(fringe, "b", Some("fringe")).range(fringe, "b", 0.0, 0.05);
     let split = b.add("chromatic_split");
     let out = b.add("output");
     b.wire(music, "bass", depth, "a")

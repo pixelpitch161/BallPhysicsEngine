@@ -318,7 +318,7 @@ fn random_graphs_never_panic() {
     let mut working = 0;
     for round in 0..300 {
         let mut b = Builder::new(&format!("Random {round}"));
-        let mut ids = Vec::new();
+        let mut ids = vec![(b.add("output"), Catalog::get().block("output").unwrap())];
         for _ in 0..1 + next(12) {
             let block = &blocks[next(blocks.len())];
             ids.push((b.add(block.kind), block));

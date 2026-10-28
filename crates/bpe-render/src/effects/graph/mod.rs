@@ -143,6 +143,7 @@ impl<'a> Compiler<'a> {
             .filter(|n| n.kind == "output" && self.nodes.contains_key(&n.id))
             .map(|n| n.id)
             .collect();
+        let mut extra_outputs = Vec::new();
         let output = match outputs.as_slice() {
             [] => {
                 self.problems.push(Problem::graph("Add an Output block: it decides what the effect shows."));
@@ -150,7 +151,8 @@ impl<'a> Compiler<'a> {
             }
             [first, rest @ ..] => {
                 for &extra in rest {
-                    self.problems.push(Problem::on(extra, "Only one Output block is used. Remove this one."));
+                    self.problems.push(Problem::on(extra, "A node effect can only have one Output block."));
+                    extra_outputs.push(extra);
                 }
                 Some(*first)
             }
@@ -181,7 +183,7 @@ impl<'a> Compiler<'a> {
         let fatal: Vec<Problem> = self
             .problems
             .iter()
-            .filter(|p| p.node.is_none_or(|n| needed.contains(&n)))
+            .filter(|p| p.node.is_none_or(|n| needed.contains(&n) || extra_outputs.contains(&n)))
             .cloned()
             .collect();
         let fatal_needed = needed.iter().any(|n| broken.contains(n));
@@ -260,12 +262,22 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        for (&id, &count) in &waiting {
-            if count > 0 {
-                self.problems.push(Problem::on(
-                    id,
-                    "This block is in a loop. Use Previous frame or Feedback to feed a picture back in.",
-                ));
+        // Left over are blocks in a loop and blocks after one; only the first get the message.
+        let left: BTreeSet<u32> = waiting.iter().filter(|(_, n)| **n > 0).map(|(&id, _)| id).collect();
+        for &id in &left {
+            let mut seen = BTreeSet::new();
+            let mut stack: Vec<u32> = downstream.get(&id).cloned().unwrap_or_default();
+            while let Some(next) = stack.pop() {
+                if next == id {
+                    self.problems.push(Problem::on(
+                        id,
+                        "This block is in a loop. Use Previous frame or Feedback to feed a picture back in.",
+                    ));
+                    break;
+                }
+                if left.contains(&next) && seen.insert(next) {
+                    stack.extend(downstream.get(&next).into_iter().flatten().copied());
+                }
             }
         }
         order
@@ -378,13 +390,27 @@ impl<'a> Compiler<'a> {
                     name = format!("{wanted}_{n}");
                     n += 1;
                 }
-                let value = number_param(node, input).clamp(input.min, input.max);
-                let kind = match input.control {
-                    Control::Toggle => "toggle".to_string(),
-                    Control::Whole => format!("[{}, {}] int", literal(input.min), literal(input.max)),
-                    Control::Slider => format!("[{}, {}]", literal(input.min), literal(input.max)),
+                let bound = |key: &str, fallback: f32| match node.params.get(&format!("{}:{key}", input.name)) {
+                    Some(Param::Number(v)) if v.is_finite() => *v,
+                    _ => fallback,
                 };
-                let _ = writeln!(header, "// param {name} = {} {kind} {}", literal(value), one_line(input.help));
+                let (min, max) = (bound("min", input.min), bound("max", input.max));
+                let (min, max) = if min < max { (min, max) } else { (input.min, input.max) };
+                let value = number_param(node, input).clamp(min, max);
+                let control = match node.params.get(&format!("{}:control", input.name)) {
+                    Some(Param::Choice(c)) if c == "toggle" => Control::Toggle,
+                    Some(Param::Choice(c)) if c == "whole" => Control::Whole,
+                    Some(Param::Choice(c)) if c == "slider" => Control::Slider,
+                    _ => input.control,
+                };
+                let (min, max) = if control == Control::Toggle { (0.0, 1.0) } else { (min, max) };
+                let value = value.clamp(min, max);
+                let kind = match control {
+                    Control::Toggle => "toggle".to_string(),
+                    Control::Whole => format!("[{}, {}] int", number(min), number(max)),
+                    Control::Slider => format!("[{}, {}]", number(min), number(max)),
+                };
+                let _ = writeln!(header, "// param {name} = {} {kind} {}", number(value), one_line(input.help));
                 slider_of.insert((node.id, input.name), name.clone());
                 sliders.push(Slider { name, node: node.id, input: input.name.to_string() });
             }
@@ -543,6 +569,25 @@ impl Builder {
         self
     }
 
+    /// Limits the slider of an exposed input to a range other than the block's usual one.
+    pub fn range(&mut self, id: u32, input: &str, min: f32, max: f32) -> &mut Self {
+        let node = self.node(id);
+        node.params.insert(format!("{input}:min"), Param::Number(min));
+        node.params.insert(format!("{input}:max"), Param::Number(max));
+        self
+    }
+
+    /// Shows an exposed input as an on/off switch (or whole-number slider) instead.
+    pub fn control(&mut self, id: u32, input: &str, control: Control) -> &mut Self {
+        let name = match control {
+            Control::Slider => "slider",
+            Control::Whole => "whole",
+            Control::Toggle => "toggle",
+        };
+        self.node(id).params.insert(format!("{input}:control"), Param::Choice(name.into()));
+        self
+    }
+
     /// Shows an input as a slider on the effect card, optionally under another name.
     pub fn expose(&mut self, id: u32, input: &str, name: Option<&str>) -> &mut Self {
         let node = self.node(id);
@@ -660,11 +705,17 @@ fn unplugged(node: &Node, input: &Input, target: Ty) -> String {
     }
 }
 
+/// A number for a `// param` line.
+fn number(v: f32) -> String {
+    if v.is_finite() { format!("{v:?}") } else { "0".into() }
+}
+
 /// A WGSL float literal.
 fn literal(v: f32) -> String {
     let v = if v.is_finite() { v } else { 0.0 };
+    // The `f` suffix keeps calls like `mix(0.0f, 1.0f, 0.5f)` concrete.
     let text = format!("{v:?}");
-    if text.contains(['.', 'e']) { text } else { format!("{text}.0") }
+    if text.contains(['.', 'e']) { format!("{text}f") } else { format!("{text}.0f") }
 }
 
 /// A slider name made from a user's label: lower case letters, digits and `_`.
@@ -693,3 +744,6 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gpu_tests;
