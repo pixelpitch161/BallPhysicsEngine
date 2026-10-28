@@ -172,6 +172,13 @@ pub fn output_size(scene: &Scene, scale: f32) -> (u32, u32) {
 
 fn spawn(mut command: Command, ffmpeg: &Path) -> anyhow::Result<Child> {
     command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        // Keep ffmpeg from flashing a console window when started from the editor.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command.spawn().with_context(|| {
         format!("could not start ffmpeg ({}). Install ffmpeg and make sure it is on your PATH", ffmpeg.display())
     })

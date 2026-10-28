@@ -1,5 +1,8 @@
 //! Ball Studio: design a scene, watch it with sound, and export it as an mp4.
 
+// No console window behind the editor in Windows release builds.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod audio_out;
 mod inspector;

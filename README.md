@@ -1,18 +1,32 @@
 # Ball Physics Engine
 
 Design, preview and render satisfying bouncing-ball videos for TikTok, Instagram Reels and YouTube Shorts.
-Written in Rust with wgpu. The output is a vertical 1080x1920 mp4 with sound.
+Written in Rust with wgpu. The output is a vertical 1080x1920 mp4 with sound. Developed for Windows 11, and also builds on macOS and Linux.
 
 The default scene recreates a reference reel: a 28 x 28 grid of glowing balls falls into a ring, and every wall hit plays a note from a chord progression.
 
 ## Requirements
 
-- Rust 1.88 or newer (`rustup update`)
-- [ffmpeg](https://ffmpeg.org/download.html) on your `PATH`, used to encode the mp4.
-  - Windows: `winget install ffmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux: `sudo apt install ffmpeg`
-- A GPU with Vulkan, Metal or DirectX 12. Linux also needs `libasound2-dev`, `libxkbcommon-x11-0` and `pkg-config` to build.
+### Windows 11
+
+1. Install Rust from [rustup.rs](https://rustup.rs). When it asks, let it install the Visual Studio C++ Build Tools.
+2. Install ffmpeg, then open a new terminal so it is on your `PATH`:
+   ```powershell
+   winget install --id Gyan.FFmpeg
+   ffmpeg -version
+   ```
+3. Clone and run the editor:
+   ```powershell
+   git clone https://github.com/pixelpitch161/BallPhysicsEngine
+   cd BallPhysicsEngine
+   cargo run --release -p bpe-app
+   ```
+   The first build downloads and compiles dependencies and takes a few minutes. The editor uses DirectX 12 or Vulkan.
+
+### macOS and Linux
+
+- Rust 1.88 or newer from [rustup.rs](https://rustup.rs), and ffmpeg (`brew install ffmpeg` or `sudo apt install ffmpeg`).
+- Linux also needs `pkg-config`, `libasound2-dev` and `libxkbcommon-x11-0` to build.
 
 ## Editor
 
