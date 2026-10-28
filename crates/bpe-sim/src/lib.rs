@@ -91,6 +91,9 @@ pub struct Ball {
     /// Linear-light RGBA.
     pub color: [f32; 4],
     pub wall_hits: u32,
+    /// Which spawner made the ball, by its place in the scene's list, so it is drawn with that
+    /// spawner's style. Balls split off another ball keep their parent's.
+    pub group: u16,
     /// False once a rule has removed the ball. Removed balls keep their place in the list, so
     /// ball numbers in the event log stay valid, but they don't move, collide or show.
     pub alive: bool,
@@ -194,7 +197,10 @@ impl Simulation {
         pending.reverse();
         let trail_every = (steps_per_second / TRAIL_SAMPLE_RATE).max(1) as u64;
         let sample_rate = steps_per_second as f32 / trail_every as f32;
-        let trail_len = ((scene.look.trail_seconds.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES);
+        // Long enough for the scene's trails and for every ball style's own.
+        let longest = scene.spawners.iter().filter_map(|s| s.style()).map(|s| s.trail_seconds);
+        let longest = longest.fold(scene.look.trail_seconds, f32::max);
+        let trail_len = ((longest.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES);
         let rings = match scene.container {
             Container::Rings { count, .. } => count as usize,
             _ => 0,
@@ -325,7 +331,14 @@ impl Simulation {
         self.dt * self.trail_every as f32
     }
 
-    /// Past positions of one ball, newest first, ending at most `Look::trail_seconds` ago.
+    /// How many of a ball's trail samples reach `seconds` back, for drawing trails of that length.
+    pub fn trail_samples(&self, seconds: f32) -> usize {
+        let sample_rate = 1.0 / self.trail_interval();
+        ((seconds.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES).min(self.trail_len)
+    }
+
+    /// Past positions of one ball, newest first, ending at most as long ago as the longest trail
+    /// the scene draws (see [`Simulation::trail_samples`]).
     /// The ball's current position is not included.
     pub fn trail(&self, ball: usize) -> impl Iterator<Item = Vec2> + '_ {
         let base = ball * self.trail_len;
@@ -1087,10 +1100,18 @@ pub fn collect_wall_hits(scene: &Scene) -> Vec<Event> {
 
 /// Every ball the scene's spawners make, with the step it appears on, earliest first.
 fn spawn_plan(scene: &Scene, steps_per_second: u32) -> Vec<(u64, Ball)> {
-    let ball =
-        |position, velocity, radius, color| Ball { position, velocity, radius, color, wall_hits: 0, alive: true };
     let mut plan = Vec::new();
-    for spawner in &scene.spawners {
+    for (group, spawner) in scene.spawners.iter().enumerate() {
+        let group = group.min(u16::MAX as usize) as u16;
+        let ball = |position, velocity, radius, color| Ball {
+            position,
+            velocity,
+            radius,
+            color,
+            wall_hits: 0,
+            group,
+            alive: true,
+        };
         match spawner {
             Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient, .. } => {
                 let size = Vec2::new(columns.saturating_sub(1) as f32, rows.saturating_sub(1) as f32) * *spacing;
@@ -1141,6 +1162,7 @@ fn split_ball(parent: &Ball, index: usize, spread: f32) -> Ball {
         radius: parent.radius,
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
+        group: parent.group,
         alive: true,
     }
 }
@@ -1317,6 +1339,7 @@ mod tests {
                     radius: 3.0 + 4.0 * noise(i + seed),
                     color: [1.0; 4],
                     wall_hits: 0,
+                    group: 0,
                     alive: true,
                 })
                 .collect();
@@ -1465,6 +1488,7 @@ mod tests {
                 color: Color::WHITE,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             },
             Spawner::Single {
                 position: Vec2::new(50.0, 0.0),
@@ -1473,6 +1497,7 @@ mod tests {
                 color: Color::WHITE,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             },
         ];
         let mut sim = Simulation::new(&scene);

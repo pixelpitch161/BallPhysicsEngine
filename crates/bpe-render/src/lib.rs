@@ -75,6 +75,8 @@ pub struct Renderer {
     background: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
+    /// Trails of balls with their own style.
+    styled_trail: wgpu::RenderPipeline,
     /// Jelly, cloth and liquid fills (physics workstream).
     soft: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
@@ -84,6 +86,7 @@ pub struct Renderer {
     composite: wgpu::RenderPipeline,
     shape_buffer: GrowableBuffer,
     trail_buffer: GrowableBuffer,
+    styled_trail_buffer: GrowableBuffer,
     soft_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
@@ -229,6 +232,10 @@ impl Renderer {
 
         let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2];
         let instance_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
+        let ball_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32x4, 3 => Float32x4,
+            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4
+        ];
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
         let shape_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ShapeInstance>() as u64,
@@ -280,6 +287,17 @@ impl Renderer {
             HDR_FORMAT,
             Some(additive),
         );
+        let styled_trail = make(
+            "styled trails",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_trail",
+            "fs_styled_trail",
+            &[Some(trail_layout.clone())],
+            TriangleList,
+            HDR_FORMAT,
+            Some(additive),
+        );
         let soft = make(
             "soft bodies",
             &scene_pipeline_layout,
@@ -297,7 +315,11 @@ impl Renderer {
             &scene_shader,
             "vs_ball",
             "fs_ball",
-            &[Some(instance_layout(std::mem::size_of::<BallInstance>() as u64))],
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<BallInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &ball_attributes,
+            })],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -357,6 +379,7 @@ impl Renderer {
             background,
             shape,
             trail,
+            styled_trail,
             soft,
             ball,
             flash,
@@ -365,6 +388,7 @@ impl Renderer {
             composite,
             shape_buffer: GrowableBuffer::new("shape instances"),
             trail_buffer: GrowableBuffer::new("trail vertices"),
+            styled_trail_buffer: GrowableBuffer::new("styled trail vertices"),
             soft_buffer: GrowableBuffer::new("soft body vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
@@ -474,6 +498,7 @@ impl Renderer {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
+        self.styled_trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.styled_trails));
         self.soft_buffer.upload(device, queue, bytemuck::cast_slice(&frame.soft));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
@@ -572,6 +597,11 @@ impl Renderer {
             pass.set_pipeline(&self.trail);
             pass.set_vertex_buffer(0, self.trail_buffer.slice());
             pass.draw(0..frame.trails.len() as u32, 0..1);
+        }
+        if !frame.styled_trails.is_empty() {
+            pass.set_pipeline(&self.styled_trail);
+            pass.set_vertex_buffer(0, self.styled_trail_buffer.slice());
+            pass.draw(0..frame.styled_trails.len() as u32, 0..1);
         }
         if !frame.soft.is_empty() {
             pass.set_pipeline(&self.soft);
@@ -864,6 +894,9 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
 /// Picture tests for soft bodies, pockets and custom shapes (physics workstream).
 #[cfg(test)]
 mod soft_tests;
+/// Picture tests for per-ball styles.
+#[cfg(test)]
+mod style_tests;
 
 #[cfg(test)]
 mod tests {

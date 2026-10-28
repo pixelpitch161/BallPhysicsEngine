@@ -493,6 +493,7 @@ mod tests {
             radius: 5.0,
             color: [1.0; 4],
             wall_hits: 0,
+            group: 0,
             alive: true,
         };
         let prev = Vec2::new(0.0, -10.0);
@@ -513,6 +514,7 @@ mod tests {
             radius: 5.0,
             color: [1.0; 4],
             wall_hits: 0,
+            group: 0,
             alive: true,
         };
         assert!(collide_piece(&mut ball, Vec2::new(96.0, 0.0), &pieces[0], 2.0, Vec2::ZERO, 0.0, 0.0, 1.0).is_none());
@@ -532,6 +534,7 @@ mod tests {
             radius: 0.5,
             color: [1.0; 4],
             wall_hits: 0,
+            group: 0,
             alive: true,
         };
         let hit = collide_disc(&mut ball, Vec2::new(-4.5, 0.0), Vec2::ZERO, 1.0, 1.0);

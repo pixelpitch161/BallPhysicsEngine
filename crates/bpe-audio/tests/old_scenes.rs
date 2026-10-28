@@ -43,6 +43,8 @@ const GOLDEN: &[(&str, u64)] = &[
     ("Liquid", 0x77ff8a6c99504c2e),
     // Rules preset: the same bounces as "Escape and multiply", built from rule blocks.
     ("Escape and multiply (rules)", 0x0721ea1f2df9d8aa),
+    // Per-ball looks preset, recorded when it arrived.
+    ("Ball looks", 0xbe67b96c3bcd5987),
     ("reference-reel.ron", 0xdcee90b73c18a4ad),
     ("growing-ball.ron", 0x4e22ede5124f46bc),
 ];

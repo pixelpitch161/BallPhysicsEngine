@@ -5,6 +5,7 @@
 //! output video, with the origin at the centre of the frame and y pointing down.
 
 mod animation;
+mod ball_style;
 mod bodies;
 mod captions;
 mod color;
@@ -24,6 +25,7 @@ pub use animation::{
     Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
     remap_effect_modulators,
 };
+pub use ball_style::*;
 pub use bodies::*;
 pub use bpe_graph::Graph;
 pub use captions::*;
@@ -272,6 +274,9 @@ pub enum Spawner {
         /// Speed into the screen in 3D, in pixels per second. Ignored in 2D.
         #[serde(default)]
         depth_velocity: f32,
+        /// How the balls look. None draws them the classic way, following the Look tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<BallStyle>,
     },
     Single {
         position: Vec2,
@@ -282,6 +287,9 @@ pub enum Spawner {
         depth: f32,
         #[serde(default)]
         depth_velocity: f32,
+        /// How the balls look. None draws them the classic way, following the Look tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<BallStyle>,
     },
     /// Balls dropped one after another from the same spot.
     Stream {
@@ -300,6 +308,9 @@ pub enum Spawner {
         depth: f32,
         #[serde(default)]
         depth_velocity: f32,
+        /// How the balls look. None draws them the classic way, following the Look tab.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<BallStyle>,
     },
 }
 
@@ -441,6 +452,7 @@ impl Default for Scene {
                 ],
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             rules: BounceRules::default(),
             look: Look::default(),
@@ -547,6 +559,23 @@ impl Default for Sound {
             stereo_width: 0.6,
             target_loudness: -14.0,
             seed: 1,
+        }
+    }
+}
+
+impl Spawner {
+    /// How these balls look, or None for the classic look that follows the Look tab.
+    pub fn style(&self) -> Option<&BallStyle> {
+        match self {
+            Spawner::Grid { style, .. } | Spawner::Single { style, .. } | Spawner::Stream { style, .. } => {
+                style.as_ref()
+            }
+        }
+    }
+
+    pub fn style_mut(&mut self) -> &mut Option<BallStyle> {
+        match self {
+            Spawner::Grid { style, .. } | Spawner::Single { style, .. } | Spawner::Stream { style, .. } => style,
         }
     }
 }
@@ -832,6 +861,11 @@ impl Scene {
                 description: "Liquid sloshes into a box and balls splash down into it.",
                 scene: Scene::liquid(),
             },
+            Preset {
+                name: "Ball looks",
+                description: "A dozen balls, each with its own look: shapes, patterns, outlines, glow and trails.",
+                scene: Scene::ball_looks(),
+            },
         ]
         .into_iter()
         .chain(Scene::gpu_presets())
@@ -882,6 +916,7 @@ impl Scene {
                     color,
                     depth: 0.0,
                     depth_velocity: 0.0,
+                    style: None,
                 }
             })
             .collect();
@@ -926,6 +961,7 @@ impl Scene {
                 gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6)],
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 400.0), ..Physics::default() },
             rules: BounceRules {
@@ -955,6 +991,7 @@ impl Scene {
                 color: Color::rgb(0x3e, 0x9b, 0xff),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             look: Look {
                 trail_seconds: 0.4,
@@ -991,6 +1028,7 @@ impl Scene {
                 color: Color::rgb(0xff, 0x5c, 0xa8),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             rules: BounceRules { speed_gain: 1.02, grow: 2.5, max_radius: 300.0, ..BounceRules::default() },
             look: Look { trail_seconds: 0.5, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },

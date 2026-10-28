@@ -538,4 +538,4 @@ fn step_inputs(sim: &Simulation, time: f64, step: u64) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

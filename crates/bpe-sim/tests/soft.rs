@@ -16,7 +16,7 @@ fn run(scene: &Scene, seconds: f64) -> (Simulation, Vec<Event>) {
 }
 
 fn ball(position: Vec2, velocity: Vec2, radius: f32) -> Spawner {
-    Spawner::Single { position, velocity, radius, color: Color::WHITE, depth: 0.0, depth_velocity: 0.0 }
+    Spawner::Single { position, velocity, radius, color: Color::WHITE, depth: 0.0, depth_velocity: 0.0, style: None }
 }
 
 /// Every soft point (position, velocity) and ball (position, velocity, alive).

@@ -7,6 +7,7 @@
 //! sit under "More settings" in each tab. A dice beside each group heading rolls random values
 //! for that group.
 
+pub mod ball_look;
 pub mod effects;
 pub mod gpu;
 pub mod music;
@@ -23,7 +24,8 @@ pub(crate) use effects::pretty_name;
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene, Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene,
+    Spawner, Vec2,
 };
 use eframe::egui::{self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, emath::Numeric};
 use std::ops::RangeInclusive;
@@ -144,6 +146,8 @@ pub struct Inspector {
     pub gpu: gpu::State,
     pub view3d: view3d::State,
     pub music: music::State,
+    /// Ball groups' own looks: which groups are picked together, and a copied look.
+    pub looks: ball_look::State,
 }
 
 impl Default for Inspector {
@@ -162,6 +166,7 @@ impl Default for Inspector {
             gpu: Default::default(),
             view3d: Default::default(),
             music: Default::default(),
+            looks: Default::default(),
         }
     }
 }
@@ -212,7 +217,15 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
-                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll, space);
+                    balls(
+                        ui,
+                        &mut scene.spawners,
+                        &mut inspector.selected,
+                        &mut inspector.looks,
+                        &scene.look,
+                        &mut roll,
+                        space,
+                    );
                     soft::section(ui, scene, &mut inspector.soft);
                     gpu::section(ui, scene, &mut inspector.gpu);
                 }
@@ -703,6 +716,7 @@ fn new_grid() -> Spawner {
         gradient: vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0xb8, 0x2e)],
         depth: 0.0,
         depth_velocity: 0.0,
+        style: Some(BallStyle::default()),
     }
 }
 
@@ -714,6 +728,7 @@ fn new_ball() -> Spawner {
         color: Color::rgb(0xff, 0x5c, 0xa8),
         depth: 0.0,
         depth_velocity: 0.0,
+        style: Some(BallStyle::default()),
     }
 }
 
@@ -728,13 +743,47 @@ fn new_stream() -> Spawner {
         gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xff, 0x3e, 0xc8)],
         depth: 0.0,
         depth_velocity: 0.0,
+        style: Some(BallStyle::default()),
     }
 }
 
-fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>, space: bool) {
+fn balls(
+    ui: &mut Ui,
+    spawners: &mut Vec<Spawner>,
+    selected: &mut Option<usize>,
+    looks: &mut ball_look::State,
+    look: &Look,
+    roll: &mut Option<Roll>,
+    space: bool,
+) {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
+    looks.sync(*selected, spawners.len());
+    if looks.picked.len() > 1 {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} groups picked: a change to one's look is made to all of them.",
+                    looks.picked.len()
+                ))
+                .color(theme::ACCENT_TEXT),
+            );
+            if ui.small_button("Unpick").clicked() {
+                looks.picked.clear();
+                *selected = None;
+            }
+        });
+        ui.add_space(6.0);
+    } else if spawners.len() > 1 {
+        ui.label(
+            RichText::new("Tip: Ctrl+click or Shift+click cards to change several balls' looks at once.")
+                .small()
+                .color(theme::MUTED),
+        );
+        ui.add_space(6.0);
+    }
+    let styles_before: Vec<Option<BallStyle>> = spawners.iter().map(|s| s.style().cloned()).collect();
     let mut remove = None;
     let mut duplicate = None;
     for (index, spawner) in spawners.iter_mut().enumerate() {
@@ -743,7 +792,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
             Spawner::Single { .. } => "Single ball".to_string(),
             Spawner::Stream { count, .. } => format!("Stream of balls · {count}"),
         };
-        let is_selected = *selected == Some(index);
+        let is_selected = *selected == Some(index) || looks.picked.contains(&index);
         ui.push_id(index, |ui| {
             let frame = egui::Frame::new()
                 .fill(theme::CARD)
@@ -880,23 +929,27 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                 if space {
                     view3d::spawner_depth(ui, spawner); // 3D (WS4)
                 }
+                ball_look::section(ui, index, spawner.style_mut(), look, looks);
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
             // colour buttons and menus inside still get their clicks.
             if card.response.contains_pointer() && ui.input(|i| i.pointer.primary_clicked()) {
-                *selected = Some(index);
+                looks.click(ui, index, selected);
             }
         });
         ui.add_space(8.0);
     }
+    looks.share_changes(&styles_before, spawners);
     if let Some(index) = duplicate {
         let copy = spawners[index].clone();
         spawners.insert(index + 1, copy);
         *selected = Some(index + 1);
+        looks.picked.clear();
     }
     if let Some(index) = remove {
         spawners.remove(index);
         *selected = None;
+        looks.picked.clear();
     }
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Add a block of balls").clicked() {
@@ -1627,7 +1680,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
         slider(
             ui,
             "Length",
-            "How far back in time each ball's trail reaches. 0 turns trails off.",
+            "How far back in time each ball's trail reaches. 0 turns trails off. Only for balls with the classic look: balls with their own look set their trail in the Balls tab.",
             &mut look.trail_seconds,
             d.trail_seconds,
             0.0..=2.0,
@@ -1660,7 +1713,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
         slider(
             ui,
             "Ball glow",
-            "The soft halo around each ball.",
+            "The soft halo around each ball with the classic look. Balls with their own look set their glow in the Balls tab.",
             &mut look.ball_glow,
             d.ball_glow,
             0.0..=2.0,

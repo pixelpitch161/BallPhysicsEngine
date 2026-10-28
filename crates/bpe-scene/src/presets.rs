@@ -41,6 +41,7 @@ impl Scene {
                 color: Color::WHITE,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 800.0), ..Physics::default() },
             rules: BounceRules { speed_gain: 1.01, max_speed: 1500.0, ..BounceRules::default() },
@@ -100,6 +101,7 @@ impl Scene {
             color: Color::rgb(0x2e, 0xd8, 0xe6),
             depth: 0.0,
             depth_velocity: 0.0,
+            style: None,
         }];
         scene.rules = BounceRules { spawn_per_escape: 2, max_balls: 200, spawn_spread: 40.0, ..scene.rules };
         scene.sound.progression = chords(&["Dm", "Bb", "F", "C"], 2.5);
@@ -152,6 +154,7 @@ impl Scene {
                 color,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             })
             .collect();
         Self {
@@ -191,6 +194,7 @@ impl Scene {
                 color: Color::rgb(0xff, 0x3e, 0x5e),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
             rules: BounceRules { spawn_per_hit: 1, max_balls: 300, spawn_spread: 25.0, ..BounceRules::default() },
@@ -225,6 +229,7 @@ impl Scene {
                 color: Color::rgb(0x2e, 0xd8, 0xe6),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 700.0), ..Physics::default() },
             rules: BounceRules {
@@ -263,6 +268,7 @@ impl Scene {
                 color: Color::rgb(0xff, 0x5c, 0xa8),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 600.0), ..Physics::default() },
             rules: BounceRules {
@@ -333,6 +339,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics {
                 gravity: Vec2::new(0.0, 1400.0),
@@ -371,6 +378,7 @@ impl Scene {
                     color,
                     depth: 0.0,
                     depth_velocity: 0.0,
+                    style: None,
                 }
             })
             .collect();
@@ -428,6 +436,7 @@ impl Scene {
                 color: RAINBOW[c],
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             })
             .collect();
         Self {
@@ -461,6 +470,7 @@ impl Scene {
                 color: Color::rgb(0xff, 0xd8, 0x2e),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             look: Look {
                 trail_seconds: 1.6,
@@ -510,6 +520,7 @@ impl Scene {
                 color,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             })
             .collect();
         let drum = |on, key, gain| VoiceMap {
@@ -567,6 +578,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 900.0), ball_collisions: true, ..Physics::default() },
             look: Look { trail_seconds: 0.25, trail_opacity: 0.4, flash_size: 24.0, ..Look::default() },
@@ -594,6 +606,7 @@ impl Scene {
                     color,
                     depth: (i as f32 - 2.5) * 40.0,
                     depth_velocity: if i % 2 == 0 { 450.0 } else { -450.0 },
+                    style: None,
                 }
             })
             .collect();
@@ -649,6 +662,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 300.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 500.0), ball_collisions: true, ..Physics::default() },
             rules: BounceRules { speed_gain: 1.01, max_speed: 1500.0, ..BounceRules::default() },
@@ -710,6 +724,7 @@ impl Scene {
                     color,
                     depth: 0.0,
                     depth_velocity: 0.0,
+                    style: None,
                 }
             })
             .collect();
@@ -770,6 +785,7 @@ impl Scene {
                 color,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             })
             .collect();
         Self {
@@ -800,6 +816,7 @@ impl Scene {
                     color,
                     depth: 0.0,
                     depth_velocity: 0.0,
+                    style: None,
                 }
             })
             .collect();
@@ -859,6 +876,7 @@ impl Scene {
                     color: colors[k % colors.len()],
                     depth: 0.0,
                     depth_velocity: 0.0,
+                    style: None,
                 });
                 k += 1;
             }
@@ -871,6 +889,7 @@ impl Scene {
             color: Color::rgb(0xf4, 0xf0, 0xe6),
             depth: 0.0,
             depth_velocity: 0.0,
+            style: None,
         });
         Self {
             name: "Billiards".into(),
@@ -941,6 +960,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics {
                 gravity: Vec2::new(0.0, 1400.0),
@@ -977,6 +997,7 @@ impl Scene {
                 color: silver,
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             })
             .collect();
         spawners.push(Spawner::Single {
@@ -986,6 +1007,7 @@ impl Scene {
             color: Color::rgb(0xff, 0x8a, 0x2e),
             depth: 0.0,
             depth_velocity: 0.0,
+            style: None,
         });
         Self {
             name: "Newton's cradle".into(),
@@ -1070,6 +1092,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             bodies: Bodies {
                 ropes: vec![Rope {
@@ -1116,6 +1139,7 @@ impl Scene {
                 gradient: RAINBOW.to_vec(),
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             bodies: Bodies {
                 cloths: vec![Cloth {
@@ -1170,6 +1194,7 @@ impl Scene {
                 ],
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 300.0), ..Physics::default() },
             look: Look {
@@ -1210,6 +1235,7 @@ impl Scene {
                 gradient: vec![Color::rgb(0xff, 0x8a, 0x2e), Color::rgb(0xff, 0x3e, 0x8e)],
                 depth: 0.0,
                 depth_velocity: 0.0,
+                style: None,
             }],
             bodies: Bodies {
                 fluid: Fluid {
@@ -1226,6 +1252,41 @@ impl Scene {
             look: Look { trail_seconds: 0.0, ball_glow: 0.3, ..Look::default() },
             video: Video { duration: 15.0, ..Video::default() },
             ..Self::default()
+        }
+    }
+    /// A dozen balls, each with a different ready-made look, bouncing in a ring.
+    pub fn ball_looks() -> Self {
+        let looks = BallStyle::presets();
+        let spawners = looks
+            .into_iter()
+            .enumerate()
+            .map(|(i, preset)| {
+                let (column, row) = ((i % 4) as f32, (i / 4) as f32);
+                Spawner::Single {
+                    position: Vec2::new(-225.0 + column * 150.0, -300.0 + row * 140.0),
+                    velocity: Vec2::new(260.0 - column * 170.0, -120.0 + row * 60.0),
+                    radius: 34.0,
+                    color: RAINBOW[i % RAINBOW.len()],
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                    style: Some(preset.style),
+                }
+            })
+            .collect();
+        Self {
+            name: "Ball looks".into(),
+            container: Container::Circle {
+                center: Vec2::ZERO,
+                radius: 480.0,
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners,
+            physics: Physics { gravity: Vec2::new(0.0, 700.0), ball_collisions: true, ..Physics::default() },
+            rules: BounceRules { max_speed: 1600.0, ..BounceRules::default() },
+            sound: Sound { progression: chords(&["Cmaj7", "Am7", "Fmaj7", "G"], 3.0), ..Sound::default() },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Scene::default()
         }
     }
 }
