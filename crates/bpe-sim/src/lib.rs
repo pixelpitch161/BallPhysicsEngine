@@ -635,6 +635,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rolled_scenes_simulate_cleanly() {
+        use bpe_scene::Group;
+        let started = std::time::Instant::now();
+        for preset in Scene::presets() {
+            let scene = &preset.scene;
+            let mut groups: Vec<Group> = (0..scene.spawners.len()).map(Group::Balls).collect();
+            groups.extend([Group::Shape, Group::Movement, Group::World, Group::Bounces, Group::NewBalls]);
+            for seed in 0..6 {
+                let rolled = scene.variation(&groups, seed, 1.0);
+                let mut sim = Simulation::new(&rolled);
+                let mut hits = Vec::new();
+                sim.advance_to(4.0, &mut hits);
+                let most = (rolled.rules.max_balls + rolled.ball_count()) as usize;
+                assert!(sim.balls().len() <= most, "{} seed {seed}", preset.name);
+                for ball in sim.balls() {
+                    assert!(ball.position.is_finite() && ball.velocity.is_finite(), "{} seed {seed}", preset.name);
+                    // Nothing flies far out of the frame, unless it escaped all the rings.
+                    let escapes = matches!(rolled.container, bpe_scene::Container::Rings { .. });
+                    assert!(
+                        escapes || ball.position.length() < 3000.0,
+                        "{} seed {seed}: {}",
+                        preset.name,
+                        ball.position
+                    );
+                }
+            }
+        }
+        eprintln!("rolled scenes took {:?}", started.elapsed());
+    }
+
+    #[test]
     fn same_scene_gives_same_result() {
         let scene = Scene::default();
         let a = collect_wall_hits(&scene);

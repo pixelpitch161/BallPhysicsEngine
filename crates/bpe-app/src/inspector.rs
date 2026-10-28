@@ -4,16 +4,17 @@
 //! Each setting has a plain name and a "?" with a one-sentence explanation. Double-clicking a
 //! setting's name or slider, Alt+clicking it, or its right-click menu puts it back to its
 //! default, and most tabs end with a "Reset this tab" button. Settings most people never touch
-//! sit under "More settings" in each tab.
+//! sit under "More settings" in each tab. A dice beside each group heading rolls random values
+//! for that group.
 
-mod effects;
+pub mod effects;
 
 pub use effects::EffectsPanel;
 
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BounceRules, ChordStep, Color, Container, Instrument, Look, Obstacle, Physics, Scene, Sound, Spawner,
-    Vec2,
+    ArenaMotion, BounceRules, ChordStep, Color, Container, Dice, Group, Instrument, Look, Obstacle, Physics, Scene,
+    Sound, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, PopupCloseBehavior, Response, RichText, Sense, Slider, Ui, emath::Numeric,
@@ -95,11 +96,50 @@ pub struct Inspector {
     /// The ball group last clicked in the preview, highlighted in the Balls tab.
     pub selected: Option<usize>,
     pub effects: EffectsPanel,
+    /// Set when a dice button rolled new settings this frame, with a line for the status bar.
+    /// The app keeps each roll as its own undo step.
+    pub rolled: Option<String>,
+    /// How many times the dice have been rolled, mixed into each roll's seed.
+    pub(crate) rolls: u64,
 }
 
 impl Default for Inspector {
     fn default() -> Self {
-        Self { tab: Tab::Balls, selected: None, effects: EffectsPanel::default() }
+        Self { tab: Tab::Balls, selected: None, effects: EffectsPanel::default(), rolled: None, rolls: 0 }
+    }
+}
+
+/// A dice button clicked this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Roll {
+    Group(Group),
+    /// One effect in the Effects tab, by its place in the list.
+    Effect(usize),
+}
+
+impl Inspector {
+    /// A fresh seed for a dice button, different on every click.
+    fn next_seed(&mut self) -> u64 {
+        self.rolls += 1;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        (nanos as u64) ^ self.rolls.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
+    /// Rolls new values for what a dice button stands for.
+    pub fn apply_roll(&mut self, roll: Roll, scene: &mut Scene) {
+        let mut dice = Dice::new(self.next_seed());
+        let what = match roll {
+            Roll::Group(group) => {
+                scene.roll(group, &mut dice, 1.0);
+                format!("Rolled new {} settings.", group.name())
+            }
+            Roll::Effect(index) => {
+                let Some(effect) = scene.effects.get_mut(index) else { return };
+                effects::roll_effect(effect, &self.effects.library, &mut dice, 1.0);
+                "Rolled new effect settings.".into()
+            }
+        };
+        self.rolled = Some(format!("{what} Ctrl+Z puts them back."));
     }
 }
 
@@ -108,12 +148,13 @@ pub const ARROW_SECONDS: f32 = 0.35;
 
 pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
     tab_bar(ui, &mut inspector.tab);
+    let mut roll = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
             match inspector.tab {
-                Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected),
+                Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll),
                 Tab::Arena => {
-                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics);
+                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll);
                     obstacles(ui, &mut scene.obstacles);
                     // Pegs and walls are things you added, like balls, so a reset keeps them.
                     let fresh = default_container(Shape::of(&scene.container));
@@ -127,21 +168,21 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Bounces => {
-                    bounces(ui, &mut scene.rules);
+                    bounces(ui, &mut scene.rules, &mut roll);
                     reset_tab_to(ui, &mut scene.rules, BounceRules::default());
                 }
                 Tab::Look => {
-                    look(ui, &mut scene.look);
+                    look(ui, &mut scene.look, &mut roll);
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
-                    effects::show(ui, &mut inspector.effects, &mut scene.effects);
+                    effects::show(ui, &mut inspector.effects, &mut scene.effects, &mut roll);
                     if reset_tab(ui, !scene.effects.is_empty()) {
                         scene.effects.clear();
                     }
                 }
                 Tab::Sound => {
-                    sound(ui, &mut scene.sound);
+                    sound(ui, &mut scene.sound, &mut roll);
                     let fresh = default_sound(&scene.sound);
                     reset_tab_to(ui, &mut scene.sound, fresh);
                 }
@@ -149,6 +190,9 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             tip(ui);
         });
     });
+    if let Some(roll) = roll {
+        inspector.apply_roll(roll, scene);
+    }
 }
 
 /// A button at the end of a tab that puts everything in it back to its default. Returns whether
@@ -180,7 +224,7 @@ fn tip(ui: &mut Ui) {
     ui.label(
         RichText::new(
             "Tip: double-click a setting's name or slider, or Alt+click it, to reset it. \
-             Hold Shift while dragging a slider for fine changes.",
+             Hold Shift while dragging a slider for fine changes. A dice rolls random settings for its group.",
         )
         .small()
         .color(theme::MUTED),
@@ -232,6 +276,44 @@ fn tab_bar(ui: &mut Ui, current: &mut Tab) {
 fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(text.to_uppercase()).size(12.0).color(theme::MUTED));
+}
+
+/// A group heading with a dice button that rolls new values for the group.
+fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(text.to_uppercase()).size(12.0).color(theme::MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if dice_button(ui, &format!("Roll random {} settings", group.name())).clicked() {
+                *roll = Some(Roll::Group(group));
+            }
+        });
+    });
+}
+
+/// A small button with a drawn dice, so it looks the same whatever fonts are installed.
+pub fn dice_button(ui: &mut Ui, what: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::click());
+    let response = response.on_hover_text(format!("{what}. Ctrl+Z puts them back."));
+    paint_dice(ui.painter(), rect, response.hovered());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, what));
+    response
+}
+
+pub fn paint_dice(painter: &egui::Painter, rect: egui::Rect, hovered: bool) {
+    if hovered {
+        painter.rect_filled(rect, 5.0, theme::HOVER);
+    }
+    let color = if hovered { theme::TEXT } else { theme::ACCENT_TEXT };
+    let face = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0));
+    painter.rect_stroke(face, 3.0, egui::Stroke::new(1.4, color), egui::StrokeKind::Middle);
+    let c = face.center();
+    for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (0.0, 0.0), (-1.0, 1.0), (1.0, 1.0)] {
+        painter.circle_filled(c + egui::vec2(x, y) * 3.6, 1.35, color);
+    }
 }
 
 fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
@@ -521,7 +603,7 @@ fn new_stream() -> Spawner {
     }
 }
 
-fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>) {
+fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>) {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -549,6 +631,9 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
                         }
                         if ui.small_button("Duplicate").on_hover_text("Add a copy of these balls").clicked() {
                             duplicate = Some(index);
+                        }
+                        if dice_button(ui, "Roll random settings for these balls").clicked() {
+                            *roll = Some(Roll::Group(Group::Balls(index)));
                         }
                     });
                 });
@@ -773,8 +858,14 @@ fn default_container(shape: Shape) -> Container {
     }
 }
 
-fn arena(ui: &mut Ui, container: &mut Container, motion: &mut ArenaMotion, physics: &mut Physics) {
-    heading(ui, "Shape");
+fn arena(
+    ui: &mut Ui,
+    container: &mut Container,
+    motion: &mut ArenaMotion,
+    physics: &mut Physics,
+    roll: &mut Option<Roll>,
+) {
+    heading_dice(ui, "Shape", Group::Shape, roll);
     let current = Shape::of(container);
     let choices = [
         (Shape::Ring, "Ring", "A round arena."),
@@ -955,7 +1046,7 @@ fn arena(ui: &mut Ui, container: &mut Container, motion: &mut ArenaMotion, physi
         });
     }
     let d = ArenaMotion::default();
-    heading(ui, "Movement");
+    heading_dice(ui, "Movement", Group::Movement, roll);
     grid(ui, "motion", |ui| {
         slider(
             ui,
@@ -999,7 +1090,7 @@ fn arena(ui: &mut Ui, container: &mut Container, motion: &mut ArenaMotion, physi
     let center = container.center_mut();
 
     let defaults = Physics::default();
-    heading(ui, "World");
+    heading_dice(ui, "World", Group::World, roll);
     grid(ui, "world", |ui| {
         slider(
             ui,
@@ -1195,8 +1286,9 @@ fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
     });
 }
 
-fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
+fn bounces(ui: &mut Ui, rules: &mut BounceRules, roll: &mut Option<Roll>) {
     let defaults = BounceRules::default();
+    heading_dice(ui, "Each bounce", Group::Bounces, roll);
     ui.label(RichText::new("What happens to a ball each time it hits the wall.").color(theme::MUTED));
     ui.add_space(6.0);
     grid(ui, "rules", |ui| {
@@ -1264,7 +1356,7 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
         color_list(ui, &mut rules.recolor, add_label);
         ui.end_row();
     });
-    heading(ui, "New balls");
+    heading_dice(ui, "New balls", Group::NewBalls, roll);
     grid(ui, "spawn", |ui| {
         slider(
             ui,
@@ -1307,9 +1399,9 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
     });
 }
 
-fn look(ui: &mut Ui, look: &mut Look) {
+fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
     let d = Look::default();
-    heading(ui, "Background");
+    heading_dice(ui, "Background", Group::Background, roll);
     grid(ui, "background", |ui| {
         color_row(
             ui,
@@ -1326,7 +1418,7 @@ fn look(ui: &mut Ui, look: &mut Look) {
             d.background_bottom,
         );
     });
-    heading(ui, "Trails");
+    heading_dice(ui, "Trails", Group::Trails, roll);
     grid(ui, "trails", |ui| {
         slider(
             ui,
@@ -1356,7 +1448,7 @@ fn look(ui: &mut Ui, look: &mut Look) {
             percent,
         );
     });
-    heading(ui, "Glow");
+    heading_dice(ui, "Glow", Group::Glow, roll);
     grid(ui, "glow", |ui| {
         slider(
             ui,
@@ -1386,7 +1478,7 @@ fn look(ui: &mut Ui, look: &mut Look) {
             percent,
         );
     });
-    heading(ui, "String art");
+    heading_dice(ui, "String art", Group::Strings, roll);
     grid(ui, "strings", |ui| {
         slider(
             ui,
@@ -1484,17 +1576,18 @@ fn split_chord(chord: &str) -> (&str, &str) {
     chord.split_at(len.min(chord.len()))
 }
 
-fn sound(ui: &mut Ui, sound: &mut Sound) {
+fn sound(ui: &mut Ui, sound: &mut Sound, roll: &mut Option<Roll>) {
     let d = Sound::default();
     ui.checkbox(&mut sound.enabled, "Play a note on every wall hit");
     ui.add_enabled_ui(sound.enabled, |ui| {
-        heading(ui, "Chords");
+        heading_dice(ui, "Chords", Group::Chords, roll);
         ui.label(
             RichText::new("Each hit plays a note from the current chord. Click a chord to change it.")
                 .color(theme::MUTED),
         );
         chords(ui, &mut sound.progression);
         ui.add_space(6.0);
+        heading_dice(ui, "Notes", Group::Notes, roll);
         grid(ui, "sound", |ui| {
             label(ui, "Sound", "A built-in plucked string, or your own WAV file.");
             ui.horizontal(|ui| {

@@ -52,6 +52,8 @@ cargo run --release -p bpe-app -- scenes/growing-ball.ron
 - **Start:** the editor reopens the last scene you saved or opened. The first time, it shows the preset gallery.
 - **Toolbar:** New and Presets open the preset gallery, each with a moving preview. Open, Save and Save as work with `.ron` scene files, which are plain text you can also edit by hand. Undo and Redo (Ctrl+Z, Ctrl+Y) cover every change. The editor asks before closing or opening another scene with unsaved changes.
 - **Settings tabs:** Balls, Arena, Bounces, Look, Effects and Sound. Every setting has a plain name and a **?** that explains it, and right-clicking a setting resets it to its default. Rarely used settings are under **More settings** in each tab.
+- **Dice:** each group of settings (Shape, Movement, World, Trails, Glow, Chords, each ball group and each effect, and so on) has a dice button that rolls new values for that group, within ranges that still make a good video. Balls are kept inside the arena and colours come from one palette. Each roll is its own undo step.
+- **Explore:** shows the current scene beside nine moving variations of it, each made from a numbered seed. Tick what may change (Balls, Arena, Bounces, Look, Effects, Sound), set how different they should be, and click one to use it. **More like this** makes a new batch close to a variation, and **New batch** rolls nine more. The same starting scene, settings and seed always give the same variations.
 - **Preview:** while paused, drag a ball group to move it, drag the tip of its arrow to set launch speed and direction, and drag the arena's edge to resize it. Clicking the preview while it plays pauses it.
 - **Bottom bar:** play and pause (Space), back to the start, scrub through time, the video's length, loop and mute.
 - **Export video:** pick Best, Good or Quick draft, and the editor saves an mp4 with sound to your Videos folder, named after the scene. It finds ffmpeg by itself, including a winget install that is not on `PATH` yet. Video size, frame rate and the ffmpeg location are under Advanced. When it finishes, Play video and Show in folder open the result.
@@ -93,7 +95,7 @@ cargo run --release -p bpe-export -- --presets                                  
 
 | Crate | Job |
 | --- | --- |
-| `bpe-scene` | The scene description: video size, container, balls, physics, rules, look and sound. Saved as RON. |
+| `bpe-scene` | The scene description: video size, container, balls, physics, rules, look and sound. Saved as RON. Also the random rolls behind the dice and the explorer. |
 | `bpe-sim` | Deterministic physics at a fixed 240 steps per second: closed arenas that spin and shrink, rings with gaps, pegs and walls, balls that appear or split mid-clip. It records every hit and escape with its exact time. |
 | `bpe-audio` | Turns wall hits into a soundtrack. Each hit plays a note from the current chord at the exact sample, then the mix is loudness-normalised and peak-limited. |
 | `bpe-render` | wgpu renderer: background, walls and pegs (instanced shapes with distance functions), string art, ring shards, motion streaks, shaded balls, wall flashes, then the shader effect chain, HDR bloom and tone mapping. |

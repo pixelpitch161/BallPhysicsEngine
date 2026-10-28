@@ -7,10 +7,12 @@
 mod color;
 mod effect;
 mod presets;
+mod random;
 
 pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
+pub use random::{Dice, Group, palette};
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

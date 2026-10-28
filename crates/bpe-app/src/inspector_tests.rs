@@ -554,3 +554,98 @@ fn turning_off_the_speed_limit_hides_top_speed() {
     harness.run();
     assert!(harness.state().scene.rules.limit_speed);
 }
+
+fn roll(harness: &mut Harness<'_, State>, label: &str) {
+    harness.get_by_label(label).click();
+    harness.run();
+}
+
+#[test]
+fn every_tab_has_its_dice() {
+    let mut scene = Scene::default();
+    scene.effects.push(Effect::new("echo"));
+    let tabs = [
+        (Tab::Balls, &["Roll random settings for these balls"][..]),
+        (
+            Tab::Arena,
+            &["Roll random arena shape settings", "Roll random arena movement settings", "Roll random world settings"],
+        ),
+        (Tab::Bounces, &["Roll random bounce settings", "Roll random new ball settings"]),
+        (
+            Tab::Look,
+            &[
+                "Roll random background settings",
+                "Roll random trail settings",
+                "Roll random glow settings",
+                "Roll random string art settings",
+            ],
+        ),
+        (Tab::Effects, &["Roll random settings for this effect"]),
+        (Tab::Sound, &["Roll random chord settings", "Roll random note settings"]),
+    ];
+    for (tab, labels) in tabs {
+        let harness = harness(tab, scene.clone());
+        for label in labels {
+            harness.get_by_label(label);
+        }
+    }
+}
+
+#[test]
+fn a_dice_rolls_only_its_own_group() {
+    let scene = Scene::default();
+    let mut harness = harness(Tab::Look, scene.clone());
+    roll(&mut harness, "Roll random trail settings");
+    let state = harness.state();
+    let look = &state.scene.look;
+    assert_ne!(
+        (look.trail_seconds, look.trail_width, look.trail_opacity),
+        (scene.look.trail_seconds, scene.look.trail_width, scene.look.trail_opacity)
+    );
+    // Nothing else changed, and the app is told so it can keep the roll as its own undo step.
+    assert_eq!(Look { trail_seconds: 0.3, trail_width: 0.3, trail_opacity: 0.4, ..look.clone() }, scene.look);
+    assert_eq!(Scene { look: scene.look.clone(), ..state.scene.clone() }, scene);
+    assert!(state.inspector.rolled.as_deref().is_some_and(|s| s.contains("trail")));
+}
+
+#[test]
+fn each_roll_is_different() {
+    let mut harness = harness(Tab::Look, Scene::default());
+    roll(&mut harness, "Roll random glow settings");
+    let first = harness.state().scene.look.clone();
+    roll(&mut harness, "Roll random glow settings");
+    assert_ne!(harness.state().scene.look, first);
+}
+
+#[test]
+fn rolled_balls_stay_inside_the_arena() {
+    let mut harness = harness(Tab::Balls, Scene::default());
+    for _ in 0..20 {
+        roll(&mut harness, "Roll random settings for these balls");
+        let scene = &harness.state().scene;
+        let Spawner::Grid { center, columns, rows, spacing, radius, .. } = scene.spawners[0] else { panic!() };
+        let half = Vec2::new((columns - 1) as f32, (rows - 1) as f32) * spacing * 0.5 + radius;
+        assert!(center.length() + half.length() <= 508.0, "{center} {half}");
+    }
+}
+
+#[test]
+fn rolling_an_effect_changes_its_sliders() {
+    let mut scene = Scene::default();
+    scene.effects.push(Effect::new("kaleidoscope"));
+    let mut harness = harness(Tab::Effects, scene);
+    roll(&mut harness, "Roll random settings for this effect");
+    let effect = &harness.state().scene.effects[0];
+    assert!(!effect.params.is_empty());
+    assert_eq!(effect.shader, "kaleidoscope");
+}
+
+#[test]
+fn rolling_chords_keeps_the_notes() {
+    let scene = Scene::default();
+    let mut harness = harness(Tab::Sound, scene.clone());
+    roll(&mut harness, "Roll random chord settings");
+    let sound = &harness.state().scene.sound;
+    assert_ne!(sound.progression, scene.sound.progression);
+    assert_eq!(Sound { progression: scene.sound.progression.clone(), ..sound.clone() }, scene.sound);
+}
