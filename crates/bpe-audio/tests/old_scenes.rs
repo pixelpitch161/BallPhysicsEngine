@@ -22,6 +22,10 @@ const GOLDEN: &[(&str, u64)] = &[
     ("String art", 0xe2843aac87a5f8ed),
     ("Plinko", 0x25786636c35c9c93),
     ("Pulsing ring", 0x4c33fcb16d2ae494),
+    // The 3D presets, recorded on main at bc0b025 once they arrived.
+    ("Glass sphere", 0x91695d8bc61e6b54),
+    ("Neon cube", 0xb85dd979e416ad10),
+    ("Endless tunnel", 0x6e6338544ed1027d),
     ("reference-reel.ron", 0xdcee90b73c18a4ad),
     ("growing-ball.ron", 0x4e22ede5124f46bc),
 ];

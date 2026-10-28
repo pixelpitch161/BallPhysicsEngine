@@ -7,7 +7,7 @@ use anyhow::Context;
 use bpe_music::AudioFeatures;
 use bpe_scene::{Scene, SyncMode};
 use bpe_sim::beat_sync::{self, TimeWarp};
-use bpe_sim::{Event, SimInputs, Simulation};
+use bpe_sim::{Event, SimInputs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -207,10 +207,7 @@ pub fn render_scene(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<Sc
 }
 
 fn simulate(scene: &Scene, inputs: &SimInputs, until: f64) -> Vec<Event> {
-    let mut sim = Simulation::with_inputs(scene, inputs);
-    let mut events = Vec::new();
-    sim.advance_to(until, &mut events);
-    events
+    bpe_sim::collect_events_until(scene, inputs, until)
 }
 
 /// Share of hits and escapes (0 to 1) within `tolerance` seconds of a beat, for the scorer

@@ -772,12 +772,18 @@ impl Playback {
 
 /// Runs a whole scene from the start and returns every event, for building the soundtrack.
 pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
+    collect_events_until(scene, inputs, scene.video.duration as f64)
+}
+
+/// The same as [`collect_events`], running until `until` seconds instead of the video's end
+/// (music workstream: beat sync's Warp runs the simulation past or short of the video's length).
+pub fn collect_events_until(scene: &Scene, inputs: &SimInputs, until: f64) -> Vec<Event> {
     if scene.space().is_some() {
         // 3D (WS4): both sides step together, as in a playback, without its snapshots.
         let mut keeper = Simulation::with_inputs(&space::time_keeper(scene), inputs);
         let mut space = space::SpaceTrack::new(scene);
         let mut events = Vec::new();
-        let target = (scene.video.duration as f64 * scene.physics.steps_per_second as f64).floor() as u64;
+        let target = (until * scene.physics.steps_per_second as f64).floor() as u64;
         while keeper.step < target {
             let from = events.len();
             keeper.step(&mut events);
@@ -787,7 +793,7 @@ pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
     }
     let mut sim = Simulation::with_inputs(scene, inputs);
     let mut events = Vec::new();
-    sim.advance_to(scene.video.duration as f64, &mut events);
+    sim.advance_to(until, &mut events);
     events
 }
 
