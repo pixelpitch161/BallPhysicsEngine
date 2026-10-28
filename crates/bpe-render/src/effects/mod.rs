@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn every_builtin_compiles() {
         let library = EffectLibrary::new();
-        assert_eq!(library.list().len(), BUILTINS.len());
+        assert_eq!(library.list().len(), BUILTINS.len() + templates::graphs().len());
         for info in library.list() {
             assert!(info.compiled.is_ok(), "{}: {}", info.id, info.error().unwrap_or_default());
             assert!(!info.about.is_empty(), "{} has no description", info.id);
@@ -642,7 +642,7 @@ mod tests {
         library.refresh();
         assert_eq!(library.get("film").unwrap().title, "My effect");
         assert_eq!(library.builtin("film").unwrap().title, "Film");
-        assert_eq!(library.list().len(), BUILTINS.len() + 1);
+        assert_eq!(library.list().len(), BUILTINS.len() + templates::graphs().len() + 1);
 
         std::fs::remove_file(dir.join("film.wgsl")).unwrap();
         assert!(library.refresh());
