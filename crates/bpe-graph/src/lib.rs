@@ -25,7 +25,7 @@ pub struct Graph {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Node {
-    /// Unique within its graph, and never reused while the graph is open.
+    /// Unique within its graph. Removing the newest block frees its id for the next one.
     pub id: u32,
     /// Which block this is, as its catalog names it.
     pub kind: String,
@@ -386,7 +386,7 @@ impl Graph {
 
     /// An id no block in the graph has.
     pub fn next_id(&self) -> u32 {
-        self.nodes.iter().map(|n| n.id + 1).max().unwrap_or(1)
+        self.nodes.iter().map(|n| n.id.saturating_add(1)).max().unwrap_or(1)
     }
 
     /// Adds a block of `spec`'s kind and returns its id.
@@ -543,7 +543,20 @@ pub fn order(graph: &Graph) -> Result<Vec<u32>, Cycle> {
     if result.len() == graph.nodes.len() {
         Ok(result)
     } else {
-        let nodes = (0..graph.nodes.len()).filter(|&i| incoming[i] > 0).map(|i| graph.nodes[i].id).collect();
+        // What's left is the loops plus blocks that only hang off them. Peel off blocks that
+        // lead nowhere inside what's left until only the loops remain.
+        let mut left: Vec<bool> = incoming.iter().map(|&n| n > 0).collect();
+        loop {
+            let dead_ends: Vec<usize> =
+                (0..left.len()).filter(|&i| left[i] && !outgoing[i].iter().any(|&j| left[j])).collect();
+            if dead_ends.is_empty() {
+                break;
+            }
+            for i in dead_ends {
+                left[i] = false;
+            }
+        }
+        let nodes = (0..graph.nodes.len()).filter(|&i| left[i]).map(|i| graph.nodes[i].id).collect();
         Err(Cycle { nodes })
     }
 }
@@ -620,6 +633,10 @@ mod tests {
         let b = g.add(c.spec("spawn").unwrap(), [0.0, 0.0]);
         g.connect(Link { from: (a, 0), to: (b, 0) }, &c);
         g.connect(Link { from: (b, 0), to: (a, 0) }, &c);
+        assert_eq!(order(&g).unwrap_err().nodes, vec![a, b]);
+        // A block that only hangs off the loop isn't part of it.
+        let after = g.add(c.spec("spawn").unwrap(), [0.0, 0.0]);
+        g.connect(Link { from: (b, 0), to: (after, 0) }, &c);
         assert_eq!(order(&g).unwrap_err().nodes, vec![a, b]);
         assert!(validate(&g, &c).iter().any(|d| d.message.contains("loop")));
         c.cycles = true;

@@ -472,7 +472,7 @@ impl StudioApp {
             self.undo();
         }
         // Over a block canvas, Space adds a block and Delete removes one.
-        let canvas_keys = self.workspace != Workspace::Scene && node_editor::wants_keyboard(ctx);
+        let canvas_keys = node_editor::take_wants_keyboard(ctx) && self.workspace != Workspace::Scene;
         if !canvas_keys && ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
         }
@@ -620,9 +620,9 @@ impl StudioApp {
         match command {
             Command::Workspace(workspace) => self.workspace = workspace,
             Command::Tab(tab) => self.inspector.tab = tab,
-            Command::Setting { label, tab } => {
+            Command::Setting { label, tab, property } => {
                 self.inspector.tab = tab;
-                crate::command_palette::point_at(ctx, &label);
+                crate::command_palette::point_at(ctx, &label, tab, property);
             }
             Command::Action(action) => match action {
                 Action::New => self.gallery.open(),

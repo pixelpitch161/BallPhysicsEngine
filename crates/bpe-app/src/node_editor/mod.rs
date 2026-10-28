@@ -128,7 +128,7 @@ pub struct NodeEditor {
     fitted: bool,
     selection: BTreeSet<u32>,
     selected_note: Option<usize>,
-    selected_link: Option<usize>,
+    selected_link: Option<Link>,
     editing_note: Option<usize>,
     drag: Drag,
     palette: Option<Palette>,
@@ -144,10 +144,11 @@ fn keyboard_id() -> Id {
     Id::unique("node editor wants keys")
 }
 
-/// Whether a node editor under the pointer takes Space, Delete and arrow keys this frame, so
-/// the editor's own shortcuts (play, step) should leave them alone.
-pub fn wants_keyboard(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<bool>(keyboard_id())).unwrap_or(false)
+/// Whether a node editor under the pointer took Space, Delete and arrow keys last frame, so
+/// the editor's own shortcuts (play, step) should leave them alone. Clears the answer, so a
+/// canvas that is no longer drawn doesn't keep the keys.
+pub fn take_wants_keyboard(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(keyboard_id())).unwrap_or(false)
 }
 
 impl NodeEditor {
@@ -312,7 +313,7 @@ impl NodeEditor {
             let broken = diagnostics.iter().any(|d| d.link == Some(index));
             let mut color = if broken { theme::ERROR } else { pin_color(ty) };
             let mut width = 2.5;
-            if self.selected_link == Some(index) {
+            if self.selected_link == graph.links.get(index).copied() {
                 width = 4.5;
                 color = Color32::WHITE;
             } else if hovered_link == Some(index) {
@@ -459,6 +460,7 @@ impl NodeEditor {
                         }
                         if response.clicked() && ctx.input(|i| i.modifiers.alt) {
                             // Alt-click unplugs every wire on the pin.
+                            self.selected_link = None;
                             graph.links.retain(|l| if side { l.from != pin_ref.key() } else { l.to != pin_ref.key() });
                         }
                     }
@@ -548,6 +550,7 @@ impl NodeEditor {
                 let into: Vec<(usize, Link)> = graph.links_into(from.key()).map(|(i, l)| (i, *l)).collect();
                 if let [(index, link)] = into[..] {
                     graph.links.remove(index);
+                    self.selected_link = None;
                     self.drag = Drag::Wire { from: PinRef { node: link.from.0, pin: link.from.1, output: true } };
                 } else {
                     self.drag = Drag::Wire { from };
@@ -644,7 +647,7 @@ impl NodeEditor {
                 self.selection.clear();
             }
             self.selected_note = None;
-            self.selected_link = hovered_link;
+            self.selected_link = hovered_link.and_then(|i| graph.links.get(i).copied());
             self.editing_note = None;
         }
         if background.double_clicked()
@@ -653,12 +656,13 @@ impl NodeEditor {
         {
             self.palette = Some(Palette::new(p, None));
         }
+        if background.secondary_clicked() {
+            self.selected_link = hovered_link.and_then(|i| graph.links.get(i).copied());
+        }
         background.context_menu(|ui| {
-            if let Some(index) = hovered_link.or(self.selected_link) {
+            if let Some(link) = self.selected_link {
                 if ui.button("Remove this wire").clicked() {
-                    if index < graph.links.len() {
-                        graph.links.remove(index);
-                    }
+                    graph.links.retain(|l| *l != link);
                     self.selected_link = None;
                     ui.close();
                 }
@@ -745,9 +749,6 @@ impl NodeEditor {
             }
         }
 
-        if graph.links.len() <= self.selected_link.unwrap_or(0) {
-            self.selected_link = None;
-        }
         outcome.changed = *graph != before;
         outcome.selected = (self.selection.len() == 1).then(|| *self.selection.first().unwrap());
         outcome
@@ -762,7 +763,7 @@ impl NodeEditor {
         if self.editing_note.is_some_and(|i| i >= graph.notes.len()) {
             self.editing_note = None;
         }
-        if self.selected_link.is_some_and(|i| i >= graph.links.len()) {
+        if self.selected_link.is_some_and(|link| !graph.links.contains(&link)) {
             self.selected_link = None;
         }
         match &self.drag {
@@ -973,10 +974,8 @@ impl NodeEditor {
             if !self.selection.is_empty() {
                 graph.remove(&self.selection);
                 self.selection.clear();
-            } else if let Some(index) = self.selected_link.take() {
-                if index < graph.links.len() {
-                    graph.links.remove(index);
-                }
+            } else if let Some(link) = self.selected_link.take() {
+                graph.links.retain(|l| *l != link);
             } else if let Some(index) = self.selected_note.take()
                 && index < graph.notes.len()
             {

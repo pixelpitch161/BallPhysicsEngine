@@ -224,7 +224,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     shapes::section(ui, scene, &mut inspector.shapes);
                     obstacles(ui, &mut scene.obstacles);
                     // Pegs and walls are things you added, like balls, so a reset keeps them.
-                    let fresh = default_container(Shape::of(&scene.container));
+                    let mut fresh = default_container(Shape::of(&scene.container));
+                    // A custom arena keeps which shape it is; only its settings go back.
+                    if let (Container::Custom { shape, .. }, Container::Custom { shape: fresh_shape, .. }) =
+                        (&scene.container, &mut fresh)
+                    {
+                        fresh_shape.clone_from(shape);
+                    }
                     let motion = ArenaMotion::default();
                     let changed =
                         scene.container != fresh || scene.arena_motion != motion || scene.physics != Physics::default();
@@ -420,7 +426,7 @@ fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         let response = hint(ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())), help);
-        crate::command_palette::setting_row(&response, text);
+        crate::command_palette::setting_row(&response, text, animatable.as_ref());
         if !help.is_empty() {
             help_icon(ui, help);
         }
