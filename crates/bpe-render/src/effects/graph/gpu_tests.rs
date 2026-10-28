@@ -161,3 +161,90 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
     }
     pixels
 }
+
+/// About 40 blocks: warps, patterns, music and colour steps.
+pub(super) fn big_graph() -> super::Graph {
+    let mut b = super::Builder::new("Forty blocks");
+    let mut at = b.add("position");
+    for (i, kind) in ["twirl", "ripple", "flow", "kaleidoscope", "mirror", "zoom", "spin", "offset"].iter().enumerate() {
+        let warp = b.add(kind);
+        b.wire(at, "out", warp, "at");
+        at = warp;
+        if i == 3 {
+            let music = b.add("music");
+            let k = b.add("multiply");
+            b.wire(music, "bass", k, "a").wire(k, "out", warp, "zoom");
+        }
+    }
+    let pic = b.add("picture");
+    b.wire(at, "out", pic, "at");
+    let clouds = b.add("fbm");
+    b.wire(at, "out", clouds, "at");
+    let cells = b.add("voronoi");
+    b.wire(at, "out", cells, "at");
+    let mix = b.add("mix");
+    b.wire(clouds, "out", mix, "a").wire(cells, "distance", mix, "b");
+    let ramp = b.add("ramp");
+    b.wire(mix, "out", ramp, "t");
+    let mut colour = b.add("blend_screen");
+    b.wire(pic, "out", colour, "base").wire(ramp, "out", colour, "layer");
+    for i in 0..18 {
+        let kind = ["hue_shift", "saturation", "vignette", "brightness_contrast", "grain", "blend_overlay"][i % 6];
+        let step = b.add(kind);
+        let input = if kind == "blend_overlay" { "base" } else { "color" };
+        b.wire(colour, "out", step, input);
+        colour = step;
+    }
+    let star = b.add("star");
+    let mask = b.add("mask");
+    b.wire(colour, "out", mask, "a").wire(star, "fill", mask, "mask");
+    let glow = b.add("hit_glow");
+    let add = b.add("blend_add");
+    b.wire(mask, "out", add, "base").wire(glow, "out", add, "layer");
+    let out = b.add("output");
+    b.wire(add, "out", out, "color");
+    b.finish()
+}
+
+/// Prints how long a 40-block node effect takes on the GPU next to a built-in effect.
+/// Run with `cargo test -p bpe-render --release graph_gpu_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn graph_gpu_cost() {
+    let Some((device, queue)) = gpu() else { return };
+    let graph = big_graph();
+    assert!(graph.nodes.len() >= 40, "{}", graph.nodes.len());
+    let (width, height) = match std::env::var("BPE_BENCH_SIZE").ok().as_deref() {
+        Some("full") => (1080, 1920),
+        _ => (540, 960),
+    };
+    let time_frames = |scene: &Scene| {
+        let mut renderer = Renderer::new(&device, width, height);
+        renderer.effect_library().sync_graphs(std::slice::from_ref(&graph));
+        let mut playback = Playback::new(scene);
+        playback.seek(4.0);
+        let frame = FrameData::build(scene, &playback, renderer.pixel_size(scene));
+        renderer.render(&device, &queue, scene, 4.0, &frame);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let start = std::time::Instant::now();
+        for i in 0..20 {
+            renderer.render(&device, &queue, scene, 4.0 + i as f64 / 60.0, &frame);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        start.elapsed().as_secs_f64() * 1000.0 / 20.0
+    };
+    let plain = time_frames(&Scene::default());
+    let builtin = time_frames(&Scene { effects: vec![Effect::new("kaleidoscope")], ..Scene::default() });
+    let nodes = time_frames(&Scene { effects: vec![Effect::new(super::effect_id(&graph.name))], ..Scene::default() });
+    let compile = std::time::Instant::now();
+    let info = crate::effects::EffectInfo::from_graph(&graph, false);
+    let to_wgsl = compile.elapsed();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(info.compiled.as_ref().unwrap().as_str().into()),
+    });
+    drop(module);
+    let to_module = compile.elapsed();
+    println!("{width}x{height}, per frame: no effects {plain:.2} ms, kaleidoscope {:.2} ms extra, 40-block graph {:.2} ms extra", builtin - plain, nodes - plain);
+    println!("graph to checked WGSL {to_wgsl:?}, to a GPU shader module {to_module:?}");
+}
