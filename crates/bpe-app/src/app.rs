@@ -10,7 +10,6 @@ use crate::timeline::{HitSummary, Timeline};
 use crate::workspace::Workspace;
 use crate::{batch, node_editor, rules_workspace, shader_workspace};
 use crate::{settings, theme};
-use bpe_audio::Soundtrack;
 use bpe_scene::{Property, Scene, Value};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke};
@@ -42,6 +41,9 @@ pub struct StudioApp {
     audio: Option<AudioOut>,
     audio_error: Option<String>,
     sound: SoundJob,
+    /// Music workstream: beat sync's Warp clock from the latest soundtrack. The preview shows
+    /// simulation time `warp.sim_time(t)` at video time `t`.
+    warp: Option<bpe_sim::beat_sync::TimeWarp>,
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
@@ -66,6 +68,8 @@ pub struct StudioApp {
     /// Show the performance meter over the preview.
     show_stats: bool,
     meter: Meter,
+    /// (WS5) The latest soundtrack's analysis, for visuals that pulse with the music.
+    mix: Option<Arc<bpe_music::AudioFeatures>>,
     workspace: Workspace,
     rules: rules_workspace::State,
     shaders: shader_workspace::State,
@@ -130,9 +134,10 @@ impl History {
     }
 }
 
-/// A finished soundtrack: its generation, the result, the hits it was made from, and how long
-/// it took in milliseconds.
-type SoundResult = (u64, anyhow::Result<Soundtrack>, HitSummary, f32);
+/// A finished soundtrack: its generation, the result with the hits it was made from, and how
+/// long it took in milliseconds.
+/// (WS5) Also the soundtrack's analysis, for visuals that pulse with the finished mix.
+type SoundResult = (u64, anyhow::Result<(bpe_audio::SceneSound, Arc<bpe_music::AudioFeatures>)>, HitSummary, f32);
 
 /// Mixes the soundtrack on a background thread whenever the scene changes.
 struct SoundJob {
@@ -172,7 +177,7 @@ impl StudioApp {
         };
         let (sender, receiver) = channel();
         Self {
-            playback: Playback::new(&scene),
+            playback: Playback::with_inputs(&scene, &bpe_audio::sim_inputs(&scene, None)),
             saved_scene: scene.clone(),
             scene,
             scene_path,
@@ -194,6 +199,7 @@ impl StudioApp {
                 receiver,
                 error: None,
             },
+            warp: None,
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
@@ -208,6 +214,7 @@ impl StudioApp {
             preview_quality: PreviewQuality::default(),
             show_stats: false,
             meter: Meter::default(),
+            mix: None,
             workspace: Workspace::default(),
             rules: rules_workspace::State::default(),
             shaders: shader_workspace::State::default(),
@@ -226,7 +233,14 @@ impl StudioApp {
     }
 
     fn scene_changed(&mut self) {
-        self.playback = Playback::new(&self.scene);
+        // Music workstream: follow the song's beats straight away when the song is already
+        // loaded. Warp's clock and a song read for the first time arrive with the soundtrack.
+        let base_dir = self.base_dir();
+        let song = bpe_audio::cached_song(&self.scene, base_dir.as_deref());
+        self.playback = Playback::with_inputs(&self.scene, &bpe_audio::sim_inputs(&self.scene, song.as_ref()));
+        if self.scene.music.beat_sync.mode != bpe_scene::SyncMode::Warp {
+            self.warp = None;
+        }
         self.timeline.clear_hits();
         self.time = self.time.min(self.scene.video.duration as f64);
         self.sound.dirty_since = Some(Instant::now());
@@ -338,16 +352,36 @@ impl StudioApp {
             self.meter.sound_ms = Some(took);
             self.timeline.set_hits(hits);
             match result {
-                Ok(track) => {
+                Ok((sound, mix)) => {
                     self.sound.error = None;
+                    self.mix = Some(mix);
+                    // Music workstream: the preview follows the same beats and clock as the sound.
+                    self.inspector.music.report = inspector::music::Report::new(&sound);
+                    let inputs = self.playback.simulation().inputs();
+                    let same_music = inputs.music.as_ref().map(|m| m.duration())
+                        == sound.inputs.music.as_ref().map(|m| m.duration());
+                    if inputs.beats != sound.inputs.beats || !same_music {
+                        self.playback = Playback::with_inputs(&self.scene, &sound.inputs);
+                    }
+                    self.warp = sound.warp;
                     if let Some(audio) = &self.audio {
-                        audio.set_track(Arc::new(track.samples));
+                        audio.set_track(Arc::new(sound.mix.track.samples));
                         if self.playing {
                             audio.play_from(self.time);
                         }
                     }
                 }
-                Err(error) => self.sound.error = Some(format!("{error:#}")),
+                Err(error) => {
+                    self.sound.error = Some(format!("{error:#}"));
+                    self.inspector.music.report = Default::default();
+                    if self.warp.take().is_some() {
+                        let song = bpe_audio::cached_song(&self.scene, self.base_dir().as_deref());
+                        self.playback =
+                            Playback::with_inputs(&self.scene, &bpe_audio::sim_inputs(&self.scene, song.as_ref()));
+                    }
+                    // WS5: don't keep pulsing to a soundtrack that is gone.
+                    self.mix = None;
+                }
             }
         }
         let due = self.sound.dirty_since.is_some_and(|t| t.elapsed() >= SOUND_DEBOUNCE);
@@ -359,10 +393,22 @@ impl StudioApp {
                 (self.sound.generation, self.scene.clone(), self.base_dir(), self.sound.sender.clone(), ctx.clone());
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let hits = bpe_sim::collect_wall_hits(&scene);
-                let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref());
+                let result = bpe_audio::render_scene(&scene, base_dir.as_deref()).map(|sound| {
+                    // WS5: what the finished mix sounds like, for visuals that pulse with it.
+                    let mix = bpe_render::effects::mix_features(&sound.mix.track.samples, bpe_audio::SAMPLE_RATE, 2);
+                    (sound, mix)
+                });
+                let hits = match &result {
+                    Ok((sound, _)) => {
+                        let mut hits = HitSummary::new(&sound.video_events());
+                        hits.music = Some(Arc::new(crate::timeline::MusicView::new(&scene, sound)));
+                        hits
+                    }
+                    // The bounces still show when a sound file is missing.
+                    Err(_) => HitSummary::new(&bpe_sim::collect_wall_hits(&scene)),
+                };
                 let took = started.elapsed().as_secs_f32() * 1000.0;
-                let _ = sender.send((generation, result, HitSummary::new(&hits), took));
+                let _ = sender.send((generation, result, hits, took));
                 ctx.request_repaint();
             });
         } else if self.sound.dirty_since.is_some() {
@@ -597,7 +643,8 @@ impl StudioApp {
             frame,
             &mut self.scene,
             &mut self.playback,
-            self.time,
+            // Music workstream: Warp shows the simulation on its bent clock.
+            self.warp.as_ref().map_or(self.time, |w| w.sim_time(self.time)),
             self.playing,
             self.inspector.selected,
             &self.inspector.effects.library,
@@ -816,6 +863,12 @@ impl eframe::App for StudioApp {
             self.scene = shown.clone();
         }
         keys::publish(&ctx, &self.scene, key_time);
+        crate::setting_menu::pulse::publish(
+            &ctx,
+            &self.scene,
+            self.mix.clone(),
+            self.playback.simulation().inputs().music.clone(),
+        );
         egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
@@ -833,7 +886,10 @@ impl eframe::App for StudioApp {
             .max_size(600.0)
             .resizable(true)
             .frame(egui::Frame::new().fill(theme::PANEL))
-            .show(ui, |ui| inspector::show(ui, &mut self.inspector, &mut self.scene));
+            .show(ui, |ui| {
+                self.inspector.music.base_dir = self.base_dir();
+                inspector::show(ui, &mut self.inspector, &mut self.scene)
+            });
 
         let central = egui::Frame::new().fill(theme::BACKGROUND);
         let outcome = egui::CentralPanel::default()
@@ -848,7 +904,15 @@ impl eframe::App for StudioApp {
                             let live = (self.playback.simulation().rules(), self.time);
                             rules_workspace::show(ui, &mut self.scene, &mut self.rules, Some(live))
                         }
-                        Workspace::Shaders => shader_workspace::show(ui, &mut self.scene, &mut self.shaders),
+                        Workspace::Shaders => shader_workspace::show(
+                            ui,
+                            frame,
+                            &mut self.scene,
+                            &mut self.shaders,
+                            &self.inspector.effects.library,
+                            &self.playback,
+                            self.time,
+                        ),
                         _ => batch::show(ui, &mut self.scene, &mut self.batch),
                     });
                     self.floating_preview(&ctx, area, frame)
@@ -859,8 +923,9 @@ impl eframe::App for StudioApp {
         if outcome.catching_up {
             ctx.request_repaint();
         }
-        if let Some(preview) = &self.preview {
+        if let Some(preview) = &mut self.preview {
             self.inspector.effects.gpu_errors = preview.effect_gpu_errors().to_vec();
+            preview.set_mix(self.mix.clone());
         }
         if outcome.clicked {
             self.set_playing(false);
@@ -891,6 +956,25 @@ impl eframe::App for StudioApp {
                 }
                 _ => None,
             });
+        }
+        // WS5: "Pulse with music" from the setting menus and wave icons, and its window.
+        let requests = crate::setting_menu::pulse::take_requests(&ctx);
+        if !requests.is_empty() {
+            let library = &self.inspector.effects.library;
+            let effects = self.scene.effects.clone();
+            crate::setting_menu::pulse::apply_requests(&ctx, &mut self.scene, requests, |property| match property {
+                Property::EffectParam(i, name) => {
+                    let info = library.get(&effects.get(*i as usize)?.shader)?;
+                    Some(Value::Number(info.params.iter().find(|p| p.name == *name)?.default))
+                }
+                _ => None,
+            });
+        }
+        crate::setting_menu::pulse::window(&ctx, &mut self.scene, self.time);
+        // WS5: "New node effect" and "Edit as nodes" open the Shaders workspace.
+        if let Some(name) = self.inspector.effects.open_graph.take() {
+            self.shaders.open(name);
+            self.workspace = Workspace::Shaders;
         }
         match self.clicked.take() {
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
@@ -997,6 +1081,9 @@ fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits:
 fn moving_parts(scene: &Scene) -> Scene {
     let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
     parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    // WS5: node effects and pulses on the picture only change the picture.
+    parts.shader_graphs = Vec::new();
+    parts.modulators = scene.modulators.iter().filter(|m| m.property.affects_simulation()).cloned().collect();
     // 3D (WS4): the camera, lights and looks only change the picture.
     if let bpe_scene::View::Space(space) = &mut parts.view {
         **space = space.moving_parts();

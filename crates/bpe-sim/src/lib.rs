@@ -18,9 +18,27 @@ pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring
 pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
 
 use bpe_music::AudioFeatures;
-use bpe_scene::{Color, Container, ObstaclePart, Scene, Spawner, Vec2};
+use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Scene, Spawner, Vec2};
 use grid::ObstacleGrid;
 use std::sync::Arc;
+
+/// The music at `time` as modulators read it (WS5). The renderer uses the same, so physics and
+/// visuals stay on the same beat.
+pub fn music_levels(music: &bpe_music::AudioFeatures, time: f64) -> Levels {
+    let at = music.at(time);
+    let beat = resting_beat_phase(Some(music), time);
+    Levels { bass: at.bass, mid: at.mid, treble: at.treble, level: at.level, beat, onset: at.onset }
+}
+
+/// How far through the current beat `time` is, from 0 on the beat to 1 just before the next.
+/// 1 (resting, as if the next beat were about to come) without beats, before the first and after
+/// the last, so beat-driven settings stay still rather than stuck on a beat.
+pub fn resting_beat_phase(music: Option<&bpe_music::AudioFeatures>, time: f64) -> f32 {
+    match music {
+        Some(m) if m.beats.len() >= 2 && time >= m.beats[0] && time < m.beats[m.beats.len() - 1] => m.beat_phase(time),
+        _ => 1.0,
+    }
+}
 
 /// How often ball positions are recorded for drawing trails, in samples per second.
 const TRAIL_SAMPLE_RATE: u32 = 120;
@@ -553,7 +571,10 @@ impl Simulation {
     fn update_arena(&mut self) {
         let time = self.time();
         if self.animated {
-            self.scene.apply_animation(time as f32, true);
+            // Modulators on settings that move balls follow the song only (WS5).
+            let song = self.inputs.music.as_deref().map(|music| move |t: f64| music_levels(music, t));
+            let audio = Audio { song: song.as_ref().map(|f| f as Listener), mix: None };
+            self.scene.apply_animation_with(time as f32, true, &audio);
         }
         let motion = &self.scene.arena_motion;
         self.arena.spin = motion.spin.to_radians();
@@ -788,12 +809,18 @@ impl Playback {
 
 /// Runs a whole scene from the start and returns every event, for building the soundtrack.
 pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
+    collect_events_until(scene, inputs, scene.video.duration as f64)
+}
+
+/// The same as [`collect_events`], running until `until` seconds instead of the video's end
+/// (music workstream: beat sync's Warp runs the simulation past or short of the video's length).
+pub fn collect_events_until(scene: &Scene, inputs: &SimInputs, until: f64) -> Vec<Event> {
     if scene.space().is_some() {
         // 3D (WS4): both sides step together, as in a playback, without its snapshots.
         let mut keeper = Simulation::with_inputs(&space::time_keeper(scene), inputs);
         let mut space = space::SpaceTrack::new(scene);
         let mut events = Vec::new();
-        let target = (scene.video.duration as f64 * scene.physics.steps_per_second as f64).floor() as u64;
+        let target = (until * scene.physics.steps_per_second as f64).floor() as u64;
         while keeper.step < target {
             let from = events.len();
             keeper.step(&mut events);
@@ -803,7 +830,7 @@ pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
     }
     let mut sim = Simulation::with_inputs(scene, inputs);
     let mut events = Vec::new();
-    sim.advance_to(scene.video.duration as f64, &mut events);
+    sim.advance_to(until, &mut events);
     events
 }
 

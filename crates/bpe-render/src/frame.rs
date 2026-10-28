@@ -122,6 +122,23 @@ pub struct FrameData {
     pub space: crate::space::SpaceFrame,
     /// Captions (captions workstream).
     pub text: crate::text::TextFrame,
+    // ---- Audio-reactive visuals (WS5) ----
+    /// Analysis of the finished soundtrack, the song plus the bounce sounds, set by whoever mixed
+    /// it. When present, `audio` and `level` follow it, and so do modulators on visual settings.
+    /// The simulation never sees it.
+    pub mix: Option<std::sync::Arc<bpe_music::AudioFeatures>>,
+    /// The song's analysis, taken from the playback by [`FrameData::fill`].
+    pub song: Option<std::sync::Arc<bpe_music::AudioFeatures>>,
+}
+
+/// The music at one moment, as modulators read it.
+pub fn levels(features: &bpe_music::AudioFeatures, time: f64) -> bpe_scene::Levels {
+    bpe_sim::music_levels(features, time)
+}
+
+/// How far through the current beat `time` is; see [`bpe_sim::resting_beat_phase`].
+pub fn beat_phase(features: Option<&bpe_music::AudioFeatures>, time: f64) -> f32 {
+    bpe_sim::resting_beat_phase(features, time)
 }
 
 /// How long a rule's screen flash lasts.
@@ -131,6 +148,17 @@ const RULE_FLASH_SECONDS: f64 = 0.8;
 pub const EVENT_MEMORY: f64 = 3.0;
 
 impl FrameData {
+    /// Runs `f` with the song and mix as modulators read them.
+    pub fn with_audio<R>(&self, f: impl FnOnce(&bpe_scene::Audio) -> R) -> R {
+        let song = self.song.as_deref().map(|s| move |t: f64| levels(s, t));
+        let mix = self.mix.as_deref().map(|m| move |t: f64| levels(m, t));
+        let audio = bpe_scene::Audio {
+            song: song.as_ref().map(|f| f as bpe_scene::Listener),
+            mix: mix.as_ref().map(|f| f as bpe_scene::Listener),
+        };
+        f(&audio)
+    }
+
     /// Builds the frame for the playback's current time. `pixel` is the size of one output
     /// pixel in world units, so streaks keep at least a pixel of anti-aliasing margin.
     pub fn build(scene: &Scene, playback: &Playback, pixel: f32) -> Self {
@@ -140,11 +168,12 @@ impl FrameData {
     }
 
     pub fn fill(&mut self, scene: &Scene, playback: &Playback, pixel: f32) {
+        self.song = playback.simulation().inputs().music.clone();
         let animated;
         let scene = if scene.animation.is_empty() && scene.modulators.is_empty() {
             scene
         } else {
-            animated = scene.at_time(playback.simulation().time() as f32);
+            animated = self.with_audio(|audio| scene.at_time_with(playback.simulation().time() as f32, audio));
             &animated
         };
         self.balls.clear();
@@ -243,10 +272,17 @@ impl FrameData {
         (self.audio, self.level) = match &sim.inputs().music {
             Some(music) => {
                 let at = music.at(now);
-                ([at.bass, at.mid, at.treble, music.beat_phase(now)], at.level)
+                ([at.bass, at.mid, at.treble, 0.0], at.level)
             }
             None => ([0.0; 4], 0.0),
         };
+        // Visuals follow everything you hear when the mixed soundtrack is known; beats still come
+        // from the song, whose beat is steadier than the bounces'.
+        if let Some(mix) = &self.mix {
+            let at = mix.at(now);
+            (self.audio, self.level) = ([at.bass, at.mid, at.treble, 0.0], at.level);
+        }
+        self.audio[3] = beat_phase(self.song.as_deref().or(self.mix.as_deref()), now);
         self.counts = playback.counts_at(now);
         self.gpu.fill(scene, playback);
         self.particles.fill(scene, playback, &self.events);

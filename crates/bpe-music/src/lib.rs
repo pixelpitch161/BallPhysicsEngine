@@ -11,7 +11,7 @@ mod cache;
 mod decode;
 pub mod midi;
 
-pub use cache::{analyze_file, cache_dir};
+pub use cache::{analyze_decoded, analyze_file, cache_dir};
 #[cfg(feature = "decode")]
 pub use decode::decode;
 

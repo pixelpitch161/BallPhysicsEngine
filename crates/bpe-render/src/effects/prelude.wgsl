@@ -24,10 +24,15 @@ struct Fx {
     dt: f32,
     // Picture pixels per video pixel (below 1 in the editor preview).
     scale: f32,
+    // How loud the music is overall, 0 to about 1.
+    level: f32,
+    // Which block a node effect shows in the Shaders workspace; 0 for the finished effect.
+    view: u32,
     pad0: f32,
-    pad1: f32,
-    pad2: f32,
-    params: array<vec4<f32>, 2>,
+    // Music right now: bass, mid and treble loudness (0 to about 1) and how far through the
+    // current beat (0 on the beat, rising to 1 just before the next).
+    audio: vec4<f32>,
+    params: array<vec4<f32>, 4>,
     // Newest bounces first: position (uv), seconds since the bounce, strength 0 to 1.5.
     hits: array<vec4<f32>, 16>,
     hit_colors: array<vec4<f32>, 16>,
@@ -150,4 +155,25 @@ fn hit_strength(i: u32) -> f32 {
 
 fn hit_color(i: u32) -> vec3<f32> {
     return fx.hit_colors[i].rgb;
+}
+
+fn bass() -> f32 {
+    return fx.audio.x;
+}
+
+fn mid() -> f32 {
+    return fx.audio.y;
+}
+
+fn treble() -> f32 {
+    return fx.audio.z;
+}
+
+fn beat_phase() -> f32 {
+    return fx.audio.w;
+}
+
+// 1 on each beat, fading quickly to 0 before the next.
+fn beat_hit() -> f32 {
+    return pow(1.0 - fx.audio.w, 4.0);
 }

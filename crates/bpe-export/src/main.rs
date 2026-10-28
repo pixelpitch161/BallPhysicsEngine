@@ -98,8 +98,11 @@ fn run() -> anyhow::Result<()> {
                 return Ok(());
             }
             "--wav" => {
-                let hits = bpe_sim::collect_wall_hits(&scene);
-                bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref())?.write_wav(value()?)?;
+                let sound = bpe_audio::render_scene(&scene, base_dir.as_deref())?;
+                if let Some(error) = sound.song_error {
+                    bail!("the song can't be used: {error}");
+                }
+                sound.mix.track.write_wav(value()?)?;
                 return Ok(());
             }
             other if other.starts_with("--") => bail!("unknown option {other}\n\n{USAGE}"),
@@ -110,7 +113,17 @@ fn run() -> anyhow::Result<()> {
     let (device, queue) = bpe_render::headless_device().context("no usable GPU found")?;
 
     if let Some(time) = still {
-        return export_still(&device, &queue, &scene, &options.effects, time, options.scale, &options.ffmpeg, &output);
+        return export_still(
+            &device,
+            &queue,
+            &scene,
+            &options.effects,
+            time,
+            options.scale,
+            &options.ffmpeg,
+            &output,
+            base_dir.as_deref(),
+        );
     }
 
     options.output = output;

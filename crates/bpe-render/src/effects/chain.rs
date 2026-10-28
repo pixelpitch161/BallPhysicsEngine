@@ -8,6 +8,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const MAX_HITS: usize = 16;
+/// Size of one block preview in the thumbnail atlas: a 9:16 picture.
+pub const THUMB_SIZE: (u32, u32) = (72, 128);
+/// Block previews per row of the atlas.
+pub const THUMB_COLUMNS: u32 = 8;
+/// Most block previews drawn in one frame.
+pub const MAX_THUMBS: usize = 64;
+const THUMB_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// A jump in time bigger than this (a seek, or a new export) starts feedback effects afresh.
 const MAX_STEP: f64 = 0.25;
 
@@ -23,10 +30,46 @@ struct FxUniform {
     frame: f32,
     dt: f32,
     scale: f32,
-    pad: [f32; 3],
+    level: f32,
+    view: u32,
+    pad: f32,
+    audio: [f32; 4],
     params: [f32; MAX_PARAMS],
     hits: [[f32; 4]; MAX_HITS],
     hit_colors: [[f32; 4]; MAX_HITS],
+}
+
+/// Asks the chain to draw small previews of a node effect's blocks, see [`EffectChain::set_thumbnails`].
+#[derive(Clone, Debug)]
+pub struct ThumbnailRequest {
+    /// Index in the scene's effect list of the node effect being edited.
+    pub effect: usize,
+    /// The effect built with [`EffectInfo::graph_thumbnails`].
+    pub info: Arc<EffectInfo>,
+    /// Which blocks to draw (values of `fx.view`, from 1), one tile each in this order.
+    pub views: Vec<u32>,
+}
+
+/// Where tile `i` of the thumbnail atlas is, in pixels: x, y, width, height.
+pub fn thumbnail_tile(i: usize) -> [u32; 4] {
+    let (w, h) = THUMB_SIZE;
+    let i = i as u32;
+    [(i % THUMB_COLUMNS) * w, (i / THUMB_COLUMNS) * h, w, h]
+}
+
+/// Size of the whole thumbnail atlas in pixels.
+pub fn thumbnail_atlas_size() -> (u32, u32) {
+    (THUMB_SIZE.0 * THUMB_COLUMNS, THUMB_SIZE.1 * (MAX_THUMBS as u32).div_ceil(THUMB_COLUMNS))
+}
+
+#[derive(Default)]
+struct Thumbnails {
+    request: Option<ThumbnailRequest>,
+    atlas: Option<(wgpu::Texture, wgpu::TextureView)>,
+    pipeline: Option<(Arc<EffectInfo>, Option<wgpu::RenderPipeline>)>,
+    uniforms: Vec<wgpu::Buffer>,
+    /// Whether the atlas holds this request's pictures.
+    drawn: bool,
 }
 
 struct Pipeline {
@@ -54,6 +97,7 @@ pub(crate) struct EffectChain {
     scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
     last_time: Option<f64>,
     gpu_errors: Vec<(String, String)>,
+    thumbnails: Thumbnails,
 }
 
 impl EffectChain {
@@ -114,7 +158,31 @@ impl EffectChain {
             scratch: None,
             last_time: None,
             gpu_errors: Vec::new(),
+            thumbnails: Thumbnails::default(),
         }
+    }
+
+    /// Starts (or with `None` stops) drawing block previews of a node effect into the thumbnail
+    /// atlas on every frame this chain renders. Costs nothing while off.
+    pub fn set_thumbnails(&mut self, request: Option<ThumbnailRequest>) {
+        let thumbs = &mut self.thumbnails;
+        thumbs.drawn = false;
+        thumbs.request = request.map(|mut r| {
+            r.views.truncate(MAX_THUMBS);
+            r
+        });
+    }
+
+    /// The thumbnail atlas (see [`thumbnail_tile`]), made on first use. It holds sRGB-encoded
+    /// colours like the main output, so it can be shown as it is.
+    pub fn thumbnail_atlas(&mut self, device: &wgpu::Device) -> &wgpu::TextureView {
+        let (width, height) = thumbnail_atlas_size();
+        &self.thumbnails.atlas.get_or_insert_with(|| make_texture(device, width, height, THUMB_FORMAT, "thumbnails")).1
+    }
+
+    /// Whether the last frame drew the requested thumbnails.
+    pub fn thumbnails_drawn(&self) -> bool {
+        self.thumbnails.drawn
     }
 
     pub fn library(&self) -> &EffectLibrary {
@@ -153,19 +221,27 @@ impl EffectChain {
         let active: Vec<_> = scene
             .effects
             .iter()
-            .filter(|e| e.enabled && e.amount > 0.0)
-            .filter_map(|effect| {
-                let info = self.library.get(&effect.shader)?;
-                info.compiled.is_ok().then_some((effect, info))
+            .enumerate()
+            .filter(|(_, e)| e.enabled && e.amount > 0.0)
+            .filter_map(|(index, effect)| {
+                let info = self.library.get_in(&effect.shader, &scene.shader_graphs)?;
+                info.compiled.is_ok().then_some((index, effect, info))
             })
             .collect();
-        for (_, info) in &active {
+        for (_, _, info) in &active {
             self.prepare(device, info);
         }
         let active: Vec<_> =
-            active.into_iter().filter(|(_, info)| self.pipelines[&info.id].pipeline.is_some()).collect();
+            active.into_iter().filter(|(_, _, info)| self.pipelines[&info.id].pipeline.is_some()).collect();
+        self.thumbnails.drawn = false;
+        let thumbs_here = self.thumbnails.request.as_ref().map(|r| r.effect);
+        let thumbs_in_chain = active.iter().any(|(index, _, _)| Some(*index) == thumbs_here);
         if active.is_empty() {
             self.last_time = None;
+            if thumbs_here.is_some() {
+                let base = self.base_uniform(scene, time, frame, hdr, 1.0 / scene.video.fps.max(1) as f32);
+                self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene);
+            }
             return;
         }
 
@@ -183,23 +259,19 @@ impl EffectChain {
             self.scratch = Some(make_texture(device, width, height, hdr.format(), "effect scratch"));
         }
 
-        let video = &scene.video;
-        let mut base = FxUniform::zeroed();
-        base.resolution = [width as f32, height as f32];
-        base.time = time as f32;
-        base.pulse = frame.pulse;
-        base.dt = dt;
-        base.scale = width as f32 / video.width.max(1) as f32;
-        base.hit_count = frame.hits.len().min(MAX_HITS) as u32;
-        for (i, hit) in frame.hits.iter().take(MAX_HITS).enumerate() {
-            let uv = [hit.position[0] / video.width as f32 + 0.5, hit.position[1] / video.height as f32 + 0.5];
-            base.hits[i] = [uv[0], uv[1], hit.age, hit.strength];
-            base.hit_colors[i] = hit.color;
+        let base = self.base_uniform(scene, time, frame, hdr, dt);
+        if thumbs_here.is_some() && !thumbs_in_chain {
+            self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene);
         }
 
-        let (scratch_texture, scratch_view) = self.scratch.as_ref().unwrap();
         let mut in_scratch = false;
-        for (index, (effect, info)) in active.iter().enumerate() {
+        for (index, (scene_index, effect, info)) in active.iter().enumerate() {
+            if Some(*scene_index) == thumbs_here {
+                let source = if in_scratch { &self.scratch.as_ref().unwrap().1 } else { hdr_view };
+                let source = source.clone();
+                let prev = self.slots.get(index).and_then(|s| s.history.as_ref()).map(|(_, v)| v.clone());
+                self.draw_thumbnails(device, queue, encoder, &source, prev.as_ref(), base, scene);
+            }
             let pipeline = self.pipelines[&info.id].pipeline.as_ref().unwrap();
 
             if self.slots.len() <= index {
@@ -238,6 +310,7 @@ impl EffectChain {
             queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniform));
             slot.frames = slot.frames.saturating_add(1);
 
+            let (scratch_texture, scratch_view) = self.scratch.as_ref().unwrap();
             let (source, target, target_texture) =
                 if in_scratch { (scratch_view, hdr_view, hdr) } else { (hdr_view, scratch_view, scratch_texture) };
             let prev = match (&slot.history, info.uses_prev) {
@@ -268,8 +341,130 @@ impl EffectChain {
             in_scratch = !in_scratch;
         }
         if in_scratch {
-            copy(encoder, scratch_texture, hdr);
+            copy(encoder, &self.scratch.as_ref().unwrap().0, hdr);
         }
+    }
+
+    /// The uniform values every effect in this frame shares.
+    fn base_uniform(&self, scene: &Scene, time: f64, frame: &FrameData, hdr: &wgpu::Texture, dt: f32) -> FxUniform {
+        let (width, height) = (hdr.width(), hdr.height());
+        let video = &scene.video;
+        let mut base = FxUniform::zeroed();
+        base.resolution = [width as f32, height as f32];
+        base.time = time as f32;
+        base.pulse = frame.pulse;
+        base.audio = frame.audio.map(|v| if v.is_finite() { v } else { 0.0 });
+        base.level = if frame.level.is_finite() { frame.level } else { 0.0 };
+        base.dt = dt;
+        base.scale = width as f32 / video.width.max(1) as f32;
+        base.hit_count = frame.hits.len().min(MAX_HITS) as u32;
+        for (i, hit) in frame.hits.iter().take(MAX_HITS).enumerate() {
+            let uv = [hit.position[0] / video.width as f32 + 0.5, hit.position[1] / video.height as f32 + 0.5];
+            base.hits[i] = [uv[0], uv[1], hit.age, hit.strength];
+            base.hit_colors[i] = hit.color;
+        }
+        base
+    }
+
+    /// Draws the requested block previews from `source`, the picture coming into the effect.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_thumbnails(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        prev: Option<&wgpu::TextureView>,
+        base: FxUniform,
+        scene: &Scene,
+    ) {
+        let Some(request) = self.thumbnails.request.clone() else { return };
+        let Ok(code) = &request.info.compiled else { return };
+        let current = self.thumbnails.pipeline.as_ref().is_some_and(|(info, _)| Arc::ptr_eq(info, &request.info));
+        if !current {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("block previews"),
+                source: wgpu::ShaderSource::Wgsl(code.as_str().into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("block previews"),
+                layout: Some(&self.pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_thumb"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: THUMB_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let pipeline = pollster::block_on(scope.pop()).is_none().then_some(pipeline);
+            self.thumbnails.pipeline = Some((request.info.clone(), pipeline));
+        }
+        if !matches!(self.thumbnails.pipeline, Some((_, Some(_)))) {
+            return;
+        }
+        self.thumbnail_atlas(device);
+        let thumbs = &mut self.thumbnails;
+        while thumbs.uniforms.len() < request.views.len() {
+            thumbs.uniforms.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("block preview uniform"),
+                size: std::mem::size_of::<FxUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let params = scene.effects.get(request.effect).map(|e| request.info.values(&e.params)).unwrap_or_default();
+        let groups: Vec<_> = request
+            .views
+            .iter()
+            .zip(&thumbs.uniforms)
+            .map(|(&view, buffer)| {
+                let mut uniform = base;
+                uniform.amount = 1.0;
+                uniform.view = view;
+                uniform.params = params;
+                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("block preview inputs"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(prev.unwrap_or(&self.black)),
+                        },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    ],
+                })
+            })
+            .collect();
+        let atlas = &thumbs.atlas.as_ref().unwrap().1;
+        let Some((_, Some(pipeline))) = &thumbs.pipeline else { return };
+        let mut pass = crate::begin_pass(encoder, atlas, "block previews", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+        pass.set_pipeline(pipeline);
+        for (i, group) in groups.iter().enumerate() {
+            let [x, y, w, h] = thumbnail_tile(i);
+            pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        thumbs.drawn = true;
     }
 
     /// Builds the pipeline for an effect, or rebuilds it when the library has a newer version.

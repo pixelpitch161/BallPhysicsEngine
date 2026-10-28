@@ -1,11 +1,17 @@
 # scene	events	all-hash	bounces	bounce-hash
+Beat-locked bounce	19	3ba9ac38d393e207	19	f97f270324743617
 Box arena	2099	8b4b9b29c16fde1a	2099	de76ed5b4ef25cba
+Confetti escape	46	98ee65b91b1212e5	46	4ab4da3075c1afa5
+Drum machine	89	57e62bc264d677dc	89	e681c762b3580fdc
 Endless tunnel	1014	78149c17e8919368	1014	b65f3e1b81ebaa93
 Escape and multiply	447	278ccbb41547445e	411	12265a47d9c6dfe7
 Escape and multiply (rules)	465	17cd4bff15a13143	411	12265a47d9c6dfe7
 Escape rings	46	98ee65b91b1212e5	46	4ab4da3075c1afa5
 Glass sphere	9349	03e017279b8f5cbd	9349	8e332ea1593b69cc
 Growing ball	23	d86adebdcfcc8097	23	9c760b95512bfa67
+Liquid fill	60	ed973bc5112acfc0	60	8d344861cf205b80
+Marimba melody	63	73f36639010eefff	63	b172da786b426a1f
+Million swarm	30	505b1cd5b2666f5c	30	148ad46be33cd03c
 Multiplying balls	2749	defb1f8d99dae576	2450	fdc0bb83ea523d41
 Neon cube	330	88dfae6af07a3615	330	63f865a7169026d1
 One big ball	18	741b82b12c9c9c2d	18	305825e4ad1517ad
@@ -14,6 +20,8 @@ Pulsing ring	116	01a3a9adf79ad49a	116	404125be61d18e2a
 Rainbow trails	89	15e56dba3ee9e118	89	db4c42932031ed38
 Reference reel	11664	51f4be00f509f778	11664	44ad419e0c5f6768
 Shrinking ring	98	c0e5c6cd9324c2cb	98	a34fc2504127183b
+Smoke rings	14458	a6d30454a1a0ee50	14299	3f72e703733d26d3
+Spark storm	104	b972c81af3eee040	104	b689aa07f4e2e3f0
 Spinning hexagon	183	ece51d7500949878	183	5225d4b1b2a9b978
 String art	57	ccc19bf5c47c3a20	57	d818adb11db65c30
 growing-ball.ron	23	d86adebdcfcc8097	23	9c760b95512bfa67

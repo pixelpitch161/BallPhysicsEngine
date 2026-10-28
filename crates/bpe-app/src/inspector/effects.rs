@@ -21,6 +21,8 @@ pub struct EffectsPanel {
     /// The folder of the open scene, whose `effects` folder is searched first.
     scene_dir: Option<Option<PathBuf>>,
     note: Option<(String, bool)>,
+    /// A node effect to open in the Shaders workspace, for the app to pick up.
+    pub open_graph: Option<String>,
 }
 
 impl Default for EffectsPanel {
@@ -31,6 +33,7 @@ impl Default for EffectsPanel {
             last_refresh: Instant::now(),
             scene_dir: None,
             note: None,
+            open_graph: None,
         }
     }
 }
@@ -49,6 +52,10 @@ impl EffectsPanel {
             if self.library.refresh() {
                 ctx.request_repaint();
             }
+        }
+        // Node effects live in the scene; the Effects tab reads them before the preview does.
+        if self.library.sync_graphs(&scene.shader_graphs) {
+            ctx.request_repaint();
         }
         let uses_files = scene.effects.iter().any(|e| self.library.get(&e.shader).is_none_or(|i| !i.is_builtin()));
         if tab_open || uses_files {
@@ -203,13 +210,25 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
             scene.copy_effect_tracks(i, i + 1);
         }
         Some((i, CardAction::EditCopy)) => edit_copy(panel, &mut effects[i]),
+        Some((i, CardAction::EditNodes)) => {
+            let shader = effects[i].shader.clone();
+            if let Some(name) = edit_as_nodes(panel, scene, &shader) {
+                for effect in scene.effects.iter_mut().filter(|e| e.shader == shader) {
+                    effect.shader = fx::graph::effect_id(&name);
+                }
+                panel.open_graph = Some(name);
+            }
+        }
+        Some((i, CardAction::SaveCode)) => {
+            let shader = effects[i].shader.clone();
+            save_as_code(panel, &shader);
+        }
         Some((i, CardAction::Roll)) => *roll = Some(Roll::Effect(i)),
         None => {}
     }
     if replaced {
         scene.remap_effect_tracks(|_| None);
     }
-    let effects = &mut scene.effects;
 
     ui.add_space(6.0);
     heading(ui, "Your own effects");
@@ -220,8 +239,24 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
         .color(theme::MUTED),
     );
     ui.horizontal_wrapped(|ui| {
+        ui.menu_button("New node effect", |ui| {
+            ui.set_min_width(260.0);
+            ui.label(RichText::new("Build an effect by connecting blocks, no code needed").small().color(theme::MUTED));
+            if ui.button("Start empty").on_hover_text("Just the picture, ready for your blocks").clicked() {
+                new_node_effect(panel, scene, None);
+                ui.close();
+            }
+            for template in fx::templates::graphs() {
+                if ui.button(format!("Start from {}", template.name)).clicked() {
+                    new_node_effect(panel, scene, Some(template));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Make an effect from blocks in the Shaders workspace");
         if ui.button("New effect file").on_hover_text("Make a starter effect file, add it here and open it").clicked() {
-            new_effect(panel, effects);
+            new_effect(panel, &mut scene.effects);
         }
         if ui.button("Open effects folder").clicked() {
             match panel.user_folder() {
@@ -241,7 +276,7 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
     }
     let broken: Vec<_> = panel.library.list().into_iter().filter(|i| !i.is_builtin() && i.error().is_some()).collect();
     for info in broken {
-        if !effects.iter().any(|e| e.shader == info.id) {
+        if !scene.effects.iter().any(|e| e.shader == info.id) {
             ui.label(RichText::new(format!("{} has an error:", file_name(&info))).color(theme::WARNING));
             error_text(ui, info.error().unwrap_or_default());
         }
@@ -292,6 +327,10 @@ enum CardAction {
     Remove,
     Duplicate,
     EditCopy,
+    /// Open the node effect in the Shaders workspace, making a node version first if needed.
+    EditNodes,
+    /// Write a node effect out as a code effect file.
+    SaveCode,
     Roll,
 }
 
@@ -316,10 +355,15 @@ fn effect_card(
             let color = if effect.enabled { theme::TEXT } else { theme::MUTED };
             ui.label(RichText::new(title).strong().color(color));
             if let Some(info) = &info
-                && !info.is_builtin()
+                && info.is_graph()
+            {
+                ui.label(RichText::new("nodes").small().color(theme::ACCENT_TEXT))
+                    .on_hover_text("Made from blocks. Edit as nodes to change it.");
+            } else if let Some(info) = &info
+                && let Some(path) = &info.path
             {
                 ui.label(RichText::new("file").small().color(theme::ACCENT_TEXT))
-                    .on_hover_text(format!("Loaded from {}", info.path.as_ref().unwrap().display()));
+                    .on_hover_text(format!("Loaded from {}", path.display()));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let more = egui::containers::menu::MenuButton::from_button(icon_button());
@@ -334,15 +378,36 @@ fn effect_card(
                             effect.amount = 1.0;
                             ui.close();
                         }
-                        let edit =
-                            if info.is_builtin() { "Edit a copy of this effect" } else { "Open the effect file" };
-                        if ui.button(edit).clicked() {
-                            if info.is_builtin() {
-                                action = Some(CardAction::EditCopy);
-                            } else if let Some(path) = &info.path {
-                                open_path(path);
+                        if info.is_graph() || (info.is_builtin() && fx::templates::rebuild(&info.id).is_some()) {
+                            let help = if info.is_graph() {
+                                "Open its blocks in the Shaders workspace"
+                            } else {
+                                "Swap this for a node version you can change block by block. It looks the same."
+                            };
+                            if ui.button("Edit as nodes").on_hover_text(help).clicked() {
+                                action = Some(CardAction::EditNodes);
+                                ui.close();
                             }
-                            ui.close();
+                        }
+                        if info.is_graph() {
+                            let ready = info.graph.as_ref().is_some_and(|g| g.generated.is_some());
+                            let button = ui.add_enabled(ready, egui::Button::new("Save as code")).on_hover_text(
+                                "Write this effect as a WGSL file in the effects folder, to edit as code",
+                            );
+                            if button.clicked() {
+                                action = Some(CardAction::SaveCode);
+                                ui.close();
+                            }
+                        } else {
+                            let edit = if info.is_builtin() { "Edit a copy as code" } else { "Open the effect file" };
+                            if ui.button(edit).clicked() {
+                                if info.is_builtin() {
+                                    action = Some(CardAction::EditCopy);
+                                } else if let Some(path) = &info.path {
+                                    open_path(path);
+                                }
+                                ui.close();
+                            }
                         }
                     }
                     if ui.button("Remove").clicked() {
@@ -379,7 +444,9 @@ fn effect_card(
         if !info.about.is_empty() {
             ui.label(RichText::new(&info.about).small().color(theme::MUTED));
         }
-        if let Some(error) = info.error() {
+        if let Some(graph) = &info.graph {
+            graph_problems(ui, graph, info.error().is_some());
+        } else if let Some(error) = info.error() {
             ui.label(
                 RichText::new("This effect has an error, so it is skipped until the file is fixed:")
                     .color(theme::ERROR),
@@ -496,6 +563,80 @@ pub(crate) fn pretty_name(name: &str) -> String {
     let text = name.replace('_', " ");
     let mut chars = text.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// A node effect's problems: errors that stop it, or warnings about blocks that do nothing.
+fn graph_problems(ui: &mut Ui, graph: &fx::GraphInfo, broken: bool) {
+    if graph.problems.is_empty() {
+        return;
+    }
+    let (text, color) = if broken {
+        ("This node effect has a problem, so it is skipped until it is fixed:", theme::ERROR)
+    } else {
+        ("Some blocks aren't doing anything:", theme::WARNING)
+    };
+    ui.label(RichText::new(text).color(color));
+    for problem in graph.problems.iter().take(4) {
+        let block = problem
+            .node
+            .and_then(|id| graph.graph.nodes.iter().find(|n| n.id == id))
+            .and_then(|n| fx::graph::Catalog::get().block(&n.kind))
+            .map(|b| format!("{}: ", b.title))
+            .unwrap_or_default();
+        ui.label(RichText::new(format!("• {block}{}", problem.message)).small().color(color));
+    }
+    if graph.problems.len() > 4 {
+        ui.label(RichText::new(format!("and {} more", graph.problems.len() - 4)).small().color(color));
+    }
+}
+
+/// Adds a node effect to the scene, from `template` or empty, and opens it in the workspace.
+fn new_node_effect(panel: &mut EffectsPanel, scene: &mut Scene, template: Option<fx::graph::Graph>) {
+    let graph = template.unwrap_or_else(crate::shader_workspace::blank_graph);
+    let stem =
+        if graph.name.is_empty() { "My effect".to_string() } else { format!("My {}", graph.name.to_lowercase()) };
+    let name = crate::shader_workspace::add_graph(scene, &panel.library, graph, &stem);
+    panel.open_graph = Some(name);
+}
+
+/// The graph to open for `shader`: the scene's own node effect, or a copy of a node effect that
+/// comes with the program, or the node version of a built-in code effect. Returns its name,
+/// once it is in the scene.
+fn edit_as_nodes(panel: &mut EffectsPanel, scene: &mut Scene, shader: &str) -> Option<String> {
+    if let Some(name) = fx::graph::graph_name(shader)
+        && scene.shader_graphs.iter().any(|g| g.name == name)
+    {
+        return Some(name.to_string());
+    }
+    let info = panel.library.get(shader)?;
+    let mut graph = match &info.graph {
+        Some(graph) => graph.graph.clone(),
+        None => fx::templates::rebuild(shader)?,
+    };
+    let stem = if info.is_graph() { format!("{} (my copy)", graph.name) } else { graph.name.clone() };
+    graph.name = crate::shader_workspace::free_name(scene, &panel.library, &stem);
+    let name = graph.name.clone();
+    scene.shader_graphs.push(graph);
+    panel.library.sync_graphs(&scene.shader_graphs);
+    Some(name)
+}
+
+/// Writes a node effect's generated code to a new file in the effects folder.
+fn save_as_code(panel: &mut EffectsPanel, shader: &str) {
+    let Some(info) = panel.library.get(shader) else { return };
+    let Some(generated) = info.graph.as_ref().and_then(|g| g.generated.as_ref()) else { return };
+    let stem: String = info
+        .title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect::<String>()
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    let stem = if stem.is_empty() { "node_effect".to_string() } else { stem };
+    let source = generated.source.clone();
+    write_effect_file(panel, &stem, &source);
 }
 
 fn error_text(ui: &mut Ui, error: &str) {

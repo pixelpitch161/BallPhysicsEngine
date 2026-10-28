@@ -208,8 +208,8 @@ impl NodeEditor {
         self.to_screen * local
     }
 
-    /// Where a block's title bar is on screen, for tests.
-    #[cfg(test)]
+    /// Where a block's title bar is on screen, for tests and for the Shaders workspace's
+    /// previews of the blocks in view (WS5).
     pub fn node_screen_pos(&self, graph: &Graph, catalog: &dyn Catalog, node: u32) -> Pos2 {
         let node = graph.node(node).expect("node");
         let layout = layout(node, catalog.spec(&node.kind), None);
