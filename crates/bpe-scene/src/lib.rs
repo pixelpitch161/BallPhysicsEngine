@@ -699,6 +699,9 @@ impl Scene {
                 scene: Scene::endless_tunnel(),
             },
         ]
+        .into_iter()
+        .chain(Scene::gpu_presets())
+        .collect()
     }
 
     /// Eight balls fired outwards from the centre, each its own colour, with long trails.
