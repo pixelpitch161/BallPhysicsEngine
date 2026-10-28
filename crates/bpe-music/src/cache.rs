@@ -26,6 +26,24 @@ pub fn analyze_file(path: impl AsRef<Path>) -> anyhow::Result<AudioFeatures> {
     anyhow::bail!("this build can't read song files")
 }
 
+/// Analyses a song already decoded from `path`, or loads the saved analysis of that file. Saves
+/// decoding the file a second time when the song is being played as well as analysed.
+pub fn analyze_decoded(path: impl AsRef<Path>, pcm: &crate::Pcm) -> AudioFeatures {
+    let dir = cache_dir();
+    let Ok(bytes) = std::fs::read(path.as_ref()) else { return crate::analyze(pcm) };
+    let key = format!("{:016x}-{}.bpef", fnv(&bytes), bytes.len());
+    if let Some(dir) = &dir
+        && let Ok(features) = load(&dir.join(&key))
+    {
+        return features;
+    }
+    let features = crate::analyze(pcm);
+    if let Some(dir) = dir {
+        let _ = std::fs::create_dir_all(&dir).and_then(|_| save(&dir.join(&key), &features));
+    }
+    features
+}
+
 #[cfg(feature = "decode")]
 pub(crate) fn analyze_file_in(path: &Path, cache: Option<&Path>) -> anyhow::Result<AudioFeatures> {
     let bytes = std::fs::read(path)?;

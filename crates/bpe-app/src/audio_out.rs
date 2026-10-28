@@ -57,6 +57,32 @@ impl AudioOut {
     pub fn set_muted(&self, muted: bool) {
         self.shared.lock().unwrap().muted = muted;
     }
+
+    /// A handle that can start sounds from another thread.
+    pub fn handle(&self) -> Handle {
+        Handle { shared: self.shared.clone() }
+    }
+}
+
+/// Plays a short sound from start to finish, such as an instrument preview. Can be sent to the
+/// thread that makes the sound.
+#[derive(Clone)]
+pub struct Handle {
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl Handle {
+    /// Plays interleaved stereo at [`SAMPLE_RATE`] from its start, replacing whatever played.
+    pub fn play(&self, samples: Vec<f32>) {
+        let mut shared = self.shared.lock().unwrap();
+        shared.track = Arc::new(samples);
+        shared.position = 0.0;
+        shared.playing = true;
+    }
+
+    pub fn stop(&self) {
+        self.shared.lock().unwrap().playing = false;
+    }
 }
 
 fn build<T: SizedSample + FromSample<f32>>(
