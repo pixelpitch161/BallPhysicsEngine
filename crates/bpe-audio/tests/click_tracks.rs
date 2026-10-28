@@ -73,3 +73,27 @@ fn lock_lands_on_the_beats_of_real_songs() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn bars_are_counted_with_warp_and_with_a_tempo_override() {
+    let dir = std::env::temp_dir().join(format!("bpe-click-bars-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("click.wav");
+    click_track(120.0, 16.0).write_wav(&path).unwrap();
+    let downbeats = |scene: &Scene| {
+        let sound = bpe_audio::render_scene(scene, None).unwrap();
+        sound.events.iter().filter(|e| matches!(e.kind, bpe_sim::EventKind::Beat { downbeat: true, .. })).count()
+    };
+    let mut scene = Scene::beat_locked_bounce();
+    scene.video.duration = 12.0;
+    scene.music.bpm = 0.0;
+    scene.music.song = Some(path.display().to_string());
+    for (mode, bpm) in [(SyncMode::Lock, 0.0), (SyncMode::Warp, 0.0), (SyncMode::Lock, 126.0), (SyncMode::Warp, 126.0)]
+    {
+        scene.music.beat_sync.mode = mode;
+        scene.music.bpm = bpm;
+        let bars = downbeats(&scene);
+        assert!((4..=8).contains(&bars), "{bars} bars in 12 s with {mode:?} at {bpm} BPM");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

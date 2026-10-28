@@ -44,7 +44,7 @@ pub fn load_song(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<Optio
         }
     }
     let pcm = bpe_music::decode(&full)?;
-    let features = bpe_music::analyze_file(&full).unwrap_or_else(|_| bpe_music::analyze(&pcm));
+    let features = bpe_music::analyze_decoded(&full, &pcm);
     let song = Song { samples: Arc::new(pcm.samples), features: Arc::new(features), path: full.clone() };
     let mut kept = SONGS.lock().unwrap_or_else(|e| e.into_inner());
     kept.retain(|(p, ..)| *p != full);
@@ -138,24 +138,55 @@ impl SceneSound {
     }
 }
 
-/// Simulates the scene with its song and beat sync, and mixes its soundtrack.
-pub fn render_scene(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<SceneSound> {
+/// What a scene's simulation follows and the clock it runs on, worked out without making any
+/// sound: enough to show any moment of the scene.
+#[derive(Clone, Debug, Default)]
+pub struct SceneClock {
+    pub inputs: SimInputs,
+    pub warp: Option<TimeWarp>,
+    pub song: Option<Song>,
+    pub song_error: Option<String>,
+}
+
+impl SceneClock {
+    /// The simulation time to show at video time `time`.
+    pub fn sim_time(&self, time: f64) -> f64 {
+        self.warp.as_ref().map_or(time, |w| w.sim_time(time))
+    }
+}
+
+/// Loads the scene's song and, in Warp mode, fits the clock to it.
+pub fn scene_clock(scene: &Scene, base_dir: Option<&Path>) -> SceneClock {
     let (song, song_error) = match load_song(scene, base_dir) {
         Ok(song) => (song, None),
         Err(error) => (None, Some(format!("{error:#}"))),
     };
     let mut inputs = sim_inputs(scene, song.as_ref());
-    let duration = scene.video.duration as f64;
     let mut warp = None;
     if scene.music.beat_sync.mode == SyncMode::Warp {
-        // Fit the warp to a plain run, then simulate again with the beats moved into
-        // simulation time so beat events (and rules on them) line up with the picture.
+        // Fit the warp to a plain run, then move the beats (and the song's bars) into
+        // simulation time so beat events and rules on them line up with the picture.
+        let duration = scene.video.duration as f64;
         let reach = duration * (1.0 + scene.music.beat_sync.warp_strength.clamp(0.0, 0.9) as f64) + 1.0;
         let plain = simulate(scene, &inputs, reach);
         let fitted = TimeWarp::fit(scene, &plain, &beat_sync::beat_grid(scene, &inputs.beats));
-        inputs.beats = inputs.beats.iter().map(|&b| fitted.sim_time(b)).collect();
+        let to_sim = |times: &[f64]| times.iter().map(|&t| fitted.sim_time(t)).collect::<Vec<_>>();
+        inputs.beats = to_sim(&inputs.beats);
+        if let Some(music) = &inputs.music {
+            let mut moved = (**music).clone();
+            moved.beats = to_sim(&music.beats);
+            moved.downbeats = to_sim(&music.downbeats);
+            inputs.music = Some(Arc::new(moved));
+        }
         warp = Some(fitted);
     }
+    SceneClock { inputs, warp, song, song_error }
+}
+
+/// Simulates the scene with its song and beat sync, and mixes its soundtrack.
+pub fn render_scene(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<SceneSound> {
+    let SceneClock { inputs, warp, song, song_error } = scene_clock(scene, base_dir);
+    let duration = scene.video.duration as f64;
     let end = warp.as_ref().map_or(duration, |w| w.sim_end(duration));
     let events = simulate(scene, &inputs, end);
     let map = |t: f64| warp.as_ref().map_or(t, |w| w.video_time(t));

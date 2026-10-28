@@ -277,6 +277,9 @@ fn export_with(
 
     // Music workstream: the song, beat sync and its clock, worked out with the soundtrack.
     let sound = bpe_audio::render_scene(scene, options.base_dir.as_deref())?;
+    if let Some(error) = &sound.song_error {
+        bail!("the song can't be used: {error}");
+    }
     let wav = TempFile::new("wav");
     sound.mix.track.write_wav(&wav.0)?;
 
@@ -401,11 +404,12 @@ pub fn export_still(
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(effects.clone());
     // Music workstream: a scene that follows a beat is simulated with it, on beat sync's clock.
-    let music = &scene.music;
-    let follows_beat = music.song.is_some() || music.bpm > 0.0 || music.beat_sync.mode != bpe_scene::SyncMode::Off;
-    let sound = if follows_beat { Some(bpe_audio::render_scene(scene, base_dir)?) } else { None };
-    let sim_time = |t: f64| sound.as_ref().map_or(t, |s| s.sim_time(t));
-    let mut playback = sound.as_ref().map_or_else(|| Playback::new(scene), |s| Playback::with_inputs(scene, &s.inputs));
+    let clock = bpe_audio::scene_clock(scene, base_dir);
+    if let Some(error) = &clock.song_error {
+        bail!("the song can't be used: {error}");
+    }
+    let sim_time = |t: f64| clock.sim_time(t);
+    let mut playback = Playback::with_inputs(scene, &clock.inputs);
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
     // Effects like Echo build up over many frames, so play the moments before `time` first.

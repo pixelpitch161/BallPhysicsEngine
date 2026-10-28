@@ -366,7 +366,15 @@ impl StudioApp {
                         }
                     }
                 }
-                Err(error) => self.sound.error = Some(format!("{error:#}")),
+                Err(error) => {
+                    self.sound.error = Some(format!("{error:#}"));
+                    self.inspector.music.report = Default::default();
+                    if self.warp.take().is_some() {
+                        let song = bpe_audio::cached_song(&self.scene, self.base_dir().as_deref());
+                        self.playback =
+                            Playback::with_inputs(&self.scene, &bpe_audio::sim_inputs(&self.scene, song.as_ref()));
+                    }
+                }
             }
         }
         let due = self.sound.dirty_since.is_some_and(|t| t.elapsed() >= SOUND_DEBOUNCE);

@@ -173,9 +173,8 @@ impl Voice {
                     samples::load_mono(&full).with_context(|| format!("loading sample {}", full.display()))?;
                 Source::Sample { wave, rate, root_note: *root_note }
             }
-            Instrument::Library { name } => {
-                Source::Builtin(Builtin::from_name(name).with_context(|| format!("unknown instrument {name:?}"))?)
-            }
+            // A name this version doesn't know (from a newer one, say) plays the pluck.
+            Instrument::Library { name } => Source::Builtin(Builtin::from_name(name).unwrap_or(Builtin::Pluck)),
             Instrument::SampleFolder { path } => Source::Folder(samples::Folder::load(&resolve(path, base_dir))?),
             Instrument::SoundFont { path, bank, preset } => {
                 Source::SoundFont(samples::Font::load(&resolve(path, base_dir), *bank, *preset)?)
@@ -379,8 +378,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_instrument_names_are_an_error() {
-        assert!(Voice::new(&Instrument::library("Kazoo"), None).is_err());
+    fn unknown_instrument_names_play_the_pluck() {
+        let mut kazoo = Voice::new(&Instrument::library("Kazoo"), None).unwrap();
+        let mut pluck = Voice::new(&Instrument::library("Pluck"), None).unwrap();
+        assert_eq!(kazoo.note(60, 0.8), pluck.note(60, 0.8));
         assert!(Voice::new(&Instrument::library("marimba"), None).is_ok());
     }
 

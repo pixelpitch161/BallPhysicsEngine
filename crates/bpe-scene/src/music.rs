@@ -110,7 +110,8 @@ pub enum SyncMode {
 pub struct Melody {
     /// A `.mid` file, or `builtin:` and the name of a melody that comes with the program.
     pub path: String,
-    /// Which track of the file to play. None picks the busiest track that isn't drums.
+    /// Which part of the file to play, by its place in the file's list of parts (one per
+    /// track and channel). None picks the busiest part that isn't drums.
     pub track: Option<u32>,
     /// Semitones to shift every note up (or down, if negative).
     pub transpose: i32,

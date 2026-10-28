@@ -51,9 +51,10 @@ fn old_scenes_sound_identical() {
         let hits = bpe_sim::collect_wall_hits(&scene);
         let track = bpe_audio::render_soundtrack(&scene, &hits, None).unwrap();
         let got = hash(&track.samples);
-        // The editor and the exporter go through render_scene, which must agree.
+        // The editor and the exporter go through render_scene, which must agree. (The new
+        // presets follow a beat, which render_soundtrack alone doesn't know about.)
         let whole = bpe_audio::render_scene(&scene, None).unwrap();
-        if hash(&whole.mix.track.samples) != got {
+        if !NEW_PRESETS.contains(&name.as_str()) && hash(&whole.mix.track.samples) != got {
             failures.push(format!("{name}: render_scene differs from render_soundtrack"));
         }
         if print {

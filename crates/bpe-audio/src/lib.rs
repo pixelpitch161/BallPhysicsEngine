@@ -11,7 +11,8 @@ mod voices;
 
 pub use bpe_music::{AudioFeatures, midi};
 pub use scene_sound::{
-    SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs,
+    SceneClock, SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, scene_clock,
+    sim_inputs,
 };
 
 use anyhow::Context;

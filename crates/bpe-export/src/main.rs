@@ -98,7 +98,11 @@ fn run() -> anyhow::Result<()> {
                 return Ok(());
             }
             "--wav" => {
-                bpe_audio::render_scene(&scene, base_dir.as_deref())?.mix.track.write_wav(value()?)?;
+                let sound = bpe_audio::render_scene(&scene, base_dir.as_deref())?;
+                if let Some(error) = sound.song_error {
+                    bail!("the song can't be used: {error}");
+                }
+                sound.mix.track.write_wav(value()?)?;
                 return Ok(());
             }
             other if other.starts_with("--") => bail!("unknown option {other}\n\n{USAGE}"),

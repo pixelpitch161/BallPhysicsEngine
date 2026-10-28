@@ -2,8 +2,39 @@
 
 use super::dsp::{self, SR};
 use anyhow::Context;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+/// Files read lately, by path, size and change time, so remaking the soundtrack after every
+/// edit doesn't read a big SoundFont or sample folder again.
+type Kept<T> = Mutex<Vec<(PathBuf, u64, Option<SystemTime>, Arc<T>)>>;
+const KEPT: usize = 4;
+
+fn kept<T>(cache: &Kept<T>, path: &Path, load: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
+    let meta = std::fs::metadata(path).with_context(|| format!("can't find {}", path.display()))?;
+    let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
+    if let Some((.., value)) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(p, l, c, _)| (p, l, c) == (&key.0, &key.1, &key.2))
+    {
+        return Ok(value.clone());
+    }
+    let value = Arc::new(load()?);
+    let mut kept = cache.lock().unwrap_or_else(|e| e.into_inner());
+    kept.retain(|(p, ..)| *p != key.0);
+    if kept.len() >= KEPT {
+        kept.remove(0);
+    }
+    kept.push((key.0, key.1, key.2, value.clone()));
+    Ok(value)
+}
+
+type Waves = Vec<(u8, Vec<f32>, f32)>;
+static FOLDERS: Kept<Waves> = Mutex::new(Vec::new());
+static FONTS: Kept<rustysynth::SoundFont> = Mutex::new(Vec::new());
 
 /// Resamples a mono sample so it plays `semitones` higher (or lower) at the mix rate.
 pub fn repitch(wave: &[f32], rate: f32, semitones: f32) -> Vec<f32> {
@@ -76,11 +107,16 @@ fn note_from_file_name(path: &Path) -> Option<u8> {
 /// A folder of WAV files, one per note, such as `C4.wav`, `E4.wav`, `G4.wav`.
 pub struct Folder {
     /// (root note, mono wave, sample rate), sorted by note.
-    samples: Vec<(u8, Vec<f32>, f32)>,
+    samples: Arc<Waves>,
 }
 
 impl Folder {
+    /// Reads the folder, or reuses it if it hasn't changed since it was last read.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
+        Ok(Self { samples: kept(&FOLDERS, dir, || Self::read(dir))? })
+    }
+
+    fn read(dir: &Path) -> anyhow::Result<Waves> {
         let mut samples = Vec::new();
         let entries = std::fs::read_dir(dir).with_context(|| format!("opening sample folder {}", dir.display()))?;
         for entry in entries {
@@ -92,7 +128,7 @@ impl Folder {
         }
         anyhow::ensure!(!samples.is_empty(), "no WAV files named by note (like C4.wav) in {}", dir.display());
         samples.sort_by_key(|s| s.0);
-        Ok(Self { samples })
+        Ok(samples)
     }
 
     /// Plays the nearest sample, pitched to `note`. Strength only changes the volume.
@@ -123,10 +159,13 @@ const FONT_RELEASE: f32 = 3.0;
 
 impl Font {
     pub fn load(path: &Path, bank: u32, preset: u32) -> anyhow::Result<Self> {
-        let mut file = std::fs::File::open(path).with_context(|| format!("opening SoundFont {}", path.display()))?;
-        let font = rustysynth::SoundFont::new(&mut file)
-            .map_err(|e| anyhow::anyhow!("reading SoundFont {}: {e:?}", path.display()))?;
-        Ok(Self { font: Arc::new(font), bank, preset })
+        let font = kept(&FONTS, path, || {
+            let mut file =
+                std::fs::File::open(path).with_context(|| format!("opening SoundFont {}", path.display()))?;
+            rustysynth::SoundFont::new(&mut file)
+                .map_err(|e| anyhow::anyhow!("reading SoundFont {}: {e:?}", path.display()))
+        })?;
+        Ok(Self { font, bank, preset })
     }
 
     /// The presets in the file as (bank, preset, name), sorted.
@@ -147,7 +186,9 @@ impl Font {
         let Ok(mut synth) = rustysynth::Synthesizer::new(&self.font, &settings) else { return Vec::new() };
         // Drum kits live in bank 128, which General MIDI plays on channel 10.
         let channel = if self.bank >= 128 { 9 } else { 0 };
-        synth.process_midi_message(channel, 0xb0, 0x00, (self.bank.min(127)) as i32);
+        // On the drum channel the synth adds 128 to the bank it's sent.
+        let bank = if channel == 9 { self.bank - 128 } else { self.bank };
+        synth.process_midi_message(channel, 0xb0, 0x00, bank.min(127) as i32);
         synth.process_midi_message(channel, 0xc0, self.preset.min(127) as i32, 0);
         let key = note.min(127) as i32;
         synth.note_on(channel, key, (1.0 + velocity.clamp(0.0, 1.0) * 126.0) as i32);

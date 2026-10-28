@@ -47,6 +47,18 @@ pub fn beat_grid(scene: &Scene, song_beats: &[f64]) -> Vec<f64> {
 pub fn inputs(scene: &Scene, song: Option<Arc<AudioFeatures>>) -> SimInputs {
     let wants_beats = scene.music.bpm > 0.0 || scene.music.beat_sync.mode != SyncMode::Off;
     match song {
+        Some(music) if scene.music.bpm > 0.0 => {
+            // An overriding tempo makes its own beats, so bars are counted on them, starting
+            // from the beat nearest the song's first bar.
+            let beats = beat_grid(scene, &music.beats);
+            let first_bar = music.downbeats.first().copied().unwrap_or(0.0);
+            let anchor =
+                beats.iter().enumerate().min_by(|a, b| (a.1 - first_bar).abs().total_cmp(&(b.1 - first_bar).abs()));
+            let anchor = anchor.map_or(0, |(i, _)| i % 4);
+            let mut features = (*music).clone();
+            features.downbeats = beats.iter().skip(anchor).step_by(4).copied().collect();
+            SimInputs { beats, music: Some(Arc::new(features)) }
+        }
         Some(music) => SimInputs { beats: beat_grid(scene, &music.beats), music: Some(music) },
         None if wants_beats => SimInputs { beats: beat_grid(scene, &[]), music: None },
         None => SimInputs::default(),
@@ -461,7 +473,7 @@ pub fn nudge(scene: &Scene, beats: &[f64]) -> Nudged {
     // A coarse grid over the whole range, then a finer one around the best point.
     for (spread, steps) in [(1.0f32, 3i32), (0.35, 3)] {
         let (cg, cv, cz) = (best.1, best.2, best.3);
-        let mut candidates = Vec::new();
+        let mut candidates: Vec<(f32, f32, f32)> = Vec::new();
         for a in -steps..=steps {
             for b in -steps..=steps {
                 let sizes = if matches!(scene.container, Container::Custom { .. }) { 0 } else { 1 };
@@ -473,6 +485,9 @@ pub fn nudge(scene: &Scene, beats: &[f64]) -> Nudged {
                 }
             }
         }
+        // Smallest changes first, so a tie keeps the change that alters the scene least.
+        let change = |&(g, v, z): &(f32, f32, f32)| (g - cg).abs() + (v - cv).abs() + (z - cz).abs();
+        candidates.sort_by(|a, b| change(a).total_cmp(&change(b)));
         let results = parallel_map(&candidates, |&(g, v, z)| score(g, v, z));
         for (&(g, v, z), share) in candidates.iter().zip(results) {
             // Ties keep the earlier (smaller change), so results are the same on every machine.
