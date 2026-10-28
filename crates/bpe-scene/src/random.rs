@@ -68,7 +68,7 @@ impl Dice {
 }
 
 /// A group of settings that can be rolled together. Each matches a heading in the editor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Group {
     /// One group of balls, by its index in `Scene::spawners`.
     Balls(usize),
@@ -114,7 +114,7 @@ impl Group {
 
     /// A number unique to the group, so each group rolls its own values from a shared seed and
     /// turning one group on or off doesn't change what the others roll.
-    fn salt(self) -> u64 {
+    pub fn salt(self) -> u64 {
         match self {
             Group::Balls(index) => 100 + index as u64,
             Group::Shape => 1,

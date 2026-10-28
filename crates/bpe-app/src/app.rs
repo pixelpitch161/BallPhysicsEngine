@@ -1,6 +1,7 @@
 use crate::audio_out::AudioOut;
 use crate::batch::BatchPanel;
 use crate::command_palette::{Action, Command, CommandPalette};
+use crate::dice_panel::DicePanel;
 use crate::explorer::Explorer;
 use crate::export::ExportPanel;
 use crate::gallery::Gallery;
@@ -48,6 +49,8 @@ pub struct StudioApp {
     export: ExportPanel,
     gallery: Gallery,
     explorer: Explorer,
+    /// The Randomize panel: every dice in one list, with locks.
+    dice_panel: DicePanel,
     batch: BatchPanel,
     /// The Batch workspace was showing last frame.
     in_batch: bool,
@@ -206,6 +209,7 @@ impl StudioApp {
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
             explorer: Explorer::default(),
+            dice_panel: DicePanel::default(),
             batch: BatchPanel::default(),
             in_batch: false,
             timeline: Timeline::default(),
@@ -588,7 +592,7 @@ impl StudioApp {
             ui.separator();
             self.workspace_switch(ui);
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
+            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
             let saved_label = match (&self.scene_path, self.was_unsaved) {
                 (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
@@ -604,8 +608,23 @@ impl StudioApp {
                 if ui.add(export).on_hover_text("Make an mp4 you can upload").clicked() {
                     self.export.open = true;
                 }
-                if ui.button("Presets").on_hover_text("Start a new scene from a preset").clicked() {
+                if ui
+                    .button("Presets")
+                    .on_hover_text("Start a new scene from a preset, or save this scene as one of your own")
+                    .clicked()
+                {
                     self.gallery.open();
+                }
+                let randomize = ui
+                    .add(egui::Button::selectable(self.dice_panel.open, "       Randomize"))
+                    .on_hover_text("Every dice in one panel: lock the parts you like and roll the rest");
+                let icon = egui::Rect::from_center_size(
+                    randomize.rect.left_center() + egui::vec2(16.0, 0.0),
+                    egui::vec2(20.0, 20.0),
+                );
+                inspector::paint_dice(ui.painter(), icon, false);
+                if randomize.clicked() {
+                    self.dice_panel.open = !self.dice_panel.open;
                 }
                 let explore = ui
                     .add(egui::Button::new("       Explore…"))
@@ -687,6 +706,7 @@ impl StudioApp {
                 Action::Redo => self.clicked = Some(ToolbarClick::Redo),
                 Action::Export => self.export.open = true,
                 Action::Explore => self.clicked = Some(ToolbarClick::Explore),
+                Action::Randomize => self.dice_panel.open = true,
                 Action::PlayPause => self.set_playing(!self.playing),
                 Action::Restart => self.seek(0.0),
                 Action::SpeedMeter => self.show_stats = !self.show_stats,
@@ -898,8 +918,15 @@ impl eframe::App for StudioApp {
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| {
                 self.inspector.music.base_dir = self.base_dir();
+                crate::my_presets::publish_base_dir(ui.ctx(), self.base_dir());
                 inspector::show(ui, &mut self.inspector, &mut self.scene)
             });
+        // Hidden while a dialog is up, so its dice can't change the scene behind the dialog.
+        if !modal_open
+            && let Some(rolled) = self.dice_panel.show(&ctx, &mut self.scene, &self.inspector.effects.library)
+        {
+            self.inspector.rolled = Some(rolled);
+        }
 
         // Coming into the Batch workspace makes batches from the scene as it is now.
         if self.workspace == Workspace::Batch && !self.in_batch {
@@ -1020,8 +1047,8 @@ impl eframe::App for StudioApp {
         }
 
         let base_dir = self.base_dir();
-        self.export.show(&ctx, frame, &mut self.scene, base_dir, &self.inspector.effects.library);
-        if let Some(scene) = self.gallery.show(&ctx, frame) {
+        self.export.show(&ctx, frame, &mut self.scene, base_dir.clone(), &self.inspector.effects.library);
+        if let Some(scene) = self.gallery.show(&ctx, frame, &self.scene, base_dir.as_deref()) {
             self.guard(Pending::Replace(Box::new(scene)), &ctx);
         }
         let mut separate = false;

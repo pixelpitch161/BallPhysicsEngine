@@ -38,6 +38,9 @@ pub(super) fn switch_heading(ui: &mut Ui, text: &str, help: &str, on: &mut bool)
         if *on {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 rolled = dice_button(ui, &format!("Roll random {} settings", text.to_lowercase())).clicked();
+                let part =
+                    if text == "Swarm" { crate::dice_panel::Part::Swarm } else { crate::dice_panel::Part::Liquid };
+                crate::dice_panel::lock_button(ui, part);
             });
         }
     });

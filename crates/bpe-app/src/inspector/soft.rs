@@ -118,6 +118,14 @@ fn card(
                     if dice_button(ui, "Roll random settings for this").clicked() {
                         *change = Some(Change::Roll(kind, id.1));
                     }
+                    crate::dice_panel::lock_button(
+                        ui,
+                        match kind {
+                            Kind::Jelly => crate::dice_panel::Part::Jelly(id.1),
+                            Kind::Rope => crate::dice_panel::Part::Rope(id.1),
+                            Kind::Cloth => crate::dice_panel::Part::Cloth(id.1),
+                        },
+                    );
                 });
             });
             ui.add_space(4.0);
@@ -415,7 +423,7 @@ fn cloth_rows(ui: &mut Ui, cloth: &mut Cloth) {
     });
 }
 
-fn roll_jelly(jelly: &mut Jelly, dice: &mut Dice) {
+pub(crate) fn roll_jelly(jelly: &mut Jelly, dice: &mut Dice) {
     jelly.columns = dice.int(1, 4);
     jelly.rows = dice.int(1, 4);
     jelly.radius = dice.range(30.0, 110.0);
@@ -425,7 +433,7 @@ fn roll_jelly(jelly: &mut Jelly, dice: &mut Dice) {
     jelly.gradient = (0..dice.int(1, 3)).map(|_| bright(dice)).collect();
 }
 
-fn roll_rope(rope: &mut Rope, dice: &mut Dice) {
+pub(crate) fn roll_rope(rope: &mut Rope, dice: &mut Dice) {
     let y = dice.range(-500.0, 400.0);
     let half = dice.range(150.0, 420.0);
     rope.from = Vec2::new(-half, y + dice.range(-150.0, 150.0));
@@ -436,7 +444,7 @@ fn roll_rope(rope: &mut Rope, dice: &mut Dice) {
     rope.color = bright(dice);
 }
 
-fn roll_cloth(cloth: &mut Cloth, dice: &mut Dice) {
+pub(crate) fn roll_cloth(cloth: &mut Cloth, dice: &mut Dice) {
     cloth.size = Vec2::new(dice.range(300.0, 800.0), dice.range(250.0, 700.0));
     cloth.stiffness = dice.range(0.3, 1.0);
     cloth.pin = dice.pick(&[ClothPin::TopRow, ClothPin::TopCorners, ClothPin::TopCorners]);
