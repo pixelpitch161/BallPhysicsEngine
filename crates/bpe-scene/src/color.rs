@@ -34,6 +34,47 @@ impl Color {
         }
     }
 
+    /// A colour from hue (0 to 1 around the colour wheel), saturation and value (each 0 to 1).
+    pub fn from_hsv(hue: f32, saturation: f32, value: f32) -> Self {
+        let h = hue.rem_euclid(1.0) * 6.0;
+        let (s, v) = (saturation.clamp(0.0, 1.0), value.clamp(0.0, 1.0));
+        let f = h - h.floor();
+        let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f)));
+        let (r, g, b) = match h as u32 {
+            0 => (v, t, p),
+            1 => (q, v, p),
+            2 => (p, v, t),
+            3 => (p, q, v),
+            4 => (t, p, v),
+            _ => (v, p, q),
+        };
+        let byte = |c: f32| (c * 255.0).round() as u8;
+        Self::rgb(byte(r), byte(g), byte(b))
+    }
+
+    /// Hue, saturation and value, each 0 to 1.
+    pub fn to_hsv(self) -> (f32, f32, f32) {
+        let (r, g, b) = (self.r as f32 / 255.0, self.g as f32 / 255.0, self.b as f32 / 255.0);
+        let max = r.max(g).max(b);
+        let delta = max - r.min(g).min(b);
+        let hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            ((g - b) / delta).rem_euclid(6.0) / 6.0
+        } else if max == g {
+            ((b - r) / delta + 2.0) / 6.0
+        } else {
+            ((r - g) / delta + 4.0) / 6.0
+        };
+        (hue, if max == 0.0 { 0.0 } else { delta / max }, max)
+    }
+
+    /// The same colour turned around the colour wheel by `turn` (1 is a full turn), keeping its alpha.
+    pub fn shift_hue(self, turn: f32) -> Self {
+        let (h, s, v) = self.to_hsv();
+        Self { a: self.a, ..Self::from_hsv(h + turn, s, v) }
+    }
+
     /// Linear-light RGBA, which is what shaders and blending work in.
     pub fn to_linear(self) -> [f32; 4] {
         let channel = |c: u8| {
@@ -83,5 +124,14 @@ mod tests {
             assert_eq!(Color::from_hex(text).unwrap().to_hex(), text);
         }
         assert!(Color::from_hex("#12345").is_none());
+    }
+
+    #[test]
+    fn hsv_round_trip() {
+        for color in [Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(255, 0, 0), Color::rgb(10, 200, 90), Color::WHITE] {
+            let (h, s, v) = color.to_hsv();
+            assert_eq!(Color::from_hsv(h, s, v), color);
+        }
+        assert_eq!(Color::rgb(255, 0, 0).shift_hue(1.0 / 3.0), Color::rgb(0, 255, 0));
     }
 }

@@ -5,6 +5,7 @@
 
 mod app;
 mod audio_out;
+mod explorer;
 mod export;
 mod gallery;
 mod inspector;

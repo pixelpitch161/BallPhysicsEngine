@@ -1,10 +1,10 @@
 //! The Effects tab: a stack of shader effects applied to the finished picture, top to bottom.
 
-use super::{grid, heading, hint, label, percent, resettable, slider};
+use super::{Roll, dice_button, grid, heading, hint, label, percent, resettable, slider};
 use crate::theme;
 use bpe_render::EffectLibrary;
 use bpe_render::effects::{self as fx, EffectInfo, ParamKind};
-use bpe_scene::{Effect, Scene};
+use bpe_scene::{Dice, Effect, Scene};
 use eframe::egui::{self, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -108,7 +108,39 @@ fn looks() -> Vec<(&'static str, &'static str, Vec<Effect>)> {
     ]
 }
 
-pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>) {
+/// Rolls new slider values for an effect. Values land nearer the effect's defaults than its
+/// slider ends, which are often extreme, and some sliders are left alone because most values
+/// look broken. See [`Scene::roll`] for `amount`.
+pub fn roll_effect(effect: &mut Effect, library: &EffectLibrary, dice: &mut Dice, amount: f32) {
+    let Some(info) = library.get(&effect.shader) else { return };
+    // Echo's zoom smears anything that doesn't move, like the arena's wall, into a grey disc.
+    const KEEP: [&str; 1] = ["zoom"];
+    for param in &info.params {
+        let rolled = dice.range(param.min, param.max);
+        let flip = dice.chance(0.3);
+        if KEEP.contains(&param.name.as_str()) {
+            continue;
+        }
+        let current = effect.params.get(&param.name).copied().filter(|v| v.is_finite()).unwrap_or(param.default);
+        let value = match param.kind {
+            ParamKind::Toggle => {
+                if flip && dice.chance(amount) {
+                    1.0 - current.round()
+                } else {
+                    current
+                }
+            }
+            ParamKind::Whole | ParamKind::Slider => {
+                let target = param.default + (rolled - param.default) * 0.6;
+                let value = current + (target - current) * amount;
+                if param.kind == ParamKind::Whole { value.round() } else { value }
+            }
+        };
+        effect.params.insert(param.name.clone(), value.clamp(param.min.min(param.max), param.max.max(param.min)));
+    }
+}
+
+pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>, roll: &mut Option<Roll>) {
     ui.label(
         RichText::new(
             "Effects change the whole picture, one after another from top to bottom. They are saved in the scene and show in the exported video.",
@@ -143,6 +175,7 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>) {
             effects.insert(i + 1, copy);
         }
         Some((i, CardAction::EditCopy)) => edit_copy(panel, &mut effects[i]),
+        Some((i, CardAction::Roll)) => *roll = Some(Roll::Effect(i)),
         None => {}
     }
 
@@ -223,6 +256,7 @@ enum CardAction {
     Remove,
     Duplicate,
     EditCopy,
+    Roll,
 }
 
 fn effect_card(
@@ -287,6 +321,11 @@ fn effect_card(
                 }
                 if icon(ui, Icon::Up, index > 0).on_hover_text("Move up").clicked() {
                     action = Some(CardAction::Up);
+                }
+                if info.as_ref().is_some_and(|i| !i.params.is_empty())
+                    && dice_button(ui, "Roll random settings for this effect").clicked()
+                {
+                    action = Some(CardAction::Roll);
                 }
             });
         });

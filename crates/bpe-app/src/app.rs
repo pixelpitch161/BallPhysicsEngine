@@ -1,4 +1,5 @@
 use crate::audio_out::AudioOut;
+use crate::explorer::Explorer;
 use crate::export::ExportPanel;
 use crate::gallery::Gallery;
 use crate::inspector::{self, Inspector, Tab};
@@ -38,6 +39,7 @@ pub struct StudioApp {
     sound: SoundJob,
     export: ExportPanel,
     gallery: Gallery,
+    explorer: Explorer,
     /// An action waiting on "Save changes?".
     confirm: Option<Pending>,
     /// Set once the user has agreed to close, so the next close request goes through.
@@ -61,6 +63,20 @@ struct History {
     /// The latest undo step is still growing: the mouse is down or edits are coming quickly.
     merging: bool,
     last_edit: Option<Instant>,
+}
+
+impl History {
+    fn record(&mut self, before: Scene, separate: bool) {
+        if !self.merging || separate {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+            self.merging = !separate;
+        }
+        self.last_edit = Some(Instant::now());
+    }
 }
 
 /// Mixes the soundtrack on a background thread whenever the scene changes.
@@ -125,6 +141,7 @@ impl StudioApp {
             },
             export: ExportPanel::new(),
             gallery: Gallery::new(show_gallery),
+            explorer: Explorer::default(),
             confirm: None,
             closing: false,
             swapped: false,
@@ -161,17 +178,9 @@ impl StudioApp {
     // ---------- undo ----------
 
     /// Records `before` as an undo step, unless this edit continues the previous one.
-    fn record_edit(&mut self, before: Scene) {
-        let history = &mut self.history;
-        if !history.merging {
-            history.undo.push(before);
-            if history.undo.len() > UNDO_LIMIT {
-                history.undo.remove(0);
-            }
-            history.redo.clear();
-            history.merging = true;
-        }
-        history.last_edit = Some(Instant::now());
+    /// A `separate` edit, like a dice roll, is always its own step.
+    fn record_edit(&mut self, before: Scene, separate: bool) {
+        self.history.record(before, separate);
     }
 
     fn end_merging(&mut self, ctx: &egui::Context) {
@@ -424,6 +433,18 @@ impl StudioApp {
                 if ui.button("Presets").on_hover_text("Start a new scene from a preset").clicked() {
                     self.gallery.open();
                 }
+                let explore = ui
+                    .add(egui::Button::new("       Explore…"))
+                    .on_hover_text("See random variations of this scene side by side and pick the one you like best");
+                let icon = egui::Rect::from_center_size(
+                    explore.rect.left_center() + egui::vec2(16.0, 0.0),
+                    egui::vec2(20.0, 20.0),
+                );
+                inspector::paint_dice(ui.painter(), icon, false);
+                if explore.clicked() {
+                    self.set_playing(false);
+                    self.explorer.open(&self.scene, &self.inspector.effects.library);
+                }
             });
         });
     }
@@ -515,7 +536,7 @@ impl eframe::App for StudioApp {
         }
         let tab_open = self.inspector.tab == Tab::Effects;
         self.inspector.effects.poll(&ctx, &self.scene, self.base_dir(), tab_open);
-        let modal_open = self.gallery.open || self.confirm.is_some();
+        let modal_open = self.gallery.open || self.explorer.open || self.confirm.is_some();
         if !modal_open {
             self.shortcuts(&ctx);
         }
@@ -569,6 +590,16 @@ impl eframe::App for StudioApp {
         if let Some(scene) = self.gallery.show(&ctx, frame) {
             self.guard(Pending::Replace(Box::new(scene)), &ctx);
         }
+        let mut separate = false;
+        if let Some(picked) = self.explorer.show(&ctx, frame) {
+            self.scene = picked.scene;
+            self.status = format!("Using the variation from seed {}. Ctrl+Z puts your scene back.", picked.seed);
+            separate = true;
+        }
+        if let Some(rolled) = self.inspector.rolled.take() {
+            self.status = rolled;
+            separate = true;
+        }
         self.confirm_dialog(&ctx);
 
         if std::mem::take(&mut self.swapped) {
@@ -576,7 +607,7 @@ impl eframe::App for StudioApp {
         } else if self.scene != before {
             // Effects only change the picture, so the simulation and sound can stay as they are.
             let effects_only = Scene { effects: before.effects.clone(), ..self.scene.clone() } == before;
-            self.record_edit(before);
+            self.record_edit(before, separate);
             if !effects_only {
                 self.scene_changed();
             }
@@ -662,6 +693,24 @@ fn round_button(ui: &mut egui::Ui, size: f32, icon: Icon) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_dice_roll_is_its_own_undo_step() {
+        let mut history = History::default();
+        let scene = |name: &str| Scene { name: name.into(), ..Scene::default() };
+        // A quick run of slider edits undoes as one step...
+        history.record(scene("a"), false);
+        history.record(scene("b"), false);
+        assert_eq!(history.undo.len(), 1);
+        // ...but rolls straight after it, or after each other, don't merge.
+        history.record(scene("c"), true);
+        history.record(scene("d"), true);
+        assert_eq!(history.undo.len(), 3);
+        // And the next slider edit starts a new step rather than joining the roll.
+        history.record(scene("e"), false);
+        assert_eq!(history.undo.len(), 4);
+        assert_eq!(history.undo.last().unwrap().name, "e");
+    }
 
     #[test]
     fn clock_reads_minutes_and_seconds() {
