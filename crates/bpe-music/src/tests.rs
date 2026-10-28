@@ -36,7 +36,12 @@ fn check_clicks(bpm: f64) {
         worst = worst.max(nearest);
     }
     assert!(worst < 0.010, "{bpm} BPM: a beat was {:.1} ms off", worst * 1000.0);
-    assert!(features.beats.len() as f64 >= truth.len() as f64 * 0.9, "{bpm}: {} of {} beats", features.beats.len(), truth.len());
+    assert!(
+        features.beats.len() as f64 >= truth.len() as f64 * 0.9,
+        "{bpm}: {} of {} beats",
+        features.beats.len(),
+        truth.len()
+    );
     // The loud first click of each bar is a downbeat.
     let first = features.downbeats[0];
     let index = truth.iter().position(|t| (t - first).abs() < 0.01).unwrap();
@@ -107,7 +112,12 @@ fn wav_files_decode_to_48k_stereo_and_cache() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("clicks.wav");
     let (pcm, _) = clicks(120.0, 8.0, 0.2);
-    let spec = hound::WavSpec { channels: 1, sample_rate: 44_100, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 44_100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
     let mut writer = hound::WavWriter::create(&path, spec).unwrap();
     // Written at 44.1 kHz by taking every sample, so it plays a little slower: 120 * 44.1 / 48.
     for s in &pcm.samples {

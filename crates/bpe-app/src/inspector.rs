@@ -216,7 +216,7 @@ fn reset_tab_to<T: PartialEq>(ui: &mut Ui, value: &mut T, default: T) {
 /// Default sound settings that keep the user's own chords, note shuffle and WAV file.
 fn default_sound(current: &Sound) -> Sound {
     let instrument = match &current.instrument {
-        Instrument::Pluck { .. } => Sound::default().instrument,
+        Instrument::Pluck { .. } | Instrument::Library { .. } => Sound::default().instrument,
         Instrument::Sample { path, .. } => Instrument::Sample { path: path.clone(), root_note: SAMPLE_ROOT_NOTE },
     };
     Sound { progression: current.progression.clone(), seed: current.seed, instrument, ..Sound::default() }
@@ -587,6 +587,8 @@ fn new_grid() -> Spawner {
         radius: 5.0,
         velocity: Vec2::new(300.0, 0.0),
         gradient: vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0xb8, 0x2e)],
+        depth: 0.0,
+        depth_velocity: 0.0,
     }
 }
 
@@ -596,6 +598,8 @@ fn new_ball() -> Spawner {
         velocity: Vec2::new(300.0, -200.0),
         radius: 20.0,
         color: Color::rgb(0xff, 0x5c, 0xa8),
+        depth: 0.0,
+        depth_velocity: 0.0,
     }
 }
 
@@ -608,6 +612,8 @@ fn new_stream() -> Spawner {
         interval: 0.2,
         jitter: 20.0,
         gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xff, 0x3e, 0xc8)],
+        depth: 0.0,
+        depth_velocity: 0.0,
     }
 }
 
@@ -647,7 +653,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                 });
                 ui.add_space(4.0);
                 match spawner {
-                    Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient } => {
+                    Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient, .. } => {
                         grid(ui, "grid", |ui| {
                             slider(ui, "Balls across", "How many columns of balls the block has.", columns, 10, 1..=100, |s| s);
                             slider(ui, "Balls down", "How many rows of balls the block has.", rows, 10, 1..=100, |s| s);
@@ -685,7 +691,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                             });
                         });
                     }
-                    Spawner::Single { position, velocity, radius, color } => {
+                    Spawner::Single { position, velocity, radius, color, .. } => {
                         grid(ui, "single", |ui| {
                             slider(
                                 ui,
@@ -710,7 +716,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                             });
                         });
                     }
-                    Spawner::Stream { position, velocity, radius, count, interval, jitter, gradient } => {
+                    Spawner::Stream { position, velocity, radius, count, interval, jitter, gradient, .. } => {
                         grid(ui, "stream", |ui| {
                             slider(ui, "How many", "How many balls are dropped in total.", count, 50, 1..=2000, log_units(""));
                             slider(
@@ -804,6 +810,8 @@ enum Shape {
     Box,
     Polygon,
     Rings,
+    /// A drawn or imported outline. Picked from the custom shapes section, not the buttons.
+    Custom,
 }
 
 impl Shape {
@@ -813,6 +821,7 @@ impl Shape {
             Container::Rect { .. } => Shape::Box,
             Container::Polygon { .. } => Shape::Polygon,
             Container::Rings { .. } => Shape::Rings,
+            Container::Custom { .. } => Shape::Custom,
         }
     }
 
@@ -851,6 +860,10 @@ impl Shape {
                     gradient,
                 },
                 other => other,
+            },
+            Shape::Custom => match old {
+                Container::Custom { .. } => old.clone(),
+                _ => Container::Custom { center, shape: String::new(), thickness, color },
             },
         }
     }
@@ -895,6 +908,18 @@ fn arena(
     });
     ui.add_space(6.0);
     grid(ui, "arena", |ui| match container {
+        Container::Custom { thickness, color, .. } => {
+            slider(
+                ui,
+                "Line width",
+                "Thickness of the arena's wall.",
+                thickness,
+                LINE_WIDTH,
+                0.0..=40.0,
+                units(" px", 1),
+            );
+            color_row(ui, "Colour", "Colour of the arena's wall.", color, LINE_COLOR);
+        }
         Container::Circle { radius, thickness, color, .. } => {
             slider(
                 ui,
@@ -1192,6 +1217,7 @@ fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
             Obstacle::Peg { .. } => "Peg".to_string(),
             Obstacle::PegGrid { columns, rows, .. } => format!("Pegs · {columns} × {rows}"),
             Obstacle::Line { .. } => "Wall".to_string(),
+            Obstacle::Shape { shape, .. } => format!("Shape · {shape}"),
         };
         ui.push_id(("obstacle", index), |ui| {
             egui::Frame::new()
@@ -1278,6 +1304,14 @@ fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
                             position_row(ui, "To", "The other end of the wall.", to);
                             slider(ui, "Width", "Thickness of the wall.", thickness, 4.0, 0.5..=60.0, units(" px", 1));
                             color_row(ui, "Colour", "", color, line);
+                        }
+                        Obstacle::Shape { position, .. } => {
+                            position_row(
+                                ui,
+                                "Position",
+                                "Where the shape sits, from the centre of the video.",
+                                position,
+                            );
                         }
                     });
                 });
@@ -1683,6 +1717,11 @@ fn sound(ui: &mut Ui, sound: &mut Sound, roll: &mut Option<Roll>) {
                         24..=108,
                         note_names,
                     );
+                }
+                Instrument::Library { name } => {
+                    label(ui, "Instrument", "A built-in instrument from the library.");
+                    ui.label(name.as_str());
+                    ui.end_row();
                 }
             }
             slider(

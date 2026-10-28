@@ -102,9 +102,7 @@ fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
             let i = x.floor() as isize;
             let t = (x - i as f64) as f32;
             let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
-            p1 + 0.5
-                * t
-                * (p2 - p0 + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + t * (3.0 * (p1 - p2) + p3 - p0)))
+            p1 + 0.5 * t * (p2 - p0 + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + t * (3.0 * (p1 - p2) + p3 - p0)))
         })
         .collect()
 }

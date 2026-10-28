@@ -1,4 +1,5 @@
 //! Analysis results saved next to the program, keyed by the song file's contents.
+#![cfg_attr(not(feature = "decode"), allow(dead_code))]
 
 use crate::AudioFeatures;
 use std::io::{Read, Write};

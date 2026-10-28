@@ -6,11 +6,15 @@
 
 pub mod effects;
 mod frame;
+pub mod gpu;
+pub mod particles;
+pub mod space;
+pub mod text;
 
 pub use effects::EffectLibrary;
 pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
 pub use frame::ShapeInstance;
-pub use frame::{BallInstance, FlashInstance, FrameData, RecentHit, TrailVertex};
+pub use frame::{BallInstance, EVENT_MEMORY, FlashInstance, FrameData, RecentHit, TrailVertex};
 pub use wgpu;
 
 use bpe_scene::Scene;
@@ -79,6 +83,10 @@ pub struct Renderer {
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     effects: effects::EffectChain,
+    gpu: gpu::GpuLayers,
+    particles: particles::Particles,
+    space: space::SpaceRenderer,
+    captions: text::Captions,
     targets: Targets,
 }
 
@@ -336,6 +344,10 @@ impl Renderer {
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             effects: effects::EffectChain::new(device, HDR_FORMAT),
+            gpu: gpu::GpuLayers::new(device, HDR_FORMAT),
+            particles: particles::Particles::new(device, HDR_FORMAT),
+            space: space::SpaceRenderer::new(device, HDR_FORMAT),
+            captions: text::Captions::new(device, OUTPUT_FORMAT),
             targets,
         }
     }
@@ -388,7 +400,7 @@ impl Renderer {
     /// Draws one frame into the output texture, with animated settings at their values at `time`.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, time: f64, frame: &FrameData) {
         let animated;
-        let scene = if scene.animation.is_empty() {
+        let scene = if scene.animation.is_empty() && scene.modulators.is_empty() {
             scene
         } else {
             animated = scene.at_time(time as f32);
@@ -401,32 +413,31 @@ impl Renderer {
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
+        let size = (self.targets.width, self.targets.height);
+        self.gpu.prepare(device, queue, &mut encoder, scene, frame, time, size);
+        self.particles.prepare(device, queue, scene, frame, &self.gpu);
+        self.captions.prepare(device, queue, scene, frame);
+        // Render order: background, walls and shapes (or the whole 3D picture), swarms and
+        // fluids, trails, balls, flashes, particles; then effects, bloom and captions.
+        if self.space.active(scene) {
+            self.space.draw(device, queue, &mut encoder, &self.targets.hdr, scene, frame, time);
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "particles", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            self.particles.draw(&mut pass, &self.globals_group);
+        } else if self.gpu.wants_split_pass(scene) {
+            {
+                let mut pass =
+                    begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                self.draw_background(&mut pass, frame);
+            }
+            self.gpu.draw_between(device, &mut encoder, &self.targets.hdr_texture, &self.targets.hdr);
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene, after fluid", wgpu::LoadOp::Load);
+            self.draw_moving(&mut pass, frame);
+        } else {
             let mut pass =
                 begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_pipeline(&self.background);
-            pass.draw(0..3, 0..1);
-            if !frame.shapes.is_empty() {
-                pass.set_pipeline(&self.shape);
-                pass.set_vertex_buffer(0, self.shape_buffer.slice());
-                pass.draw(0..4, 0..frame.shapes.len() as u32);
-            }
-            if !frame.trails.is_empty() {
-                pass.set_pipeline(&self.trail);
-                pass.set_vertex_buffer(0, self.trail_buffer.slice());
-                pass.draw(0..frame.trails.len() as u32, 0..1);
-            }
-            if !frame.balls.is_empty() {
-                pass.set_pipeline(&self.ball);
-                pass.set_vertex_buffer(0, self.ball_buffer.slice());
-                pass.draw(0..4, 0..frame.balls.len() as u32);
-            }
-            if !frame.flashes.is_empty() {
-                pass.set_pipeline(&self.flash);
-                pass.set_vertex_buffer(0, self.flash_buffer.slice());
-                pass.draw(0..4, 0..frame.flashes.len() as u32);
-            }
+            self.draw_background(&mut pass, frame);
+            self.draw_moving(&mut pass, frame);
         }
         self.effects.apply(
             device,
@@ -469,7 +480,45 @@ impl Renderer {
             pass.set_bind_group(1, &self.targets.composite, &[]);
             pass.draw(0..3, 0..1);
         }
+        if self.captions.visible(frame) {
+            let mut pass = begin_pass(&mut encoder, &self.targets.output_view, "captions", wgpu::LoadOp::Load);
+            self.captions.draw(&mut pass);
+        }
         queue.submit([encoder.finish()]);
+    }
+
+    /// The background, then walls, pegs, string art and shards.
+    fn draw_background(&self, pass: &mut wgpu::RenderPass, frame: &FrameData) {
+        pass.set_bind_group(0, &self.globals_group, &[]);
+        pass.set_pipeline(&self.background);
+        pass.draw(0..3, 0..1);
+        if !frame.shapes.is_empty() {
+            pass.set_pipeline(&self.shape);
+            pass.set_vertex_buffer(0, self.shape_buffer.slice());
+            pass.draw(0..4, 0..frame.shapes.len() as u32);
+        }
+    }
+
+    /// Swarms, trails, balls, flashes and particles, over the background.
+    fn draw_moving(&self, pass: &mut wgpu::RenderPass, frame: &FrameData) {
+        pass.set_bind_group(0, &self.globals_group, &[]);
+        self.gpu.draw(pass, &self.globals_group);
+        if !frame.trails.is_empty() {
+            pass.set_pipeline(&self.trail);
+            pass.set_vertex_buffer(0, self.trail_buffer.slice());
+            pass.draw(0..frame.trails.len() as u32, 0..1);
+        }
+        if !frame.balls.is_empty() {
+            pass.set_pipeline(&self.ball);
+            pass.set_vertex_buffer(0, self.ball_buffer.slice());
+            pass.draw(0..4, 0..frame.balls.len() as u32);
+        }
+        if !frame.flashes.is_empty() {
+            pass.set_pipeline(&self.flash);
+            pass.set_vertex_buffer(0, self.flash_buffer.slice());
+            pass.draw(0..4, 0..frame.flashes.len() as u32);
+        }
+        self.particles.draw(pass, &self.globals_group);
     }
 
     /// Copies the output image back to the CPU as tightly packed RGBA bytes (sRGB-encoded).

@@ -5,7 +5,7 @@ use crate::inspector::Tab;
 use crate::keys::{self, KeyState};
 use crate::theme;
 use bpe_scene::{Ease, Property, SAME_TIME, Scene, Value};
-use bpe_sim::{HitKind, WallHit};
+use bpe_sim::{Event, EventKind};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 
 /// Width of the names column on the left.
@@ -29,11 +29,13 @@ pub struct HitSummary {
 }
 
 impl HitSummary {
-    pub fn new(hits: &[WallHit]) -> Self {
+    pub fn new(events: &[Event]) -> Self {
         let mut counts = Vec::new();
         let mut escapes = Vec::new();
-        for hit in hits {
-            if let HitKind::Escape(_) = hit.kind {
+        let mut total = 0;
+        for hit in events.iter().filter(|e| e.kind.is_bounce()) {
+            total += 1;
+            if let EventKind::Escape(_) = hit.kind {
                 escapes.push(hit.time as f32);
                 continue;
             }
@@ -43,7 +45,7 @@ impl HitSummary {
             }
             counts[bucket] += 1;
         }
-        Self { counts, escapes, total: hits.len() }
+        Self { counts, escapes, total }
     }
 
     /// The most hits in any slice from `from` to `to` seconds.
@@ -715,7 +717,7 @@ mod tests {
         scene.video.duration = 6.0;
         let hits = bpe_sim::collect_wall_hits(&scene);
         let summary = HitSummary::new(&hits);
-        let escapes = hits.iter().filter(|h| matches!(h.kind, HitKind::Escape(_))).count();
+        let escapes = hits.iter().filter(|h| matches!(h.kind, EventKind::Escape(_))).count();
         assert!(escapes > 0);
         assert_eq!(summary.escapes.len(), escapes);
         assert_eq!(summary.counts.iter().sum::<u32>() as usize, hits.len() - escapes);

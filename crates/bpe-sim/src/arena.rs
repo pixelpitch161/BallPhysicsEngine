@@ -144,7 +144,8 @@ pub fn closed_outline(container: &Container, arena: ArenaState) -> Option<Outlin
             gap_half: 0.0,
             thickness,
         }),
-        Container::Rings { .. } => None,
+        // Custom outlines become wall pieces once custom shapes are in; until then, no walls.
+        Container::Rings { .. } | Container::Custom { .. } => None,
     }
 }
 
@@ -479,6 +480,7 @@ mod tests {
             radius: 5.0,
             color: [1.0; 4],
             wall_hits: 0,
+            alive: true,
         };
         let prev = Vec2::new(0.0, -10.0);
         let hit = collide_piece(&mut ball, prev, &piece, 2.0, Vec2::ZERO, 0.0, 0.0, 1.0);
@@ -498,6 +500,7 @@ mod tests {
             radius: 5.0,
             color: [1.0; 4],
             wall_hits: 0,
+            alive: true,
         };
         assert!(collide_piece(&mut ball, Vec2::new(96.0, 0.0), &pieces[0], 2.0, Vec2::ZERO, 0.0, 0.0, 1.0).is_none());
         assert_eq!(ball.position, Vec2::new(104.0, 0.0));
@@ -516,6 +519,7 @@ mod tests {
             radius: 0.5,
             color: [1.0; 4],
             wall_hits: 0,
+            alive: true,
         };
         let hit = collide_disc(&mut ball, Vec2::new(-4.5, 0.0), Vec2::ZERO, 1.0, 1.0);
         assert!(hit.is_some());

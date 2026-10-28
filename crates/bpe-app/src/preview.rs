@@ -337,7 +337,7 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
         }
     }
     match scene.container {
-        Container::Circle { .. } | Container::Polygon { .. } | Container::Rings { .. } => {}
+        Container::Circle { .. } | Container::Polygon { .. } | Container::Rings { .. } | Container::Custom { .. } => {}
         Container::Rect { center, size, .. } => {
             let d = (world - center).abs();
             let half = size * arena_size(scene) / 2.0;
@@ -396,6 +396,7 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
                 Container::Rings { inner_radius, .. } => {
                     *inner_radius = (*inner_radius * scale.unwrap_or(1.0)).clamp(10.0, 1000.0).round()
                 }
+                Container::Custom { .. } => {}
                 Container::Rect { center, size, .. } => {
                     let d = ((world - *center).abs() * 2.0 / shown_size)
                         .clamp(Vec2::splat(40.0), Vec2::splat(2400.0))

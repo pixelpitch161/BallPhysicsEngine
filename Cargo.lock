@@ -295,6 +295,7 @@ dependencies = [
 name = "bpe-sim"
 version = "0.1.0"
 dependencies = [
+ "bpe-music",
  "bpe-scene",
  "glam",
 ]

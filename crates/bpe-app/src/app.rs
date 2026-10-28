@@ -721,7 +721,13 @@ impl eframe::App for StudioApp {
                 );
                 if self.show_stats {
                     let stats = self.preview.as_ref().map(|p| p.stats).unwrap_or_default();
-                    draw_meter(ui, &self.meter, &stats, self.playback.hits().len(), self.playing);
+                    draw_meter(
+                        ui,
+                        &self.meter,
+                        &stats,
+                        self.playback.events().iter().filter(|e| e.is_hit()).count(),
+                        self.playing,
+                    );
                 }
                 outcome
             })

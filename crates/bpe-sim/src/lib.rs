@@ -6,12 +6,21 @@
 //! in sync.
 
 mod arena;
+mod beat_sync;
+mod bodies;
+mod broadphase;
+pub mod events;
 mod grid;
+pub mod rules;
+mod space;
 
 pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring_outline};
+pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
 
+use bpe_music::AudioFeatures;
 use bpe_scene::{Color, Container, ObstaclePart, Scene, Spawner, Vec2};
-use grid::{BallGrid, ObstacleGrid};
+use grid::ObstacleGrid;
+use std::sync::Arc;
 
 /// How often ball positions are recorded for drawing trails, in samples per second.
 const TRAIL_SAMPLE_RATE: u32 = 120;
@@ -48,31 +57,25 @@ pub struct Ball {
     /// Linear-light RGBA.
     pub color: [f32; 4],
     pub wall_hits: u32,
+    /// False once a rule has removed the ball. Removed balls keep their place in the list, so
+    /// ball numbers in the event log stay valid, but they don't move, collide or show.
+    pub alive: bool,
 }
 
-/// What a ball hit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HitKind {
-    /// The arena's wall, or one of its rings.
-    Wall,
-    /// A peg or wall piece, by its index in [`Scene::obstacle_parts`].
-    Obstacle(u32),
-    /// The ball escaped through the gap of this ring, which shattered.
-    Escape(u32),
+/// Things from outside the scene that the simulation follows: the song's beats and levels.
+/// Physics may follow the song, never the bounce sounds it makes.
+#[derive(Clone, Debug, Default)]
+pub struct SimInputs {
+    /// Beat times in seconds, earliest first. Each becomes a beat event.
+    pub beats: Vec<f64>,
+    pub music: Option<Arc<AudioFeatures>>,
 }
 
-/// One ball touching a wall or peg while moving into it, or escaping a ring.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WallHit {
-    /// Seconds from the start of the clip.
-    pub time: f64,
-    pub ball: u32,
-    /// Where the ball touched the wall.
-    pub position: Vec2,
-    /// Speed into the wall just before the bounce, in pixels per second. For an escape, the
-    /// ball's speed.
-    pub impact_speed: f32,
-    pub kind: HitKind,
+impl SimInputs {
+    /// Inputs that follow a song: its beats and levels.
+    pub fn from_music(music: Arc<AudioFeatures>) -> Self {
+        Self { beats: music.beats.clone(), music: Some(music) }
+    }
 }
 
 /// When and how a ring broke.
@@ -97,9 +100,8 @@ pub struct Simulation {
     obstacles: Vec<ObstaclePart>,
     /// Finds the pegs and wall pieces near a ball.
     obstacle_grid: ObstacleGrid,
-    /// Scratch space for obstacle lookups and for pairing up balls that collide.
+    /// Scratch space for obstacle lookups.
     nearby: Vec<u32>,
-    ball_grid: BallGrid,
     /// Balls that appear later, as (step, ball), latest first.
     pending: Vec<(u64, Ball)>,
     /// Arena size still to shrink away from hits, eased in over a few steps.
@@ -120,10 +122,27 @@ pub struct Simulation {
     trail_every: u64,
     trail_head: usize,
     trail_filled: usize,
+    inputs: SimInputs,
+    /// The next beat in `inputs.beats` to announce.
+    next_beat: usize,
+    /// Beat sync's state (the controller stage).
+    controller: beat_sync::Controller,
+    /// Ball-to-ball contact state.
+    broadphase: broadphase::Broadphase,
+    /// Jelly balls, ropes, cloth and small fluid.
+    #[allow(dead_code)]
+    bodies: bodies::BodyState,
+    /// Compiled rules and their counters.
+    rules: rules::RuleState,
 }
 
 impl Simulation {
+    /// A simulation of `scene` with no song.
     pub fn new(scene: &Scene) -> Self {
+        Self::with_inputs(scene, &SimInputs::default())
+    }
+
+    pub fn with_inputs(scene: &Scene, inputs: &SimInputs) -> Self {
         let steps_per_second = scene.physics.steps_per_second.max(1);
         let mut pending = spawn_plan(scene, steps_per_second);
         let split = pending.partition_point(|(step, _)| *step == 0);
@@ -148,7 +167,6 @@ impl Simulation {
             obstacles: scene.obstacle_parts(),
             obstacle_grid: ObstacleGrid::default(),
             nearby: Vec::new(),
-            ball_grid: BallGrid::default(),
             pending,
             shrink_owed: 0.0,
             shrunk: 1.0,
@@ -160,7 +178,14 @@ impl Simulation {
             trail_every,
             trail_head: 0,
             trail_filled: 0,
+            next_beat: inputs.beats.partition_point(|&b| b < 0.0),
+            inputs: inputs.clone(),
+            controller: beat_sync::Controller::default(),
+            broadphase: broadphase::Broadphase::default(),
+            bodies: bodies::BodyState::new(scene),
+            rules: rules::RuleState::new(scene),
         };
+        sim.controller = beat_sync::Controller::new(scene, inputs);
         sim.obstacle_grid = ObstacleGrid::new(&sim.obstacles);
         sim.update_arena();
         sim.record_trail();
@@ -171,8 +196,19 @@ impl Simulation {
         &self.scene
     }
 
+    /// Every ball so far, including removed ones (see [`Ball::alive`]).
     pub fn balls(&self) -> &[Ball] {
         &self.balls
+    }
+
+    /// The song and beats this simulation follows.
+    pub fn inputs(&self) -> &SimInputs {
+        &self.inputs
+    }
+
+    /// Rule state: compiled rules, counters and how often each block fired.
+    pub fn rules(&self) -> &rules::RuleState {
+        &self.rules
     }
 
     pub fn time(&self) -> f64 {
@@ -235,20 +271,27 @@ impl Simulation {
         })
     }
 
-    /// Runs whole steps until the simulation reaches `time`, appending wall hits to `hits`.
-    pub fn advance_to(&mut self, time: f64, hits: &mut Vec<WallHit>) {
+    /// Runs whole steps until the simulation reaches `time`, appending what happens to `events`.
+    pub fn advance_to(&mut self, time: f64, events: &mut Vec<Event>) {
         let target = (time * self.scene.physics.steps_per_second as f64).floor() as u64;
         while self.step < target {
-            self.step(hits);
+            self.step(events);
         }
     }
 
-    pub fn step(&mut self, hits: &mut Vec<WallHit>) {
+    /// One fixed step. The stages always run in this order: balls due now appear, beat sync
+    /// steers, the arena moves, then each substep moves balls, collides them with each other,
+    /// with walls and pegs, and steps soft bodies; then rules react to the step's events, and
+    /// trails are recorded.
+    pub fn step(&mut self, events: &mut Vec<Event>) {
+        let first_event = events.len();
         let dt = self.dt;
+        let now = self.time();
         while self.pending.last().is_some_and(|(step, _)| *step <= self.step) {
             let (_, ball) = self.pending.pop().unwrap();
-            self.add_ball(ball);
+            self.spawn(ball, now, events);
         }
+        beat_sync::Controller::before_step(self);
         let ceiling = self.speed_ceiling();
         for ball in &mut self.balls {
             ball.velocity = ball.velocity.clamp_length_max(ceiling);
@@ -280,8 +323,10 @@ impl Simulation {
                 rings.iter_mut().for_each(|ring| ring.moved = Vec2::X);
             }
             let time = ((self.step - 1) as f64 + (i + 1) as f64 / substeps as f64) / rate;
-            self.substep(dt / substeps as f32, time, closed, &rings, hits);
+            self.announce_beats(time, events);
+            self.substep(dt / substeps as f32, time, closed, &rings, events);
         }
+        rules::run(self, first_event, events);
         if self.step.is_multiple_of(self.trail_every) {
             self.record_trail();
         }
@@ -302,21 +347,44 @@ impl Simulation {
         ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS)
     }
 
+    /// Adds a beat event for each beat up to `until` seconds.
+    fn announce_beats(&mut self, until: f64, events: &mut Vec<Event>) {
+        while let Some(&beat) = self.inputs.beats.get(self.next_beat) {
+            if beat > until {
+                break;
+            }
+            let index = self.next_beat as u32;
+            let downbeat = match &self.inputs.music {
+                Some(music) if !music.downbeats.is_empty() => {
+                    let k = music.downbeats.partition_point(|&d| d < beat - 1e-6);
+                    music.downbeats.get(k).is_some_and(|&d| (d - beat).abs() <= 1e-6)
+                }
+                _ => index.is_multiple_of(4),
+            };
+            events.push(Event::global(beat, EventKind::Beat { index, downbeat }));
+            self.next_beat += 1;
+        }
+    }
+
     /// Moves every ball forward by `dt` and bounces it off whatever it hit. `time` is the
-    /// clip time at the end of this substep, for the hits it records.
-    fn substep(&mut self, dt: f32, time: f64, closed: Option<Outline>, rings: &[RingNow], hits: &mut Vec<WallHit>) {
+    /// clip time at the end of this substep, for the events it records.
+    fn substep(&mut self, dt: f32, time: f64, closed: Option<Outline>, rings: &[RingNow], events: &mut Vec<Event>) {
         let physics = &self.scene.physics;
-        let restitution = physics.restitution;
         let drag = (1.0 - physics.air_drag * dt).max(0.0);
         self.previous.clear();
         self.previous.extend(self.balls.iter().map(|b| b.position));
-        for ball in &mut self.balls {
+        for ball in self.balls.iter_mut().filter(|b| b.alive) {
             ball.velocity = (ball.velocity + physics.gravity * dt) * drag;
             ball.position += ball.velocity * dt;
         }
-        if physics.ball_collisions {
-            collide_balls(&mut self.balls, restitution, &mut self.ball_grid);
-        }
+        broadphase::ball_ball(self, time, events);
+        self.collide_walls(time, closed, rings, events);
+        bodies::step(self, dt, time, events);
+    }
+
+    /// Bounces balls off the arena, rings, pegs and walls, and applies the bounce rules.
+    fn collide_walls(&mut self, time: f64, closed: Option<Outline>, rings: &[RingNow], events: &mut Vec<Event>) {
+        let restitution = self.scene.physics.restitution;
         let container = &self.scene.container;
         let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
         let pivot = container.center();
@@ -325,8 +393,11 @@ impl Simulation {
         // Touches slower than this are balls resting on something, not bounces. They still push
         // the ball out but don't count as hits, so resting balls don't buzz or flicker.
         let resting = self.scene.physics.gravity.length() * self.dt * 4.0 + 1.0;
-        let mut events = Vec::new();
+        let mut found = Vec::new();
         for (index, ball) in self.balls.iter_mut().enumerate() {
+            if !ball.alive {
+                continue;
+            }
             let prev = self.previous[index];
             let mut wall_hit = match &closed {
                 Some(outline) => arena::collide_closed(ball, outline, self.arena, restitution),
@@ -347,8 +418,8 @@ impl Simulation {
                     }
                 }
             }
-            if let Some((position, impact_speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
-                events.push(WallHit { time, ball: index as u32, position, impact_speed, kind: HitKind::Wall });
+            if let Some((position, speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
+                found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind: EventKind::Wall });
             }
             let mut obstacle = |ball: &mut Ball, part: usize| {
                 let hit = match self.obstacles[part] {
@@ -360,9 +431,9 @@ impl Simulation {
                         arena::collide_piece(ball, prev, &piece, thickness, Vec2::ZERO, 0.0, 0.0, restitution)
                     }
                 };
-                if let Some((position, impact_speed)) = hit.filter(|(_, speed)| *speed >= resting) {
-                    let kind = HitKind::Obstacle(part as u32);
-                    events.push(WallHit { time, ball: index as u32, position, impact_speed, kind });
+                if let Some((position, speed)) = hit.filter(|(_, speed)| *speed >= resting) {
+                    let kind = EventKind::Obstacle(part as u32);
+                    found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind });
                 }
             };
             if self.obstacle_grid.enabled() {
@@ -388,9 +459,10 @@ impl Simulation {
                 let seen = pivot + ring.moved.rotate(prev - pivot);
                 if self.breaks[k].is_none() && arena::inside(outline, seen) && !arena::inside(outline, ball.position) {
                     self.breaks[k] = Some(RingBreak { time, outline: *outline });
-                    let impact_speed = ball.velocity.length();
-                    let kind = HitKind::Escape(k as u32);
-                    events.push(WallHit { time, ball: index as u32, position: ball.position, impact_speed, kind });
+                    let speed = ball.velocity.length();
+                    let kind = EventKind::Escape(k as u32);
+                    let position = ball.position;
+                    found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind });
                 }
             }
         }
@@ -398,24 +470,24 @@ impl Simulation {
         let mut spawns = Vec::new();
         let center = container.center();
         let ceiling = self.speed_ceiling();
-        for event in events {
+        for event in found {
             let ball = &mut self.balls[event.ball as usize];
             let rules = &self.scene.rules;
             let children = match event.kind {
-                HitKind::Escape(_) => rules.spawn_per_escape,
-                HitKind::Wall | HitKind::Obstacle(_) => {
+                EventKind::Escape(_) => rules.spawn_per_escape,
+                _ => {
                     apply_bounce_rules(ball, &self.scene, ceiling);
                     rules.spawn_per_hit
                 }
             };
             // Balls split off at a bounce start where the parent is. Balls made by an escape
             // start back in the middle, so there is always a ball left to escape the next ring.
-            let start = if let HitKind::Escape(_) = event.kind { center } else { ball.position };
-            if event.kind == HitKind::Wall {
+            let start = if let EventKind::Escape(_) = event.kind { center } else { ball.position };
+            if event.kind == EventKind::Wall {
                 self.shrink_on_hit();
             }
             spawns.extend((0..children).map(|_| (event.ball, start)));
-            hits.push(event);
+            events.push(event);
         }
         for (parent, start) in spawns {
             if self.balls.len() >= self.scene.rules.max_balls as usize {
@@ -423,8 +495,26 @@ impl Simulation {
             }
             let mut child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
             child.position = start;
-            self.add_ball(child);
+            self.spawn(child, time, events);
         }
+    }
+
+    /// Adds a ball partway through and records its spawn event.
+    fn spawn(&mut self, ball: Ball, time: f64, events: &mut Vec<Event>) {
+        let index = self.balls.len() as u32;
+        let (position, speed) = (ball.position, ball.velocity.length());
+        events.push(Event { time, ball: index, position, depth: 0.0, speed, kind: EventKind::Spawn });
+        self.add_ball(ball);
+    }
+
+    /// Takes a ball out of the scene and records its remove event. Its place in the list stays.
+    #[allow(dead_code)]
+    fn remove(&mut self, index: usize, time: f64, events: &mut Vec<Event>) {
+        let Some(ball) = self.balls.get_mut(index).filter(|b| b.alive) else { return };
+        ball.alive = false;
+        let position = ball.position;
+        ball.velocity = Vec2::ZERO;
+        events.push(Event { time, ball: index as u32, position, depth: 0.0, speed: 0.0, kind: EventKind::Remove });
     }
 
     /// Adds a ball partway through, with a trail that starts where it is.
@@ -495,41 +585,82 @@ const CHECKPOINT_SECONDS: f64 = 0.5;
 /// and they are taken half as often.
 const CHECKPOINT_BYTES: usize = 192 << 20;
 
-/// A simulation plus every wall hit so far, which can be moved to any point in time.
+/// A simulation plus every event so far, which can be moved to any point in time.
 /// Seeking backwards restarts from the latest snapshot before that time. The simulation is
 /// deterministic, so this gives exactly the same result as replaying from the start.
 #[derive(Clone)]
 pub struct Playback {
     sim: Simulation,
-    hits: Vec<WallHit>,
-    /// Snapshots taken every `checkpoint_every` steps, oldest first, with how many hits there
+    events: Vec<Event>,
+    /// Snapshots taken every `checkpoint_every` steps, oldest first, with how many events there
     /// were at the time.
     checkpoints: Vec<(Simulation, usize)>,
     checkpoint_every: u64,
+    /// Balls there at the very start, which [`Playback::counts_at`] counts from.
+    start_balls: u32,
 }
 
 impl Playback {
+    /// A playback of `scene` with no song.
     pub fn new(scene: &Scene) -> Self {
-        let sim = Simulation::new(scene);
+        Self::with_inputs(scene, &SimInputs::default())
+    }
+
+    pub fn with_inputs(scene: &Scene, inputs: &SimInputs) -> Self {
+        let sim = Simulation::with_inputs(scene, inputs);
         let checkpoint_every = (CHECKPOINT_SECONDS * scene.physics.steps_per_second.max(1) as f64).ceil() as u64;
         let checkpoints = vec![(sim.clone(), 0)];
-        Self { sim, hits: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1) }
+        let start_balls = sim.balls().len() as u32;
+        Self { sim, events: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1), start_balls }
     }
 
     pub fn simulation(&self) -> &Simulation {
         &self.sim
     }
 
-    /// All wall hits up to the current time, oldest first.
-    pub fn hits(&self) -> &[WallHit] {
-        &self.hits
+    /// Everything that happened up to the current time, oldest first.
+    pub fn events(&self) -> &[Event] {
+        &self.events
     }
 
-    /// Wall hits within the last `seconds`.
-    pub fn recent_hits(&self, seconds: f64) -> &[WallHit] {
+    /// The same as [`Playback::events`]. Use [`Event::is_hit`] to pick out hits.
+    pub fn hits(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// Events within the last `seconds`.
+    pub fn recent_events(&self, seconds: f64) -> &[Event] {
         let since = self.sim.time() - seconds;
-        let start = self.hits.partition_point(|h| h.time <= since);
-        &self.hits[start..]
+        let start = self.events.partition_point(|h| h.time <= since);
+        &self.events[start..]
+    }
+
+    /// The same as [`Playback::recent_events`].
+    pub fn recent_hits(&self, seconds: f64) -> &[Event] {
+        self.recent_events(seconds)
+    }
+
+    /// Events from `from` up to (not including) `to` seconds, as far as the playback has run.
+    pub fn events_between(&self, from: f64, to: f64) -> &[Event] {
+        events::between(&self.events, from, to)
+    }
+
+    /// Running totals at `time`, as far as the playback has run.
+    pub fn counts_at(&self, time: f64) -> Counts {
+        let mut counts = Counts { balls: self.start_balls, ..Counts::default() };
+        let end = self.events.partition_point(|e| e.time <= time);
+        for event in &self.events[..end] {
+            counts.add(event);
+            if let EventKind::Action { rule, action } = event.kind
+                && let Some((counter, amount)) = self.sim.rules.counter_change(rule, action)
+            {
+                if counts.counters.len() <= counter {
+                    counts.counters.resize(counter + 1, 0.0);
+                }
+                counts.counters[counter] += amount;
+            }
+        }
+        counts
     }
 
     pub fn seek(&mut self, time: f64) {
@@ -544,13 +675,13 @@ impl Playback {
         let target = (time * rate).floor() as u64;
         if target < self.sim.step {
             let index = self.checkpoints.partition_point(|(sim, _)| sim.step <= target).max(1) - 1;
-            let (sim, hits) = &self.checkpoints[index];
+            let (sim, events) = &self.checkpoints[index];
             self.sim = sim.clone();
-            self.hits.truncate(*hits);
+            self.events.truncate(*events);
         }
         let started = budget.map(|_| std::time::Instant::now());
         while self.sim.step < target {
-            self.sim.step(&mut self.hits);
+            self.sim.step(&mut self.events);
             if self.sim.step.is_multiple_of(self.checkpoint_every)
                 && self.checkpoints.last().is_some_and(|(sim, _)| sim.step < self.sim.step)
             {
@@ -567,7 +698,7 @@ impl Playback {
     }
 
     fn save_checkpoint(&mut self) {
-        self.checkpoints.push((self.sim.clone(), self.hits.len()));
+        self.checkpoints.push((self.sim.clone(), self.events.len()));
         let bytes: usize = self.checkpoints.iter().map(|(sim, _)| sim.memory()).sum();
         if bytes > CHECKPOINT_BYTES && self.checkpoints.len() > 2 {
             // Keep the first one and every other one after it, and take them half as often.
@@ -578,21 +709,27 @@ impl Playback {
     }
 }
 
-/// Runs a whole scene from the start and returns every wall hit, for building the soundtrack.
-pub fn collect_wall_hits(scene: &Scene) -> Vec<WallHit> {
-    let mut sim = Simulation::new(scene);
-    let mut hits = Vec::new();
-    sim.advance_to(scene.video.duration as f64, &mut hits);
-    hits
+/// Runs a whole scene from the start and returns every event, for building the soundtrack.
+pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
+    let mut sim = Simulation::with_inputs(scene, inputs);
+    let mut events = Vec::new();
+    sim.advance_to(scene.video.duration as f64, &mut events);
+    events
+}
+
+/// The same as [`collect_events`] with no song.
+pub fn collect_wall_hits(scene: &Scene) -> Vec<Event> {
+    collect_events(scene, &SimInputs::default())
 }
 
 /// Every ball the scene's spawners make, with the step it appears on, earliest first.
 fn spawn_plan(scene: &Scene, steps_per_second: u32) -> Vec<(u64, Ball)> {
-    let ball = |position, velocity, radius, color| Ball { position, velocity, radius, color, wall_hits: 0 };
+    let ball =
+        |position, velocity, radius, color| Ball { position, velocity, radius, color, wall_hits: 0, alive: true };
     let mut plan = Vec::new();
     for spawner in &scene.spawners {
         match spawner {
-            Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient } => {
+            Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient, .. } => {
                 let size = Vec2::new(columns.saturating_sub(1) as f32, rows.saturating_sub(1) as f32) * *spacing;
                 let origin = *center - size * 0.5;
                 for row in 0..*rows {
@@ -604,10 +741,10 @@ fn spawn_plan(scene: &Scene, steps_per_second: u32) -> Vec<(u64, Ball)> {
                     }
                 }
             }
-            Spawner::Single { position, velocity, radius, color } => {
+            Spawner::Single { position, velocity, radius, color, .. } => {
                 plan.push((0, ball(*position, *velocity, *radius, color.to_linear())))
             }
-            Spawner::Stream { position, velocity, radius, count, interval, jitter, gradient } => {
+            Spawner::Stream { position, velocity, radius, count, interval, jitter, gradient, .. } => {
                 for i in 0..*count {
                     let t = if *count > 1 { i as f32 / (*count - 1) as f32 } else { 0.0 };
                     let offset = Vec2::new(unit_noise(i as u64 * 2 + 1) * jitter, 0.0);
@@ -641,6 +778,7 @@ fn split_ball(parent: &Ball, index: usize, spread: f32) -> Ball {
         radius: parent.radius,
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
+        alive: true,
     }
 }
 
@@ -692,42 +830,12 @@ fn apply_bounce_rules(ball: &mut Ball, scene: &Scene, ceiling: f32) {
     }
 }
 
-/// Elastic collisions between balls, found with a uniform grid. Heavier (bigger) balls move less.
-fn collide_balls(balls: &mut [Ball], restitution: f32, grid: &mut BallGrid) {
-    let max_radius = balls.iter().map(|b| b.radius).fold(0.0f32, f32::max);
-    if balls.len() < 2 || max_radius <= 0.0 {
-        return;
-    }
-    grid.build(balls.iter().map(|b| b.position), max_radius * 2.0);
-    grid.for_each_pair(|i, j| resolve_pair(balls, i, j, restitution));
-}
-
-fn resolve_pair(balls: &mut [Ball], i: usize, j: usize, restitution: f32) {
-    let (left, right) = balls.split_at_mut(j);
-    let (a, b) = (&mut left[i], &mut right[0]);
-    let offset = b.position - a.position;
-    let distance = offset.length();
-    let overlap = a.radius + b.radius - distance;
-    if overlap <= 0.0 || distance == 0.0 {
-        return;
-    }
-    let normal = offset / distance;
-    let (mass_a, mass_b) = (a.radius * a.radius, b.radius * b.radius);
-    let total = mass_a + mass_b;
-    a.position -= normal * overlap * (mass_b / total);
-    b.position += normal * overlap * (mass_a / total);
-    let closing = (a.velocity - b.velocity).dot(normal);
-    if closing > 0.0 {
-        let impulse = closing * (1.0 + restitution) / total;
-        a.velocity -= normal * impulse * mass_b;
-        b.velocity += normal * impulse * mass_a;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bpe_scene::{Ease, Key, Property, Track, Value};
+    use broadphase::{collide_balls, resolve_pair};
+    use grid::BallGrid;
 
     #[test]
     fn rolled_scenes_simulate_cleanly() {
@@ -801,6 +909,7 @@ mod tests {
                     radius: 3.0 + 4.0 * noise(i + seed),
                     color: [1.0; 4],
                     wall_hits: 0,
+                    alive: true,
                 })
                 .collect();
             let (mut a, mut b) = (balls.clone(), balls);
@@ -946,12 +1055,16 @@ mod tests {
                 velocity: Vec2::new(200.0, 0.0),
                 radius: 10.0,
                 color: Color::WHITE,
+                depth: 0.0,
+                depth_velocity: 0.0,
             },
             Spawner::Single {
                 position: Vec2::new(50.0, 0.0),
                 velocity: Vec2::new(-200.0, 0.0),
                 radius: 10.0,
                 color: Color::WHITE,
+                depth: 0.0,
+                depth_velocity: 0.0,
             },
         ];
         let mut sim = Simulation::new(&scene);
@@ -973,8 +1086,8 @@ mod tests {
         );
     }
 
-    fn escapes(hits: &[WallHit]) -> Vec<u32> {
-        hits.iter().filter_map(|h| if let HitKind::Escape(k) = h.kind { Some(k) } else { None }).collect()
+    fn escapes(hits: &[Event]) -> Vec<u32> {
+        hits.iter().filter_map(|h| if let EventKind::Escape(k) = h.kind { Some(k) } else { None }).collect()
     }
 
     #[test]

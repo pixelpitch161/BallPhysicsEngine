@@ -119,7 +119,9 @@ pub fn track(onset: &[f32], loudness: &[f32], window: f32) -> Found {
     // The bar starts where the beats are loudest (kick drums, accented clicks).
     let weight = |time: f64| {
         let f = (time * FRAME_RATE as f64) as usize;
-        loudness.get(f.saturating_sub(2)..(f + 4).min(loudness.len())).map_or(0.0, |w| w.iter().copied().fold(0.0, f32::max))
+        loudness
+            .get(f.saturating_sub(2)..(f + 4).min(loudness.len()))
+            .map_or(0.0, |w| w.iter().copied().fold(0.0, f32::max))
     };
     let phase = (0..4.min(beats.len()))
         .max_by(|&a, &b| {

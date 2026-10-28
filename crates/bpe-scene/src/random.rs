@@ -279,7 +279,9 @@ impl Scene {
                 Room::Circle { center, radius: (inner - wall).max(1.0) }
             }
             Container::Rect { center, size, .. } => Room::Box { center, half: (size * 0.5 - wall).max(Vec2::ONE) },
-            Container::Custom { center, .. } => Room::Circle { center, radius: (self.container.size() - wall).max(1.0) },
+            Container::Custom { center, .. } => {
+                Room::Circle { center, radius: (self.container.size() - wall).max(1.0) }
+            }
         }
     }
 

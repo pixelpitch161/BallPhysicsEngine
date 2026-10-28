@@ -92,7 +92,10 @@ impl PinType {
     pub fn accepts(self, from: PinType) -> bool {
         use PinType::*;
         self == from
-            || matches!((self, from), (Field, Number | Vector | Color) | (Number, Bool) | (Bool, Number) | (Text, Number))
+            || matches!(
+                (self, from),
+                (Field, Number | Vector | Color) | (Number, Bool) | (Bool, Number) | (Text, Number)
+            )
     }
 
     /// A short name for menus and tooltips.
