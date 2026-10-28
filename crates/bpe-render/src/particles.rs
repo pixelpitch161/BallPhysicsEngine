@@ -53,7 +53,7 @@ impl EmitterGpu {
         let mut stops = 0;
         if let ParticleColor::Gradient(colors) = &e.color {
             for (slot, c) in gradient.iter_mut().zip(colors) {
-                *slot = c.to_linear();
+                *slot = crate::frame::blend_alpha(c.to_linear());
                 stops += 1;
             }
         }
@@ -303,6 +303,11 @@ fn event_normal(scene: &Scene, parts: &[ObstaclePart], event: &Event, id: u32) -
 }
 
 fn burst_color(scene: &Scene, playback: &Playback, emitter: &Emitter, hit: &Event) -> [f32; 4] {
+    crate::frame::blend_alpha(source_color(scene, playback, emitter, hit))
+}
+
+/// The linear colour a burst takes from its emitter, ball or wall.
+fn source_color(scene: &Scene, playback: &Playback, emitter: &Emitter, hit: &Event) -> [f32; 4] {
     let ball = || hit.ball_index().and_then(|b| playback.simulation().balls().get(b)).map_or([1.0; 4], |b| b.color);
     match &emitter.color {
         ParticleColor::FromBall => ball(),

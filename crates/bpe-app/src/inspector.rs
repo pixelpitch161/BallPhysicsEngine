@@ -27,7 +27,9 @@ use bpe_scene::{
     ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene,
     Spawner, Vec2,
 };
-use eframe::egui::{self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, emath::Numeric};
+use eframe::egui::{
+    self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
+};
 use std::ops::RangeInclusive;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -605,10 +607,20 @@ fn log_units(suffix: &'static str) -> impl FnOnce(Slider<'_>) -> Slider<'_> {
 }
 
 fn color_row(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Color) {
+    color_row_with(ui, text, help, value, default, Alpha::BlendOrAdditive);
+}
+
+/// A colour row without the picker's "Additive" blending, for colours that only tint or light
+/// things (backgrounds, lights, GPU swarms) where adding light has no meaning.
+fn plain_color_row(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Color) {
+    color_row_with(ui, text, help, value, default, Alpha::OnlyBlend);
+}
+
+fn color_row_with(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Color, alpha: Alpha) {
     let name = label(ui, text, help);
     // The right-click menu goes on a wrapper: on the button itself it would share the colour
     // picker's popup and close it as soon as it opens.
-    let swatch = ui.scope(|ui| hint(color_button(ui, value), help));
+    let swatch = ui.scope(|ui| hint(color_button(ui, value, alpha), help));
     if reset_clicked(&swatch.inner) {
         // The click also opened or closed the colour picker. A reset should leave it shut.
         Popup::close_all(ui.ctx());
@@ -619,23 +631,48 @@ fn color_row(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Co
     ui.end_row();
 }
 
-fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
-    let mut c = Color32::from_rgba_unmultiplied(value.r, value.g, value.b, value.a);
-    let response = ui.color_edit_button_srgba(&mut c);
+fn color_button(ui: &mut Ui, value: &mut Color, alpha: Alpha) -> Response {
+    let mut c = picker_color(*value);
+    let response = egui::color_picker::color_edit_button_srgba(ui, &mut c, alpha);
     if response.changed() {
-        let [r, g, b, a] = c.to_srgba_unmultiplied();
-        *value = Color { r, g, b, a };
+        *value = scene_color(c);
     }
     response
 }
 
+/// egui keeps an additive colour as premultiplied with no alpha. Built unmultiplied, no alpha
+/// turns it into plain transparent black, so "Additive" would undo itself on the next frame.
+fn picker_color(c: Color) -> Color32 {
+    if c.is_additive() {
+        Color32::from_rgba_premultiplied(c.r, c.g, c.b, 0)
+    } else {
+        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+    }
+}
+
+/// The picker's colour as a scene colour. An additive one comes back as its colour with no
+/// alpha, which is how `Color` keeps it.
+fn scene_color(c: Color32) -> Color {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    Color { r, g, b, a }
+}
+
 fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
+    color_list_with(ui, colors, add_label, Alpha::BlendOrAdditive);
+}
+
+/// A colour list without the picker's "Additive" blending (see [`plain_color_row`]).
+fn plain_color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
+    color_list_with(ui, colors, add_label, Alpha::OnlyBlend);
+}
+
+fn color_list_with(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str, alpha: Alpha) {
     ui.horizontal_wrapped(|ui| {
         let mut remove = None;
         for (i, c) in colors.iter_mut().enumerate() {
             ui.push_id(i, |ui| {
                 let response = ui
-                    .scope(|ui| color_button(ui, c).on_hover_text("Click to change. Right-click to remove."))
+                    .scope(|ui| color_button(ui, c, alpha).on_hover_text("Click to change. Right-click to remove."))
                     .response;
                 response.context_menu(|ui| {
                     if ui.button("Remove colour").clicked() {
@@ -1659,7 +1696,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
     heading_dice(ui, "Background", Group::Background, roll);
     grid(ui, "background", |ui| {
         key(ui, Property::BackgroundTop);
-        color_row(
+        plain_color_row(
             ui,
             "Top colour",
             "The background fades from this colour at the top...",
@@ -1667,7 +1704,7 @@ fn look(ui: &mut Ui, look: &mut Look, roll: &mut Option<Roll>) {
             d.background_top,
         );
         key(ui, Property::BackgroundBottom);
-        color_row(
+        plain_color_row(
             ui,
             "Bottom colour",
             "...to this colour at the bottom.",
@@ -1845,6 +1882,25 @@ fn parse_note(text: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn additive_colours_survive_the_colour_picker() {
+        use super::{picker_color, scene_color};
+        use bpe_scene::Color;
+        use eframe::egui::{Color32, ecolor::Hsva};
+        let glow = Color::additive(0x20, 0xff, 0x40);
+        // The picker works in HSVA: an additive colour has a negative alpha there.
+        let hsva = Hsva::from(picker_color(glow));
+        assert!(hsva.a < 0.0, "the picker sees the colour as additive");
+        assert_eq!(scene_color(Color32::from(hsva)), glow);
+        // Picking "Additive" on a normal colour keeps its colour.
+        let normal = Color::rgb(0x20, 0xff, 0x40);
+        let picked = Hsva { a: -Hsva::from(picker_color(normal)).a, ..Hsva::from(picker_color(normal)) };
+        assert_eq!(scene_color(Color32::from(picked)), glow);
+        for c in [normal, Color::WHITE, Color { r: 0, g: 0, b: 0, a: 0 }] {
+            assert_eq!(scene_color(picker_color(c)), c);
+        }
+    }
+
     use super::*;
 
     #[test]

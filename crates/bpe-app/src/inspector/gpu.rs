@@ -1,6 +1,6 @@
 //! Swarms and big fluids: the GPU layers (Balls tab).
 
-use super::{color_list, color_row, dice_button, grid, label, log_units, more, percent, slider, units};
+use super::{dice_button, grid, label, log_units, more, percent, plain_color_list, plain_color_row, slider, units};
 use crate::theme;
 use bpe_scene::{
     Dice, GpuFluid, MAX_FLUID_PARTICLES, MAX_SWARM_POINTS, MIN_GPU_FLUID_PARTICLES, Scene, Swarm, SwarmColor,
@@ -120,7 +120,7 @@ fn swarm(ui: &mut Ui, swarm: &mut Swarm, state: &mut State) {
         ui.end_row();
         if swarm.color != SwarmColor::NearestBall {
             label(ui, "Colours", "The colours the points use.");
-            color_list(ui, &mut swarm.colors, "+");
+            plain_color_list(ui, &mut swarm.colors, "+");
             ui.end_row();
         }
         slider(
@@ -241,7 +241,7 @@ fn fluid(ui: &mut Ui, fluid: &mut GpuFluid, state: &mut State) {
             0.0..=30.0,
             units(" s", 1),
         );
-        color_row(ui, "Colour", "The liquid's colour.", &mut fluid.color, d.color);
+        plain_color_row(ui, "Colour", "The liquid's colour.", &mut fluid.color, d.color);
         slider(
             ui,
             "Clarity",

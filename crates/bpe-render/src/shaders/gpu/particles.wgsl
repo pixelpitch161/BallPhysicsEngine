@@ -273,7 +273,7 @@ fn coverage(in: Out) -> f32 {
 
 @fragment
 fn fs_add(in: Out) -> @location(0) vec4<f32> {
-    let a = coverage(in) * in.color.a;
+    let a = coverage(in) * abs(in.color.a);
     if a < 1e-4 {
         discard;
     }
@@ -283,9 +283,10 @@ fn fs_add(in: Out) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_alpha(in: Out) -> @location(0) vec4<f32> {
-    let a = coverage(in) * in.color.a;
+    let a = coverage(in) * abs(in.color.a);
     if a < 1e-4 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * in.info.z * a, a);
+    // A negative alpha is an additive colour: it adds its light and covers nothing.
+    return vec4<f32>(in.color.rgb * in.info.z * a, select(a, 0.0, in.color.a < 0.0));
 }

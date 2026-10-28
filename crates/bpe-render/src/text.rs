@@ -351,11 +351,13 @@ impl TextLayout {
         let unit = em / RASTER_PX;
         let line_height = em * font.line_height;
         let encode = |c: Color, alpha: f32| {
-            let mut rgba = if srgb {
+            let rgba = if srgb {
                 [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, c.a as f32 / 255.0]
             } else {
                 c.to_linear()
             };
+            // Negative alpha: an additive colour (see `blend_alpha`).
+            let mut rgba = crate::frame::blend_alpha(rgba);
             rgba[3] *= alpha;
             rgba
         };

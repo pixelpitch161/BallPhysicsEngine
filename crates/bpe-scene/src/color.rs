@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// An sRGB colour, written in scene files as a hex string like "#ff8800" or "#ff880080".
+///
+/// No alpha with some colour ("#ff880000") is an additive colour: it adds its light to whatever
+/// is behind it instead of covering it, like the colour picker's "Additive" blending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Color {
     pub r: u8,
@@ -14,6 +17,16 @@ impl Color {
 
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, a: 255 }
+    }
+
+    /// An additive colour: it adds its light to what is behind it instead of covering it.
+    pub const fn additive(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 0 }
+    }
+
+    /// Whether this colour adds its light instead of covering what is behind it.
+    pub const fn is_additive(self) -> bool {
+        self.a == 0 && (self.r > 0 || self.g > 0 || self.b > 0)
     }
 
     pub fn to_hex(self) -> String {
@@ -146,6 +159,16 @@ mod tests {
             assert_eq!(Color::from_hex(text).unwrap().to_hex(), text);
         }
         assert!(Color::from_hex("#12345").is_none());
+    }
+
+    #[test]
+    fn additive_colours() {
+        let glow = Color::additive(255, 136, 0);
+        assert!(glow.is_additive());
+        assert_eq!(glow.to_hex(), "#ff880000");
+        assert_eq!(Color::from_hex("#ff880000"), Some(glow));
+        assert!(!Color { r: 0, g: 0, b: 0, a: 0 }.is_additive());
+        assert!(!Color::WHITE.is_additive());
     }
 
     #[test]

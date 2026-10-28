@@ -104,6 +104,12 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
     return out;
 }
 
+// How much a pixel hides what is behind it. A negative colour alpha is an additive colour (the
+// colour picker's "Additive" blending): it adds its light and hides nothing.
+fn covering(cover: f32, color_alpha: f32) -> f32 {
+    return select(cover, 0.0, color_alpha < 0.0);
+}
+
 fn rotate(p: vec2<f32>, angle: f32) -> vec2<f32> {
     let c = cos(angle);
     let s = sin(angle);
@@ -163,12 +169,12 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     let width = in.c.y * 2.0;
     let half_width = max(in.c.y, 0.5 * px);
     // Lines thinner than a pixel get dimmer instead of aliasing.
-    let cover = clamp((half_width - d) / px + 0.5, 0.0, 1.0) * min(width / px, 1.0) * in.color.a;
+    let cover = clamp((half_width - d) / px + 0.5, 0.0, 1.0) * min(width / px, 1.0) * abs(in.color.a);
     let glow = exp(-max(d - half_width, 0.0) / 6.0) * in.c.z;
     if cover <= 0.0 && glow < 1e-4 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * (cover + glow), cover);
+    return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
 }
 
 // ---- Motion streaks (triangle list built on the CPU) ----
@@ -300,6 +306,11 @@ fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
     let lit = sphere_light(in.local, in.color.rgb);
     let halo_d = max(r - 1.0, 0.0) / 0.8;
     let halo = g.look.x * exp(-halo_d * halo_d) * (1.0 - cover);
+    if in.color.a < 0.0 {
+        // Additive: the lit ball's light is added at the colour's strength.
+        let k = -in.color.a;
+        return vec4<f32>((lit * cover + in.color.rgb * halo) * k, 0.0);
+    }
     return vec4<f32>(lit * cover + in.color.rgb * halo, cover);
 }
 
@@ -452,13 +463,14 @@ fn styled_ball(in: BallOut) -> vec4<f32> {
         color = mix(in.outline_color.rgb, color, fill_part);
         glow_color = in.outline_color.rgb;
     }
-    let opacity = in.look.z;
+    // An additive fill colour makes the whole ball add its light.
+    let opacity = in.look.z * select(1.0, -in.color.a, in.color.a < 0.0);
     let glow_d = max(d, 0.0) / max(in.misc.z, 0.05);
     let halo = in.look.y * exp(-glow_d * glow_d) * (1.0 - cover);
     if cover <= 0.0 && halo < 1e-4 {
         discard;
     }
-    return vec4<f32>((color * cover + glow_color * halo) * opacity, cover * opacity);
+    return vec4<f32>((color * cover + glow_color * halo) * opacity, covering(cover * opacity, in.color.a));
 }
 
 // ---- Wall flashes (instanced additive glows) ----

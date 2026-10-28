@@ -39,6 +39,7 @@ pub struct BallInstance {
 impl BallInstance {
     /// A ball drawn the classic way, following the scene's Look settings.
     pub fn classic(center: Vec2, radius: f32, color: [f32; 4]) -> Self {
+        let color = blend_alpha(color);
         Self {
             center: center.into(),
             radius,
@@ -55,6 +56,7 @@ impl BallInstance {
     /// A ball drawn with its own style at `time` seconds, moving at `velocity`.
     pub fn styled(center: Vec2, velocity: Vec2, radius: f32, color: [f32; 4], style: &BallStyle, time: f32) -> Self {
         let (color, color2, outline) = style_colors(style, color, time);
+        let (color, color2, outline) = (blend_alpha(color), blend_alpha(color2), blend_alpha(outline));
         let speed = velocity.length();
         let heading = if speed > 1e-3 { velocity / speed } else { Vec2::X };
         // Fast balls stretch along their path and thin out across it, keeping about the same area.
@@ -136,6 +138,13 @@ fn style_colors(style: &BallStyle, color: [f32; 4], time: f32) -> ([f32; 4], [f3
     (shift_linear_hue(color, turn), shift_linear_hue(second, turn), outline)
 }
 
+/// The colour the shaders get for a linear colour: an additive colour (some colour, no alpha)
+/// gets an alpha of -1. The shaders read a negative alpha as "add this much light and cover
+/// nothing", so it can still fade like any other alpha.
+pub fn blend_alpha(c: [f32; 4]) -> [f32; 4] {
+    if c[3] == 0.0 && (c[0] > 0.0 || c[1] > 0.0 || c[2] > 0.0) { [c[0], c[1], c[2], -1.0] } else { c }
+}
+
 /// Turns a linear-light colour `turn` of the way around the colour wheel.
 fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
     let shifted = Color::from_linear([color[0], color[1], color[2], 1.0]).shift_hue(turn).to_linear();
@@ -185,12 +194,14 @@ pub struct ShapeInstance {
     pub b: [f32; 4],
     /// Kind, half line width (or capsule radius), glow strength.
     pub c: [f32; 4],
-    /// Linear-light colour. Alpha scales the line, not the glow.
+    /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
+    /// light (see [`blend_alpha`]).
     pub color: [f32; 4],
 }
 
 impl ShapeInstance {
     pub fn outline(outline: &Outline, color: [f32; 4], glow: f32) -> Self {
+        let color = blend_alpha(color);
         match *outline {
             Outline::Ring { center, radius, sides, angle, gap_half, thickness } => Self {
                 a: [center.x, center.y, angle, 0.0],
@@ -208,7 +219,7 @@ impl ShapeInstance {
     }
 
     pub fn capsule(from: Vec2, to: Vec2, radius: f32, color: [f32; 4], glow: f32) -> Self {
-        Self { a: [from.x, from.y, to.x, to.y], b: [0.0; 4], c: [2.0, radius, glow, 0.0], color }
+        Self { a: [from.x, from.y, to.x, to.y], b: [0.0; 4], c: [2.0, radius, glow, 0.0], color: blend_alpha(color) }
     }
 }
 
@@ -562,8 +573,9 @@ impl FrameData {
                 full += 1;
             }
             let ball = &balls[index];
-            let c = ball.color;
-            let color = [c[0], c[1], c[2], look.string_opacity];
+            let c = blend_alpha(ball.color);
+            // Lines from additive balls add their light too.
+            let color = [c[0], c[1], c[2], look.string_opacity.copysign(c[3])];
             self.shapes.push(ShapeInstance::capsule(hit.position, ball.position, look.string_width * 0.5, color, 0.0));
             total += 1;
             if full == balls.len() || total >= MAX_STRING_LINES {
@@ -578,9 +590,9 @@ fn wall_color(container: &Container, ring: Option<u32>) -> [f32; 4] {
     match (container, ring) {
         (Container::Rings { gradient, count, .. }, Some(k)) => {
             let t = if *count > 1 { k as f32 / (*count - 1) as f32 } else { 0.0 };
-            Color::sample_gradient(gradient, t)
+            blend_alpha(Color::sample_gradient(gradient, t))
         }
-        _ => container.color().to_linear(),
+        _ => blend_alpha(container.color().to_linear()),
     }
 }
 
@@ -685,7 +697,7 @@ impl FrameData {
         let points = &world.points;
         for (index, body) in world.bodies.iter().enumerate() {
             let range = body.points.start as usize..body.points.end as usize;
-            let color = body.color;
+            let color = blend_alpha(body.color);
             match body.kind {
                 bpe_sim::bodies::BodyKind::Jelly => {
                     let ring = &points[range];
@@ -768,6 +780,8 @@ impl FrameData {
         }
         // The spacing of points along the pinned top edge, which keeps its length.
         let rest = ((at(columns - 1, 0) - at(0, 0)).length() / (columns - 1) as f32).max(1e-3);
+        // Additive cloth adds its light; any other cloth is opaque.
+        let cover = if blend_alpha(body.color)[3] < 0.0 { -1.0 } else { 1.0 };
         let shade = |area: f32| {
             let stretch = (area.abs().sqrt() / rest).clamp(0.5, 1.5);
             0.55 + 0.45 * stretch.min(1.2) / 1.2
@@ -783,7 +797,7 @@ impl FrameData {
                 let s = shade(area);
                 let checker = if (c + r) % 2 == 0 { 1.0 } else { 0.93 };
                 let color =
-                    [body.color[0] * s * checker, body.color[1] * s * checker, body.color[2] * s * checker, 1.0];
+                    [body.color[0] * s * checker, body.color[1] * s * checker, body.color[2] * s * checker, cover];
                 // Large distance inside: no smoothing across the shared edges of cells.
                 let deep = pixel * 4.0;
                 self.soft.extend_from_slice(&[

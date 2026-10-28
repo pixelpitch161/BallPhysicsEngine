@@ -891,6 +891,9 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
     Ok((device, queue))
 }
 
+/// Picture tests for additive colours.
+#[cfg(test)]
+mod blend_tests;
 /// Picture tests for soft bodies, pockets and custom shapes (physics workstream).
 #[cfg(test)]
 mod soft_tests;
