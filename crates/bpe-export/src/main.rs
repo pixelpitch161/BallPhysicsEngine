@@ -28,7 +28,8 @@ Options:
                    encoder when ffmpeg can, which is much faster, and the CPU otherwise
   --profile        time the simulation, sound, frames and drawing, and print a fingerprint
                    of the result (`all` profiles every preset plus some extra-heavy scenes)
-  --gpu-frames N   frames to draw on the graphics card when profiling (default 30, 0 skips)
+  --gpu-frames N   frames to draw on the graphics card when profiling, both spread over the
+                   video (jump) and in a row as when playing (play) (default 30, 0 skips)
 
 Batch options (render many random variations and keep the best; run the same command again
 to carry on with a batch that was stopped):
