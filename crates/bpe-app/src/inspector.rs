@@ -8,6 +8,14 @@
 //! for that group.
 
 pub mod effects;
+pub mod gpu;
+pub mod music;
+pub mod particles;
+pub mod rules;
+pub mod shapes;
+pub mod soft;
+pub mod text;
+pub mod view3d;
 
 pub use effects::EffectsPanel;
 pub(crate) use effects::pretty_name;
@@ -31,12 +39,15 @@ pub enum Tab {
     Look,
     Effects,
     Sound,
+    Rules,
+    Text,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Effects, Tab::Sound];
+    pub const ALL: [Tab; 8] =
+        [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Effects, Tab::Sound, Tab::Rules, Tab::Text];
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Tab::Balls => "Balls",
             Tab::Arena => "Arena",
@@ -44,6 +55,8 @@ impl Tab {
             Tab::Look => "Look",
             Tab::Effects => "Effects",
             Tab::Sound => "Sound",
+            Tab::Rules => "Rules",
+            Tab::Text => "Text",
         }
     }
 
@@ -88,6 +101,28 @@ impl Tab {
                 painter.line_segment([c + v(7.8, 3.0), c + v(7.8, -10.0)], stroke);
                 painter.line_segment([c + v(-1.2, -8.0), c + v(7.8, -10.0)], egui::Stroke::new(2.4, color));
             }
+            Tab::Rules => {
+                // Two blocks joined by a wire.
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(c + v(-5.5, -4.0), v(7.0, 6.0)),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(c + v(5.5, 4.0), v(7.0, 6.0)),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                let wire = vec![c + v(-2.0, -4.0), c + v(0.5, -4.0), c + v(-0.5, 4.0), c + v(2.0, 4.0)];
+                painter.add(egui::Shape::line(wire, stroke));
+            }
+            Tab::Text => {
+                // A capital T.
+                painter.line_segment([c + v(-7.0, -7.0), c + v(7.0, -7.0)], egui::Stroke::new(2.2, color));
+                painter.line_segment([c + v(0.0, -7.0), c + v(0.0, 8.0)], egui::Stroke::new(2.2, color));
+            }
         }
     }
 }
@@ -103,11 +138,34 @@ pub struct Inspector {
     pub rolled: Option<String>,
     /// How many times the dice have been rolled, mixed into each roll's seed.
     pub(crate) rolls: u64,
+    /// Each feature section's own panel state.
+    pub rules: rules::State,
+    pub text: text::State,
+    pub soft: soft::State,
+    pub shapes: shapes::State,
+    pub particles: particles::State,
+    pub gpu: gpu::State,
+    pub view3d: view3d::State,
+    pub music: music::State,
 }
 
 impl Default for Inspector {
     fn default() -> Self {
-        Self { tab: Tab::Balls, selected: None, effects: EffectsPanel::default(), rolled: None, rolls: 0 }
+        Self {
+            tab: Tab::Balls,
+            selected: None,
+            effects: EffectsPanel::default(),
+            rolled: None,
+            rolls: 0,
+            rules: Default::default(),
+            text: Default::default(),
+            soft: Default::default(),
+            shapes: Default::default(),
+            particles: Default::default(),
+            gpu: Default::default(),
+            view3d: Default::default(),
+            music: Default::default(),
+        }
     }
 }
 
@@ -154,9 +212,15 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
             match inspector.tab {
-                Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll),
+                Tab::Balls => {
+                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll);
+                    soft::section(ui, scene, &mut inspector.soft);
+                    gpu::section(ui, scene, &mut inspector.gpu);
+                }
                 Tab::Arena => {
+                    view3d::section(ui, scene, &mut inspector.view3d);
                     arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll);
+                    shapes::section(ui, scene, &mut inspector.shapes);
                     obstacles(ui, &mut scene.obstacles);
                     // Pegs and walls are things you added, like balls, so a reset keeps them.
                     let fresh = default_container(Shape::of(&scene.container));
@@ -171,10 +235,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 }
                 Tab::Bounces => {
                     bounces(ui, &mut scene.rules, &mut roll);
+                    soft::bounces_section(ui, scene, &mut inspector.soft);
                     reset_tab_to(ui, &mut scene.rules, BounceRules::default());
                 }
                 Tab::Look => {
                     look(ui, &mut scene.look, &mut roll);
+                    particles::section(ui, scene, &mut inspector.particles);
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
@@ -186,9 +252,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 }
                 Tab::Sound => {
                     sound(ui, &mut scene.sound, &mut roll);
+                    music::section(ui, scene, &mut inspector.music);
                     let fresh = default_sound(&scene.sound);
                     reset_tab_to(ui, &mut scene.sound, fresh);
                 }
+                Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
+                Tab::Text => text::section(ui, scene, &mut inspector.text),
             }
             tip(ui);
         });
@@ -236,6 +305,8 @@ fn tip(ui: &mut Ui) {
 
 fn tab_bar(ui: &mut Ui, current: &mut Tab) {
     let width = ui.available_width() / Tab::ALL.len() as f32;
+    // Eight tabs share the panel, so names shrink a little on a narrow panel to stay readable.
+    let font = (width / 4.6).clamp(10.5, 14.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for tab in Tab::ALL {
@@ -255,7 +326,7 @@ fn tab_bar(ui: &mut Ui, current: &mut Tab) {
                 rect.center_top() + egui::vec2(0.0, 37.0),
                 egui::Align2::CENTER_CENTER,
                 name,
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(font),
                 color,
             );
             if selected {
@@ -344,6 +415,7 @@ fn help_icon(ui: &mut Ui, help: &str) {
 /// marked with [`key`] just before gets a keyframe diamond.
 fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
     let animatable = crate::keys::take_next(ui);
+    crate::setting_menu::set_row_property(ui.ctx(), animatable.clone());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         let response = hint(ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())), help);
@@ -379,11 +451,12 @@ fn reset_clicked(response: &Response) -> bool {
 /// Puts a setting back to its default on a double-click, an Alt+click or the right-click menu.
 fn resettable<T: PartialEq>(response: Response, value: &mut T, default: T) -> Response {
     let mut reset = reset_clicked(&response);
+    let target = crate::setting_menu::Target {
+        property: crate::setting_menu::take_row_property(&response.ctx),
+        label: String::new(),
+    };
     response.context_menu(|ui| {
-        if ui.add_enabled(*value != default, egui::Button::new("Reset to default")).clicked() {
-            reset = true;
-            ui.close();
-        }
+        reset |= crate::setting_menu::items(ui, &target, *value != default);
     });
     if reset {
         // Alt+click on a number box would otherwise start typing into it.

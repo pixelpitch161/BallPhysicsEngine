@@ -249,6 +249,11 @@ pub trait Catalog {
     fn allows_cycles(&self) -> bool {
         false
     }
+    /// Whether an output of type `from` can be wired into an input of type `to`. Shader graphs
+    /// loosen this for their generic blocks.
+    fn accepts(&self, to: PinType, from: PinType) -> bool {
+        to.accepts(from)
+    }
 }
 
 /// A plain list of specs, the simplest catalog.
@@ -475,7 +480,7 @@ pub fn validate(graph: &Graph, catalog: &dyn Catalog) -> Vec<Diagnostic> {
                 Some("This wire leads to a block that is gone.".to_string())
             }
             (None, _) | (_, None) => Some("This wire is plugged into a pin the block doesn't have.".to_string()),
-            (Some(from), Some(to)) if !to.accepts(from) => {
+            (Some(from), Some(to)) if !catalog.accepts(to, from) => {
                 Some(format!("A {} can't go into a {} input.", from.name(), to.name()))
             }
             _ => None,

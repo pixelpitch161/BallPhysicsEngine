@@ -13,6 +13,7 @@ mod inspector;
 mod inspector_tests;
 mod keys;
 mod preview;
+mod setting_menu;
 mod settings;
 mod theme;
 mod timeline;

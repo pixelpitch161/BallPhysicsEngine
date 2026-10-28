@@ -1,8 +1,13 @@
 //! Golden event logs: every preset and every scene file in `scenes/` must keep producing exactly
 //! the same events. Any change to the physics that moves a single hit shows up here.
 //!
-//! When a change is meant to alter the logs, run with `BLESS_GOLDEN=1` to rewrite
-//! `tests/golden.txt`, and say why in the pull request.
+//! When a change is meant to alter the logs, run with `BLESS_GOLDEN=1` (once with `--release`
+//! and once without) to rewrite the golden files, and say why in the pull request.
+//!
+//! Release and debug builds each have their own file: a few presets work out starting speeds
+//! with sine and cosine, which the optimiser can work out at compile time a hair differently
+//! from the maths library at run time. The release file is the one that matches the program
+//! people use.
 
 use bpe_scene::Scene;
 use bpe_sim::{Event, EventKind, collect_wall_hits};
@@ -75,12 +80,13 @@ fn every_scene_keeps_its_event_log() {
         let (bounces, bounce_hash) = hash(events.iter().filter(|e| e.kind.is_bounce()), false);
         lines += &format!("{name}\t{all}\t{all_hash:016x}\t{bounces}\t{bounce_hash:016x}\n");
     }
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden.txt");
+    let file = if cfg!(debug_assertions) { "tests/golden-debug.txt" } else { "tests/golden.txt" };
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
     if std::env::var_os("BLESS_GOLDEN").is_some() {
         std::fs::write(&path, &lines).unwrap();
         return;
     }
-    let expected = std::fs::read_to_string(&path).expect("tests/golden.txt is missing; run with BLESS_GOLDEN=1");
+    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
     let differ: Vec<_> = expected
         .lines()
         .zip(lines.lines())
