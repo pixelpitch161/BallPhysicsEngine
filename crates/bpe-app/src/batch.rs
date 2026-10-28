@@ -119,15 +119,28 @@ impl BatchPanel {
 
     /// The folder the videos go in.
     fn folder(&self) -> PathBuf {
-        self.folder.clone().unwrap_or_else(|| {
-            let name = if self.base.name.trim().is_empty() { "Ball video" } else { self.base.name.as_str() };
-            videos_dir().join(format!("{} batch", safe_file_name(name)))
-        })
+        self.folder.clone().or_else(|| self.manifest_folder.clone()).unwrap_or_else(|| self.default_folder(1))
+    }
+
+    /// The `n`th folder in Videos named after the scene: "Escape rings batch", then
+    /// "Escape rings batch 2" and so on.
+    fn default_folder(&self, n: u32) -> PathBuf {
+        let name = if self.base.name.trim().is_empty() { "Ball video" } else { self.base.name.as_str() };
+        let suffix = if n > 1 { format!(" {n}") } else { String::new() };
+        videos_dir().join(format!("{} batch{suffix}", safe_file_name(name)))
     }
 
     /// Reads the batch record in the chosen folder, if there is one.
     fn reload(&mut self) {
-        let folder = self.folder();
+        let folder = match &self.folder {
+            Some(folder) => folder.clone(),
+            // Without a chosen folder, the first one free or holding this same batch, so
+            // changing a setting never runs into an older batch.
+            None => (1..100)
+                .map(|n| self.default_folder(n))
+                .find(|f| Manifest::load(f).map_or(!f.join("batch.json").exists(), |m| m.spec == self.spec))
+                .unwrap_or_else(|| self.default_folder(1)),
+        };
         self.manifest = Manifest::load(&folder).ok();
         self.manifest_folder = Some(folder);
     }
@@ -431,7 +444,7 @@ impl BatchPanel {
                     ui.label(RichText::new("Stopping…").color(theme::MUTED));
                 }
                 ui.label(
-                    RichText::new("You can close this window and keep editing; the batch carries on.")
+                    RichText::new("You can switch to another workspace and keep editing; the batch carries on.")
                         .small()
                         .color(theme::MUTED),
                 );

@@ -595,7 +595,7 @@ impl StudioApp {
             let selected = self.workspace == workspace;
             // A dot on Batch while a batch runs, wherever the user is.
             let name = if workspace == Workspace::Batch && self.batch.busy() {
-                format!("{} ●", workspace.name())
+                format!("{} (running)", workspace.name())
             } else {
                 workspace.name().to_string()
             };
