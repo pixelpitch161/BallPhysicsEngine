@@ -79,12 +79,6 @@ pub struct Track {
     pub keys: Vec<Key>,
 }
 
-/// A setting that follows the music, such as an effect amount pulsing with the bass. Owned by
-/// the audio-reactive workstream, which replaces this placeholder.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Modulator {}
-
 impl Ease {
     pub const ALL: [Ease; 5] = [Ease::Smooth, Ease::Linear, Ease::EaseIn, Ease::EaseOut, Ease::Hold];
 
@@ -424,10 +418,390 @@ impl Scene {
     }
 }
 
+// ---- Modulators: settings that pulse with the music ----
+
+/// Which part of the music a [`Modulator`] follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AudioBand {
+    /// Kick drums and bass lines.
+    #[default]
+    Bass,
+    /// Vocals, chords and most instruments.
+    Mid,
+    /// Hi-hats, cymbals and sparkle.
+    Treble,
+    /// Overall loudness.
+    Level,
+    /// 1 on every beat, fading quickly to 0.
+    Beat,
+    /// Jumps whenever a new sound starts.
+    Onset,
+}
+
+/// Which sound a [`Modulator`] listens to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AudioFrom {
+    /// The finished soundtrack: the song plus the bounce sounds. Visual settings only.
+    #[default]
+    Mix,
+    /// Only the loaded song. Settings that change how balls move always use this, so the
+    /// balls can never react to the sounds they make themselves.
+    Song,
+}
+
+/// How the music's loudness maps onto the setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Curve {
+    /// In step with the music.
+    #[default]
+    Linear,
+    /// Reacts to quiet sounds too.
+    Soft,
+    /// Only reacts to loud hits.
+    Sharp,
+    /// Off or fully on, nothing between.
+    Gate,
+}
+
+/// One moment of the music, each part from 0 to about 1. `beat` is the phase through the
+/// current beat: 0 on the beat, rising to 1 just before the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Levels {
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
+    pub level: f32,
+    pub beat: f32,
+    pub onset: f32,
+}
+
+/// Something that knows the music at any time in seconds, such as a song's analysis.
+pub type Listener<'a> = &'a dyn Fn(f64) -> Levels;
+
+/// The music modulators can follow. Either can be missing, and then modulators using it rest.
+#[derive(Clone, Copy, Default)]
+pub struct Audio<'a> {
+    pub song: Option<Listener<'a>>,
+    pub mix: Option<Listener<'a>>,
+}
+
+impl std::fmt::Debug for Audio<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Audio").field("song", &self.song.is_some()).field("mix", &self.mix.is_some()).finish()
+    }
+}
+
+/// "Pulse with music": moves a setting with the music, on top of its value or keyframes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Modulator {
+    pub property: Property,
+    pub source: AudioBand,
+    pub from: AudioFrom,
+    /// How far the setting moves when the music is at full strength, in the setting's own units.
+    /// For colours, how far towards [`Modulator::color`] (0 to 1).
+    pub amount: f32,
+    /// Seconds the music is averaged over; 0 follows every hit exactly, higher is gentler.
+    pub smoothing: f32,
+    pub curve: Curve,
+    /// For colour settings: the colour the music pushes towards.
+    pub color: Color,
+    pub enabled: bool,
+}
+
+impl Default for Modulator {
+    fn default() -> Self {
+        Self {
+            property: Property::Bloom,
+            source: AudioBand::Bass,
+            from: AudioFrom::Mix,
+            amount: 0.5,
+            smoothing: 0.08,
+            curve: Curve::Linear,
+            color: Color::WHITE,
+            enabled: true,
+        }
+    }
+}
+
+/// Most smoothing allowed, in seconds.
+pub const MAX_SMOOTHING: f32 = 2.0;
+/// Samples averaged for smoothing. Fixed, so the result only depends on the time.
+const SMOOTHING_TAPS: usize = 8;
+
+impl AudioBand {
+    pub const ALL: [AudioBand; 6] =
+        [AudioBand::Bass, AudioBand::Mid, AudioBand::Treble, AudioBand::Level, AudioBand::Beat, AudioBand::Onset];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AudioBand::Bass => "Bass",
+            AudioBand::Mid => "Mid",
+            AudioBand::Treble => "Treble",
+            AudioBand::Level => "Loudness",
+            AudioBand::Beat => "Beat",
+            AudioBand::Onset => "Every new sound",
+        }
+    }
+
+    /// This part of the music, from 0 to 1.
+    pub fn of(self, levels: &Levels) -> f32 {
+        let value = match self {
+            AudioBand::Bass => levels.bass,
+            AudioBand::Mid => levels.mid,
+            AudioBand::Treble => levels.treble,
+            AudioBand::Level => levels.level,
+            AudioBand::Beat => (1.0 - levels.beat.clamp(0.0, 1.0)).powi(4),
+            AudioBand::Onset => levels.onset,
+        };
+        if value.is_finite() { value.clamp(0.0, 1.5) } else { 0.0 }
+    }
+}
+
+impl Curve {
+    pub const ALL: [Curve; 4] = [Curve::Linear, Curve::Soft, Curve::Sharp, Curve::Gate];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Curve::Linear => "Even",
+            Curve::Soft => "Soft",
+            Curve::Sharp => "Sharp",
+            Curve::Gate => "On or off",
+        }
+    }
+
+    pub fn apply(self, x: f32) -> f32 {
+        let x = x.max(0.0);
+        match self {
+            Curve::Linear => x,
+            Curve::Soft => x.sqrt(),
+            Curve::Sharp => x * x,
+            Curve::Gate => {
+                let t = ((x - 0.4) / 0.2).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            }
+        }
+    }
+}
+
+impl Modulator {
+    pub fn new(property: Property, source: AudioBand) -> Self {
+        let from = if property.affects_simulation() { AudioFrom::Song } else { AudioFrom::Mix };
+        Self { property, source, from, ..Self::default() }
+    }
+
+    /// The sound this modulator really listens to: settings that move balls always use the song.
+    pub fn listens_to(&self) -> AudioFrom {
+        if self.property.affects_simulation() { AudioFrom::Song } else { self.from }
+    }
+
+    /// How strongly the music pushes the setting at `time`, from 0 to about 1, after smoothing
+    /// and the curve. None when the music it listens to isn't there.
+    pub fn strength(&self, time: f64, audio: &Audio) -> Option<f32> {
+        let listener = match self.listens_to() {
+            AudioFrom::Song => audio.song?,
+            AudioFrom::Mix => audio.mix?,
+        };
+        let smoothing = if self.smoothing.is_finite() { self.smoothing.clamp(0.0, MAX_SMOOTHING) } else { 0.0 };
+        let raw = if smoothing < 0.005 {
+            self.source.of(&listener(time))
+        } else {
+            // A weighted look back over the last two smoothing times: recent music counts most.
+            let step = 2.0 * smoothing / SMOOTHING_TAPS as f32;
+            let (mut total, mut weights) = (0.0, 0.0);
+            for k in 0..SMOOTHING_TAPS {
+                let ago = k as f32 * step;
+                let weight = (-ago / smoothing).exp();
+                total += self.source.of(&listener((time - ago as f64).max(0.0))) * weight;
+                weights += weight;
+            }
+            total / weights
+        };
+        Some(self.curve.apply(raw))
+    }
+
+    /// The setting's value at `time`, starting from `base`.
+    pub fn modulate(&self, base: Value, time: f64, audio: &Audio) -> Value {
+        if !self.enabled || !self.amount.is_finite() {
+            return base;
+        }
+        let Some(strength) = self.strength(time, audio) else { return base };
+        match base {
+            Value::Number(v) => Value::Number(self.property.limit(v + self.amount * strength)),
+            Value::Color(c) => Value::Color(Color::mix(c, self.color, (self.amount * strength).clamp(0.0, 1.0))),
+        }
+    }
+}
+
+impl Property {
+    /// Keeps a value made by a modulator within what the setting can take.
+    pub fn limit(&self, value: f32) -> f32 {
+        match self {
+            Property::Gravity
+            | Property::SidewaysGravity
+            | Property::ArenaSpin
+            | Property::ShrinkSpeed
+            | Property::EffectParam(..) => value,
+            Property::ArenaSize => value.max(0.05),
+            Property::EffectAmount(_) => value.clamp(0.0, 1.0),
+            _ => value.max(0.0),
+        }
+    }
+}
+
+/// Applies `modulators` to `scene` at `time` (only those on settings that move balls, with
+/// `simulation_only`). Modulators come after keyframes, so they pulse around the animated value.
+pub fn apply_modulators(scene: &mut Scene, modulators: &[Modulator], time: f64, simulation_only: bool, audio: &Audio) {
+    for modulator in modulators {
+        if simulation_only && !modulator.property.affects_simulation() {
+            continue;
+        }
+        if let Some(base) = modulator.property.get(scene) {
+            let value = modulator.modulate(base, time, audio);
+            if value != base {
+                modulator.property.set(scene, value);
+            }
+        }
+    }
+}
+
+/// Keeps modulators attached to their effects after the effect list changes, like
+/// [`Scene::remap_effect_tracks`] does for keyframes.
+pub fn remap_effect_modulators(modulators: &mut Vec<Modulator>, map: impl Fn(u32) -> Option<u32>) {
+    modulators.retain_mut(|m| {
+        let Some(old) = m.property.effect() else { return true };
+        let Some(new) = map(old) else { return false };
+        match &mut m.property {
+            Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = new,
+            _ => {}
+        }
+        true
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Effect;
+
+    fn steady(levels: Levels) -> impl Fn(f64) -> Levels {
+        move |_| levels
+    }
+
+    #[test]
+    fn modulators_rest_without_music() {
+        let m = Modulator::new(Property::Bloom, AudioBand::Bass);
+        assert_eq!(m.modulate(Value::Number(0.3), 1.0, &Audio::default()), Value::Number(0.3));
+        // A visual setting doesn't follow the song alone, by default.
+        let song = steady(Levels { bass: 1.0, ..Levels::default() });
+        let audio = Audio { song: Some(&song), mix: None };
+        assert_eq!(m.modulate(Value::Number(0.3), 1.0, &audio), Value::Number(0.3));
+    }
+
+    #[test]
+    fn modulators_follow_their_band() {
+        let mix = steady(Levels { bass: 1.0, treble: 0.25, beat: 0.0, ..Levels::default() });
+        let audio = Audio { song: None, mix: Some(&mix) };
+        let mut m = Modulator { amount: 2.0, smoothing: 0.0, ..Modulator::new(Property::Bloom, AudioBand::Bass) };
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(2.5));
+        m.source = AudioBand::Treble;
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(1.0));
+        m.curve = Curve::Sharp;
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(0.625));
+        m.source = AudioBand::Beat;
+        m.curve = Curve::Linear;
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(2.5));
+        m.enabled = false;
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(0.5));
+        // Values stay usable: bloom never goes negative.
+        let m = Modulator { amount: -10.0, smoothing: 0.0, ..Modulator::new(Property::Bloom, AudioBand::Bass) };
+        assert_eq!(m.modulate(Value::Number(0.5), 1.0, &audio), Value::Number(0.0));
+    }
+
+    #[test]
+    fn settings_that_move_balls_only_hear_the_song() {
+        let mix = steady(Levels { bass: 1.0, ..Levels::default() });
+        let mut m = Modulator { amount: 100.0, smoothing: 0.0, ..Modulator::new(Property::Gravity, AudioBand::Bass) };
+        assert_eq!(m.from, AudioFrom::Song);
+        // Even when set to the mix by hand, the bounce sounds can't move the balls.
+        m.from = AudioFrom::Mix;
+        assert_eq!(m.listens_to(), AudioFrom::Song);
+        let audio = Audio { song: None, mix: Some(&mix) };
+        assert_eq!(m.modulate(Value::Number(160.0), 1.0, &audio), Value::Number(160.0));
+        let audio = Audio { song: Some(&mix), mix: None };
+        assert_eq!(m.modulate(Value::Number(160.0), 1.0, &audio), Value::Number(260.0));
+    }
+
+    #[test]
+    fn smoothing_only_looks_back_and_stays_steady() {
+        // A short loud moment from t = 1.
+        let hit = |t: f64| Levels { bass: if (1.0..1.06).contains(&t) { 1.0 } else { 0.0 }, ..Levels::default() };
+        let audio = Audio { song: None, mix: Some(&hit) };
+        let m = Modulator { smoothing: 0.2, ..Modulator::new(Property::Bloom, AudioBand::Bass) };
+        assert_eq!(m.strength(0.99, &audio), Some(0.0), "never reacts before the sound");
+        let at = m.strength(1.0, &audio).unwrap();
+        let later = m.strength(1.2, &audio).unwrap();
+        assert!(at > 0.0 && later > 0.0 && later < at, "{at} {later}");
+        assert_eq!(m.strength(1.0, &audio), m.strength(1.0, &audio), "same time, same value");
+        // Odd values don't break anything.
+        let odd = Modulator { smoothing: f32::NAN, amount: f32::INFINITY, ..m.clone() };
+        assert_eq!(odd.modulate(Value::Number(1.0), 1.0, &audio), Value::Number(1.0));
+        let nan = |_| Levels { bass: f32::NAN, ..Levels::default() };
+        let audio = Audio { song: None, mix: Some(&nan) };
+        assert_eq!(m.strength(1.0, &audio), Some(0.0));
+    }
+
+    #[test]
+    fn colours_pulse_towards_the_target() {
+        let mix = steady(Levels { bass: 1.0, ..Levels::default() });
+        let audio = Audio { song: None, mix: Some(&mix) };
+        let red = Color::rgb(255, 0, 0);
+        let m = Modulator { amount: 1.0, smoothing: 0.0, color: red, ..Modulator::new(Property::BackgroundTop, AudioBand::Bass) };
+        assert_eq!(m.modulate(Value::Color(Color::rgb(0, 0, 0)), 0.0, &audio), Value::Color(red));
+    }
+
+    #[test]
+    fn apply_modulators_after_keyframes_and_by_kind() {
+        let mix = steady(Levels { bass: 1.0, ..Levels::default() });
+        let audio = Audio { song: Some(&mix), mix: Some(&mix) };
+        let mut scene = Scene::default();
+        let mut track = Track::new(Property::Bloom);
+        track.set_key(0.0, Value::Number(1.0));
+        scene.animation.push(track);
+        let modulators = vec![
+            Modulator { amount: 0.5, smoothing: 0.0, ..Modulator::new(Property::Bloom, AudioBand::Bass) },
+            Modulator { amount: 10.0, smoothing: 0.0, ..Modulator::new(Property::Gravity, AudioBand::Bass) },
+        ];
+        let gravity = scene.physics.gravity.y;
+        let mut sim = scene.clone();
+        apply_modulators(&mut sim, &modulators, 1.0, true, &audio);
+        assert_eq!((sim.physics.gravity.y, sim.look.bloom_strength), (gravity + 10.0, scene.look.bloom_strength));
+        scene.apply_animation(1.0, false);
+        apply_modulators(&mut scene, &modulators, 1.0, false, &audio);
+        assert_eq!(scene.look.bloom_strength, 1.5);
+    }
+
+    #[test]
+    fn modulators_follow_their_effects() {
+        let mut modulators = vec![
+            Modulator::new(Property::EffectAmount(0), AudioBand::Bass),
+            Modulator::new(Property::EffectParam(2, "zoom".into()), AudioBand::Bass),
+            Modulator::new(Property::Bloom, AudioBand::Bass),
+        ];
+        remap_effect_modulators(&mut modulators, |i| if i == 0 { None } else { Some(i - 1) });
+        let properties: Vec<_> = modulators.iter().map(|m| m.property.clone()).collect();
+        assert_eq!(properties, [Property::EffectParam(1, "zoom".into()), Property::Bloom]);
+    }
+
+    #[test]
+    fn modulators_save_and_load() {
+        let m = Modulator { curve: Curve::Gate, source: AudioBand::Onset, ..Modulator::new(Property::Exposure, AudioBand::Mid) };
+        let text = ron::to_string(&vec![m.clone()]).unwrap();
+        assert_eq!(ron::from_str::<Vec<Modulator>>(&text).unwrap(), vec![m]);
+        // Missing fields take their defaults.
+        let short: Modulator = ron::from_str("(property: Bloom)").unwrap();
+        assert_eq!(short, Modulator::default());
+    }
 
     fn track(keys: &[(f32, f32)], ease: Ease) -> Track {
         Track {
