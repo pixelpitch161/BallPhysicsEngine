@@ -27,6 +27,7 @@ fn overlap(green: Color, style: Option<BallStyle>) -> Scene {
         depth: 0.0,
         depth_velocity: 0.0,
         style: style.clone(),
+        sound: None,
     };
     scene.spawners = vec![ball(0.0, RED), ball(150.0, green)];
     scene

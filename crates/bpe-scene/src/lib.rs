@@ -277,6 +277,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
     Single {
         position: Vec2,
@@ -290,6 +293,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
     /// Balls dropped one after another from the same spot.
     Stream {
@@ -311,6 +317,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
 }
 
@@ -453,6 +462,7 @@ impl Default for Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             rules: BounceRules::default(),
             look: Look::default(),
@@ -576,6 +586,20 @@ impl Spawner {
     pub fn style_mut(&mut self) -> &mut Option<BallStyle> {
         match self {
             Spawner::Grid { style, .. } | Spawner::Single { style, .. } | Spawner::Stream { style, .. } => style,
+        }
+    }
+
+    pub fn sound(&self) -> Option<&BallSound> {
+        match self {
+            Spawner::Grid { sound, .. } | Spawner::Single { sound, .. } | Spawner::Stream { sound, .. } => {
+                sound.as_ref()
+            }
+        }
+    }
+
+    pub fn sound_mut(&mut self) -> &mut Option<BallSound> {
+        match self {
+            Spawner::Grid { sound, .. } | Spawner::Single { sound, .. } | Spawner::Stream { sound, .. } => sound,
         }
     }
 }
@@ -866,6 +890,11 @@ impl Scene {
                 description: "A dozen balls, each with its own look: shapes, patterns, outlines, glow and trails.",
                 scene: Scene::ball_looks(),
             },
+            Preset {
+                name: "Ball band",
+                description: "Four balls, each with its own sound: a kick drum, a bass, the chords and high bells.",
+                scene: Scene::ball_band(),
+            },
         ]
         .into_iter()
         .chain(Scene::gpu_presets())
@@ -917,6 +946,7 @@ impl Scene {
                     depth: 0.0,
                     depth_velocity: 0.0,
                     style: None,
+                    sound: None,
                 }
             })
             .collect();
@@ -962,6 +992,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 400.0), ..Physics::default() },
             rules: BounceRules {
@@ -992,6 +1023,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             look: Look {
                 trail_seconds: 0.4,
@@ -1029,6 +1061,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             rules: BounceRules { speed_gain: 1.02, grow: 2.5, max_radius: 300.0, ..BounceRules::default() },
             look: Look { trail_seconds: 0.5, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },

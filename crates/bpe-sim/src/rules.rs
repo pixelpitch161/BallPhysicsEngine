@@ -48,6 +48,8 @@ pub trait RuleBalls {
     fn color(&self, i: usize) -> [f32; 4];
     fn set_color(&mut self, i: usize, color: [f32; 4]);
     fn radius(&self, i: usize) -> f32;
+    /// Which spawner made the ball, as [`crate::Ball::group`].
+    fn group(&self, i: usize) -> u16;
     fn set_radius(&mut self, i: usize, radius: f32);
     /// Takes the ball out and records a [`EventKind::Remove`] event.
     fn remove(&mut self, i: usize, time: f64, events: &mut Vec<Event>);
@@ -954,9 +956,10 @@ fn act(
     let target = ball_input(state, program, index, 1, context, balls);
     let emit = |events: &mut Vec<Event>, ball: Option<usize>, amount: f32, balls: &dyn RuleBalls| {
         let position = ball.map_or_else(|| balls.center(), |b| balls.position(b));
+        let group = ball.map_or(crate::NO_GROUP, |b| balls.group(b));
         let ball = ball.map_or(NO_BALL, |b| b as u32);
         let kind = EventKind::Action { rule: block.rule, action: block.id as u16 };
-        events.push(Event { time: now, ball, position, depth: 0.0, speed: amount, kind });
+        events.push(Event { time: now, ball, group, position, depth: 0.0, speed: amount, kind });
     };
     match block.kind {
         Kind::Spawn => {
@@ -1168,6 +1171,9 @@ impl RuleBalls for FlatBalls<'_> {
     }
     fn radius(&self, i: usize) -> f32 {
         self.0.balls[i].radius
+    }
+    fn group(&self, i: usize) -> u16 {
+        self.0.balls[i].group
     }
     fn set_radius(&mut self, i: usize, radius: f32) {
         self.0.balls[i].radius = radius;

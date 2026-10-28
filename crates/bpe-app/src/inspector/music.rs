@@ -13,8 +13,8 @@ use crate::theme;
 use bpe_audio::instruments::{self, Builtin, Piece};
 use bpe_audio::midi::MidiFile;
 use bpe_scene::{
-    Advance, BeatSync, ChordStep, Group, Instrument, Melody, Music, NoteTrigger, PitchMode, Scene, Sound, SyncMode,
-    VoiceMap,
+    Advance, BallNotes, BallSound, BeatSync, ChordStep, Group, Instrument, Melody, Music, NoteTrigger, PitchMode,
+    Scene, Sound, SyncMode, VoiceMap,
 };
 use bpe_sim::beat_sync;
 use eframe::egui::{self, Popup, PopupCloseBehavior, RichText, Slider, Ui};
@@ -133,6 +133,16 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State, roll: &mut Opt
     ui.checkbox(&mut scene.sound.enabled, "Play a note on every hit");
     ui.add_enabled_ui(scene.sound.enabled, |ui| {
         instrument_section(ui, &mut scene.sound, state);
+        let own = scene.spawners.iter().filter(|s| s.sound().is_some()).count();
+        if own > 0 {
+            let text = if own == 1 {
+                "1 group of balls has its own sound, set in its card on the Balls tab. Its hits play that instead."
+                    .to_string()
+            } else {
+                format!("{own} groups of balls have their own sound, set in their cards on the Balls tab. Their hits play that instead.")
+            };
+            ui.label(RichText::new(text).small().color(theme::ACCENT_TEXT));
+        }
         notes_section(ui, scene, state, roll);
         voices_section(ui, &mut scene.sound.voices, state);
         loudness_section(ui, &mut scene.sound);
@@ -804,12 +814,7 @@ fn voices_section(ui: &mut Ui, voices: &mut Vec<VoiceMap>, state: &mut State) {
 
 /// A drop-down of every instrument, for a voice row.
 fn instrument_menu(ui: &mut Ui, id: (&str, usize), instrument: &mut Instrument) {
-    let shown = match &*instrument {
-        Instrument::Sample { path, .. } | Instrument::SampleFolder { path } | Instrument::SoundFont { path, .. } => {
-            file_name(path)
-        }
-        other => Pick::of(other).map_or("Unknown", Pick::name).to_string(),
-    };
+    let shown = instrument_name(instrument);
     combo(ui, "Instrument", egui::ComboBox::from_id_salt(id).selected_text(shown).width(120.0), |ui| {
         let current = Pick::of(instrument);
         for (family, picks) in shelves() {
@@ -823,6 +828,225 @@ fn instrument_menu(ui: &mut Ui, id: (&str, usize), instrument: &mut Instrument) 
             }
         }
     });
+}
+
+// ---------- a ball group's own sound ----------
+
+/// The Sound part of a ball group's card: its own instrument, notes, volume and place.
+pub fn ball_section(ui: &mut Ui, index: usize, sound: &mut Option<BallSound>, scene_sound: &Sound, state: &mut State) {
+    ui.add_space(4.0);
+    let header = match sound {
+        None => "Sound",
+        Some(s) if s.muted => "Sound (muted)",
+        Some(_) => "Sound (its own)",
+    };
+    egui::CollapsingHeader::new(RichText::new(header).strong().color(theme::ACCENT_TEXT))
+        .id_salt(("ball-sound", index))
+        .default_open(sound.is_some())
+        .show(ui, |ui| ball_sound_body(ui, sound, scene_sound, state));
+}
+
+fn ball_sound_body(ui: &mut Ui, sound: &mut Option<BallSound>, scene_sound: &Sound, state: &mut State) {
+    let scene_instrument = instrument_name(&scene_sound.instrument);
+    let Some(s) = sound.as_mut() else {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("These balls sound like the rest of the scene ({scene_instrument}, Sound tab)."))
+                    .color(theme::MUTED),
+            );
+            if ui
+                .button("Give them their own sound")
+                .on_hover_text("Pick an instrument and notes just for these balls")
+                .clicked()
+            {
+                *sound = Some(BallSound::default());
+            }
+            if ui.small_button("Mute").on_hover_text("These balls make no sound").clicked() {
+                *sound = Some(BallSound { muted: true, ..BallSound::default() });
+            }
+        });
+        return;
+    };
+    let mut back = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut s.muted, "Mute").on_hover_text("These balls make no sound at all");
+        back = ui
+            .small_button("Back to the scene's sound")
+            .on_hover_text("Play these balls like the rest of the scene again")
+            .clicked();
+    });
+    if back {
+        *sound = None;
+        return;
+    }
+    if s.muted {
+        return;
+    }
+    let d = BallSound::default();
+    grid(ui, "ball-sound", |ui| {
+        label(
+            ui,
+            "Instrument",
+            "What these balls' hits play. Their hits play only this, instead of the Sound tab's instrument and voices.",
+        );
+        ui.horizontal(|ui| {
+            let shown = s
+                .instrument
+                .as_ref()
+                .map_or_else(|| format!("Same as the scene ({scene_instrument})"), instrument_name);
+            combo(
+                ui,
+                "Instrument",
+                egui::ComboBox::from_id_salt("ball-instrument").selected_text(shown).width(190.0),
+                |ui| {
+                    if ui.selectable_label(s.instrument.is_none(), "Same as the scene").clicked() {
+                        s.instrument = None;
+                    }
+                    let current = s.instrument.as_ref().and_then(Pick::of);
+                    for (family, picks) in shelves() {
+                        ui.label(RichText::new(family).small().color(theme::MUTED));
+                        for pick in picks {
+                            let base = s.instrument.clone().unwrap_or_else(|| scene_sound.instrument.clone());
+                            if ui
+                                .selectable_label(current == Some(pick), pick.name())
+                                .on_hover_text(pick.help())
+                                .clicked()
+                                && let Some(new) = pick.instrument(&base)
+                            {
+                                state.preview(&new);
+                                s.instrument = Some(new);
+                            }
+                        }
+                    }
+                },
+            );
+            hear_button(ui, state, s.instrument.as_ref().unwrap_or(&scene_sound.instrument));
+        });
+        ui.end_row();
+        if let Some(instrument) = &mut s.instrument {
+            instrument_settings(ui, instrument, state);
+        }
+
+        label(ui, "Notes", "Which notes these balls play.");
+        let drums =
+            s.instrument.as_ref().unwrap_or(&scene_sound.instrument).eq(&Instrument::library(Builtin::DrumKit.name()));
+        ui.horizontal_wrapped(|ui| {
+            let kind = |n: &BallNotes| std::mem::discriminant(n);
+            let low = scene_sound.low_note.max(24).saturating_add(12).min(96);
+            let one = if drums { "One drum" } else { "One note" };
+            let options = [
+                (BallNotes::Scene, "Same as the scene", "The same chords or melody as everything else."),
+                (
+                    BallNotes::Range { low, high: low.saturating_add(12).min(108) },
+                    "Own range",
+                    "Notes from the scene's chords, but only between two notes, so these balls sit higher or lower.",
+                ),
+                (BallNotes::Fixed(if drums { 36 } else { 60 }), one, "Always the same note."),
+                (
+                    BallNotes::Melody(Melody::default()),
+                    "Own melody",
+                    "A tune of their own, one note per hit of these balls.",
+                ),
+            ];
+            for (notes, name, help) in options {
+                let picked = kind(&s.notes) == kind(&notes);
+                if ui.add(egui::Button::selectable(picked, name)).on_hover_text(help).clicked() && !picked {
+                    s.notes = notes;
+                }
+            }
+        });
+        ui.end_row();
+        match &mut s.notes {
+            BallNotes::Scene | BallNotes::Melody(_) => {}
+            BallNotes::Range { low, high } => {
+                slider(
+                    ui,
+                    "Lowest note",
+                    "The lowest note these balls play. Middle C is C4.",
+                    low,
+                    72,
+                    24..=108,
+                    note_names,
+                );
+                slider(ui, "Highest note", "The highest note these balls play.", high, 84, 24..=108, note_names);
+                if *high < *low {
+                    *high = *low;
+                }
+            }
+            BallNotes::Fixed(key) => {
+                if drums {
+                    label(ui, "Drum", "Which drum these balls hit.");
+                    let piece = Piece::from_note(*key);
+                    combo(
+                        ui,
+                        "Drum",
+                        egui::ComboBox::from_id_salt("ball-drum").selected_text(piece.name()).width(120.0),
+                        |ui| {
+                            for piece in Piece::ALL {
+                                if ui.selectable_label(Piece::from_note(*key) == piece, piece.name()).clicked() {
+                                    *key = piece.note();
+                                }
+                            }
+                        },
+                    );
+                    ui.end_row();
+                } else {
+                    slider(ui, "Note", "The note every hit of these balls plays.", key, 60, 24..=108, note_names);
+                }
+            }
+        }
+        slider(
+            ui,
+            "Volume",
+            "How loud these balls are. 0 is as loud as the rest of the scene.",
+            &mut s.gain,
+            d.gain,
+            -30.0..=12.0,
+            units(" dB", 1),
+        );
+        label(
+            ui,
+            "Left or right",
+            "Where these balls are heard. Follow the ball moves the sound with where the hit is.",
+        );
+        ui.horizontal(|ui| {
+            let mut follow = s.pan.is_none();
+            if ui.checkbox(&mut follow, "Follow the ball").changed() {
+                s.pan = if follow { None } else { Some(0.0) };
+            }
+            if let Some(pan) = &mut s.pan {
+                let side = egui::Slider::new(pan, -1.0..=1.0).custom_formatter(|p, _| match p {
+                    p if p < -0.02 => format!("{:.0}% left", -p * 100.0),
+                    p if p > 0.02 => format!("{:.0}% right", p * 100.0),
+                    _ => "Middle".into(),
+                });
+                named(&ui.add(side), egui::Role::Slider, "Left or right");
+            }
+        });
+        ui.end_row();
+    });
+    if let BallNotes::Melody(melody) = &mut s.notes {
+        melody_settings(ui, melody, state);
+    }
+    if let BallNotes::Range { low, high } = s.notes
+        && high - low < 4
+    {
+        ui.label(
+            RichText::new("Tip: a narrow range may hold no notes of some chords, and those hits stay silent.")
+                .small()
+                .color(theme::MUTED),
+        );
+    }
+}
+
+/// An instrument's name as the menus show it.
+fn instrument_name(instrument: &Instrument) -> String {
+    match instrument {
+        Instrument::Sample { path, .. } | Instrument::SampleFolder { path } | Instrument::SoundFont { path, .. } => {
+            file_name(path)
+        }
+        other => Pick::of(other).map_or("Unknown", Pick::name).to_string(),
+    }
 }
 
 // ---------- loudness ----------

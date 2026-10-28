@@ -29,6 +29,7 @@ fn sheet(styles: &[BallStyle]) -> Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: Some(style.clone()),
+                sound: None,
             }
         })
         .collect();

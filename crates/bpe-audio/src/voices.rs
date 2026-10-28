@@ -1,13 +1,14 @@
 //! The voices table: each kind of event can play its own instrument, and every bounce can play
 //! the next note of a MIDI melody. Each voice holds at most [`MAX_VOICES`] notes at once; when
-//! a new note needs room, the oldest one fades out quickly.
+//! a new note needs room, the oldest one fades out quickly. A ball group can also have its own
+//! sound, which plays its hits and escapes instead.
 
 use crate::instruments::Voice;
 use crate::{
     ESCAPE_STRUM, MixOptions, PlayedNote, Progression, SAMPLE_RATE, STRUM_SPACING, Soundtrack, mix_notes, mix64,
 };
 use bpe_music::midi::Step;
-use bpe_scene::{Advance, Instrument, NoteTrigger, PitchMode, Scene};
+use bpe_scene::{Advance, BallNotes, Instrument, Melody as MelodySettings, NoteTrigger, PitchMode, Scene};
 use bpe_sim::{Event, EventKind};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -19,11 +20,14 @@ const STEAL_FADE: usize = SAMPLE_RATE as usize / 200;
 /// Strength of events that have no impact speed, such as beats.
 const PLAIN_VELOCITY: f32 = 0.8;
 
-/// Whether a scene uses none of the voices table or melody, so it plays exactly as scenes did
-/// before they existed.
+/// Whether a scene uses none of the voices table, melody or ball groups' own sounds, so it plays
+/// exactly as scenes did before they existed.
 pub(crate) fn plays_like_before(scene: &Scene) -> bool {
     let classic = matches!(scene.sound.instrument, Instrument::Pluck { .. } | Instrument::Sample { .. });
-    classic && scene.sound.voices.is_empty() && scene.music.melody.is_none()
+    classic
+        && scene.sound.voices.is_empty()
+        && scene.music.melody.is_none()
+        && scene.spawners.iter().all(|s| s.sound().is_none())
 }
 
 /// What happened, as far as choosing a sound goes.
@@ -101,7 +105,16 @@ struct Chosen {
 
 impl Tune {
     fn new(scene: &Scene, options: &MixOptions) -> anyhow::Result<Self> {
-        let melody = match &scene.music.melody {
+        Self::with(scene.music.melody.as_ref(), Progression::new(scene)?, scene.sound.seed, options)
+    }
+
+    fn with(
+        melody: Option<&MelodySettings>,
+        progression: Progression,
+        seed: u64,
+        options: &MixOptions,
+    ) -> anyhow::Result<Self> {
+        let melody = match melody {
             Some(m) => {
                 let file = bpe_music::midi::load(&m.path, options.base_dir)?;
                 let steps = file.steps(m.track, m.transpose);
@@ -115,7 +128,7 @@ impl Tune {
             }
             None => None,
         };
-        Ok(Self { melody, progression: Progression::new(scene)?, seed: scene.sound.seed })
+        Ok(Self { melody, progression, seed })
     }
 
     /// Notes for event number `index`, which happened at video `time`.
@@ -160,6 +173,8 @@ struct Row {
     voice: Voice,
     /// The events it plays; None for the scene's instrument, which plays what no row does.
     filter: Option<NoteTrigger>,
+    /// A ball group's own instrument, which plays only that group's hits.
+    group_only: bool,
     pitch: PitchMode,
     gain: f32,
 }
@@ -194,6 +209,7 @@ fn rows(scene: &Scene, options: &MixOptions) -> anyhow::Result<Vec<Row>> {
             index: index as u16,
             voice: Voice::new(&v.instrument, options.base_dir)?,
             filter: Some(v.on),
+            group_only: false,
             pitch: v.pitch,
             gain: 10f32.powf(v.gain / 20.0),
         });
@@ -202,10 +218,80 @@ fn rows(scene: &Scene, options: &MixOptions) -> anyhow::Result<Vec<Row>> {
         index: sound.voices.len() as u16,
         voice: Voice::new(&sound.instrument, options.base_dir)?,
         filter: None,
+        group_only: false,
         pitch: PitchMode::Tune,
         gain: 1.0,
     });
     Ok(rows)
+}
+
+/// A ball group's own sound, ready to play.
+struct GroupSound {
+    muted: bool,
+    /// The row that plays it: the group's own instrument, or the scene's.
+    row: usize,
+    notes: GroupNotes,
+    /// Volume, as a factor.
+    gain: f32,
+    pan: Option<f32>,
+}
+
+enum GroupNotes {
+    /// The scene's tune, moving on with everyone else.
+    Scene,
+    Fixed(u8),
+    /// Chords in the group's own range, or its own melody.
+    Own(Tune),
+}
+
+/// Each spawner's own sound, by its place in the scene's list. Groups with their own instrument
+/// get a row of their own, added to `rows` after the scene's instrument at `main`.
+fn group_sounds(
+    scene: &Scene,
+    options: &MixOptions,
+    rows: &mut Vec<Row>,
+    main: usize,
+) -> anyhow::Result<Vec<Option<GroupSound>>> {
+    let mut groups = Vec::new();
+    for (g, spawner) in scene.spawners.iter().enumerate() {
+        let Some(sound) = spawner.sound() else {
+            groups.push(None);
+            continue;
+        };
+        let row = match &sound.instrument {
+            Some(instrument) if !sound.muted => {
+                rows.push(Row {
+                    index: (scene.sound.voices.len() + 1 + g) as u16,
+                    voice: Voice::new(instrument, options.base_dir)?,
+                    filter: None,
+                    group_only: true,
+                    pitch: PitchMode::Tune,
+                    gain: 1.0,
+                });
+                rows.len() - 1
+            }
+            _ => main,
+        };
+        let seed = scene.sound.seed;
+        let notes = match &sound.notes {
+            BallNotes::Scene => GroupNotes::Scene,
+            BallNotes::Fixed(key) => GroupNotes::Fixed(*key),
+            BallNotes::Range { low, high } => {
+                GroupNotes::Own(Tune::with(None, Progression::in_range(scene, *low, *high)?, seed, options)?)
+            }
+            BallNotes::Melody(melody) => {
+                GroupNotes::Own(Tune::with(Some(melody), Progression::new(scene)?, seed, options)?)
+            }
+        };
+        groups.push(Some(GroupSound {
+            muted: sound.muted,
+            row,
+            notes,
+            gain: 10f32.powf(sound.gain / 20.0),
+            pan: sound.pan.map(|p| p.clamp(-1.0, 1.0)),
+        }));
+    }
+    Ok(groups)
 }
 
 /// Which rows play an event of this class.
@@ -214,7 +300,7 @@ fn playing(rows: &[Row], class: Class) -> Vec<bool> {
     rows.iter()
         .map(|r| match r.filter {
             Some(filter) => class.matches(filter),
-            None => class.is_impact() && !claimed,
+            None => class.is_impact() && !claimed && !r.group_only,
         })
         .collect()
 }
@@ -229,6 +315,9 @@ pub(crate) fn layer(
     let sound = &scene.sound;
     let mut tune = Tune::new(scene, options)?;
     let mut rows = rows(scene, options)?;
+    // The scene's own instrument comes after the voices table, then the groups' instruments.
+    let main = rows.len() - 1;
+    let mut groups = group_sounds(scene, options, &mut rows, main)?;
     let (center, half_width) = (scene.container.center().x, scene.container.half_width());
     let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
@@ -245,7 +334,16 @@ pub(crate) fn layer(
                 continue;
             }
         }
-        let plays = playing(&rows, class);
+        // A group with its own sound plays its hits and escapes on that alone.
+        let mut group =
+            if class.is_impact() { groups.get_mut(event.group as usize).and_then(Option::as_mut) } else { None };
+        if group.as_ref().is_some_and(|g| g.muted) {
+            continue;
+        }
+        let plays = match &group {
+            Some(g) => (0..rows.len()).map(|r| r == g.row).collect(),
+            None => playing(&rows, class),
+        };
         if !plays.contains(&true) {
             continue;
         }
@@ -262,10 +360,20 @@ pub(crate) fn layer(
         };
         // The melody moves on once per event, however many voices play it.
         let wants_tune = rows.iter().zip(&plays).any(|(r, &p)| p && r.pitch == PitchMode::Tune);
-        let chosen = if wants_tune { tune.choose(index, event, class, time, impact) } else { None };
+        let chosen = match group.as_deref_mut().map(|g| &mut g.notes) {
+            None | Some(GroupNotes::Scene) => {
+                wants_tune.then(|| tune.choose(index, event, class, time, impact)).flatten()
+            }
+            Some(GroupNotes::Fixed(key)) => Some(Chosen { keys: vec![*key], velocity: impact, spacing: 0, step: None }),
+            // The group's own melody isn't the scene's, so the timeline's melody steps leave it out.
+            Some(GroupNotes::Own(own)) => {
+                own.choose(index, event, class, time, impact).map(|c| Chosen { step: None, ..c })
+            }
+        };
+        let (group_gain, group_pan) = group.map_or((1.0, None), |g| (g.gain, g.pan));
         // Beats and other events without a ball sit in the middle.
         let x = if event.ball_index().is_some() { event.position.x - center } else { 0.0 };
-        let pan = (x / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
+        let pan = group_pan.unwrap_or((x / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width);
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         for (r, row) in rows.iter().enumerate() {
             if !plays[r] {
@@ -276,7 +384,7 @@ pub(crate) fn layer(
                 (PitchMode::Tune, Some(c)) => (c.keys.clone(), c.velocity, c.spacing, c.step),
                 (PitchMode::Tune, None) => continue,
             };
-            let gain = velocity * row.gain;
+            let gain = velocity * row.gain * group_gain;
             for (n, &key) in keys.iter().enumerate() {
                 let start = start + n * spacing;
                 if start >= frames {
@@ -290,10 +398,10 @@ pub(crate) fn layer(
         }
     }
 
-    // Notes played by rules go to the scene's own instrument, the last row.
+    // Notes played by rules go to the scene's own instrument.
     if events.iter().any(|e| matches!(e.kind, EventKind::Action { .. })) {
         let progression = Progression::new(scene)?;
-        let row = rows.len() - 1;
+        let row = main;
         for note in crate::rule_notes(scene, events, options, &progression, frames) {
             let (key, velocity) = (note.key, note.volume.clamp(0.0, 1.0));
             pending.push(Pending { row, start: note.start, key, velocity, left: note.left, right: note.right });
@@ -382,7 +490,7 @@ mod tests {
     }
 
     fn hit(time: f64, ball: u32, kind: EventKind) -> Event {
-        Event { time, ball, position: bpe_scene::Vec2::ZERO, depth: 0.0, speed: 500.0, kind }
+        Event { time, ball, group: 0, position: bpe_scene::Vec2::ZERO, depth: 0.0, speed: 500.0, kind }
     }
 
     fn keys(scene: &Scene, events: &[Event]) -> Vec<u8> {
@@ -474,6 +582,114 @@ mod tests {
         assert!(sounding > 0);
         assert_eq!(mix.notes.iter().filter(|n| n.voice == 1).count(), sounding);
         assert!(mix.notes.iter().filter(|n| n.voice == 0).all(|n| n.key == 49));
+    }
+
+    /// Two balls, the second with its own sound.
+    fn two_balls(own: bpe_scene::BallSound) -> (Scene, Vec<Event>) {
+        let mut scene = Scene::default();
+        scene.video.duration = 10.0;
+        let ball = |x: f32, sound| bpe_scene::Spawner::Single {
+            position: bpe_scene::Vec2::new(x, 0.0),
+            velocity: bpe_scene::Vec2::new(400.0, -300.0),
+            radius: 30.0,
+            color: bpe_scene::Color::WHITE,
+            depth: 0.0,
+            depth_velocity: 0.0,
+            style: None,
+            sound,
+        };
+        scene.spawners = vec![ball(-200.0, None), ball(200.0, Some(own))];
+        let events = bpe_sim::collect_wall_hits(&scene);
+        (scene, events)
+    }
+
+    /// Hits that make a sound, for each of the two groups.
+    fn sounding(scene: &Scene, events: &[Event]) -> [usize; 2] {
+        let count = |g| {
+            events
+                .iter()
+                .filter(|e| e.group == g && e.kind.is_bounce() && e.speed >= scene.sound.min_impact_speed)
+                .filter(|e| e.time < scene.video.duration as f64)
+                .count()
+        };
+        [count(0), count(1)]
+    }
+
+    #[test]
+    fn a_ball_group_plays_its_own_instrument_and_note() {
+        let own = bpe_scene::BallSound {
+            instrument: Some(Instrument::library("Drum kit")),
+            notes: BallNotes::Fixed(38),
+            ..Default::default()
+        };
+        let (scene, events) = two_balls(own);
+        let [plain, drums] = sounding(&scene, &events);
+        assert!(plain > 3 && drums > 3, "{plain} {drums}");
+        let mix = crate::mix(&scene, &events, &MixOptions::default()).unwrap();
+        // The scene's instrument is row 0 (no voices); the second group's is 0 + 1 + 1.
+        let own_notes: Vec<_> = mix.notes.iter().filter(|n| n.voice == 2).collect();
+        assert_eq!(own_notes.len(), drums);
+        assert!(own_notes.iter().all(|n| n.key == 38));
+        assert_eq!(mix.notes.iter().filter(|n| n.voice == 0).count(), plain);
+    }
+
+    #[test]
+    fn a_muted_group_is_silent_and_the_others_still_play() {
+        let (scene, events) = two_balls(bpe_scene::BallSound { muted: true, ..Default::default() });
+        let [plain, _] = sounding(&scene, &events);
+        let mix = crate::mix(&scene, &events, &MixOptions::default()).unwrap();
+        assert!(plain > 0);
+        assert_eq!(mix.notes.len(), plain);
+        assert!(mix.notes.iter().all(|n| n.voice == 0));
+    }
+
+    #[test]
+    fn a_group_can_keep_to_its_own_notes_and_side() {
+        let own = bpe_scene::BallSound {
+            notes: BallNotes::Range { low: 84, high: 96 },
+            pan: Some(-1.0),
+            gain: -6.0,
+            ..Default::default()
+        };
+        let (scene, events) = two_balls(own);
+        let [_, high] = sounding(&scene, &events);
+        let mix = crate::mix(&scene, &events, &MixOptions::default()).unwrap();
+        let own: Vec<_> = mix.notes.iter().filter(|n| n.key >= 84).collect();
+        assert_eq!(own.len(), high);
+        // The rest stay in the Sound tab's range, which tops out below.
+        assert!(mix.notes.iter().filter(|n| n.key < 84).all(|n| n.key >= scene.sound.low_note));
+
+        // Hard left: only the left channel moves while the group plays alone.
+        let mut alone = scene.clone();
+        alone.spawners.remove(0);
+        let events = bpe_sim::collect_wall_hits(&alone);
+        let mix = crate::mix(&alone, &events, &MixOptions::default()).unwrap();
+        let (left, right) = mix
+            .track
+            .samples
+            .chunks_exact(2)
+            .fold((0.0f32, 0.0f32), |(l, r), f| (l.max(f[0].abs()), r.max(f[1].abs())));
+        assert!(left > 0.1 && right < 1e-4, "{left} {right}");
+    }
+
+    #[test]
+    fn a_group_melody_moves_on_only_with_its_own_hits() {
+        let own = bpe_scene::BallSound { notes: BallNotes::Melody(Melody::default()), ..Default::default() };
+        let events = [
+            hit(0.5, 1, EventKind::Wall),
+            hit(0.6, 0, EventKind::Wall),
+            hit(0.7, 0, EventKind::Wall),
+            hit(0.8, 1, EventKind::Wall),
+            hit(0.9, 1, EventKind::Wall),
+            hit(1.0, 1, EventKind::Wall),
+        ];
+        let (scene, _) = two_balls(own);
+        let events: Vec<Event> = events.into_iter().map(|e| Event { group: e.ball as u16, ..e }).collect();
+        let mix = crate::mix(&scene, &events, &MixOptions::default()).unwrap();
+        // The second ball plays Ode to Joy, E E F G, with no gaps for the other ball's hits.
+        let tune: Vec<u8> =
+            mix.notes.iter().filter(|n| [0.5, 0.8, 0.9, 1.0].contains(&n.time)).map(|n| n.key).collect();
+        assert_eq!(tune, vec![64, 64, 65, 67]);
     }
 
     #[test]
