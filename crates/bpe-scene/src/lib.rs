@@ -18,7 +18,10 @@ mod random;
 mod shapes;
 mod view;
 
-pub use animation::{Ease, Key, Modulator, Property, SAME_TIME, Track, Value};
+pub use animation::{
+    Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
+    remap_effect_modulators,
+};
 pub use bodies::*;
 pub use bpe_graph::Graph;
 pub use captions::*;

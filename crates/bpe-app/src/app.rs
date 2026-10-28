@@ -66,6 +66,8 @@ pub struct StudioApp {
     /// Show the performance meter over the preview.
     show_stats: bool,
     meter: Meter,
+    /// (WS5) The latest soundtrack's analysis, for visuals that pulse with the music.
+    mix: Option<Arc<bpe_music::AudioFeatures>>,
     workspace: Workspace,
     rules: rules_workspace::State,
     shaders: shader_workspace::State,
@@ -132,7 +134,8 @@ impl History {
 
 /// A finished soundtrack: its generation, the result, the hits it was made from, and how long
 /// it took in milliseconds.
-type SoundResult = (u64, anyhow::Result<Soundtrack>, HitSummary, f32);
+/// (WS5) Also the soundtrack's analysis, for visuals that pulse with the finished mix.
+type SoundResult = (u64, anyhow::Result<(Soundtrack, Arc<bpe_music::AudioFeatures>)>, HitSummary, f32);
 
 /// Mixes the soundtrack on a background thread whenever the scene changes.
 struct SoundJob {
@@ -208,6 +211,7 @@ impl StudioApp {
             preview_quality: PreviewQuality::default(),
             show_stats: false,
             meter: Meter::default(),
+            mix: None,
             workspace: Workspace::default(),
             rules: rules_workspace::State::default(),
             shaders: shader_workspace::State::default(),
@@ -338,8 +342,9 @@ impl StudioApp {
             self.meter.sound_ms = Some(took);
             self.timeline.set_hits(hits);
             match result {
-                Ok(track) => {
+                Ok((track, mix)) => {
                     self.sound.error = None;
+                    self.mix = Some(mix);
                     if let Some(audio) = &self.audio {
                         audio.set_track(Arc::new(track.samples));
                         if self.playing {
@@ -347,7 +352,11 @@ impl StudioApp {
                         }
                     }
                 }
-                Err(error) => self.sound.error = Some(format!("{error:#}")),
+                Err(error) => {
+                    self.sound.error = Some(format!("{error:#}"));
+                    // WS5: don't keep pulsing to a soundtrack that is gone.
+                    self.mix = None;
+                }
             }
         }
         let due = self.sound.dirty_since.is_some_and(|t| t.elapsed() >= SOUND_DEBOUNCE);
@@ -360,7 +369,11 @@ impl StudioApp {
             std::thread::spawn(move || {
                 let started = Instant::now();
                 let hits = bpe_sim::collect_wall_hits(&scene);
-                let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref());
+                let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref()).map(|track| {
+                    // WS5: what the finished mix sounds like, for visuals that pulse with it.
+                    let mix = bpe_render::effects::mix_features(&track.samples, bpe_audio::SAMPLE_RATE, 2);
+                    (track, mix)
+                });
                 let took = started.elapsed().as_secs_f32() * 1000.0;
                 let _ = sender.send((generation, result, HitSummary::new(&hits), took));
                 ctx.request_repaint();
@@ -816,6 +829,12 @@ impl eframe::App for StudioApp {
             self.scene = shown.clone();
         }
         keys::publish(&ctx, &self.scene, key_time);
+        crate::setting_menu::pulse::publish(
+            &ctx,
+            &self.scene,
+            self.mix.clone(),
+            self.playback.simulation().inputs().music.clone(),
+        );
         egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
@@ -844,7 +863,15 @@ impl eframe::App for StudioApp {
                     let area = ui.max_rect();
                     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| match workspace {
                         Workspace::Rules => rules_workspace::show(ui, &mut self.scene, &mut self.rules, None),
-                        Workspace::Shaders => shader_workspace::show(ui, &mut self.scene, &mut self.shaders),
+                        Workspace::Shaders => shader_workspace::show(
+                            ui,
+                            frame,
+                            &mut self.scene,
+                            &mut self.shaders,
+                            &self.inspector.effects.library,
+                            &self.playback,
+                            self.time,
+                        ),
                         _ => batch::show(ui, &mut self.scene, &mut self.batch),
                     });
                     self.floating_preview(&ctx, area, frame)
@@ -855,8 +882,9 @@ impl eframe::App for StudioApp {
         if outcome.catching_up {
             ctx.request_repaint();
         }
-        if let Some(preview) = &self.preview {
+        if let Some(preview) = &mut self.preview {
             self.inspector.effects.gpu_errors = preview.effect_gpu_errors().to_vec();
+            preview.set_mix(self.mix.clone());
         }
         if outcome.clicked {
             self.set_playing(false);
@@ -887,6 +915,25 @@ impl eframe::App for StudioApp {
                 }
                 _ => None,
             });
+        }
+        // WS5: "Pulse with music" from the setting menus and wave icons, and its window.
+        let requests = crate::setting_menu::pulse::take_requests(&ctx);
+        if !requests.is_empty() {
+            let library = &self.inspector.effects.library;
+            let effects = self.scene.effects.clone();
+            crate::setting_menu::pulse::apply_requests(&ctx, &mut self.scene, requests, |property| match property {
+                Property::EffectParam(i, name) => {
+                    let info = library.get(&effects.get(*i as usize)?.shader)?;
+                    Some(Value::Number(info.params.iter().find(|p| p.name == *name)?.default))
+                }
+                _ => None,
+            });
+        }
+        crate::setting_menu::pulse::window(&ctx, &mut self.scene, self.time);
+        // WS5: "New node effect" and "Edit as nodes" open the Shaders workspace.
+        if let Some(name) = self.inspector.effects.open_graph.take() {
+            self.shaders.open(name);
+            self.workspace = Workspace::Shaders;
         }
         match self.clicked.take() {
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
@@ -988,6 +1035,9 @@ fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits:
 fn moving_parts(scene: &Scene) -> Scene {
     let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
     parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    // WS5: node effects and pulses on the picture only change the picture.
+    parts.shader_graphs = Vec::new();
+    parts.modulators = scene.modulators.iter().filter(|m| m.property.affects_simulation()).cloned().collect();
     // 3D (WS4): the camera, lights and looks only change the picture.
     if let bpe_scene::View::Space(space) = &mut parts.view {
         **space = space.moving_parts();

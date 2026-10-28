@@ -125,6 +125,19 @@ impl View {
 }
 
 impl Preview {
+    /// (WS5) The finished soundtrack's analysis, for visuals that pulse with the mix.
+    pub fn set_mix(&mut self, mix: Option<std::sync::Arc<bpe_music::AudioFeatures>>) {
+        let same = match (&mix, &self.frame_data.mix) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.frame_data.mix = mix;
+            self.drawn = None;
+        }
+    }
+
     /// Effects the GPU refused even though they passed the shader check, as (id, message).
     pub fn effect_gpu_errors(&self) -> &[(String, String)] {
         self.renderer.effect_gpu_errors()

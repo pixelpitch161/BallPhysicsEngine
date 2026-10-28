@@ -14,6 +14,8 @@ pub mod text;
 pub use effects::EffectLibrary;
 pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
 pub use frame::ShapeInstance;
+/// The music at a moment, for settings that pulse with it (WS5).
+pub use frame::levels as audio_levels;
 pub use frame::{BallInstance, EVENT_MEMORY, FlashInstance, FrameData, RecentHit, TrailVertex};
 pub use wgpu;
 
@@ -378,6 +380,23 @@ impl Renderer {
         self.effects.gpu_errors()
     }
 
+    // ---- Shader workspace (WS5): block previews of a node effect ----
+
+    /// Starts (or with `None` stops) drawing block previews of a node effect each frame.
+    pub fn set_effect_thumbnails(&mut self, request: Option<effects::ThumbnailRequest>) {
+        self.effects.set_thumbnails(request);
+    }
+
+    /// The atlas the block previews are drawn into, see [`effects::thumbnail_tile`].
+    pub fn effect_thumbnails(&mut self, device: &wgpu::Device) -> &wgpu::TextureView {
+        self.effects.thumbnail_atlas(device)
+    }
+
+    /// Whether the last frame drew the requested block previews.
+    pub fn effect_thumbnails_drawn(&self) -> bool {
+        self.effects.thumbnails_drawn()
+    }
+
     /// Starts feedback effects such as Echo afresh on the next frame.
     pub fn reset_effects(&mut self) {
         self.effects.reset();
@@ -403,7 +422,7 @@ impl Renderer {
         let scene = if scene.animation.is_empty() && scene.modulators.is_empty() {
             scene
         } else {
-            animated = scene.at_time(time as f32);
+            animated = frame.with_audio(|audio| scene.at_time_with(time as f32, audio));
             &animated
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));

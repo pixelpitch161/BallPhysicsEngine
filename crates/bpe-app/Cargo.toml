@@ -16,6 +16,7 @@ bpe-audio.workspace = true
 bpe-render.workspace = true
 bpe-export.workspace = true
 bpe-graph.workspace = true
+bpe-music.workspace = true
 eframe.workspace = true
 egui-wgpu.workspace = true
 cpal.workspace = true

@@ -8,6 +8,8 @@
 mod bounces;
 pub mod lanes;
 mod notes;
+/// WS5: settings that pulse with the music.
+mod pulse;
 mod rules;
 mod song;
 mod text;
@@ -122,6 +124,7 @@ impl Default for Timeline {
                 Box::new(song::SongLane::default()),
                 Box::new(notes::NotesLane::default()),
                 Box::new(bounces::BouncesLane),
+                Box::new(pulse::PulseLane::default()),
                 Box::new(rules::RulesLane::default()),
                 Box::new(text::TextLane::default()),
             ],

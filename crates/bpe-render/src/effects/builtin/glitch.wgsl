@@ -4,11 +4,12 @@
 // param bands = 24 [4, 120] int Number of horizontal bands
 // param react = 1 [0, 1] 1 only glitches on bounces, 0 glitches all the time
 // param rate = 12 [1, 60] Times per second the glitch pattern changes
+// param music = 0 [0, 1] Pulse with music: how much the bass sets off glitches
 
 fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
     let band = floor(uv.y * round(p.bands));
     let tick = floor(fx.time * p.rate);
-    let level = p.amount * mix(1.0, fx.pulse, p.react);
+    let level = p.amount * (mix(1.0, fx.pulse, p.react) + p.music * bass());
     let on = step(1.0 - level * 0.7, hash21(vec2<f32>(band * 0.37, tick)));
     let shift = (hash21(vec2<f32>(band, tick + 7.0)) - 0.5) * 0.2 * level * on;
     let split = 0.01 * level * on;
