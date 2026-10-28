@@ -988,6 +988,10 @@ fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits:
 fn moving_parts(scene: &Scene) -> Scene {
     let mut parts = Scene { effects: Vec::new(), animation: Vec::new(), ..scene.clone() };
     parts.animation = scene.animation.iter().filter(|t| t.property.affects_simulation()).cloned().collect();
+    // 3D (WS4): the camera, lights and looks only change the picture.
+    if let bpe_scene::View::Space(space) = &mut parts.view {
+        **space = space.moving_parts();
+    }
     parts
 }
 

@@ -221,6 +221,13 @@ impl Preview {
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
 
+        // ---- 3D (WS4): dragging turns the camera instead of moving balls. ----
+        if crate::orbit::interact(ui, &response, scene, rect) {
+            preview.drag = None;
+            outcome.clicked = playing && response.clicked();
+            draw_hint(ui, rect, crate::orbit::HINT);
+            return outcome;
+        }
         if playing {
             preview.drag = None;
             outcome.clicked = response.clicked();

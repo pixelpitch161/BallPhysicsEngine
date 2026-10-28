@@ -219,10 +219,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     gpu::section(ui, scene, &mut inspector.gpu);
                 }
                 Tab::Arena => {
-                    view3d::section(ui, scene, &mut inspector.view3d);
-                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll);
-                    shapes::section(ui, scene, &mut inspector.shapes);
-                    obstacles(ui, &mut scene.obstacles);
+                    // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
+                    let flat = !view3d::section(ui, scene, &mut inspector.view3d);
+                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll, flat);
+                    if flat {
+                        shapes::section(ui, scene, &mut inspector.shapes);
+                        obstacles(ui, &mut scene.obstacles);
+                    }
                     // Pegs and walls are things you added, like balls, so a reset keeps them.
                     let mut fresh = default_container(Shape::of(&scene.container));
                     // A custom arena keeps which shape it is; only its settings go back.
@@ -966,7 +969,16 @@ fn arena(
     motion: &mut ArenaMotion,
     physics: &mut Physics,
     roll: &mut Option<Roll>,
+    flat: bool,
 ) {
+    // 3D (WS4): the flat shape only applies to a flat scene.
+    if flat {
+        arena_shape(ui, container, roll);
+    }
+    arena_motion_and_world(ui, container, motion, physics, roll);
+}
+
+fn arena_shape(ui: &mut Ui, container: &mut Container, roll: &mut Option<Roll>) {
     heading_dice(ui, "Shape", Group::Shape, roll);
     let current = Shape::of(container);
     let choices = [
@@ -1162,6 +1174,15 @@ fn arena(
             });
         });
     }
+}
+
+fn arena_motion_and_world(
+    ui: &mut Ui,
+    container: &mut Container,
+    motion: &mut ArenaMotion,
+    physics: &mut Physics,
+    roll: &mut Option<Roll>,
+) {
     let d = ArenaMotion::default();
     heading_dice(ui, "Movement", Group::Movement, roll);
     grid(ui, "motion", |ui| {

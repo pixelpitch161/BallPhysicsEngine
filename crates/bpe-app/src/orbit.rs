@@ -66,12 +66,13 @@ mod tests {
     fn flat_scenes_are_left_alone() {
         let ctx = egui::Context::default();
         let mut scene = Scene::default();
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
             let rect = ui.max_rect();
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
             assert!(!interact(ui, &response, &mut scene, rect));
             let mut space = Scene { view: View::Space(Box::new(Space::default())), ..Scene::default() };
             assert!(interact(ui, &response, &mut space, rect));
         });
+        output.textures_delta.clear();
     }
 }
