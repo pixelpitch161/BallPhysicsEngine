@@ -31,6 +31,7 @@ pub use particles::*;
 pub use random::{Dice, Group, palette};
 pub use shapes::*;
 pub use view::*;
+pub use glam::Vec3; // 3D (WS4)
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

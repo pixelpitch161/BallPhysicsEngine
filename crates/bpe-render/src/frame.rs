@@ -152,64 +152,70 @@ impl FrameData {
         let sim = playback.simulation();
         let look = &scene.look;
 
-        self.push_walls(scene, playback);
-        self.push_strings(scene, playback);
-
-        for ball in sim.balls().iter().filter(|b| b.alive) {
-            self.balls.push(BallInstance { center: ball.position.into(), radius: ball.radius, color: ball.color });
-        }
-
-        if look.trail_seconds > 0.0 && look.trail_opacity > 0.0 {
-            let mut points = Vec::new();
-            for (index, ball) in sim.balls().iter().enumerate() {
-                if !ball.alive {
-                    continue;
-                }
-                points.clear();
-                points.push(ball.position);
-                points.extend(sim.trail(index));
-                let half_width = ball.radius * look.trail_width;
-                push_streak(&mut self.trails, &points, half_width, ball.color, pixel);
-            }
-        }
-
-        if look.flash_strength > 0.0 && look.flash_seconds > 0.0 {
-            let now = sim.time();
-            let full_speed = scene.sound.full_volume_speed.max(1.0);
-            for hit in playback.recent_events(look.flash_seconds as f64).iter().filter(|e| e.kind.is_bounce()) {
-                let age = (now - hit.time) as f32 / look.flash_seconds;
-                let intensity = (hit.speed / full_speed).min(1.5) * (-3.0 * age).exp() * 0.35;
-                if intensity < 0.002 {
-                    continue;
-                }
-                let Some(ball) = hit.ball_index().and_then(|i| sim.balls().get(i)) else { continue };
-                let c = ball.color;
-                let color = [
-                    (c[0] + 1.0) * 0.5 * intensity,
-                    (c[1] + 1.0) * 0.5 * intensity,
-                    (c[2] + 1.0) * 0.5 * intensity,
-                    1.0,
-                ];
-                self.flashes.push(FlashInstance { center: hit.position.into(), size: look.flash_size, color });
-            }
-        }
-
-        if !scene.effects.is_empty() {
-            let now = sim.time();
-            let full_speed = scene.sound.full_volume_speed.max(1.0);
-            let mut energy = 0.0;
-            for hit in playback.recent_events(HIT_MEMORY).iter().rev().filter(|e| e.kind.is_bounce()) {
-                let age = (now - hit.time).max(0.0) as f32;
-                let strength = (hit.speed / full_speed).min(1.5);
-                energy += strength * (-6.0 * age).exp();
-                if self.hits.len() < crate::MAX_EFFECT_HITS {
-                    let color = sim.balls().get(hit.ball as usize).map_or([1.0; 4], |b| b.color);
-                    self.hits.push(RecentHit { position: hit.position.into(), age, strength, color });
-                }
-            }
-            self.pulse = 1.0 - (-energy).exp();
-        } else {
+        // 3D (WS4): the 3D picture replaces walls, strings, balls, trails and flashes, and the
+        // flat simulation has no balls for them.
+        if playback.space().is_some() {
             self.pulse = 0.0;
+        } else {
+            self.push_walls(scene, playback);
+            self.push_strings(scene, playback);
+
+            for ball in sim.balls().iter().filter(|b| b.alive) {
+                self.balls.push(BallInstance { center: ball.position.into(), radius: ball.radius, color: ball.color });
+            }
+
+            if look.trail_seconds > 0.0 && look.trail_opacity > 0.0 {
+                let mut points = Vec::new();
+                for (index, ball) in sim.balls().iter().enumerate() {
+                    if !ball.alive {
+                        continue;
+                    }
+                    points.clear();
+                    points.push(ball.position);
+                    points.extend(sim.trail(index));
+                    let half_width = ball.radius * look.trail_width;
+                    push_streak(&mut self.trails, &points, half_width, ball.color, pixel);
+                }
+            }
+
+            if look.flash_strength > 0.0 && look.flash_seconds > 0.0 {
+                let now = sim.time();
+                let full_speed = scene.sound.full_volume_speed.max(1.0);
+                for hit in playback.recent_events(look.flash_seconds as f64).iter().filter(|e| e.kind.is_bounce()) {
+                    let age = (now - hit.time) as f32 / look.flash_seconds;
+                    let intensity = (hit.speed / full_speed).min(1.5) * (-3.0 * age).exp() * 0.35;
+                    if intensity < 0.002 {
+                        continue;
+                    }
+                    let Some(ball) = hit.ball_index().and_then(|i| sim.balls().get(i)) else { continue };
+                    let c = ball.color;
+                    let color = [
+                        (c[0] + 1.0) * 0.5 * intensity,
+                        (c[1] + 1.0) * 0.5 * intensity,
+                        (c[2] + 1.0) * 0.5 * intensity,
+                        1.0,
+                    ];
+                    self.flashes.push(FlashInstance { center: hit.position.into(), size: look.flash_size, color });
+                }
+            }
+
+            if !scene.effects.is_empty() {
+                let now = sim.time();
+                let full_speed = scene.sound.full_volume_speed.max(1.0);
+                let mut energy = 0.0;
+                for hit in playback.recent_events(HIT_MEMORY).iter().rev().filter(|e| e.kind.is_bounce()) {
+                    let age = (now - hit.time).max(0.0) as f32;
+                    let strength = (hit.speed / full_speed).min(1.5);
+                    energy += strength * (-6.0 * age).exp();
+                    if self.hits.len() < crate::MAX_EFFECT_HITS {
+                        let color = sim.balls().get(hit.ball as usize).map_or([1.0; 4], |b| b.color);
+                        self.hits.push(RecentHit { position: hit.position.into(), age, strength, color });
+                    }
+                }
+                self.pulse = 1.0 - (-energy).exp();
+            } else {
+                self.pulse = 0.0;
+            }
         }
 
         let now = sim.time();
@@ -226,6 +232,10 @@ impl FrameData {
         self.gpu.fill(scene, playback);
         self.particles.fill(scene, playback, &self.events);
         self.space.fill(scene, playback);
+        if self.space.active {
+            // 3D (WS4): effects react to hits where they show on screen.
+            self.pulse = self.space.effect_hits(scene, now, playback.events(), &mut self.hits);
+        }
         self.text.fill(scene, playback, &self.counts);
     }
 }
