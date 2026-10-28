@@ -304,6 +304,20 @@ pub fn blocks() -> Vec<Block> {
             &[],
         ),
         block(
+            "object",
+            "Object",
+            Inputs,
+            "What is at this pixel, for effects that change only balls, walls or obstacles. Local is a position of the thing's own: -0.5 to 0.5 across a ball, turning with its pattern (on walls and obstacles it is the frame's position). Seed is a random number from 0 to 1 for each ball, Inside how much of the pixel it covers, Group which ball group it is (-1 for walls and obstacles).",
+            vec![at()],
+            vec![out("local", Vector), out("seed", Number), out("inside", Number), out("group", Number)],
+            "let $_o = object_at(from_centered($at));
+let $local = $_o.xy;
+let $seed = fract($_o.z) * 2.0;
+let $inside = $_o.w;
+let $group = select(-1.0, floor($_o.z) - 10.0, $_o.z >= 10.0);",
+            &[],
+        ),
+        block(
             "screen_uv",
             "Screen UV",
             Inputs,

@@ -332,8 +332,9 @@ fn effects_pulse_with_the_music() {
         );
         assert!(moved > 0.02, "{id} doesn't react to the bass ({moved})");
     }
-    // So do the music templates. Without music, beats rest.
-    for graph in templates::graphs() {
+    // So do the music templates. Without music, beats rest. Lava and Rainbow flow are
+    // materials that don't follow the music.
+    for graph in templates::graphs().into_iter().filter(|g| !["Lava", "Rainbow flow"].contains(&g.name.as_str())) {
         let scene = Scene { effects: vec![Effect::new(super::effect_id(&graph.name))], ..Scene::default() };
         let (moved, _) = difference(
             &render_with_mix(&device, &queue, &scene, None),

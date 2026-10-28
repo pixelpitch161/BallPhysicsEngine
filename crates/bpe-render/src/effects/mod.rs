@@ -20,7 +20,7 @@ pub mod graph;
 pub mod templates;
 
 pub(crate) use chain::EffectChain;
-pub use chain::{MAX_THUMBS, THUMB_SIZE, ThumbnailRequest, thumbnail_atlas_size, thumbnail_tile};
+pub use chain::{MAX_THUMBS, Stage, THUMB_SIZE, ThumbnailRequest, thumbnail_atlas_size, thumbnail_tile};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -79,6 +79,9 @@ pub struct EffectInfo {
     pub compiled: Result<String, String>,
     /// Whether the shader reads its previous frame, which needs an extra texture.
     pub uses_prev: bool,
+    /// Whether the shader reads what is where (`object_at` and friends), which needs the object
+    /// picture drawn.
+    pub uses_objects: bool,
     /// For a node effect, the graph it was made from and what went wrong on which block.
     pub graph: Option<GraphInfo>,
 }
@@ -132,6 +135,7 @@ impl EffectInfo {
             user_source: source.to_string(),
             compiled,
             uses_prev: source.contains("prev("),
+            uses_objects: source.contains("object_"),
             graph: None,
         }
     }
@@ -181,6 +185,7 @@ impl EffectInfo {
                     user_source: String::new(),
                     compiled: Err(summary),
                     uses_prev: false,
+                    uses_objects: false,
                     graph: Some(GraphInfo { graph: source_graph.clone(), generated: None, problems, builtin }),
                 }
             }
@@ -269,7 +274,12 @@ fn assemble(source: &str, params: &[ParamInfo]) -> Result<String, String> {
     }
     tail.push_str(
         "    let result = effect(in.uv, p);
-    let blended = mix(sample(in.uv), result, fx.amount);
+    // Effects on things leave every other pixel exactly as it was.
+    var base = sample(in.uv);
+    if fx.apply_to > 0.5 {
+        base = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0).rgb;
+    }
+    let blended = mix(base, result, fx.amount * target_weight(in.uv));
     // Keep feedback from running away and stop a NaN from spreading.
     let safe = select(blended, vec3<f32>(0.0), blended != blended);
     return vec4<f32>(clamp(safe, vec3<f32>(0.0), vec3<f32>(64.0)), 1.0);

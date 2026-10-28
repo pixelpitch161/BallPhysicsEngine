@@ -209,6 +209,32 @@ pub fn section(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &
         .show(ui, |ui| body(ui, index, style, look, state));
 }
 
+/// The shader these balls wear like a material: any effect or node effect, drawn on these balls
+/// only. Returns the pick: an effect id, or `None` to take the shader off.
+pub(crate) fn shader_row(ui: &mut Ui, index: usize, shaders: &super::BallShaders) -> Option<Option<String>> {
+    let worn = shaders.worn.get(index).cloned().flatten();
+    let mut pick = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Shader").color(theme::TEXT)).on_hover_text(
+            "Paint these balls with an effect or a node effect from the Shaders workspace, like a material. Lava is made for balls. Its sliders are in the Effects tab.",
+        );
+        let shown = worn.as_ref().map_or("None", |(_, title)| title.as_str());
+        let combo = egui::ComboBox::from_id_salt(("ball-shader", index)).selected_text(shown).width(200.0).show_ui(ui, |ui| {
+            if ui.selectable_label(worn.is_none(), "None").clicked() {
+                pick = Some(None);
+            }
+            for (id, title) in &shaders.choices {
+                let on = worn.as_ref().is_some_and(|(worn, _)| worn == id);
+                if ui.selectable_label(on, title).clicked() && !on {
+                    pick = Some(Some(id.clone()));
+                }
+            }
+        });
+        named(&combo.response, "Shader on these balls");
+    });
+    pick
+}
+
 fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, state: &mut State) {
     let key = |ui: &Ui, setting| crate::keys::mark_next(ui, Property::Ball(index as u32, setting));
     ui.horizontal_wrapped(|ui| {

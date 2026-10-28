@@ -31,7 +31,7 @@ pub use bodies::*;
 pub use bpe_graph::Graph;
 pub use captions::*;
 pub use color::Color;
-pub use effect::Effect;
+pub use effect::{Effect, EffectTarget};
 pub use glam::Vec2;
 pub use glam::Vec3; // 3D (WS4)
 pub use gpu::*;
@@ -896,6 +896,11 @@ impl Scene {
                 name: "Ball band",
                 description: "Four balls, each with its own sound: a kick drum, a bass, the chords and high bells.",
                 scene: Scene::ball_band(),
+            },
+            Preset {
+                name: "Shader materials",
+                description: "Lava balls, rainbow walls and glowing pegs: node shaders on things, not the whole picture.",
+                scene: Scene::shader_materials(),
             },
         ]
         .into_iter()
