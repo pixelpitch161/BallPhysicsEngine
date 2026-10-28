@@ -544,12 +544,8 @@ impl StudioApp {
                 self.resume_after_scrub = self.playing;
                 self.set_playing(false);
             }
-            Some(false) => {
-                if std::mem::take(&mut self.resume_after_scrub) {
-                    self.set_playing(true);
-                }
-            }
-            None => {}
+            Some(false) if std::mem::take(&mut self.resume_after_scrub) => self.set_playing(true),
+            _ => {}
         }
         if let Some(time) = outcome.seek {
             self.seek(time);
