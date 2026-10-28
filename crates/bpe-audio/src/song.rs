@@ -1,14 +1,15 @@
 //! Mixes the scene's song under the bounce sounds, dipping it a little while bounces play.
 
 use crate::{SAMPLE_RATE, normalize_loudness};
-use bpe_scene::Music;
+use bpe_scene::{Property, Scene};
 
 /// Seconds the song fades out over at the end of the video.
 const FADE_OUT: f32 = 0.75;
 
 /// Adds `song` (interleaved stereo at the mix rate) under `bounces`, then levels the whole mix
 /// to `target_db`.
-pub(crate) fn mix_in(bounces: &mut [f32], song: &[f32], music: &Music, target_db: f32) {
+pub(crate) fn mix_in(bounces: &mut [f32], song: &[f32], scene: &Scene, target_db: f32) {
+    let music = &scene.music;
     let frames = bounces.len() / 2;
     normalize_loudness(bounces, target_db);
     // The part of the song the video plays over. A negative offset starts the song late.
@@ -22,21 +23,35 @@ pub(crate) fn mix_in(bounces: &mut [f32], song: &[f32], music: &Music, target_db
         }
     }
     normalize_loudness(&mut layer, target_db + music.gain);
+    // Keyframed volume and ducking, worked out a few hundred times a second.
+    let animated = |p: &Property| scene.track(p).is_some_and(|t| !t.keys.is_empty());
+    let (volume_keyed, duck_keyed) = (animated(&Property::SongVolume), animated(&Property::SongDucking));
+    let mut volume = 1.0f32;
+    let mut amount = music.duck_amount.clamp(0.0, 1.0);
+    const CONTROL_FRAMES: usize = 64;
 
     // Duck: follow the bounce sounds' level and lower the song while they're loud.
-    let amount = music.duck_amount.clamp(0.0, 1.0);
     let reference = 10f32.powf(target_db / 20.0) * 1.4;
     let attack = 1.0 - (-1.0 / (0.005 * SAMPLE_RATE as f32)).exp();
     let release = 1.0 - (-1.0 / (0.25 * SAMPLE_RATE as f32)).exp();
     let fade_frames = ((FADE_OUT * SAMPLE_RATE as f32) as usize).min(frames).max(1);
     let mut level = 0.0f32;
     for (i, (out, song)) in bounces.chunks_exact_mut(2).zip(layer.chunks_exact(2)).enumerate() {
+        if (volume_keyed || duck_keyed) && i % CONTROL_FRAMES == 0 {
+            let time = i as f32 / SAMPLE_RATE as f32;
+            if let Some(gain) = scene.number_at(&Property::SongVolume, time).filter(|_| volume_keyed) {
+                volume = 10f32.powf((gain - music.gain) / 20.0);
+            }
+            if let Some(duck) = scene.number_at(&Property::SongDucking, time).filter(|_| duck_keyed) {
+                amount = duck.clamp(0.0, 1.0);
+            }
+        }
         let now = (out[0].abs() + out[1].abs()) * 0.5;
         level += (now - level) * if now > level { attack } else { release };
         let duck = 1.0 - amount * 0.75 * (level / reference).min(1.0);
         let fade = ((frames - i) as f32 / fade_frames as f32).min(1.0);
-        out[0] += song[0] * duck * fade;
-        out[1] += song[1] * duck * fade;
+        out[0] += song[0] * duck * fade * volume;
+        out[1] += song[1] * duck * fade * volume;
     }
     normalize_loudness(bounces, target_db);
 }
@@ -45,7 +60,7 @@ pub(crate) fn mix_in(bounces: &mut [f32], song: &[f32], music: &Music, target_db
 mod tests {
     use super::*;
     use crate::{MixOptions, mix};
-    use bpe_scene::Scene;
+    use bpe_scene::{Ease, Key, Music, Track, Value};
 
     /// A steady 220 Hz tone, as a stand-in song.
     fn tone(seconds: f32) -> Vec<f32> {
@@ -85,17 +100,38 @@ mod tests {
 
     #[test]
     fn offset_and_silent_songs() {
-        let mut music = Music { song: Some("x".into()), offset: -1.0, duck_amount: 0.0, ..Music::default() };
+        let music = Music { song: Some("x".into()), offset: -1.0, duck_amount: 0.0, ..Music::default() };
+        let mut scene = Scene { music, ..Scene::default() };
         let mut bounces = vec![0.0; SAMPLE_RATE as usize * 2 * 3];
-        mix_in(&mut bounces, &tone(5.0), &music, -14.0);
+        mix_in(&mut bounces, &tone(5.0), &scene, -14.0);
         // The song starts a second into the video.
         assert!(bounces[..SAMPLE_RATE as usize * 2 - 2].iter().all(|&s| s == 0.0));
         assert!(rms(&bounces[SAMPLE_RATE as usize * 2..]) > 0.05);
         // A silent or empty song changes nothing.
-        music.offset = 0.0;
+        scene.music.offset = 0.0;
         let mut quiet = vec![0.0; 1000];
-        mix_in(&mut quiet, &[], &music, -14.0);
-        mix_in(&mut quiet, &vec![0.0; 4000], &music, -14.0);
+        mix_in(&mut quiet, &[], &scene, -14.0);
+        mix_in(&mut quiet, &vec![0.0; 4000], &scene, -14.0);
         assert!(quiet.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn keyframed_song_volume_fades_the_song() {
+        let mut scene =
+            Scene { music: Music { song: Some("x".into()), duck_amount: 0.0, ..Music::default() }, ..Scene::default() };
+        let mut plain = vec![0.0; SAMPLE_RATE as usize * 2 * 2];
+        let mut faded = plain.clone();
+        mix_in(&mut plain, &tone(3.0), &scene, -14.0);
+        let gain = scene.music.gain;
+        let key = |time, v| Key { time, value: Value::Number(v), ease: Ease::Linear };
+        scene
+            .animation
+            .push(Track { property: Property::SongVolume, keys: vec![key(0.0, gain), key(1.0, gain - 40.0)] });
+        mix_in(&mut faded, &tone(3.0), &scene, -14.0);
+        let second = SAMPLE_RATE as usize * 2;
+        let (early, late) =
+            (rms(&faded[..second / 10]), rms(&faded[second + 200..second * 2 - 2 * SAMPLE_RATE as usize / 2]));
+        assert!(late < early * 0.3, "{early} {late}");
+        assert!(rms(&plain[second + 200..]) > late);
     }
 }

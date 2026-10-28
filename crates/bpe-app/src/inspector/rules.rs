@@ -3,8 +3,8 @@
 
 use crate::node_editor::{category_color, param_control};
 use crate::theme;
-use bpe_graph::{Catalog, Graph, PinType};
-use bpe_scene::Scene;
+use bpe_graph::{Catalog, Graph, Param, PinType};
+use bpe_scene::{List, Property, Scene};
 use bpe_sim::rules::{self, WHEN};
 use eframe::egui::{self, RichText, Ui};
 
@@ -50,6 +50,7 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     }
     if let Some(index) = remove {
         scene.logic.remove(index);
+        scene.removed_item(List::Rules, index);
     }
 }
 
@@ -80,7 +81,7 @@ fn card(
                     }
                 });
             });
-            sentences(ui, graph, catalog);
+            sentences(ui, graph, index as u32, catalog);
             let problems = bpe_graph::validate(graph, catalog);
             for problem in problems.iter().take(3) {
                 ui.label(RichText::new(&problem.message).small().color(theme::ERROR));
@@ -90,7 +91,7 @@ fn card(
 
 /// Each "When" block and what follows it, as a line of words with the settings marked for
 /// this tab right in it.
-fn sentences(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog) {
+fn sentences(ui: &mut Ui, graph: &mut Graph, rule: u32, catalog: &dyn Catalog) {
     let triggers: Vec<u32> = graph
         .nodes
         .iter()
@@ -104,15 +105,15 @@ fn sentences(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog) {
         ui.push_id(trigger, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                block(ui, graph, catalog, trigger);
-                follow(ui, graph, catalog, trigger, 0);
+                block(ui, graph, rule, catalog, trigger);
+                follow(ui, graph, rule, catalog, trigger, 0);
             });
         });
     }
 }
 
 /// What a block's trigger outputs start, written after it.
-fn follow(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog, node: u32, depth: u32) {
+fn follow(ui: &mut Ui, graph: &mut Graph, rule: u32, catalog: &dyn Catalog, node: u32, depth: u32) {
     if depth > 12 {
         ui.label("...");
         return;
@@ -137,15 +138,15 @@ fn follow(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog, node: u32, dept
             ui.label(RichText::new(if k == 0 { "then" } else { "and" }).color(theme::MUTED));
             // A block reached along two paths is drawn twice, so each drawing gets its own id.
             ui.push_id((depth, pin, k), |ui| {
-                block(ui, graph, catalog, target);
-                follow(ui, graph, catalog, target, depth + 1);
+                block(ui, graph, rule, catalog, target);
+                follow(ui, graph, rule, catalog, target, depth + 1);
             });
         }
     }
 }
 
 /// A block's title, coloured by its kind, followed by the settings shown on this tab.
-fn block(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog, id: u32) {
+fn block(ui: &mut Ui, graph: &mut Graph, rule: u32, catalog: &dyn Catalog, id: u32) {
     let Some(node) = graph.node_mut(id) else { return };
     let Some(spec) = catalog.spec(&node.kind) else {
         ui.label(RichText::new(&node.kind).color(theme::ERROR));
@@ -162,5 +163,8 @@ fn block(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog, id: u32) {
         }
         let label = ui.label(RichText::new(param.label.to_lowercase()).small().color(theme::MUTED));
         param_control(ui, node, param, label.id);
+        if matches!(param.default, Param::Number(_) | Param::Color(_)) {
+            crate::keys::diamond(ui, Property::Rule(rule, id, param.name.clone()));
+        }
     }
 }

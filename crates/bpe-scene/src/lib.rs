@@ -22,8 +22,8 @@ pub mod shapes;
 mod view;
 
 pub use animation::{
-    Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
-    remap_effect_modulators,
+    Audio, AudioBand, AudioFrom, BallSetting, Bezier, CaptionSetting, Curve, Ease, Key, Levels, List, Listener,
+    Modulator, Property, SAME_TIME, Track, Value, remap_effect_modulators,
 };
 pub use ball_style::*;
 pub use bodies::*;

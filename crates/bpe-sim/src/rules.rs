@@ -10,7 +10,7 @@
 
 use crate::{Ball, Event, EventKind, NO_BALL};
 use bpe_graph::{Catalog, Graph, Node, NodeSpec, Param, ParamSpec, PinSpec, PinType, SpecList};
-use bpe_scene::{Scene, Vec2};
+use bpe_scene::{Property, Scene, Vec2};
 use std::sync::{Arc, LazyLock};
 
 /// At most this many actions run in one step, however many rules fire, so a rule that
@@ -441,7 +441,7 @@ pub fn recipes() -> Vec<Recipe> {
 // ---------- compiling ----------
 
 /// One block, ready to run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Block {
     kind: Kind,
     rule: u16,
@@ -458,7 +458,7 @@ struct Block {
     outputs: Vec<Vec<u32>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Program {
     blocks: Vec<Block>,
     starts: Vec<u32>,
@@ -719,6 +719,44 @@ impl RuleState {
         let program = self.program.as_ref()?;
         let index = self.block_index(rule, action as u32)?;
         program.outputs.get(program.blocks[index].pick)
+    }
+
+    /// Puts the values of keyframed rule settings in `scene` (the scene at this moment) into the
+    /// compiled rules, so they take effect from now on. Rules aren't compiled again: only the
+    /// numbers and colours of the blocks with animated settings change.
+    pub fn retune(&mut self, scene: &Scene) {
+        let catalog = catalog();
+        let properties =
+            scene.animation.iter().map(|t| &t.property).chain(scene.modulators.iter().map(|m| &m.property));
+        for property in properties {
+            let Property::Rule(rule, id, _) = property else { continue };
+            let Ok(rule) = u16::try_from(*rule) else { continue };
+            let Some(index) = self.block_index(rule, *id) else { continue };
+            let Some(node) = scene.logic.get(rule as usize).and_then(|g| g.node(*id)) else { continue };
+            let Some(spec) = catalog.spec(&node.kind) else { continue };
+            let Some(program) = self.program.as_mut() else { return };
+            let old = &program.blocks[index];
+            let mut block = old.clone();
+            // Blocks with an output add a new one while compiling: compile into a scratch
+            // program and put that output in place of the old one.
+            let mut scratch = Program { counters: program.counters.clone(), ..Program::default() };
+            compile_block(&mut scratch, &mut block, node, spec);
+            let output = scratch.outputs.pop();
+            if output.is_some() {
+                block.pick = old.pick;
+            }
+            let same_output = output.as_ref().is_none_or(|o| program.outputs.get(old.pick) == Some(o));
+            if block == *old && same_output {
+                continue;
+            }
+            let program = Arc::make_mut(program);
+            if let Some(output) = output
+                && let Some(slot) = program.outputs.get_mut(block.pick)
+            {
+                *slot = output;
+            }
+            program.blocks[index] = block;
+        }
     }
 
     fn block_index(&self, rule: u16, id: u32) -> Option<usize> {

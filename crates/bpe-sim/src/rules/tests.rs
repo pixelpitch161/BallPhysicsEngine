@@ -277,3 +277,53 @@ fn the_rules_preset_matches_its_recipe_and_multiplies() {
     let escapes = count(&events, |k| matches!(k, EventKind::Escape(_)));
     assert!(escapes > 3 && count(&events, |k| *k == EventKind::Spawn) > escapes);
 }
+
+#[test]
+fn keyframed_rule_settings_change_what_rules_do_over_time() {
+    use bpe_scene::{Ease, Key, Property, Track, Value};
+    let mut scene = preset("Escape and multiply");
+    scene.rules.spawn_per_escape = 0;
+    scene.logic = vec![recipe("Escape and multiply")];
+    let id = |kind: &str| scene.logic[0].nodes.iter().find(|n| n.kind == kind).expect("block").id;
+    let (spawn, flash) = (id("spawn"), id("flash"));
+    let escapes = |events: &[Event], from: f64, to: f64| {
+        events.iter().filter(|e| matches!(e.kind, EventKind::Escape(_)) && e.time >= from && e.time < to).count()
+    };
+    let spawns = |events: &[Event], from: f64, to: f64| {
+        events.iter().filter(|e| e.kind == EventKind::Spawn && e.time >= from && e.time < to).count()
+    };
+    let plain = run(&scene);
+    let first = plain.iter().find(|e| matches!(e.kind, EventKind::Escape(_))).expect("an escape").time;
+    // Nothing spawns until just after the first escape, then two balls per escape.
+    let switch = first + 0.05;
+    let key = |time: f64, v| Key { time: time as f32, value: Value::Number(v), ease: Ease::Hold };
+    scene.animation.push(Track {
+        property: Property::Rule(0, spawn, "count".into()),
+        keys: vec![key(0.0, 0.0), key(switch, 2.0)],
+    });
+    scene.animation.push(Track {
+        property: Property::Rule(0, flash, "strength".into()),
+        keys: vec![key(0.0, 0.1), key(switch, 0.9)],
+    });
+    let events = run(&scene);
+    let end = scene.video.duration as f64;
+    assert!(escapes(&events, 0.0, switch) >= 1);
+    assert_eq!(spawns(&events, 0.0, switch), 0, "no spawns while the count is keyed to 0");
+    assert!(spawns(&events, switch, end) > 0, "spawns once the count is 2");
+    assert_eq!(run(&scene), events, "keyframed rules stay deterministic");
+    // The flash's strength follows its keyframes too.
+    let mut sim = Simulation::new(&scene);
+    let mut log = Vec::new();
+    sim.advance_to(first - 0.01, &mut log);
+    let mut early = sim.clone();
+    let mut more = Vec::new();
+    early.advance_to(first + 0.01, &mut more);
+    let flash_event = more.iter().find(|e| matches!(e.kind, EventKind::Action { .. })).expect("a flash");
+    assert!(
+        matches!(early.rules().output(flash_event), Some(RuleOutput::Flash { strength, .. }) if (*strength - 0.1).abs() < 1e-6)
+    );
+    sim.advance_to(end, &mut log);
+    assert!(
+        matches!(sim.rules().output(flash_event), Some(RuleOutput::Flash { strength, .. }) if (*strength - 0.9).abs() < 1e-6)
+    );
+}
