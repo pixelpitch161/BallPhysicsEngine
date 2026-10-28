@@ -85,6 +85,9 @@ pub struct SwarmSim {
     group: Option<wgpu::BindGroup>,
     draw_group: Option<wgpu::BindGroup>,
     last_params: Option<SwarmParams>,
+    /// Whether steps fill the neighbour grid, set when the swarm starts (motion settings only
+    /// change with a restart).
+    flocking: bool,
 }
 
 impl SwarmSim {
@@ -186,6 +189,7 @@ impl SwarmSim {
             group: None,
             draw_group: None,
             last_params: None,
+            flocking: true,
         }
     }
 
@@ -238,6 +242,7 @@ impl SwarmSim {
         }
         let params = SwarmParams::new(scene, count);
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
+        self.flocking = params.steer[1] > 0.0 || params.steer[2] > 0.0;
         self.ensure_group(device, sdf);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm start"), timestamp_writes: None });
         pass.set_pipeline(&self.init);
@@ -274,7 +279,7 @@ impl SwarmSim {
         sdf: &SdfField,
     ) {
         self.ensure_group(device, sdf);
-        let flocking = self.last_params.is_none_or(|p| p.steer[1] > 0.0 || p.steer[2] > 0.0);
+        let flocking = self.flocking;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("swarm step"), timestamp_writes: None });
         pass.set_bind_group(0, inputs, &[offset]);
         pass.set_bind_group(1, self.group.as_ref().unwrap(), &[]);

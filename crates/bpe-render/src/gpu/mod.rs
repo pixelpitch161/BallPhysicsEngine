@@ -130,14 +130,16 @@ fn motion_key(scene: &Scene) -> Scene {
     key.video.fps = 0;
     key.video.duration = 0.0;
     let (swarm, fluid) = (&mut key.gpu.swarm, &mut key.gpu.fluid);
-    (swarm.size, swarm.brightness, swarm.color) = (0.0, 0.0, bpe_scene::SwarmColor::Speed);
-    swarm.colors.clear();
-    if !swarm.enabled {
+    if swarm.is_active() {
+        (swarm.size, swarm.brightness, swarm.color) = (1.0, 1.0, bpe_scene::SwarmColor::Speed);
+        swarm.colors.clear();
+    } else {
         *swarm = Default::default();
     }
-    (fluid.color, fluid.clarity, fluid.refraction, fluid.highlight, fluid.smoothing) =
-        (bpe_scene::GpuFluid::default().color, 0.0, 0.0, 0.0, 0.0);
-    if !fluid.enabled {
+    if fluid.is_active() {
+        (fluid.color, fluid.clarity, fluid.refraction, fluid.highlight, fluid.smoothing) =
+            (bpe_scene::GpuFluid::default().color, 0.0, 0.0, 0.0, 0.0);
+    } else {
         *fluid = Default::default();
     }
     key
@@ -162,6 +164,8 @@ struct Driver {
     checkpoints: Vec<Checkpoint>,
     /// Steps between checkpoints.
     interval: u64,
+    /// The most checkpoints that fit the memory budget.
+    most: usize,
 }
 
 pub struct GpuLayers {
@@ -412,6 +416,7 @@ impl GpuLayers {
             events: Vec::new(),
             checkpoints: Vec::new(),
             interval,
+            most: most as usize,
         };
         let mut encoder = device.create_command_encoder(&Default::default());
         driver.checkpoints.push(Checkpoint {
@@ -461,6 +466,12 @@ impl GpuLayers {
                     swarm: self.swarm.as_ref().map(|s| s.snapshot(device, &mut encoder)),
                     fluid: self.fluid.as_ref().map(|f| f.snapshot(device, &mut encoder)),
                 });
+                // Over budget (a video made longer without a restart): keep every other one.
+                if driver.checkpoints.len() > driver.most {
+                    driver.interval *= 2;
+                    let interval = driver.interval;
+                    driver.checkpoints.retain(|c| c.step.is_multiple_of(interval));
+                }
             }
             slot += 1;
             // Very busy walls can fill the bake buffers; send what there is and carry on.
@@ -497,11 +508,11 @@ impl GpuLayers {
 /// all of them.
 fn step_inputs(sim: &Simulation, time: f64, step: u64) -> Vec<u8> {
     let scene = sim.scene();
-    let balls = sim.balls();
+    let balls: Vec<_> = sim.balls().iter().filter(|b| b.alive).collect();
     let picked = balls.len().min(MAX_INPUT_BALLS);
     let mut list = [BallGpu::default(); MAX_INPUT_BALLS];
     for (k, slot) in list.iter_mut().take(picked).enumerate() {
-        let ball = &balls[k * balls.len() / picked.max(1)];
+        let ball = balls[k * balls.len() / picked.max(1)];
         *slot = BallGpu {
             place: [ball.position.x, ball.position.y, ball.radius, 0.0],
             velocity: [ball.velocity.x, ball.velocity.y, 0.0, 0.0],

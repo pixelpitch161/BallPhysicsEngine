@@ -386,14 +386,13 @@ impl SdfBaker {
         if field.baked.as_ref() == Some(walls) {
             return;
         }
-        let was_empty = field.baked.as_ref().is_none_or(Walls::is_empty);
-        if walls.is_empty() != was_empty || field.baked.is_none() {
-            queue.write_buffer(&field.info, 0, bytemuck::bytes_of(&field.layout.info(!walls.is_empty())));
+        // Once baked, the field always counts as holding walls, even empty ones (it then reads
+        // far from everything). The flag is a buffer write, which lands before the whole batch
+        // of steps runs, so it must not change between steps of one batch.
+        if field.baked.is_none() {
+            queue.write_buffer(&field.info, 0, bytemuck::bytes_of(&field.layout.info(true)));
         }
         field.baked = Some(walls.clone());
-        if walls.is_empty() {
-            return;
-        }
         let layout = field.layout;
         let (starts, lists) = bin_pieces(&layout, &walls.pieces);
         let (closed_a, closed_b) = walls.closed_uniform();

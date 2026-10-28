@@ -7,7 +7,7 @@
 use crate::frame::FrameData;
 use crate::gpu::GpuLayers;
 use crate::gpu::util::{self, StorageBuffer};
-use bpe_scene::{Blend, Color, Container, Emitter, EventMatch, ObstaclePart, ParticleColor, ParticlePreset, Scene, Vec2};
+use bpe_scene::{Blend, Color, Container, Emitter, EventMatch, ObstaclePart, ParticleColor, ParticlePreset, Scene, Vec2, particle_hash};
 use bpe_sim::{Event, EventKind, Playback};
 use bytemuck::{Pod, Zeroable};
 
@@ -71,8 +71,6 @@ pub struct ParticleFrame {
     /// Particles in glowing bursts, then in covering ones.
     pub additive: u32,
     pub covering: u32,
-    /// Whether any emitter bounces off walls, so the wall field must be baked.
-    pub needs_walls: bool,
 }
 
 impl ParticleFrame {
@@ -87,19 +85,23 @@ impl ParticleFrame {
         self.emitters.clear();
         self.additive = 0;
         self.covering = 0;
-        self.needs_walls = false;
-        let mut emitters: Vec<Emitter> = scene.particles.iter().filter(|e| e.is_active()).cloned().collect();
+        // Each emitter keeps its place in the scene, which picks its random pattern, so turning
+        // one off leaves the others as they were.
+        let mut emitters: Vec<(usize, Emitter)> =
+            scene.particles.iter().enumerate().filter(|(_, e)| e.is_active()).map(|(i, e)| (i, e.clone())).collect();
         // A rule's "Burst particles" with no emitter set up for it uses its preset as it comes.
-        let longest = emitters.iter().map(|e| e.max_age()).fold(0.0, f32::max).max(4.0);
+        let longest = emitters.iter().map(|(_, e)| e.max_age()).fold(0.0, f32::max).max(4.0);
         for event in playback.recent_events(longest as f64) {
             if let EventKind::Action { rule, action } = event.kind
                 && let Some(name) = burst_name(scene, rule, action)
-                && !emitters.iter().any(|e| e.on.kind == EventMatch::Action && e.on.action.eq_ignore_ascii_case(&name))
+                && !emitters.iter().any(|(_, e)| {
+                    e.on.kind == EventMatch::Action && (e.on.action.is_empty() || e.on.action.eq_ignore_ascii_case(&name))
+                })
                 && let Some(preset) = ParticlePreset::ALL.into_iter().find(|p| p.name().eq_ignore_ascii_case(&name))
             {
                 let mut emitter = preset.emitter(EventMatch::Action);
                 emitter.on.action = name;
-                emitters.push(emitter);
+                emitters.push((scene.particles.len() + emitters.len(), emitter));
             }
         }
         if emitters.is_empty() {
@@ -109,12 +111,12 @@ impl ParticleFrame {
         let now = sim.time();
         let full_speed = scene.sound.full_volume_speed.max(1.0);
         let all = playback.events();
+        let parts = scene.obstacle_parts();
         let mut lists: [Vec<BurstGpu>; 2] = [Vec::new(), Vec::new()];
         let mut budget = MAX_LIVE_PARTICLES;
-        for (index, emitter) in emitters.iter().enumerate() {
-            self.emitters.push(EmitterGpu::new(emitter, index));
+        for (index, emitter) in &emitters {
+            self.emitters.push(EmitterGpu::new(emitter, *index));
             let emitter_slot = self.emitters.len() as u32 - 1;
-            self.needs_walls |= emitter.bounce;
             let recent = playback.recent_events(emitter.max_age() as f64);
             let first_id = all.len() - recent.len();
             let list = &mut lists[(emitter.blend == Blend::Alpha) as usize];
@@ -130,7 +132,7 @@ impl ParticleFrame {
                 let strength = if event.speed > 0.0 { (event.speed / full_speed).min(1.5) } else { 1.0 };
                 let count = emitter.burst_count(strength).min(budget);
                 budget -= count;
-                let normal = event_normal(scene, playback, event);
+                let normal = event_normal(scene, &parts, event, (first_id + offset) as u32);
                 let color = burst_color(scene, playback, emitter, event);
                 let place = event_place(scene, event);
                 let id = (first_id + offset) as u32;
@@ -206,28 +208,24 @@ fn event_place(scene: &Scene, event: &Event) -> Vec2 {
     }
 }
 
-/// Which way particles fly from an event: away from the surface that was hit.
-fn event_normal(scene: &Scene, playback: &Playback, event: &Event) -> Vec2 {
-    let sim = playback.simulation();
+/// Which way particles fly from an event: away from the surface that was hit. It depends only
+/// on the event and the scene as built, never on where things are now, so a burst keeps its
+/// direction for its whole life.
+fn event_normal(scene: &Scene, parts: &[ObstaclePart], event: &Event, id: u32) -> Vec2 {
     let center = scene.container.center();
-    let ball = || event.ball_index().and_then(|b| sim.balls().get(b));
     let away = match event.kind {
         EventKind::Wall => center - event.position,
         EventKind::Escape(_) => event.position - center,
-        EventKind::Obstacle(i) => match sim.obstacles().get(i as usize) {
+        EventKind::Obstacle(i) => match parts.get(i as usize) {
             Some(ObstaclePart::Disc { center, .. }) => event.position - *center,
             Some(ObstaclePart::Segment { from, to, .. }) => {
                 let side = (*to - *from).perp();
-                let at = ball().map_or(event.position, |b| b.position);
-                if side.dot(at - *from) >= 0.0 { side } else { -side }
+                if side.dot(event.position - *from) >= 0.0 { side } else { -side }
             }
             None => Vec2::NEG_Y,
         },
-        EventKind::Ball(other) => match (ball(), sim.balls().get(other as usize)) {
-            (Some(a), Some(b)) => a.position - b.position,
-            _ => Vec2::NEG_Y,
-        },
-        EventKind::Spawn => ball().map_or(Vec2::NEG_Y, |b| b.velocity),
+        // Bumps between balls and new balls have no surface: pick a steady direction per event.
+        EventKind::Ball(_) | EventKind::Spawn => Vec2::from_angle(particle_hash(id, 7) * std::f32::consts::TAU),
         _ => Vec2::NEG_Y,
     };
     away.try_normalize().unwrap_or(Vec2::NEG_Y)
@@ -468,7 +466,7 @@ mod tests {
         let mut playback = Playback::new(&scene);
         playback.seek(4.0);
         for hit in playback.recent_hits(1.0) {
-            let n = event_normal(&scene, &playback, hit);
+            let n = event_normal(&scene, &scene.obstacle_parts(), hit, 0);
             assert!((n.length() - 1.0).abs() < 1e-4);
             // The ring is centred on the frame, so inward points back towards the middle.
             assert!(n.dot(-hit.position) > 0.0);

@@ -33,6 +33,25 @@ struct Globals {
 @group(1) @binding(1) var<storage, read> draw_points: array<vec4<f32>>;
 @group(1) @binding(2) var<storage, read> draw_tints: array<vec2<u32>>;
 
+// Matches hash2 in common.wgsl and `rand` in swarm.wgsl.
+fn draw_rand(i: u32, k: u32) -> f32 {
+    var h = ((draw_params.counts.w ^ (i * 0x632be5abu)) * 0x9e3779b9u) ^ (k * 0x85ebca6bu);
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) / 16777216.0;
+}
+
+fn draw_gradient(t: f32) -> vec4<f32> {
+    let stops = max(draw_params.look.y, 1u);
+    let x = clamp(t, 0.0, 1.0) * f32(stops - 1u);
+    let a = u32(floor(x));
+    let b = min(a + 1u, stops - 1u);
+    return mix(draw_params.colors[a], draw_params.colors[b], fract(x));
+}
+
 struct PointOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local: vec2<f32>,
@@ -42,9 +61,21 @@ struct PointOut {
 @vertex
 fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PointOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
-    let p = draw_points[ii].xy;
-    let tint = draw_tints[ii];
-    let color = vec4<f32>(unpack2x16float(tint.x), unpack2x16float(tint.y));
+    let point = draw_points[ii];
+    let p = point.xy;
+    var color: vec4<f32>;
+    switch draw_params.look.x {
+        case 0u: {
+            color = draw_gradient(length(point.zw) / max(draw_params.motion.x, 1.0));
+        }
+        case 1u: {
+            let tint = draw_tints[ii];
+            color = vec4<f32>(unpack2x16float(tint.x), unpack2x16float(tint.y));
+        }
+        default: {
+            color = draw_gradient(draw_rand(ii, 42u));
+        }
+    }
     let px = g.view.z;
     let size = draw_params.arena.w;
     // Points smaller than a pixel get dimmer instead of vanishing between pixels.

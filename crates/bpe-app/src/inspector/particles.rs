@@ -30,9 +30,7 @@ pub struct State {
 
 impl State {
     fn dice(&mut self) -> Dice {
-        self.rolls += 1;
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        Dice::new(nanos as u64 ^ self.rolls.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        super::gpu::fresh_dice(&mut self.rolls)
     }
 }
 

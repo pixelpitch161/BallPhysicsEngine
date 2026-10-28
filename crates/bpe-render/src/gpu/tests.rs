@@ -159,6 +159,9 @@ fn looks_change_without_restarting() {
     scene.look.bloom_strength = 0.9;
     render(&device, &queue, &mut renderer, &scene, &[1.0]);
     assert_eq!(renderer.gpu.steps_run(), steps, "a colour change should not start the swarm again");
+    scene.gpu.swarm.color = bpe_scene::SwarmColor::Gradient;
+    render(&device, &queue, &mut renderer, &scene, &[1.0]);
+    assert_eq!(renderer.gpu.steps_run(), steps, "a colour mode change should not start the swarm again");
     scene.gpu.swarm.flow = 2.0;
     render(&device, &queue, &mut renderer, &scene, &[1.0]);
     assert!(renderer.gpu.steps_run() > steps, "a movement change starts again from the beginning");

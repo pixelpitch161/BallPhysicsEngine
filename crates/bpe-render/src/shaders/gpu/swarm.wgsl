@@ -122,7 +122,7 @@ fn init_points(@builtin(global_invocation_id) id: vec3<u32>) {
     let angle = rand(i, 40u) * TAU;
     let v = vec2<f32>(cos(angle), sin(angle)) * params.motion.x * 0.1 * rand(i, 41u);
     points[i] = vec4<f32>(p, v);
-    tints[i] = pack_color(gradient_color(rand(i, 42u)));
+    tints[i] = pack_color(params.colors[0]);
 }
 
 @compute @workgroup_size(256)
@@ -269,15 +269,9 @@ fn move_points(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     points[i] = vec4<f32>(p, v);
 
-    switch params.look.x {
-        case 0u: {
-            tints[i] = pack_color(gradient_color(length(v) / top));
-        }
-        case 1u: {
-            if count > 0u {
-                tints[i] = pack_color(nearest_color);
-            }
-        }
-        default: {}
+    // Only the nearest ball's colour has to be kept: the other colour modes are worked out when
+    // drawing, so colour settings can change without starting the swarm again.
+    if count > 0u {
+        tints[i] = pack_color(nearest_color);
     }
 }

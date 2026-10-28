@@ -16,10 +16,15 @@ pub struct State {
 
 impl State {
     fn dice(&mut self) -> Dice {
-        self.rolls += 1;
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        Dice::new(nanos as u64 ^ self.rolls.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        fresh_dice(&mut self.rolls)
     }
+}
+
+/// A dice with a new seed for each roll, counting rolls in `rolls`.
+pub(super) fn fresh_dice(rolls: &mut u64) -> Dice {
+    *rolls += 1;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    Dice::new(nanos as u64 ^ rolls.wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
 /// Draws the section. Edits go straight into `scene`; the app keeps them as undo steps.
