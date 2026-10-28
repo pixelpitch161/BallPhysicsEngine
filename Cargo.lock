@@ -234,6 +234,7 @@ name = "bpe-audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bpe-graph",
  "bpe-music",
  "bpe-scene",
  "bpe-sim",

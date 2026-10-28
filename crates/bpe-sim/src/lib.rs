@@ -227,7 +227,6 @@ impl Simulation {
         &self.inputs
     }
 
-    /// Rule state: compiled rules, counters and how often each block fired.
     /// Runs the scene's rules on this step's events from `first_event` on, acting on `balls`.
     /// The flat simulation does this itself at the end of [`Simulation::step`]; 3D mode calls
     /// it after its own balls have stepped.
@@ -239,6 +238,7 @@ impl Simulation {
         rules::run(&mut self.rules, now, first_event, events, balls);
     }
 
+    /// Rule state: compiled rules, counters and how often each block fired.
     pub fn rules(&self) -> &rules::RuleState {
         &self.rules
     }

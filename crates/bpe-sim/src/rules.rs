@@ -500,8 +500,14 @@ fn compile(scene: &Scene) -> Option<Program> {
 fn compile_graph(program: &mut Program, rule: u16, graph: &Graph, catalog: &SpecList) {
     let base = program.blocks.len() as u32;
     // Blocks that can't run (unknown or switched off) keep their slot so wires still line up,
-    // but nothing reaches them.
-    let usable = |node: &Node| node.enabled && kind_of(&node.kind).is_some() && catalog.spec(&node.kind).is_some();
+    // but nothing reaches them. Action events name their block in 16 bits, so a block with a
+    // larger id (only from a hand-edited file) doesn't run either.
+    let usable = |node: &Node| {
+        node.enabled
+            && node.id <= u16::MAX as u32
+            && kind_of(&node.kind).is_some()
+            && catalog.spec(&node.kind).is_some()
+    };
     let slot = |id: u32| graph.nodes.iter().position(|n| n.id == id).map(|i| base + i as u32);
     for node in &graph.nodes {
         let spec = catalog.spec(&node.kind);
@@ -795,7 +801,8 @@ pub fn run(state: &mut RuleState, now: f64, first: usize, events: &mut Vec<Event
                     let n = state.memory[block as usize] as u64;
                     state.memory[block as usize] += 1.0;
                     if n.is_multiple_of(b.num[0] as u64) {
-                        fire(state, &program, block, NOBODY, event.time.max(now - 1.0), events, balls, &mut budget);
+                        // Logged at the end of the step like every other action, so the log stays in time order.
+                        fire(state, &program, block, NOBODY, now, events, balls, &mut budget);
                     }
                 }
                 continue;
@@ -948,7 +955,7 @@ fn act(
     let emit = |events: &mut Vec<Event>, ball: Option<usize>, amount: f32, balls: &dyn RuleBalls| {
         let position = ball.map_or_else(|| balls.center(), |b| balls.position(b));
         let ball = ball.map_or(NO_BALL, |b| b as u32);
-        let kind = EventKind::Action { rule: block.rule, action: block.id.min(u16::MAX as u32) as u16 };
+        let kind = EventKind::Action { rule: block.rule, action: block.id as u16 };
         events.push(Event { time: now, ball, position, depth: 0.0, speed: amount, kind });
     };
     match block.kind {

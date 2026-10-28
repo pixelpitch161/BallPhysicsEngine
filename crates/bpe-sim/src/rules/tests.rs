@@ -225,6 +225,17 @@ fn beats_fire_on_every_nth_and_downbeats() {
     scene.logic = vec![chain("Bar", &[("beat", &[("downbeats", Param::Bool(true))]), ("flash", &[])])];
     let events = crate::collect_events(&scene, &inputs);
     assert_eq!(count(&events, |k| matches!(k, EventKind::Action { .. })), 4);
+    // Beats between steps, with a wall rule acting in the same steps: the log stays in time order.
+    let beats: Vec<f64> = (0..40).map(|i| i as f64 * 0.1937 + 0.0011).collect();
+    let inputs = crate::SimInputs { beats, music: None };
+    scene.logic = vec![
+        chain("Beat", &[("beat", &[]), ("flash", &[])]),
+        chain("Walls", &[("wall", &[]), ("flash", &[])]),
+        chain("Tick", &[("timer", &[("every", Param::Number(0.25))]), ("flash", &[])]),
+    ];
+    let events = crate::collect_events(&scene, &inputs);
+    assert!(count(&events, |k| matches!(k, EventKind::Action { .. })) > 40);
+    assert!(events.windows(2).all(|w| w[0].time <= w[1].time), "events out of time order");
 }
 
 /// Twenty rules on a busy scene must cost under 0.1 ms a step on top of the physics.

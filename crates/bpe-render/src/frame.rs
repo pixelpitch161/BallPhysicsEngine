@@ -231,18 +231,25 @@ impl FrameData {
                 }
             }
 
-            // Rule flashes cover the whole picture and fade over about half a second.
+            // Rule flashes cover the whole picture and fade over about half a second. They are added
+            // up into one full-screen flash, so a rule firing hundreds of times is still one quad.
             let rules = sim.rules();
             if !rules.is_empty() {
                 let now = sim.time();
-                let size = 3.0 * (scene.video.width + scene.video.height) as f32;
+                let mut sum = [0.0f32; 3];
                 for event in playback.recent_events(RULE_FLASH_SECONDS).iter() {
                     let Some(bpe_sim::rules::RuleOutput::Flash { color, strength }) = rules.output(event) else {
                         continue;
                     };
                     let fade = (-6.0 * (now - event.time).max(0.0) as f32).exp() * strength * 0.5;
+                    for (total, c) in sum.iter_mut().zip(color) {
+                        *total += c * fade;
+                    }
+                }
+                if sum.iter().any(|&c| c > 1e-3) {
+                    let size = 3.0 * (scene.video.width + scene.video.height) as f32;
                     // Alpha above 1 tells the shader this flash ignores the scene's own flash strength.
-                    let color = [color[0] * fade, color[1] * fade, color[2] * fade, 2.0];
+                    let color = [sum[0].min(1.0), sum[1].min(1.0), sum[2].min(1.0), 2.0];
                     self.flashes.push(FlashInstance { center: scene.container.center().into(), size, color });
                 }
             }

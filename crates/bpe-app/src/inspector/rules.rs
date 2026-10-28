@@ -44,40 +44,48 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     let catalog = rules::catalog();
     let mut remove = None;
     for (index, graph) in scene.logic.iter_mut().enumerate() {
-        egui::Frame::new()
-            .fill(theme::CARD)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::same(10))
-            .stroke(egui::Stroke::new(1.0, crate::timeline::rule_color(index as u16).gamma_multiply(0.6)))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut graph.enabled, "").on_hover_text("Turn this rule set on or off");
-                    ui.add(egui::TextEdit::singleline(&mut graph.name).desired_width(150.0).hint_text("Name"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Remove").on_hover_text("Remove this rule set (Ctrl+Z brings it back)").clicked() {
-                            remove = Some(index);
-                        }
-                        if ui
-                            .button("Open in graph")
-                            .on_hover_text("Edit it as blocks in the Rules workspace")
-                            .clicked()
-                        {
-                            state.open = Some(index);
-                        }
-                    });
-                });
-                sentences(ui, graph, catalog);
-                let problems = bpe_graph::validate(graph, catalog);
-                for problem in problems.iter().take(3) {
-                    ui.label(RichText::new(&problem.message).small().color(theme::ERROR));
-                }
-            });
+        // Block ids start again in every rule set, so each card gets its own id space.
+        ui.push_id(index, |ui| card(ui, graph, index, catalog, state, &mut remove));
         ui.add_space(6.0);
     }
     if let Some(index) = remove {
         scene.logic.remove(index);
     }
+}
+
+fn card(
+    ui: &mut Ui,
+    graph: &mut Graph,
+    index: usize,
+    catalog: &dyn Catalog,
+    state: &mut State,
+    remove: &mut Option<usize>,
+) {
+    egui::Frame::new()
+        .fill(theme::CARD)
+        .corner_radius(8)
+        .inner_margin(egui::Margin::same(10))
+        .stroke(egui::Stroke::new(1.0, crate::timeline::rule_color(index as u16).gamma_multiply(0.6)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut graph.enabled, "").on_hover_text("Turn this rule set on or off");
+                ui.add(egui::TextEdit::singleline(&mut graph.name).desired_width(150.0).hint_text("Name"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Remove").on_hover_text("Remove this rule set (Ctrl+Z brings it back)").clicked() {
+                        *remove = Some(index);
+                    }
+                    if ui.button("Open in graph").on_hover_text("Edit it as blocks in the Rules workspace").clicked() {
+                        state.open = Some(index);
+                    }
+                });
+            });
+            sentences(ui, graph, catalog);
+            let problems = bpe_graph::validate(graph, catalog);
+            for problem in problems.iter().take(3) {
+                ui.label(RichText::new(&problem.message).small().color(theme::ERROR));
+            }
+        });
 }
 
 /// Each "When" block and what follows it, as a line of words with the settings marked for
@@ -93,10 +101,12 @@ fn sentences(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog) {
         ui.label(RichText::new("No \"When\" block yet. Open it as a graph to add one.").color(theme::MUTED));
     }
     for trigger in triggers {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            block(ui, graph, catalog, trigger);
-            follow(ui, graph, catalog, trigger, 0);
+        ui.push_id(trigger, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                block(ui, graph, catalog, trigger);
+                follow(ui, graph, catalog, trigger, 0);
+            });
         });
     }
 }
@@ -125,8 +135,11 @@ fn follow(ui: &mut Ui, graph: &mut Graph, catalog: &dyn Catalog, node: u32, dept
         }
         for (k, target) in next.into_iter().enumerate() {
             ui.label(RichText::new(if k == 0 { "then" } else { "and" }).color(theme::MUTED));
-            block(ui, graph, catalog, target);
-            follow(ui, graph, catalog, target, depth + 1);
+            // A block reached along two paths is drawn twice, so each drawing gets its own id.
+            ui.push_id((depth, pin, k), |ui| {
+                block(ui, graph, catalog, target);
+                follow(ui, graph, catalog, target, depth + 1);
+            });
         }
     }
 }
