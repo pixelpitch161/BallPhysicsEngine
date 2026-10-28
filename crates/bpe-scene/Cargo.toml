@@ -1,0 +1,12 @@
+[package]
+name = "bpe-scene"
+description = "Scene description for the ball physics engine: what is in a video and how it looks and sounds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+ron.workspace = true
+glam.workspace = true
+anyhow.workspace = true

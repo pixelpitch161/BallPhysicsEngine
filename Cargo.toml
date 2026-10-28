@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+bpe-scene = { path = "crates/bpe-scene" }
+bpe-sim = { path = "crates/bpe-sim" }
+bpe-audio = { path = "crates/bpe-audio" }
+bpe-render = { path = "crates/bpe-render" }
+bpe-export = { path = "crates/bpe-export" }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+anyhow = "1"
+hound = "3.5"
+pollster = "1"
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+egui-wgpu = "0.37"
+wgpu = "30"
+cpal = "0.18"
+rfd = "0.17"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
