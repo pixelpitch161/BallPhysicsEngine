@@ -22,6 +22,7 @@ pub enum Action {
     Redo,
     Export,
     Explore,
+    Randomize,
     PlayPause,
     Restart,
     SpeedMeter,
@@ -29,7 +30,7 @@ pub enum Action {
 }
 
 impl Action {
-    const ALL: [Action; 12] = [
+    const ALL: [Action; 13] = [
         Action::PlayPause,
         Action::Restart,
         Action::Export,
@@ -40,6 +41,7 @@ impl Action {
         Action::Undo,
         Action::Redo,
         Action::Explore,
+        Action::Randomize,
         Action::SpeedMeter,
         Action::TogglePreview,
     ];
@@ -54,6 +56,7 @@ impl Action {
             Action::Redo => ("Redo", "Ctrl+Y"),
             Action::Export => ("Export video…", ""),
             Action::Explore => ("Explore random variations…", ""),
+            Action::Randomize => ("Randomize with locks…", ""),
             Action::PlayPause => ("Play or pause", "Space"),
             Action::Restart => ("Back to the start", "Home"),
             Action::SpeedMeter => ("Show or hide the speed meter", "F3"),

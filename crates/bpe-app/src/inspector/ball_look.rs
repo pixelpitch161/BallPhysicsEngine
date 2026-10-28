@@ -235,6 +235,9 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
         if dice_button(ui, "Roll a random look for these balls").clicked() {
             *style = Some(random_style(&mut state.dice()));
         }
+        if style.is_some() {
+            crate::dice_panel::lock_button(ui, crate::dice_panel::Part::BallLook(index));
+        }
         if let Some(current) = style.as_ref()
             && ui.small_button("Copy look").on_hover_text("Copy this look to paste onto other balls").clicked()
         {
@@ -245,6 +248,7 @@ fn body(ui: &mut Ui, index: usize, style: &mut Option<BallStyle>, look: &Look, s
         {
             *style = Some(copied);
         }
+        crate::my_presets::ball_look_menu(ui, index, style);
     });
     let Some(s) = style.as_mut() else {
         ui.horizontal_wrapped(|ui| {

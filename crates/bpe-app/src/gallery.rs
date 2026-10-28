@@ -1,8 +1,9 @@
-//! The preset gallery: every built-in starting point with a small moving preview.
+//! The preset gallery: every built-in starting point with a small moving preview, after the
+//! scenes the user saved as their own presets.
 
 use crate::theme;
 use bpe_render::{FrameData, Renderer};
-use bpe_scene::{Preset, Scene};
+use bpe_scene::{Preset, SavedPreset, Scene};
 use bpe_sim::Playback;
 use eframe::egui::{self, Color32, RichText, Sense};
 use std::time::{Duration, Instant};
@@ -21,7 +22,14 @@ const FRAME_EVERY: Duration = Duration::from_millis(33);
 
 pub struct Gallery {
     pub open: bool,
-    presets: Vec<Preset>,
+    /// The user's saved scenes first, then the built-in presets.
+    presets: Vec<Entry>,
+    /// How many of `presets` are the user's own.
+    mine: usize,
+    /// The name typed for saving the current scene as a preset.
+    save_name: String,
+    /// What the last save or delete did.
+    message: Option<String>,
     /// A preview for each preset, made the first time its card scrolls into view.
     thumbs: Vec<Option<Thumb>>,
     /// Which cards were on screen last frame. Only those are simulated and drawn.
@@ -32,6 +40,36 @@ pub struct Gallery {
     opened: Instant,
 }
 
+/// One card in the gallery.
+struct Entry {
+    name: String,
+    description: String,
+    scene: Scene,
+    /// The user's own saved preset, which can be deleted.
+    saved: Option<SavedPreset>,
+}
+
+impl From<Preset> for Entry {
+    fn from(preset: Preset) -> Self {
+        Self { name: preset.name.into(), description: preset.description.into(), scene: preset.scene, saved: None }
+    }
+}
+
+impl From<SavedPreset> for Entry {
+    fn from(saved: SavedPreset) -> Self {
+        let bpe_scene::PresetData::Scene(scene) = &saved.data else { unreachable!("only scenes are listed") };
+        Self {
+            name: saved.name.clone(),
+            description: "Saved by you".into(),
+            scene: (**scene).clone(),
+            saved: Some(saved),
+        }
+    }
+}
+
+/// A gallery card and its preview, if made yet.
+type Thumbed = (Entry, Option<Thumb>);
+
 struct Thumb {
     renderer: Renderer,
     texture: egui::TextureId,
@@ -41,27 +79,60 @@ struct Thumb {
 
 impl Gallery {
     pub fn new(open: bool) -> Self {
-        let presets = Scene::presets();
-        let count = presets.len();
-        Self {
+        let mut gallery = Self {
             open,
-            presets,
-            thumbs: (0..count).map(|_| None).collect(),
-            visible: vec![false; count],
+            presets: Vec::new(),
+            mine: 0,
+            save_name: String::new(),
+            message: None,
+            thumbs: Vec::new(),
+            visible: Vec::new(),
             next: 0,
             last_drawn: None,
             opened: Instant::now(),
+        };
+        gallery.reload();
+        gallery
+    }
+
+    /// Reads the user's saved scenes again. Built-in previews already made are kept.
+    fn reload(&mut self) {
+        let mine: Vec<Entry> = crate::my_presets::scenes().into_iter().map(Entry::from).collect();
+        let unchanged = mine.len() == self.mine && mine.iter().zip(&self.presets).all(|(a, b)| a.saved == b.saved);
+        if unchanged && !self.presets.is_empty() {
+            return;
         }
+        let built_in: Vec<Thumbed> = if self.presets.is_empty() {
+            Scene::presets().into_iter().map(|p| (Entry::from(p), None)).collect()
+        } else {
+            let thumbs = std::mem::take(&mut self.thumbs);
+            std::mem::take(&mut self.presets).into_iter().zip(thumbs).skip(self.mine).collect()
+        };
+        self.mine = mine.len();
+        let (presets, thumbs) = mine.into_iter().map(|e| (e, None)).chain(built_in).unzip();
+        self.presets = presets;
+        self.thumbs = thumbs;
+        self.visible = vec![false; self.presets.len()];
+        self.next = 0;
     }
 
     pub fn open(&mut self) {
         self.open = true;
         self.opened = Instant::now();
         self.last_drawn = None;
+        self.message = None;
+        self.reload();
     }
 
-    /// Shows the gallery if it is open. Returns the preset the user picked.
-    pub fn show(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scene> {
+    /// Shows the gallery if it is open. Returns the preset the user picked. `current` and
+    /// `base_dir` (its file's folder) are for saving the current scene as a preset.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        current: &Scene,
+        base_dir: Option<&std::path::Path>,
+    ) -> Option<Scene> {
         if !self.open {
             return None;
         }
@@ -77,27 +148,58 @@ impl Gallery {
             ui.add_space(10.0);
             // Leave room for the title and buttons; the presets scroll when they don't all fit.
             let max_height = (ctx.content_rect().height() - 220.0).max(THUMB.y + 80.0);
+            let mut delete = None;
             egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
-                egui::Grid::new("presets").spacing([14.0, 14.0]).show(ui, |ui| {
-                    for (i, preset) in self.presets.iter().enumerate() {
-                        let texture = self.thumbs[i].as_ref().map(|t| t.texture);
-                        let response = card(ui, preset, texture);
-                        self.visible[i] = ui.is_rect_visible(response.rect);
-                        if response.clicked() {
-                            picked = Some(preset.scene.clone());
-                        }
-                        if i % 3 == 2 {
-                            ui.end_row();
-                        }
+                for (section, range) in [("MY SCENES", 0..self.mine), ("BUILT IN", self.mine..self.presets.len())] {
+                    if self.mine == 0 || range.is_empty() {
+                        continue;
+                    }
+                    ui.label(RichText::new(section).size(12.0).color(theme::MUTED));
+                    ui.add_space(4.0);
+                    self.cards(ui, section, range, &mut picked, &mut delete);
+                    ui.add_space(10.0);
+                }
+                if self.mine == 0 {
+                    self.cards(ui, "presets", 0..self.presets.len(), &mut picked, &mut delete);
+                }
+            });
+            if let Some(i) = delete {
+                let entry = &self.presets[i];
+                self.message = Some(match entry.saved.as_ref().map(crate::my_presets::delete) {
+                    Some(Ok(())) => format!("Deleted \"{}\".", entry.name),
+                    Some(Err(error)) => format!("Couldn't delete it: {error}"),
+                    None => String::new(),
+                });
+                self.reload();
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label("Save my current scene as");
+                ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(170.0).hint_text(&current.name));
+                let name = if self.save_name.trim().is_empty() { current.name.trim() } else { self.save_name.trim() };
+                let name = if name.is_empty() { "My scene" } else { name }.to_string();
+                let replace = self.presets[..self.mine]
+                    .iter()
+                    .any(|e| bpe_scene::saved_file_name(&e.name) == bpe_scene::saved_file_name(&name));
+                let label = if replace { "Replace" } else { "Save" };
+                if ui.button(label).on_hover_text("Keep this scene in My scenes, to start new scenes from it").clicked()
+                {
+                    self.message = Some(match crate::my_presets::save_scene(&name, current, base_dir) {
+                        Ok(()) => format!("Saved \"{name}\" to My scenes."),
+                        Err(error) => format!("Couldn't save it: {error}"),
+                    });
+                    self.save_name.clear();
+                    self.reload();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Keep my current scene").clicked() {
+                        self.open = false;
                     }
                 });
             });
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Keep my current scene").clicked() {
-                    self.open = false;
-                }
-            });
+            if let Some(message) = &self.message {
+                ui.label(RichText::new(message).small().color(theme::MUTED));
+            }
         });
         if modal.should_close() || picked.is_some() {
             self.open = false;
@@ -107,6 +209,39 @@ impl Gallery {
             ctx.request_repaint_after(wait);
         }
         picked
+    }
+
+    /// Cards for presets in `range`, three to a row.
+    fn cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        range: std::ops::Range<usize>,
+        picked: &mut Option<Scene>,
+        delete: &mut Option<usize>,
+    ) {
+        egui::Grid::new(id).spacing([14.0, 14.0]).show(ui, |ui| {
+            for (k, i) in range.enumerate() {
+                let preset = &self.presets[i];
+                let texture = self.thumbs[i].as_ref().map(|t| t.texture);
+                let response = card(ui, preset, texture);
+                self.visible[i] = ui.is_rect_visible(response.rect);
+                if response.clicked() {
+                    *picked = Some(preset.scene.clone());
+                }
+                if preset.saved.is_some() {
+                    response.context_menu(|ui| {
+                        if ui.button("Delete this preset").clicked() {
+                            *delete = Some(i);
+                            ui.close();
+                        }
+                    });
+                }
+                if k % 3 == 2 {
+                    ui.end_row();
+                }
+            }
+        });
     }
 
     fn render_thumbnails(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -161,7 +296,7 @@ impl Gallery {
     }
 }
 
-fn card(ui: &mut egui::Ui, preset: &Preset, texture: Option<egui::TextureId>) -> egui::Response {
+fn card(ui: &mut egui::Ui, preset: &Entry, texture: Option<egui::TextureId>) -> egui::Response {
     let width = THUMB.x + 46.0;
     let response = egui::Frame::new()
         .fill(theme::CARD)
@@ -180,8 +315,8 @@ fn card(ui: &mut egui::Ui, preset: &Preset, texture: Option<egui::TextureId>) ->
                     }
                 });
                 ui.add_space(4.0);
-                ui.label(RichText::new(preset.name).strong().color(theme::TEXT));
-                ui.add(egui::Label::new(RichText::new(preset.description).small().color(theme::MUTED)).wrap());
+                ui.label(RichText::new(&preset.name).strong().color(theme::TEXT));
+                ui.add(egui::Label::new(RichText::new(&preset.description).small().color(theme::MUTED)).wrap());
             });
         })
         .response
@@ -197,5 +332,10 @@ fn card(ui: &mut egui::Ui, preset: &Preset, texture: Option<egui::TextureId>) ->
             egui::StrokeKind::Inside,
         );
     }
-    response.on_hover_text("Start a new scene from this preset")
+    let hover = if preset.saved.is_some() {
+        "Start a new scene from this preset. Right-click to delete it."
+    } else {
+        "Start a new scene from this preset"
+    };
+    response.on_hover_text(hover)
 }

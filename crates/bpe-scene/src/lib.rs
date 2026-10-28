@@ -16,6 +16,7 @@ mod music;
 mod particles;
 mod presets;
 mod random;
+mod saved;
 #[cfg(feature = "import")]
 pub mod shape_import;
 pub mod shapes;
@@ -37,6 +38,7 @@ pub use gpu::*;
 pub use music::*;
 pub use particles::*;
 pub use random::{Dice, Group, palette};
+pub use saved::{PresetData, PresetKind, SavedPreset, file_name as saved_file_name};
 pub use shapes::{Placement, Shape};
 pub use view::*;
 
