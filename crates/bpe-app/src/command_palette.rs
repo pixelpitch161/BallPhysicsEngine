@@ -292,18 +292,15 @@ impl CommandPalette {
             egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
                 for (index, entry) in found.iter().enumerate().take(200) {
                     let selected = index == self.highlighted;
-                    let row = ui
-                        .horizontal(|ui| {
-                            let button = egui::Button::selectable(selected, &entry.title)
-                                .min_size(vec2(ui.available_width() - 150.0, 26.0));
-                            let response = ui.add(button);
-                            ui.label(RichText::new(entry.kind).small().color(theme::MUTED));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new(&entry.keys).small().color(theme::MUTED));
-                            });
-                            response
-                        })
-                        .inner;
+                    let hint = if entry.keys.is_empty() {
+                        entry.kind.to_string()
+                    } else {
+                        format!("{}  ·  {}", entry.kind, entry.keys)
+                    };
+                    let button = egui::Button::selectable(selected, entry.title.as_str())
+                        .shortcut_text(RichText::new(hint).small())
+                        .min_size(vec2(ui.available_width(), 26.0));
+                    let row = ui.add(button);
                     if selected && (up || down) {
                         row.scroll_to_me(None);
                     }
