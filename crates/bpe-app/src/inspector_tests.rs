@@ -1,7 +1,9 @@
 //! Drives the settings panel with simulated mouse input to check the reset shortcuts.
 
 use crate::inspector::{self, Inspector, Tab};
-use bpe_scene::{BounceRules, ChordStep, Color, Container, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2};
+use bpe_scene::{
+    BounceRules, ChordStep, Color, Container, Effect, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2,
+};
 use eframe::egui::{self, Modifiers, PointerButton};
 use egui_kittest::{
     Harness,
@@ -14,7 +16,7 @@ struct State {
 }
 
 fn harness(tab: Tab, scene: Scene) -> Harness<'static, State> {
-    let state = State { inspector: Inspector { tab, selected: None }, scene };
+    let state = State { inspector: Inspector { tab, ..Inspector::default() }, scene };
     let mut harness = Harness::builder()
         .with_size(egui::vec2(460.0, 2400.0))
         // Real frame times, so two quick clicks count as a double-click.
@@ -345,10 +347,71 @@ fn reset_this_tab_works_while_sound_is_off() {
 
 #[test]
 fn opening_a_tab_changes_nothing() {
-    for tab in [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Sound] {
+    for tab in [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Effects, Tab::Sound] {
         let harness = harness(tab, Scene::default());
         assert!(harness.state().scene == Scene::default(), "showing a tab must not edit the scene");
     }
+    // Effect sliders the scene leaves at their defaults must not get written in just by showing them.
+    let scene =
+        Scene { effects: vec![Effect::new("echo"), Effect::new("mirror"), Effect::new("pixels")], ..Scene::default() };
+    let harness = harness(Tab::Effects, scene.clone());
+    assert!(harness.state().scene == scene, "showing the effects must not edit them");
+}
+
+fn with_effects(effects: Vec<Effect>) -> Scene {
+    Scene { effects, ..Scene::default() }
+}
+
+#[test]
+fn double_clicking_an_effect_setting_resets_it() {
+    let mut effect = Effect::new("kaleidoscope").with("slices", 12.0).with("spin", 0.5);
+    effect.amount = 0.3;
+    let mut harness = harness(Tab::Effects, with_effects(vec![effect]));
+    double_click(&mut harness, "Slices");
+    double_click(&mut harness, "Amount");
+    let effect = &harness.state().scene.effects[0];
+    assert_eq!(effect.params["slices"], 6.0);
+    assert_eq!(effect.params["spin"], 0.5, "other sliders keep their values");
+    assert_eq!(effect.amount, 1.0);
+}
+
+#[test]
+fn alt_clicking_an_effect_switch_resets_it() {
+    let mut harness = harness(Tab::Effects, with_effects(vec![Effect::new("mirror").with("left_right", 0.0)]));
+    alt_click(&mut harness, "Left right");
+    assert_eq!(harness.state().scene.effects[0].params["left_right"], 1.0);
+}
+
+#[test]
+fn effects_are_added_from_the_menu_and_from_looks() {
+    let mut harness = harness(Tab::Effects, Scene::default());
+    harness.get_by_label("+ Add effect").click();
+    harness.run();
+    harness.get_by_label("Kaleidoscope").click();
+    harness.run();
+    assert_eq!(harness.state().scene.effects, vec![Effect::new("kaleidoscope")]);
+
+    harness.get_by_label("Start from a look").click();
+    harness.run();
+    harness.get_by_label("Retro TV").click();
+    harness.run();
+    let shaders: Vec<_> = harness.state().scene.effects.iter().map(|e| e.shader.as_str()).collect();
+    assert_eq!(shaders, ["pixels", "film", "glitch"]);
+}
+
+#[test]
+fn reset_this_tab_removes_the_effects() {
+    let mut harness = harness(Tab::Effects, with_effects(vec![Effect::new("film"), Effect::new("glitch")]));
+    harness.get_by_label("Reset this tab").click();
+    harness.run();
+    assert!(harness.state().scene.effects.is_empty());
+}
+
+#[test]
+fn a_missing_effect_is_explained_not_dropped() {
+    let harness = harness(Tab::Effects, with_effects(vec![Effect::new("not_installed")]));
+    assert!(harness.query_by_label_contains("There is no effect called").is_some());
+    assert_eq!(harness.state().scene.effects.len(), 1);
 }
 
 /// Drags a slider by `dx` pixels, optionally holding Shift, and returns the new value.

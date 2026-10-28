@@ -264,7 +264,8 @@ fn effect_card(
                             effect.amount = 1.0;
                             ui.close();
                         }
-                        let edit = if info.is_builtin() { "Edit a copy of this effect" } else { "Open the effect file" };
+                        let edit =
+                            if info.is_builtin() { "Edit a copy of this effect" } else { "Open the effect file" };
                         if ui.button(edit).clicked() {
                             if info.is_builtin() {
                                 action = Some(CardAction::EditCopy);
@@ -304,7 +305,10 @@ fn effect_card(
             ui.label(RichText::new(&info.about).small().color(theme::MUTED));
         }
         if let Some(error) = info.error() {
-            ui.label(RichText::new("This effect has an error, so it is skipped until the file is fixed:").color(theme::ERROR));
+            ui.label(
+                RichText::new("This effect has an error, so it is skipped until the file is fixed:")
+                    .color(theme::ERROR),
+            );
             error_text(ui, error);
         }
         if let Some((_, error)) = panel.gpu_errors.iter().find(|(id, _)| *id == info.id) {
@@ -356,7 +360,13 @@ fn param_row(ui: &mut Ui, effect: &mut Effect, param: &fx::ParamInfo) {
         ParamKind::Slider => {
             let range = param.min..=param.max;
             let span = (param.max - param.min).abs();
-            let decimals = if span <= 0.2 { 3 } else if span <= 5.0 { 2 } else { 1 };
+            let decimals = if span <= 0.2 {
+                3
+            } else if span <= 5.0 {
+                2
+            } else {
+                1
+            };
             slider(ui, &text, &param.help, &mut value, param.default, range, move |s| {
                 s.custom_formatter(move |v, _| format!("{v:.decimals$}"))
             });

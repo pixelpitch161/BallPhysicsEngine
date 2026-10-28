@@ -407,7 +407,16 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
         }
-        self.effects.apply(device, queue, &mut encoder, &self.targets.hdr_texture, &self.targets.hdr, scene, time, frame);
+        self.effects.apply(
+            device,
+            queue,
+            &mut encoder,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            scene,
+            time,
+            frame,
+        );
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -637,7 +646,13 @@ mod tests {
         assert!(pixels.chunks(4).any(|p| p[0] > 100), "expected some bright pixels");
     }
 
-    fn render_at(device: &wgpu::Device, queue: &wgpu::Queue, renderer: &mut Renderer, scene: &Scene, times: &[f64]) -> Vec<u8> {
+    fn render_at(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &mut Renderer,
+        scene: &Scene,
+        times: &[f64],
+    ) -> Vec<u8> {
         let mut playback = Playback::new(scene);
         let mut frame = FrameData::default();
         for &time in times {
@@ -709,11 +724,8 @@ mod tests {
     #[test]
     fn effects_survive_a_resize_and_a_stack() {
         let Ok((device, queue)) = headless_device() else { return };
-        let mut scene = Scene::default();
-        scene.effects = ["echo", "kaleidoscope", "shockwave", "color_split", "film"]
-            .into_iter()
-            .map(bpe_scene::Effect::new)
-            .collect();
+        let effects = ["echo", "kaleidoscope", "shockwave", "color_split", "film"];
+        let scene = Scene { effects: effects.into_iter().map(bpe_scene::Effect::new).collect(), ..Scene::default() };
         let mut renderer = Renderer::new(&device, 135, 240);
         render_at(&device, &queue, &mut renderer, &scene, &[1.0, 1.02]);
         renderer.resize(&device, 90, 160);

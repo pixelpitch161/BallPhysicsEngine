@@ -166,9 +166,7 @@ fn parse_param(text: &str) -> Result<ParamInfo, String> {
         }
         let after = after.trim_start();
         match after.strip_prefix("int") {
-            Some(help) if help.is_empty() || help.starts_with(char::is_whitespace) => {
-                (lo, hi, ParamKind::Whole, help)
-            }
+            Some(help) if help.is_empty() || help.starts_with(char::is_whitespace) => (lo, hi, ParamKind::Whole, help),
             _ => (lo, hi, ParamKind::Slider, after),
         }
     };
@@ -187,9 +185,7 @@ fn assemble(source: &str, params: &[ParamInfo]) -> Result<String, String> {
         head.push_str("    unused: f32,\n");
     }
     head.push_str("};\n\n");
-    let mut tail = String::from(
-        "\n@fragment\nfn fs_main(in: FsIn) -> @location(0) vec4<f32> {\n    var p: Params;\n",
-    );
+    let mut tail = String::from("\n@fragment\nfn fs_main(in: FsIn) -> @location(0) vec4<f32> {\n    var p: Params;\n");
     for (i, param) in params.iter().enumerate() {
         tail.push_str(&format!("    p.{} = fx.params[{}][{}];\n", param.name, i / 4, i % 4));
     }
@@ -260,8 +256,10 @@ impl Default for EffectLibrary {
 impl EffectLibrary {
     /// A library holding only the built-in effects.
     pub fn new() -> Self {
-        let builtins =
-            BUILTINS.iter().map(|(id, source)| (id.to_string(), Arc::new(EffectInfo::parse(id, source, None)))).collect();
+        let builtins = BUILTINS
+            .iter()
+            .map(|(id, source)| (id.to_string(), Arc::new(EffectInfo::parse(id, source, None))))
+            .collect();
         Self { inner: Arc::new(RwLock::new(Inner { builtins, custom: BTreeMap::new(), folders: Vec::new() })) }
     }
 
@@ -344,9 +342,13 @@ impl EffectLibrary {
         let inner = self.inner.read().unwrap();
         let mut list: Vec<_> = BUILTINS
             .iter()
-            .map(|(id, _)| inner.custom.get(*id).map(|(info, _)| info.clone()).unwrap_or_else(|| inner.builtins[*id].clone()))
+            .map(|(id, _)| {
+                inner.custom.get(*id).map(|(info, _)| info.clone()).unwrap_or_else(|| inner.builtins[*id].clone())
+            })
             .collect();
-        list.extend(inner.custom.iter().filter(|(id, _)| !inner.builtins.contains_key(*id)).map(|(_, (info, _))| info.clone()));
+        list.extend(
+            inner.custom.iter().filter(|(id, _)| !inner.builtins.contains_key(*id)).map(|(_, (info, _))| info.clone()),
+        );
         list
     }
 }
@@ -417,6 +419,16 @@ mod tests {
     }
 
     #[test]
+    fn readme_example_compiles() {
+        let readme = include_str!("../../../../README.md");
+        let start = readme.find("```wgsl\n").expect("README has a wgsl example") + 8;
+        let end = start + readme[start..].find("```").unwrap();
+        let info = EffectInfo::parse("wobble", &readme[start..end], None);
+        assert!(info.compiled.is_ok(), "{:?}", info.compiled.err());
+        assert_eq!(info.params.len(), 3);
+    }
+
+    #[test]
     fn params_parse() {
         let p = parse_param("slices = 6 [2, 24] int Number of slices").unwrap();
         assert_eq!((p.name.as_str(), p.default, p.min, p.max, p.kind), ("slices", 6.0, 2.0, 24.0, ParamKind::Whole));
@@ -476,7 +488,8 @@ mod tests {
 
         // A changed file is reloaded; make sure the modified time moves on coarse file systems.
         std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(dir.join("My FX.wgsl"), "fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return oops; }").unwrap();
+        std::fs::write(dir.join("My FX.wgsl"), "fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return oops; }")
+            .unwrap();
         let file = std::fs::File::options().write(true).open(dir.join("My FX.wgsl")).unwrap();
         file.set_modified(SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
         assert!(library.refresh());
