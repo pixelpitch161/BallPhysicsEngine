@@ -1,7 +1,7 @@
 //! The 3D part of the Arena tab: the Flat / 3D switch, the 3D container, the camera, the lights
 //! and the look of the balls and glass.
 
-use super::{color_row, dice_button, grid, heading, key, label, more, percent, slider, slider_row, units};
+use super::{dice_button, grid, heading, key, label, more, percent, plain_color_row, slider, slider_row, units};
 use crate::theme;
 use bpe_scene::{Camera, CameraMode, Container3d, Dice, Lights, Material, Property, Scene, Space, Spawner, View};
 use eframe::egui::{self, RichText, Ui};
@@ -362,7 +362,7 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
             0.0..=10.0,
             units("", 1),
         );
-        color_row(ui, "Light colour", "Colour of the main light.", &mut lights.key_color, d.key_color);
+        plain_color_row(ui, "Light colour", "Colour of the main light.", &mut lights.key_color, d.key_color);
         slider(
             ui,
             "Sky light",
@@ -372,8 +372,8 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
             0.0..=3.0,
             units("", 2),
         );
-        color_row(ui, "Sky colour", "Light from above.", &mut lights.ambient_top, d.ambient_top);
-        color_row(ui, "Ground colour", "Light from below.", &mut lights.ambient_bottom, d.ambient_bottom);
+        plain_color_row(ui, "Sky colour", "Light from above.", &mut lights.ambient_top, d.ambient_top);
+        plain_color_row(ui, "Ground colour", "Light from below.", &mut lights.ambient_bottom, d.ambient_bottom);
         let name = label(ui, "Shadows", "Whether balls cast shadows on each other and the walls.");
         ui.checkbox(&mut lights.shadows, "").labelled_by(name.id);
         ui.end_row();
@@ -430,7 +430,7 @@ fn finish(ui: &mut Ui, space: &mut Space) {
             0.0..=1.0,
             percent,
         );
-        color_row(
+        plain_color_row(
             ui,
             "Glass colour",
             "Tint of the glass, its edges and the tunnel's rings.",

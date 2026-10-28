@@ -57,13 +57,19 @@ fn fs_glyph(in: VertexOut) -> @location(0) vec4<f32> {
     let fill = clamp(inside + 0.5, 0.0, 1.0);
     let edge = clamp(inside + outline + 0.5, 0.0, 1.0);
     let rgb = mix(in.outline_color.rgb, in.color.rgb, select(fill, 1.0, outline <= 0.0));
-    let body = select(edge * mix(in.outline_color.a, in.color.a, fill), fill * in.color.a, outline <= 0.0);
+    // A negative alpha is an additive colour: it shows at that strength and covers nothing.
+    let fill_a = abs(in.color.a);
+    let line_a = abs(in.outline_color.a);
+    let fill_cover = select(fill_a, 0.0, in.color.a < 0.0);
+    let line_cover = select(line_a, 0.0, in.outline_color.a < 0.0);
+    let body = select(edge * mix(line_a, fill_a, fill), fill * fill_a, outline <= 0.0);
+    let hides = select(edge * mix(line_cover, fill_cover, fill), fill * fill_cover, outline <= 0.0);
     // Glow fades out from the outer edge, reaching nothing before the edge of the quad. It only
     // adds light, so it never darkens what is behind it.
     let outside = max(-(inside + outline), 0.0);
     let reach = max(in.params.w, 0.5);
     let fade = 1.0 - smoothstep(0.0, 1.0, outside / reach);
     let glow = in.params.z * exp(-outside / reach * 2.0) * fade * (1.0 - edge);
-    let color = rgb * body + in.color.rgb * glow * in.color.a;
-    return vec4<f32>(color, clamp(body, 0.0, 1.0));
+    let color = rgb * body + in.color.rgb * glow * fill_a;
+    return vec4<f32>(color, clamp(hides, 0.0, 1.0));
 }

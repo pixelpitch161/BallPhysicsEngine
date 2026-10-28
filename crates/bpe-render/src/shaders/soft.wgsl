@@ -6,6 +6,6 @@
 fn fs_soft(in: TrailOut) -> @location(0) vec4<f32> {
     let px = g.view.z;
     let cover = clamp(in.edge.x / px + 0.5, 0.0, 1.0);
-    let a = in.color.a * cover;
-    return vec4<f32>(in.color.rgb * a, a);
+    let a = abs(in.color.a) * cover;
+    return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
 }
