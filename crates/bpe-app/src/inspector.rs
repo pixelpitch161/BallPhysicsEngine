@@ -423,6 +423,8 @@ fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
             help_icon(ui, help);
         }
         if let Some(property) = animatable {
+            // WS5: a wave beside settings that pulse with the music.
+            crate::setting_menu::pulse::wave_icon(ui, &property);
             crate::keys::diamond(ui, property);
         }
         response

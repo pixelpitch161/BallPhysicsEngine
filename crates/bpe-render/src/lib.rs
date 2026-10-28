@@ -15,6 +15,8 @@ pub use effects::EffectLibrary;
 pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
 pub use frame::ShapeInstance;
 pub use frame::{BallInstance, EVENT_MEMORY, FlashInstance, FrameData, RecentHit, TrailVertex};
+/// The music at a moment, for settings that pulse with it (WS5).
+pub use frame::levels as audio_levels;
 pub use wgpu;
 
 use bpe_scene::Scene;
