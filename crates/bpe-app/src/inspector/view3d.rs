@@ -1,9 +1,9 @@
 //! The 3D part of the Arena tab: the Flat / 3D switch, the 3D container, the camera, the lights
 //! and the look of the balls and glass.
 
-use super::{color_row, dice_button, grid, heading, label, more, percent, slider, slider_row, units};
+use super::{color_row, key, dice_button, grid, heading, label, more, percent, slider, slider_row, units};
 use crate::theme;
-use bpe_scene::{Camera, CameraMode, Container3d, Dice, Lights, Material, Scene, Space, View};
+use bpe_scene::{Camera, CameraMode, Container3d, Dice, Lights, Material, Property, Scene, Space, Spawner, View};
 use eframe::egui::{self, RichText, Ui};
 
 /// What the 3D section remembers between frames.
@@ -68,6 +68,33 @@ fn view_switch(ui: &mut Ui, scene: &mut Scene, state: &mut State, aspect: f32) {
 
 /// 3D settings for a scene switched to 3D for the first time: a sphere about the size of its
 /// 2D arena, with the camera framing it.
+/// Depth and depth speed of a group of balls, at the end of its card in the Balls tab.
+pub fn spawner_depth(ui: &mut Ui, spawner: &mut Spawner) {
+    let (Spawner::Grid { depth, depth_velocity, .. }
+    | Spawner::Single { depth, depth_velocity, .. }
+    | Spawner::Stream { depth, depth_velocity, .. }) = spawner;
+    grid(ui, "depth-3d", |ui| {
+        slider(
+            ui,
+            "Depth",
+            "How far from the middle the balls start, away from the camera (positive) or towards it.",
+            depth,
+            0.0,
+            -2000.0..=2000.0,
+            units(" px", 0),
+        );
+        slider(
+            ui,
+            "Depth speed",
+            "Speed away from the camera (positive) or towards it when the balls start.",
+            depth_velocity,
+            0.0,
+            -3000.0..=3000.0,
+            units(" px/s", 0),
+        );
+    });
+}
+
 fn fresh_space(scene: &Scene, aspect: f32) -> Space {
     let radius = scene.container.size().clamp(150.0, 900.0);
     let container = Container3d::Sphere { radius };
@@ -220,6 +247,7 @@ fn camera(ui: &mut Ui, space: &mut Space, state: &mut State, aspect: f32) {
             let (mut turn, mut height, mut distance) = camera.angles();
             let before = (turn, height, distance);
             let (fit_turn, fit_height, fit_distance) = fitted.angles();
+            key(ui, Property::CameraTurn);
             let turn_row = slider_row(
                 ui,
                 "Turn",
@@ -228,6 +256,7 @@ fn camera(ui: &mut Ui, space: &mut Space, state: &mut State, aspect: f32) {
                 -180.0..=180.0,
                 units("°", 0),
             );
+            key(ui, Property::CameraHeight);
             let height_row = slider_row(
                 ui,
                 "Height",
@@ -236,6 +265,7 @@ fn camera(ui: &mut Ui, space: &mut Space, state: &mut State, aspect: f32) {
                 -85.0..=85.0,
                 units("°", 0),
             );
+            key(ui, Property::CameraDistance);
             let distance_row = slider_row(
                 ui,
                 "Distance",
@@ -251,6 +281,7 @@ fn camera(ui: &mut Ui, space: &mut Space, state: &mut State, aspect: f32) {
                 camera.set_angles(turn, height, distance);
             }
         }
+        key(ui, Property::CameraFov);
         slider(
             ui,
             "Field of view",
@@ -278,6 +309,7 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
     let lights = &mut space.lights;
     let d = Lights::default();
     grid(ui, "lights-3d", |ui| {
+        key(ui, Property::LightTurn);
         slider(
             ui,
             "Light direction",
@@ -287,6 +319,7 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
             -180.0..=180.0,
             units("°", 0),
         );
+        key(ui, Property::LightHeight);
         slider(
             ui,
             "Light height",
@@ -296,6 +329,7 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
             5.0..=90.0,
             units("°", 0),
         );
+        key(ui, Property::LightBrightness);
         slider(
             ui,
             "Brightness",
@@ -363,6 +397,7 @@ fn finish(ui: &mut Ui, space: &mut Space) {
             0.0..=1.0,
             percent,
         );
+        key(ui, Property::Glass);
         slider(
             ui,
             "Glass",
@@ -373,6 +408,7 @@ fn finish(ui: &mut Ui, space: &mut Space) {
             percent,
         );
         color_row(ui, "Glass colour", "Tint of the glass, its edges and the tunnel's rings.", &mut material.glass_color, m.glass_color);
+        key(ui, Property::EdgeGlow);
         slider(
             ui,
             "Edge glow",

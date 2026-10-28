@@ -679,6 +679,22 @@ impl Scene {
                 description: "Keyframes make the ring breathe in and out while the colours change.",
                 scene: Scene::pulsing_ring(),
             },
+            // ---- 3D (WS4) ----
+            Preset {
+                name: "Glass sphere",
+                description: "A block of balls tumbles inside a glass sphere while the camera circles it.",
+                scene: Scene::glass_sphere(),
+            },
+            Preset {
+                name: "Neon cube",
+                description: "Six fast balls leave long trails inside a turning cube with glowing edges.",
+                scene: Scene::neon_cube(),
+            },
+            Preset {
+                name: "Endless tunnel",
+                description: "Balls are pushed down a tunnel and break each ring when one finds its gap.",
+                scene: Scene::endless_tunnel(),
+            },
         ]
     }
 

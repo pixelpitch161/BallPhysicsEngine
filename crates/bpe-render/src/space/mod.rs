@@ -665,6 +665,17 @@ mod gpu_tests {
         }
     }
 
+    #[test]
+    fn the_3d_presets_render() {
+        let Some(device) = device() else { return };
+        let scale: u32 = std::env::var("BPE_DUMP_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        for preset in Scene::presets().into_iter().filter(|p| p.scene.space().is_some()) {
+            let pixels = render_space(&device, &preset.scene, 6.0, (270 * scale, 480 * scale), preset.name);
+            let lit = pixels.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 200).count();
+            assert!(lit > 500 * (scale * scale) as usize, "{}: only {lit} bright pixels", preset.name);
+        }
+    }
+
     /// A flat scene never touches the 3D renderer, and a 3D scene draws nothing flat.
     #[test]
     fn flat_and_space_pictures_differ() {

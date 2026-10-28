@@ -5,7 +5,7 @@
 //! scene's `Physics::gravity` (x and y) plus [`Space::gravity_depth`] along z, so gravity sliders
 //! and keyframes work the same in both views.
 
-use crate::{Color, Dice, Vec2};
+use crate::{Color, Dice, Property, Vec2};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -339,6 +339,42 @@ impl Camera {
         let offset = self.position - self.target;
         let distance = (offset.length() * factor).clamp(50.0, 20_000.0);
         self.position = self.target + offset.normalize_or(Vec3::NEG_Z) * distance;
+    }
+}
+
+impl Space {
+    /// The value of an animatable 3D setting ([`Property::SPACE`]), or None for any other.
+    pub fn number(&self, property: &Property) -> Option<f32> {
+        let (turn, height, distance) = self.camera.angles();
+        Some(match property {
+            Property::CameraTurn => turn,
+            Property::CameraHeight => height,
+            Property::CameraDistance => distance,
+            Property::CameraFov => self.camera.fov,
+            Property::LightTurn => self.lights.key_turn,
+            Property::LightHeight => self.lights.key_height,
+            Property::LightBrightness => self.lights.intensity,
+            Property::Glass => self.material.glass,
+            Property::EdgeGlow => self.material.edge_glow,
+            _ => return None,
+        })
+    }
+
+    /// Sets an animatable 3D setting. Any other setting is ignored.
+    pub fn set_number(&mut self, property: &Property, value: f32) {
+        let (turn, height, distance) = self.camera.angles();
+        match property {
+            Property::CameraTurn => self.camera.set_angles(value, height, distance),
+            Property::CameraHeight => self.camera.set_angles(turn, value, distance),
+            Property::CameraDistance => self.camera.set_angles(turn, height, value),
+            Property::CameraFov => self.camera.fov = value,
+            Property::LightTurn => self.lights.key_turn = value,
+            Property::LightHeight => self.lights.key_height = value,
+            Property::LightBrightness => self.lights.intensity = value,
+            Property::Glass => self.material.glass = value,
+            Property::EdgeGlow => self.material.edge_glow = value,
+            _ => {}
+        }
     }
 }
 

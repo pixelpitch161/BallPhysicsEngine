@@ -245,6 +245,16 @@ pub fn name(property: &Property, scene: &Scene) -> String {
         Property::EffectParam(i, param) => {
             format!("{} {}", effect_name(i), crate::inspector::pretty_name(param).to_lowercase())
         }
+        // 3D (WS4)
+        Property::CameraTurn => "Camera turn".into(),
+        Property::CameraHeight => "Camera height".into(),
+        Property::CameraDistance => "Camera distance".into(),
+        Property::CameraFov => "Zoom".into(),
+        Property::LightTurn => "Light direction".into(),
+        Property::LightHeight => "Light height".into(),
+        Property::LightBrightness => "Light brightness".into(),
+        Property::Glass => "Glass".into(),
+        Property::EdgeGlow => "Edge glow".into(),
     }
 }
 

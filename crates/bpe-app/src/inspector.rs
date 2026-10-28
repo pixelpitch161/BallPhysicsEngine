@@ -214,7 +214,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
             match inspector.tab {
                 Tab::Balls => {
-                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll);
+                    let space = scene.space().is_some(); // 3D (WS4)
+                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll, space);
                     soft::section(ui, scene, &mut inspector.soft);
                     gpu::section(ui, scene, &mut inspector.gpu);
                 }
@@ -701,7 +702,7 @@ fn new_stream() -> Spawner {
     }
 }
 
-fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>) {
+fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>, space: bool) {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -846,6 +847,9 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                             });
                         });
                     }
+                }
+                if space {
+                    view3d::spawner_depth(ui, spawner); // 3D (WS4)
                 }
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
