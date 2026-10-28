@@ -1216,15 +1216,24 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
             rules.speed_gain = 1.0 + gain / 100.0;
         }
         resettable(response, &mut rules.speed_gain, defaults.speed_gain);
-        slider(
+        label(
             ui,
-            "Top speed",
-            "Balls never go faster than this, so speeding up can't run away.",
-            &mut rules.max_speed,
-            defaults.max_speed,
-            10.0..=20000.0,
-            log_units(" px/s"),
+            "Speed limit",
+            "Turn this off to let balls keep speeding up with no top speed. Very fast balls still bounce off every wall and peg.",
         );
+        ui.checkbox(&mut rules.limit_speed, "Cap the top speed");
+        ui.end_row();
+        if rules.limit_speed {
+            slider(
+                ui,
+                "Top speed",
+                "Balls never go faster than this, so speeding up can't run away.",
+                &mut rules.max_speed,
+                defaults.max_speed,
+                10.0..=20000.0,
+                log_units(" px/s"),
+            );
+        }
         slider(
             ui,
             "Grow",

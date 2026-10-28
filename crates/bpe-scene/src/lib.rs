@@ -198,6 +198,9 @@ pub enum Spawner {
 pub struct BounceRules {
     /// Speed multiplier per wall hit. 1.0 leaves speed unchanged.
     pub speed_gain: f32,
+    /// Whether `max_speed` applies. With it off, balls can keep speeding up until they reach
+    /// the simulation's own ceiling (about 245,000 px/s at 240 steps a second).
+    pub limit_speed: bool,
     /// Speed cap in pixels per second, so speed gain cannot run away.
     pub max_speed: f32,
     /// Pixels added to the radius per wall hit.
@@ -349,6 +352,7 @@ impl Default for BounceRules {
     fn default() -> Self {
         Self {
             speed_gain: 1.0,
+            limit_speed: true,
             max_speed: 3000.0,
             grow: 0.0,
             max_radius: 60.0,

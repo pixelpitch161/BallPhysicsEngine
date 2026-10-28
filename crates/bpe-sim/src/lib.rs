@@ -16,6 +16,13 @@ const TRAIL_SAMPLE_RATE: u32 = 120;
 const MAX_TRAIL_SAMPLES: usize = 256;
 /// The arena never grows past this multiple of its starting size.
 const MAX_ARENA_SCALE: f32 = 4.0;
+/// Furthest a ball moves in one substep, in pixels. Faster balls split a step into substeps
+/// so they still bounce off every wall and peg in their way. At the default 240 steps a
+/// second this keeps one substep up to 3840 px/s.
+const SAFE_MOVE: f32 = 16.0;
+/// Most substeps in one step. This sets the highest speed the simulation allows even with no
+/// top speed: 64 x 16 px x 240 steps, about 245,000 px/s.
+const MAX_SUBSTEPS: u32 = 64;
 /// Roughly how long the arena takes to shrink by a hit's amount.
 const SHRINK_EASE_SECONDS: f32 = 0.06;
 
@@ -212,25 +219,16 @@ impl Simulation {
             let (_, ball) = self.pending.pop().unwrap();
             self.add_ball(ball);
         }
-        let physics = &self.scene.physics;
-        let restitution = physics.restitution;
-        let drag = (1.0 - physics.air_drag * dt).max(0.0);
-        self.previous.clear();
-        self.previous.extend(self.balls.iter().map(|b| b.position));
+        let ceiling = self.speed_ceiling();
         for ball in &mut self.balls {
-            ball.velocity = (ball.velocity + physics.gravity * dt) * drag;
-            ball.position += ball.velocity * dt;
+            ball.velocity = ball.velocity.clamp_length_max(ceiling);
         }
-        if physics.ball_collisions {
-            collide_balls(&mut self.balls, restitution);
-        }
+        let substeps = self.substeps();
         self.step += 1;
         self.update_arena();
-        let time = self.time();
         let container = &self.scene.container;
         let closed = closed_outline(container, self.arena);
         let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
-        let pivot = container.center();
         let mut rings = Vec::new();
         self.pieces.clear();
         if closed.is_none() {
@@ -245,11 +243,58 @@ impl Simulation {
                 rings.push(RingNow { index: k, outline, spin, moved, pieces: start..self.pieces.len() });
             }
         }
+        let rate = self.scene.physics.steps_per_second.max(1) as f64;
+        for i in 0..substeps {
+            // The walls only move once per step, so after the first substep they stay put.
+            if i == 1 {
+                rings.iter_mut().for_each(|ring| ring.moved = Vec2::X);
+            }
+            let time = ((self.step - 1) as f64 + (i + 1) as f64 / substeps as f64) / rate;
+            self.substep(dt / substeps as f32, time, closed, &rings, hits);
+        }
+        if self.step.is_multiple_of(self.trail_every) {
+            self.record_trail();
+        }
+    }
+
+    /// The highest speed the simulation allows, in pixels per second, even with no top speed.
+    /// Above this a ball would need more than `MAX_SUBSTEPS` substeps a step to stay inside.
+    fn speed_ceiling(&self) -> f32 {
+        SAFE_MOVE * MAX_SUBSTEPS as f32 * self.scene.physics.steps_per_second.max(1) as f32
+    }
+
+    /// How many pieces to split the next step into, so that no ball moves further than
+    /// `SAFE_MOVE` at a time and fast balls still bounce off every wall and peg in their way.
+    fn substeps(&self) -> u32 {
+        let fastest = self.balls.iter().map(|b| b.velocity.length()).fold(0.0f32, f32::max);
+        let travel = (fastest + self.scene.physics.gravity.length() * self.dt) * self.dt;
+        // A NaN casts to 0, which the clamp turns into a single step.
+        ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS)
+    }
+
+    /// Moves every ball forward by `dt` and bounces it off whatever it hit. `time` is the
+    /// clip time at the end of this substep, for the hits it records.
+    fn substep(&mut self, dt: f32, time: f64, closed: Option<Outline>, rings: &[RingNow], hits: &mut Vec<WallHit>) {
+        let physics = &self.scene.physics;
+        let restitution = physics.restitution;
+        let drag = (1.0 - physics.air_drag * dt).max(0.0);
+        self.previous.clear();
+        self.previous.extend(self.balls.iter().map(|b| b.position));
+        for ball in &mut self.balls {
+            ball.velocity = (ball.velocity + physics.gravity * dt) * drag;
+            ball.position += ball.velocity * dt;
+        }
+        if physics.ball_collisions {
+            collide_balls(&mut self.balls, restitution);
+        }
+        let container = &self.scene.container;
+        let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
+        let pivot = container.center();
         let thickness = container.thickness();
 
         // Touches slower than this are balls resting on something, not bounces. They still push
         // the ball out but don't count as hits, so resting balls don't buzz or flicker.
-        let resting = self.scene.physics.gravity.length() * dt * 4.0 + 1.0;
+        let resting = self.scene.physics.gravity.length() * self.dt * 4.0 + 1.0;
         let mut events = Vec::new();
         for (index, ball) in self.balls.iter_mut().enumerate() {
             let prev = self.previous[index];
@@ -257,7 +302,7 @@ impl Simulation {
                 Some(outline) => arena::collide_closed(ball, outline, self.arena, restitution),
                 None => None,
             };
-            for ring in &rings {
+            for ring in rings {
                 // A ring that broke earlier in this step is already gone.
                 if self.breaks[ring.index as usize].is_some() {
                     continue;
@@ -290,7 +335,7 @@ impl Simulation {
                     events.push(WallHit { time, ball: index as u32, position, impact_speed, kind });
                 }
             }
-            for ring in &rings {
+            for ring in rings {
                 let (k, outline) = (ring.index as usize, &ring.outline);
                 let seen = pivot + ring.moved.rotate(prev - pivot);
                 if self.breaks[k].is_none() && arena::inside(outline, seen) && !arena::inside(outline, ball.position) {
@@ -304,13 +349,14 @@ impl Simulation {
 
         let mut spawns = Vec::new();
         let center = container.center();
+        let ceiling = self.speed_ceiling();
         for event in events {
             let ball = &mut self.balls[event.ball as usize];
             let rules = &self.scene.rules;
             let children = match event.kind {
                 HitKind::Escape(_) => rules.spawn_per_escape,
                 HitKind::Wall | HitKind::Obstacle(_) => {
-                    apply_bounce_rules(ball, &self.scene);
+                    apply_bounce_rules(ball, &self.scene, ceiling);
                     rules.spawn_per_hit
                 }
             };
@@ -330,9 +376,6 @@ impl Simulation {
             let mut child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
             child.position = start;
             self.add_ball(child);
-        }
-        if self.step.is_multiple_of(self.trail_every) {
-            self.record_trail();
         }
     }
 
@@ -512,15 +555,18 @@ fn unit_noise(seed: u64) -> f32 {
     noise(seed) * 2.0 - 1.0
 }
 
-fn apply_bounce_rules(ball: &mut Ball, scene: &Scene) {
+/// `ceiling` is the simulation's own speed limit, which holds even with no top speed.
+fn apply_bounce_rules(ball: &mut Ball, scene: &Scene, ceiling: f32) {
     let rules = &scene.rules;
     ball.wall_hits += 1;
     if rules.speed_gain != 1.0 {
         ball.velocity *= rules.speed_gain;
     }
     let speed = ball.velocity.length();
-    if speed > rules.max_speed && speed > 0.0 {
+    if rules.limit_speed && speed > rules.max_speed && speed > 0.0 {
         ball.velocity *= rules.max_speed / speed;
+    } else if speed > ceiling {
+        ball.velocity *= ceiling / speed;
     }
     if rules.grow != 0.0 {
         ball.radius = (ball.radius + rules.grow).clamp(0.5, rules.max_radius.max(0.5));
@@ -858,5 +904,104 @@ mod tests {
         scene.arena_motion.shrink_per_hit = 5.0;
         scene.arena_motion.min_size = 100.0;
         assert_no_leaks(&scene, scene.video.duration);
+    }
+
+    /// Runs a scene and checks after every step that each ball is a real number, inside the
+    /// arena (or the smallest unbroken ring) and not inside a peg.
+    fn assert_contained(scene: &Scene, seconds: f32) -> Simulation {
+        let mut sim = Simulation::new(scene);
+        let mut hits = Vec::new();
+        for step in 0..(seconds * scene.physics.steps_per_second as f32) as usize {
+            sim.step(&mut hits);
+            let outline = sim.outlines().into_iter().next().map(|(_, o)| o);
+            for (i, ball) in sim.balls().iter().enumerate() {
+                assert!(ball.position.is_finite() && ball.velocity.is_finite(), "ball {i} blew up at step {step}");
+                if let Some(outline) = &outline {
+                    assert!(arena::inside(outline, ball.position), "ball {i} left the arena at step {step}");
+                }
+                for part in sim.obstacles() {
+                    if let ObstaclePart::Disc { center, radius, .. } = *part {
+                        assert!(ball.position.distance(center) >= radius, "ball {i} went into a peg at step {step}");
+                    }
+                }
+            }
+        }
+        assert!(hits.windows(2).all(|w| w[0].time <= w[1].time), "hits out of order");
+        sim
+    }
+
+    fn fastest(sim: &Simulation) -> f32 {
+        sim.balls().iter().map(|b| b.velocity.length()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn no_top_speed_lets_balls_keep_speeding_up() {
+        let mut scene = Scene::growing_ball();
+        scene.rules.grow = 0.0;
+        scene.rules.speed_gain = 1.1;
+        let capped = assert_contained(&scene, 10.0);
+        assert!(fastest(&capped) <= scene.rules.max_speed + 1.0);
+        scene.rules.limit_speed = false;
+        let free = assert_contained(&scene, 10.0);
+        assert!(fastest(&free) > scene.rules.max_speed * 3.0, "top speed {}", fastest(&free));
+    }
+
+    #[test]
+    fn every_preset_holds_together_with_no_top_speed() {
+        for preset in Scene::presets() {
+            let mut scene = preset.scene;
+            scene.rules.limit_speed = false;
+            scene.rules.speed_gain = scene.rules.speed_gain.max(1.05);
+            let sim = assert_contained(&scene, scene.video.duration.min(15.0));
+            println!("{}: fastest {:.0} px/s", preset.name, fastest(&sim));
+        }
+    }
+
+    #[test]
+    fn a_ball_far_too_fast_is_held_at_the_ceiling() {
+        let mut scene = Scene::growing_ball();
+        scene.rules.limit_speed = false;
+        scene.rules.speed_gain = 3.0;
+        scene.rules.grow = 0.0;
+        let Spawner::Single { velocity, .. } = &mut scene.spawners[0] else { panic!() };
+        *velocity = Vec2::new(1e30, -3e29);
+        let sim = assert_contained(&scene, 5.0);
+        let ceiling = sim.speed_ceiling();
+        // Gravity can add a little within one step, but never more than that.
+        assert!(fastest(&sim) <= ceiling + scene.physics.gravity.length() * sim.dt + 1.0);
+    }
+
+    #[test]
+    fn fast_balls_still_hit_every_peg_in_their_way() {
+        let mut scene = Scene::plinko();
+        scene.rules.limit_speed = false;
+        scene.rules.speed_gain = 1.2;
+        for spawner in &mut scene.spawners {
+            if let Spawner::Stream { velocity, radius, .. } = spawner {
+                *velocity = Vec2::new(7000.0, 90000.0);
+                *radius = 2.0;
+            }
+        }
+        let sim = assert_contained(&scene, 15.0);
+        assert!(fastest(&sim) > 20000.0, "fastest {}", fastest(&sim));
+    }
+
+    #[test]
+    fn fast_balls_never_leak_through_spinning_rings() {
+        let mut scene = Scene::escape_and_multiply();
+        scene.rules.limit_speed = false;
+        scene.rules.speed_gain = 1.08;
+        if let Container::Rings { spin, spin_step, gap, .. } = &mut scene.container {
+            *spin = 300.0;
+            *spin_step = -40.0;
+            *gap = 20.0;
+        }
+        assert_contained(&scene, 15.0);
+    }
+
+    #[test]
+    fn slow_scenes_take_one_step_at_a_time() {
+        let sim = Simulation::new(&Scene::default());
+        assert_eq!(sim.substeps(), 1);
     }
 }
