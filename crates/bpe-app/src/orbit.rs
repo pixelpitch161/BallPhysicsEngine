@@ -50,7 +50,7 @@ fn world_per_point(camera: &Camera, rect: Rect) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_scene::{Space, View};
+    use bpe_scene::View;
 
     #[test]
     fn panning_keeps_pace_with_the_pointer() {
@@ -70,7 +70,7 @@ mod tests {
             let rect = ui.max_rect();
             let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
             assert!(!interact(ui, &response, &mut scene, rect));
-            let mut space = Scene { view: View::Space(Box::new(Space::default())), ..Scene::default() };
+            let mut space = Scene { view: View::Space(Box::default()), ..Scene::default() };
             assert!(interact(ui, &response, &mut space, rect));
         });
         output.textures_delta.clear();

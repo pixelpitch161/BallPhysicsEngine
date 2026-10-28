@@ -201,15 +201,7 @@ impl Container3d {
 
     /// A tunnel with the usual ring settings.
     pub fn tunnel(radius: f32) -> Self {
-        Container3d::Tunnel {
-            radius,
-            rings: 24,
-            spacing: 520.0,
-            gap: 70.0,
-            spin: 40.0,
-            gap_offset: 75.0,
-            speed: 220.0,
-        }
+        Container3d::Tunnel { radius, rings: 24, spacing: 520.0, gap: 70.0, spin: 40.0, gap_offset: 75.0, speed: 220.0 }
     }
 
     /// Distance from the middle to the walls: the radius, or half a cube's side.
@@ -407,7 +399,8 @@ impl Space {
         match self.container {
             Container3d::Tunnel { radius, .. } => {
                 camera.fov = dice.range(50.0, 85.0);
-                camera.position = fitted.position + Vec3::new(dice.range(-0.4, 0.4), dice.range(-0.4, 0.4), 0.0) * radius;
+                camera.position =
+                    fitted.position + Vec3::new(dice.range(-0.4, 0.4), dice.range(-0.4, 0.4), 0.0) * radius;
                 camera.mode = CameraMode::Fixed;
             }
             _ => {
@@ -434,7 +427,8 @@ impl Space {
         lights.intensity = dice.range(2.0, 4.5);
         let hue = dice.unit();
         lights.ambient_top = Color::from_hsv(hue, dice.range(0.2, 0.7), dice.range(0.5, 0.9));
-        lights.ambient_bottom = Color::from_hsv(hue + dice.range(0.2, 0.6), dice.range(0.3, 0.8), dice.range(0.05, 0.3));
+        lights.ambient_bottom =
+            Color::from_hsv(hue + dice.range(0.2, 0.6), dice.range(0.3, 0.8), dice.range(0.05, 0.3));
         lights.ambient = dice.range(0.3, 0.9);
         lights.rim = dice.range(0.0, 1.0);
         let material = &mut self.material;
@@ -466,6 +460,28 @@ impl crate::Scene {
 mod tests {
     use super::*;
     use crate::Scene;
+
+    /// Changing one camera angle leaves the others where they were, give or take a rounding
+    /// error, which the editor ignores (see `Value::same`).
+    #[test]
+    fn camera_angles_change_one_at_a_time() {
+        let mut changed = 0;
+        for i in 0..2000 {
+            let mut space = Space::default();
+            let t = i as f32;
+            space.camera.set_angles(t * 0.37 - 180.0, t * 0.071 - 70.0, 300.0 + t * 7.3);
+            let before = Property::SPACE.map(|p| space.number(&p));
+            space.set_number(&Property::CameraTurn, t * 0.13);
+            let after = Property::SPACE.map(|p| space.number(&p));
+            changed += (0..9)
+                .filter(|&k| {
+                    let (Some(a), Some(b)) = (before[k], after[k]) else { return true };
+                    k != 0 && !crate::Value::Number(a).same(crate::Value::Number(b))
+                })
+                .count();
+        }
+        assert_eq!(changed, 0, "settings moved by themselves");
+    }
 
     #[test]
     fn flat_is_the_default_and_old_scenes_stay_flat() {

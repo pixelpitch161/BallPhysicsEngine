@@ -228,7 +228,7 @@ impl SpaceSimulation {
     /// Ring `index` of a tunnel as it is now.
     pub fn gate(&self, index: u32) -> Option<Gate> {
         let Container3d::Tunnel { spacing, gap, spin, gap_offset, .. } = self.space.container else { return None };
-        let direction = if index % 2 == 0 { 1.0 } else { -1.0 };
+        let direction = if index.is_multiple_of(2) { 1.0 } else { -1.0 };
         let turn = gap_offset * index as f32 + direction * spin * self.time() as f32;
         Some(Gate {
             index,
@@ -264,7 +264,7 @@ impl SpaceSimulation {
         while self.pending.last().is_some_and(|(step, _)| *step <= self.step) {
             let (_, mut ball) = self.pending.pop().unwrap();
             self.place_inside(&mut ball);
-            self.add_ball(ball);
+            self.add_ball(ball, self.time(), events);
         }
         let ceiling = self.speed_ceiling();
         for ball in &mut self.balls {
@@ -378,11 +378,14 @@ impl SpaceSimulation {
                 break;
             }
             let child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
-            self.add_ball(child);
+            self.add_ball(child, time, events);
         }
     }
 
-    fn add_ball(&mut self, ball: Ball3) {
+    /// Adds a ball after the start, with its spawn event.
+    fn add_ball(&mut self, ball: Ball3, time: f64, events: &mut Vec<Event>) {
+        let index = self.balls.len() as u32;
+        events.push(event(time, index, ball.position, ball.velocity.length(), EventKind::Spawn));
         self.trail.extend(std::iter::repeat_n(ball.position, self.trail_len));
         self.balls.push(ball);
     }
@@ -707,16 +710,6 @@ pub fn time_keeper(scene: &Scene) -> Scene {
     }
 }
 
-/// The balls a 3D scene starts with.
-pub fn spawn_balls_3d(scene: &Scene) -> Vec<Ball3> {
-    let space = scene.space().cloned().unwrap_or_default();
-    spawn_plan(scene, &space, scene.physics.steps_per_second.max(1))
-        .into_iter()
-        .take_while(|(step, _)| *step == 0)
-        .map(|(_, ball)| ball)
-        .collect()
-}
-
 /// A uniform grid for finding touching balls without allocating every step: balls are sorted
 /// into buckets by a hash of their cell, then each ball checks the buckets of the 27 cells
 /// around it.
@@ -725,6 +718,8 @@ struct BallGrid {
     starts: Vec<u32>,
     sorted: Vec<u32>,
     keys: Vec<u32>,
+    /// Where the next ball of each bucket goes while sorting.
+    fill: Vec<u32>,
 }
 
 impl BallGrid {
@@ -747,7 +742,9 @@ impl BallGrid {
             (c.x as i32, c.y as i32, c.z as i32)
         };
         let hash = |(x, y, z): (i32, i32, i32)| {
-            ((x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841) ^ (z as u32).wrapping_mul(0xcb1a_b31f))
+            ((x as u32).wrapping_mul(0x8da6_b343)
+                ^ (y as u32).wrapping_mul(0xd816_3841)
+                ^ (z as u32).wrapping_mul(0xcb1a_b31f))
                 & mask
         };
         self.starts.clear();
@@ -763,10 +760,11 @@ impl BallGrid {
         }
         self.sorted.clear();
         self.sorted.resize(balls.len(), 0);
-        let mut fill = self.starts.clone();
+        self.fill.clear();
+        self.fill.extend_from_slice(&self.starts);
         for (i, &key) in self.keys.iter().enumerate() {
-            self.sorted[fill[key as usize] as usize] = i as u32;
-            fill[key as usize] += 1;
+            self.sorted[self.fill[key as usize] as usize] = i as u32;
+            self.fill[key as usize] += 1;
         }
         let mut near = [0u32; 27];
         for i in 0..balls.len() {
@@ -835,8 +833,8 @@ mod tests {
     use bpe_scene::View;
 
     fn space_scene(container: Container3d) -> Scene {
-        let mut scene = Scene::default();
-        scene.view = View::Space(Box::new(Space { container, ..Space::default() }));
+        let mut scene =
+            Scene { view: View::Space(Box::new(Space { container, ..Space::default() })), ..Scene::default() };
         scene.video.duration = 10.0;
         scene
     }
@@ -854,7 +852,9 @@ mod tests {
 
     #[test]
     fn same_scene_gives_same_events() {
-        for container in [Container3d::Sphere { radius: 400.0 }, Container3d::Cube { size: 700.0 }, Container3d::tunnel(350.0)] {
+        for container in
+            [Container3d::Sphere { radius: 400.0 }, Container3d::Cube { size: 700.0 }, Container3d::tunnel(350.0)]
+        {
             let mut scene = space_scene(container);
             scene.physics.ball_collisions = true;
             let (a_sim, a) = run(&scene, 6.0);
@@ -869,7 +869,9 @@ mod tests {
     /// events and balls of one straight run, including after its snapshots are thinned.
     #[test]
     fn playback_seeks_match_a_straight_run() {
-        for container in [Container3d::Sphere { radius: 400.0 }, Container3d::Cube { size: 700.0 }, Container3d::tunnel(350.0)] {
+        for container in
+            [Container3d::Sphere { radius: 400.0 }, Container3d::Cube { size: 700.0 }, Container3d::tunnel(350.0)]
+        {
             let mut scene = space_scene(container);
             scene.physics.ball_collisions = true;
             scene.rules.spawn_per_escape = 1;
@@ -884,12 +886,38 @@ mod tests {
             // The flat side has no balls: it only keeps time.
             assert!(straight.simulation().balls().is_empty());
             assert_eq!(straight.counts_at(4.0).balls as usize, straight.space().unwrap().balls().len());
-            assert_eq!(crate::collect_wall_hits(&scene).len(), {
+            assert_eq!(crate::collect_wall_hits(&scene), {
                 let mut whole = crate::Playback::new(&scene);
                 whole.seek(scene.video.duration as f64);
-                whole.events().len()
+                whole.events().to_vec()
             });
         }
+    }
+
+    /// Balls that appear later, from a stream or split off on a hit, are counted.
+    #[test]
+    fn later_balls_have_spawn_events() {
+        let mut scene = space_scene(Container3d::Sphere { radius: 400.0 });
+        scene.spawners = vec![Spawner::Stream {
+            position: Vec2::ZERO,
+            velocity: Vec2::new(200.0, 0.0),
+            radius: 10.0,
+            count: 12,
+            interval: 0.1,
+            jitter: 20.0,
+            gradient: vec![Color::WHITE],
+            depth: 0.0,
+            depth_velocity: 0.0,
+        }];
+        scene.rules.spawn_per_hit = 1;
+        scene.rules.max_balls = 40;
+        let mut playback = crate::Playback::new(&scene);
+        playback.seek(3.0);
+        let balls = playback.space().unwrap().balls().len();
+        assert!(balls > 12, "{balls}");
+        let counts = playback.counts_at(3.0);
+        assert_eq!(counts.balls as usize, balls);
+        assert_eq!(counts.spawns as usize, balls - 1, "the first stream ball is there from the start");
     }
 
     #[test]

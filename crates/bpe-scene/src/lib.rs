@@ -25,13 +25,13 @@ pub use captions::*;
 pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
+pub use glam::Vec3; // 3D (WS4)
 pub use gpu::*;
 pub use music::*;
 pub use particles::*;
 pub use random::{Dice, Group, palette};
 pub use shapes::*;
 pub use view::*;
-pub use glam::Vec3; // 3D (WS4)
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

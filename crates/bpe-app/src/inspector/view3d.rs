@@ -1,7 +1,7 @@
 //! The 3D part of the Arena tab: the Flat / 3D switch, the 3D container, the camera, the lights
 //! and the look of the balls and glass.
 
-use super::{color_row, key, dice_button, grid, heading, label, more, percent, slider, slider_row, units};
+use super::{color_row, dice_button, grid, heading, key, label, more, percent, slider, slider_row, units};
 use crate::theme;
 use bpe_scene::{Camera, CameraMode, Container3d, Dice, Lights, Material, Property, Scene, Space, Spawner, View};
 use eframe::egui::{self, RichText, Ui};
@@ -10,7 +10,8 @@ use eframe::egui::{self, RichText, Ui};
 #[derive(Default)]
 pub struct State {
     /// The 3D settings from before switching to Flat, so switching back brings them back.
-    last_space: Option<Box<Space>>,
+    /// Kept with the scene's name, so another scene opened since doesn't get them.
+    last_space: Option<(String, Box<Space>)>,
     /// How many times a dice was rolled, mixed into each roll's seed.
     rolls: u64,
 }
@@ -55,10 +56,13 @@ fn view_switch(ui: &mut Ui, scene: &mut Scene, state: &mut State, aspect: f32) {
             if ui.add_sized([ui.available_width(), 30.0], button).on_hover_text(help).clicked() && flat != is_flat {
                 if is_flat {
                     if let View::Space(space) = std::mem::take(&mut scene.view) {
-                        state.last_space = Some(space);
+                        state.last_space = Some((scene.name.clone(), space));
                     }
                 } else {
-                    let space = state.last_space.take().unwrap_or_else(|| Box::new(fresh_space(scene, aspect)));
+                    let space = match state.last_space.take() {
+                        Some((name, space)) if name == scene.name => space,
+                        _ => Box::new(fresh_space(scene, aspect)),
+                    };
                     scene.view = View::Space(space);
                 }
             }
@@ -66,8 +70,15 @@ fn view_switch(ui: &mut Ui, scene: &mut Scene, state: &mut State, aspect: f32) {
     });
 }
 
-/// 3D settings for a scene switched to 3D for the first time: a sphere about the size of its
-/// 2D arena, with the camera framing it.
+/// What the Arena tab's reset puts back in 3D: the same kind of container at its usual size,
+/// framed by the camera, with the usual lights and look. None for a flat scene.
+pub fn reset_target(scene: &Scene) -> Option<Space> {
+    let space = scene.space()?;
+    let aspect = scene.video.width as f32 / scene.video.height.max(1) as f32;
+    let container = Container3d::default().with_name(space.container.name());
+    Some(Space { camera: Camera::fit(&container, aspect), container, ..Space::default() })
+}
+
 /// Depth and depth speed of a group of balls, at the end of its card in the Balls tab.
 pub fn spawner_depth(ui: &mut Ui, spawner: &mut Spawner) {
     let (Spawner::Grid { depth, depth_velocity, .. }
@@ -95,6 +106,8 @@ pub fn spawner_depth(ui: &mut Ui, spawner: &mut Spawner) {
     });
 }
 
+/// 3D settings for a scene switched to 3D for the first time: a sphere about the size of its
+/// 2D arena, with the camera framing it.
 fn fresh_space(scene: &Scene, aspect: f32) -> Space {
     let radius = scene.container.size().clamp(150.0, 900.0);
     let container = Container3d::Sphere { radius };
@@ -128,7 +141,15 @@ fn container(ui: &mut Ui, space: &mut Space, aspect: f32) {
             slider(ui, "Size", "Radius of the sphere in pixels.", radius, 380.0, 50.0..=1500.0, units(" px", 0));
         }
         Container3d::Cube { size } => {
-            slider(ui, "Size", "Length of each side of the cube in pixels.", size, 600.0, 80.0..=3000.0, units(" px", 0));
+            slider(
+                ui,
+                "Size",
+                "Length of each side of the cube in pixels.",
+                size,
+                600.0,
+                80.0..=3000.0,
+                units(" px", 0),
+            );
         }
         Container3d::Tunnel { radius, rings, spacing, gap, spin, speed, .. } => {
             slider(ui, "Size", "Radius of the tunnel in pixels.", radius, 320.0, 50.0..=1500.0, units(" px", 0));
@@ -194,9 +215,11 @@ fn camera(ui: &mut Ui, space: &mut Space, state: &mut State, aspect: f32) {
         space.roll_camera(&mut dice, aspect);
     });
     ui.label(
-        RichText::new("Drag the preview to turn the camera, Shift+drag to move it, scroll to zoom, right-click to reset.")
-            .small()
-            .color(theme::MUTED),
+        RichText::new(
+            "Drag the preview to turn the camera, Shift+drag to move it, scroll to zoom, right-click to reset.",
+        )
+        .small()
+        .color(theme::MUTED),
     );
     ui.add_space(4.0);
     let fitted = Camera::fit(&space.container, aspect);
@@ -407,7 +430,13 @@ fn finish(ui: &mut Ui, space: &mut Space) {
             0.0..=1.0,
             percent,
         );
-        color_row(ui, "Glass colour", "Tint of the glass, its edges and the tunnel's rings.", &mut material.glass_color, m.glass_color);
+        color_row(
+            ui,
+            "Glass colour",
+            "Tint of the glass, its edges and the tunnel's rings.",
+            &mut material.glass_color,
+            m.glass_color,
+        );
         key(ui, Property::EdgeGlow);
         slider(
             ui,
@@ -459,8 +488,7 @@ fn heading_with_dice(ui: &mut Ui, text: &str, what: &str, roll: impl FnOnce()) {
     let clicked = ui
         .horizontal(|ui| {
             ui.label(RichText::new(text.to_uppercase()).size(12.0).color(theme::MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| dice_button(ui, what).clicked())
-                .inner
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| dice_button(ui, what).clicked()).inner
         })
         .inner;
     if clicked {

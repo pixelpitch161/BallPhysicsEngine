@@ -384,8 +384,10 @@ impl SpaceRenderer {
     }
 
     /// Whether the scene is drawn in 3D, so this renderer replaces the 2D passes.
-    pub fn active(&self, scene: &Scene) -> bool {
-        scene.space().is_some()
+    /// The frame decides, since in the frame where Flat/3D is switched the scene and its
+    /// playback can disagree.
+    pub fn active(&self, scene: &Scene, frame: &crate::FrameData) -> bool {
+        scene.space().is_some() && frame.space.active
     }
 
     /// Draws the frame into `hdr`, an HDR picture of `size` pixels, replacing what was there.

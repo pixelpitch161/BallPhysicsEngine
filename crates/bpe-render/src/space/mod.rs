@@ -239,7 +239,7 @@ impl SpaceFrame {
             gap_half: g.gap_half,
             index: g.index,
         }));
-        self.light = light_for(space, &self.container, &self.gates, sim);
+        self.light = light_for(space, &self.container, &self.gates);
         self.push_ribbons(scene, sim);
         self.push_hits(scene, sim, events);
         self.push_shards(scene, sim);
@@ -444,7 +444,7 @@ pub fn camera_for(space: &Space, sim: &SpaceSimulation, time: f32, aspect: f32) 
 
 /// The key light's view, fitted around the container (or the stretch of tunnel the balls are in)
 /// so the shadow map's texels cover only what can cast or catch a shadow.
-fn light_for(space: &Space, container: &ContainerFrame, gates: &[GateFrame], sim: &SpaceSimulation) -> LightFrame {
+fn light_for(space: &Space, container: &ContainerFrame, gates: &[GateFrame]) -> LightFrame {
     let (center, reach) = match space.container {
         Container3d::Sphere { .. } => (Vec3::ZERO, container.size * 1.02),
         Container3d::Cube { .. } => (Vec3::ZERO, container.size * 3f32.sqrt() * 1.02),
@@ -452,7 +452,6 @@ fn light_for(space: &Space, container: &ContainerFrame, gates: &[GateFrame], sim
             let far = gates.first().map_or(container.back + spacing * 2.0, |g| g.z);
             let half = ((far - container.back) * 0.5).max(container.size);
             let center = Vec3::new(0.0, 0.0, container.back + half);
-            let _ = sim;
             (center, (half * half + container.size * container.size).sqrt() * 1.02)
         }
     };
@@ -622,7 +621,15 @@ mod fuzz {
                 for ball in sim.balls() {
                     assert!(ball.position.is_finite() && ball.velocity.is_finite(), "seed {seed}: {ball:?}");
                     if !matches!(scene.space().unwrap().container, Container3d::Tunnel { .. }) {
-                        assert!(ball.position.length() <= reach, "seed {seed} at {time}: ball escaped to {} (container {:?}, arena {:?}, radius {}, motion {:?})", ball.position, scene.space().unwrap().container, sim.arena(), ball.radius, scene.arena_motion);
+                        assert!(
+                            ball.position.length() <= reach,
+                            "seed {seed} at {time}: ball escaped to {} (container {:?}, arena {:?}, radius {}, motion {:?})",
+                            ball.position,
+                            scene.space().unwrap().container,
+                            sim.arena(),
+                            ball.radius,
+                            scene.arena_motion
+                        );
                     }
                 }
                 assert!(frame.space.active && frame.space.camera.view_projection.is_finite(), "seed {seed}");

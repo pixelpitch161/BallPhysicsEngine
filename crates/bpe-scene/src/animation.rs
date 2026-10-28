@@ -127,6 +127,15 @@ impl Ease {
 }
 
 impl Value {
+    /// Whether two values are the same but for rounding errors, such as a 3D camera angle
+    /// read back after another angle changed.
+    pub fn same(self, other: Value) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => (a - b).abs() <= 1e-4 * a.abs().max(b.abs()).max(1.0),
+            (a, b) => a == b,
+        }
+    }
+
     pub fn number(self) -> Option<f32> {
         match self {
             Value::Number(v) => Some(v),
@@ -571,10 +580,10 @@ mod tests {
             let mut copy = scene.clone();
             property.set(&mut copy, changed);
             let Some(Value::Number(now)) = property.get(&copy) else { panic!() };
-            assert!((now - (v + 1.5)).abs() < 1e-3, "{property:?}: {now} after setting {}", v + 1.5);
+            assert!((now - (v + 1.5)).abs() < 0.01, "{property:?}: {now} after setting {}", v + 1.5);
             property.copy(&scene, &mut copy);
             let Some(Value::Number(back)) = property.get(&copy) else { panic!() };
-            assert!((back - v).abs() < 1e-3, "{property:?}");
+            assert!((back - v).abs() < 0.01, "{property:?}");
         }
     }
 

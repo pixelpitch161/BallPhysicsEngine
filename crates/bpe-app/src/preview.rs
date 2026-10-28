@@ -26,6 +26,8 @@ struct Drawn {
     step_time: f64,
     size: (u32, u32),
     effects: u64,
+    /// 3D (WS4): whether the playback is 3D, so the frame after switching Flat/3D is drawn again.
+    space: bool,
 }
 
 /// How long the parts of a preview frame took, in milliseconds.
@@ -198,6 +200,7 @@ impl Preview {
             step_time: playback.simulation().time(),
             size: (width, height),
             effects: effects.revision(),
+            space: playback.space().is_some(),
         };
         let stats = &mut preview.stats;
         stats.simulate = simulate.as_secs_f32() * 1000.0;

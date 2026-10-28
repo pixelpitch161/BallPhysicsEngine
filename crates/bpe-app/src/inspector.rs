@@ -236,10 +236,19 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         fresh_shape.clone_from(shape);
                     }
                     let motion = ArenaMotion::default();
-                    let changed =
-                        scene.container != fresh || scene.arena_motion != motion || scene.physics != Physics::default();
+                    // 3D (WS4): in 3D the reset puts back the 3D settings instead of the hidden flat arena.
+                    let fresh_space = view3d::reset_target(scene);
+                    let changed = (flat && scene.container != fresh)
+                        || scene.arena_motion != motion
+                        || scene.physics != Physics::default()
+                        || scene.space() != fresh_space.as_ref();
                     if reset_tab(ui, changed) {
-                        scene.container = fresh;
+                        if flat {
+                            scene.container = fresh;
+                        }
+                        if let Some(space) = fresh_space {
+                            scene.view = bpe_scene::View::Space(Box::new(space));
+                        }
                         scene.arena_motion = motion;
                         scene.physics = Physics::default();
                     }
@@ -979,7 +988,7 @@ fn arena(
     if flat {
         arena_shape(ui, container, roll);
     }
-    arena_motion_and_world(ui, container, motion, physics, roll);
+    arena_motion_and_world(ui, container, motion, physics, roll, flat);
 }
 
 fn arena_shape(ui: &mut Ui, container: &mut Container, roll: &mut Option<Roll>) {
@@ -1186,6 +1195,7 @@ fn arena_motion_and_world(
     motion: &mut ArenaMotion,
     physics: &mut Physics,
     roll: &mut Option<Roll>,
+    flat: bool,
 ) {
     let d = ArenaMotion::default();
     heading_dice(ui, "Movement", Group::Movement, roll);
@@ -1300,12 +1310,15 @@ fn arena_motion_and_world(
                 60..=2000,
                 log_units(" steps/s"),
             );
-            position_row(
-                ui,
-                "Arena position",
-                "Where the centre of the arena is, measured from the centre of the video.",
-                center,
-            );
+            // 3D (WS4): the 3D container is always in the middle.
+            if flat {
+                position_row(
+                    ui,
+                    "Arena position",
+                    "Where the centre of the arena is, measured from the centre of the video.",
+                    center,
+                );
+            }
         });
     });
 }

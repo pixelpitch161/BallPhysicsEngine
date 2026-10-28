@@ -194,8 +194,9 @@ pub fn write_back(base: &Scene, shown: &Scene, mut edited: Scene, time: f32) -> 
             continue;
         }
         let now = property.get(&edited);
+        // Rounding errors are not edits: a 3D camera angle can read back a hair off (WS4).
         if let Some(value) = now
-            && now != property.get(shown)
+            && !property.get(shown).is_some_and(|shown| shown.same(value))
             && let Some(track) = edited.track_mut(&property)
         {
             track.set_key(time, value);
