@@ -683,6 +683,12 @@ impl Scene {
                 description: "Keyframes make the ring breathe in and out while the colours change.",
                 scene: Scene::pulsing_ring(),
             },
+            // ---- Rules (WS1) ----
+            Preset {
+                name: "Escape and multiply (rules)",
+                description: "The same idea built from rules: each escape starts two balls in the middle and flashes red.",
+                scene: Scene::escape_and_multiply_rules(),
+            },
             // ---- 3D (WS4) ----
             Preset {
                 name: "Glass sphere",

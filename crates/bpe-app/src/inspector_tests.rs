@@ -716,3 +716,37 @@ fn effect_sliders_have_diamonds_that_follow_the_effect() {
     let animated: Vec<_> = harness.state().scene.animation.iter().map(|t| t.property.clone()).collect();
     assert_eq!(animated, [bpe_scene::Property::EffectAmount(1)]);
 }
+
+#[test]
+fn a_recipe_adds_a_rule_set_that_reads_as_a_sentence() {
+    let mut harness = harness(Tab::Rules, Scene::default());
+    harness.get_by_label("+ Add a recipe").click();
+    harness.run();
+    harness.get_by_label_contains("Escape and multiply").click();
+    harness.run();
+    assert_eq!(harness.state().scene.logic.len(), 1);
+    assert!(harness.query_by_label("when a ball escapes").is_some());
+    assert!(harness.query_by_label("spawn balls").is_some());
+    assert!(harness.query_by_label("flash the screen").is_some());
+}
+
+#[test]
+fn open_in_graph_asks_for_the_rules_workspace() {
+    let scene = Scene { logic: vec![bpe_sim::rules::recipes().remove(0).graph], ..Default::default() };
+    let mut harness = harness(Tab::Rules, scene);
+    harness.get_by_label("Open in graph").click();
+    harness.run();
+    assert_eq!(harness.state().inspector.rules.open, Some(0));
+}
+
+#[test]
+fn switching_a_rule_set_off_keeps_it() {
+    let scene = Scene { logic: vec![bpe_sim::rules::recipes().remove(0).graph], ..Default::default() };
+    let mut harness = harness(Tab::Rules, scene);
+    let switch = harness.get_all_by_role(egui::accesskit::Role::CheckBox).next().expect("switch").rect().center();
+    click_at(&mut harness, switch);
+    harness.run();
+    let logic = &harness.state().scene.logic;
+    assert_eq!(logic.len(), 1);
+    assert!(!logic[0].enabled);
+}

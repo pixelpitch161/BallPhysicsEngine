@@ -32,6 +32,8 @@ const GOLDEN: &[(&str, u64)] = &[
     ("Smoke rings", 0x25786636c35c9c93),
     ("Liquid fill", 0xf788edc3a22cc412),
     ("Million swarm", 0xa7f7b25358aaf2f7),
+    // Rules preset: the same bounces as "Escape and multiply", built from rule blocks.
+    ("Escape and multiply (rules)", 0x0721ea1f2df9d8aa),
     ("reference-reel.ron", 0xdcee90b73c18a4ad),
     ("growing-ball.ron", 0x4e22ede5124f46bc),
 ];

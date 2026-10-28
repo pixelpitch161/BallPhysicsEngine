@@ -24,7 +24,10 @@ pub(crate) fn collide_balls(balls: &mut [Ball], restitution: f32, grid: &mut Bal
     if balls.len() < 2 || max_radius <= 0.0 {
         return;
     }
-    grid.build(balls.iter().map(|b| b.position), max_radius * 2.0);
+    // Removed balls stay in the list where they left. Keeping them out of the grid stops
+    // thousands of them piling up in one cell and every step checking each pair of them.
+    let alive = balls.iter().enumerate().filter(|(_, b)| b.alive).map(|(i, b)| (i as u32, b.position));
+    grid.build(alive, max_radius * 2.0);
     grid.for_each_pair(|i, j| resolve_pair(balls, i, j, restitution));
 }
 

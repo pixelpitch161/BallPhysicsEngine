@@ -7,5 +7,6 @@ license.workspace = true
 
 [dependencies]
 bpe-scene.workspace = true
+bpe-graph.workspace = true
 bpe-music.workspace = true
 glam.workspace = true

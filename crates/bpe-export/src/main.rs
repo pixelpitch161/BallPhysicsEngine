@@ -173,5 +173,7 @@ fn profile(args: &[String]) -> anyhow::Result<()> {
 
 /// A preset's name as typed on the command line: "Escape rings" is `escape-rings`.
 fn slug(name: &str) -> String {
-    name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-")
+    // Brackets and other marks are left out: "Escape and multiply (rules)" is escape-and-multiply-rules.
+    let plain: String = name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
+    plain.split_whitespace().collect::<Vec<_>>().join("-")
 }
