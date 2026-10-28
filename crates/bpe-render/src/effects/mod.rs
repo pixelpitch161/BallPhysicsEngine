@@ -147,7 +147,8 @@ fn parse_param(text: &str) -> Result<ParamInfo, String> {
     }
     let rest = rest.trim_start();
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let default: f32 = rest[..end].parse().map_err(|_| format!("`{}` is not a number", &rest[..end]))?;
+    let default = rest[..end].parse::<f32>().ok().filter(|v| v.is_finite());
+    let default = default.ok_or_else(|| format!("`{}` is not a number", &rest[..end]))?;
     let rest = rest[end..].trim_start();
     let (min, max, kind, help) = if let Some(help) = rest.strip_prefix("toggle") {
         (0.0, 1.0, ParamKind::Toggle, help)
@@ -157,8 +158,11 @@ fn parse_param(text: &str) -> Result<ParamInfo, String> {
         let (lo, hi) = range.split_once(',').ok_or("expected a range like [0, 1]")?;
         let number = |s: &str| s.trim().parse::<f32>().map_err(|_| format!("`{}` is not a number", s.trim()));
         let (lo, hi) = (number(lo)?, number(hi)?);
-        if !(lo < hi) {
+        if !lo.is_finite() || !hi.is_finite() || lo >= hi {
             return Err(format!("the range [{lo}, {hi}] is empty"));
+        }
+        if !(lo..=hi).contains(&default) {
+            return Err(format!("the default {default} is outside the range [{lo}, {hi}]"));
         }
         let after = after.trim_start();
         match after.strip_prefix("int") {
@@ -425,6 +429,9 @@ mod tests {
         assert!(parse_param("x = 0 [1, 0]").is_err());
         assert!(parse_param("x = abc [0, 1]").is_err());
         assert!(parse_param("x = 0").is_err());
+        assert!(parse_param("x = 5 [0, 1] too big").is_err());
+        assert!(parse_param("x = nan [0, 1]").is_err());
+        assert!(parse_param("x = 0 [0, inf]").is_err());
     }
 
     #[test]

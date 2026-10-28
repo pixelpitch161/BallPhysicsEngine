@@ -636,4 +636,89 @@ mod tests {
         assert_eq!(pixels.len(), 270 * 480 * 4);
         assert!(pixels.chunks(4).any(|p| p[0] > 100), "expected some bright pixels");
     }
+
+    fn render_at(device: &wgpu::Device, queue: &wgpu::Queue, renderer: &mut Renderer, scene: &Scene, times: &[f64]) -> Vec<u8> {
+        let mut playback = Playback::new(scene);
+        let mut frame = FrameData::default();
+        for &time in times {
+            playback.seek(time);
+            frame.fill(scene, &playback, renderer.pixel_size(scene));
+            renderer.render(device, queue, scene, time, &frame);
+        }
+        renderer.read_output(device, queue).unwrap()
+    }
+
+    fn brightness(pixels: &[u8]) -> u64 {
+        pixels.chunks(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum()
+    }
+
+    #[test]
+    fn every_builtin_effect_changes_the_picture() {
+        let Ok((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available, skipping");
+            return;
+        };
+        let mut scene = Scene::default();
+        let times: Vec<f64> = (0..20).map(|i| 3.0 + i as f64 / 60.0).collect();
+        let plain = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &times);
+        for info in EffectLibrary::new().list() {
+            scene.effects = vec![bpe_scene::Effect::new(info.id.clone())];
+            // Turn on every switch so toggled code paths run too.
+            for param in info.params.iter().filter(|p| p.kind == effects::ParamKind::Toggle) {
+                scene.effects[0].params.insert(param.name.clone(), 1.0);
+            }
+            let mut renderer = Renderer::new(&device, 135, 240);
+            let pixels = render_at(&device, &queue, &mut renderer, &scene, &times);
+            assert!(renderer.effect_gpu_errors().is_empty(), "{}: {:?}", info.id, renderer.effect_gpu_errors());
+            assert_ne!(pixels, plain, "{} left the picture unchanged", info.id);
+            assert!(brightness(&pixels) > brightness(&plain) / 4, "{} made the picture nearly black", info.id);
+        }
+    }
+
+    #[test]
+    fn switched_off_or_unknown_effects_change_nothing() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::default();
+        let plain = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        let mut off = bpe_scene::Effect::new("kaleidoscope");
+        off.enabled = false;
+        let mut zero = bpe_scene::Effect::new("liquid");
+        zero.amount = 0.0;
+        scene.effects = vec![off, zero, bpe_scene::Effect::new("no_such_effect")];
+        let pixels = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        assert_eq!(pixels, plain);
+    }
+
+    #[test]
+    fn echo_builds_up_and_restarts_after_a_seek() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::rainbow_trails();
+        scene.look.trail_seconds = 0.0;
+        scene.effects = vec![bpe_scene::Effect::new("echo").with("fade", 0.95)];
+        let mut renderer = Renderer::new(&device, 135, 240);
+        let single = render_at(&device, &queue, &mut renderer, &scene, &[2.0]);
+        let times: Vec<f64> = (1..=60).map(|i| 1.0 + i as f64 / 60.0).collect();
+        let built_up = render_at(&device, &queue, &mut renderer, &scene, &times);
+        assert!(brightness(&built_up) > brightness(&single) + 1000, "echo should leave trails");
+        // Jumping back starts again from a clean slate, the same as a fresh renderer.
+        let again = render_at(&device, &queue, &mut renderer, &scene, &[2.0, 0.5]);
+        let fresh = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[0.5]);
+        assert!(again == fresh, "a seek backwards should clear the echo");
+    }
+
+    #[test]
+    fn effects_survive_a_resize_and_a_stack() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::default();
+        scene.effects = ["echo", "kaleidoscope", "shockwave", "color_split", "film"]
+            .into_iter()
+            .map(bpe_scene::Effect::new)
+            .collect();
+        let mut renderer = Renderer::new(&device, 135, 240);
+        render_at(&device, &queue, &mut renderer, &scene, &[1.0, 1.02]);
+        renderer.resize(&device, 90, 160);
+        let pixels = render_at(&device, &queue, &mut renderer, &scene, &[1.04, 1.06]);
+        assert_eq!(pixels.len(), 90 * 160 * 4);
+        assert!(brightness(&pixels) > 0);
+    }
 }

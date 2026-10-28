@@ -6,6 +6,10 @@
 //! default, and most tabs end with a "Reset this tab" button. Settings most people never touch
 //! sit under "More settings" in each tab.
 
+mod effects;
+
+pub use effects::EffectsPanel;
+
 use crate::theme;
 use bpe_scene::{BounceRules, ChordStep, Color, Container, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2};
 use eframe::egui::{
@@ -19,11 +23,12 @@ pub enum Tab {
     Arena,
     Bounces,
     Look,
+    Effects,
     Sound,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Sound];
+    const ALL: [Tab; 6] = [Tab::Balls, Tab::Arena, Tab::Bounces, Tab::Look, Tab::Effects, Tab::Sound];
 
     fn name(self) -> &'static str {
         match self {
@@ -31,6 +36,7 @@ impl Tab {
             Tab::Arena => "Arena",
             Tab::Bounces => "Bounces",
             Tab::Look => "Look",
+            Tab::Effects => "Effects",
             Tab::Sound => "Sound",
         }
     }
@@ -61,6 +67,14 @@ impl Tab {
                     painter.line_segment([c + dir * 6.0, c + dir * 9.0], stroke);
                 }
             }
+            Tab::Effects => {
+                // A four-point sparkle, drawn as two thin diamonds.
+                let (long, short) = (9.0, 2.4);
+                for (x, y) in [(short, long), (long, short)] {
+                    let points = vec![c + v(0.0, -y), c + v(x, 0.0), c + v(0.0, y), c + v(-x, 0.0)];
+                    painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
+                }
+            }
             Tab::Sound => {
                 painter.circle_filled(c + v(-4.0, 5.0), 3.2, color);
                 painter.circle_filled(c + v(5.0, 3.0), 3.2, color);
@@ -77,11 +91,12 @@ pub struct Inspector {
     pub tab: Tab,
     /// The ball group last clicked in the preview, highlighted in the Balls tab.
     pub selected: Option<usize>,
+    pub effects: EffectsPanel,
 }
 
 impl Default for Inspector {
     fn default() -> Self {
-        Self { tab: Tab::Balls, selected: None }
+        Self { tab: Tab::Balls, selected: None, effects: EffectsPanel::default() }
     }
 }
 
@@ -109,6 +124,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 Tab::Look => {
                     look(ui, &mut scene.look);
                     reset_tab_to(ui, &mut scene.look, Look::default());
+                }
+                Tab::Effects => {
+                    effects::show(ui, &mut inspector.effects, &mut scene.effects);
+                    if reset_tab(ui, !scene.effects.is_empty()) {
+                        scene.effects.clear();
+                    }
                 }
                 Tab::Sound => {
                     sound(ui, &mut scene.sound);
