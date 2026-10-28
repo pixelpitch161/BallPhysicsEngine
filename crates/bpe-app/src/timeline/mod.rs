@@ -15,6 +15,7 @@ mod song;
 mod text;
 
 pub use lanes::{Lane, LaneContext, Scale};
+pub use rules::rule_color;
 pub use song::MusicView;
 
 use crate::inspector::Tab;

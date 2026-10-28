@@ -234,6 +234,7 @@ name = "bpe-audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bpe-graph",
  "bpe-music",
  "bpe-scene",
  "bpe-sim",
@@ -307,6 +308,7 @@ dependencies = [
 name = "bpe-sim"
 version = "0.1.0"
 dependencies = [
+ "bpe-graph",
  "bpe-music",
  "bpe-scene",
  "glam",

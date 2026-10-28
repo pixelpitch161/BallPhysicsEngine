@@ -107,6 +107,39 @@ impl Scene {
         scene
     }
 
+    /// "Escape and multiply" with its splitting done by a rule set instead of the bounce
+    /// settings, as a starting point for rules.
+    pub fn escape_and_multiply_rules() -> Self {
+        use bpe_graph::{Graph, Link, Node, Param};
+        let mut scene = Scene::escape_and_multiply();
+        scene.name = "Escape and multiply (rules)".into();
+        scene.rules.spawn_per_escape = 0;
+        let node = |id: u32, kind: &str, x: f32, params: &[(&str, Param)]| Node {
+            id,
+            kind: kind.into(),
+            pos: [x, 0.0],
+            params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            exposed: params.iter().map(|(k, _)| k.to_string()).collect(),
+            ..Node::default()
+        };
+        let mut graph = Graph::new("Escape and multiply");
+        graph.nodes = vec![
+            node(1, "escape", 0.0, &[]),
+            node(2, "spawn", 260.0, &[("count", Param::Number(2.0)), ("from", Param::Choice("in the middle".into()))]),
+            node(
+                3,
+                "flash",
+                520.0,
+                &[("color", Param::Color([1.0, 0.05, 0.05, 1.0])), ("strength", Param::Number(0.6))],
+            ),
+        ];
+        graph.links = vec![Link { from: (1, 0), to: (2, 0) }, Link { from: (2, 0), to: (3, 0) }];
+        // Blocks are made with every setting filled in, the defaults included.
+        graph.nodes[1].params.insert("spread".into(), Param::Number(40.0));
+        scene.logic = vec![graph];
+        scene
+    }
+
     /// A spinning hexagon with six balls bouncing inside.
     pub fn spinning_hexagon() -> Self {
         let spawners = RAINBOW

@@ -283,5 +283,7 @@ fn vs_flash(@builtin(vertex_index) i: u32, f: FlashIn) -> FlashOut {
 fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
     let r2 = dot(in.local, in.local);
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
-    return vec4<f32>(in.color.rgb * v * g.look.z, 0.0);
+    // Rule flashes (alpha above 1) keep their own strength.
+    let strength = select(g.look.z, 1.0, in.color.a > 1.5);
+    return vec4<f32>(in.color.rgb * v * strength, 0.0);
 }

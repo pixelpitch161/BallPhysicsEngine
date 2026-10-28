@@ -290,6 +290,17 @@ pub(crate) fn layer(
         }
     }
 
+    // Notes played by rules go to the scene's own instrument, the last row.
+    if events.iter().any(|e| matches!(e.kind, EventKind::Action { .. })) {
+        let progression = Progression::new(scene)?;
+        let row = rows.len() - 1;
+        for note in crate::rule_notes(scene, events, options, &progression, frames) {
+            let (key, velocity) = (note.key, note.volume.clamp(0.0, 1.0));
+            pending.push(Pending { row, start: note.start, key, velocity, left: note.left, right: note.right });
+            played.push(PlayedNote { time: note.time, key, velocity, voice: rows[row].index, step: None });
+        }
+    }
+
     // Make each row's sounds once, on all cores, then place them.
     for (r, row) in rows.iter_mut().enumerate() {
         let wanted: Vec<(u8, f32)> = pending.iter().filter(|p| p.row == r).map(|p| (p.key, p.velocity)).collect();

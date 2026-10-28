@@ -914,7 +914,11 @@ impl eframe::App for StudioApp {
                 workspace => {
                     let area = ui.max_rect();
                     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| match workspace {
-                        Workspace::Rules => rules_workspace::show(ui, &mut self.scene, &mut self.rules, None),
+                        Workspace::Rules => {
+                            self.rules.editor.fit_inset_right = if self.floating_preview { 300.0 } else { 0.0 };
+                            let live = (self.playback.simulation().rules(), self.time);
+                            rules_workspace::show(ui, &mut self.scene, &mut self.rules, Some(live))
+                        }
                         Workspace::Shaders => shader_workspace::show(
                             ui,
                             frame,
@@ -1026,6 +1030,11 @@ impl eframe::App for StudioApp {
             self.status = format!("Editing the batch's variation from seed {seed}. Ctrl+Z puts your scene back.");
             self.workspace = Workspace::Scene;
             separate = true;
+        }
+        if let Some(index) = self.inspector.rules.open.take() {
+            self.workspace = Workspace::Rules;
+            self.rules.graph = index;
+            self.rules.editor.refit();
         }
         if let Some(rolled) = self.inspector.rolled.take() {
             self.status = rolled;
