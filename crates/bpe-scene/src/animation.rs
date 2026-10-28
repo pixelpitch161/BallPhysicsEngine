@@ -842,7 +842,12 @@ mod tests {
         let mix = steady(Levels { bass: 1.0, ..Levels::default() });
         let audio = Audio { song: None, mix: Some(&mix) };
         let red = Color::rgb(255, 0, 0);
-        let m = Modulator { amount: 1.0, smoothing: 0.0, color: red, ..Modulator::new(Property::BackgroundTop, AudioBand::Bass) };
+        let m = Modulator {
+            amount: 1.0,
+            smoothing: 0.0,
+            color: red,
+            ..Modulator::new(Property::BackgroundTop, AudioBand::Bass)
+        };
         assert_eq!(m.modulate(Value::Color(Color::rgb(0, 0, 0)), 0.0, &audio), Value::Color(red));
     }
 
@@ -885,7 +890,11 @@ mod tests {
         let audio = Audio { song: Some(&song), mix: None };
         let mut scene = Scene::default();
         let gravity = scene.physics.gravity.y;
-        scene.modulators.push(Modulator { amount: 50.0, smoothing: 0.0, ..Modulator::new(Property::Gravity, AudioBand::Bass) });
+        scene.modulators.push(Modulator {
+            amount: 50.0,
+            smoothing: 0.0,
+            ..Modulator::new(Property::Gravity, AudioBand::Bass)
+        });
         assert!(scene.animates_simulation());
         for step in 0..10 {
             scene.apply_animation_with(step as f32 / 240.0, true, &audio);
@@ -911,18 +920,24 @@ mod tests {
 
     #[test]
     fn effect_modulators_move_and_copy_with_their_effects() {
-        let mut scene = Scene::default();
-        scene.effects = vec![Effect::new("echo"), Effect::new("film")];
+        let mut scene = Scene { effects: vec![Effect::new("echo"), Effect::new("film")], ..Scene::default() };
         scene.modulators.push(Modulator::new(Property::EffectAmount(1), AudioBand::Treble));
         scene.copy_effect_tracks(1, 0);
         assert_eq!(scene.modulators.len(), 2);
         scene.remap_effect_tracks(|i| if i == 0 { None } else { Some(0) });
-        assert_eq!(scene.modulators.iter().map(|m| m.property.clone()).collect::<Vec<_>>(), [Property::EffectAmount(0)]);
+        assert_eq!(
+            scene.modulators.iter().map(|m| m.property.clone()).collect::<Vec<_>>(),
+            [Property::EffectAmount(0)]
+        );
     }
 
     #[test]
     fn modulators_save_and_load() {
-        let m = Modulator { curve: Curve::Gate, source: AudioBand::Onset, ..Modulator::new(Property::Exposure, AudioBand::Mid) };
+        let m = Modulator {
+            curve: Curve::Gate,
+            source: AudioBand::Onset,
+            ..Modulator::new(Property::Exposure, AudioBand::Mid)
+        };
         let text = ron::to_string(&vec![m.clone()]).unwrap();
         assert_eq!(ron::from_str::<Vec<Modulator>>(&text).unwrap(), vec![m]);
         // Missing fields take their defaults.

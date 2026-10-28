@@ -22,7 +22,6 @@ use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Scene, 
 use grid::ObstacleGrid;
 use std::sync::Arc;
 
-
 /// The music at `time` as modulators read it (WS5). The renderer uses the same, so physics and
 /// visuals stay on the same beat.
 pub fn music_levels(music: &bpe_music::AudioFeatures, time: f64) -> Levels {
@@ -36,9 +35,7 @@ pub fn music_levels(music: &bpe_music::AudioFeatures, time: f64) -> Levels {
 /// the last, so beat-driven settings stay still rather than stuck on a beat.
 pub fn resting_beat_phase(music: Option<&bpe_music::AudioFeatures>, time: f64) -> f32 {
     match music {
-        Some(m) if m.beats.len() >= 2 && time >= m.beats[0] && time < m.beats[m.beats.len() - 1] => {
-            m.beat_phase(time)
-        }
+        Some(m) if m.beats.len() >= 2 && time >= m.beats[0] && time < m.beats[m.beats.len() - 1] => m.beat_phase(time),
         _ => 1.0,
     }
 }

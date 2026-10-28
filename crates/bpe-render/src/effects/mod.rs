@@ -166,7 +166,8 @@ impl EffectInfo {
                         graph::Problem { node, message: format!("The shader check failed: {line}") }
                     }));
                 }
-                info.graph = Some(GraphInfo { graph: source_graph.clone(), generated: Some(generated), problems, builtin });
+                info.graph =
+                    Some(GraphInfo { graph: source_graph.clone(), generated: Some(generated), problems, builtin });
                 info
             }
             Err(problems) => {
@@ -379,7 +380,14 @@ impl EffectLibrary {
             let info = EffectInfo::from_graph(&graph, true);
             builtins.insert(info.id.clone(), Arc::new(info));
         }
-        let inner = Inner { builtins, custom: BTreeMap::new(), graphs: BTreeMap::new(), graph_cache: Vec::new(), folders: Vec::new(), revision: 0 };
+        let inner = Inner {
+            builtins,
+            custom: BTreeMap::new(),
+            graphs: BTreeMap::new(),
+            graph_cache: Vec::new(),
+            folders: Vec::new(),
+            revision: 0,
+        };
         Self { inner: Arc::new(RwLock::new(inner)) }
     }
 
@@ -403,8 +411,7 @@ impl EffectLibrary {
         if unchanged {
             return false;
         }
-        let fresh: BTreeMap<_, _> =
-            graphs.iter().map(|g| (graph::effect_id(&g.name), self.graph_effect(g))).collect();
+        let fresh: BTreeMap<_, _> = graphs.iter().map(|g| (graph::effect_id(&g.name), self.graph_effect(g))).collect();
         let mut inner = self.inner.write().unwrap();
         inner.graphs = fresh;
         inner.revision += 1;

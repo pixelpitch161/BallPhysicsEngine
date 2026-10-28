@@ -357,7 +357,10 @@ fn welcome(ui: &mut Ui, scene: &mut Scene, state: &mut State, library: &EffectLi
                 for i in rebuildable {
                     let shader = scene.effects[i].shader.clone();
                     let title = library.get(&shader).map_or_else(|| shader.clone(), |info| info.title.clone());
-                    if ui.button(title).on_hover_text("Swap this effect for its node version. It looks the same.").clicked()
+                    if ui
+                        .button(title)
+                        .on_hover_text("Swap this effect for its node version. It looks the same.")
+                        .clicked()
                         && let Some(graph) = fx::templates::rebuild(&shader)
                     {
                         let mut graph = graph;
@@ -444,6 +447,7 @@ fn side(ui: &mut Ui, scene: &mut Scene, index: usize, info: Option<&EffectInfo>,
 }
 
 /// Draws the visible blocks' previews when due, and returns the texture for each block.
+#[allow(clippy::too_many_arguments)]
 fn previews(
     ctx: &egui::Context,
     render_state: &egui_wgpu::RenderState,
@@ -486,8 +490,7 @@ fn previews(
         previews.shown.clear();
         return HashMap::new();
     };
-    let wanted: Vec<u32> =
-        state.visible.iter().copied().filter(|id| order.contains(id)).take(fx::MAX_THUMBS).collect();
+    let wanted: Vec<u32> = state.visible.iter().copied().filter(|id| order.contains(id)).take(fx::MAX_THUMBS).collect();
     let due = previews.last.is_none_or(|t| t.elapsed() >= PREVIEW_EVERY);
     let key = (scene.clone(), time, wanted.clone());
     if due && previews.drawn.as_ref() != Some(&key) && !wanted.is_empty() {
@@ -644,7 +647,10 @@ mod tests {
 
     #[test]
     fn every_template_and_rebuild_makes_a_working_effect() {
-        for graph in fx::templates::graphs().into_iter().chain(fx::templates::REBUILT.iter().filter_map(|id| fx::templates::rebuild(id))) {
+        for graph in fx::templates::graphs()
+            .into_iter()
+            .chain(fx::templates::REBUILT.iter().filter_map(|id| fx::templates::rebuild(id)))
+        {
             let info = EffectInfo::from_graph(&graph, false);
             assert!(info.error().is_none(), "{}: {:?}", graph.name, info.error());
         }

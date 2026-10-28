@@ -22,7 +22,13 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[s
     render_with_bass(device, queue, scene, graphs, 0.0)
 }
 
-fn render_with_bass(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[super::Graph], bass: f32) -> Vec<u8> {
+fn render_with_bass(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    graphs: &[super::Graph],
+    bass: f32,
+) -> Vec<u8> {
     let mut renderer = Renderer::new(device, 216, 384);
     let scene = &Scene { shader_graphs: graphs.to_vec(), ..scene.clone() };
     let mut playback = Playback::new(scene);
@@ -75,10 +81,14 @@ fn node_versions_match_the_built_in_effects() {
         let mut rebuilt = original.clone();
         rebuilt.shader = graph_id;
         let a = render(&device, &queue, &Scene { effects: vec![original], ..base.clone() }, &[]);
-        let b = render(&device, &queue, &Scene { effects: vec![rebuilt], ..base.clone() }, std::slice::from_ref(&graph));
+        let b =
+            render(&device, &queue, &Scene { effects: vec![rebuilt], ..base.clone() }, std::slice::from_ref(&graph));
         let (mean, off) = difference(&a, &b);
         let (changed, _) = difference(&a, &plain);
-        report.push(format!("{id}: mean difference {mean:.3}, pixels off {:.2}%, effect strength {changed:.2}", off * 100.0));
+        report.push(format!(
+            "{id}: mean difference {mean:.3}, pixels off {:.2}%, effect strength {changed:.2}",
+            off * 100.0
+        ));
         assert!(changed > 0.05 || id == "glitch", "{id} did nothing, so the comparison proves nothing");
         assert!(mean < 0.6 && off < 0.01, "{id} node version differs: mean {mean:.3}, {:.2}% of pixels", off * 100.0);
         // With "Pulse with music" up and the bass playing. Glitch's node version scales the
@@ -91,7 +101,11 @@ fn node_versions_match_the_built_in_effects() {
             let b = render_with_bass(&device, &queue, &scene(rebuilt), std::slice::from_ref(&graph), 0.8);
             let (mean, off) = difference(&a, &b);
             report.push(format!("{id} with the bass: mean difference {mean:.3}, pixels off {:.2}%", off * 100.0));
-            assert!(mean < 0.6 && off < 0.01, "{id} with the bass differs: mean {mean:.3}, {:.2}% of pixels", off * 100.0);
+            assert!(
+                mean < 0.6 && off < 0.01,
+                "{id} with the bass differs: mean {mean:.3}, {:.2}% of pixels",
+                off * 100.0
+            );
         }
     }
     println!("{}", report.join("\n"));
@@ -186,7 +200,8 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) ->
 pub(super) fn big_graph() -> super::Graph {
     let mut b = super::Builder::new("Forty blocks");
     let mut at = b.add("position");
-    for (i, kind) in ["twirl", "ripple", "flow", "kaleidoscope", "mirror", "zoom", "spin", "offset"].iter().enumerate() {
+    for (i, kind) in ["twirl", "ripple", "flow", "kaleidoscope", "mirror", "zoom", "spin", "offset"].iter().enumerate()
+    {
         let warp = b.add(kind);
         b.wire(at, "out", warp, "at");
         at = warp;
@@ -265,7 +280,11 @@ fn graph_gpu_cost() {
     });
     drop(module);
     let to_module = compile.elapsed();
-    println!("{width}x{height}, per frame: no effects {plain:.2} ms, kaleidoscope {:.2} ms extra, 40-block graph {:.2} ms extra", builtin - plain, nodes - plain);
+    println!(
+        "{width}x{height}, per frame: no effects {plain:.2} ms, kaleidoscope {:.2} ms extra, 40-block graph {:.2} ms extra",
+        builtin - plain,
+        nodes - plain
+    );
     println!("graph to checked WGSL {to_wgsl:?}, to a GPU shader module {to_module:?}");
 }
 
@@ -307,13 +326,19 @@ fn effects_pulse_with_the_music() {
         let on = Scene { effects: vec![Effect::new(id).with("music", 1.0)], ..Scene::default() };
         let quiet = render_with_mix(&device, &queue, &off, None);
         assert_eq!(quiet, render_with_mix(&device, &queue, &off, Some(1.0)), "{id} pulses with the music set to 0");
-        let (moved, _) = difference(&render_with_mix(&device, &queue, &on, Some(0.0)), &render_with_mix(&device, &queue, &on, Some(1.0)));
+        let (moved, _) = difference(
+            &render_with_mix(&device, &queue, &on, Some(0.0)),
+            &render_with_mix(&device, &queue, &on, Some(1.0)),
+        );
         assert!(moved > 0.02, "{id} doesn't react to the bass ({moved})");
     }
     // So do the music templates. Without music, beats rest.
     for graph in templates::graphs() {
         let scene = Scene { effects: vec![Effect::new(super::effect_id(&graph.name))], ..Scene::default() };
-        let (moved, _) = difference(&render_with_mix(&device, &queue, &scene, None), &render_with_mix(&device, &queue, &scene, Some(1.0)));
+        let (moved, _) = difference(
+            &render_with_mix(&device, &queue, &scene, None),
+            &render_with_mix(&device, &queue, &scene, Some(1.0)),
+        );
         assert!(moved > 0.02, "{} doesn't react to the music ({moved})", graph.name);
     }
 }

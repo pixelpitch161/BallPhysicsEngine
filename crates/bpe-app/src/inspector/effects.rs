@@ -391,16 +391,15 @@ fn effect_card(
                         }
                         if info.is_graph() {
                             let ready = info.graph.as_ref().is_some_and(|g| g.generated.is_some());
-                            let button = ui
-                                .add_enabled(ready, egui::Button::new("Save as code"))
-                                .on_hover_text("Write this effect as a WGSL file in the effects folder, to edit as code");
+                            let button = ui.add_enabled(ready, egui::Button::new("Save as code")).on_hover_text(
+                                "Write this effect as a WGSL file in the effects folder, to edit as code",
+                            );
                             if button.clicked() {
                                 action = Some(CardAction::SaveCode);
                                 ui.close();
                             }
                         } else {
-                            let edit =
-                                if info.is_builtin() { "Edit a copy as code" } else { "Open the effect file" };
+                            let edit = if info.is_builtin() { "Edit a copy as code" } else { "Open the effect file" };
                             if ui.button(edit).clicked() {
                                 if info.is_builtin() {
                                     action = Some(CardAction::EditCopy);
@@ -594,7 +593,8 @@ fn graph_problems(ui: &mut Ui, graph: &fx::GraphInfo, broken: bool) {
 /// Adds a node effect to the scene, from `template` or empty, and opens it in the workspace.
 fn new_node_effect(panel: &mut EffectsPanel, scene: &mut Scene, template: Option<fx::graph::Graph>) {
     let graph = template.unwrap_or_else(crate::shader_workspace::blank_graph);
-    let stem = if graph.name.is_empty() { "My effect".to_string() } else { format!("My {}", graph.name.to_lowercase()) };
+    let stem =
+        if graph.name.is_empty() { "My effect".to_string() } else { format!("My {}", graph.name.to_lowercase()) };
     let name = crate::shader_workspace::add_graph(scene, &panel.library, graph, &stem);
     panel.open_graph = Some(name);
 }

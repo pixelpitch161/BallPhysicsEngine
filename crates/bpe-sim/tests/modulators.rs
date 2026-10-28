@@ -8,7 +8,9 @@ use std::sync::Arc;
 /// A made-up song: bass and treble that swell and fall, a beat twice a second.
 fn song() -> Arc<AudioFeatures> {
     let frames = 200 * 30;
-    let wave = |period: f32| (0..frames).map(|i| 0.5 + 0.5 * (i as f32 / 200.0 * std::f32::consts::TAU / period).sin()).collect();
+    let wave = |period: f32| {
+        (0..frames).map(|i| 0.5 + 0.5 * (i as f32 / 200.0 * std::f32::consts::TAU / period).sin()).collect()
+    };
     Arc::new(AudioFeatures {
         rate: 200.0,
         bass: wave(1.3),

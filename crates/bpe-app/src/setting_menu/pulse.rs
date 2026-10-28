@@ -403,7 +403,10 @@ fn meter(ui: &mut Ui, m: &Modulator, music: &Music, time: f64) {
         .map(|i| {
             let t = time - history + history * i as f64 / 80.0;
             let s = if t < 0.0 { 0.0 } else { strength(m, music, t).unwrap_or(0.0).clamp(0.0, 1.2) };
-            Pos2::new(rect.left() + rect.width() * i as f32 / 80.0, rect.bottom() - 3.0 - s / 1.2 * (rect.height() - 6.0))
+            Pos2::new(
+                rect.left() + rect.width() * i as f32 / 80.0,
+                rect.bottom() - 3.0 - s / 1.2 * (rect.height() - 6.0),
+            )
         })
         .collect();
     painter.add(egui::Shape::line(points, Stroke::new(1.5, theme::ACCENT_TEXT)));

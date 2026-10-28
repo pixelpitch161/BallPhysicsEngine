@@ -168,13 +168,19 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             let gap = b.add("number");
             b.set(gap, "value", 0.15).expose(gap, "value", Some("gap")).range(gap, "value", 0.0, 0.6);
             let edge = b.add("remap");
-            b.set(edge, "in_low", 0.0).set(edge, "in_high", 1.0).set(edge, "out_low", 0.46).set(edge, "out_high", -0.04);
+            b.set(edge, "in_low", 0.0)
+                .set(edge, "in_high", 1.0)
+                .set(edge, "out_low", 0.46)
+                .set(edge, "out_high", -0.04);
             let dot = b.add("circle");
             b.set(dot, "softness", 0.04);
             let square = b.add("box");
             b.set(square, "softness", 0.02);
             let side = b.add("remap");
-            b.set(side, "in_low", 0.0).set(side, "in_high", 1.0).set(side, "out_low", 0.96).set(side, "out_high", -0.04);
+            b.set(side, "in_low", 0.0)
+                .set(side, "in_high", 1.0)
+                .set(side, "out_low", 0.96)
+                .set(side, "out_high", -0.04);
             let dots = b.add("number");
             b.set(dots, "value", 0.0).expose(dots, "value", Some("dots")).control(dots, "value", Control::Toggle);
             let shape = b.add("mix");

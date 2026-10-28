@@ -379,7 +379,8 @@ fn generation_is_fast() {
     b.wire(last, "out", pic, "at");
     let mut colour = pic;
     for i in 0..24 {
-        let step = b.add(["hue_shift", "saturation", "vignette", "blend_screen", "brightness_contrast", "grain"][i % 6]);
+        let step =
+            b.add(["hue_shift", "saturation", "vignette", "blend_screen", "brightness_contrast", "grain"][i % 6]);
         let input = if i % 6 == 3 { "base" } else { "color" };
         b.wire(colour, "out", step, input);
         colour = step;

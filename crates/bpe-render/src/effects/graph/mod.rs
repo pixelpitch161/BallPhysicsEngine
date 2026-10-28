@@ -136,7 +136,9 @@ fn node_spec(block: &Block) -> bpe_graph::NodeSpec {
         let param = match (input.default, input.control) {
             (Default::Number(v), Control::Toggle) => ParamSpec::new(input.name, label, Param::Bool(v > 0.5)),
             (Default::Number(v), _) => ParamSpec::number(input.name, &label, v, input.min, input.max),
-            (Default::Vector(v), _) => ParamSpec { range: (input.min, input.max), ..ParamSpec::new(input.name, label, Param::Vector(v)) },
+            (Default::Vector(v), _) => {
+                ParamSpec { range: (input.min, input.max), ..ParamSpec::new(input.name, label, Param::Vector(v)) }
+            }
             (Default::Color([r, g, b]), _) => ParamSpec::new(input.name, label, Param::Color([r, g, b, 1.0])),
             // Unplugged, these use the pixel or the picture; there's nothing to set.
             (Default::Position | Default::Picture, _) => continue,
@@ -186,13 +188,7 @@ struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     fn new(graph: &'a Graph) -> Self {
-        Self {
-            graph,
-            catalog: Catalog::get(),
-            nodes: BTreeMap::new(),
-            wires: BTreeMap::new(),
-            problems: Vec::new(),
-        }
+        Self { graph, catalog: Catalog::get(), nodes: BTreeMap::new(), wires: BTreeMap::new(), problems: Vec::new() }
     }
 
     fn run(mut self, thumbnails: bool) -> Result<Generated, Vec<Problem>> {
@@ -444,7 +440,8 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 if sliders.len() == MAX_SLIDERS {
-                    problems.push(Problem::on(node.id, format!("A node effect can have at most {MAX_SLIDERS} sliders.")));
+                    problems
+                        .push(Problem::on(node.id, format!("A node effect can have at most {MAX_SLIDERS} sliders.")));
                     break;
                 }
                 let wanted = match node.params.get(&format!("{}:name", input.name)) {
@@ -788,12 +785,8 @@ fn literal(v: f32) -> String {
 
 /// A slider name made from a user's label: lower case letters, digits and `_`.
 fn identifier(text: &str) -> Option<String> {
-    let mut name: String = text
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
+    let mut name: String =
+        text.trim().to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     while name.contains("__") {
         name = name.replace("__", "_");
     }
