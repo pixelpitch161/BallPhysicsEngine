@@ -405,7 +405,7 @@ impl EffectLibrary {
                         .graphs
                         .get(&graph::effect_id(&g.name))
                         .and_then(|info| info.graph.as_ref())
-                        .is_some_and(|info| info.graph == **g)
+                        .is_some_and(|info| graph::same_shader(&info.graph, g))
                 })
         };
         if unchanged {
@@ -496,7 +496,7 @@ impl EffectLibrary {
     /// The effect built from `graph`, reusing one built before for the same graph.
     pub fn graph_effect(&self, graph: &graph::Graph) -> Arc<EffectInfo> {
         const KEEP: usize = 32;
-        let same = |i: &&Arc<EffectInfo>| i.graph.as_ref().is_some_and(|g| g.graph == *graph);
+        let same = |i: &&Arc<EffectInfo>| i.graph.as_ref().is_some_and(|g| graph::same_shader(&g.graph, graph));
         {
             let inner = self.inner.read().unwrap();
             if let Some(info) = inner.graphs.values().find(same).or_else(|| inner.graph_cache.iter().find(same)) {

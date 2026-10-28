@@ -465,6 +465,7 @@ fn previews(
         let (w, h) = fx::THUMB_SIZE;
         let mut renderer = Renderer::new(device, w, h);
         renderer.set_effect_library(library.clone());
+        renderer.set_effect_background_builds(true);
         Previews {
             renderer,
             frame_data: FrameData::default(),
@@ -481,7 +482,7 @@ fn previews(
         previews.shown.clear();
         return HashMap::new();
     };
-    if previews.info.as_ref().is_none_or(|(g, _)| g != graph) {
+    if previews.info.as_ref().is_none_or(|(g, _)| !fx::graph::same_shader(g, graph)) {
         previews.info = Some((graph.clone(), Arc::new(EffectInfo::graph_thumbnails(graph))));
     }
     let info = previews.info.as_ref().unwrap().1.clone();
@@ -499,14 +500,21 @@ fn previews(
         let pixel = previews.renderer.pixel_size(scene);
         previews.frame_data.fill(scene, playback, pixel);
         previews.renderer.render(device, &render_state.queue, scene, time, &previews.frame_data);
+        let building = previews.renderer.effects_building();
         if previews.renderer.effect_thumbnails_drawn() {
             copy_tiles(render_state, previews, wanted.len());
             previews.shown = wanted.iter().enumerate().map(|(slot, &id)| (id, slot)).collect();
-        } else {
+        } else if !building {
             previews.shown.clear();
         }
         previews.last = Some(Instant::now());
-        previews.drawn = Some(key);
+        if building {
+            // The changed effect is still building: keep the pictures there are and try again.
+            previews.drawn = None;
+            ctx.request_repaint_after(PREVIEW_EVERY);
+        } else {
+            previews.drawn = Some(key);
+        }
     } else if !due && previews.drawn.as_ref() != Some(&key) {
         // Come back when the previews are due.
         ctx.request_repaint_after(PREVIEW_EVERY);
