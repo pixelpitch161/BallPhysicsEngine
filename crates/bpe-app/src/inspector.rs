@@ -1,8 +1,10 @@
 //! The scene settings panel, split into tabs. Every widget edits the [`Scene`] in place; the
 //! app notices the change and rebuilds the preview and soundtrack.
 //!
-//! Each setting has a plain name, a "?" with a one-sentence explanation, and a right-click
-//! "Reset to default". Settings most people never touch sit under "More settings" in each tab.
+//! Each setting has a plain name and a "?" with a one-sentence explanation. Double-clicking a
+//! setting's name or slider, Alt+clicking it, or its right-click menu puts it back to its
+//! default, and most tabs end with a "Reset this tab" button. Settings most people never touch
+//! sit under "More settings" in each tab.
 
 use crate::theme;
 use bpe_scene::{BounceRules, ChordStep, Color, Container, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2};
@@ -89,14 +91,70 @@ pub const ARROW_SECONDS: f32 = 0.35;
 pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
     tab_bar(ui, &mut inspector.tab);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| match inspector.tab {
-            Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected),
-            Tab::Arena => arena(ui, &mut scene.container, &mut scene.physics),
-            Tab::Bounces => bounces(ui, &mut scene.rules),
-            Tab::Look => look(ui, &mut scene.look),
-            Tab::Sound => sound(ui, &mut scene.sound),
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
+            match inspector.tab {
+                Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected),
+                Tab::Arena => {
+                    arena(ui, &mut scene.container, &mut scene.physics);
+                    let fresh = default_container(matches!(scene.container, Container::Circle { .. }));
+                    if reset_tab(ui, scene.container != fresh || scene.physics != Physics::default()) {
+                        scene.container = fresh;
+                        scene.physics = Physics::default();
+                    }
+                }
+                Tab::Bounces => {
+                    bounces(ui, &mut scene.rules);
+                    reset_tab_to(ui, &mut scene.rules, BounceRules::default());
+                }
+                Tab::Look => {
+                    look(ui, &mut scene.look);
+                    reset_tab_to(ui, &mut scene.look, Look::default());
+                }
+                Tab::Sound => {
+                    sound(ui, &mut scene.sound);
+                    let fresh = default_sound(&scene.sound);
+                    reset_tab_to(ui, &mut scene.sound, fresh);
+                }
+            }
+            tip(ui);
         });
     });
+}
+
+/// A button at the end of a tab that puts everything in it back to its default. Returns whether
+/// it was clicked.
+fn reset_tab(ui: &mut Ui, changed: bool) -> bool {
+    ui.add_space(14.0);
+    ui.add_enabled(changed, egui::Button::new("Reset this tab"))
+        .on_hover_text("Put every setting in this tab back to its default. Ctrl+Z brings them back.")
+        .clicked()
+}
+
+fn reset_tab_to<T: PartialEq>(ui: &mut Ui, value: &mut T, default: T) {
+    if reset_tab(ui, *value != default) {
+        *value = default;
+    }
+}
+
+/// Default sound settings that keep the user's own chords, note shuffle and WAV file.
+fn default_sound(current: &Sound) -> Sound {
+    let instrument = match &current.instrument {
+        Instrument::Pluck { .. } => Sound::default().instrument,
+        Instrument::Sample { path, .. } => Instrument::Sample { path: path.clone(), root_note: SAMPLE_ROOT_NOTE },
+    };
+    Sound { progression: current.progression.clone(), seed: current.seed, instrument, ..Sound::default() }
+}
+
+fn tip(ui: &mut Ui) {
+    ui.add_space(16.0);
+    ui.label(
+        RichText::new(
+            "Tip: double-click a setting's name or slider, or Alt+click it, to reset it. \
+             Hold Shift while dragging a slider for fine changes.",
+        )
+        .small()
+        .color(theme::MUTED),
+    );
 }
 
 fn tab_bar(ui: &mut Ui, current: &mut Tab) {
@@ -167,32 +225,55 @@ fn help_icon(ui: &mut Ui, help: &str) {
     response.on_hover_text(help);
 }
 
-fn label(ui: &mut Ui, text: &str, help: &str) {
+/// A setting's name. It senses clicks so that double-clicking it resets the setting.
+fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
-        hint(ui.label(text), help);
+        let response = hint(ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())), help);
         if !help.is_empty() {
             help_icon(ui, help);
         }
-    });
+        response
+    })
+    .inner
 }
 
 fn hint(response: Response, help: &str) -> Response {
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
 
-/// Right-click menu that puts a setting back to its default.
+/// Whether this click asks to reset a setting: a double-click, or a click with Alt held.
+/// A double-click in a number box being typed into selects text instead.
+fn reset_clicked(response: &Response) -> bool {
+    let primary = egui::PointerButton::Primary;
+    // egui counts a double-click that comes soon after a click elsewhere as a triple-click.
+    let (alt, clicked, many_clicks) = response.ctx.input(|i| {
+        let many = i.pointer.button_double_clicked(primary) || i.pointer.button_triple_clicked(primary);
+        (i.modifiers.alt, i.pointer.button_clicked(primary), many)
+    });
+    // Sliders only sense drags, so a click on one shows up as a drag that stops where it started.
+    let clicked = response.clicked() || (response.drag_stopped() && clicked);
+    (clicked && alt) || (clicked && many_clicks && !response.ctx.text_edit_focused())
+}
+
+/// Puts a setting back to its default on a double-click, an Alt+click or the right-click menu.
 fn resettable<T: PartialEq>(response: Response, value: &mut T, default: T) -> Response {
+    let mut reset = reset_clicked(&response);
     response.context_menu(|ui| {
         if ui.add_enabled(*value != default, egui::Button::new("Reset to default")).clicked() {
-            *value = default;
+            reset = true;
             ui.close();
         }
     });
+    if reset {
+        // Alt+click on a number box would otherwise start typing into it.
+        response.ctx.memory_mut(|m| m.stop_text_input());
+        *value = default;
+    }
     response
 }
 
-/// One labelled slider row in a grid, with a right-click reset.
+/// One labelled slider row in a grid, with the reset shortcuts.
 fn slider<T: Numeric>(
     ui: &mut Ui,
     text: &str,
@@ -206,7 +287,8 @@ fn slider<T: Numeric>(
     resettable(response, value, default)
 }
 
-/// One labelled slider row in a grid, for values that reset some other way.
+/// One labelled slider row in a grid, for values that reset some other way. The response
+/// covers the name as well as the slider, so both can be double-clicked.
 fn slider_row<T: Numeric>(
     ui: &mut Ui,
     text: &str,
@@ -215,12 +297,43 @@ fn slider_row<T: Numeric>(
     range: RangeInclusive<T>,
     style: impl FnOnce(Slider<'_>) -> Slider<'_>,
 ) -> Response {
-    label(ui, text, help);
+    let name = label(ui, text, help);
     // Fill the rest of the row, leaving room for the number box beside the slider.
     ui.spacing_mut().slider_width = (ui.available_width() - 120.0).max(60.0);
+    let (min, max) = (range.start().to_f64(), range.end().to_f64());
+    let before = value.to_f64();
     let response = hint(ui.add(style(Slider::new(value, range))), help);
+    fine_drag(ui, &response, value, before, min, max);
     ui.end_row();
-    response
+    response.union(name)
+}
+
+/// While Shift is held, a slider drag moves the value a tenth as far, for small changes.
+fn fine_drag<T: Numeric>(ui: &Ui, response: &Response, value: &mut T, before: f64, min: f64, max: f64) {
+    const FINE: f64 = 0.1;
+    let id = response.id.with("fine drag");
+    // Remember where the slider itself would put the value and where the fine value is, so each
+    // frame adds a tenth of the slider's own movement. Only the slider itself: its number box
+    // already drags slowly with Shift.
+    let last = ui.data(|d| d.get_temp::<(f64, f64)>(id));
+    let dragging = ui.ctx().is_being_dragged(response.id);
+    // The slider moves to the pointer once more on the frame the button is let go.
+    let letting_go = last.is_some() && response.drag_stopped();
+    if !((dragging || letting_go) && ui.input(|i| i.modifiers.shift)) {
+        ui.data_mut(|d| d.remove::<(f64, f64)>(id));
+        return;
+    }
+    let raw = value.to_f64();
+    let fine = match last {
+        Some((last_raw, fine)) => (fine + (raw - last_raw) * FINE).clamp(min.min(max), max.max(min)),
+        None => before,
+    };
+    if dragging {
+        ui.data_mut(|d| d.insert_temp(id, (raw, fine)));
+    } else {
+        ui.data_mut(|d| d.remove::<(f64, f64)>(id));
+    }
+    *value = T::from_f64(if T::INTEGRAL { fine.round() } else { fine });
 }
 
 /// A 0..1 value shown as a percentage.
@@ -245,11 +358,17 @@ fn log_units(suffix: &'static str) -> impl FnOnce(Slider<'_>) -> Slider<'_> {
 }
 
 fn color_row(ui: &mut Ui, text: &str, help: &str, value: &mut Color, default: Color) {
-    label(ui, text, help);
+    let name = label(ui, text, help);
     // The right-click menu goes on a wrapper: on the button itself it would share the colour
     // picker's popup and close it as soon as it opens.
-    let response = ui.scope(|ui| hint(color_button(ui, value), help)).response;
-    resettable(response, value, default);
+    let swatch = ui.scope(|ui| hint(color_button(ui, value), help));
+    if reset_clicked(&swatch.inner) {
+        // The click also opened or closed the colour picker. A reset should leave it shut.
+        Popup::close_all(ui.ctx());
+        *value = default;
+    }
+    resettable(swatch.response, value, default);
+    resettable(name, value, default);
     ui.end_row();
 }
 
@@ -288,21 +407,31 @@ fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
     });
 }
 
-/// Position as two plain number boxes.
+/// Position as two plain number boxes. Resetting puts it back in the middle.
 fn position_row(ui: &mut Ui, text: &str, help: &str, value: &mut Vec2) {
-    label(ui, text, help);
-    ui.horizontal(|ui| {
-        ui.add(DragValue::new(&mut value.x).speed(1.0).prefix("across ").suffix(" px")).on_hover_text(help);
-        ui.add(DragValue::new(&mut value.y).speed(1.0).prefix("down ").suffix(" px")).on_hover_text(help);
+    let name = label(ui, text, help);
+    let boxes = ui.horizontal(|ui| {
+        let x = ui.add(DragValue::new(&mut value.x).speed(1.0).prefix("across ").suffix(" px")).on_hover_text(help);
+        let y = ui.add(DragValue::new(&mut value.y).speed(1.0).prefix("down ").suffix(" px")).on_hover_text(help);
+        (x, y)
     });
+    let (x, y) = boxes.inner;
+    resettable(name, value, Vec2::ZERO);
+    resettable(x, value, Vec2::ZERO);
+    resettable(y, value, Vec2::ZERO);
     ui.end_row();
 }
 
-/// Launch speed and direction, edited as two sliders over a velocity vector.
+/// Launch speed and direction, edited as two sliders over a velocity vector. Each resets on
+/// its own and keeps the other.
 fn launch_rows(ui: &mut Ui, velocity: &mut Vec2, default: Vec2) {
+    let default_speed = default.length();
+    let default_angle = default.y.atan2(default.x).to_degrees();
     let mut speed = velocity.length();
-    let mut angle = if speed > 0.0 { velocity.y.atan2(velocity.x).to_degrees() } else { 0.0 };
-    let response = slider_row(
+    // A ball at rest has no direction, so show the default one.
+    let mut angle = if speed > 0.0 { velocity.y.atan2(velocity.x).to_degrees() } else { default_angle };
+    let before = (speed, angle);
+    let speed_response = slider_row(
         ui,
         "Launch speed",
         "How fast the balls are thrown at the start, in pixels per second. You can also drag the arrow tip in the preview.",
@@ -310,8 +439,7 @@ fn launch_rows(ui: &mut Ui, velocity: &mut Vec2, default: Vec2) {
         0.0..=3000.0,
         units(" px/s", 0),
     );
-    let speed_response = response;
-    let response = slider_row(
+    let angle_response = slider_row(
         ui,
         "Direction",
         "Which way the balls are thrown. 0° is right, 90° is straight down, -90° is straight up.",
@@ -319,13 +447,13 @@ fn launch_rows(ui: &mut Ui, velocity: &mut Vec2, default: Vec2) {
         -180.0..=180.0,
         units("°", 0),
     );
+    let speed_response = resettable(speed_response, &mut speed, default_speed);
+    let angle_response = resettable(angle_response, &mut angle, default_angle);
     // Only on a real edit: the sliders round the numbers they show, which would nudge the velocity.
-    if speed_response.changed() || response.changed() {
+    if speed_response.changed() || angle_response.changed() || (speed, angle) != before {
         let radians = angle.to_radians();
         *velocity = Vec2::new(radians.cos(), radians.sin()) * speed;
     }
-    resettable(speed_response, velocity, default);
-    resettable(response, velocity, default);
 }
 
 // ---------- tabs ----------
@@ -477,19 +605,33 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
     });
 }
 
+const RING_RADIUS: f32 = 508.0;
+const BOX_SIZE: Vec2 = Vec2::new(1000.0, 1000.0);
+const LINE_WIDTH: f32 = 3.0;
+const LINE_COLOR: Color = Color::rgb(0xd8, 0xdc, 0xd0);
+const SAMPLE_ROOT_NOTE: u8 = 60;
+
+/// A ring or box in the middle of the video at its usual size.
+fn default_container(circle: bool) -> Container {
+    if circle {
+        Container::Circle { center: Vec2::ZERO, radius: RING_RADIUS, thickness: LINE_WIDTH, color: LINE_COLOR }
+    } else {
+        Container::Rect { center: Vec2::ZERO, size: BOX_SIZE, thickness: LINE_WIDTH, color: LINE_COLOR }
+    }
+}
+
 fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
-    let line = Color::rgb(0xd8, 0xdc, 0xd0);
     heading(ui, "Shape");
     ui.horizontal(|ui| {
         let is_circle = matches!(container, Container::Circle { .. });
         let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
         if ui.add_sized([width, 30.0], egui::Button::selectable(is_circle, "Ring")).clicked() && !is_circle {
             let (center, thickness, color) = container_basics(container);
-            *container = Container::Circle { center, radius: 508.0, thickness, color };
+            *container = Container::Circle { center, radius: RING_RADIUS, thickness, color };
         }
         if ui.add_sized([width, 30.0], egui::Button::selectable(!is_circle, "Box")).clicked() && is_circle {
             let (center, thickness, color) = container_basics(container);
-            *container = Container::Rect { center, size: Vec2::new(1000.0, 1000.0), thickness, color };
+            *container = Container::Rect { center, size: BOX_SIZE, thickness, color };
         }
     });
     ui.add_space(6.0);
@@ -500,7 +642,7 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 "Size",
                 "Radius of the ring in pixels. You can also drag the ring's edge in the preview.",
                 radius,
-                508.0,
+                RING_RADIUS,
                 20.0..=1200.0,
                 units(" px", 0),
             );
@@ -509,11 +651,11 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 "Line width",
                 "Thickness of the ring's line. 0 hides it.",
                 thickness,
-                3.0,
+                LINE_WIDTH,
                 0.0..=40.0,
                 units(" px", 1),
             );
-            color_row(ui, "Line colour", "", color, line);
+            color_row(ui, "Line colour", "", color, LINE_COLOR);
             center
         }
         Container::Rect { center, size, thickness, color } => {
@@ -522,7 +664,7 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 "Width",
                 "Width of the box in pixels. You can also drag the box's edge in the preview.",
                 &mut size.x,
-                1000.0,
+                BOX_SIZE.x,
                 40.0..=2400.0,
                 units(" px", 0),
             );
@@ -531,7 +673,7 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 "Height",
                 "Height of the box in pixels. You can also drag the box's edge in the preview.",
                 &mut size.y,
-                1000.0,
+                BOX_SIZE.y,
                 40.0..=2400.0,
                 units(" px", 0),
             );
@@ -540,11 +682,11 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 "Line width",
                 "Thickness of the box's line. 0 hides it.",
                 thickness,
-                3.0,
+                LINE_WIDTH,
                 0.0..=40.0,
                 units(" px", 1),
             );
-            color_row(ui, "Line colour", "", color, line);
+            color_row(ui, "Line colour", "", color, LINE_COLOR);
             center
         }
     });
@@ -645,7 +787,7 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
         if response.changed() {
             rules.speed_gain = 1.0 + gain / 100.0;
         }
-        resettable(response, &mut rules.speed_gain, 1.0);
+        resettable(response, &mut rules.speed_gain, defaults.speed_gain);
         slider(
             ui,
             "Top speed",
@@ -842,7 +984,7 @@ fn sound(ui: &mut Ui, sound: &mut Sound) {
                     sound.instrument = Instrument::Pluck { decay: 0.9, brightness: 0.5 };
                 }
                 if ui.add(egui::Button::selectable(!is_pluck, "My WAV file")).clicked() && is_pluck {
-                    sound.instrument = Instrument::Sample { path: String::new(), root_note: 60 };
+                    sound.instrument = Instrument::Sample { path: String::new(), root_note: SAMPLE_ROOT_NOTE };
                 }
             });
             ui.end_row();
@@ -886,7 +1028,7 @@ fn sound(ui: &mut Ui, sound: &mut Sound) {
                         "Note in the file",
                         "The note your recording plays, so it can be tuned to the chords. Middle C is C4.",
                         root_note,
-                        60,
+                        SAMPLE_ROOT_NOTE,
                         24..=108,
                         note_names,
                     );
