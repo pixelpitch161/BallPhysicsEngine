@@ -315,14 +315,8 @@ fn instrument_settings(ui: &mut Ui, instrument: &mut Instrument, state: &mut Sta
                 percent,
             );
         }
-        Instrument::Library { name } => {
-            label(ui, "Playing", "A built-in instrument. Pick another above.");
-            ui.horizontal(|ui| {
-                ui.label(name.as_str());
-                hear_button(ui, state, &Instrument::Library { name: name.clone() });
-            });
-            ui.end_row();
-        }
+        // Built-in instruments have nothing more to set; clicking one again plays it again.
+        Instrument::Library { .. } => {}
         Instrument::Sample { path, root_note } => {
             file_row(
                 ui,
@@ -408,7 +402,7 @@ fn named(response: &egui::Response, kind: egui::Role, name: &str) {
 }
 
 fn hear_button(ui: &mut Ui, state: &mut State, instrument: &Instrument) {
-    if ui.small_button("▶ Hear it").on_hover_text("Play a few notes on this instrument").clicked() {
+    if ui.small_button("Hear it").on_hover_text("Play a few notes on this instrument").clicked() {
         state.preview(instrument);
     }
 }
@@ -754,7 +748,7 @@ fn voices_section(ui: &mut Ui, voices: &mut Vec<VoiceMap>, state: &mut State) {
                 instrument_menu(ui, ("voice-instrument", i), &mut voice.instrument);
                 hear_button(ui, state, &voice.instrument);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").on_hover_text("Remove this voice").clicked() {
+                    if ui.small_button("Remove").on_hover_text("Remove this voice").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -896,7 +890,7 @@ fn song_section(ui: &mut Ui, music: &mut Music, state: &mut State) {
             match &music.song {
                 Some(path) => {
                     ui.label(file_name(path)).on_hover_text(path.as_str());
-                    if ui.small_button("✕").on_hover_text("Play no song").clicked() {
+                    if ui.small_button("Remove").on_hover_text("Play no song").clicked() {
                         music.song = None;
                     }
                 }
@@ -1187,5 +1181,95 @@ mod tests {
         assert_eq!(fresh.song, music.song);
         assert_eq!(fresh.gain, Music::default().gain);
         assert_eq!(fresh.melody, Some(Melody { path: "tune.mid".into(), ..Melody::default() }));
+    }
+
+    mod ui {
+        use crate::inspector::{self, Inspector, Tab};
+        use bpe_scene::{EventFilter, Instrument, Music, Scene, SyncMode};
+        use eframe::egui;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        struct Panel {
+            inspector: Inspector,
+            scene: Scene,
+        }
+
+        fn harness(scene: Scene) -> Harness<'static, Panel> {
+            let panel = Panel { inspector: Inspector { tab: Tab::Sound, ..Inspector::default() }, scene };
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(460.0, 3000.0))
+                .with_step_dt(1.0 / 60.0)
+                .allow_missing_glyphs()
+                .with_context_setup(crate::theme::apply)
+                .build_ui_state(|ui, p: &mut Panel| inspector::show(ui, &mut p.inspector, &mut p.scene), panel);
+            harness.run();
+            harness
+        }
+
+        fn click(harness: &mut Harness<'_, Panel>, label: &str) {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+
+        #[test]
+        fn switching_between_chords_and_a_melody() {
+            let mut harness = harness(Scene::default());
+            click(&mut harness, "A melody");
+            assert_eq!(harness.state().scene.music.melody, Some(bpe_scene::Melody::default()));
+            harness.get_by_label("Transpose");
+            click(&mut harness, "Chords");
+            assert_eq!(harness.state().scene.music.melody, None);
+            harness.get_by_label("Roll random chord settings");
+        }
+
+        #[test]
+        fn picking_an_instrument_and_a_sync_mode() {
+            let mut harness = harness(Scene::default());
+            click(&mut harness, "Marimba");
+            assert_eq!(harness.state().scene.sound.instrument, Instrument::library("Marimba"));
+            click(&mut harness, "Lock");
+            assert_eq!(harness.state().scene.music.beat_sync.mode, SyncMode::Lock);
+            harness.get_by_label("Lead balls");
+            click(&mut harness, "Warp");
+            harness.get_by_label("Warp strength");
+            click(&mut harness, "Pluck");
+            assert!(matches!(harness.state().scene.sound.instrument, Instrument::Pluck { .. }));
+        }
+
+        #[test]
+        fn adding_and_removing_a_voice() {
+            let mut harness = harness(Scene::default());
+            click(&mut harness, "+ Add a voice");
+            click(&mut harness, "Crash cymbal on escapes");
+            let voices = &harness.state().scene.sound.voices;
+            assert_eq!(voices.len(), 1);
+            assert_eq!(voices[0].on, EventFilter::Escapes);
+            click(&mut harness, "Remove");
+            assert!(harness.state().scene.sound.voices.is_empty());
+        }
+
+        #[test]
+        fn reset_keeps_the_song_and_voices() {
+            let mut scene = Scene::drum_machine();
+            scene.music.song = Some("song.mp3".into());
+            scene.music.gain = -12.0;
+            scene.music.beat_sync.mode = SyncMode::Warp;
+            let voices = scene.sound.voices.clone();
+            let mut harness = harness(scene);
+            click(&mut harness, "Reset this tab");
+            let state = harness.state();
+            assert_eq!(state.scene.music.song.as_deref(), Some("song.mp3"));
+            assert_eq!(state.scene.music.gain, Music::default().gain);
+            assert_eq!(state.scene.music.beat_sync.mode, SyncMode::Off);
+            assert_eq!(state.scene.sound.voices, voices);
+        }
+
+        #[test]
+        fn showing_the_music_presets_changes_nothing() {
+            for scene in [Scene::marimba_melody(), Scene::beat_locked_bounce(), Scene::drum_machine()] {
+                let harness = harness(scene.clone());
+                assert!(harness.state().scene == scene, "showing {} edited it", scene.name);
+            }
+        }
     }
 }
