@@ -90,7 +90,7 @@ impl EventMatch {
 
     pub fn name(self) -> &'static str {
         match self {
-            EventMatch::AnyHit => "Any hit",
+            EventMatch::AnyHit => "Every hit",
             EventMatch::Wall => "Wall hits",
             EventMatch::Obstacle => "Peg hits",
             EventMatch::Escape => "Escapes",

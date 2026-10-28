@@ -78,9 +78,20 @@ pub struct GpuFrame {
     /// The scene and inputs the playback simulates, before keyframes are applied, when the
     /// swarm or liquid is on. Their own copy of the simulation starts from these.
     pub source: Option<(Scene, SimInputs)>,
+    /// How long one frame may spend catching the swarm and liquid up to the frame's time.
+    /// `None` (the default, for export) always catches up fully.
+    pub budget: Option<std::time::Duration>,
+    /// Set by the renderer when the budget ran out, so the layers show an earlier moment
+    /// and the caller should draw again to let them catch up.
+    behind: std::cell::Cell<bool>,
 }
 
 impl GpuFrame {
+    /// Whether the last render ran out of time before the swarm and liquid caught up.
+    pub fn behind(&self) -> bool {
+        self.behind.get()
+    }
+
     pub fn fill(&mut self, scene: &Scene, playback: &Playback) {
         self.video = (scene.video.width, scene.video.height);
         let bouncing = scene.particles.iter().any(|e| e.is_active() && e.bounce);
@@ -276,7 +287,8 @@ impl GpuLayers {
     ) {
         let video = frame.gpu.video;
         if let (true, Some((source, inputs))) = (scene.gpu.is_active(), &frame.gpu.source) {
-            self.step_to(device, queue, source, inputs, time, video);
+            let caught_up = self.step_to(device, queue, source, inputs, time, video, frame.gpu.budget);
+            frame.gpu.behind.set(!caught_up);
         } else if self.driver.is_some() {
             self.driver = None;
             self.swarm = None;
@@ -319,7 +331,9 @@ impl GpuLayers {
         inputs: &SimInputs,
         time: f64,
         video: (u32, u32),
-    ) {
+        budget: Option<std::time::Duration>,
+    ) -> bool {
+        let started = std::time::Instant::now();
         let key = motion_key(scene);
         let target = (time.max(0.0) * STEP_RATE as f64).floor() as u64;
         if self.driver.as_ref().is_none_or(|d| d.key != key || !same_music(&d.inputs, inputs) || d.inputs.beats != inputs.beats) {
@@ -344,7 +358,18 @@ impl GpuLayers {
         }
         while self.driver.as_ref().unwrap().step < target {
             self.run_batch(device, queue, target);
+            if let Some(budget) = budget
+                && self.driver.as_ref().unwrap().step < target
+            {
+                // Steps run on the GPU after they are sent, so wait for them to know the time
+                // they really took.
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                if started.elapsed() >= budget {
+                    return false;
+                }
+            }
         }
+        true
     }
 
     /// Starts the swarm and liquid afresh at time 0.

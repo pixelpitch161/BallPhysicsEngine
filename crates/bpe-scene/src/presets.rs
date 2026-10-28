@@ -507,3 +507,157 @@ impl Scene {
         }
     }
 }
+
+/// Presets that show off swarms, liquid and hit particles.
+impl Scene {
+    /// Every scene preset added with the GPU layers, for the gallery.
+    pub fn gpu_presets() -> Vec<Preset> {
+        vec![
+            Preset {
+                name: "Spark storm",
+                description: "Six balls race around a ring, throwing sparks and stars on every bounce.",
+                scene: Scene::spark_storm(),
+            },
+            Preset {
+                name: "Confetti escape",
+                description: "Each ring a ball breaks out of bursts into confetti.",
+                scene: Scene::confetti_escape(),
+            },
+            Preset {
+                name: "Smoke rings",
+                description: "Balls fall through pegs, leaving puffs of smoke and rings of light.",
+                scene: Scene::smoke_rings(),
+            },
+            Preset {
+                name: "Liquid fill",
+                description: "Water pours into a ring while balls splash through it.",
+                scene: Scene::liquid_fill(),
+            },
+            Preset {
+                name: "Million swarm",
+                description: "A million glowing points swirl and flock around three balls.",
+                scene: Scene::million_swarm(),
+            },
+        ]
+    }
+
+    pub fn spark_storm() -> Self {
+        let spawners = RAINBOW
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| {
+                let angle = i as f32 / RAINBOW.len() as f32 * std::f32::consts::TAU;
+                Spawner::Single {
+                    position: Vec2::from_angle(angle) * 150.0,
+                    velocity: Vec2::from_angle(angle + 1.4) * 700.0,
+                    radius: 16.0,
+                    color,
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                }
+            })
+            .collect();
+        let mut sparks = ParticlePreset::Sparks.emitter(EventMatch::AnyHit);
+        sparks.count = 28;
+        sparks.bounce = true;
+        Self {
+            name: "Spark storm".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 500.0), ..Physics::default() },
+            spawners,
+            look: Look { trail_seconds: 0.3, trail_width: 0.7, ball_glow: 0.4, bloom_strength: 0.35, ..Look::default() },
+            particles: vec![sparks, ParticlePreset::Stars.emitter(EventMatch::AnyHit)],
+            sound: Sound {
+                progression: chords(&["Dm", "Bb", "F", "C"], 3.0),
+                instrument: Instrument::Pluck { decay: 0.6, brightness: 0.7 },
+                ..Sound::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    pub fn confetti_escape() -> Self {
+        let mut confetti = ParticlePreset::Confetti.emitter(EventMatch::Escape);
+        confetti.count = 160;
+        Self {
+            name: "Confetti escape".into(),
+            particles: vec![confetti, ParticlePreset::Sparks.emitter(EventMatch::AnyHit)],
+            ..Self::escape_rings()
+        }
+    }
+
+    pub fn smoke_rings() -> Self {
+        Self {
+            name: "Smoke rings".into(),
+            particles: vec![
+                ParticlePreset::Smoke.emitter(EventMatch::Obstacle),
+                ParticlePreset::Rings.emitter(EventMatch::Obstacle),
+            ],
+            ..Self::plinko()
+        }
+    }
+
+    pub fn liquid_fill() -> Self {
+        let spawners = RAINBOW[..3]
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| Spawner::Single {
+                position: Vec2::new(-200.0 + i as f32 * 200.0, -300.0),
+                velocity: Vec2::new(300.0 - i as f32 * 250.0, 0.0),
+                radius: 26.0,
+                color,
+                depth: 0.0,
+                depth_velocity: 0.0,
+            })
+            .collect();
+        Self {
+            name: "Liquid fill".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 900.0), restitution: 1.0, ..Physics::default() },
+            spawners,
+            gpu: GpuLayers {
+                fluid: GpuFluid { enabled: true, count: 80_000, fill: 0.4, pour_seconds: 8.0, ..GpuFluid::default() },
+                ..GpuLayers::default()
+            },
+            particles: vec![ParticlePreset::Rings.emitter(EventMatch::Wall)],
+            look: Look { trail_seconds: 0.2, ball_glow: 0.3, ..Look::default() },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    pub fn million_swarm() -> Self {
+        let spawners = RAINBOW[..3]
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| {
+                let angle = i as f32 / 3.0 * std::f32::consts::TAU;
+                Spawner::Single {
+                    position: Vec2::from_angle(angle) * 200.0,
+                    velocity: Vec2::from_angle(angle + 1.6) * 450.0,
+                    radius: 20.0,
+                    color,
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                }
+            })
+            .collect();
+        Self {
+            name: "Million swarm".into(),
+            physics: Physics { gravity: Vec2::ZERO, ..Physics::default() },
+            spawners,
+            gpu: GpuLayers {
+                swarm: Swarm {
+                    enabled: true,
+                    count: MAX_SWARM_POINTS,
+                    brightness: 0.12,
+                    color: SwarmColor::NearestBall,
+                    ..Swarm::default()
+                },
+                ..GpuLayers::default()
+            },
+            look: Look { trail_seconds: 0.0, ball_glow: 0.5, bloom_strength: 0.3, ..Look::default() },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+}

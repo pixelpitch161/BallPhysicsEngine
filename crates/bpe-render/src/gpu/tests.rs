@@ -285,3 +285,87 @@ fn liquid_report() {
         );
     }
 }
+
+/// Every group the dice can roll, for the sweep below.
+fn every_group(scene: &Scene) -> Vec<bpe_scene::Group> {
+    use bpe_scene::Group::*;
+    (0..scene.spawners.len())
+        .map(Balls)
+        .chain([Shape, Movement, World, Bounces, NewBalls, Background, Trails, Glow, Strings, Chords, Notes])
+        .collect()
+}
+
+/// A random scene with every GPU layer and a random particle style on every kind of event.
+fn rolled_scene(seed: u64, points: u32, drops: u32) -> Scene {
+    let presets = Scene::presets();
+    let base = &presets[seed as usize % presets.len()].scene;
+    let mut scene = base.variation(&every_group(base), seed, 1.0);
+    let mut dice = bpe_scene::Dice::new(seed ^ 0x5eed);
+    scene.particles = EventMatch::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| {
+            let mut emitter = ParticlePreset::ALL[(seed as usize + i) % ParticlePreset::ALL.len()].emitter(kind);
+            emitter.roll(&mut dice, 1.0);
+            emitter
+        })
+        .collect();
+    scene.gpu.swarm.roll(&mut dice, 1.0);
+    scene.gpu.swarm.enabled = true;
+    scene.gpu.swarm.count = points;
+    scene.gpu.fluid.roll(&mut dice, 1.0);
+    scene.gpu.fluid.enabled = seed % 2 == 0;
+    scene.gpu.fluid.count = drops;
+    scene
+}
+
+/// 500 random scenes, 10 seconds each: the particle lists stay finite and within budget. Slow,
+/// so run with `--ignored`.
+#[test]
+#[ignore]
+fn sweep_particle_lists() {
+    for seed in 0..500 {
+        let scene = rolled_scene(seed, 1000, 8000);
+        let mut playback = Playback::new(&scene);
+        let mut frame = FrameData::default();
+        let mut time = 0.0;
+        while time <= 10.0 {
+            playback.seek(time);
+            frame.fill(&scene, &playback, W as f32 / 1080.0);
+            let p = &frame.particles;
+            assert!(p.additive + p.covering <= crate::particles::MAX_LIVE_PARTICLES, "seed {seed}: {} particles", p.additive + p.covering);
+            for burst in &p.bursts {
+                let numbers = burst.place.iter().chain(&burst.timing).chain(&burst.color);
+                assert!(numbers.clone().all(|v| v.is_finite()), "seed {seed} at {time}: {burst:?}");
+            }
+            time += 0.25;
+        }
+    }
+}
+
+/// Random scenes with every layer on, rendered on the GPU through 10 seconds: no point or drop
+/// goes to NaN or leaves the frame, and the picture stays finite. Slow, so run with `--ignored`;
+/// `BPE_SWEEP` sets how many scenes (default 40).
+#[test]
+#[ignore]
+fn sweep_gpu_layers() {
+    let Some((device, queue)) = gpu() else { return };
+    let scenes = std::env::var("BPE_SWEEP").ok().and_then(|v| v.parse().ok()).unwrap_or(40u64);
+    for seed in 0..scenes {
+        let scene = rolled_scene(seed, 2000, 8000);
+        let mut renderer = fresh(&device);
+        let times: Vec<f64> = (0..=20).map(|i| i as f64 * 0.5).collect();
+        let pixels = render(&device, &queue, &mut renderer, &scene, &times);
+        assert!(brightness(&pixels) > 0, "seed {seed}: black picture");
+        let half = Vec2::new(540.0, 960.0) * 1.01;
+        for p in renderer.gpu.swarm.as_ref().unwrap().read_points(&device, &queue) {
+            assert!(p.is_finite() && p.x.abs() <= half.x && p.y.abs() <= half.y, "seed {seed}: swarm point at {p}");
+        }
+        if let Some(fluid) = &renderer.gpu.fluid {
+            for d in fluid.read_state(&device, &queue) {
+                assert!(d.iter().all(|v| v.is_finite()), "seed {seed}: drop {d:?}");
+                assert!(d[0].abs() <= half.x && d[1].abs() <= half.y, "seed {seed}: drop left the frame at {d:?}");
+            }
+        }
+    }
+}
