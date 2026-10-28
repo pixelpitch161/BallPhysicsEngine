@@ -1,11 +1,8 @@
-//! Swarms and big fluids: the GPU layers (Balls tab).
+//! Swarms: the GPU layer of glowing points (Balls tab). Big liquid is in `liquid`.
 
-use super::{dice_button, grid, label, log_units, more, percent, plain_color_list, plain_color_row, slider, units};
+use super::{dice_button, grid, label, log_units, more, percent, plain_color_list, slider, units};
 use crate::theme;
-use bpe_scene::{
-    Dice, GpuFluid, MAX_FLUID_PARTICLES, MAX_SWARM_POINTS, MIN_GPU_FLUID_PARTICLES, Scene, Swarm, SwarmColor,
-    SwarmStart,
-};
+use bpe_scene::{Dice, MAX_SWARM_POINTS, Scene, Swarm, SwarmColor, SwarmStart};
 use eframe::egui::{self, RichText, Ui};
 
 /// Panel state for this section that is not part of the scene.
@@ -30,11 +27,10 @@ pub(super) fn fresh_dice(rolls: &mut u64) -> Dice {
 /// Draws the section. Edits go straight into `scene`; the app keeps them as undo steps.
 pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     swarm(ui, &mut scene.gpu.swarm, state);
-    fluid(ui, &mut scene.gpu.fluid, state);
 }
 
 /// A heading with an on switch and a dice that rolls new settings.
-fn switch_heading(ui: &mut Ui, text: &str, help: &str, on: &mut bool) -> bool {
+pub(super) fn switch_heading(ui: &mut Ui, text: &str, help: &str, on: &mut bool) -> bool {
     let mut rolled = false;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -212,115 +208,6 @@ fn swarm(ui: &mut Ui, swarm: &mut Swarm, state: &mut State) {
     });
 }
 
-fn fluid(ui: &mut Ui, fluid: &mut GpuFluid, state: &mut State) {
-    let help = "Water that fills the arena and splashes around the balls. Balls push it; it does not push back.";
-    if switch_heading(ui, "Liquid", help, &mut fluid.enabled) {
-        fluid.roll(&mut state.dice(), 1.0);
-    }
-    if !fluid.enabled {
-        return;
-    }
-    let d = GpuFluid::default();
-    grid(ui, "fluid", |ui| {
-        slider(
-            ui,
-            "Drops",
-            "How many drops make the liquid. More looks smoother but needs a better graphics card.",
-            &mut fluid.count,
-            d.count,
-            MIN_GPU_FLUID_PARTICLES..=MAX_FLUID_PARTICLES,
-            |s| log_units("")(s).integer(),
-        );
-        slider(ui, "Fill", "How full the arena is.", &mut fluid.fill, d.fill, 0.02..=0.9, percent);
-        slider(
-            ui,
-            "Pour in over",
-            "Seconds the liquid takes to pour in from the top. 0 starts full.",
-            &mut fluid.pour_seconds,
-            d.pour_seconds,
-            0.0..=30.0,
-            units(" s", 1),
-        );
-        plain_color_row(ui, "Colour", "The liquid's colour.", &mut fluid.color, d.color);
-        slider(
-            ui,
-            "Clarity",
-            "How clearly you see through the liquid.",
-            &mut fluid.clarity,
-            d.clarity,
-            0.0..=1.0,
-            percent,
-        );
-    });
-    more(ui, "fluid-more", |ui| {
-        grid(ui, "fluid-more-grid", |ui| {
-            slider(
-                ui,
-                "Bending",
-                "How much the liquid bends what is behind it.",
-                &mut fluid.refraction,
-                d.refraction,
-                0.0..=1.0,
-                percent,
-            );
-            slider(
-                ui,
-                "Shine",
-                "How bright the surface highlights are.",
-                &mut fluid.highlight,
-                d.highlight,
-                0.0..=1.0,
-                percent,
-            );
-            slider(
-                ui,
-                "Thickness",
-                "Thicker liquid flows slower, like honey.",
-                &mut fluid.viscosity,
-                d.viscosity,
-                0.0..=1.0,
-                percent,
-            );
-            slider(
-                ui,
-                "Springiness",
-                "How strongly the liquid resists being squashed.",
-                &mut fluid.stiffness,
-                d.stiffness,
-                0.0..=1.0,
-                percent,
-            );
-            slider(
-                ui,
-                "Ball push",
-                "How strongly balls push the liquid aside.",
-                &mut fluid.ball_push,
-                d.ball_push,
-                0.0..=3.0,
-                percent,
-            );
-            slider(
-                ui,
-                "Gravity",
-                "How hard the liquid falls. The balls' own gravity is separate.",
-                &mut fluid.gravity,
-                d.gravity,
-                0.0..=3000.0,
-                units(" px/s²", 0),
-            );
-            slider(
-                ui,
-                "Smoothness",
-                "How smooth the surface looks.",
-                &mut fluid.smoothing,
-                d.smoothing,
-                1.0..=16.0,
-                units(" px", 1),
-            );
-        });
-    });
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::inspector::{self, Inspector, Tab};
@@ -355,22 +242,5 @@ pub(crate) mod tests {
         harness.get_by_label("Roll random swarm settings").click();
         harness.run();
         assert_ne!(harness.state().1.gpu.swarm, bpe_scene::Swarm { enabled: true, ..Default::default() });
-    }
-
-    #[test]
-    fn switching_the_liquid_on_and_resetting_a_setting() {
-        let mut scene = Scene::default();
-        scene.gpu.fluid.enabled = true;
-        scene.gpu.fluid.fill = 0.8;
-        let mut harness = harness(Tab::Balls, scene);
-        harness.get_by_label("Fill").click();
-        harness.step();
-        harness.get_by_label("Fill").click();
-        harness.run();
-        assert_eq!(harness.state().1.gpu.fluid.fill, bpe_scene::GpuFluid::default().fill);
-        harness.get_by_label("LIQUID").click();
-        harness.run();
-        assert!(!harness.state().1.gpu.fluid.enabled);
-        assert!(harness.query_by_label("Fill").is_none());
     }
 }

@@ -10,6 +10,7 @@
 pub mod ball_look;
 pub mod effects;
 pub mod gpu;
+pub mod liquid;
 pub mod music;
 pub mod particles;
 pub mod rules;
@@ -146,6 +147,7 @@ pub struct Inspector {
     pub shapes: shapes::State,
     pub particles: particles::State,
     pub gpu: gpu::State,
+    pub liquid: liquid::State,
     pub view3d: view3d::State,
     pub music: music::State,
     /// Ball groups' own looks: which groups are picked together, and a copied look.
@@ -166,6 +168,7 @@ impl Default for Inspector {
             shapes: Default::default(),
             particles: Default::default(),
             gpu: Default::default(),
+            liquid: Default::default(),
             view3d: Default::default(),
             music: Default::default(),
             looks: Default::default(),
@@ -238,6 +241,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         inspector.soft.selected = None;
                     }
                     gpu::section(ui, scene, &mut inspector.gpu);
+                    let liquid = ui.scope(|ui| liquid::section(ui, scene, &mut inspector.liquid)).response;
+                    // Liquid picked in the preview: bring its section into view.
+                    if inspector.soft.selected == Some(soft::SoftPick::Liquid)
+                        && std::mem::take(&mut inspector.soft.scroll_to)
+                    {
+                        liquid.scroll_to_me(Some(egui::Align::Center));
+                    }
                 }
                 Tab::Arena => {
                     // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
