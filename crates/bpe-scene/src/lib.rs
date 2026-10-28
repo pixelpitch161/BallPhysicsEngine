@@ -136,6 +136,14 @@ pub struct Sound {
     pub seed: u64,
 }
 
+/// A built-in starting point for a new scene.
+#[derive(Clone, Debug)]
+pub struct Preset {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub scene: Scene,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChordStep {
     /// Chord name such as "C", "Am", "G7", "Dsus4", "Fmaj7".
@@ -253,9 +261,150 @@ impl Default for Sound {
 }
 
 impl Scene {
-    /// Built-in starting points shown in the editor's Presets menu.
-    pub fn presets() -> Vec<(&'static str, Scene)> {
-        vec![("Ball grid in a ring (reference reel)", Scene::default()), ("Growing ball", Scene::growing_ball())]
+    /// Built-in starting points shown in the editor's preset gallery, each with a one-line description.
+    pub fn presets() -> Vec<Preset> {
+        vec![
+            Preset {
+                name: "Reference reel",
+                description: "784 glowing balls fall into a ring and play chords.",
+                scene: Scene::default(),
+            },
+            Preset {
+                name: "Growing ball",
+                description: "One ball that grows and speeds up on every bounce.",
+                scene: Scene::growing_ball(),
+            },
+            Preset {
+                name: "Rainbow trails",
+                description: "Eight balls burst out from the middle with long trails.",
+                scene: Scene::rainbow_trails(),
+            },
+            Preset {
+                name: "Box arena",
+                description: "A block of balls in a square box that change colour as they bounce.",
+                scene: Scene::box_arena(),
+            },
+            Preset {
+                name: "One big ball",
+                description: "A single large ball bouncing with a deep, slow sound.",
+                scene: Scene::big_ball(),
+            },
+        ]
+    }
+
+    /// Eight balls fired outwards from the centre, each its own colour, with long trails.
+    pub fn rainbow_trails() -> Self {
+        let colors = [
+            Color::rgb(0xff, 0x3e, 0x5e),
+            Color::rgb(0xff, 0x8a, 0x2e),
+            Color::rgb(0xff, 0xd8, 0x2e),
+            Color::rgb(0x5c, 0xe6, 0x5c),
+            Color::rgb(0x2e, 0xd8, 0xe6),
+            Color::rgb(0x3e, 0x7b, 0xff),
+            Color::rgb(0x8a, 0x4d, 0xff),
+            Color::rgb(0xff, 0x4d, 0xd8),
+        ];
+        let spawners = colors
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| {
+                let angle = i as f32 / colors.len() as f32 * std::f32::consts::TAU - 1.3;
+                Spawner::Single {
+                    position: Vec2::ZERO,
+                    velocity: Vec2::new(angle.cos(), angle.sin()) * 520.0,
+                    radius: 12.0,
+                    color,
+                }
+            })
+            .collect();
+        Self {
+            name: "Rainbow trails".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 250.0), ..Physics::default() },
+            spawners,
+            look: Look { trail_seconds: 1.2, trail_width: 0.8, trail_opacity: 0.6, ball_glow: 0.35, ..Look::default() },
+            sound: Sound {
+                progression: vec![
+                    ChordStep { chord: "Fmaj7".into(), seconds: 3.0 },
+                    ChordStep { chord: "Em7".into(), seconds: 3.0 },
+                    ChordStep { chord: "Dm7".into(), seconds: 3.0 },
+                    ChordStep { chord: "Cmaj7".into(), seconds: 3.0 },
+                ],
+                low_note: 60,
+                high_note: 88,
+                ..Sound::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A block of balls in a square box, stepping through colours on every wall hit.
+    pub fn box_arena() -> Self {
+        Self {
+            name: "Box arena".into(),
+            container: Container::Rect {
+                center: Vec2::ZERO,
+                size: Vec2::new(900.0, 900.0),
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Grid {
+                center: Vec2::new(-150.0, -200.0),
+                columns: 12,
+                rows: 12,
+                spacing: 26.0,
+                radius: 8.0,
+                velocity: Vec2::new(420.0, -150.0),
+                gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6)],
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 400.0), ..Physics::default() },
+            rules: BounceRules {
+                recolor: vec![
+                    Color::rgb(0xff, 0x3e, 0xc8),
+                    Color::rgb(0xff, 0xb8, 0x2e),
+                    Color::rgb(0x5c, 0xe6, 0x5c),
+                    Color::rgb(0x2e, 0xd8, 0xe6),
+                ],
+                ..BounceRules::default()
+            },
+            look: Look { trail_seconds: 0.25, trail_width: 0.6, ..Look::default() },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// One large ball with heavy gravity and a low, slow pluck.
+    pub fn big_ball() -> Self {
+        Self {
+            name: "One big ball".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 1200.0), ..Physics::default() },
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(0.0, -250.0),
+                velocity: Vec2::new(380.0, 0.0),
+                radius: 110.0,
+                color: Color::rgb(0x3e, 0x9b, 0xff),
+            }],
+            look: Look {
+                trail_seconds: 0.4,
+                trail_width: 0.9,
+                trail_opacity: 0.35,
+                ball_glow: 0.25,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: vec![
+                    ChordStep { chord: "Am".into(), seconds: 4.0 },
+                    ChordStep { chord: "F".into(), seconds: 4.0 },
+                ],
+                low_note: 40,
+                high_note: 64,
+                instrument: Instrument::Pluck { decay: 2.5, brightness: 0.3 },
+                full_volume_speed: 1500.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 15.0, ..Video::default() },
+            ..Self::default()
+        }
     }
 
     /// One ball in a ring that grows and speeds up a little on every bounce.
@@ -323,6 +472,15 @@ mod tests {
         let scene = Scene::default();
         let text = scene.to_ron().unwrap();
         assert_eq!(Scene::from_ron(&text).unwrap(), scene);
+    }
+
+    #[test]
+    fn presets_save_and_load() {
+        for preset in Scene::presets() {
+            let text = preset.scene.to_ron().unwrap();
+            assert_eq!(Scene::from_ron(&text).unwrap(), preset.scene, "{}", preset.name);
+            assert_eq!(preset.scene.name, preset.name);
+        }
     }
 
     #[test]

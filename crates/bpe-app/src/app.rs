@@ -1,42 +1,66 @@
 use crate::audio_out::AudioOut;
-use crate::inspector;
+use crate::export::ExportPanel;
+use crate::gallery::Gallery;
+use crate::inspector::{self, Inspector, Tab};
+use crate::preview::Preview;
+use crate::{settings, theme};
 use bpe_audio::Soundtrack;
-use bpe_export::ExportOptions;
-use bpe_render::{FrameData, Renderer};
 use bpe_scene::Scene;
 use bpe_sim::Playback;
-use eframe::egui::{self, Key, RichText};
+use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// Wait this long after the last edit before remixing the soundtrack.
 const SOUND_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Edits closer together than this, with no mouse button held, undo as one step.
+const UNDO_MERGE: Duration = Duration::from_millis(600);
+/// Undo steps kept.
+const UNDO_LIMIT: usize = 200;
 
 pub struct StudioApp {
     scene: Scene,
     scene_path: Option<PathBuf>,
     saved_scene: Scene,
-    progression_text: String,
     playback: Playback,
-    frame_data: FrameData,
     time: f64,
     playing: bool,
     looping: bool,
     muted: bool,
     last_tick: Option<Instant>,
     preview: Option<Preview>,
+    inspector: Inspector,
+    history: History,
     audio: Option<AudioOut>,
+    audio_error: Option<String>,
     sound: SoundJob,
     export: ExportPanel,
+    gallery: Gallery,
+    /// An action waiting on "Save changes?".
+    confirm: Option<Pending>,
+    /// Set once the user has agreed to close, so the next close request goes through.
+    closing: bool,
+    /// The scene was swapped wholesale this frame (undo, redo, open), so it is not a new edit.
+    swapped: bool,
     status: String,
 }
 
-struct Preview {
-    renderer: Renderer,
-    texture: egui::TextureId,
+/// Something that would throw away unsaved changes.
+enum Pending {
+    Close,
+    Open,
+    Replace(Box<Scene>),
+}
+
+#[derive(Default)]
+struct History {
+    undo: Vec<Scene>,
+    redo: Vec<Scene>,
+    /// The latest undo step is still growing: the mouse is down or edits are coming quickly.
+    merging: bool,
+    last_edit: Option<Instant>,
 }
 
 /// Mixes the soundtrack on a background thread whenever the scene changes.
@@ -49,74 +73,71 @@ struct SoundJob {
     error: Option<String>,
 }
 
-struct ExportPanel {
-    open: bool,
-    path: String,
-    half_size: bool,
-    crf: u8,
-    ffmpeg: String,
-    job: Option<ExportJob>,
-    message: Option<String>,
-}
-
-struct ExportJob {
-    done: Arc<AtomicU32>,
-    total: Arc<AtomicU32>,
-    cancel: Arc<AtomicBool>,
-    receiver: Receiver<anyhow::Result<()>>,
-    started: Instant,
-}
-
 impl StudioApp {
-    pub fn new(_cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
-        let (mut scene, mut status) = (Scene::default(), String::from("Space plays and pauses."));
+    pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
+        theme::apply(&cc.egui_ctx);
+        let mut status = String::from("Press Space to play and pause.");
+        let opened_from_command_line = scene_path.is_some();
+        let scene_path = scene_path.or_else(settings::last_scene);
+        let mut scene = None;
         if let Some(path) = &scene_path {
             match Scene::load(path) {
-                Ok(loaded) => scene = loaded,
-                Err(error) => status = format!("Could not open {}: {error:#}", path.display()),
+                Ok(loaded) => {
+                    status = format!("Opened {}.", file_label(path));
+                    scene = Some(loaded);
+                }
+                Err(error) => status = format!("Couldn't open {}: {error:#}", path.display()),
             }
         }
-        let audio = AudioOut::new().map_err(|e| status = format!("No sound in preview: {e}")).ok();
+        let show_gallery = scene.is_none() && !opened_from_command_line;
+        let scene_path = scene.is_some().then_some(scene_path).flatten();
+        let scene = scene.unwrap_or_default();
+        let (audio, audio_error) = match AudioOut::new() {
+            Ok(audio) => (Some(audio), None),
+            Err(_) => (
+                None,
+                Some("Preview sound is off because no speakers were found. Exported videos still have sound.".into()),
+            ),
+        };
         let (sender, receiver) = channel();
-        let mut app = Self {
-            progression_text: inspector::progression_to_text(&scene.sound.progression),
+        Self {
             playback: Playback::new(&scene),
             saved_scene: scene.clone(),
             scene,
             scene_path,
-            frame_data: FrameData::default(),
             time: 0.0,
             playing: false,
             looping: true,
             muted: false,
             last_tick: None,
             preview: None,
+            inspector: Inspector::default(),
+            history: History::default(),
             audio,
+            audio_error,
             sound: SoundJob {
                 generation: 0,
-                dirty_since: Some(Instant::now()),
+                dirty_since: Some(Instant::now() - SOUND_DEBOUNCE),
                 running: false,
                 sender,
                 receiver,
                 error: None,
             },
-            export: ExportPanel {
-                open: false,
-                path: "ball-video.mp4".into(),
-                half_size: false,
-                crf: 18,
-                ffmpeg: "ffmpeg".into(),
-                job: None,
-                message: None,
-            },
+            export: ExportPanel::new(),
+            gallery: Gallery::new(show_gallery),
+            confirm: None,
+            closing: false,
+            swapped: false,
             status,
-        };
-        app.sound.dirty_since = Some(Instant::now() - SOUND_DEBOUNCE);
-        app
+        }
     }
 
     fn base_dir(&self) -> Option<PathBuf> {
         self.scene_path.as_ref().and_then(|p| p.parent()).map(PathBuf::from)
+    }
+
+    fn unsaved(&self) -> bool {
+        self.scene != self.saved_scene
     }
 
     fn scene_changed(&mut self) {
@@ -126,14 +147,63 @@ impl StudioApp {
     }
 
     fn replace_scene(&mut self, scene: Scene, path: Option<PathBuf>) {
-        self.progression_text = inspector::progression_to_text(&scene.sound.progression);
         self.saved_scene = scene.clone();
         self.scene = scene;
         self.scene_path = path;
+        self.history = History::default();
+        self.swapped = true;
+        self.inspector.selected = None;
         self.time = 0.0;
         self.set_playing(false);
         self.scene_changed();
     }
+
+    // ---------- undo ----------
+
+    /// Records `before` as an undo step, unless this edit continues the previous one.
+    fn record_edit(&mut self, before: Scene) {
+        let history = &mut self.history;
+        if !history.merging {
+            history.undo.push(before);
+            if history.undo.len() > UNDO_LIMIT {
+                history.undo.remove(0);
+            }
+            history.redo.clear();
+            history.merging = true;
+        }
+        history.last_edit = Some(Instant::now());
+    }
+
+    fn end_merging(&mut self, ctx: &egui::Context) {
+        let pointer_down = ctx.input(|i| i.pointer.any_down());
+        if self.history.merging && !pointer_down && self.history.last_edit.is_none_or(|t| t.elapsed() >= UNDO_MERGE) {
+            self.history.merging = false;
+        } else if self.history.merging {
+            ctx.request_repaint_after(UNDO_MERGE);
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(scene) = self.history.undo.pop() {
+            self.history.redo.push(std::mem::replace(&mut self.scene, scene));
+            self.history.merging = false;
+            self.swapped = true;
+            self.status = "Undone.".into();
+            self.scene_changed();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(scene) = self.history.redo.pop() {
+            self.history.undo.push(std::mem::replace(&mut self.scene, scene));
+            self.history.merging = false;
+            self.swapped = true;
+            self.status = "Redone.".into();
+            self.scene_changed();
+        }
+    }
+
+    // ---------- playback ----------
 
     fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
@@ -212,67 +282,147 @@ impl StudioApp {
         }
     }
 
+    // ---------- files ----------
+
+    /// Runs `action` now, or asks to save first if there are unsaved changes.
+    fn guard(&mut self, action: Pending, ctx: &egui::Context) {
+        if self.unsaved() {
+            self.confirm = Some(action);
+        } else {
+            self.perform(action, ctx);
+        }
+    }
+
+    fn perform(&mut self, action: Pending, ctx: &egui::Context) {
+        match action {
+            Pending::Close => {
+                self.closing = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Pending::Open => self.open(),
+            Pending::Replace(scene) => {
+                self.status = format!("Started a new scene from \"{}\".", scene.name);
+                self.replace_scene(*scene, None);
+            }
+        }
+    }
+
     fn open(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Scene", &["ron"]).pick_file() {
+        let mut dialog = rfd::FileDialog::new().add_filter("Ball Studio scene", &["ron"]);
+        if let Some(dir) = self.base_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
             match Scene::load(&path) {
                 Ok(scene) => {
-                    self.status = format!("Opened {}", path.display());
+                    self.status = format!("Opened {}.", file_label(&path));
+                    settings::remember_scene(&path);
                     self.replace_scene(scene, Some(path));
                 }
-                Err(error) => self.status = format!("Could not open {}: {error:#}", path.display()),
+                Err(error) => self.status = format!("Couldn't open {}: {error:#}", path.display()),
             }
         }
     }
 
-    fn save(&mut self, choose_path: bool) {
+    /// Saves, asking for a file name if the scene has none (or `choose_path` is set).
+    /// Returns whether the scene was saved.
+    fn save(&mut self, choose_path: bool) -> bool {
         let path = match (&self.scene_path, choose_path) {
             (Some(path), false) => Some(path.clone()),
-            _ => rfd::FileDialog::new()
-                .add_filter("Scene", &["ron"])
-                .set_file_name(format!("{}.ron", self.scene.name))
-                .save_file(),
+            _ => {
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter("Ball Studio scene", &["ron"])
+                    .set_file_name(format!("{}.ron", self.scene.name));
+                if let Some(dir) = self.base_dir() {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog.save_file()
+            }
         };
-        let Some(path) = path else { return };
+        let Some(path) = path else { return false };
         match self.scene.save(&path) {
             Ok(()) => {
-                self.status = format!("Saved {}", path.display());
+                self.status = format!("Saved {}.", file_label(&path));
                 self.saved_scene = self.scene.clone();
+                settings::remember_scene(&path);
                 self.scene_path = Some(path);
+                true
             }
-            Err(error) => self.status = format!("Could not save: {error:#}"),
+            Err(error) => {
+                self.status = format!("Couldn't save: {error:#}");
+                false
+            }
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("Open scene...").clicked() {
-                    self.open();
-                }
-                if ui.button("Save").clicked() {
-                    self.save(false);
-                }
-                if ui.button("Save as...").clicked() {
-                    self.save(true);
-                }
-            });
-            ui.menu_button("Presets", |ui| {
-                for (name, scene) in Scene::presets() {
-                    if ui.button(name).clicked() {
-                        self.replace_scene(scene, None);
-                    }
-                }
-            });
+    // ---------- panels ----------
+
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        let typing = ctx.text_edit_focused();
+        let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
+        if pressed(Modifiers::COMMAND, Key::S) {
+            self.save(false);
+        }
+        if pressed(Modifiers::COMMAND, Key::O) {
+            self.guard(Pending::Open, ctx);
+        }
+        if typing {
+            return;
+        }
+        if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || pressed(Modifiers::COMMAND, Key::Y) {
+            self.redo();
+        }
+        if pressed(Modifiers::COMMAND, Key::Z) {
+            self.undo();
+        }
+        if ctx.input(|i| i.key_pressed(Key::Space)) {
+            self.set_playing(!self.playing);
+        }
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            if ui.button("New").on_hover_text("Start a new scene from a preset").clicked() {
+                self.gallery.open();
+            }
+            if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
+                self.guard(Pending::Open, &ctx);
+            }
+            if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
+                self.save(false);
+            }
+            if ui.button("Save as…").on_hover_text("Save this scene under a new name").clicked() {
+                self.save(true);
+            }
             ui.separator();
-            let title = match &self.scene_path {
-                Some(path) => path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                None => "Unsaved scene".into(),
+            let undo = egui::Button::new("Undo");
+            if ui.add_enabled(!self.history.undo.is_empty(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
+                self.undo();
+            }
+            let redo = egui::Button::new("Redo");
+            if ui.add_enabled(!self.history.redo.is_empty(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
+                self.redo();
+            }
+            ui.separator();
+            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
+                .on_hover_text("The scene's name. Exported videos are named after it.");
+            let saved_label = match (&self.scene_path, self.unsaved()) {
+                (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
+                (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
+                (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
             };
-            let marker = if self.scene != self.saved_scene { " (edited)" } else { "" };
-            ui.label(format!("{title}{marker}"));
+            ui.label(saved_label.small());
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("Export video").strong()).clicked() {
+                let export = egui::Button::new(RichText::new("Export video…").strong().color(Color32::WHITE))
+                    .fill(theme::ACCENT)
+                    .min_size(egui::vec2(0.0, 30.0));
+                if ui.add(export).on_hover_text("Make an mp4 you can upload").clicked() {
                     self.export.open = true;
+                }
+                if ui.button("Presets").on_hover_text("Start a new scene from a preset").clicked() {
+                    self.gallery.open();
                 }
             });
         });
@@ -280,23 +430,28 @@ impl StudioApp {
 
     fn transport(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let label = if self.playing { "Pause" } else { "Play" };
-            if ui.button(label).clicked() {
+            if round_button(ui, 40.0, if self.playing { Icon::Pause } else { Icon::Play })
+                .on_hover_text("Play or pause (Space)")
+                .clicked()
+            {
                 self.set_playing(!self.playing);
             }
-            if ui.button("Restart").clicked() {
+            if round_button(ui, 30.0, Icon::Restart).on_hover_text("Back to the start").clicked() {
                 self.seek(0.0);
-                self.set_playing(true);
             }
             let duration = self.scene.video.duration as f64;
+            ui.monospace(format!("{} / {}", clock(self.time), clock(duration)));
+            let right_side = 330.0;
             let mut time = self.time;
-            ui.style_mut().spacing.slider_width = (ui.available_width() - 330.0).max(100.0);
+            ui.style_mut().spacing.slider_width = (ui.available_width() - right_side).max(100.0);
             let response = ui.add(egui::Slider::new(&mut time, 0.0..=duration).show_value(false));
             if response.changed() {
                 self.seek(time);
             }
-            let frame = (self.time * self.scene.video.fps as f64).floor() as u32;
-            ui.monospace(format!("{:5.2} s / {:.2} s  frame {frame}", self.time, duration));
+            ui.add_space(8.0);
+            ui.label(RichText::new("Length").color(theme::MUTED));
+            ui.add(egui::DragValue::new(&mut self.scene.video.duration).range(1.0..=600.0).speed(0.1).suffix(" s"))
+                .on_hover_text("How long the video is, in seconds. Click to type, or drag.");
             ui.checkbox(&mut self.looping, "Loop");
             if ui.checkbox(&mut self.muted, "Mute").changed()
                 && let Some(audio) = &self.audio
@@ -305,190 +460,203 @@ impl StudioApp {
             }
         });
         ui.horizontal(|ui| {
-            ui.small(&self.status);
+            ui.label(RichText::new(&self.status).small().color(theme::MUTED));
             if self.sound.running || self.sound.dirty_since.is_some() {
-                ui.small("Updating sound...");
+                ui.label(RichText::new("· Updating sound…").small().color(theme::MUTED));
+            }
+            if let Some(error) = &self.audio_error {
+                ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
             if let Some(error) = &self.sound.error {
-                ui.colored_label(ui.visuals().error_fg_color, format!("Sound: {error}"));
+                ui.label(RichText::new(format!("The sound couldn't be made: {error}")).small().color(theme::ERROR));
             }
         });
     }
 
-    fn preview(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
-        let Some(render_state) = frame.wgpu_render_state() else {
-            ui.label("The preview needs the wgpu renderer.");
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        if self.confirm.is_none() {
             return;
-        };
-        let video = &self.scene.video;
-        let aspect = video.width as f32 / video.height.max(1) as f32;
-        let available = ui.available_size();
-        let mut size = egui::vec2(available.y * aspect, available.y);
-        if size.x > available.x {
-            size = egui::vec2(available.x, available.x / aspect);
         }
-        // Render at the screen's real pixel size, but never above the video's own size.
-        let scale = (size.x * ui.ctx().pixels_per_point() / video.width as f32).min(1.0);
-        let (width, height) = bpe_export::output_size(&self.scene, scale);
-
-        let device = &render_state.device;
-        let preview = self.preview.get_or_insert_with(|| {
-            let renderer = Renderer::new(device, width, height);
-            let texture = render_state.renderer.write().register_native_texture(
-                device,
-                renderer.output_view(),
-                bpe_render::wgpu::FilterMode::Linear,
-            );
-            Preview { renderer, texture }
-        });
-        if preview.renderer.size() != (width, height) {
-            preview.renderer.resize(device, width, height);
-            render_state.renderer.write().update_egui_texture_from_wgpu_texture(
-                device,
-                preview.renderer.output_view(),
-                bpe_render::wgpu::FilterMode::Linear,
-                preview.texture,
-            );
-        }
-
-        self.playback.seek(self.time);
-        let pixel = preview.renderer.pixel_size(&self.scene);
-        self.frame_data.fill(&self.scene, &self.playback, pixel);
-        preview.renderer.render(device, &render_state.queue, &self.scene, self.time, &self.frame_data);
-
-        ui.centered_and_justified(|ui| {
-            ui.image(egui::load::SizedTexture::new(preview.texture, size));
-        });
-    }
-
-    fn export_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        if let Some(job) = &self.export.job
-            && let Ok(result) = job.receiver.try_recv()
-        {
-            let seconds = job.started.elapsed().as_secs_f32();
-            self.export.message = Some(match result {
-                Ok(()) => format!("Saved {} in {seconds:.0} s.", self.export.path),
-                Err(error) => format!("Export failed: {error:#}"),
-            });
-            self.export.job = None;
-        }
-        let mut open = self.export.open;
-        egui::Window::new("Export video").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
-            let busy = self.export.job.is_some();
-            ui.add_enabled_ui(!busy, |ui| {
-                egui::Grid::new("export").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Save to");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.export.path).desired_width(240.0));
-                        if ui.button("Browse").clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter("MP4 video", &["mp4"])
-                                .set_file_name(format!("{}.mp4", self.scene.name))
-                                .save_file()
-                        {
-                            self.export.path = path.display().to_string();
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Size");
-                    ui.horizontal(|ui| {
-                        let video = &self.scene.video;
-                        ui.radio_value(
-                            &mut self.export.half_size,
-                            false,
-                            format!("Full ({} x {})", video.width, video.height),
-                        );
-                        ui.radio_value(&mut self.export.half_size, true, "Half, for a quick draft");
-                    });
-                    ui.end_row();
-                    ui.label("Quality");
-                    ui.add(egui::Slider::new(&mut self.export.crf, 14..=30).text("CRF, lower is better"));
-                    ui.end_row();
-                    ui.label("ffmpeg");
-                    ui.text_edit_singleline(&mut self.export.ffmpeg);
-                    ui.end_row();
-                });
-            });
-            ui.add_space(6.0);
-            if let Some(job) = &self.export.job {
-                let (done, total) = (job.done.load(Ordering::Relaxed), job.total.load(Ordering::Relaxed).max(1));
-                ui.add(egui::ProgressBar::new(done as f32 / total as f32).text(format!("Frame {done} of {total}")));
-                if ui.button("Cancel").clicked() {
-                    job.cancel.store(true, Ordering::Relaxed);
+        let name = self.scene.name.clone();
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("save-changes")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading(format!("Save changes to \"{name}\"?"));
+            ui.label(RichText::new("Your changes will be lost if you don't save them.").color(theme::MUTED));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let save = egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE)).fill(theme::ACCENT);
+                if ui.add(save).clicked() {
+                    choice = Some(true);
                 }
-            } else if ui.button(RichText::new("Export").strong()).clicked() {
-                self.start_export(ctx, frame);
-            }
-            if let Some(message) = &self.export.message {
-                ui.label(message);
-            }
-        });
-        self.export.open = open;
-    }
-
-    fn start_export(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        let Some(render_state) = frame.wgpu_render_state() else { return };
-        let mut options = ExportOptions::new(&self.export.path);
-        options.scale = if self.export.half_size { 0.5 } else { 1.0 };
-        options.crf = self.export.crf;
-        options.ffmpeg = self.export.ffmpeg.clone().into();
-        options.base_dir = self.base_dir();
-        let (device, queue, scene, ctx) =
-            (render_state.device.clone(), render_state.queue.clone(), self.scene.clone(), ctx.clone());
-        let (done, total, cancel) = (
-            Arc::new(AtomicU32::new(0)),
-            Arc::new(AtomicU32::new(scene.frame_count())),
-            Arc::new(AtomicBool::new(false)),
-        );
-        let (sender, receiver) = channel();
-        let (d, t, c) = (done.clone(), total.clone(), cancel.clone());
-        std::thread::spawn(move || {
-            let result = bpe_export::export_video(&device, &queue, &scene, &options, |frame, frames| {
-                d.store(frame, Ordering::Relaxed);
-                t.store(frames, Ordering::Relaxed);
-                ctx.request_repaint();
-                !c.load(Ordering::Relaxed)
+                if ui.button("Don't save").clicked() {
+                    choice = Some(false);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirm = None;
+                }
             });
-            let _ = sender.send(result);
-            ctx.request_repaint();
         });
-        self.export.message = None;
-        self.export.job = Some(ExportJob { done, total, cancel, receiver, started: Instant::now() });
+        if let Some(save) = choice
+            && let Some(action) = self.confirm.take()
+            && (!save || self.save(false))
+        {
+            self.perform(action, ctx);
+        }
     }
 }
 
 impl eframe::App for StudioApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let typing = ctx.memory(|m| m.focused().is_some());
-        if !typing && ctx.input(|i| i.key_pressed(Key::Space)) {
-            self.set_playing(!self.playing);
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.unsaved() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Pending::Close);
+        }
+        let modal_open = self.gallery.open || self.confirm.is_some();
+        if !modal_open {
+            self.shortcuts(&ctx);
         }
         self.advance_clock();
         self.update_soundtrack(&ctx);
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::bottom("transport").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.transport(ui);
-            ui.add_space(2.0);
-        });
-
         let before = self.scene.clone();
-        egui::Panel::left("inspector").default_size(380.0).resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                inspector::show(ui, &mut self.scene, &mut self.progression_text);
-            });
-        });
-        if self.scene != before {
+        egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("transport").frame(bar_frame()).show(ui, |ui| self.transport(ui));
+        egui::Panel::left("inspector")
+            .default_size(460.0)
+            .min_size(340.0)
+            .max_size(600.0)
+            .resizable(true)
+            .frame(egui::Frame::new().fill(theme::PANEL))
+            .show(ui, |ui| inspector::show(ui, &mut self.inspector, &mut self.scene));
+
+        let central = egui::Frame::new().fill(theme::BACKGROUND);
+        let outcome = egui::CentralPanel::default()
+            .frame(central)
+            .show(ui, |ui| {
+                Preview::show(
+                    &mut self.preview,
+                    ui,
+                    frame,
+                    &mut self.scene,
+                    &mut self.playback,
+                    self.time,
+                    self.playing,
+                    self.inspector.selected,
+                )
+            })
+            .inner;
+        if outcome.clicked {
+            self.set_playing(false);
+        }
+        if outcome.drag_started {
+            self.seek(0.0);
+        }
+        if let Some(index) = outcome.selected {
+            self.inspector.selected = Some(index);
+            self.inspector.tab = Tab::Balls;
+        }
+
+        let base_dir = self.base_dir();
+        self.export.show(&ctx, frame, &mut self.scene, base_dir);
+        if let Some(scene) = self.gallery.show(&ctx, frame) {
+            self.guard(Pending::Replace(Box::new(scene)), &ctx);
+        }
+        self.confirm_dialog(&ctx);
+
+        if std::mem::take(&mut self.swapped) {
+            // Already handled by undo, redo or opening a scene.
+        } else if self.scene != before {
+            self.record_edit(before);
             self.scene_changed();
         }
+        self.end_merging(&ctx);
 
-        egui::CentralPanel::default().show(ui, |ui| self.preview(ui, frame));
-        self.export_window(&ctx, frame);
-
-        if self.playing || self.export.job.is_some() {
+        if self.playing || self.export.busy() {
             ctx.request_repaint();
         }
+    }
+}
+
+fn bar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::PANEL)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .stroke(Stroke::new(1.0, theme::LINE))
+}
+
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// Seconds as m:ss.
+fn clock(seconds: f64) -> String {
+    let tenths = (seconds.max(0.0) * 10.0).floor() as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+#[derive(Clone, Copy)]
+enum Icon {
+    Play,
+    Pause,
+    Restart,
+}
+
+/// A round button with a drawn icon, so it looks the same whatever fonts are installed.
+fn round_button(ui: &mut egui::Ui, size: f32, icon: Icon) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), Sense::click());
+    let fill = match icon {
+        Icon::Play | Icon::Pause => {
+            if response.hovered() {
+                theme::ACCENT_TEXT
+            } else {
+                theme::ACCENT
+            }
+        }
+        Icon::Restart => {
+            if response.hovered() {
+                theme::HOVER
+            } else {
+                theme::RAISED
+            }
+        }
+    };
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), size / 2.0, fill);
+    let c = rect.center();
+    let s = size * 0.2;
+    let white = Color32::WHITE;
+    match icon {
+        Icon::Play => {
+            let points = vec![c + egui::vec2(-s * 0.7, -s), c + egui::vec2(s * 1.1, 0.0), c + egui::vec2(-s * 0.7, s)];
+            painter.add(egui::Shape::convex_polygon(points, white, Stroke::NONE));
+        }
+        Icon::Pause => {
+            for dx in [-s * 0.55, s * 0.55] {
+                let bar = egui::Rect::from_center_size(c + egui::vec2(dx, 0.0), egui::vec2(s * 0.5, s * 2.0));
+                painter.rect_filled(bar, 1.0, white);
+            }
+        }
+        Icon::Restart => {
+            let s = size * 0.22;
+            let bar = egui::Rect::from_center_size(c + egui::vec2(-s * 0.9, 0.0), egui::vec2(s * 0.35, s * 1.8));
+            painter.rect_filled(bar, 0.5, white);
+            let points = vec![c + egui::vec2(s, -s * 0.9), c + egui::vec2(s, s * 0.9), c + egui::vec2(-s * 0.6, 0.0)];
+            painter.add(egui::Shape::convex_polygon(points, white, Stroke::NONE));
+        }
+    }
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_reads_minutes_and_seconds() {
+        assert_eq!(clock(0.0), "0:00.0");
+        assert_eq!(clock(14.88), "0:14.8");
+        assert_eq!(clock(83.0), "1:23.0");
     }
 }
