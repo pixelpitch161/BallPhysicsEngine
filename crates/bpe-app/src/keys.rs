@@ -210,8 +210,15 @@ pub fn write_back(base: &Scene, shown: &Scene, mut edited: Scene, time: f32) -> 
 /// A setting's name as the timeline shows it.
 pub fn name(property: &Property, scene: &Scene) -> String {
     let effect_name = |i: &u32| {
-        let shader = scene.effects.get(*i as usize).map_or("Missing effect", |e| e.shader.as_str());
-        crate::inspector::pretty_name(shader)
+        let Some(effect) = scene.effects.get(*i as usize) else { return "Missing effect".to_string() };
+        let name = crate::inspector::pretty_name(&effect.shader);
+        // Number effects used more than once, counting from the top.
+        let same: Vec<usize> =
+            scene.effects.iter().enumerate().filter(|(_, e)| e.shader == effect.shader).map(|(j, _)| j).collect();
+        match same.iter().position(|&j| j == *i as usize) {
+            Some(n) if same.len() > 1 => format!("{name} {}", n + 1),
+            _ => name,
+        }
     };
     match property {
         Property::Gravity => "Gravity".into(),
@@ -354,5 +361,8 @@ mod tests {
             let _ = tab(&property);
         }
         assert_eq!(name(&Property::EffectParam(3, "fade".into()), &scene), "Missing effect fade");
+        let twice = Scene { effects: vec![Effect::new("echo"), Effect::new("film"), Effect::new("echo")], ..scene };
+        assert_eq!(name(&Property::EffectAmount(2), &twice), "Echo 2 amount");
+        assert_eq!(name(&Property::EffectAmount(1), &twice), "Film amount");
     }
 }

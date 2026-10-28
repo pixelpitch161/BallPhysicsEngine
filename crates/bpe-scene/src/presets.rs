@@ -346,12 +346,12 @@ impl Scene {
                     keys: vec![
                         colour(0.0, Color::rgb(0x02, 0x02, 0x2a)),
                         colour(8.0, Color::rgb(0x2a, 0x05, 0x3a)),
-                        colour(16.0, Color::rgb(0x00, 0x26, 0x30)),
+                        colour(16.0, Color::rgb(0x06, 0x12, 0x48)),
                     ],
                 },
                 Track {
                     property: Property::Bloom,
-                    keys: vec![number(0.0, 0.15), number(12.0, 0.7), number(16.0, 0.3)],
+                    keys: vec![number(0.0, 0.15), number(12.0, 0.45), number(16.0, 0.25)],
                 },
             ],
             sound: Sound {

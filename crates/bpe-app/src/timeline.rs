@@ -72,6 +72,8 @@ pub struct Timeline {
     selected: Option<(Property, usize)>,
     /// Seconds the timeline shows, held still while the end of the video is dragged.
     held_span: Option<f32>,
+    /// How many settings were animated last frame, to scroll to a newly animated one.
+    rows_seen: usize,
 }
 
 /// What the app should do after the timeline is drawn.
@@ -142,6 +144,8 @@ impl Timeline {
         let time = time as f32;
         let duration = scene.video.duration;
         let fps = scene.video.fps;
+        // Keyframes are added on whole frames, so that is where "a keyframe here" is checked.
+        let key_time = to_frame(time, fps);
         if let Some((property, index)) = &self.selected
             && scene.track(property).is_none_or(|t| *index >= t.keys.len())
         {
@@ -182,17 +186,20 @@ impl Timeline {
                 && pointer.is_some_and(|p| p.x >= lanes_left)
             {
                 self.drag = Some(Drag::Scrub);
+                self.selected = None;
                 outcome.scrubbing = Some(true);
             }
         }
 
         // Keyframe rows.
-        let rows_height = (ui.available_height() - 4.0).max(ROW);
+        // Fill the rest of the panel exactly, so it keeps the height it was given and the rows
+        // scroll instead.
+        let rows_height = ui.available_height().max(ROW);
         egui::ScrollArea::vertical()
             .id_salt("timeline rows")
             .max_height(rows_height)
-            .auto_shrink([false, true])
-            .show(ui, |ui| self.rows(ui, scene, scale, time, &mut outcome));
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.rows(ui, scene, scale, key_time, &mut outcome));
 
         // Carrying on a drag.
         // A quick click can press and let go within one frame, so the playhead moves before the
@@ -236,7 +243,7 @@ impl Timeline {
                 let (property, index) = (property.clone(), *index);
                 let mut target = to_frame(scale.time(p.x), fps);
                 if !ui.input(|i| i.modifiers.shift) {
-                    for magnet in [0.0, time, duration] {
+                    for magnet in [0.0, key_time, duration] {
                         if (scale.x(magnet) - p.x).abs() <= SNAP {
                             target = magnet;
                         }
@@ -414,6 +421,7 @@ impl Timeline {
     /// One row per animated setting: its name and buttons on the left, its keyframes on the right.
     fn rows(&mut self, ui: &mut Ui, scene: &mut Scene, scale: Scale, time: f32, outcome: &mut Outcome) {
         if scene.animation.is_empty() {
+            self.rows_seen = 0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW + 6.0), Sense::hover());
             ui.painter().text(
                 Pos2::new(scale.left + 8.0, rect.center().y),
@@ -424,11 +432,16 @@ impl Timeline {
             );
             return;
         }
+        let added = scene.animation.len() > self.rows_seen;
+        self.rows_seen = scene.animation.len();
         let mut stop = None;
         let names: Vec<String> = scene.animation.iter().map(|t| keys::name(&t.property, scene)).collect();
         for (row, name) in names.iter().enumerate() {
             let property = scene.animation[row].property.clone();
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::hover());
+            if added && row + 1 == names.len() {
+                ui.scroll_to_rect(rect, None);
+            }
             let header = Rect::from_min_max(rect.min, Pos2::new(scale.left - 8.0, rect.bottom()));
             let lane = Rect::from_x_y_ranges(scale.left..=rect.right(), rect.top() + 2.0..=rect.bottom() - 2.0);
             let painter = ui.painter_at(rect);

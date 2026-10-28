@@ -45,8 +45,9 @@ pub struct StudioApp {
     timeline: Timeline,
     /// Playing was paused to scrub the timeline, and starts again when scrubbing stops.
     resume_after_scrub: bool,
-    /// A toolbar button that was clicked. It is acted on once the panels are drawn, because
-    /// while settings are animated the panels edit a copy of the scene.
+    /// A toolbar button that was clicked (or Delete pressed on a keyframe). It is acted on once
+    /// the panels are drawn, because while settings are animated the panels edit a copy of the
+    /// scene, and so that it counts as an edit that can be undone.
     clicked: Option<ToolbarClick>,
     /// Whether the scene had unsaved changes at the start of this frame.
     was_unsaved: bool,
@@ -67,6 +68,8 @@ enum ToolbarClick {
     Undo,
     Redo,
     Explore,
+    /// Delete was pressed with a keyframe selected in the timeline.
+    DeleteKeyframe,
 }
 
 /// Something that would throw away unsaved changes.
@@ -447,7 +450,7 @@ impl StudioApp {
             self.seek(self.scene.video.duration as f64);
         }
         if delete && self.timeline.selected() {
-            self.timeline.delete_selected(&mut self.scene);
+            self.clicked = Some(ToolbarClick::DeleteKeyframe);
         }
     }
 
@@ -553,6 +556,9 @@ impl StudioApp {
         if let Some(tab) = outcome.show_tab {
             self.inspector.tab = tab;
         }
+    }
+
+    fn status_line(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small().color(theme::MUTED));
             if self.sound.running || self.sound.dirty_since.is_some() {
@@ -626,10 +632,13 @@ impl eframe::App for StudioApp {
         }
         keys::publish(&ctx, &self.scene, key_time);
         egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
+            .show(ui, |ui| self.status_line(ui));
         egui::Panel::bottom("transport")
             .frame(bar_frame())
             .resizable(true)
-            .default_size(236.0)
+            .default_size(300.0)
             .min_size(150.0)
             .max_size(640.0)
             .show(ui, |ui| self.transport(ui));
@@ -701,6 +710,7 @@ impl eframe::App for StudioApp {
                 self.set_playing(false);
                 self.explorer.open(&self.scene, &self.inspector.effects.library);
             }
+            Some(ToolbarClick::DeleteKeyframe) => self.timeline.delete_selected(&mut self.scene),
             None => {}
         }
 
