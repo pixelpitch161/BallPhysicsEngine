@@ -36,11 +36,12 @@ cargo run --release -p bpe-app
 cargo run --release -p bpe-app -- scenes/growing-ball.ron
 ```
 
-- **Left panel:** every property of the scene, including container, balls, physics, wall-hit rules, look and sound. Changes show immediately in the preview.
-- **Bottom bar:** play and pause (Space), restart, scrub through time, loop and mute.
-- **File menu:** open and save scenes as `.ron` files, which are plain text you can also edit by hand.
-- **Presets menu:** built-in starting points.
-- **Export video:** renders every frame at full quality and encodes an mp4 with sound. *Half size* makes a quick draft.
+- **Start:** the editor reopens the last scene you saved or opened. The first time, it shows the preset gallery.
+- **Toolbar:** New and Presets open the preset gallery, each with a moving preview. Open, Save and Save as work with `.ron` scene files, which are plain text you can also edit by hand. Undo and Redo (Ctrl+Z, Ctrl+Y) cover every change. The editor asks before closing or opening another scene with unsaved changes.
+- **Settings tabs:** Balls, Arena, Bounces, Look and Sound. Every setting has a plain name and a **?** that explains it, and right-clicking a setting resets it to its default. Rarely used settings are under **More settings** in each tab.
+- **Preview:** while paused, drag a ball group to move it, drag the tip of its arrow to set launch speed and direction, and drag the arena's edge to resize it. Clicking the preview while it plays pauses it.
+- **Bottom bar:** play and pause (Space), back to the start, scrub through time, the video's length, loop and mute.
+- **Export video:** pick Best, Good or Quick draft, and the editor saves an mp4 with sound to your Videos folder, named after the scene. It finds ffmpeg by itself, including a winget install that is not on `PATH` yet. Video size, frame rate and the ffmpeg location are under Advanced. When it finishes, Play video and Show in folder open the result.
 
 ## Command line
 

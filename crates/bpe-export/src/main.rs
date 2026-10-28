@@ -18,7 +18,7 @@ Options:
   --frames N       render only the first N frames
   --crf N          H.264 quality, lower is better (default 18)
   --preset NAME    x264 speed preset (default medium)
-  --ffmpeg PATH    ffmpeg executable (default: ffmpeg on PATH)";
+  --ffmpeg PATH    ffmpeg executable (default: found automatically)";
 
 fn main() {
     if let Err(error) = run() {

@@ -1,0 +1,352 @@
+//! The video preview, plus the handles that let you set up a scene by dragging in it:
+//! move a ball group, aim it by its arrow tip, and resize the arena by its edge.
+
+use crate::inspector::ARROW_SECONDS;
+use crate::theme;
+use bpe_render::{FrameData, Renderer};
+use bpe_scene::{Container, Scene, Spawner, Vec2};
+use bpe_sim::Playback;
+use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
+
+pub struct Preview {
+    renderer: Renderer,
+    texture: egui::TextureId,
+    frame_data: FrameData,
+    drag: Option<Drag>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Handle {
+    /// Move a ball group.
+    Body(usize),
+    /// Aim a ball group by its launch arrow.
+    Aim(usize),
+    /// Resize the arena. For a box, which sides are being dragged.
+    Edge { x: bool, y: bool },
+}
+
+#[derive(Clone, Copy)]
+struct Drag {
+    handle: Handle,
+    /// Pointer position minus the dragged thing's position, in world pixels.
+    offset: Vec2,
+}
+
+/// What happened in the preview this frame, for the app to act on.
+#[derive(Default)]
+pub struct Outcome {
+    /// A drag began: the app pauses and jumps to the start so the starting layout is visible.
+    pub drag_started: bool,
+    /// The preview was clicked while playing.
+    pub clicked: bool,
+    /// A ball group was clicked or dragged.
+    pub selected: Option<usize>,
+}
+
+/// Converts between world pixels (origin at the video centre, y down) and screen points.
+struct View {
+    rect: Rect,
+    scale: f32,
+}
+
+impl View {
+    fn to_screen(&self, p: Vec2) -> Pos2 {
+        self.rect.center() + egui::vec2(p.x, p.y) * self.scale
+    }
+
+    fn to_world(&self, p: Pos2) -> Vec2 {
+        let d = (p - self.rect.center()) / self.scale;
+        Vec2::new(d.x, d.y)
+    }
+}
+
+impl Preview {
+    #[allow(clippy::too_many_arguments)]
+    pub fn show(
+        slot: &mut Option<Self>,
+        ui: &mut Ui,
+        frame: &eframe::Frame,
+        scene: &mut Scene,
+        playback: &mut Playback,
+        time: f64,
+        playing: bool,
+        selected: Option<usize>,
+    ) -> Outcome {
+        let Some(render_state) = frame.wgpu_render_state() else {
+            ui.label("The preview needs the wgpu renderer.");
+            return Outcome::default();
+        };
+        let video = &scene.video;
+        let aspect = video.width as f32 / video.height.max(1) as f32;
+        let area = ui.available_rect_before_wrap().shrink(12.0);
+        let mut size = egui::vec2(area.height() * aspect, area.height());
+        if size.x > area.width() {
+            size = egui::vec2(area.width(), area.width() / aspect);
+        }
+        let rect = Rect::from_center_size(area.center(), size);
+        // Render at the screen's real pixel size, but never above the video's own size.
+        let scale = (size.x * ui.ctx().pixels_per_point() / video.width as f32).min(1.0);
+        let (width, height) = bpe_export::output_size(scene, scale);
+
+        let device = &render_state.device;
+        let preview = slot.get_or_insert_with(|| {
+            let renderer = Renderer::new(device, width, height);
+            let texture = render_state.renderer.write().register_native_texture(
+                device,
+                renderer.output_view(),
+                bpe_render::wgpu::FilterMode::Linear,
+            );
+            Preview { renderer, texture, frame_data: FrameData::default(), drag: None }
+        });
+        if preview.renderer.size() != (width, height) {
+            preview.renderer.resize(device, width, height);
+            render_state.renderer.write().update_egui_texture_from_wgpu_texture(
+                device,
+                preview.renderer.output_view(),
+                bpe_render::wgpu::FilterMode::Linear,
+                preview.texture,
+            );
+        }
+
+        playback.seek(time);
+        let pixel = preview.renderer.pixel_size(scene);
+        preview.frame_data.fill(scene, playback, pixel);
+        preview.renderer.render(device, &render_state.queue, scene, time, &preview.frame_data);
+
+        let response = ui.allocate_rect(rect, Sense::click_and_drag());
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
+
+        let mut outcome = Outcome::default();
+        if playing {
+            preview.drag = None;
+            outcome.clicked = response.clicked();
+            return outcome;
+        }
+        let view = View { rect, scale: rect.width() / scene.video.width as f32 };
+        let pointer = response.interact_pointer_pos().or(response.hover_pos());
+        let hovered = pointer.and_then(|p| hit_test(scene, &view, p));
+
+        if response.drag_started()
+            && let Some(press) = ui.input(|i| i.pointer.press_origin())
+            && let Some(handle) = hit_test(scene, &view, press)
+        {
+            let anchor = match handle {
+                Handle::Body(i) => spawner_center(&scene.spawners[i]),
+                Handle::Aim(_) | Handle::Edge { .. } => view.to_world(press),
+            };
+            preview.drag = Some(Drag { handle, offset: view.to_world(press) - anchor });
+            outcome.drag_started = true;
+        }
+        if response.drag_stopped() {
+            preview.drag = None;
+        }
+        if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
+            apply_drag(scene, drag, view.to_world(pos));
+            if let Handle::Body(i) | Handle::Aim(i) = drag.handle {
+                outcome.selected = Some(i);
+            }
+        } else if response.clicked()
+            && let Some(Handle::Body(i) | Handle::Aim(i)) = hovered
+        {
+            outcome.selected = Some(i);
+        }
+
+        let active = preview.drag.map(|d| d.handle).or(hovered);
+        if active.is_some() {
+            ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+        }
+        draw_handles(ui, scene, &view, active, outcome.selected.or(selected));
+        draw_hint(ui, rect, "Drag balls to move them · drag arrow tips to aim · drag the edge to resize");
+        outcome
+    }
+}
+
+fn spawner_center(spawner: &Spawner) -> Vec2 {
+    match spawner {
+        Spawner::Grid { center, .. } => *center,
+        Spawner::Single { position, .. } => *position,
+    }
+}
+
+fn spawner_velocity(spawner: &Spawner) -> Vec2 {
+    match spawner {
+        Spawner::Grid { velocity, .. } | Spawner::Single { velocity, .. } => *velocity,
+    }
+}
+
+/// Half the width and height of a ball group, in world pixels.
+fn spawner_half_size(spawner: &Spawner) -> Vec2 {
+    match spawner {
+        Spawner::Grid { columns, rows, spacing, radius, .. } => Vec2::new(
+            (columns.saturating_sub(1)) as f32 * spacing / 2.0 + radius,
+            (rows.saturating_sub(1)) as f32 * spacing / 2.0 + radius,
+        ),
+        Spawner::Single { radius, .. } => Vec2::splat(*radius),
+    }
+}
+
+fn arrow_tip(spawner: &Spawner) -> Vec2 {
+    spawner_center(spawner) + spawner_velocity(spawner) * ARROW_SECONDS
+}
+
+/// Screen points within which a handle can be grabbed.
+const GRAB: f32 = 10.0;
+
+fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
+    let world = view.to_world(pos);
+    let reach = GRAB / view.scale;
+    for (i, spawner) in scene.spawners.iter().enumerate().rev() {
+        if view.to_screen(arrow_tip(spawner)).distance(pos) <= GRAB + 2.0 {
+            return Some(Handle::Aim(i));
+        }
+    }
+    match scene.container {
+        Container::Circle { center, radius, .. } => {
+            if ((world - center).length() - radius).abs() <= reach {
+                return Some(Handle::Edge { x: true, y: true });
+            }
+        }
+        Container::Rect { center, size, .. } => {
+            let d = (world - center).abs();
+            let half = size / 2.0;
+            let x = (d.x - half.x).abs() <= reach && d.y <= half.y + reach;
+            let y = (d.y - half.y).abs() <= reach && d.x <= half.x + reach;
+            if x || y {
+                return Some(Handle::Edge { x, y });
+            }
+        }
+    }
+    for (i, spawner) in scene.spawners.iter().enumerate().rev() {
+        let d = (world - spawner_center(spawner)).abs();
+        let half = spawner_half_size(spawner).max(Vec2::splat(reach));
+        let inside = match spawner {
+            Spawner::Grid { .. } => d.x <= half.x && d.y <= half.y,
+            Spawner::Single { .. } => d.length() <= half.x,
+        };
+        if inside {
+            return Some(Handle::Body(i));
+        }
+    }
+    None
+}
+
+fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
+    match drag.handle {
+        Handle::Body(i) => {
+            let target = (world - drag.offset).round();
+            match &mut scene.spawners[i] {
+                Spawner::Grid { center, .. } => *center = target,
+                Spawner::Single { position, .. } => *position = target,
+            }
+        }
+        Handle::Aim(i) => {
+            let spawner = &mut scene.spawners[i];
+            let center = spawner_center(spawner);
+            let velocity = ((world - center) / ARROW_SECONDS).clamp_length_max(3000.0).round();
+            match spawner {
+                Spawner::Grid { velocity: v, .. } | Spawner::Single { velocity: v, .. } => *v = velocity,
+            }
+        }
+        Handle::Edge { x, y } => match &mut scene.container {
+            Container::Circle { center, radius, .. } => {
+                *radius = (world - *center).length().clamp(20.0, 1200.0).round()
+            }
+            Container::Rect { center, size, .. } => {
+                let d = ((world - *center).abs() * 2.0).clamp(Vec2::splat(40.0), Vec2::splat(2400.0)).round();
+                if x {
+                    size.x = d.x;
+                }
+                if y {
+                    size.y = d.y;
+                }
+            }
+        },
+    }
+}
+
+fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, selected: Option<usize>) {
+    let painter = ui.painter_at(view.rect);
+    let faint = Color32::from_white_alpha(110);
+
+    // Arena edge.
+    let edge_active = matches!(active, Some(Handle::Edge { .. }));
+    let edge_stroke = Stroke::new(if edge_active { 2.5 } else { 1.0 }, if edge_active { theme::ACCENT } else { faint });
+    let edge_dot = match scene.container {
+        Container::Circle { center, radius, .. } => {
+            if edge_active {
+                painter.circle_stroke(view.to_screen(center), radius * view.scale, edge_stroke);
+            }
+            view.to_screen(center + Vec2::new(radius, 0.0))
+        }
+        Container::Rect { center, size, .. } => {
+            if edge_active {
+                let r = Rect::from_center_size(view.to_screen(center), egui::vec2(size.x, size.y) * view.scale);
+                painter.rect_stroke(r, 0.0, edge_stroke, egui::StrokeKind::Middle);
+            }
+            view.to_screen(center + size / 2.0)
+        }
+    };
+    painter.circle(
+        edge_dot,
+        5.0,
+        if edge_active { theme::ACCENT } else { theme::TEXT },
+        Stroke::new(1.5, Color32::BLACK),
+    );
+
+    for (i, spawner) in scene.spawners.iter().enumerate() {
+        let highlighted = selected == Some(i) || matches!(active, Some(Handle::Body(j) | Handle::Aim(j)) if j == i);
+        let color = if highlighted { theme::ACCENT } else { faint };
+        let center = view.to_screen(spawner_center(spawner));
+        let half = spawner_half_size(spawner) * view.scale + Vec2::splat(4.0);
+        match spawner {
+            Spawner::Grid { .. } => {
+                let r = Rect::from_center_size(center, egui::vec2(half.x, half.y) * 2.0);
+                let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                painter.extend(egui::Shape::dashed_line(&corners, Stroke::new(1.2, color), 5.0, 4.0));
+            }
+            Spawner::Single { .. } => {
+                painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
+            }
+        }
+
+        // Launch arrow.
+        let tip = view.to_screen(arrow_tip(spawner));
+        let aim_active = active == Some(Handle::Aim(i));
+        let arrow_color = if aim_active { theme::ACCENT } else { Color32::WHITE };
+        painter.line_segment([center, tip], Stroke::new(2.0, arrow_color));
+        let dir = (tip - center).normalized();
+        if dir.length() > 0.5 {
+            let side = egui::vec2(-dir.y, dir.x);
+            let back = tip - dir * 11.0;
+            painter.add(egui::Shape::convex_polygon(
+                vec![tip, back + side * 5.5, back - side * 5.5],
+                arrow_color,
+                Stroke::NONE,
+            ));
+        }
+        painter.circle(tip, if aim_active { 7.0 } else { 5.5 }, theme::ACCENT, Stroke::new(1.5, Color32::WHITE));
+        if aim_active || highlighted {
+            let speed = spawner_velocity(spawner).length();
+            painter.text(
+                tip + egui::vec2(10.0, -10.0),
+                Align2::LEFT_BOTTOM,
+                format!("{speed:.0} px/s"),
+                FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+        }
+    }
+}
+
+fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
+    let painter = ui.painter_at(rect);
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.5), theme::TEXT);
+    let size = galley.size() + egui::vec2(24.0, 10.0);
+    if size.x > rect.width() {
+        return;
+    }
+    let pill = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, size.y / 2.0 + 10.0), size);
+    painter.rect_filled(pill, size.y / 2.0, Color32::from_black_alpha(190));
+    painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, theme::TEXT);
+}

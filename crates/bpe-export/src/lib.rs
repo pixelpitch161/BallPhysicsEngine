@@ -33,7 +33,7 @@ impl ExportOptions {
     pub fn new(output: impl Into<PathBuf>) -> Self {
         Self {
             output: output.into(),
-            ffmpeg: "ffmpeg".into(),
+            ffmpeg: find_ffmpeg().unwrap_or_else(|| "ffmpeg".into()),
             crf: 18,
             preset: "medium".into(),
             scale: 1.0,
@@ -162,6 +162,48 @@ pub fn export_still(
         bail!("ffmpeg failed: {}", stderr.join().unwrap_or_default());
     }
     Ok(())
+}
+
+/// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put
+/// it (winget, Chocolatey, Scoop, C:\ffmpeg). A program started from Explorer may not see a
+/// PATH change from a recent install, so the install folders are checked directly too.
+pub fn find_ffmpeg() -> Option<PathBuf> {
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let mut folders: Vec<PathBuf> =
+        std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        folders.push(dir.join("ffmpeg").join("bin"));
+        folders.push(dir.clone());
+    }
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    if let Some(local) = env("LOCALAPPDATA") {
+        folders.push(local.join("Microsoft").join("WinGet").join("Links"));
+        // winget unpacks to Packages\Gyan.FFmpeg_<source>\ffmpeg-<version>-full_build\bin.
+        let packages = local.join("Microsoft").join("WinGet").join("Packages");
+        for package in read_dir(&packages).filter(|p| file_name(p).to_ascii_lowercase().contains("ffmpeg")) {
+            folders.extend(read_dir(&package).map(|build| build.join("bin")));
+        }
+    }
+    if let Some(home) = env("USERPROFILE") {
+        folders.push(home.join("scoop").join("shims"));
+    }
+    if let Some(data) = env("ProgramData") {
+        folders.push(data.join("chocolatey").join("bin"));
+    }
+    for root in [env("ProgramFiles"), Some(PathBuf::from("C:\\"))].into_iter().flatten() {
+        folders.push(root.join("ffmpeg").join("bin"));
+    }
+    folders.push("/opt/homebrew/bin".into());
+    folders.push("/usr/local/bin".into());
+    folders.into_iter().map(|dir| dir.join(exe)).find(|path| path.is_file())
+}
+
+fn read_dir(dir: &Path) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Output size for a scale factor, rounded to even numbers as H.264 requires.
