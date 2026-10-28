@@ -10,7 +10,12 @@ pub struct StorageBuffer {
 impl StorageBuffer {
     pub fn new(device: &wgpu::Device, label: &'static str, extra: wgpu::BufferUsages) -> Self {
         let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: 256, usage, mapped_at_creation: false });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: 256,
+            usage,
+            mapped_at_creation: false,
+        });
         Self { label, usage, buffer }
     }
 
@@ -79,7 +84,11 @@ pub fn storage_entry(binding: u32, visibility: wgpu::ShaderStages, read_only: bo
 }
 
 /// A float texture read with `textureLoad`, such as the wall distance field.
-pub fn float_texture_entry(binding: u32, visibility: wgpu::ShaderStages, filterable: bool) -> wgpu::BindGroupLayoutEntry {
+pub fn float_texture_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    filterable: bool,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility,

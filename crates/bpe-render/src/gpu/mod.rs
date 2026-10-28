@@ -98,9 +98,10 @@ impl GpuFrame {
         let sim = playback.simulation();
         self.walls = (bouncing || scene.gpu.is_active()).then(|| Walls::of(sim));
         if scene.gpu.is_active() {
-            let fresh = self.source.as_ref().is_none_or(|(s, i)| {
-                s != sim.scene() || i.beats != sim.inputs().beats || !same_music(i, sim.inputs())
-            });
+            let fresh = self
+                .source
+                .as_ref()
+                .is_none_or(|(s, i)| s != sim.scene() || i.beats != sim.inputs().beats || !same_music(i, sim.inputs()));
             if fresh {
                 self.source = Some((sim.scene().clone(), sim.inputs().clone()));
             }
@@ -339,7 +340,11 @@ impl GpuLayers {
         let started = std::time::Instant::now();
         let key = motion_key(scene);
         let target = (time.max(0.0) * STEP_RATE as f64).floor() as u64;
-        if self.driver.as_ref().is_none_or(|d| d.key != key || !same_music(&d.inputs, inputs) || d.inputs.beats != inputs.beats) {
+        if self
+            .driver
+            .as_ref()
+            .is_none_or(|d| d.key != key || !same_music(&d.inputs, inputs) || d.inputs.beats != inputs.beats)
+        {
             self.restart(device, queue, scene, inputs, key, video);
         }
         let driver = self.driver.as_mut().unwrap();
@@ -394,17 +399,20 @@ impl GpuLayers {
         self.note_sdf();
         let field = self.sdf.field().unwrap();
         self.swarm = scene.gpu.swarm.is_active().then(|| {
-            let mut s = self.swarm.take().unwrap_or_else(|| swarm::SwarmSim::new(device, &self.inputs_layout, self.hdr_format));
+            let mut s =
+                self.swarm.take().unwrap_or_else(|| swarm::SwarmSim::new(device, &self.inputs_layout, self.hdr_format));
             s.reset(device, queue, &mut encoder, &self.inputs_group, scene, field);
             s
         });
         self.fluid = scene.gpu.fluid.is_active().then(|| {
-            let mut f = self.fluid.take().unwrap_or_else(|| fluid::FluidSim::new(device, &self.inputs_layout, self.hdr_format));
+            let mut f =
+                self.fluid.take().unwrap_or_else(|| fluid::FluidSim::new(device, &self.inputs_layout, self.hdr_format));
             f.reset(device, queue, &mut encoder, &self.inputs_group, scene, &walls, field);
             f
         });
         queue.submit([encoder.finish()]);
-        let bytes = self.swarm.as_ref().map_or(0, |s| s.state_bytes()) + self.fluid.as_ref().map_or(0, |f| f.state_bytes());
+        let bytes =
+            self.swarm.as_ref().map_or(0, |s| s.state_bytes()) + self.fluid.as_ref().map_or(0, |f| f.state_bytes());
         let duration_steps = (scene.video.duration.max(1.0) * STEP_RATE as f32) as u64;
         let most = (CHECKPOINT_BUDGET / bytes.max(1)).clamp(1, 64);
         let interval = duration_steps.div_ceil(most).max(STEP_RATE as u64);

@@ -299,7 +299,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     music::section(ui, scene, &mut inspector.music, &mut roll);
                 }
                 Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
-                Tab::Text => text::section(ui, scene, &mut inspector.text),
+                Tab::Text => {
+                    text::show(ui, &mut inspector.text, scene, &mut roll);
+                    if reset_tab(ui, !scene.captions.is_empty()) {
+                        scene.captions.clear();
+                    }
+                }
             }
             tip(ui);
         });

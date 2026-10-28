@@ -372,7 +372,7 @@ impl Renderer {
             gpu: gpu::GpuLayers::new(device, HDR_FORMAT),
             particles: particles::Particles::new(device, HDR_FORMAT),
             space: space::SpaceRenderer::new(device, HDR_FORMAT),
-            captions: text::Captions::new(device, OUTPUT_FORMAT),
+            captions: text::Captions::new(OUTPUT_FORMAT, HDR_FORMAT),
             targets,
         }
     }
@@ -420,6 +420,16 @@ impl Renderer {
         self.effects.thumbnails_drawn()
     }
 
+    /// Sets the folder that captions' relative font paths are looked up in.
+    pub fn set_font_folder(&mut self, folder: Option<std::path::PathBuf>) {
+        self.captions.layout.fonts.set_folder(folder);
+    }
+
+    /// Caption font files that couldn't be read, as (path, reason).
+    pub fn font_errors(&self) -> &[(String, String)] {
+        self.captions.layout.fonts.errors()
+    }
+
     /// Starts feedback effects such as Echo afresh on the next frame.
     pub fn reset_effects(&mut self) {
         self.effects.reset();
@@ -459,7 +469,8 @@ impl Renderer {
         let size = (self.targets.width, self.targets.height);
         self.gpu.prepare(device, queue, &mut encoder, scene, frame, time, size);
         self.particles.prepare(device, queue, scene, frame, &self.gpu);
-        self.captions.prepare(device, queue, scene, frame);
+        let pixel = self.pixel_size(scene);
+        self.captions.prepare(device, queue, scene, &frame.text, pixel);
         // Render order: background, walls and shapes (or the whole 3D picture), swarms and
         // fluids, trails, balls, flashes, particles; then effects, bloom and captions.
         if self.space.active(scene, frame) {
@@ -482,6 +493,7 @@ impl Renderer {
             self.draw_background(&mut pass, frame);
             self.draw_moving(&mut pass, frame);
         }
+        self.captions.draw_under(&mut encoder, &self.targets.hdr);
         self.effects.apply(
             device,
             queue,
@@ -523,10 +535,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.targets.composite, &[]);
             pass.draw(0..3, 0..1);
         }
-        if self.captions.visible(frame) {
-            let mut pass = begin_pass(&mut encoder, &self.targets.output_view, "captions", wgpu::LoadOp::Load);
-            self.captions.draw(&mut pass);
-        }
+        self.captions.draw_over(&mut encoder, &self.targets.output_view);
         queue.submit([encoder.finish()]);
     }
 
@@ -674,7 +683,7 @@ impl Targets {
     }
 }
 
-fn begin_pass<'a>(
+pub(crate) fn begin_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     view: &'a wgpu::TextureView,
     label: &str,
@@ -696,18 +705,18 @@ fn begin_pass<'a>(
 }
 
 /// A vertex buffer that grows to fit whatever is uploaded.
-struct GrowableBuffer {
+pub(crate) struct GrowableBuffer {
     label: &'static str,
     buffer: Option<wgpu::Buffer>,
     len: u64,
 }
 
 impl GrowableBuffer {
-    fn new(label: &'static str) -> Self {
+    pub(crate) fn new(label: &'static str) -> Self {
         Self { label, buffer: None, len: 0 }
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+    pub(crate) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
         self.len = bytes.len() as u64;
         if bytes.is_empty() {
             return;
@@ -723,7 +732,7 @@ impl GrowableBuffer {
         queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
     }
 
-    fn slice(&self) -> wgpu::BufferSlice<'_> {
+    pub(crate) fn slice(&self) -> wgpu::BufferSlice<'_> {
         self.buffer.as_ref().expect("buffer uploaded before drawing").slice(..self.len)
     }
 }

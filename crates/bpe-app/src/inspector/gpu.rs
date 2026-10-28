@@ -58,19 +58,53 @@ fn swarm(ui: &mut Ui, swarm: &mut Swarm, state: &mut State) {
     }
     let d = Swarm::default();
     grid(ui, "swarm", |ui| {
-        slider(ui, "Points", "How many points. A million needs a good graphics card.", &mut swarm.count, d.count, 1000..=MAX_SWARM_POINTS, |s| log_units("")(s).integer());
+        slider(
+            ui,
+            "Points",
+            "How many points. A million needs a good graphics card.",
+            &mut swarm.count,
+            d.count,
+            1000..=MAX_SWARM_POINTS,
+            |s| log_units("")(s).integer(),
+        );
         label(ui, "Start", "Where the points are at the start.");
         ui.horizontal(|ui| {
-            for (start, name) in [(SwarmStart::Fill, "Everywhere"), (SwarmStart::Center, "Middle"), (SwarmStart::Ring, "Edge")] {
+            for (start, name) in
+                [(SwarmStart::Fill, "Everywhere"), (SwarmStart::Center, "Middle"), (SwarmStart::Ring, "Edge")]
+            {
                 if ui.selectable_label(swarm.start == start, name).clicked() {
                     swarm.start = start;
                 }
             }
         });
         ui.end_row();
-        slider(ui, "Flow", "How strongly the points follow swirling currents.", &mut swarm.flow, d.flow, 0.0..=3.0, percent);
-        slider(ui, "Flocking", "How much points line up with their neighbours, like birds.", &mut swarm.flock, d.flock, 0.0..=1.0, percent);
-        slider(ui, "Pull to balls", "Positive draws points toward balls; negative pushes them away.", &mut swarm.attraction, d.attraction, -3.0..=3.0, percent);
+        slider(
+            ui,
+            "Flow",
+            "How strongly the points follow swirling currents.",
+            &mut swarm.flow,
+            d.flow,
+            0.0..=3.0,
+            percent,
+        );
+        slider(
+            ui,
+            "Flocking",
+            "How much points line up with their neighbours, like birds.",
+            &mut swarm.flock,
+            d.flock,
+            0.0..=1.0,
+            percent,
+        );
+        slider(
+            ui,
+            "Pull to balls",
+            "Positive draws points toward balls; negative pushes them away.",
+            &mut swarm.attraction,
+            d.attraction,
+            -3.0..=3.0,
+            percent,
+        );
         label(ui, "Colour", "How the points are coloured.");
         ui.horizontal(|ui| {
             for (color, name, tip) in [
@@ -89,19 +123,91 @@ fn swarm(ui: &mut Ui, swarm: &mut Swarm, state: &mut State) {
             color_list(ui, &mut swarm.colors, "+");
             ui.end_row();
         }
-        slider(ui, "Brightness", "How much light each point adds. Dense areas glow brighter.", &mut swarm.brightness, d.brightness, 0.01..=1.0, percent);
+        slider(
+            ui,
+            "Brightness",
+            "How much light each point adds. Dense areas glow brighter.",
+            &mut swarm.brightness,
+            d.brightness,
+            0.01..=1.0,
+            percent,
+        );
     });
     more(ui, "swarm-more", |ui| {
         grid(ui, "swarm-more-grid", |ui| {
-            slider(ui, "Point size", "Size of each point in pixels.", &mut swarm.size, d.size, 0.5..=6.0, units(" px", 1));
-            slider(ui, "Top speed", "The fastest a point can move.", &mut swarm.max_speed, d.max_speed, 20.0..=2000.0, log_units(" px/s"));
+            slider(
+                ui,
+                "Point size",
+                "Size of each point in pixels.",
+                &mut swarm.size,
+                d.size,
+                0.5..=6.0,
+                units(" px", 1),
+            );
+            slider(
+                ui,
+                "Top speed",
+                "The fastest a point can move.",
+                &mut swarm.max_speed,
+                d.max_speed,
+                20.0..=2000.0,
+                log_units(" px/s"),
+            );
             slider(ui, "Drag", "How quickly points slow down.", &mut swarm.drag, d.drag, 0.0..=5.0, units("", 2));
-            slider(ui, "Current size", "How big the swirls of the flow are.", &mut swarm.flow_scale, d.flow_scale, 20.0..=1000.0, log_units(" px"));
-            slider(ui, "Current change", "How quickly the swirls change over time.", &mut swarm.flow_speed, d.flow_speed, 0.0..=1.0, units("", 2));
-            slider(ui, "Spacing", "How much points keep apart from their neighbours.", &mut swarm.separation, d.separation, 0.0..=1.0, percent);
-            slider(ui, "Ball reach", "How far a ball's pull or push reaches.", &mut swarm.reach, d.reach, 10.0..=1000.0, log_units(" px"));
-            slider(ui, "Avoid walls", "How hard points steer away from walls before touching them.", &mut swarm.avoid_walls, d.avoid_walls, 0.0..=3.0, percent);
-            slider(ui, "Gravity", "Pull on the points. Negative floats them up.", &mut swarm.gravity, d.gravity, -1000.0..=1000.0, units(" px/s²", 0));
+            slider(
+                ui,
+                "Current size",
+                "How big the swirls of the flow are.",
+                &mut swarm.flow_scale,
+                d.flow_scale,
+                20.0..=1000.0,
+                log_units(" px"),
+            );
+            slider(
+                ui,
+                "Current change",
+                "How quickly the swirls change over time.",
+                &mut swarm.flow_speed,
+                d.flow_speed,
+                0.0..=1.0,
+                units("", 2),
+            );
+            slider(
+                ui,
+                "Spacing",
+                "How much points keep apart from their neighbours.",
+                &mut swarm.separation,
+                d.separation,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Ball reach",
+                "How far a ball's pull or push reaches.",
+                &mut swarm.reach,
+                d.reach,
+                10.0..=1000.0,
+                log_units(" px"),
+            );
+            slider(
+                ui,
+                "Avoid walls",
+                "How hard points steer away from walls before touching them.",
+                &mut swarm.avoid_walls,
+                d.avoid_walls,
+                0.0..=3.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Gravity",
+                "Pull on the points. Negative floats them up.",
+                &mut swarm.gravity,
+                d.gravity,
+                -1000.0..=1000.0,
+                units(" px/s²", 0),
+            );
         });
     });
 }
@@ -116,21 +222,101 @@ fn fluid(ui: &mut Ui, fluid: &mut GpuFluid, state: &mut State) {
     }
     let d = GpuFluid::default();
     grid(ui, "fluid", |ui| {
-        slider(ui, "Drops", "How many drops make the liquid. More looks smoother but needs a better graphics card.", &mut fluid.count, d.count, MIN_GPU_FLUID_PARTICLES..=MAX_FLUID_PARTICLES, |s| log_units("")(s).integer());
+        slider(
+            ui,
+            "Drops",
+            "How many drops make the liquid. More looks smoother but needs a better graphics card.",
+            &mut fluid.count,
+            d.count,
+            MIN_GPU_FLUID_PARTICLES..=MAX_FLUID_PARTICLES,
+            |s| log_units("")(s).integer(),
+        );
         slider(ui, "Fill", "How full the arena is.", &mut fluid.fill, d.fill, 0.02..=0.9, percent);
-        slider(ui, "Pour in over", "Seconds the liquid takes to pour in from the top. 0 starts full.", &mut fluid.pour_seconds, d.pour_seconds, 0.0..=30.0, units(" s", 1));
+        slider(
+            ui,
+            "Pour in over",
+            "Seconds the liquid takes to pour in from the top. 0 starts full.",
+            &mut fluid.pour_seconds,
+            d.pour_seconds,
+            0.0..=30.0,
+            units(" s", 1),
+        );
         color_row(ui, "Colour", "The liquid's colour.", &mut fluid.color, d.color);
-        slider(ui, "Clarity", "How clearly you see through the liquid.", &mut fluid.clarity, d.clarity, 0.0..=1.0, percent);
+        slider(
+            ui,
+            "Clarity",
+            "How clearly you see through the liquid.",
+            &mut fluid.clarity,
+            d.clarity,
+            0.0..=1.0,
+            percent,
+        );
     });
     more(ui, "fluid-more", |ui| {
         grid(ui, "fluid-more-grid", |ui| {
-            slider(ui, "Bending", "How much the liquid bends what is behind it.", &mut fluid.refraction, d.refraction, 0.0..=1.0, percent);
-            slider(ui, "Shine", "How bright the surface highlights are.", &mut fluid.highlight, d.highlight, 0.0..=1.0, percent);
-            slider(ui, "Thickness", "Thicker liquid flows slower, like honey.", &mut fluid.viscosity, d.viscosity, 0.0..=1.0, percent);
-            slider(ui, "Springiness", "How strongly the liquid resists being squashed.", &mut fluid.stiffness, d.stiffness, 0.0..=1.0, percent);
-            slider(ui, "Ball push", "How strongly balls push the liquid aside.", &mut fluid.ball_push, d.ball_push, 0.0..=3.0, percent);
-            slider(ui, "Gravity", "How hard the liquid falls. The balls' own gravity is separate.", &mut fluid.gravity, d.gravity, 0.0..=3000.0, units(" px/s²", 0));
-            slider(ui, "Smoothness", "How smooth the surface looks.", &mut fluid.smoothing, d.smoothing, 1.0..=16.0, units(" px", 1));
+            slider(
+                ui,
+                "Bending",
+                "How much the liquid bends what is behind it.",
+                &mut fluid.refraction,
+                d.refraction,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Shine",
+                "How bright the surface highlights are.",
+                &mut fluid.highlight,
+                d.highlight,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Thickness",
+                "Thicker liquid flows slower, like honey.",
+                &mut fluid.viscosity,
+                d.viscosity,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Springiness",
+                "How strongly the liquid resists being squashed.",
+                &mut fluid.stiffness,
+                d.stiffness,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Ball push",
+                "How strongly balls push the liquid aside.",
+                &mut fluid.ball_push,
+                d.ball_push,
+                0.0..=3.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Gravity",
+                "How hard the liquid falls. The balls' own gravity is separate.",
+                &mut fluid.gravity,
+                d.gravity,
+                0.0..=3000.0,
+                units(" px/s²", 0),
+            );
+            slider(
+                ui,
+                "Smoothness",
+                "How smooth the surface looks.",
+                &mut fluid.smoothing,
+                d.smoothing,
+                1.0..=16.0,
+                units(" px", 1),
+            );
         });
     });
 }

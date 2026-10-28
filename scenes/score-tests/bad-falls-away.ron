@@ -1,0 +1,6 @@
+// Bad: the ball starts below the ring, falls off the bottom of the screen and is never heard.
+Scene(
+    name: "Falls away",
+    video: Video(duration: 20.0),
+    spawners: [Single(position: Vec2(0.0, 600.0), velocity: Vec2(80.0, 0.0), radius: 20.0, color: "#3e9bff")],
+)

@@ -2,9 +2,7 @@
 
 use super::{color_list, color_row, dice_button, grid, label, more, slider, units};
 use crate::theme;
-use bpe_scene::{
-    Blend, Color, Dice, Emitter, EventMatch, ParticleColor, ParticlePreset, Scene, particle_hash,
-};
+use bpe_scene::{Blend, Color, Dice, Emitter, EventMatch, ParticleColor, ParticlePreset, Scene, particle_hash};
 use eframe::egui::{self, Color32, Pos2, RichText, Sense, Ui, Vec2};
 
 /// The event kinds that get a row, in order.
@@ -49,9 +47,11 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
         });
     });
     ui.label(
-        RichText::new("Sparks, smoke or confetti that burst out where things happen. Click a row's name for its settings.")
-            .small()
-            .color(theme::MUTED),
+        RichText::new(
+            "Sparks, smoke or confetti that burst out where things happen. Click a row's name for its settings.",
+        )
+        .small()
+        .color(theme::MUTED),
     );
     ui.add_space(4.0);
 
@@ -167,16 +167,38 @@ fn event_row(
 
 fn settings(ui: &mut Ui, emitter: &mut Emitter, index: usize) {
     let d = emitter.preset.emitter(emitter.on.kind);
-    egui::Frame::new()
-        .fill(theme::CARD)
-        .corner_radius(8.0)
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
+    egui::Frame::new().fill(theme::CARD).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 8)).show(
+        ui,
+        |ui| {
             grid(ui, &format!("particles-{index}"), |ui| {
-                slider(ui, "Amount", "Particles per event, at full impact.", &mut emitter.count, d.count, 1..=400, |s| s);
-                slider(ui, "Speed", "How fast particles fly out.", &mut emitter.speed, d.speed, 0.0..=2000.0, units(" px/s", 0));
+                slider(
+                    ui,
+                    "Amount",
+                    "Particles per event, at full impact.",
+                    &mut emitter.count,
+                    d.count,
+                    1..=400,
+                    |s| s,
+                );
+                slider(
+                    ui,
+                    "Speed",
+                    "How fast particles fly out.",
+                    &mut emitter.speed,
+                    d.speed,
+                    0.0..=2000.0,
+                    units(" px/s", 0),
+                );
                 slider(ui, "Size", "Particle size in pixels.", &mut emitter.size, d.size, 0.5..=120.0, units(" px", 1));
-                slider(ui, "Lasts", "How long each particle lasts.", &mut emitter.life, d.life, 0.05..=6.0, units(" s", 2));
+                slider(
+                    ui,
+                    "Lasts",
+                    "How long each particle lasts.",
+                    &mut emitter.life,
+                    d.life,
+                    0.05..=6.0,
+                    units(" s", 2),
+                );
                 label(ui, "Colour", "Where the particles get their colour.");
                 ui.horizontal(|ui| {
                     let mode = color_mode(&emitter.color);
@@ -202,7 +224,9 @@ fn settings(ui: &mut Ui, emitter: &mut Emitter, index: usize) {
                 });
                 ui.end_row();
                 match &mut emitter.color {
-                    ParticleColor::Fixed(c) => color_row(ui, "Pick", "The particles' colour.", c, Color::rgb(0xff, 0xf2, 0xc0)),
+                    ParticleColor::Fixed(c) => {
+                        color_row(ui, "Pick", "The particles' colour.", c, Color::rgb(0xff, 0xf2, 0xc0))
+                    }
                     ParticleColor::Gradient(colors) => {
                         label(ui, "Colours", "Each particle picks a colour along these.");
                         color_list(ui, colors, "+");
@@ -216,10 +240,38 @@ fn settings(ui: &mut Ui, emitter: &mut Emitter, index: usize) {
             });
             more(ui, &format!("particles-more-{index}"), |ui| {
                 grid(ui, &format!("particles-more-grid-{index}"), |ui| {
-                    slider(ui, "Spread", "How widely particles fan out. 360° sends them every way.", &mut emitter.spread, d.spread, 0.0..=360.0, units("°", 0));
-                    slider(ui, "Gravity", "Pull on the particles. Negative floats them up, like smoke.", &mut emitter.gravity, d.gravity, -1000.0..=2000.0, units(" px/s²", 0));
-                    slider(ui, "Air drag", "How quickly particles slow down.", &mut emitter.drag, d.drag, 0.0..=10.0, units("", 2));
-                    label(ui, "Glow", "Glowing particles add light; the others cover what is behind them, like paper or smoke.");
+                    slider(
+                        ui,
+                        "Spread",
+                        "How widely particles fan out. 360° sends them every way.",
+                        &mut emitter.spread,
+                        d.spread,
+                        0.0..=360.0,
+                        units("°", 0),
+                    );
+                    slider(
+                        ui,
+                        "Gravity",
+                        "Pull on the particles. Negative floats them up, like smoke.",
+                        &mut emitter.gravity,
+                        d.gravity,
+                        -1000.0..=2000.0,
+                        units(" px/s²", 0),
+                    );
+                    slider(
+                        ui,
+                        "Air drag",
+                        "How quickly particles slow down.",
+                        &mut emitter.drag,
+                        d.drag,
+                        0.0..=10.0,
+                        units("", 2),
+                    );
+                    label(
+                        ui,
+                        "Glow",
+                        "Glowing particles add light; the others cover what is behind them, like paper or smoke.",
+                    );
                     let mut glow = emitter.blend == Blend::Add;
                     if ui.checkbox(&mut glow, "Add light").changed() {
                         emitter.blend = if glow { Blend::Add } else { Blend::Alpha };
@@ -229,7 +281,11 @@ fn settings(ui: &mut Ui, emitter: &mut Emitter, index: usize) {
                     ui.checkbox(&mut emitter.follow_impact, "Harder hits, bigger bursts");
                     ui.end_row();
                     if emitter.on.kind == EventMatch::Action {
-                        label(ui, "Rule burst name", "Only bursts with this name, as set in the rule. Empty answers every burst.");
+                        label(
+                            ui,
+                            "Rule burst name",
+                            "Only bursts with this name, as set in the rule. Empty answers every burst.",
+                        );
                         ui.text_edit_singleline(&mut emitter.on.action);
                         ui.end_row();
                     }
@@ -241,7 +297,8 @@ fn settings(ui: &mut Ui, emitter: &mut Emitter, index: usize) {
                     ui.end_row();
                 });
             });
-        });
+        },
+    );
     ui.add_space(4.0);
 }
 
@@ -277,10 +334,17 @@ pub fn preset_icon(ui: &mut Ui, preset: ParticlePreset, size: f32) {
         let fade = ((1.0 - t) * 255.0) as u8;
         match preset {
             ParticlePreset::Sparks => {
-                painter.line_segment([c + dir * reach * 0.5, p], egui::Stroke::new(1.2, Color32::from_rgba_unmultiplied(255, 220, 140, fade)));
+                painter.line_segment(
+                    [c + dir * reach * 0.5, p],
+                    egui::Stroke::new(1.2, Color32::from_rgba_unmultiplied(255, 220, 140, fade)),
+                );
             }
             ParticlePreset::Smoke if k < 3 => {
-                painter.circle_filled(c + dir * reach * 0.4, r * (0.3 + 0.4 * t), Color32::from_rgba_unmultiplied(190, 195, 210, fade / 3));
+                painter.circle_filled(
+                    c + dir * reach * 0.4,
+                    r * (0.3 + 0.4 * t),
+                    Color32::from_rgba_unmultiplied(190, 195, 210, fade / 3),
+                );
             }
             ParticlePreset::Confetti => {
                 let flutter = (time * 6.0 + k as f32).cos().abs().max(0.2);
@@ -296,10 +360,18 @@ pub fn preset_icon(ui: &mut Ui, preset: ParticlePreset, size: f32) {
             ParticlePreset::Shards => {
                 let side = dir.rot90() * 1.2;
                 let tip = p + dir * 2.5;
-                painter.add(egui::Shape::convex_polygon(vec![p - side, tip, p + side], colors[(k as usize + 1) % 4], egui::Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(
+                    vec![p - side, tip, p + side],
+                    colors[(k as usize + 1) % 4],
+                    egui::Stroke::NONE,
+                ));
             }
             ParticlePreset::Rings if k == 0 => {
-                painter.circle_stroke(c, reach, egui::Stroke::new(1.2, Color32::from_rgba_unmultiplied(160, 200, 255, fade)));
+                painter.circle_stroke(
+                    c,
+                    reach,
+                    egui::Stroke::new(1.2, Color32::from_rgba_unmultiplied(160, 200, 255, fade)),
+                );
             }
             _ => {}
         }

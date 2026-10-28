@@ -22,6 +22,8 @@ mod rules_workspace;
 mod setting_menu;
 mod settings;
 mod shader_workspace;
+#[cfg(test)]
+mod text_tests;
 mod theme;
 mod timeline;
 mod workspace;

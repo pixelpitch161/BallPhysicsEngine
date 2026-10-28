@@ -156,9 +156,8 @@ pub fn closed_distance(outline: &Outline, p: Vec2) -> f32 {
             let step = TAU / sides as f32;
             let apothem = radius * (PI / sides as f32).cos();
             let k = ((o.y.atan2(o.x) - angle) / step).round();
-            let best = (-1..=1)
-                .map(|j| o.dot(Vec2::from_angle(angle + (k + j as f32) * step)))
-                .fold(f32::MIN, f32::max);
+            let best =
+                (-1..=1).map(|j| o.dot(Vec2::from_angle(angle + (k + j as f32) * step))).fold(f32::MIN, f32::max);
             apothem - best - thickness * 0.5
         }
         Outline::Box { center, half, angle, thickness } => {
@@ -435,7 +434,8 @@ impl SdfBaker {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&field.view) },
             ],
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sdf bake"), timestamp_writes: None });
+        let mut pass = encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sdf bake"), timestamp_writes: None });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(tiles_x, tiles_y, 1);
@@ -495,7 +495,8 @@ mod tests {
         let tile_world = TILE as f32 * layout.texel;
         for (i, &(x, y)) in [(10u32, 10u32), (200, 300), (431, 767), (216, 384), (100, 700)].iter().enumerate() {
             let p = layout.origin + (Vec2::new(x as f32, y as f32) + 0.5) * layout.texel;
-            let tile = ((p.y - layout.origin.y) / tile_world) as u32 * tx + ((p.x - layout.origin.x) / tile_world) as u32;
+            let tile =
+                ((p.y - layout.origin.y) / tile_world) as u32 * tx + ((p.x - layout.origin.x) / tile_world) as u32;
             let near = lists[starts[tile as usize] as usize..starts[tile as usize + 1] as usize]
                 .iter()
                 .map(|&k| walls.pieces[k as usize].distance(p))

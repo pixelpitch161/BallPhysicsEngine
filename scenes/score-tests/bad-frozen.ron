@@ -1,0 +1,7 @@
+// Bad: one ball floating in the middle with no gravity and no speed. Nothing ever happens.
+Scene(
+    name: "Frozen",
+    video: Video(duration: 20.0),
+    physics: Physics(gravity: Vec2(0.0, 0.0)),
+    spawners: [Single(position: Vec2(0.0, 0.0), velocity: Vec2(0.0, 0.0), radius: 30.0, color: "#ff5ca8")],
+)

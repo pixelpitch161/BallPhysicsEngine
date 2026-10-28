@@ -7,7 +7,10 @@
 use crate::frame::FrameData;
 use crate::gpu::GpuLayers;
 use crate::gpu::util::{self, StorageBuffer};
-use bpe_scene::{Blend, Color, Container, Emitter, EventMatch, ObstaclePart, ParticleColor, ParticlePreset, Scene, Vec2, particle_hash};
+use bpe_scene::{
+    Blend, Color, Container, Emitter, EventMatch, ObstaclePart, ParticleColor, ParticlePreset, Scene, Vec2,
+    particle_hash,
+};
 use bpe_sim::{Event, EventKind, Playback};
 use bytemuck::{Pod, Zeroable};
 
@@ -95,7 +98,8 @@ impl ParticleFrame {
             if let EventKind::Action { rule, action } = event.kind
                 && let Some(name) = burst_name(scene, rule, action)
                 && !emitters.iter().any(|(_, e)| {
-                    e.on.kind == EventMatch::Action && (e.on.action.is_empty() || e.on.action.eq_ignore_ascii_case(&name))
+                    e.on.kind == EventMatch::Action
+                        && (e.on.action.is_empty() || e.on.action.eq_ignore_ascii_case(&name))
                 })
                 && let Some(preset) = ParticlePreset::ALL.into_iter().find(|p| p.name().eq_ignore_ascii_case(&name))
             {
@@ -201,11 +205,7 @@ fn matches(scene: &Scene, emitter: &Emitter, event: &Event) -> bool {
 /// Where a burst starts. Events without a place of their own, such as beats, burst from the
 /// middle of the arena.
 fn event_place(scene: &Scene, event: &Event) -> Vec2 {
-    if event.ball_index().is_none() && event.position == Vec2::ZERO {
-        scene.container.center()
-    } else {
-        event.position
-    }
+    if event.ball_index().is_none() && event.position == Vec2::ZERO { scene.container.center() } else { event.position }
 }
 
 /// Which way particles fly from an event: away from the surface that was hit. It depends only
@@ -297,7 +297,8 @@ impl Particles {
             bind_group_layouts: &[Some(&globals), Some(&layout)],
             immediate_size: 0,
         });
-        let module = util::shader(device, "particles", &[util::COMMON_WGSL, include_str!("shaders/gpu/particles.wgsl")]);
+        let module =
+            util::shader(device, "particles", &[util::COMMON_WGSL, include_str!("shaders/gpu/particles.wgsl")]);
         let make = |label, fs, blend| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -308,7 +309,10 @@ impl Particles {
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -346,7 +350,14 @@ impl Particles {
         }
     }
 
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, _scene: &Scene, frame: &FrameData, gpu: &GpuLayers) {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _scene: &Scene,
+        frame: &FrameData,
+        gpu: &GpuLayers,
+    ) {
         let particles = &frame.particles;
         self.additive_count = particles.additive;
         self.covering_count = particles.covering;
@@ -457,12 +468,16 @@ mod tests {
     #[test]
     fn filters_pick_the_right_events() {
         let mut scene = Scene::plinko();
-        scene.particles.push(Emitter { on: bpe_scene::EventFilter { kind: EventMatch::Obstacle, ..Default::default() }, ..Emitter::default() });
+        scene.particles.push(Emitter {
+            on: bpe_scene::EventFilter { kind: EventMatch::Obstacle, ..Default::default() },
+            ..Emitter::default()
+        });
         let pegs = frame_at(&scene, 6.0);
         assert!(!pegs.bursts.is_empty());
         scene.particles[0].on.kind = EventMatch::Escape;
         assert!(frame_at(&scene, 6.0).bursts.is_empty());
-        scene.particles[0].on = bpe_scene::EventFilter { kind: EventMatch::AnyHit, ball: Some(9999), ..Default::default() };
+        scene.particles[0].on =
+            bpe_scene::EventFilter { kind: EventMatch::AnyHit, ball: Some(9999), ..Default::default() };
         assert!(frame_at(&scene, 6.0).bursts.is_empty());
     }
 

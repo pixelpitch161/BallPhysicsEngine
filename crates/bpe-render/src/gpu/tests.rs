@@ -24,7 +24,13 @@ const W: u32 = 135;
 const H: u32 = 240;
 
 /// Renders `scene` at each of `times` in turn with one renderer, returning the last picture.
-fn render(device: &wgpu::Device, queue: &wgpu::Queue, renderer: &mut Renderer, scene: &Scene, times: &[f64]) -> Vec<u8> {
+fn render(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut Renderer,
+    scene: &Scene,
+    times: &[f64],
+) -> Vec<u8> {
     let mut playback = Playback::new(scene);
     let mut frame = FrameData::default();
     for &time in times {
@@ -233,7 +239,8 @@ fn showcase() {
         ParticlePreset::Rings.emitter(EventMatch::AnyHit),
     ];
     let mut smoke = Scene::plinko();
-    smoke.particles = vec![ParticlePreset::Smoke.emitter(EventMatch::Obstacle), ParticlePreset::Stars.emitter(EventMatch::Obstacle)];
+    smoke.particles =
+        vec![ParticlePreset::Smoke.emitter(EventMatch::Obstacle), ParticlePreset::Stars.emitter(EventMatch::Obstacle)];
     for (name, scene, time) in [
         ("show-swarm", swarm_scene(60_000), 4.0),
         ("show-liquid", liquid, 3.0),
@@ -336,7 +343,11 @@ fn sweep_particle_lists() {
             playback.seek(time);
             frame.fill(&scene, &playback, W as f32 / 1080.0);
             let p = &frame.particles;
-            assert!(p.additive + p.covering <= crate::particles::MAX_LIVE_PARTICLES, "seed {seed}: {} particles", p.additive + p.covering);
+            assert!(
+                p.additive + p.covering <= crate::particles::MAX_LIVE_PARTICLES,
+                "seed {seed}: {} particles",
+                p.additive + p.covering
+            );
             for burst in &p.bursts {
                 let numbers = burst.place.iter().chain(&burst.timing).chain(&burst.color);
                 assert!(numbers.clone().all(|v| v.is_finite()), "seed {seed} at {time}: {burst:?}");
