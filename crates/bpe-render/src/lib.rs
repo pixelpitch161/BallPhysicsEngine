@@ -24,7 +24,13 @@ use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The object picture effects on things read: own position, what it is, coverage.
+pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const BLOOM_LEVELS: usize = 6;
+/// The 2D scene shader: its passes, then the styled balls' shapes and patterns.
+const SCENE_SHADER: [&str; 2] = [include_str!("shaders/scene.wgsl"), BALL_LOOK_SHADER];
+/// Shapes and fill patterns of styled balls, shared by the 2D and 3D views.
+pub(crate) const BALL_LOOK_SHADER: &str = include_str!("shaders/ball_look.wgsl");
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -81,6 +87,11 @@ pub struct Renderer {
     soft: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
+    /// What is where, for effects on things (see `fs_shape_object` in scene.wgsl).
+    shape_object: wgpu::RenderPipeline,
+    ball_object: wgpu::RenderPipeline,
+    /// The object picture, made when an effect first needs it, the size of the HDR picture.
+    objects: Option<(wgpu::Texture, wgpu::TextureView)>,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -102,13 +113,13 @@ impl Renderer {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(SCENE_SHADER.concat().into()),
         });
         // Soft bodies (physics workstream): the scene shader plus a fragment for filled shapes.
         let soft_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("soft body shader"),
             source: wgpu::ShaderSource::Wgsl(
-                [include_str!("shaders/scene.wgsl"), include_str!("shaders/soft.wgsl")].concat().into(),
+                [SCENE_SHADER[0], SCENE_SHADER[1], include_str!("shaders/soft.wgsl")].concat().into(),
             ),
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -271,7 +282,7 @@ impl Renderer {
             &scene_shader,
             "vs_shape",
             "fs_shape",
-            &[Some(shape_layout)],
+            &[Some(shape_layout.clone())],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -335,6 +346,33 @@ impl Renderer {
             HDR_FORMAT,
             Some(additive),
         );
+        // Effects on things (WS shader materials): what is where, drawn only when an effect needs it.
+        let shape_object = make(
+            "shape objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_shape",
+            "fs_shape_object",
+            &[Some(shape_layout.clone())],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
+        );
+        let ball_object = make(
+            "ball objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_ball",
+            "fs_ball_object",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<BallInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &ball_attributes,
+            })],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
+        );
         let downsample = make(
             "bloom down",
             &post_pipeline_layout,
@@ -383,6 +421,9 @@ impl Renderer {
             soft,
             ball,
             flash,
+            shape_object,
+            ball_object,
+            objects: None,
             downsample,
             upsample,
             composite,
@@ -510,38 +551,48 @@ impl Renderer {
         let pixel = self.pixel_size(scene);
         self.captions.prepare(device, queue, scene, &frame.text, pixel);
         // Render order: background, walls and shapes (or the whole 3D picture), swarms and
-        // fluids, trails, balls, flashes, particles; then effects, bloom and captions.
+        // fluids, trails, balls, flashes, particles; then effects, bloom and captions. Effects on
+        // things (shader materials) go in just before the flashes and particles.
+        self.effects.begin_frame();
+        let objects = self.effects.wants_objects(scene);
+        if objects {
+            self.ensure_objects(device);
+        }
         if self.space.active(scene, frame) {
             self.space.draw(device, queue, &mut encoder, &self.targets.hdr, size, scene, frame, time); // 3D (WS4): size
+            if objects {
+                let view = &self.objects.as_ref().unwrap().1;
+                self.space.draw_objects(&mut encoder, view, frame);
+                self.apply_effects(device, queue, &mut encoder, scene, time, frame, effects::Stage::Things);
+            }
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "particles", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.particles.draw(&mut pass, &self.globals_group);
-        } else if self.gpu.wants_split_pass(scene) {
-            {
+        } else {
+            if self.gpu.wants_split_pass(scene) {
+                {
+                    let mut pass =
+                        begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                    self.draw_background(&mut pass, frame);
+                }
+                self.gpu.draw_between(device, &mut encoder, &self.targets.hdr_texture, &self.targets.hdr);
+                let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene, after fluid", wgpu::LoadOp::Load);
+                self.draw_moving(&mut pass, frame, !objects);
+            } else {
                 let mut pass =
                     begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
                 self.draw_background(&mut pass, frame);
+                self.draw_moving(&mut pass, frame, !objects);
             }
-            self.gpu.draw_between(device, &mut encoder, &self.targets.hdr_texture, &self.targets.hdr);
-            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene, after fluid", wgpu::LoadOp::Load);
-            self.draw_moving(&mut pass, frame);
-        } else {
-            let mut pass =
-                begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            self.draw_background(&mut pass, frame);
-            self.draw_moving(&mut pass, frame);
+            if objects {
+                self.draw_objects(&mut encoder, frame);
+                self.apply_effects(device, queue, &mut encoder, scene, time, frame, effects::Stage::Things);
+                let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
+                self.draw_overlays(&mut pass, frame);
+            }
         }
         self.captions.draw_under(&mut encoder, &self.targets.hdr);
-        self.effects.apply(
-            device,
-            queue,
-            &mut encoder,
-            &self.targets.hdr_texture,
-            &self.targets.hdr,
-            scene,
-            time,
-            frame,
-        );
+        self.apply_effects(device, queue, &mut encoder, scene, time, frame, effects::Stage::Picture);
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -589,8 +640,8 @@ impl Renderer {
         }
     }
 
-    /// Swarms, trails, balls, flashes and particles, over the background.
-    fn draw_moving(&self, pass: &mut wgpu::RenderPass, frame: &FrameData) {
+    /// Swarms, trails and balls over the background, then (with `overlays`) flashes and particles.
+    fn draw_moving(&self, pass: &mut wgpu::RenderPass, frame: &FrameData, overlays: bool) {
         pass.set_bind_group(0, &self.globals_group, &[]);
         self.gpu.draw(pass, &self.globals_group);
         if !frame.trails.is_empty() {
@@ -613,12 +664,83 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.ball_buffer.slice());
             pass.draw(0..4, 0..frame.balls.len() as u32);
         }
+        if overlays {
+            self.draw_overlays(pass, frame);
+        }
+    }
+
+    /// Wall flashes and particles, over everything else.
+    fn draw_overlays(&self, pass: &mut wgpu::RenderPass, frame: &FrameData) {
+        pass.set_bind_group(0, &self.globals_group, &[]);
         if !frame.flashes.is_empty() {
             pass.set_pipeline(&self.flash);
             pass.set_vertex_buffer(0, self.flash_buffer.slice());
             pass.draw(0..4, 0..frame.flashes.len() as u32);
         }
         self.particles.draw(pass, &self.globals_group);
+    }
+
+    /// Makes the object picture if it is missing or the wrong size.
+    fn ensure_objects(&mut self, device: &wgpu::Device) {
+        let (width, height) = self.size();
+        if self.objects.as_ref().is_some_and(|(t, _)| (t.width(), t.height()) == (width, height)) {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("objects"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OBJECT_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.objects = Some((texture, view));
+    }
+
+    /// Draws what is where in the 2D view into the object picture: walls, pegs, lines, then balls.
+    fn draw_objects(&self, encoder: &mut wgpu::CommandEncoder, frame: &FrameData) {
+        let view = &self.objects.as_ref().expect("object picture made first").1;
+        let mut pass = begin_pass(encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+        pass.set_bind_group(0, &self.globals_group, &[]);
+        if !frame.shapes.is_empty() {
+            pass.set_pipeline(&self.shape_object);
+            pass.set_vertex_buffer(0, self.shape_buffer.slice());
+            pass.draw(0..4, 0..frame.shapes.len() as u32);
+        }
+        if !frame.balls.is_empty() {
+            pass.set_pipeline(&self.ball_object);
+            pass.set_vertex_buffer(0, self.ball_buffer.slice());
+            pass.draw(0..4, 0..frame.balls.len() as u32);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_effects(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &Scene,
+        time: f64,
+        frame: &FrameData,
+        stage: effects::Stage,
+    ) {
+        let objects = self.objects.as_ref().map(|(_, view)| view).filter(|_| self.effects.wants_objects(scene));
+        self.effects.apply(
+            device,
+            queue,
+            encoder,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            scene,
+            time,
+            frame,
+            stage,
+            objects,
+        );
     }
 
     /// Copies the output image back to the CPU as tightly packed RGBA bytes (sRGB-encoded).
@@ -894,6 +1016,8 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
 /// Picture tests for additive colours.
 #[cfg(test)]
 mod blend_tests;
+#[cfg(test)]
+mod material_tests;
 /// Picture tests for soft bodies, pockets and custom shapes (physics workstream).
 #[cfg(test)]
 mod soft_tests;

@@ -28,7 +28,9 @@ struct Fx {
     level: f32,
     // Which block a node effect shows in the Shaders workspace; 0 for the finished effect.
     view: u32,
-    pad0: f32,
+    // What the effect changes: 0 the whole picture, 1 every ball, 2 walls, 3 obstacles, 10 + n
+    // the balls of group n. Outside those things the picture is left as it was.
+    apply_to: f32,
     // Music right now: bass, mid and treble loudness (0 to about 1) and how far through the
     // current beat (0 on the beat, rising to 1 just before the next).
     audio: vec4<f32>,
@@ -42,6 +44,7 @@ struct Fx {
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
 @group(0) @binding(2) var prev_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
+@group(0) @binding(4) var object_tex: texture_2d<f32>;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -176,4 +179,39 @@ fn beat_phase() -> f32 {
 // 1 on each beat, fading quickly to 0 before the next.
 fn beat_hit() -> f32 {
     return pow(1.0 - fx.audio.w, 4.0);
+}
+
+// What is at `uv`: x and y are a position of its own (-0.5 to 0.5 across a ball, turning with
+// its pattern; the frame's position on walls and obstacles), z says what it is (see
+// object_kind) plus half its random number, and w how much of the pixel it covers. All zero
+// where there is nothing, and everywhere when the frame has no effects on things.
+fn object_at(uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(object_tex));
+    let p = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
+    return textureLoad(object_tex, p, 0);
+}
+
+// 0 nothing, 2 a wall, 3 an obstacle, 10 + n a ball of group n.
+fn object_kind(uv: vec2<f32>) -> f32 {
+    return floor(object_at(uv).z);
+}
+
+// A random number from 0 to 1 for each ball, the same in every frame.
+fn object_seed(uv: vec2<f32>) -> f32 {
+    return fract(object_at(uv).z) * 2.0;
+}
+
+// How much of the effect shows at `uv` for the effect's target: 1 everywhere for the whole
+// picture, else how much of the pixel the target covers.
+fn target_weight(uv: vec2<f32>) -> f32 {
+    if fx.apply_to < 0.5 {
+        return 1.0;
+    }
+    let o = object_at(uv);
+    let kind = floor(o.z);
+    var hit = abs(kind - fx.apply_to) < 0.5;
+    if fx.apply_to < 1.5 {
+        hit = kind > 9.5;
+    }
+    return select(0.0, o.w, hit);
 }

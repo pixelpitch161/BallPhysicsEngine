@@ -15,7 +15,7 @@ mod renderer;
 
 pub use renderer::SpaceRenderer;
 
-use bpe_scene::{CameraMode, Color, Container3d, Scene, Space, Vec2, Vec3};
+use bpe_scene::{BallStyle, CameraMode, Color, Container3d, Scene, Space, Vec2, Vec3};
 use bpe_sim::space::SpaceSimulation;
 use bytemuck::{Pod, Zeroable};
 use glam::camera::rh::{proj::directx, view};
@@ -43,8 +43,68 @@ const FOLLOW_SMOOTHING: usize = 24;
 pub struct SpaceBall {
     pub center: [f32; 3],
     pub radius: f32,
-    /// Linear-light RGBA.
+    /// Linear-light RGBA. A negative alpha adds light (see [`crate::frame::blend_alpha`]).
     pub color: [f32; 4],
+    /// A look's second colour (patterns and gradients), linear light.
+    pub color2: [f32; 4],
+    pub outline_color: [f32; 4],
+    /// Shape, fill (-1 draws the classic ball lit by the 3D material), pattern size, roundness.
+    pub form: [f32; 4],
+    /// Outline width in pixels, unused, opacity, turn around the up axis in radians.
+    pub look: [f32; 4],
+    /// For effects on things: the ball's group plus one (0 for none), and a random number from
+    /// 0 to 1.
+    pub tag: [f32; 4],
+}
+
+impl SpaceBall {
+    /// A ball drawn the classic way, lit by the scene's 3D material.
+    pub fn classic(center: Vec3, radius: f32, color: [f32; 4]) -> Self {
+        let color = crate::frame::blend_alpha(color);
+        Self {
+            center: center.into(),
+            radius,
+            color,
+            color2: color,
+            outline_color: color,
+            form: [0.0, -1.0, 1.0, 0.0],
+            look: [0.0, 0.0, 1.0, 0.0],
+            tag: [0.0; 4],
+        }
+    }
+
+    /// The same ball, marked as one of group `group` for effects on things.
+    pub fn tagged(mut self, group: u32, index: usize) -> Self {
+        self.tag = [group as f32 + 1.0, crate::frame::ball_seed(index), 0.0, 0.0];
+        self
+    }
+
+    /// A ball with its own look at `time` seconds. Shapes other than circles are drawn as puffy
+    /// stickers that face the camera; patterns wrap around the ball and turn with it.
+    pub fn styled(center: Vec3, radius: f32, color: [f32; 4], style: &BallStyle, time: f32) -> Self {
+        use crate::frame::{blend_alpha, fill_code, shape_code, style_colors};
+        let (color, color2, outline) = style_colors(style, color, time);
+        Self {
+            center: center.into(),
+            radius,
+            color: blend_alpha(color),
+            color2: blend_alpha(color2),
+            outline_color: blend_alpha(outline),
+            form: [
+                shape_code(style.shape),
+                fill_code(style.fill),
+                style.pattern_size.max(0.1),
+                style.roundness.clamp(0.0, 1.0),
+            ],
+            look: [
+                style.outline.max(0.0),
+                0.0,
+                style.opacity.clamp(0.0, 1.0),
+                (style.turn + style.spin * time).to_radians(),
+            ],
+            tag: [0.0; 4],
+        }
+    }
 }
 
 /// One corner of a trail ribbon.
@@ -174,6 +234,9 @@ pub struct SpaceFrame {
     pub balls: Vec<SpaceBall>,
     pub ribbons: Vec<RibbonVertex>,
     pub glows: Vec<Glow>,
+    /// Halos around balls whose look has a glow. `color.a` is the ball's radius as a fraction
+    /// of `size`; the halo is drawn outside it.
+    pub halos: Vec<Glow>,
     /// Unbroken tunnel rings, nearest first, at most [`MAX_GATES`].
     pub gates: Vec<GateFrame>,
     /// Newest first, at most [`MAX_GLOW_HITS`].
@@ -230,10 +293,30 @@ impl SpaceFrame {
         };
         self.camera = camera_for(space, sim, time as f32, aspect);
 
-        for ball in sim.balls() {
+        self.halos.clear();
+        let now = time as f32;
+        for (index, ball) in sim.balls().iter().enumerate() {
             // Removed balls keep their slot, so ball numbers in events still line up, but draw nothing.
             let radius = if ball.alive { ball.radius } else { 0.0 };
-            self.balls.push(SpaceBall { center: ball.position.into(), radius, color: ball.color });
+            match style_of(scene, ball.group) {
+                None => {
+                    self.balls.push(SpaceBall::classic(ball.position, radius, ball.color).tagged(ball.group, index))
+                }
+                Some(style) => {
+                    let drawn =
+                        SpaceBall::styled(ball.position, radius, ball.color, style, now).tagged(ball.group, index);
+                    if style.glow > 0.0 && radius > 0.0 && style.opacity > 0.0 {
+                        // The halo reaches out like the 2D one: about 2.5 glow sizes past the edge.
+                        let size = radius * (1.0 + style.glow_size.max(0.05) * 2.5);
+                        let c = drawn.color;
+                        let k = style.glow * style.opacity.clamp(0.0, 1.0) * if c[3] < 0.0 { -c[3] } else { 1.0 };
+                        let c = if style.outline > 0.0 { drawn.outline_color } else { c };
+                        let color = [c[0] * k, c[1] * k, c[2] * k, radius / size];
+                        self.halos.push(Glow { center: ball.position.into(), size, color });
+                    }
+                    self.balls.push(drawn);
+                }
+            }
         }
         self.gates.extend(sim.gates().take(MAX_GATES).map(|g| GateFrame {
             z: g.z,
@@ -250,33 +333,49 @@ impl SpaceFrame {
     pub fn clear(&mut self) {
         self.active = false;
         self.balls.clear();
+        self.halos.clear();
         self.ribbons.clear();
         self.glows.clear();
         self.gates.clear();
         self.wall_glows.clear();
     }
 
-    /// Trails as ribbons that always face the camera, tapering and fading towards the tail.
+    /// Trails as ribbons that always face the camera, tapering and fading towards the tail. Balls
+    /// with their own look use its trail settings instead of the scene's.
     fn push_ribbons(&mut self, scene: &Scene, sim: &SpaceSimulation) {
         let look = &scene.look;
-        if look.trail_seconds <= 0.0 || look.trail_opacity <= 0.0 || look.trail_width <= 0.0 {
-            return;
-        }
+        let classic = look.trail_seconds > 0.0 && look.trail_opacity > 0.0 && look.trail_width > 0.0;
+        // The simulation keeps enough trail for the longest one drawn; the scene's own trails
+        // stop where they always did.
+        let classic_samples = sim.trail_samples(look.trail_seconds);
+        let time = sim.time() as f32;
         let eye = self.camera.position;
         let mut points = Vec::new();
         for (index, ball) in sim.balls().iter().enumerate() {
             if !ball.alive {
                 continue;
             }
+            let (samples, half_width, c, opacity) = match style_of(scene, ball.group) {
+                None if classic => (classic_samples, ball.radius * look.trail_width, ball.color, look.trail_opacity),
+                Some(style) if style.trail_seconds > 0.0 && style.trail_opacity > 0.0 && style.trail_width > 0.0 => {
+                    let (fill, second, outline) = crate::frame::style_colors(style, ball.color, time);
+                    let c = match style.trail_color {
+                        bpe_scene::TrailColor::Ball => fill,
+                        bpe_scene::TrailColor::Second => second,
+                        bpe_scene::TrailColor::Outline => outline,
+                    };
+                    let opacity = style.trail_opacity.clamp(0.0, 1.0) * style.opacity.clamp(0.0, 1.0);
+                    (sim.trail_samples(style.trail_seconds), ball.radius * style.trail_width, c, opacity)
+                }
+                _ => continue,
+            };
             points.clear();
             points.push(ball.position);
-            points.extend(sim.trail(index));
+            points.extend(sim.trail(index).take(samples));
             let n = points.len();
             if n < 2 {
                 continue;
             }
-            let half_width = ball.radius * look.trail_width;
-            let c = ball.color;
             let mut previous: Option<(RibbonVertex, RibbonVertex)> = None;
             for i in 0..n {
                 let along = if i + 1 < n { points[i + 1] - points[i] } else { points[i] - points[i - 1] };
@@ -287,7 +386,7 @@ impl SpaceFrame {
                 };
                 let t = i as f32 / (n - 1) as f32;
                 let width = half_width * (1.0 - t);
-                let alpha = (1.0 - t) * (1.0 - t) * look.trail_opacity;
+                let alpha = (1.0 - t) * (1.0 - t) * opacity;
                 let color = [c[0] * alpha, c[1] * alpha, c[2] * alpha, alpha];
                 let left = RibbonVertex { position: (points[i] + side * width).into(), across: 1.0, color };
                 let right = RibbonVertex { position: (points[i] - side * width).into(), across: -1.0, color };
@@ -404,6 +503,11 @@ impl SpaceFrame {
     pub fn to_screen(&self, point: Vec3, video: Vec2) -> Option<Vec2> {
         self.camera.to_screen(point, video)
     }
+}
+
+/// The look of balls from spawner `group`, or None for the classic look.
+fn style_of(scene: &Scene, group: u32) -> Option<&BallStyle> {
+    scene.spawners.get(group as usize).and_then(|s| s.style())
 }
 
 /// The colour of tunnel ring `index` of `count`: the glass colour, turning slowly around the

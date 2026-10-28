@@ -30,6 +30,8 @@ pub struct Ball3 {
     /// False once a rule removed the ball. It keeps its place in the list so ball numbers in
     /// events stay valid.
     pub alive: bool,
+    /// Index of the spawner that made it, which decides its look. Split balls keep their parent's.
+    pub group: u32,
 }
 
 /// One of the tunnel's rings at the current moment.
@@ -120,7 +122,10 @@ impl SpaceSimulation {
         pending.reverse();
         let trail_every = (steps_per_second / TRAIL_SAMPLE_RATE).max(1) as u64;
         let sample_rate = steps_per_second as f32 / trail_every as f32;
-        let trail_len = ((scene.look.trail_seconds.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES);
+        // Long enough for the longest trail drawn: the scene's own, or a ball look's.
+        let longest = scene.spawners.iter().filter_map(|s| s.style()).map(|s| s.trail_seconds);
+        let longest = longest.fold(scene.look.trail_seconds, f32::max);
+        let trail_len = ((longest.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES);
         let rings = match space.container {
             Container3d::Tunnel { rings, .. } => rings.min(10_000) as usize,
             _ => 0,
@@ -249,6 +254,12 @@ impl SpaceSimulation {
     /// Seconds between trail samples.
     pub fn trail_interval(&self) -> f32 {
         self.dt * self.trail_every as f32
+    }
+
+    /// How many of a ball's trail samples reach `seconds` back, for drawing trails of that length.
+    pub fn trail_samples(&self, seconds: f32) -> usize {
+        let sample_rate = 1.0 / self.trail_interval();
+        ((seconds.max(0.0) * sample_rate).ceil() as usize + 1).min(MAX_TRAIL_SAMPLES).min(self.trail_len)
     }
 
     /// Past positions of one ball, newest first. The ball's current position is not included.
@@ -609,6 +620,7 @@ fn split_ball(parent: &Ball3, index: usize, spread: f32) -> Ball3 {
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
         alive: true,
+        group: parent.group,
     }
 }
 
@@ -627,6 +639,7 @@ fn spawn_plan(scene: &Scene, space: &Space, steps_per_second: u32) -> Vec<(u64, 
     let reach = space.container.size() * 0.5;
     let scatter = space.scatter.clamp(0.0, 1.0);
     let mut plan = Vec::new();
+    let group = std::cell::Cell::new(0);
     let mut add = |step: u64, position: Vec2, velocity: Vec2, radius: f32, color: [f32; 4], depth: (f32, f32)| {
         let seed = plan.len() as u64 * 7 + 0xd3;
         let z = depth.0 + unit_noise(seed) * reach * scatter;
@@ -638,10 +651,12 @@ fn spawn_plan(scene: &Scene, space: &Space, steps_per_second: u32) -> Vec<(u64, 
             color,
             wall_hits: 0,
             alive: true,
+            group: group.get(),
         };
         plan.push((step, ball));
     };
-    for spawner in &scene.spawners {
+    for (index, spawner) in scene.spawners.iter().enumerate() {
+        group.set(index as u32);
         let depth = spawner_depth(spawner);
         match spawner {
             Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient, .. } => {

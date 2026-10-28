@@ -30,7 +30,7 @@ pub use bodies::*;
 pub use bpe_graph::Graph;
 pub use captions::*;
 pub use color::Color;
-pub use effect::Effect;
+pub use effect::{Effect, EffectTarget};
 pub use glam::Vec2;
 pub use glam::Vec3; // 3D (WS4)
 pub use gpu::*;
@@ -865,6 +865,11 @@ impl Scene {
                 name: "Ball looks",
                 description: "A dozen balls, each with its own look: shapes, patterns, outlines, glow and trails.",
                 scene: Scene::ball_looks(),
+            },
+            Preset {
+                name: "Shader materials",
+                description: "Lava balls, rainbow walls and glowing pegs: node shaders on things, not the whole picture.",
+                scene: Scene::shader_materials(),
             },
         ]
         .into_iter()

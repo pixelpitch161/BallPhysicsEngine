@@ -108,10 +108,15 @@ fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
 
 // Physically based shading with one key light, sky light and a rim.
 fn shade(albedo: vec3<f32>, n: vec3<f32>, v: vec3<f32>, shadow: f32) -> vec3<f32> {
+    return shade_with(albedo, n, v, shadow, u.material.x, u.material.y);
+}
+
+// The same, with its own roughness and metalness.
+fn shade_with(albedo: vec3<f32>, n: vec3<f32>, v: vec3<f32>, shadow: f32, roughness: f32, metalness: f32) -> vec3<f32> {
     let l = u.key_dir.xyz;
     let h = normalize(l + v);
-    let rough = clamp(u.material.x, 0.04, 1.0);
-    let metal = clamp(u.material.y, 0.0, 1.0);
+    let rough = clamp(roughness, 0.04, 1.0);
+    let metal = clamp(metalness, 0.0, 1.0);
     let a = rough * rough;
     let a2 = a * a;
     let ndl = max(dot(n, l), 0.0);
@@ -356,15 +361,33 @@ fn fs_env(in: ScreenOut) -> EnvOut {
 
 // ---- Balls: camera-facing quads ray traced as spheres ----
 
+struct LookBallIn {
+    @location(0) center_radius: vec4<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) color2: vec4<f32>,
+    @location(3) outline_color: vec4<f32>,
+    // Shape, fill (-1 classic), pattern size, roundness.
+    @location(4) form: vec4<f32>,
+    // Outline width in pixels, unused, opacity, turn around the up axis.
+    @location(5) look: vec4<f32>,
+    // Group plus one (0 for none), random number, for effects on things.
+    @location(6) tag: vec4<f32>,
+};
+
 struct BallOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) @interpolate(flat) center_radius: vec4<f32>,
     @location(2) @interpolate(flat) color: vec4<f32>,
+    @location(3) @interpolate(flat) color2: vec4<f32>,
+    @location(4) @interpolate(flat) outline_color: vec4<f32>,
+    @location(5) @interpolate(flat) form: vec4<f32>,
+    @location(6) @interpolate(flat) look: vec4<f32>,
+    @location(7) @interpolate(flat) tag: vec4<f32>,
 };
 
 @vertex
-fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
+fn vs_ball(@builtin(vertex_index) i: u32, b: LookBallIn) -> BallOut {
     let corner = quad_corner(i);
     let c = b.center_radius.xyz;
     let r = b.center_radius.w;
@@ -373,6 +396,11 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     var out: BallOut;
     out.center_radius = b.center_radius;
     out.color = b.color;
+    out.color2 = b.color2;
+    out.outline_color = b.outline_color;
+    out.form = b.form;
+    out.look = b.look;
+    out.tag = b.tag;
     if d <= r * 1.02 + 1.0 {
         // The camera is inside this ball: skip it.
         out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
@@ -387,7 +415,11 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     let right = normalize(side);
     let up = cross(right, forward);
     // Half size of the sphere's outline on a plane through its centre, plus room to smooth the edge.
-    let s = r / sqrt(1.0 - (r / d) * (r / d)) + pixel_at(d) * 2.0;
+    var s = r / sqrt(1.0 - (r / d) * (r / d)) + pixel_at(d) * 2.0;
+    if b.form.y >= 0.0 && b.form.x > 0.5 {
+        // Stars and hearts poke a little past the radius.
+        s = r * 1.3 + pixel_at(d) * 2.0;
+    }
     let world = c + (right * corner.x + up * corner.y) * s;
     out.pos = u.view_proj * vec4<f32>(world, 1.0);
     out.world = world;
@@ -401,6 +433,12 @@ struct BallFrag {
 
 @fragment
 fn fs_ball(in: BallOut) -> BallFrag {
+    if in.form.y >= 0.0 {
+        if in.form.x > 0.5 {
+            return sticker_ball(in);
+        }
+        return styled_ball(in);
+    }
     let ro = u.camera.xyz;
     let rd = normalize(in.world - ro);
     let c = in.center_radius.xyz;
@@ -427,9 +465,138 @@ fn fs_ball(in: BallOut) -> BallFrag {
     var color = shade(albedo, n, -rd, shadow_at(p, n));
     color += albedo * u.ambient_bottom.w * 2.0 + hit_glow(p) * 0.15;
     var out: BallFrag;
+    out.depth = depth_of(p);
+    if in.color.a < 0.0 {
+        // Additive: the lit ball's light is added at the colour's strength.
+        out.color = vec4<f32>(color * coverage * -in.color.a, 0.0);
+        return out;
+    }
     out.color = vec4<f32>(color * coverage, coverage);
+    return out;
+}
+
+// The albedo of a styled ball's fill at a point of its surface. `m` is the point's direction
+// from the centre, turned with the ball; `facing` how squarely the surface faces the camera.
+fn look_albedo(in: BallOut, m: vec3<f32>, facing: f32) -> vec3<f32> {
+    let fill = in.form.y;
+    if fill < 1.5 {
+        return in.color.rgb;
+    }
+    var t: f32;
+    if fill < 2.5 {
+        // Radial: the ball's colour where it faces the camera, the second colour at its rim.
+        t = smoothstep(0.0, 1.0, sqrt(max(1.0 - facing * facing, 0.0)));
+    } else if fill > 10.5 {
+        // The face is on the front, and turns away as the ball spins.
+        t = pattern(m.xy, fill, in.form.z) * step(m.z, 0.0);
+    } else {
+        t = pattern(m.xy, fill, in.form.z);
+    }
+    return mix(in.color.rgb, in.color2.rgb, t);
+}
+
+// Lights a styled ball's surface point; shiny balls get a polished finish.
+fn look_shade(in: BallOut, albedo: vec3<f32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    let shadow = shadow_at(p, n);
+    var color: vec3<f32>;
+    if in.form.y > 0.5 && in.form.y < 1.5 {
+        color = shade_with(albedo, n, v, shadow, 0.12, u.material.y);
+        let h = normalize(u.key_dir.xyz + v);
+        color += u.key_color.rgb * pow(max(dot(n, h), 0.0), 60.0) * 0.6 * shadow;
+    } else {
+        color = shade(albedo, n, v, shadow);
+    }
+    return color + albedo * u.ambient_bottom.w * 2.0 + hit_glow(p) * 0.15;
+}
+
+// The finished colour of a styled ball's pixel: outline, opacity and additive colours.
+fn look_finish(in: BallOut, lit: vec3<f32>, cover: f32, edge_px: f32) -> vec4<f32> {
+    var color = lit;
+    let outline = in.look.x;
+    if outline > 0.0 {
+        color = mix(in.outline_color.rgb, color, clamp(edge_px - outline + 0.5, 0.0, 1.0));
+    }
+    // An additive fill colour makes the whole ball add its light.
+    let opacity = in.look.z * select(1.0, -in.color.a, in.color.a < 0.0);
+    let a = cover * opacity;
+    return vec4<f32>(color * a, select(a, 0.0, in.color.a < 0.0));
+}
+
+// A round styled ball: a sphere with its pattern wrapped around it.
+fn styled_ball(in: BallOut) -> BallFrag {
+    let ro = u.camera.xyz;
+    let rd = normalize(in.world - ro);
+    let c = in.center_radius.xyz;
+    let r = in.center_radius.w;
+    let oc = ro - c;
+    let b = dot(oc, rd);
+    let miss = sqrt(max(dot(oc, oc) - b * b, 0.0));
+    let px = pixel_at(max(-b, 1.0));
+    let coverage = clamp((r - miss) / px + 0.5, 0.0, 1.0);
+    if coverage <= 0.0 || in.look.z <= 0.0 {
+        discard;
+    }
+    var p: vec3<f32>;
+    let disc = b * b - (dot(oc, oc) - r * r);
+    if disc >= 0.0 {
+        p = ro + rd * (-b - sqrt(disc));
+    } else {
+        let closest = ro + rd * (-b);
+        p = c + normalize(closest - c) * r;
+    }
+    let n = normalize(p - c);
+    let m = rotate_y(n, -in.look.w);
+    let albedo = look_albedo(in, m, dot(n, -rd));
+    let lit = look_shade(in, albedo, p, n, -rd);
+    var out: BallFrag;
+    out.color = look_finish(in, lit, coverage, (r - miss) / px);
     out.depth = depth_of(p);
     return out;
+}
+
+// A styled ball of another shape: a puffy sticker facing the camera, turned by the look's turn.
+fn sticker_ball(in: BallOut) -> BallFrag {
+    let ro = u.camera.xyz;
+    let rd = normalize(in.world - ro);
+    let c = in.center_radius.xyz;
+    let r = in.center_radius.w;
+    let forward = normalize(c - ro);
+    var side = cross(forward, vec3<f32>(0.0, -1.0, 0.0));
+    if dot(side, side) < 1e-6 {
+        side = vec3<f32>(1.0, 0.0, 0.0);
+    }
+    let right = normalize(side);
+    let up = cross(right, forward);
+    // Where the ray meets the plane through the centre, facing the camera.
+    let t = dot(c - ro, forward) / max(dot(rd, forward), 1e-4);
+    let hit = ro + rd * t;
+    let local = vec2<f32>(dot(hit - c, right), -dot(hit - c, up)) / max(r, 1e-3);
+    let q = rotate2(local, -in.look.w);
+    let d = ball_shape(q, in.form.x, in.form.w);
+    let px = pixel_at(max(t, 1.0)) / max(r, 1e-3);
+    let cover = clamp(-d / px + 0.5, 0.0, 1.0);
+    if cover <= 0.0 || in.look.z <= 0.0 {
+        discard;
+    }
+    // Rounded towards the camera in the middle, flatter near the edge.
+    let bulge = sqrt(clamp(-d, 0.0, 1.0));
+    let n = normalize(right * local.x * 0.6 - up * local.y * 0.6 - forward * (0.4 + bulge));
+    let p = hit - forward * bulge * r * 0.5;
+    var albedo = in.color.rgb;
+    if in.form.y > 1.5 {
+        albedo = mix(in.color.rgb, in.color2.rgb, pattern(q, in.form.y, in.form.z));
+    }
+    let lit = look_shade(in, albedo, p, n, -rd);
+    var out: BallFrag;
+    out.color = look_finish(in, lit, cover, -d / px);
+    out.depth = depth_of(p);
+    return out;
+}
+
+fn rotate2(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
 // ---- Trails: ribbons facing the camera ----
@@ -497,6 +664,107 @@ fn fs_glow(in: GlowOut) -> @location(0) vec4<f32> {
     let q = dot(in.corner, in.corner);
     let core = exp(-q * 9.0) + exp(-q * 3.0) * 0.25;
     return vec4<f32>(in.color.rgb * core * (1.0 - smoothstep(0.8, 1.0, q)), 0.0);
+}
+
+// ---- What is where, for effects on things (see fs_ball_object in the 2D scene shader) ----
+
+// Where the scene drew a wall: the frame's position, kind 2, fully covered.
+@fragment
+fn fs_wall_object(in: ScreenOut) -> @location(0) vec4<f32> {
+    let depth = textureLoad(scene_depth, vec2<i32>(in.pos.xy), 0);
+    if depth <= 0.0 {
+        discard;
+    }
+    let uv = in.pos.xy / u.screen.xy;
+    return vec4<f32>((uv - 0.5) * vec2<f32>(u.screen.x / u.screen.y, 1.0), 2.0, 1.0);
+}
+
+struct ObjectFrag {
+    @location(0) value: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+// A ball: its own position, -0.5 to 0.5 across it, turning with its pattern.
+@fragment
+fn fs_ball_object(in: BallOut) -> ObjectFrag {
+    let ro = u.camera.xyz;
+    let rd = normalize(in.world - ro);
+    let c = in.center_radius.xyz;
+    let r = in.center_radius.w;
+    var local: vec2<f32>;
+    var cover: f32;
+    var p: vec3<f32>;
+    if in.form.y >= 0.0 && in.form.x > 0.5 {
+        let forward = normalize(c - ro);
+        var side = cross(forward, vec3<f32>(0.0, -1.0, 0.0));
+        if dot(side, side) < 1e-6 {
+            side = vec3<f32>(1.0, 0.0, 0.0);
+        }
+        let right = normalize(side);
+        let up = cross(right, forward);
+        let t = dot(c - ro, forward) / max(dot(rd, forward), 1e-4);
+        let hit = ro + rd * t;
+        local = rotate2(vec2<f32>(dot(hit - c, right), -dot(hit - c, up)) / max(r, 1e-3), -in.look.w);
+        let d = ball_shape(local, in.form.x, in.form.w);
+        cover = clamp(-d / (pixel_at(max(t, 1.0)) / max(r, 1e-3)) + 0.5, 0.0, 1.0);
+        p = hit - forward * sqrt(clamp(-d, 0.0, 1.0)) * r * 0.5;
+    } else {
+        let oc = ro - c;
+        let b = dot(oc, rd);
+        let miss = sqrt(max(dot(oc, oc) - b * b, 0.0));
+        cover = clamp((r - miss) / pixel_at(max(-b, 1.0)) + 0.5, 0.0, 1.0);
+        let disc = b * b - (dot(oc, oc) - r * r);
+        if disc >= 0.0 {
+            p = ro + rd * (-b - sqrt(disc));
+        } else {
+            let closest = ro + rd * (-b);
+            p = c + normalize(closest - c) * r;
+        }
+        let n = normalize(p - c);
+        local = rotate_y(n, -in.look.w).xy;
+    }
+    if cover <= 0.0 || r <= 0.0 || (in.form.y >= 0.0 && in.look.z <= 0.0) {
+        discard;
+    }
+    let kind = select(0.0, 9.0 + in.tag.x, in.tag.x > 0.5);
+    var out: ObjectFrag;
+    out.value = vec4<f32>(local * 0.5, kind + in.tag.y * 0.5, cover);
+    // A hair nearer than the ball drawn in the scene pass, so it passes the depth test.
+    out.depth = min(depth_of(p) * 1.0001, 1.0);
+    return out;
+}
+
+// ---- Halos: the glow of balls whose look has one, outside the ball ----
+
+@vertex
+fn vs_halo(@builtin(vertex_index) i: u32, b: BallIn) -> GlowOut {
+    let corner = quad_corner(i);
+    let size = b.center_radius.w;
+    let to = b.center_radius.xyz - u.camera.xyz;
+    let d = max(length(to), 1e-3);
+    let forward = to / d;
+    var side = cross(forward, vec3<f32>(0.0, -1.0, 0.0));
+    if dot(side, side) < 1e-6 {
+        side = vec3<f32>(1.0, 0.0, 0.0);
+    }
+    let right = normalize(side);
+    let up = cross(right, forward);
+    let world = b.center_radius.xyz + (right * corner.x + up * corner.y) * size;
+    var out: GlowOut;
+    out.pos = u.view_proj * vec4<f32>(world, 1.0);
+    out.corner = corner;
+    out.color = b.color;
+    return out;
+}
+
+@fragment
+fn fs_halo(in: GlowOut) -> @location(0) vec4<f32> {
+    let q = length(in.corner);
+    let inner = in.color.a;
+    // Distance past the ball's edge, in the halo's reach (2.5 glow sizes, as in 2D).
+    let d = max(q - inner, 0.0) / max(1.0 - inner, 1e-3) * 2.5;
+    let halo = exp(-d * d) * smoothstep(inner * 0.97, inner, q) * (1.0 - smoothstep(0.9, 1.0, q));
+    return vec4<f32>(in.color.rgb * halo, 0.0);
 }
 
 // ---- Glass: the container's front surface, its edges and the tunnel's rings ----

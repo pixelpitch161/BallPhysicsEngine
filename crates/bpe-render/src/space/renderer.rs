@@ -118,10 +118,16 @@ pub struct SpaceRenderer {
     ball: wgpu::RenderPipeline,
     ribbon: wgpu::RenderPipeline,
     glow: wgpu::RenderPipeline,
+    /// Glows of balls whose look has one.
+    halo: wgpu::RenderPipeline,
     glass: wgpu::RenderPipeline,
+    /// What is where, for effects on things.
+    wall_object: wgpu::RenderPipeline,
+    ball_object: wgpu::RenderPipeline,
     balls: GrowableBuffer,
     ribbons: GrowableBuffer,
     glows: GrowableBuffer,
+    halos: GrowableBuffer,
     depth: Option<DepthTarget>,
     /// The camera of the last frame drawn, for [`SpaceRenderer::view`].
     last_camera: Option<(glam::Mat4, glam::Vec3)>,
@@ -131,7 +137,7 @@ impl SpaceRenderer {
     pub fn new(device: &wgpu::Device, hdr_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("space shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("space.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl([include_str!("space.wgsl"), crate::BALL_LOOK_SHADER].concat().into()),
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("space uniform"),
@@ -214,10 +220,14 @@ impl SpaceRenderer {
         let main_layout = layout("space layout", &[Some(&uniform_layout), Some(&textures_layout)]);
 
         let ball_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        let look_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4
+        ];
         let ball_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<SpaceBall>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ball_attributes,
+            attributes: &look_attributes,
         };
         let glow_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Glow>() as u64,
@@ -322,7 +332,7 @@ impl SpaceRenderer {
             &main_layout,
             "vs_ball",
             "fs_ball",
-            &[Some(ball_layout)],
+            &[Some(ball_layout.clone())],
             TriangleStrip,
             Some(premultiplied),
             depth(true, GreaterEqual),
@@ -344,7 +354,18 @@ impl SpaceRenderer {
             &main_layout,
             "vs_glow",
             "fs_glow",
-            &[Some(glow_layout)],
+            &[Some(glow_layout.clone())],
+            TriangleStrip,
+            Some(additive),
+            depth(false, GreaterEqual),
+            true,
+        );
+        let halo = make(
+            "space halos",
+            &main_layout,
+            "vs_halo",
+            "fs_halo",
+            &[Some(glow_layout.clone())],
             TriangleStrip,
             Some(additive),
             depth(false, GreaterEqual),
@@ -362,9 +383,46 @@ impl SpaceRenderer {
             true,
         );
 
+        // What is where, for effects on things.
+        let object = |label: &str, vs: &str, fs: &str, buffers: &[Option<wgpu::VertexBufferLayout>], depth_stencil| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&main_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: if buffers.is_empty() { TriangleList } else { TriangleStrip },
+                    ..Default::default()
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: crate::OBJECT_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let wall_object = object("space wall objects", "vs_screen", "fs_wall_object", &[], None);
+        let ball_object =
+            object("space ball objects", "vs_ball", "fs_ball_object", &[Some(ball_layout)], depth(false, GreaterEqual));
+
         Self {
             uniform,
             uniform_group,
+            wall_object,
+            ball_object,
             textures_layout,
             shadow_sampler,
             shadow_view,
@@ -374,10 +432,12 @@ impl SpaceRenderer {
             ball,
             ribbon,
             glow,
+            halo,
             glass,
             balls: GrowableBuffer::new("space balls"),
             ribbons: GrowableBuffer::new("space trails"),
             glows: GrowableBuffer::new("space glows"),
+            halos: GrowableBuffer::new("space halos"),
             depth: None,
             last_camera: None,
         }
@@ -411,6 +471,7 @@ impl SpaceRenderer {
         self.balls.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.ribbons.upload(device, queue, bytemuck::cast_slice(&frame.ribbons));
         self.glows.upload(device, queue, bytemuck::cast_slice(&frame.glows));
+        self.halos.upload(device, queue, bytemuck::cast_slice(&frame.halos));
         self.last_camera = Some((frame.camera.view_projection, frame.camera.position));
         let target = self.depth.as_ref().expect("depth target made above");
 
@@ -464,6 +525,11 @@ impl SpaceRenderer {
                 pass.set_vertex_buffer(0, self.balls.slice());
                 pass.draw(0..4, 0..frame.balls.len() as u32);
             }
+            if !frame.halos.is_empty() {
+                pass.set_pipeline(&self.halo);
+                pass.set_vertex_buffer(0, self.halos.slice());
+                pass.draw(0..4, 0..frame.halos.len() as u32);
+            }
             if !frame.ribbons.is_empty() {
                 pass.set_pipeline(&self.ribbon);
                 pass.set_vertex_buffer(0, self.ribbons.slice());
@@ -494,6 +560,55 @@ impl SpaceRenderer {
             pass.set_pipeline(&self.glass);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    /// Draws what is where in the last frame drawn into `objects`, the object picture effects on
+    /// things read: the container's walls, then the balls in front of them.
+    pub fn draw_objects(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        objects: &wgpu::TextureView,
+        frame: &crate::FrameData,
+    ) {
+        let frame = &frame.space;
+        let Some(target) = self.depth.as_ref() else { return };
+        {
+            let mut pass = crate::begin_pass(
+                encoder,
+                objects,
+                "space wall objects",
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            );
+            pass.set_bind_group(0, &self.uniform_group, &[]);
+            pass.set_bind_group(1, &target.glass_group, &[]);
+            pass.set_pipeline(&self.wall_object);
+            pass.draw(0..3, 0..1);
+        }
+        if frame.balls.is_empty() {
+            return;
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("space ball objects"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: objects,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_bind_group(0, &self.uniform_group, &[]);
+        pass.set_bind_group(1, &self.scene_group, &[]);
+        pass.set_pipeline(&self.ball_object);
+        pass.set_vertex_buffer(0, self.balls.slice());
+        pass.draw(0..4, 0..frame.balls.len() as u32);
     }
 
     /// The camera and depth of the last 3D frame drawn, so particles can be drawn into it.

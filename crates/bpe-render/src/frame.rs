@@ -32,7 +32,8 @@ pub struct BallInstance {
     /// Unit direction the ball is stretched along, its length along that direction and across
     /// it, both as multiples of the radius.
     pub stretch: [f32; 4],
-    /// How far the drawn quad reaches, in radii; glow reach in radii.
+    /// How far the drawn quad reaches, in radii; glow reach in radii; then, for effects on
+    /// things, the ball's group plus one (0 for none) and a random number from 0 to 1.
     pub extent: [f32; 4],
 }
 
@@ -51,6 +52,14 @@ impl BallInstance {
             stretch: [1.0, 0.0, 1.0, 1.0],
             extent: [3.0, 0.8, 0.0, 0.0],
         }
+    }
+
+    /// The same ball, marked as one of group `group` for effects on things, with its own random
+    /// number made from `index`.
+    pub fn tagged(mut self, group: u32, index: usize) -> Self {
+        self.extent[2] = group as f32 + 1.0;
+        self.extent[3] = ball_seed(index);
+        self
     }
 
     /// A ball drawn with its own style at `time` seconds, moving at `velocity`.
@@ -96,7 +105,16 @@ impl BallInstance {
     }
 }
 
-fn shape_code(shape: BallShape) -> f32 {
+/// A random number from 0 to 1 for ball number `index`, the same every frame.
+pub fn ball_seed(index: usize) -> f32 {
+    let mut x = (index as u32).wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2c1b_3c6d);
+    x ^= x >> 12;
+    (x >> 8) as f32 / (1u32 << 24) as f32
+}
+
+pub(crate) fn shape_code(shape: BallShape) -> f32 {
     match shape {
         BallShape::Circle => 0.0,
         BallShape::Square => 1.0,
@@ -109,7 +127,7 @@ fn shape_code(shape: BallShape) -> f32 {
     }
 }
 
-fn fill_code(fill: BallFill) -> f32 {
+pub(crate) fn fill_code(fill: BallFill) -> f32 {
     match fill {
         BallFill::Solid => 0.0,
         BallFill::Shiny => 1.0,
@@ -128,7 +146,7 @@ fn fill_code(fill: BallFill) -> f32 {
 
 /// A styled ball's fill, second and outline colours at `time`, turned around the colour wheel
 /// when the style cycles through the rainbow. All linear light.
-fn style_colors(style: &BallStyle, color: [f32; 4], time: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
+pub(crate) fn style_colors(style: &BallStyle, color: [f32; 4], time: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
     let second = style.second_color.to_linear();
     let outline = style.outline_color.to_linear();
     if style.rainbow == 0.0 {
@@ -183,6 +201,11 @@ pub struct RecentHit {
 
 /// How far back effects can see wall hits, in seconds.
 const HIT_MEMORY: f64 = 3.0;
+/// `ShapeInstance::c[3]` of arena walls, rings and their shards.
+pub const SHAPE_WALL: f32 = 2.0;
+/// `ShapeInstance::c[3]` of pegs, lines and shaped obstacles.
+pub const SHAPE_OBSTACLE: f32 = 3.0;
+
 /// A wall, peg, line or shard, drawn as an instanced quad with a distance function.
 /// `c.x` picks the shape: 0 ring or polygon outline, 1 box outline, 2 filled capsule.
 #[repr(C)]
@@ -192,7 +215,8 @@ pub struct ShapeInstance {
     pub a: [f32; 4],
     /// Ring: radius, sides, half gap. Box: half width, half height.
     pub b: [f32; 4],
-    /// Kind, half line width (or capsule radius), glow strength.
+    /// Kind, half line width (or capsule radius), glow strength, and what it is for effects on
+    /// things: [`SHAPE_WALL`], [`SHAPE_OBSTACLE`] or 0 for anything else.
     pub c: [f32; 4],
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
@@ -331,13 +355,14 @@ impl FrameData {
 
             let time = sim.time() as f32;
             let style_of = |ball: &bpe_sim::Ball| scene.spawners.get(ball.group as usize).and_then(|s| s.style());
-            for ball in sim.balls().iter().filter(|b| b.alive) {
-                self.balls.push(match style_of(ball) {
+            for (index, ball) in sim.balls().iter().enumerate().filter(|(_, b)| b.alive) {
+                let drawn = match style_of(ball) {
                     None => BallInstance::classic(ball.position, ball.radius, ball.color),
                     Some(style) => {
                         BallInstance::styled(ball.position, ball.velocity, ball.radius, ball.color, style, time)
                     }
-                });
+                };
+                self.balls.push(drawn.tagged(ball.group as u32, index));
             }
             // Soft bodies, billiard pockets and spinning balls' glints (physics workstream).
             self.push_soft(scene, sim, pixel);
@@ -475,6 +500,7 @@ impl FrameData {
     fn push_walls(&mut self, scene: &Scene, playback: &Playback) {
         let sim = playback.simulation();
         let look = &scene.look;
+        let start = self.shapes.len();
         for (ring, outline) in sim.outlines() {
             if outline.thickness() > 0.0 {
                 let color = wall_color(&scene.container, ring);
@@ -487,8 +513,10 @@ impl FrameData {
         {
             self.push_shape_outline(sim, index as usize, place, *thickness, color.to_linear(), WALL_GLOW);
         }
+        self.tag_shapes(start, SHAPE_WALL);
 
         let now = sim.time();
+        let start = self.shapes.len();
         let lit_seconds = look.flash_seconds.max(0.3) as f64;
         let mut last_hit = vec![f64::NEG_INFINITY; sim.obstacles().len()];
         for hit in playback.recent_hits(lit_seconds) {
@@ -514,6 +542,8 @@ impl FrameData {
                 }
             }
         }
+        self.tag_shapes(start, SHAPE_OBSTACLE);
+        let start = self.shapes.len();
 
         let pieces = look.shatter_pieces.min(400);
         let gravity = scene.physics.gravity;
@@ -545,6 +575,14 @@ impl FrameData {
                 let glow = WALL_GLOW * 2.0 * fade * fade;
                 self.shapes.push(ShapeInstance::capsule(moved - half, moved + half, radius, color, glow));
             }
+        }
+        self.tag_shapes(start, SHAPE_WALL);
+    }
+
+    /// Marks the shapes from `start` on as walls or obstacles, for effects that work on them.
+    fn tag_shapes(&mut self, start: usize, tag: f32) {
+        for shape in &mut self.shapes[start..] {
+            shape.c[3] = tag;
         }
     }
 

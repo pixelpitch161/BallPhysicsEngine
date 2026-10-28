@@ -4,7 +4,7 @@ use super::{Roll, dice_button, grid, heading, hint, key, label, percent, resetta
 use crate::theme;
 use bpe_render::EffectLibrary;
 use bpe_render::effects::{self as fx, EffectInfo, ParamKind};
-use bpe_scene::{Effect, Property, Scene};
+use bpe_scene::{Effect, EffectTarget, Property, Scene};
 use eframe::egui::{self, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -121,7 +121,7 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
     let effects = &mut scene.effects;
     ui.label(
         RichText::new(
-            "Effects change the whole picture, one after another from top to bottom. They are saved in the scene and show in the exported video.",
+            "Effects change the whole picture, one after another from top to bottom, or with Applies to, only some balls, the walls or the obstacles, like a material. They are saved in the scene and show in the exported video.",
         )
         .color(theme::MUTED),
     );
@@ -134,9 +134,10 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut
     }
     let mut action = None;
     let count = effects.len();
+    let groups = group_names(&scene.spawners);
     for (index, effect) in effects.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
-            if let Some(a) = effect_card(ui, panel, effect, index, count) {
+            if let Some(a) = effect_card(ui, panel, effect, index, count, &groups) {
                 action = Some((index, a));
             }
         });
@@ -304,12 +305,62 @@ enum CardAction {
     Roll,
 }
 
+/// A name for each group of balls, as the Balls tab lists them.
+pub(crate) fn group_names(spawners: &[bpe_scene::Spawner]) -> Vec<String> {
+    spawners
+        .iter()
+        .enumerate()
+        .map(|(i, spawner)| {
+            let kind = match spawner {
+                bpe_scene::Spawner::Grid { .. } => "block of balls",
+                bpe_scene::Spawner::Single { .. } => "single ball",
+                bpe_scene::Spawner::Stream { .. } => "stream of balls",
+            };
+            format!("Balls {}: {kind}", i + 1)
+        })
+        .collect()
+}
+
+/// The name of what an effect changes.
+fn target_name(target: EffectTarget, groups: &[String]) -> String {
+    match target {
+        EffectTarget::Picture => "The whole picture".into(),
+        EffectTarget::Balls => "Every ball".into(),
+        EffectTarget::Group(n) => groups.get(n as usize).cloned().unwrap_or_else(|| format!("Balls {} (gone)", n + 1)),
+        EffectTarget::Walls => "The arena's walls".into(),
+        EffectTarget::Obstacles => "Pegs and obstacles".into(),
+    }
+}
+
+/// Picks what an effect changes: the whole picture, or only some things in it.
+fn target_row(ui: &mut Ui, effect: &mut Effect, groups: &[String]) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Applies to").color(theme::MUTED)).on_hover_text(
+            "The whole picture, or only some things in it, like a material. Effects on things are drawn first, under flashes, particles and captions.",
+        );
+        let mut targets = vec![EffectTarget::Picture, EffectTarget::Balls];
+        targets.extend((0..groups.len() as u32).map(EffectTarget::Group));
+        targets.extend([EffectTarget::Walls, EffectTarget::Obstacles]);
+        let combo = egui::ComboBox::from_id_salt("applies-to")
+            .selected_text(target_name(effect.target, groups))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for target in targets {
+                    ui.selectable_value(&mut effect.target, target, target_name(target, groups));
+                }
+            });
+        let enabled = combo.response.enabled();
+        combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, enabled, "Applies to"));
+    });
+}
+
 fn effect_card(
     ui: &mut Ui,
     panel: &mut EffectsPanel,
     effect: &mut Effect,
     index: usize,
     count: usize,
+    groups: &[String],
 ) -> Option<CardAction> {
     let info = panel.library.get(&effect.shader);
     let mut action = None;
@@ -429,6 +480,7 @@ fn effect_card(
         }
         ui.add_space(4.0);
         ui.add_enabled_ui(effect.enabled, |ui| {
+            target_row(ui, effect, groups);
             grid(ui, "params", |ui| {
                 key(ui, Property::EffectAmount(index as u32));
                 slider(

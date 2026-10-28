@@ -8,8 +8,11 @@ use super::graph::{Builder, Control, Graph};
 
 /// The node effects offered in the effect list.
 pub fn graphs() -> Vec<Graph> {
-    vec![bass_tunnel(), treble_sparkle(), beat_kaleido(), liquid_pulse()]
+    vec![bass_tunnel(), treble_sparkle(), beat_kaleido(), liquid_pulse(), lava(), rainbow_flow(), bass_glow()]
 }
+
+/// Node effects made to go on balls, walls or obstacles rather than the whole picture.
+pub const MATERIALS: [&str; 3] = ["Lava", "Rainbow flow", "Bass glow"];
 
 /// Built-in code effects that have a node version.
 pub const REBUILT: [&str; 10] =
@@ -278,6 +281,82 @@ fn bass_tunnel() -> Graph {
         .wire(ramp, "out", add, "layer")
         .wire(glow, "out", add, "amount")
         .wire(add, "out", out, "color");
+    b.finish()
+}
+
+/// Glowing, churning lava, different on every ball. Made for balls.
+fn lava() -> Graph {
+    let mut b = Builder::new("Lava");
+    let object = b.add("object");
+    let spread = b.add("multiply");
+    b.set(spread, "b", 7.0);
+    let moved = b.add("add");
+    let clouds = b.add("fbm");
+    b.set(clouds, "scale", 3.0).set(clouds, "speed", 0.35);
+    b.expose(clouds, "scale", Some("size")).expose(clouds, "speed", None);
+    let ramp = b.add("ramp");
+    b.set_color(ramp, "dark", [0.08, 0.0, 0.0]).set_color(ramp, "middle", [0.9, 0.12, 0.0]);
+    b.set_color(ramp, "bright", [1.0, 0.75, 0.15]);
+    let heat = b.add("multiply");
+    b.set(heat, "b", 1.6).expose(heat, "b", Some("heat")).range(heat, "b", 0.0, 4.0);
+    let out = b.add("output");
+    b.wire(object, "seed", spread, "a")
+        .wire(object, "local", moved, "a")
+        .wire(spread, "out", moved, "b")
+        .wire(moved, "out", clouds, "at")
+        .wire(clouds, "out", ramp, "t")
+        .wire(ramp, "out", heat, "a")
+        .wire(heat, "out", out, "color");
+    b.finish()
+}
+
+/// Colours that flow up the screen, keeping the light and shade of what's under them. Made for
+/// walls and obstacles.
+fn rainbow_flow() -> Graph {
+    let mut b = Builder::new("Rainbow flow");
+    let position = b.add("position");
+    let split = b.add("split");
+    let bands = b.add("multiply");
+    b.set(bands, "b", 0.8).expose(bands, "b", Some("bands")).range(bands, "b", 0.0, 4.0);
+    let time = b.add("time");
+    b.set(time, "speed", 0.25).expose(time, "speed", None).range(time, "speed", -2.0, 2.0);
+    let hue = b.add("add");
+    let rainbow = b.add("rainbow");
+    let picture = b.add("picture");
+    let light = b.add("split_colour");
+    let tint = b.add("multiply");
+    let glow = b.add("multiply");
+    b.set(glow, "b", 1.5).expose(glow, "b", Some("glow")).range(glow, "b", 0.0, 4.0);
+    let out = b.add("output");
+    b.wire(position, "out", split, "at")
+        .wire(split, "y", bands, "a")
+        .wire(bands, "out", hue, "a")
+        .wire(time, "out", hue, "b")
+        .wire(hue, "out", rainbow, "hue")
+        .wire(picture, "out", light, "color")
+        .wire(rainbow, "out", tint, "a")
+        .wire(light, "brightness", tint, "b")
+        .wire(tint, "out", glow, "a")
+        .wire(glow, "out", out, "color");
+    b.finish()
+}
+
+/// Brightens with the bass, so walls or balls throb with the music.
+fn bass_glow() -> Graph {
+    let mut b = Builder::new("Bass glow");
+    let music = b.add("music");
+    let punch = b.add("multiply");
+    b.set(punch, "b", 3.0).expose(punch, "b", Some("punch")).range(punch, "b", 0.0, 10.0);
+    let gain = b.add("add");
+    b.set(gain, "a", 1.0);
+    let picture = b.add("picture");
+    let lit = b.add("multiply");
+    let out = b.add("output");
+    b.wire(music, "bass", punch, "a")
+        .wire(punch, "out", gain, "b")
+        .wire(picture, "out", lit, "a")
+        .wire(gain, "out", lit, "b")
+        .wire(lit, "out", out, "color");
     b.finish()
 }
 

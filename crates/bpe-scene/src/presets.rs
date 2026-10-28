@@ -1289,4 +1289,66 @@ impl Scene {
             ..Scene::default()
         }
     }
+
+    /// Shader materials: lava balls, rainbow walls and glowing pegs, each a node effect that
+    /// changes only those things.
+    pub fn shader_materials() -> Self {
+        let lava_look = BallStyle { fill: BallFill::Shiny, glow: 0.2, glow_size: 0.6, ..BallStyle::default() };
+        let plain = BallStyle { trail_seconds: 0.25, trail_opacity: 0.4, ..BallStyle::default() };
+        Self {
+            name: "Shader materials".into(),
+            container: Container::Circle {
+                center: Vec2::ZERO,
+                radius: 480.0,
+                thickness: 14.0,
+                color: Color::rgb(0xf0, 0xf0, 0xf0),
+            },
+            obstacles: vec![Obstacle::PegGrid {
+                center: Vec2::new(0.0, 150.0),
+                columns: 5,
+                rows: 3,
+                spacing: Vec2::new(150.0, 120.0),
+                radius: 18.0,
+                stagger: true,
+                color: Color::rgb(0xff, 0xff, 0xff),
+            }],
+            spawners: vec![
+                Spawner::Grid {
+                    center: Vec2::new(0.0, -280.0),
+                    columns: 3,
+                    rows: 2,
+                    spacing: 130.0,
+                    radius: 44.0,
+                    velocity: Vec2::new(240.0, -100.0),
+                    gradient: vec![Color::rgb(0xff, 0x60, 0x20)],
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                    style: Some(lava_look),
+                },
+                Spawner::Stream {
+                    position: Vec2::new(0.0, -380.0),
+                    velocity: Vec2::new(0.0, 100.0),
+                    radius: 12.0,
+                    count: 40,
+                    interval: 0.25,
+                    jitter: 120.0,
+                    gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xb0, 0x5c, 0xff)],
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                    style: Some(plain),
+                },
+            ],
+            effects: vec![
+                Effect::new("graph:Lava").on(EffectTarget::Group(0)),
+                Effect::new("graph:Rainbow flow").on(EffectTarget::Walls),
+                Effect::new("graph:Rainbow flow").with("bands", 2.5).with("speed", -0.4).on(EffectTarget::Obstacles),
+            ],
+            physics: Physics { gravity: Vec2::new(0.0, 900.0), ball_collisions: true, ..Physics::default() },
+            rules: BounceRules { max_speed: 1500.0, ..BounceRules::default() },
+            look: Look { trail_seconds: 0.0, ..Look::default() },
+            sound: Sound { progression: chords(&["Am", "F", "C", "G"], 3.0), ..Sound::default() },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Scene::default()
+        }
+    }
 }

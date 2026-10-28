@@ -24,8 +24,8 @@ pub(crate) use effects::pretty_name;
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene,
-    Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, EffectTarget, Group, Look, Obstacle, Physics,
+    Property, Scene, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -219,7 +219,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
-                    balls(
+                    let shaders = BallShaders::new(scene, &inspector.effects.library);
+                    let change = balls(
                         ui,
                         &mut scene.spawners,
                         &mut inspector.selected,
@@ -227,7 +228,9 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         &scene.look,
                         &mut roll,
                         space,
+                        &shaders,
                     );
+                    change.apply(scene);
                     soft::section(ui, scene, &mut inspector.soft);
                     gpu::section(ui, scene, &mut inspector.gpu);
                 }
@@ -784,6 +787,118 @@ fn new_stream() -> Spawner {
     }
 }
 
+/// The shader effects a ball group can wear like a material, and which one each group has.
+pub(crate) struct BallShaders {
+    /// Every effect, as (id, title).
+    pub choices: Vec<(String, String)>,
+    /// For each group, the first effect on it alone, as (id, title).
+    pub worn: Vec<Option<(String, String)>>,
+}
+
+impl BallShaders {
+    fn new(scene: &Scene, library: &bpe_render::effects::EffectLibrary) -> Self {
+        let title = |id: &str| library.get(id).map_or_else(|| id.to_string(), |info| info.title.clone());
+        let mut choices: Vec<(String, String)> =
+            library.list().iter().map(|i| (i.id.clone(), i.title.clone())).collect();
+        // Materials first: they are made for this.
+        let materials: Vec<String> = bpe_render::effects::templates::MATERIALS.iter().map(|n| fx_graph_id(n)).collect();
+        choices.sort_by_key(|(id, _)| !materials.contains(id));
+        let worn = (0..scene.spawners.len())
+            .map(|i| {
+                let effect = scene.effects.iter().find(|e| e.target == EffectTarget::Group(i as u32));
+                effect.map(|e| (e.shader.clone(), title(&e.shader)))
+            })
+            .collect();
+        Self { choices, worn }
+    }
+}
+
+fn fx_graph_id(name: &str) -> String {
+    bpe_render::effects::graph::effect_id(name)
+}
+
+/// What the ball cards changed that reaches outside the balls: effects follow their groups.
+#[derive(Default)]
+pub(crate) struct BallsChange {
+    removed: Option<usize>,
+    duplicated: Option<usize>,
+    /// A group picked a shader to wear (`Some(id)`) or took its shader off (`None`).
+    shader: Option<(usize, Option<String>)>,
+}
+
+impl BallsChange {
+    fn apply(self, scene: &mut Scene) {
+        if let Some(removed) = self.removed {
+            // Shaders on the deleted balls go with them, keyframes and all.
+            let mut index = 0;
+            while index < scene.effects.len() {
+                match scene.effects[index].target.after_removing_group(removed as u32) {
+                    Some(target) => {
+                        scene.effects[index].target = target;
+                        index += 1;
+                    }
+                    None => {
+                        scene.effects.remove(index);
+                        let i = index as u32;
+                        scene.remap_effect_tracks(|k| match k {
+                            k if k == i => None,
+                            k if k > i => Some(k - 1),
+                            k => Some(k),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(index) = self.duplicated {
+            let index = index as u32;
+            // The copy sits right after the original: later groups move down one, and the copy
+            // wears copies of the original's shaders.
+            for effect in &mut scene.effects {
+                if let EffectTarget::Group(n) = &mut effect.target
+                    && *n > index
+                {
+                    *n += 1;
+                }
+            }
+            let copies: Vec<usize> =
+                (0..scene.effects.len()).filter(|&i| scene.effects[i].target == EffectTarget::Group(index)).collect();
+            for (added, i) in copies.into_iter().enumerate() {
+                let mut copy = scene.effects[i + added].clone();
+                copy.target = EffectTarget::Group(index + 1);
+                let at = scene.effects.len() as u32;
+                scene.effects.push(copy);
+                scene.copy_effect_tracks((i + added) as u32, at);
+            }
+        }
+        if let Some((group, shader)) = self.shader {
+            let target = EffectTarget::Group(group as u32);
+            let worn = scene.effects.iter().position(|e| e.target == target);
+            match (shader, worn) {
+                (Some(id), Some(i)) => {
+                    let effect = &mut scene.effects[i];
+                    if effect.shader != id {
+                        *effect = bpe_scene::Effect::new(id).on(target);
+                        scene.remap_effect_tracks(|k| (k != i as u32).then_some(k));
+                    }
+                    scene.effects[i].enabled = true;
+                }
+                (Some(id), None) => scene.effects.push(bpe_scene::Effect::new(id).on(target)),
+                (None, Some(i)) => {
+                    scene.effects.remove(i);
+                    let i = i as u32;
+                    scene.remap_effect_tracks(|k| match k {
+                        k if k == i => None,
+                        k if k > i => Some(k - 1),
+                        k => Some(k),
+                    });
+                }
+                (None, None) => {}
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn balls(
     ui: &mut Ui,
     spawners: &mut Vec<Spawner>,
@@ -792,7 +907,9 @@ fn balls(
     look: &Look,
     roll: &mut Option<Roll>,
     space: bool,
-) {
+    shaders: &BallShaders,
+) -> BallsChange {
+    let mut change = BallsChange::default();
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -967,6 +1084,9 @@ fn balls(
                     view3d::spawner_depth(ui, spawner); // 3D (WS4)
                 }
                 ball_look::section(ui, index, spawner.style_mut(), look, looks);
+                if let Some(pick) = ball_look::shader_row(ui, index, shaders) {
+                    change.shader = Some((index, pick));
+                }
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
             // colour buttons and menus inside still get their clicks.
@@ -982,11 +1102,14 @@ fn balls(
         spawners.insert(index + 1, copy);
         *selected = Some(index + 1);
         looks.picked.clear();
+        change.duplicated = Some(index);
     }
     if let Some(index) = remove {
         spawners.remove(index);
         *selected = None;
         looks.picked.clear();
+        change.removed = Some(index);
+        change.shader = None;
     }
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Add a block of balls").clicked() {
@@ -1002,6 +1125,7 @@ fn balls(
             *selected = Some(spawners.len() - 1);
         }
     });
+    change
 }
 
 const RING_RADIUS: f32 = 508.0;
@@ -1882,6 +2006,30 @@ fn parse_note(text: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shaders_follow_their_ball_groups() {
+        use super::BallsChange;
+        use bpe_scene::{Effect, EffectTarget, Scene};
+        let mut scene = Scene::ball_looks();
+        // Wearing a shader adds an effect on that group; picking another swaps it.
+        BallsChange { shader: Some((2, Some("graph:Lava".into()))), ..Default::default() }.apply(&mut scene);
+        assert_eq!(scene.effects, vec![Effect::new("graph:Lava").on(EffectTarget::Group(2))]);
+        BallsChange { shader: Some((2, Some("liquid".into()))), ..Default::default() }.apply(&mut scene);
+        assert_eq!(scene.effects, vec![Effect::new("liquid").on(EffectTarget::Group(2))]);
+        // A copy of the group wears a copy, and the groups after it move along.
+        scene.effects.push(Effect::new("film").on(EffectTarget::Group(5)));
+        BallsChange { duplicated: Some(2), ..Default::default() }.apply(&mut scene);
+        let targets: Vec<_> = scene.effects.iter().map(|e| e.target).collect();
+        assert_eq!(targets, [EffectTarget::Group(2), EffectTarget::Group(6), EffectTarget::Group(3)]);
+        // Removing a group removes its shader, and the groups after it move back.
+        BallsChange { removed: Some(2), ..Default::default() }.apply(&mut scene);
+        let targets: Vec<_> = scene.effects.iter().map(|e| e.target).collect();
+        assert_eq!(targets, [EffectTarget::Group(5), EffectTarget::Group(2)]);
+        // Taking the shader off removes it.
+        BallsChange { shader: Some((2, None)), ..Default::default() }.apply(&mut scene);
+        assert_eq!(scene.effects, vec![Effect::new("film").on(EffectTarget::Group(5))]);
+    }
+
     #[test]
     fn additive_colours_survive_the_colour_picker() {
         use super::{picker_color, scene_color};

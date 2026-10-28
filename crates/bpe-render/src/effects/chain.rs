@@ -33,7 +33,8 @@ struct FxUniform {
     scale: f32,
     level: f32,
     view: u32,
-    pad: f32,
+    /// What the effect changes, see [`bpe_scene::EffectTarget::code`].
+    apply_to: f32,
     audio: [f32; 4],
     params: [f32; MAX_PARAMS],
     hits: [[f32; 4]; MAX_HITS],
@@ -164,6 +165,29 @@ fn build_pipeline(
     }
 }
 
+/// Which effects [`EffectChain::apply`] runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// Effects on things (balls, walls, obstacles), like materials, before flashes, particles and
+    /// captions are drawn.
+    Things,
+    /// Effects on the whole picture.
+    Picture,
+}
+
+impl Stage {
+    fn runs(self, effect: &bpe_scene::Effect) -> bool {
+        effect.target.is_picture() == (self == Stage::Picture)
+    }
+}
+
+/// One stage's effects from frame to frame.
+#[derive(Default)]
+struct StageState {
+    slots: Vec<Slot>,
+    last_time: Option<f64>,
+}
+
 /// Per-position state: the uniform buffer and, for feedback effects, last frame's output.
 struct Slot {
     id: String,
@@ -178,14 +202,16 @@ pub(crate) struct EffectChain {
     pipeline_layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
     black: wgpu::TextureView,
+    /// Stands in for the object picture when nothing needs one: no objects anywhere.
+    no_objects: wgpu::TextureView,
     pipelines: HashMap<String, Pipeline>,
     /// New versions of pipelines being built on other threads, by effect id.
     building: HashMap<String, Building>,
     /// Whether changed effects are rebuilt on other threads, see [`EffectChain::set_background_builds`].
     background: bool,
-    slots: Vec<Slot>,
+    /// Effects on things, then effects on the whole picture: each with its own feedback history.
+    stages: [StageState; 2],
     scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
-    last_time: Option<f64>,
     gpu_errors: Vec<(String, String)>,
     thumbnails: Thumbnails,
 }
@@ -223,6 +249,16 @@ impl EffectChain {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -237,18 +273,19 @@ impl EffectChain {
             ..Default::default()
         });
         let black = make_texture(device, 1, 1, format, "effect black").1;
+        let no_objects = make_texture(device, 1, 1, crate::OBJECT_FORMAT, "no objects").1;
         Self {
             library: EffectLibrary::new(),
             layout,
             pipeline_layout,
             sampler,
             black,
+            no_objects,
             pipelines: HashMap::new(),
             building: HashMap::new(),
             background: false,
-            slots: Vec::new(),
+            stages: Default::default(),
             scratch: None,
-            last_time: None,
             gpu_errors: Vec::new(),
             thumbnails: Thumbnails::default(),
         }
@@ -331,10 +368,27 @@ impl EffectChain {
 
     /// Forgets feedback history, so the next frame starts the echo effects from black.
     pub fn reset(&mut self) {
-        self.last_time = None;
+        for stage in &mut self.stages {
+            stage.last_time = None;
+        }
     }
 
-    /// Applies the scene's enabled effects to `hdr` in place, recording the passes into `encoder`.
+    /// Starts a new frame: the stages that follow draw the block previews at most once.
+    pub fn begin_frame(&mut self) {
+        self.thumbnails.drawn = false;
+    }
+
+    /// Whether this frame needs the object picture: an effect on things, or any effect that reads
+    /// what is where (its shader calls `object_at`).
+    pub fn wants_objects(&self, scene: &Scene) -> bool {
+        scene.effects.iter().filter(|e| e.enabled && e.amount > 0.0).any(|e| {
+            !e.target.is_picture()
+                || self.library.get_in(&e.shader, &scene.shader_graphs).is_some_and(|info| info.uses_objects)
+        })
+    }
+
+    /// Applies the scene's enabled effects of one stage to `hdr` in place, recording the passes
+    /// into `encoder`. `objects` is the object picture, if this frame drew one.
     #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
@@ -346,12 +400,16 @@ impl EffectChain {
         scene: &Scene,
         time: f64,
         frame: &FrameData,
+        stage: Stage,
+        objects: Option<&wgpu::TextureView>,
     ) {
+        let objects = objects.unwrap_or(&self.no_objects).clone();
+        let stage_index = stage as usize;
         let active: Vec<_> = scene
             .effects
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.enabled && e.amount > 0.0)
+            .filter(|(_, e)| e.enabled && e.amount > 0.0 && stage.runs(e))
             .filter_map(|(index, effect)| {
                 let info = self.library.get_in(&effect.shader, &scene.shader_graphs)?;
                 info.compiled.is_ok().then_some((index, effect, info))
@@ -370,35 +428,38 @@ impl EffectChain {
                 built.pipeline.is_some().then(|| (index, effect, built.info.clone()))
             })
             .collect();
-        self.thumbnails.drawn = false;
-        let thumbs_here = self.thumbnails.request.as_ref().map(|r| r.effect);
+        // Block previews are drawn by the stage that runs their effect, else by the picture
+        // stage from the finished scene.
+        let thumbs_here = self.thumbnails.request.as_ref().map(|r| r.effect).filter(|_| !self.thumbnails.drawn);
         let thumbs_in_chain = active.iter().any(|(index, _, _)| Some(*index) == thumbs_here);
+        let thumbs_here = thumbs_here.filter(|_| thumbs_in_chain || stage == Stage::Picture);
         if active.is_empty() {
-            self.last_time = None;
+            self.stages[stage_index].last_time = None;
             if thumbs_here.is_some() {
                 let base = self.base_uniform(scene, time, frame, hdr, 1.0 / scene.video.fps.max(1) as f32);
-                self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene);
+                self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene, &objects);
             }
             return;
         }
 
         let (width, height) = (hdr.width(), hdr.height());
-        let fresh = match self.last_time {
+        let last_time = self.stages[stage_index].last_time;
+        let fresh = match last_time {
             Some(last) => time < last || time - last > MAX_STEP,
             None => true,
         };
-        let dt = match self.last_time {
+        let dt = match last_time {
             Some(last) if !fresh => (time - last) as f32,
             _ => 1.0 / scene.video.fps.max(1) as f32,
         };
-        self.last_time = Some(time);
+        self.stages[stage_index].last_time = Some(time);
         if self.scratch.as_ref().is_none_or(|(t, _)| t.width() != width || t.height() != height) {
             self.scratch = Some(make_texture(device, width, height, hdr.format(), "effect scratch"));
         }
 
         let base = self.base_uniform(scene, time, frame, hdr, dt);
         if thumbs_here.is_some() && !thumbs_in_chain {
-            self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene);
+            self.draw_thumbnails(device, queue, encoder, hdr_view, None, base, scene, &objects);
         }
 
         let mut in_scratch = false;
@@ -406,13 +467,15 @@ impl EffectChain {
             if Some(*scene_index) == thumbs_here {
                 let source = if in_scratch { &self.scratch.as_ref().unwrap().1 } else { hdr_view };
                 let source = source.clone();
-                let prev = self.slots.get(index).and_then(|s| s.history.as_ref()).map(|(_, v)| v.clone());
-                self.draw_thumbnails(device, queue, encoder, &source, prev.as_ref(), base, scene);
+                let slots = &self.stages[stage_index].slots;
+                let prev = slots.get(index).and_then(|s| s.history.as_ref()).map(|(_, v)| v.clone());
+                self.draw_thumbnails(device, queue, encoder, &source, prev.as_ref(), base, scene, &objects);
             }
             let pipeline = self.pipelines[&info.id].pipeline.as_ref().unwrap();
 
-            if self.slots.len() <= index {
-                self.slots.push(Slot {
+            let slots = &mut self.stages[stage_index].slots;
+            if slots.len() <= index {
+                slots.push(Slot {
                     id: String::new(),
                     uniform: device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("effect uniform"),
@@ -424,7 +487,7 @@ impl EffectChain {
                     frames: 0,
                 });
             }
-            let slot = &mut self.slots[index];
+            let slot = &mut slots[index];
             if slot.id != info.id || fresh {
                 slot.id = info.id.clone();
                 slot.frames = 0;
@@ -444,6 +507,7 @@ impl EffectChain {
             uniform.amount = effect.amount.clamp(0.0, 1.0);
             uniform.frame = slot.frames as f32;
             uniform.params = info.values(&effect.params);
+            uniform.apply_to = effect.target.code();
             queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniform));
             slot.frames = slot.frames.saturating_add(1);
 
@@ -462,6 +526,7 @@ impl EffectChain {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(prev) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&objects) },
                 ],
             });
             {
@@ -514,6 +579,7 @@ impl EffectChain {
         prev: Option<&wgpu::TextureView>,
         base: FxUniform,
         scene: &Scene,
+        objects: &wgpu::TextureView,
     ) {
         let Some(request) = self.thumbnails.request.clone() else { return };
         let Ok(code) = &request.info.compiled else { return };
@@ -549,7 +615,9 @@ impl EffectChain {
                 mapped_at_creation: false,
             }));
         }
-        let params = scene.effects.get(request.effect).map(|e| built.values(&e.params)).unwrap_or_default();
+        let effect = scene.effects.get(request.effect);
+        let params = effect.map(|e| built.values(&e.params)).unwrap_or_default();
+        let target = effect.map_or(0.0, |e| e.target.code());
         let groups: Vec<_> = request
             .views
             .iter()
@@ -559,6 +627,7 @@ impl EffectChain {
                 uniform.amount = 1.0;
                 uniform.view = view;
                 uniform.params = params;
+                uniform.apply_to = target;
                 queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("block preview inputs"),
@@ -571,6 +640,7 @@ impl EffectChain {
                             resource: wgpu::BindingResource::TextureView(prev.unwrap_or(&self.black)),
                         },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(objects) },
                     ],
                 })
             })
