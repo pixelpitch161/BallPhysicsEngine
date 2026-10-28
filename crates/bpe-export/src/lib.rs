@@ -6,7 +6,7 @@
 //! machine just takes longer, and the result is identical.
 
 use anyhow::{Context, bail};
-use bpe_render::{FrameData, Renderer, wgpu};
+use bpe_render::{EffectLibrary, FrameData, Renderer, wgpu};
 use bpe_scene::Scene;
 use bpe_sim::Playback;
 use std::io::{Read, Write};
@@ -27,6 +27,8 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Folder that relative paths in the scene (such as samples) are resolved against.
     pub base_dir: Option<PathBuf>,
+    /// Where the scene's shader effects come from. Built-ins only unless folders are set.
+    pub effects: EffectLibrary,
 }
 
 impl ExportOptions {
@@ -39,6 +41,7 @@ impl ExportOptions {
             scale: 1.0,
             max_frames: None,
             base_dir: None,
+            effects: EffectLibrary::new(),
         }
     }
 }
@@ -92,6 +95,7 @@ pub fn export_video(
     let stderr = collect_stderr(&mut child);
 
     let mut renderer = Renderer::new(device, width, height);
+    renderer.set_effect_library(options.effects.clone());
     let mut playback = Playback::new(scene);
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
@@ -123,10 +127,12 @@ pub fn export_video(
 }
 
 /// Renders one frame at `time` and saves it as a PNG (through ffmpeg).
+#[allow(clippy::too_many_arguments)]
 pub fn export_still(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     scene: &Scene,
+    effects: &EffectLibrary,
     time: f64,
     scale: f32,
     ffmpeg: &Path,
@@ -134,9 +140,23 @@ pub fn export_still(
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, scale);
     let mut renderer = Renderer::new(device, width, height);
+    renderer.set_effect_library(effects.clone());
     let mut playback = Playback::new(scene);
+    let mut frame = FrameData::default();
+    let pixel = renderer.pixel_size(scene);
+    // Effects like Echo build up over many frames, so play the moments before `time` first.
+    let uses_feedback = scene.effects.iter().any(|e| e.enabled && effects.get(&e.shader).is_some_and(|i| i.uses_prev));
+    let fps = scene.video.fps.max(1) as f64;
+    let first = if uses_feedback { ((time - 3.0).max(0.0) * fps).round() as u64 } else { (time * fps).round() as u64 };
+    let last = (time * fps).round() as u64;
+    for index in first..last {
+        let t = index as f64 / fps;
+        playback.seek(t);
+        frame.fill(scene, &playback, pixel);
+        renderer.render(device, queue, scene, t, &frame);
+    }
     playback.seek(time);
-    let frame = FrameData::build(scene, &playback, renderer.pixel_size(scene));
+    frame.fill(scene, &playback, pixel);
     renderer.render(device, queue, scene, time, &frame);
     let pixels = renderer.read_output(device, queue)?;
 

@@ -4,9 +4,12 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
+pub mod effects;
 mod frame;
 
-pub use frame::{BallInstance, FlashInstance, FrameData, TrailVertex};
+pub use effects::EffectLibrary;
+pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
+pub use frame::{BallInstance, FlashInstance, FrameData, RecentHit, TrailVertex};
 pub use wgpu;
 
 use bpe_scene::{Container, Scene};
@@ -59,6 +62,7 @@ impl Globals {
 struct Targets {
     width: u32,
     height: u32,
+    hdr_texture: wgpu::Texture,
     hdr: wgpu::TextureView,
     bloom: Vec<wgpu::TextureView>,
     output: wgpu::Texture,
@@ -85,6 +89,7 @@ pub struct Renderer {
     trail_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
+    effects: effects::EffectChain,
     targets: Targets,
 }
 
@@ -322,6 +327,7 @@ impl Renderer {
             trail_buffer: GrowableBuffer::new("trail vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
+            effects: effects::EffectChain::new(device, HDR_FORMAT),
             targets,
         }
     }
@@ -335,6 +341,26 @@ impl Renderer {
             self.targets =
                 Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
         }
+    }
+
+    /// The effects this renderer can use. Built-ins only, unless [`Renderer::set_effect_library`] was called.
+    pub fn effect_library(&self) -> &EffectLibrary {
+        self.effects.library()
+    }
+
+    /// Shares a library (usually one with custom effect folders) with this renderer.
+    pub fn set_effect_library(&mut self, library: EffectLibrary) {
+        self.effects.set_library(library);
+    }
+
+    /// Effects the GPU refused even though they passed the shader check, as (id, message).
+    pub fn effect_gpu_errors(&self) -> &[(String, String)] {
+        self.effects.gpu_errors()
+    }
+
+    /// Starts feedback effects such as Echo afresh on the next frame.
+    pub fn reset_effects(&mut self) {
+        self.effects.reset();
     }
 
     /// The finished image: sRGB-encoded `Rgba8Unorm`.
@@ -381,6 +407,7 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
         }
+        self.effects.apply(device, queue, &mut encoder, &self.targets.hdr_texture, &self.targets.hdr, scene, time, frame);
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -481,7 +508,10 @@ impl Targets {
             })
         };
         let render_and_sample = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let hdr = texture("hdr", width, height, HDR_FORMAT, render_and_sample).create_view(&Default::default());
+        // The effect chain copies its result back into the HDR image.
+        let copyable = render_and_sample | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        let hdr_texture = texture("hdr", width, height, HDR_FORMAT, copyable);
+        let hdr = hdr_texture.create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -513,7 +543,7 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
             ],
         });
-        Self { width, height, hdr, bloom, output, output_view, down_sources, up_sources, composite }
+        Self { width, height, hdr_texture, hdr, bloom, output, output_view, down_sources, up_sources, composite }
     }
 }
 

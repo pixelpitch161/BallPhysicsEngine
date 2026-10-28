@@ -256,6 +256,7 @@ dependencies = [
  "bpe-scene",
  "bpe-sim",
  "bytemuck",
+ "naga",
  "pollster 1.0.1",
  "wgpu",
 ]
