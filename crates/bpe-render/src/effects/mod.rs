@@ -348,6 +348,9 @@ struct Inner {
     custom: BTreeMap<String, (Arc<EffectInfo>, Option<SystemTime>)>,
     /// Node effects from the scene, by id. They replace built-in node effects of the same name.
     graphs: BTreeMap<String, Arc<EffectInfo>>,
+    /// Node effects recently built for some scene, newest last, so renderers drawing different
+    /// scenes (the preview, an export, the explorer) each find theirs without rebuilding.
+    graph_cache: Vec<Arc<EffectInfo>>,
     folders: Vec<PathBuf>,
     /// Goes up whenever a custom effect is added, changed or removed.
     revision: u64,
@@ -376,13 +379,16 @@ impl EffectLibrary {
             let info = EffectInfo::from_graph(&graph, true);
             builtins.insert(info.id.clone(), Arc::new(info));
         }
-        let inner = Inner { builtins, custom: BTreeMap::new(), graphs: BTreeMap::new(), folders: Vec::new(), revision: 0 };
+        let inner = Inner { builtins, custom: BTreeMap::new(), graphs: BTreeMap::new(), graph_cache: Vec::new(), folders: Vec::new(), revision: 0 };
         Self { inner: Arc::new(RwLock::new(inner)) }
     }
 
     /// Makes the scene's node effects available as `graph:Name`, rebuilding only graphs that
     /// changed. Cheap to call every frame. Returns whether anything changed.
     pub fn sync_graphs(&self, graphs: &[graph::Graph]) -> bool {
+        // The first graph of a name wins, like the effect folders.
+        let mut seen = std::collections::BTreeSet::new();
+        let graphs: Vec<&graph::Graph> = graphs.iter().filter(|g| seen.insert(g.name.as_str())).collect();
         let unchanged = {
             let inner = self.inner.read().unwrap();
             inner.graphs.len() == graphs.len()
@@ -391,25 +397,14 @@ impl EffectLibrary {
                         .graphs
                         .get(&graph::effect_id(&g.name))
                         .and_then(|info| info.graph.as_ref())
-                        .is_some_and(|info| info.graph == *g)
+                        .is_some_and(|info| info.graph == **g)
                 })
         };
         if unchanged {
             return false;
         }
-        let mut fresh = BTreeMap::new();
-        {
-            let inner = self.inner.read().unwrap();
-            for g in graphs {
-                let id = graph::effect_id(&g.name);
-                if fresh.contains_key(&id) {
-                    continue; // The first graph of a name wins, like the effect folders.
-                }
-                let current = inner.graphs.get(&id).filter(|i| i.graph.as_ref().is_some_and(|info| info.graph == *g));
-                let info = current.cloned().unwrap_or_else(|| Arc::new(EffectInfo::from_graph(g, false)));
-                fresh.insert(id, info);
-            }
-        }
+        let fresh: BTreeMap<_, _> =
+            graphs.iter().map(|g| (graph::effect_id(&g.name), self.graph_effect(g))).collect();
         let mut inner = self.inner.write().unwrap();
         inner.graphs = fresh;
         inner.revision += 1;
@@ -491,6 +486,40 @@ impl EffectLibrary {
 
     /// Looks up an effect by id. A custom file overrides a built-in of the same name, and a
     /// scene's node effect overrides a built-in node effect.
+    /// The effect built from `graph`, reusing one built before for the same graph.
+    pub fn graph_effect(&self, graph: &graph::Graph) -> Arc<EffectInfo> {
+        const KEEP: usize = 32;
+        let same = |i: &&Arc<EffectInfo>| i.graph.as_ref().is_some_and(|g| g.graph == *graph);
+        {
+            let inner = self.inner.read().unwrap();
+            if let Some(info) = inner.graphs.values().find(same).or_else(|| inner.graph_cache.iter().find(same)) {
+                return info.clone();
+            }
+        }
+        let info = Arc::new(EffectInfo::from_graph(graph, false));
+        let mut inner = self.inner.write().unwrap();
+        if inner.graph_cache.len() >= KEEP {
+            inner.graph_cache.remove(0);
+        }
+        inner.graph_cache.push(info.clone());
+        info
+    }
+
+    /// Like [`EffectLibrary::get`], but node effects come from `graphs` (a scene's own), not
+    /// from the last [`EffectLibrary::sync_graphs`]. Safe for renderers of different scenes.
+    pub fn get_in(&self, id: &str, graphs: &[graph::Graph]) -> Option<Arc<EffectInfo>> {
+        let custom = self.inner.read().unwrap().custom.get(id).map(|(info, _)| info.clone());
+        if custom.is_some() {
+            return custom;
+        }
+        if let Some(name) = graph::graph_name(id)
+            && let Some(g) = graphs.iter().find(|g| g.name == name)
+        {
+            return Some(self.graph_effect(g));
+        }
+        self.inner.read().unwrap().builtins.get(id).cloned()
+    }
+
     pub fn get(&self, id: &str) -> Option<Arc<EffectInfo>> {
         let inner = self.inner.read().unwrap();
         inner

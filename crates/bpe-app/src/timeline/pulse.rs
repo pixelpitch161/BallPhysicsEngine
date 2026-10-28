@@ -39,7 +39,7 @@ impl Lane for PulseLane {
 
     fn draw(&mut self, ui: &mut Ui, rect: Rect, ctx: &LaneContext) {
         let painter = ui.painter_at(rect);
-        let mix = pulse::published_mix(ui.ctx());
+        let music = pulse::published_music(ui.ctx());
         let scale = ctx.scale;
         let end = scale.x(ctx.scene.video.duration).min(rect.right());
         for (index, m) in ctx.scene.modulators.iter().enumerate() {
@@ -51,9 +51,9 @@ impl Lane for PulseLane {
             let mut x = wave.left();
             while x <= wave.right() {
                 let time = scale.time(x) as f64;
-                let s = match &mix {
-                    Some(mix) => pulse::strength(m, mix, time).clamp(0.0, 1.2) / 1.2,
-                    // Until the soundtrack is ready, a gentle wave says "this pulses".
+                let s = match pulse::strength(m, &music, time) {
+                    Some(s) => s.clamp(0.0, 1.2) / 1.2,
+                    // Without the music it follows, a gentle wave just says "this pulses".
                     None => 0.5 + 0.35 * (time as f32 * 6.0).sin(),
                 };
                 points.push(Pos2::new(x, wave.bottom() - s * wave.height()));

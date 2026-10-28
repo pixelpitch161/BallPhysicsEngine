@@ -20,7 +20,7 @@ mod view;
 
 pub use animation::{
     Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
-    apply_modulators, remap_effect_modulators,
+    remap_effect_modulators,
 };
 pub use bodies::*;
 pub use bpe_graph::Graph;

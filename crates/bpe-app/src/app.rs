@@ -352,7 +352,11 @@ impl StudioApp {
                         }
                     }
                 }
-                Err(error) => self.sound.error = Some(format!("{error:#}")),
+                Err(error) => {
+                    self.sound.error = Some(format!("{error:#}"));
+                    // WS5: don't keep pulsing to a soundtrack that is gone.
+                    self.mix = None;
+                }
             }
         }
         let due = self.sound.dirty_since.is_some_and(|t| t.elapsed() >= SOUND_DEBOUNCE);
@@ -825,7 +829,12 @@ impl eframe::App for StudioApp {
             self.scene = shown.clone();
         }
         keys::publish(&ctx, &self.scene, key_time);
-        crate::setting_menu::pulse::publish(&ctx, &self.scene, self.mix.clone());
+        crate::setting_menu::pulse::publish(
+            &ctx,
+            &self.scene,
+            self.mix.clone(),
+            self.playback.simulation().inputs().music.clone(),
+        );
         egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
@@ -920,7 +929,7 @@ impl eframe::App for StudioApp {
                 _ => None,
             });
         }
-        crate::setting_menu::pulse::window(&ctx, &mut self.scene, self.mix.as_deref(), self.time);
+        crate::setting_menu::pulse::window(&ctx, &mut self.scene, self.time);
         // WS5: "New node effect" and "Edit as nodes" open the Shaders workspace.
         if let Some(name) = self.inspector.effects.open_graph.take() {
             self.shaders.open(name);

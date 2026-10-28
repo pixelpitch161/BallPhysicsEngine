@@ -736,7 +736,8 @@ impl Property {
 
 /// Applies `modulators` to `scene` at `time` (only those on settings that move balls, with
 /// `simulation_only`). Modulators come after keyframes, so they pulse around the animated value.
-pub fn apply_modulators(scene: &mut Scene, modulators: &[Modulator], time: f64, simulation_only: bool, audio: &Audio) {
+#[cfg(test)]
+fn apply_modulators(scene: &mut Scene, modulators: &[Modulator], time: f64, simulation_only: bool, audio: &Audio) {
     for modulator in modulators {
         if simulation_only && !modulator.property.affects_simulation() {
             continue;

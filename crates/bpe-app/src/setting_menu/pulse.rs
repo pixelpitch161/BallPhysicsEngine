@@ -19,6 +19,8 @@ struct Status {
     pulsing: HashMap<Property, bool>,
     /// The finished soundtrack's analysis, once it is ready.
     mix: Option<Arc<AudioFeatures>>,
+    /// The loaded song's analysis, if there is a song.
+    song: Option<Arc<AudioFeatures>>,
 }
 
 /// Something asked for while the panels were drawn.
@@ -45,22 +47,34 @@ fn window_id() -> egui::Id {
 }
 
 /// Tells this frame's menus and icons which settings pulse.
-pub fn publish(ctx: &egui::Context, scene: &Scene, mix: Option<Arc<AudioFeatures>>) {
+pub fn publish(ctx: &egui::Context, scene: &Scene, mix: Option<Arc<AudioFeatures>>, song: Option<Arc<AudioFeatures>>) {
     let pulsing = scene.modulators.iter().map(|m| (m.property.clone(), m.enabled)).collect();
-    ctx.data_mut(|d| d.insert_temp(status_id(), Arc::new(Status { pulsing, mix })));
+    ctx.data_mut(|d| d.insert_temp(status_id(), Arc::new(Status { pulsing, mix, song })));
 }
 
-/// The finished soundtrack's analysis published this frame, if it is ready.
-pub fn published_mix(ctx: &egui::Context) -> Option<Arc<AudioFeatures>> {
-    status(ctx).mix.clone()
+/// The music published this frame: the finished soundtrack's analysis once it is ready, and the
+/// song's.
+#[derive(Clone, Default)]
+pub struct Music {
+    pub mix: Option<Arc<AudioFeatures>>,
+    pub song: Option<Arc<AudioFeatures>>,
 }
 
-/// How strongly the music pushes `modulator` at `time`, from 0 to about 1, following `mix`.
-pub fn strength(modulator: &Modulator, mix: &AudioFeatures, time: f64) -> f32 {
-    let listener = |t: f64| bpe_render::audio_levels(mix, t);
-    let listener: &dyn Fn(f64) -> Levels = &listener;
-    let audio = bpe_scene::Audio { song: Some(listener), mix: Some(listener) };
-    modulator.strength(time.max(0.0), &audio).unwrap_or(0.0)
+pub fn published_music(ctx: &egui::Context) -> Music {
+    let status = status(ctx);
+    Music { mix: status.mix.clone(), song: status.song.clone() }
+}
+
+/// How strongly the music pushes `modulator` at `time`, from 0 to about 1, following the same
+/// music the video does. None when the music it listens to isn't there.
+pub fn strength(modulator: &Modulator, music: &Music, time: f64) -> Option<f32> {
+    let song = music.song.as_deref().map(|s| move |t: f64| bpe_render::audio_levels(s, t));
+    let mix = music.mix.as_deref().map(|m| move |t: f64| bpe_render::audio_levels(m, t));
+    let audio = bpe_scene::Audio {
+        song: song.as_ref().map(|f| f as &dyn Fn(f64) -> Levels),
+        mix: mix.as_ref().map(|f| f as &dyn Fn(f64) -> Levels),
+    };
+    modulator.strength(time.max(0.0), &audio)
 }
 
 fn status(ctx: &egui::Context) -> Arc<Status> {
@@ -173,7 +187,13 @@ pub fn apply_requests(
                     m.source = band;
                     m.enabled = true;
                 } else {
-                    let base = property.get(scene).or_else(|| fallback(&property));
+                    let base = property.get(scene).or_else(|| {
+                        // An effect slider at its default has no value of its own in the scene,
+                        // and a pulse needs one to start from.
+                        let value = fallback(&property)?;
+                        property.set(scene, value);
+                        Some(value)
+                    });
                     let modulator = new_pulse(scene, property.clone(), band, base);
                     scene.modulators.push(modulator);
                 }
@@ -239,7 +259,7 @@ pub fn pulse_amount(property: &Property, value: f32) -> f32 {
 }
 
 /// The open pulse window, if any. Edits the scene's pulse in place.
-pub fn window(ctx: &egui::Context, scene: &mut Scene, mix: Option<&AudioFeatures>, time: f64) {
+pub fn window(ctx: &egui::Context, scene: &mut Scene, time: f64) {
     let Some(property) = ctx.data(|d| d.get_temp::<Option<Property>>(window_id())).flatten() else { return };
     let Some(index) = scene.modulators.iter().position(|m| m.property == property) else {
         ctx.data_mut(|d| d.insert_temp::<Option<Property>>(window_id(), None));
@@ -256,7 +276,7 @@ pub fn window(ctx: &egui::Context, scene: &mut Scene, mix: Option<&AudioFeatures
         .default_width(320.0)
         .show(ctx, |ui| {
             let modulator = &mut scene.modulators[index];
-            stop = settings(ui, modulator, mix, time);
+            stop = settings(ui, modulator, &published_music(ctx), time);
         });
     if !open || stop {
         if stop {
@@ -267,7 +287,7 @@ pub fn window(ctx: &egui::Context, scene: &mut Scene, mix: Option<&AudioFeatures
 }
 
 /// The pulse's settings. Returns true when "Stop pulsing" was clicked.
-fn settings(ui: &mut Ui, m: &mut Modulator, mix: Option<&AudioFeatures>, time: f64) -> bool {
+fn settings(ui: &mut Ui, m: &mut Modulator, music: &Music, time: f64) -> bool {
     let mut stop = false;
     egui::Grid::new("pulse settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
         ui.label("On");
@@ -347,7 +367,7 @@ fn settings(ui: &mut Ui, m: &mut Modulator, mix: Option<&AudioFeatures>, time: f
         m.amount = 0.0;
     }
     ui.add_space(6.0);
-    meter(ui, m, mix, time);
+    meter(ui, m, music, time);
     ui.add_space(6.0);
     if ui.button("Stop pulsing").clicked() {
         stop = true;
@@ -365,13 +385,16 @@ fn curve_help(curve: Curve) -> &'static str {
 }
 
 /// A bar showing how strongly the music pushes the setting right now, and the last two seconds.
-fn meter(ui: &mut Ui, m: &Modulator, mix: Option<&AudioFeatures>, time: f64) {
-    let Some(mix) = mix else {
-        ui.label(
-            RichText::new("Once the soundtrack is ready, the wave below shows the pulse.").small().color(theme::MUTED),
-        );
+fn meter(ui: &mut Ui, m: &Modulator, music: &Music, time: f64) {
+    if strength(m, music, time).is_none() {
+        let text = if m.listens_to() == AudioFrom::Song {
+            "This follows the song. Load a song in the Sound tab to see and hear it pulse."
+        } else {
+            "Once the soundtrack is ready, a wave here shows the pulse."
+        };
+        ui.label(RichText::new(text).small().color(theme::MUTED));
         return;
-    };
+    }
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, theme::CARD);
@@ -379,7 +402,7 @@ fn meter(ui: &mut Ui, m: &Modulator, mix: Option<&AudioFeatures>, time: f64) {
     let points: Vec<Pos2> = (0..=80)
         .map(|i| {
             let t = time - history + history * i as f64 / 80.0;
-            let s = if t < 0.0 { 0.0 } else { strength(m, mix, t).clamp(0.0, 1.2) };
+            let s = if t < 0.0 { 0.0 } else { strength(m, music, t).unwrap_or(0.0).clamp(0.0, 1.2) };
             Pos2::new(rect.left() + rect.width() * i as f32 / 80.0, rect.bottom() - 3.0 - s / 1.2 * (rect.height() - 6.0))
         })
         .collect();
@@ -464,11 +487,11 @@ mod tests {
             .build_ui_state(
                 |ui, s: &mut Studio| {
                     let ctx = ui.ctx().clone();
-                    publish(&ctx, &s.scene, None);
+                    publish(&ctx, &s.scene, None, None);
                     crate::inspector::show(ui, &mut s.inspector, &mut s.scene);
                     let requests = take_requests(&ctx);
                     apply_requests(&ctx, &mut s.scene, requests, |_| None);
-                    window(&ctx, &mut s.scene, None, 0.0);
+                    window(&ctx, &mut s.scene, 0.0);
                 },
                 state,
             );

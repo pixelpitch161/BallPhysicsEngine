@@ -218,14 +218,13 @@ impl EffectChain {
         time: f64,
         frame: &FrameData,
     ) {
-        self.library.sync_graphs(&scene.shader_graphs);
         let active: Vec<_> = scene
             .effects
             .iter()
             .enumerate()
             .filter(|(_, e)| e.enabled && e.amount > 0.0)
             .filter_map(|(index, effect)| {
-                let info = self.library.get(&effect.shader)?;
+                let info = self.library.get_in(&effect.shader, &scene.shader_graphs)?;
                 info.compiled.is_ok().then_some((index, effect, info))
             })
             .collect();

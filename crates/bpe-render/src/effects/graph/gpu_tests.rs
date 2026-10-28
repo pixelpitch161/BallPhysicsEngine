@@ -19,6 +19,10 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 fn render(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[super::Graph]) -> Vec<u8> {
+    render_with_bass(device, queue, scene, graphs, 0.0)
+}
+
+fn render_with_bass(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[super::Graph], bass: f32) -> Vec<u8> {
     let mut renderer = Renderer::new(device, 216, 384);
     let scene = &Scene { shader_graphs: graphs.to_vec(), ..scene.clone() };
     let mut playback = Playback::new(scene);
@@ -29,6 +33,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[s
         playback.seek(time);
         frame.fill(scene, &playback, renderer.pixel_size(scene));
         frame.pulse = 0.8;
+        frame.audio[0] = bass;
         renderer.render(device, queue, scene, time, &frame);
     }
     assert!(renderer.effect_gpu_errors().is_empty(), "{:?}", renderer.effect_gpu_errors());
@@ -70,12 +75,24 @@ fn node_versions_match_the_built_in_effects() {
         let mut rebuilt = original.clone();
         rebuilt.shader = graph_id;
         let a = render(&device, &queue, &Scene { effects: vec![original], ..base.clone() }, &[]);
-        let b = render(&device, &queue, &Scene { effects: vec![rebuilt], ..base.clone() }, &[graph]);
+        let b = render(&device, &queue, &Scene { effects: vec![rebuilt], ..base.clone() }, std::slice::from_ref(&graph));
         let (mean, off) = difference(&a, &b);
         let (changed, _) = difference(&a, &plain);
         report.push(format!("{id}: mean difference {mean:.3}, pixels off {:.2}%, effect strength {changed:.2}", off * 100.0));
         assert!(changed > 0.05 || id == "glitch", "{id} did nothing, so the comparison proves nothing");
         assert!(mean < 0.6 && off < 0.01, "{id} node version differs: mean {mean:.3}, {:.2}% of pixels", off * 100.0);
+        // With "Pulse with music" up and the bass playing. Glitch's node version scales the
+        // bass by its react setting too, so it is only close.
+        if original_info.params.iter().any(|p| p.name == "music") && id != "glitch" {
+            let original = Effect { params: [("music".to_string(), 1.0)].into(), ..Effect::new(id) };
+            let rebuilt = Effect { shader: super::effect_id(&graph.name), ..original.clone() };
+            let scene = |e: Effect| Scene { effects: vec![e], ..base.clone() };
+            let a = render_with_bass(&device, &queue, &scene(original), &[], 0.8);
+            let b = render_with_bass(&device, &queue, &scene(rebuilt), std::slice::from_ref(&graph), 0.8);
+            let (mean, off) = difference(&a, &b);
+            report.push(format!("{id} with the bass: mean difference {mean:.3}, pixels off {:.2}%", off * 100.0));
+            assert!(mean < 0.6 && off < 0.01, "{id} with the bass differs: mean {mean:.3}, {:.2}% of pixels", off * 100.0);
+        }
     }
     println!("{}", report.join("\n"));
 }

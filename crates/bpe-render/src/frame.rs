@@ -133,27 +133,12 @@ pub struct FrameData {
 
 /// The music at one moment, as modulators read it.
 pub fn levels(features: &bpe_music::AudioFeatures, time: f64) -> bpe_scene::Levels {
-    let at = features.at(time);
-    bpe_scene::Levels {
-        bass: at.bass,
-        mid: at.mid,
-        treble: at.treble,
-        level: at.level,
-        beat: beat_phase(Some(features), time),
-        onset: at.onset,
-    }
+    bpe_sim::music_levels(features, time)
 }
 
-/// How far through the current beat `time` is, from 0 on the beat to 1 just before the next.
-/// 1 (resting, as if the next beat were about to come) without beats, before the first and after
-/// the last, so beat-driven visuals stay still rather than stuck on a beat.
+/// How far through the current beat `time` is; see [`bpe_sim::resting_beat_phase`].
 pub fn beat_phase(features: Option<&bpe_music::AudioFeatures>, time: f64) -> f32 {
-    match features {
-        Some(f) if f.beats.len() >= 2 && time >= f.beats[0] && time < f.beats[f.beats.len() - 1] => {
-            f.beat_phase(time)
-        }
-        _ => 1.0,
-    }
+    bpe_sim::resting_beat_phase(features, time)
 }
 
 /// How far back [`FrameData::events`] reaches, in seconds.
@@ -261,7 +246,7 @@ impl FrameData {
         (self.audio, self.level) = match &sim.inputs().music {
             Some(music) => {
                 let at = music.at(now);
-                ([at.bass, at.mid, at.treble, music.beat_phase(now)], at.level)
+                ([at.bass, at.mid, at.treble, 0.0], at.level)
             }
             None => ([0.0; 4], 0.0),
         };

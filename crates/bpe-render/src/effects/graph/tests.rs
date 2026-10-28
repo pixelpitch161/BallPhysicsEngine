@@ -274,8 +274,7 @@ fn templates_and_rebuilds_compile() {
         let rebuilt = info(&graph);
         let original = library.builtin(id).unwrap();
         let mut ours: Vec<_> = rebuilt.params.iter().map(|p| (&p.name, p.default, p.min, p.max, p.kind)).collect();
-        // "Pulse with music" is left out of the node versions; at 0 it changes nothing.
-        let mut theirs: Vec<_> = original.params.iter().filter(|p| p.name != "music").map(|p| (&p.name, p.default, p.min, p.max, p.kind)).collect();
+        let mut theirs: Vec<_> = original.params.iter().map(|p| (&p.name, p.default, p.min, p.max, p.kind)).collect();
         ours.sort_by(|a, b| a.0.cmp(b.0));
         theirs.sort_by(|a, b| a.0.cmp(b.0));
         assert_eq!(ours, theirs, "{id} sliders differ from the original");

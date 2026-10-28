@@ -261,7 +261,7 @@ impl<'a> Compiler<'a> {
             .copied()
             .filter(|id| !broken.contains(id) && (needed.contains(id) || thumbnails) && Some(*id) != output)
             .collect();
-        self.emit(&emit, output.unwrap(), &types, thumbnails, warnings)
+        self.emit(&emit, &needed, output.unwrap(), &types, thumbnails, warnings)
     }
 
     fn collect_nodes(&mut self) {
@@ -410,6 +410,7 @@ impl<'a> Compiler<'a> {
     fn emit(
         &self,
         emit: &[u32],
+        needed: &BTreeSet<u32>,
         output: u32,
         types: &OutTypes,
         thumbnails: bool,
@@ -430,6 +431,11 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             let (_, block) = self.nodes[&node.id];
+            // Blocks drawn only for their previews keep fixed values, so the previews get the
+            // same sliders as the effect itself.
+            if node.id != output && !needed.contains(&node.id) {
+                continue;
+            }
             for (index, input) in block.inputs.iter().enumerate() {
                 if !node.exposed.contains(input.name) || self.wires.contains_key(&(node.id, index)) {
                     continue;

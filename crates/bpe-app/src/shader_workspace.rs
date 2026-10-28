@@ -345,7 +345,9 @@ fn welcome(ui: &mut Ui, scene: &mut Scene, state: &mut State, library: &EffectLi
             .effects
             .iter()
             .enumerate()
-            .filter(|(_, e)| fx::templates::rebuild(&e.shader).is_some())
+            .filter(|(_, e)| {
+                fx::templates::rebuild(&e.shader).is_some() && library.get(&e.shader).is_some_and(|i| i.is_builtin())
+            })
             .map(|(i, _)| i)
             .collect();
         if !rebuildable.is_empty() {

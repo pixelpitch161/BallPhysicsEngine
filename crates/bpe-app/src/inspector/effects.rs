@@ -378,7 +378,7 @@ fn effect_card(
                             effect.amount = 1.0;
                             ui.close();
                         }
-                        if info.is_graph() || fx::templates::rebuild(&info.id).is_some() {
+                        if info.is_graph() || (info.is_builtin() && fx::templates::rebuild(&info.id).is_some()) {
                             let help = if info.is_graph() {
                                 "Open its blocks in the Shaders workspace"
                             } else {

@@ -23,9 +23,10 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         "kaleidoscope" => {
             b = Builder::new(&title("Kaleidoscope"));
             let k = b.add("kaleidoscope");
-            for name in ["slices", "spin", "zoom", "angle"] {
+            for name in ["slices", "spin", "angle"] {
                 b.expose(k, name, None);
             }
+            let _ = bass_drives(&mut b, k, "kaleidoscope", "zoom", 0.5, false);
             let pic = b.add("picture");
             let out = b.add("output");
             b.wire(k, "out", pic, "at").wire(pic, "out", out, "color");
@@ -38,6 +39,8 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             let kick = b.add("multiply");
             b.set(kick, "b", 0.0).expose(kick, "b", Some("kick")).range(kick, "b", 0.0, 0.5);
             let turns = b.add("add");
+            let (music, _) = music_slider(&mut b, 0.25);
+            let pushed = b.add("add");
             let hue = b.add("hue_shift");
             let sat = b.add("saturation");
             b.set(sat, "amount", 1.0).expose(sat, "amount", Some("saturation")).range(sat, "amount", 0.0, 2.0);
@@ -47,7 +50,9 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             b.wire(pulse, "out", kick, "a")
                 .wire(time, "out", turns, "a")
                 .wire(kick, "out", turns, "b")
-                .wire(turns, "out", hue, "turns")
+                .wire(turns, "out", pushed, "a")
+                .wire(music, "out", pushed, "b")
+                .wire(pushed, "out", hue, "turns")
                 .wire(hue, "out", sat, "color")
                 .wire(sat, "out", contrast, "color")
                 .wire(contrast, "out", out, "color");
@@ -65,9 +70,10 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         "liquid" => {
             b = Builder::new(&title("Liquid"));
             let flow = b.add("flow");
-            for name in ["amount", "scale", "speed"] {
+            for name in ["scale", "speed"] {
                 b.expose(flow, name, None);
             }
+            let _ = bass_drives(&mut b, flow, "flow", "amount", 3.0, false);
             let pic = b.add("picture");
             let out = b.add("output");
             b.wire(flow, "out", pic, "at").wire(pic, "out", out, "color");
@@ -76,9 +82,10 @@ pub fn rebuild(id: &str) -> Option<Graph> {
             b = Builder::new(&title("Echo"));
             let feedback = b.add("feedback");
             b.set(feedback, "hue", 0.004);
-            for name in ["fade", "zoom", "spin", "hue"] {
+            for name in ["fade", "spin", "hue"] {
                 b.expose(feedback, name, None);
             }
+            let _ = bass_drives(&mut b, feedback, "feedback", "zoom", 0.03, true);
             let lighten = b.add("blend_lighten");
             let out = b.add("output");
             b.wire(feedback, "out", lighten, "layer").wire(lighten, "out", out, "color");
@@ -86,18 +93,22 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         "shockwave" => {
             b = Builder::new(&title("Shockwaves"));
             let wave = b.add("shockwave");
-            for name in ["strength", "speed", "width", "life"] {
+            for name in ["speed", "width", "life"] {
                 b.expose(wave, name, None);
             }
+            let boost = bass_drives(&mut b, wave, "shockwave", "strength", 2.0, false).unwrap();
             let pic = b.add("picture");
             let glow = b.add("multiply");
             b.set(glow, "a", 0.4).expose(glow, "a", Some("glow")).range(glow, "a", 0.0, 2.0).set(glow, "b", 0.25);
+            let boosted = b.add("multiply");
             let add = b.add("blend_add");
             let out = b.add("output");
             b.wire(wave, "out", pic, "at")
                 .wire(pic, "out", add, "base")
                 .wire(wave, "light", add, "layer")
-                .wire(glow, "out", add, "amount")
+                .wire(glow, "out", boosted, "a")
+                .wire(boost, "out", boosted, "b")
+                .wire(boosted, "out", add, "amount")
                 .wire(add, "out", out, "color");
         }
         "color_split" => {
@@ -132,9 +143,10 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         "glitch" => {
             b = Builder::new(&title("Glitch"));
             let bands = b.add("glitch");
-            for name in ["amount", "bands", "react", "rate"] {
+            for name in ["bands", "react", "rate"] {
                 b.expose(bands, name, None);
             }
+            let _ = bass_drives(&mut b, bands, "glitch", "amount", 1.0, false);
             // Colour split measures its gap in frame heights across, Glitch bands in screen widths.
             let aspect = b.add("aspect");
             let gap = b.add("multiply");
@@ -186,6 +198,46 @@ pub fn rebuild(id: &str) -> Option<Graph> {
         _ => return None,
     }
     Some(b.finish())
+}
+
+/// The "music" slider of the code effects: `music * bass * gain`, as a block whose output is "out".
+/// Returns that block and the Music block.
+fn music_slider(b: &mut Builder, gain: f32) -> (u32, u32) {
+    let music = b.add("music");
+    let amount = b.add("multiply");
+    b.set(amount, "b", 0.0).expose(amount, "b", Some("music")).range(amount, "b", 0.0, 1.0);
+    let scaled = b.add("multiply");
+    b.set(scaled, "b", gain);
+    b.wire(music, "bass", amount, "a").wire(amount, "out", scaled, "a");
+    (scaled, music)
+}
+
+/// Feeds `input` of block `node` (a `kind` block) from a slider of the same name, pushed by the
+/// bass the way the code effects' "music" slider does: `value * (1 + music * bass * gain)`, or
+/// with `add`, `value + music * bass * gain`. Returns the block giving `1 + music * bass * gain`
+/// when multiplying, for other values the effect boosts the same way.
+fn bass_drives(b: &mut Builder, node: u32, kind: &str, input: &str, gain: f32, add: bool) -> Option<u32> {
+    let spec = super::graph::Catalog::get().block(kind).and_then(|k| k.input(input)).expect("block input");
+    let default = match spec.default {
+        super::graph::catalog::Default::Number(v) => v,
+        _ => 0.0,
+    };
+    let value = b.add("number");
+    b.set(value, "value", default).expose(value, "value", Some(input)).range(value, "value", spec.min, spec.max);
+    let (music, _) = music_slider(b, gain);
+    let (pushed, boost) = if add {
+        let sum = b.add("add");
+        b.wire(value, "out", sum, "a").wire(music, "out", sum, "b");
+        (sum, None)
+    } else {
+        let one_plus = b.add("add");
+        b.set(one_plus, "a", 1.0).wire(music, "out", one_plus, "b");
+        let product = b.add("multiply");
+        b.wire(value, "out", product, "a").wire(one_plus, "out", product, "b");
+        (product, Some(one_plus))
+    };
+    b.wire(pushed, "out", node, input);
+    boost
 }
 
 /// A light tunnel that flies forward harder on every bass hit.
