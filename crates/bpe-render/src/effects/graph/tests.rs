@@ -396,3 +396,26 @@ fn generation_is_fast() {
     println!("40-block graph to checked WGSL: {elapsed:?}");
     assert!(elapsed.as_millis() < 50 || cfg!(debug_assertions), "{elapsed:?}");
 }
+
+/// The editor's sliders keep values within the block's range, so a value outside it would
+/// change as soon as the graph is shown.
+#[test]
+fn template_values_are_within_their_slider_ranges() {
+    let catalog = Catalog::get();
+    let graphs = crate::effects::templates::graphs()
+        .into_iter()
+        .chain(crate::effects::templates::REBUILT.iter().filter_map(|id| crate::effects::templates::rebuild(id)));
+    let mut bad = Vec::new();
+    for graph in graphs {
+        for node in &graph.nodes {
+            let block = catalog.block(&node.kind).unwrap();
+            for (name, value) in &node.params {
+                let (Some(input), bpe_graph::Param::Number(v)) = (block.input(name), value) else { continue };
+                if *v < input.min.min(input.max) || *v > input.max.max(input.min) {
+                    bad.push(format!("{}: {}.{name} = {v} not in {}..{}", graph.name, node.kind, input.min, input.max));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}

@@ -274,12 +274,16 @@ fn settings(ui: &mut Ui, m: &mut Modulator, mix: Option<&AudioFeatures>, time: f
         ui.checkbox(&mut m.enabled, "").on_hover_text("Turn the pulse off without losing its settings");
         ui.end_row();
 
-        ui.label("Follow");
-        egui::ComboBox::from_id_salt("band").selected_text(m.source.name()).show_ui(ui, |ui| {
-            for band in AudioBand::ALL {
-                ui.selectable_value(&mut m.source, band, band.name()).on_hover_text(band_help(band));
-            }
-        });
+        let label = ui.label("Follow");
+        egui::ComboBox::from_id_salt("band")
+            .selected_text(m.source.name())
+            .show_ui(ui, |ui| {
+                for band in AudioBand::ALL {
+                    ui.selectable_value(&mut m.source, band, band.name()).on_hover_text(band_help(band));
+                }
+            })
+            .response
+            .labelled_by(label.id);
         ui.end_row();
 
         if m.property.is_color() {
@@ -309,12 +313,16 @@ fn settings(ui: &mut Ui, m: &mut Modulator, mix: Option<&AudioFeatures>, time: f
         .on_hover_text("Higher follows the music more gently; none follows every hit exactly");
         ui.end_row();
 
-        ui.label("Response");
-        egui::ComboBox::from_id_salt("curve").selected_text(m.curve.name()).show_ui(ui, |ui| {
-            for curve in Curve::ALL {
-                ui.selectable_value(&mut m.curve, curve, curve.name()).on_hover_text(curve_help(curve));
-            }
-        });
+        let label = ui.label("Response");
+        egui::ComboBox::from_id_salt("curve")
+            .selected_text(m.curve.name())
+            .show_ui(ui, |ui| {
+                for curve in Curve::ALL {
+                    ui.selectable_value(&mut m.curve, curve, curve.name()).on_hover_text(curve_help(curve));
+                }
+            })
+            .response
+            .labelled_by(label.id);
         ui.end_row();
 
         ui.label("Listen to");
@@ -438,5 +446,52 @@ mod tests {
         for property in Property::PLAIN {
             assert!(pulse_amount(&property, 0.0).is_finite());
         }
+    }
+
+    struct Studio {
+        inspector: crate::inspector::Inspector,
+        scene: Scene,
+    }
+
+    /// The settings panel with pulses handled the way the app does it.
+    fn studio(tab: crate::inspector::Tab, scene: Scene) -> egui_kittest::Harness<'static, Studio> {
+        let state = Studio { inspector: crate::inspector::Inspector { tab, ..Default::default() }, scene };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(460.0, 2400.0))
+            .with_max_steps(240)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                |ui, s: &mut Studio| {
+                    let ctx = ui.ctx().clone();
+                    publish(&ctx, &s.scene, None);
+                    crate::inspector::show(ui, &mut s.inspector, &mut s.scene);
+                    let requests = take_requests(&ctx);
+                    apply_requests(&ctx, &mut s.scene, requests, |_| None);
+                    window(&ctx, &mut s.scene, None, 0.0);
+                },
+                state,
+            );
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn right_click_makes_a_setting_pulse_and_the_window_changes_it() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = studio(crate::inspector::Tab::Arena, Scene::default());
+        harness.get_by_label("Bounciness").click_secondary();
+        harness.run();
+        harness.get_by_label("Pulse with music").click();
+        harness.run();
+        harness.get_by_label("Treble").click();
+        harness.run();
+        let m = &harness.state().scene.modulators;
+        assert_eq!(m.len(), 1);
+        assert_eq!((&m[0].property, m[0].source), (&Property::Bounciness, AudioBand::Treble));
+        // The settings window opens straight away and can stop the pulse.
+        harness.get_by_label("Stop pulsing").click();
+        harness.run();
+        assert!(harness.state().scene.modulators.is_empty());
     }
 }

@@ -118,10 +118,10 @@ pub fn show(
     library.sync_graphs(&scene.shader_graphs);
     let info = library.get(&fx::graph::effect_id(&scene.shader_graphs[index].name));
 
-    egui::Panel::right("shader side")
+    egui::Panel::left("shader side")
         .resizable(false)
         .exact_size(SIDE)
-        .frame(egui::Frame::new().inner_margin(egui::Margin { left: 10, ..Default::default() }))
+        .frame(egui::Frame::new().inner_margin(egui::Margin { right: 10, ..Default::default() }))
         .show(ui, |ui| side(ui, scene, index, info.as_deref(), state));
 
     let problems: HashMap<u32, String> = info
@@ -159,15 +159,20 @@ fn graph_names(scene: &Scene) -> Vec<String> {
 
 fn top_bar(ui: &mut Ui, scene: &mut Scene, state: &mut State, library: &EffectLibrary) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Node effect").color(theme::MUTED));
+        let label = ui.label(RichText::new("Node effect").color(theme::MUTED));
         let current = state.graph.clone().unwrap_or_else(|| "None yet".into());
-        egui::ComboBox::from_id_salt("shader-graph").selected_text(&current).width(180.0).show_ui(ui, |ui| {
-            for name in graph_names(scene) {
-                if ui.selectable_label(state.graph.as_ref() == Some(&name), &name).clicked() {
-                    state.open(name);
+        egui::ComboBox::from_id_salt("shader-graph")
+            .selected_text(&current)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for name in graph_names(scene) {
+                    if ui.selectable_label(state.graph.as_ref() == Some(&name), &name).clicked() {
+                        state.open(name);
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(label.id);
         new_menu(ui, scene, state, library);
         let Some(index) = state.graph.as_ref().and_then(|n| scene.shader_graphs.iter().position(|g| g.name == *n))
         else {
@@ -175,7 +180,9 @@ fn top_bar(ui: &mut Ui, scene: &mut Scene, state: &mut State, library: &EffectLi
         };
         let name = scene.shader_graphs[index].name.clone();
         let text = state.rename.get_or_insert_with(|| name.clone());
-        let response = ui.add(egui::TextEdit::singleline(text).desired_width(140.0).hint_text("Name"));
+        let response = ui
+            .add(egui::TextEdit::singleline(text).desired_width(140.0).hint_text("Name"))
+            .on_hover_text("The effect's name. Press Enter to rename it.");
         if response.lost_focus() {
             let wanted = state.rename.take().unwrap_or_default().trim().to_string();
             if wanted != name {
@@ -582,6 +589,57 @@ mod tests {
         assert!(scene.animation.is_empty());
     }
 
+    struct Studio {
+        inspector: crate::inspector::Inspector,
+        scene: Scene,
+    }
+
+    fn effects_tab(scene: Scene) -> egui_kittest::Harness<'static, Studio> {
+        let state = Studio {
+            inspector: crate::inspector::Inspector { tab: crate::inspector::Tab::Effects, ..Default::default() },
+            scene,
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(460.0, 2400.0))
+            .with_max_steps(240)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(|ui, s: &mut Studio| crate::inspector::show(ui, &mut s.inspector, &mut s.scene), state);
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn new_node_effect_adds_a_card_and_opens_the_workspace() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = effects_tab(Scene::default());
+        harness.get_by_label("New node effect").click();
+        harness.run();
+        harness.get_by_label("Start empty").click();
+        harness.run();
+        let state = harness.state();
+        assert_eq!(state.scene.shader_graphs.len(), 1);
+        assert_eq!(state.scene.effects[0].shader, fx::graph::effect_id(&state.scene.shader_graphs[0].name));
+        assert_eq!(state.inspector.effects.open_graph.as_deref(), Some("My effect"));
+    }
+
+    #[test]
+    fn edit_as_nodes_swaps_a_built_in_for_its_node_version() {
+        use egui_kittest::kittest::Queryable;
+        let scene = Scene { effects: vec![Effect::new("kaleidoscope").with("slices", 9.0)], ..Scene::default() };
+        let mut harness = effects_tab(scene);
+        harness.get_by_label("More options").click();
+        harness.run();
+        harness.get_by_label("Edit as nodes").click();
+        harness.run();
+        let scene = &harness.state().scene;
+        assert_eq!(scene.shader_graphs.len(), 1);
+        assert!(fx::graph::graph_name(&scene.effects[0].shader).is_some());
+        // Its sliders carry over, since the node version has sliders of the same names.
+        assert_eq!(scene.effects[0].params["slices"], 9.0);
+        assert!(harness.query_by_label("nodes").is_some(), "the card says it is made of blocks");
+    }
+
     #[test]
     fn every_template_and_rebuild_makes_a_working_effect() {
         for graph in fx::templates::graphs().into_iter().chain(fx::templates::REBUILT.iter().filter_map(|id| fx::templates::rebuild(id))) {
@@ -590,5 +648,55 @@ mod tests {
         }
         let blank = EffectInfo::from_graph(&blank_graph(), false);
         assert!(blank.error().is_none(), "{:?}", blank.error());
+    }
+}
+
+/// Writes a scene with node effects and pulses to `$BPE_DEMO_SCENE`, for screenshots:
+/// `BPE_DEMO_SCENE=demo.ron cargo test -p bpe-app write_demo_scene -- --ignored`.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn write_demo_scene() {
+    let Ok(path) = std::env::var("BPE_DEMO_SCENE") else { return };
+    let library = EffectLibrary::new();
+    let mut scene = Scene::presets()[0].scene.clone();
+    let tunnel = fx::templates::graphs().into_iter().next().unwrap();
+    add_graph(&mut scene, &library, tunnel, "My bass tunnel");
+    add_graph(&mut scene, &library, fx::templates::rebuild("kaleidoscope").unwrap(), "Kaleidoscope (nodes)");
+    for (property, band) in [
+        (bpe_scene::Property::Bloom, bpe_scene::AudioBand::Bass),
+        (bpe_scene::Property::ArenaColor, bpe_scene::AudioBand::Beat),
+        (bpe_scene::Property::Gravity, bpe_scene::AudioBand::Treble),
+    ] {
+        let base = property.get(&scene);
+        let mut m = bpe_scene::Modulator::new(property.clone(), band);
+        if let Some(bpe_scene::Value::Number(v)) = base {
+            m.amount = crate::setting_menu::pulse::pulse_amount(&property, v);
+        }
+        scene.modulators.push(m);
+    }
+    scene.save(std::path::Path::new(&path)).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn looking_at_a_node_effect_does_not_change_it() {
+    let rebuilt = fx::templates::REBUILT.iter().filter_map(|id| fx::templates::rebuild(id));
+    for graph in fx::templates::graphs().into_iter().chain(rebuilt) {
+        let before = graph.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 600.0)).build_ui_state(
+            |ui, g: &mut bpe_graph::Graph| {
+                let mut editor = NodeEditor::new("t");
+                editor.show(ui, g, catalog(), None);
+            },
+            graph,
+        );
+        harness.run_steps(3);
+        let after = harness.state();
+        for (a, b) in before.nodes.iter().zip(&after.nodes) {
+            assert_eq!(a, b, "{}", before.name);
+        }
+        assert_eq!(before.links, after.links, "{}", before.name);
+        assert_eq!(&before, after);
     }
 }
