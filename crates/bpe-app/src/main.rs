@@ -7,6 +7,7 @@ mod app;
 mod audio_out;
 mod batch;
 mod command_palette;
+mod draw_shape;
 mod explorer;
 mod export;
 mod gallery;

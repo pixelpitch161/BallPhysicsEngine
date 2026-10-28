@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!-- A heart drawn with two cubic curves on each side, as an arena for jelly balls. -->
+  <path d="M100 55 C 120 5, 205 15, 195 80 C 188 130, 130 160, 100 195 C 70 160, 12 130, 5 80 C -5 15, 80 5, 100 55 Z"/>
+</svg>

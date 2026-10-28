@@ -10,7 +10,7 @@ name = "ball-studio"
 path = "src/main.rs"
 
 [dependencies]
-bpe-scene.workspace = true
+bpe-scene = { workspace = true, features = ["import"] }
 bpe-sim.workspace = true
 bpe-audio.workspace = true
 bpe-render.workspace = true

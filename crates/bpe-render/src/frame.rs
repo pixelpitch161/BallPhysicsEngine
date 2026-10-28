@@ -1,7 +1,7 @@
 //! What to draw for one video frame, built on the CPU from the simulation.
 
 use bpe_scene::{Color, Container, ObstaclePart, Scene, Vec2};
-use bpe_sim::{Counts, Event, EventKind, Outline, Playback};
+use bpe_sim::{Counts, Event, EventKind, Outline, Playback, Simulation};
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::TAU;
 
@@ -122,6 +122,9 @@ pub struct FrameData {
     pub space: crate::space::SpaceFrame,
     /// Captions (captions workstream).
     pub text: crate::text::TextFrame,
+    /// Jelly balls, cloth and liquid as filled triangles, drawn over trails and under balls
+    /// (physics workstream). `edge.x` is each vertex's distance inside the shape's edge.
+    pub soft: Vec<TrailVertex>,
     // ---- Audio-reactive visuals (WS5) ----
     /// Analysis of the finished soundtrack, the song plus the bounce sounds, set by whoever mixed
     /// it. When present, `audio` and `level` follow it, and so do modulators on visual settings.
@@ -181,6 +184,7 @@ impl FrameData {
         self.flashes.clear();
         self.hits.clear();
         self.shapes.clear();
+        self.soft.clear();
         let sim = playback.simulation();
         let look = &scene.look;
 
@@ -195,6 +199,8 @@ impl FrameData {
             for ball in sim.balls().iter().filter(|b| b.alive) {
                 self.balls.push(BallInstance { center: ball.position.into(), radius: ball.radius, color: ball.color });
             }
+            // Soft bodies, billiard pockets and spinning balls' glints (physics workstream).
+            self.push_soft(scene, sim, pixel);
 
             if look.trail_seconds > 0.0 && look.trail_opacity > 0.0 {
                 let mut points = Vec::new();
@@ -219,8 +225,7 @@ impl FrameData {
                     if intensity < 0.002 {
                         continue;
                     }
-                    let Some(ball) = hit.ball_index().and_then(|i| sim.balls().get(i)) else { continue };
-                    let c = ball.color;
+                    let c = event_color(sim, hit);
                     let color = [
                         (c[0] + 1.0) * 0.5 * intensity,
                         (c[1] + 1.0) * 0.5 * intensity,
@@ -263,7 +268,7 @@ impl FrameData {
                     let strength = (hit.speed / full_speed).min(1.5);
                     energy += strength * (-6.0 * age).exp();
                     if self.hits.len() < crate::MAX_EFFECT_HITS {
-                        let color = sim.balls().get(hit.ball as usize).map_or([1.0; 4], |b| b.color);
+                        let color = event_color(sim, hit);
                         self.hits.push(RecentHit { position: hit.position.into(), age, strength, color });
                     }
                 }
@@ -313,6 +318,12 @@ impl FrameData {
                 self.shapes.push(ShapeInstance::outline(&outline, color, WALL_GLOW));
             }
         }
+        if let (Some(place), Container::Custom { shape, thickness, color, .. }) =
+            (sim.arena_placement(), &scene.container)
+            && let Some(index) = scene.shape_index(shape)
+        {
+            self.push_shape_outline(sim, index as usize, place, *thickness, color.to_linear(), WALL_GLOW);
+        }
 
         let now = sim.time();
         let lit_seconds = look.flash_seconds.max(0.3) as f64;
@@ -334,6 +345,10 @@ impl FrameData {
                     self.shapes.push(ShapeInstance::capsule(from, to, thickness * 0.5, color.to_linear(), WALL_GLOW));
                 }
                 ObstaclePart::Segment { .. } => {}
+                ObstaclePart::Shape { shape, place, thickness, color } => {
+                    let color = scaled(color.to_linear(), boost);
+                    self.push_shape_outline(sim, shape as usize, place, thickness, color, WALL_GLOW * boost);
+                }
             }
         }
 
@@ -461,5 +476,184 @@ fn push_streak(out: &mut Vec<TrailVertex>, points: &[Vec2], half_width: f32, col
         let (a, b) = (vertex(i, s0, 1.0), vertex(i, s0, -1.0));
         let (c, d) = (vertex(i + 1, s1, 1.0), vertex(i + 1, s1, -1.0));
         out.extend_from_slice(&[a, b, c, b, d, c]);
+    }
+}
+
+impl FrameData {
+    /// A custom shape's outline at `place`, as a chain of rounded line pieces.
+    pub fn push_shape_outline(
+        &mut self,
+        sim: &bpe_sim::Simulation,
+        shape: usize,
+        place: bpe_scene::Placement,
+        thickness: f32,
+        color: [f32; 4],
+        glow: f32,
+    ) {
+        let Some(lines) = sim.shape_lines(shape) else { return };
+        // A hairline still shows, so a shape drawn with no thickness doesn't vanish.
+        let radius = (thickness * 0.5).max(0.75);
+        for line in lines {
+            for (from, to) in line.pieces() {
+                self.shapes.push(ShapeInstance::capsule(place.apply(from), place.apply(to), radius, color, glow));
+            }
+        }
+    }
+}
+
+/// Lighter version of a linear colour, for the middle of a jelly ball.
+fn lighter(c: [f32; 4], by: f32) -> [f32; 4] {
+    [c[0] + (1.0 - c[0]) * by, c[1] + (1.0 - c[1]) * by, c[2] + (1.0 - c[2]) * by, c[3]]
+}
+
+fn soft_vertex(position: Vec2, color: [f32; 4], inside: f32) -> TrailVertex {
+    TrailVertex { position: position.into(), color, edge: [inside, 0.0] }
+}
+
+/// Points around a circle used for drawing liquid drops: few, as there are thousands.
+const DROP_SIDES: usize = 6;
+
+impl FrameData {
+    /// Jelly balls (filled, lighter in the middle, with a rim), ropes and cloth edges as
+    /// rounded lines, cloth as shaded triangles, liquid as overlapping drops, billiard pockets,
+    /// and a glint on each spinning ball.
+    pub fn push_soft(&mut self, scene: &Scene, sim: &Simulation, pixel: f32) {
+        for pocket in &scene.physics.contact.pockets {
+            let color = [0.01, 0.01, 0.012, 1.0];
+            self.shapes.push(ShapeInstance::capsule(pocket.position, pocket.position, pocket.radius, color, 0.0));
+        }
+        if scene.physics.ball_collisions && scene.physics.contact.spin && scene.physics.contact.quality > 0 {
+            for (i, ball) in sim.balls().iter().enumerate().filter(|(_, b)| b.alive) {
+                let at = ball.position + Vec2::from_angle(sim.ball_angle(i)) * ball.radius * 0.55;
+                let color = [0.35, 0.35, 0.35, 1.0];
+                self.flashes.push(FlashInstance { center: at.into(), size: ball.radius * 0.45, color });
+            }
+        }
+        let world = sim.soft();
+        let points = &world.points;
+        for (index, body) in world.bodies.iter().enumerate() {
+            let range = body.points.start as usize..body.points.end as usize;
+            let color = body.color;
+            match body.kind {
+                bpe_sim::bodies::BodyKind::Jelly => {
+                    let ring = &points[range];
+                    let n = ring.len();
+                    if n < 3 {
+                        continue;
+                    }
+                    // The skin's outer edge: each point's middle pushed out by its radius.
+                    let middle = ring.iter().map(|p| p.position).sum::<Vec2>() / n as f32;
+                    let edge = |k: usize| {
+                        let p = &ring[k % n];
+                        p.position + (p.position - middle).normalize_or_zero() * p.radius
+                    };
+                    let reach = (0..n).map(|k| edge(k).distance(middle)).fold(0.0f32, f32::max);
+                    let inner = lighter(color, 0.35);
+                    for k in 0..n {
+                        let (a, b) = (edge(k), edge(k + 1));
+                        let out = |p: Vec2| p + (p - middle).normalize_or_zero() * pixel;
+                        self.soft.extend_from_slice(&[
+                            soft_vertex(middle, inner, reach),
+                            soft_vertex(out(a), color, -pixel),
+                            soft_vertex(out(b), color, -pixel),
+                        ]);
+                    }
+                    let rim = lighter(color, 0.6);
+                    let width = (reach * 0.03).max(pixel);
+                    for k in 0..n {
+                        let (a, b) = (edge(k), edge(k + 1));
+                        let inset = |p: Vec2| p + (middle - p).normalize_or_zero() * width;
+                        self.shapes.push(ShapeInstance::capsule(inset(a), inset(b), width, rim, 0.0));
+                    }
+                }
+                bpe_sim::bodies::BodyKind::Rope => {
+                    let radius = body.thickness * 0.5;
+                    for (a, b) in world.links_of(index) {
+                        let (a, b) = (points[a as usize].position, points[b as usize].position);
+                        self.shapes.push(ShapeInstance::capsule(a, b, radius, color, 0.0));
+                    }
+                }
+                bpe_sim::bodies::BodyKind::Cloth => self.push_cloth(world, index, pixel),
+                bpe_sim::bodies::BodyKind::Fluid => {
+                    for p in &points[range] {
+                        // Drops drawn bigger than they are, so neighbours merge into one surface.
+                        let r = p.radius * 1.45;
+                        let corner =
+                            |k: usize| p.position + Vec2::from_angle(k as f32 * TAU / DROP_SIDES as f32) * (r + pixel);
+                        for k in 0..DROP_SIDES {
+                            self.soft.extend_from_slice(&[
+                                soft_vertex(p.position, color, r),
+                                soft_vertex(corner(k), color, -pixel),
+                                soft_vertex(corner(k + 1), color, -pixel),
+                            ]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A cloth as triangles between its points, darker where it is squashed and lighter where
+    /// it is stretched, so folds show. Torn cells are left out.
+    fn push_cloth(&mut self, world: &bpe_sim::bodies::SoftWorld, index: usize, pixel: f32) {
+        let body = &world.bodies[index];
+        let (columns, rows) = (body.columns as usize, body.rows as usize);
+        if columns < 2 || rows < 2 {
+            return;
+        }
+        let first = body.points.start;
+        let at = |c: usize, r: usize| world.points[first as usize + r * columns + c].position;
+        // Which links between grid neighbours still hold.
+        let mut across = vec![false; columns * rows];
+        let mut down = vec![false; columns * rows];
+        for (a, b) in world.links_of(index) {
+            let (a, b) = ((a.min(b) - first) as usize, (a.max(b) - first) as usize);
+            if b == a + 1 && b % columns != 0 {
+                across[a] = true;
+            } else if b == a + columns {
+                down[a] = true;
+            }
+        }
+        // The spacing of points along the pinned top edge, which keeps its length.
+        let rest = ((at(columns - 1, 0) - at(0, 0)).length() / (columns - 1) as f32).max(1e-3);
+        let shade = |area: f32| {
+            let stretch = (area.abs().sqrt() / rest).clamp(0.5, 1.5);
+            0.55 + 0.45 * stretch.min(1.2) / 1.2
+        };
+        for r in 0..rows - 1 {
+            for c in 0..columns - 1 {
+                let k = r * columns + c;
+                if !(across[k] && down[k] && across[k + columns] && down[k + 1]) {
+                    continue;
+                }
+                let (p00, p10, p01, p11) = (at(c, r), at(c + 1, r), at(c, r + 1), at(c + 1, r + 1));
+                let area = (p10 - p00).perp_dot(p01 - p00);
+                let s = shade(area);
+                let checker = if (c + r) % 2 == 0 { 1.0 } else { 0.93 };
+                let color =
+                    [body.color[0] * s * checker, body.color[1] * s * checker, body.color[2] * s * checker, 1.0];
+                // Large distance inside: no smoothing across the shared edges of cells.
+                let deep = pixel * 4.0;
+                self.soft.extend_from_slice(&[
+                    soft_vertex(p00, color, deep),
+                    soft_vertex(p10, color, deep),
+                    soft_vertex(p11, color, deep),
+                    soft_vertex(p00, color, deep),
+                    soft_vertex(p11, color, deep),
+                    soft_vertex(p01, color, deep),
+                ]);
+            }
+        }
+    }
+}
+
+/// Colour of whatever made an event: its ball, or the soft body that hit a wall.
+fn event_color(sim: &Simulation, event: &Event) -> [f32; 4] {
+    if let Some(ball) = event.ball_index().and_then(|b| sim.balls().get(b)) {
+        return ball.color;
+    }
+    match event.kind {
+        EventKind::Soft { body } => sim.soft().bodies.get(body as usize).map_or([1.0; 4], |b| b.color),
+        _ => [1.0; 4],
     }
 }

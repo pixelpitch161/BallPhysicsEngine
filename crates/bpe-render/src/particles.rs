@@ -222,6 +222,8 @@ fn event_normal(scene: &Scene, parts: &[ObstaclePart], event: &Event, id: u32) -
                 let side = (*to - *from).perp();
                 if side.dot(event.position - *from) >= 0.0 { side } else { -side }
             }
+            // Away from the shape's middle, which is close enough for a burst's direction.
+            Some(ObstaclePart::Shape { place, .. }) => event.position - place.center,
             None => Vec2::NEG_Y,
         },
         // Bumps between balls and new balls have no surface: pick a steady direction per event.
@@ -240,7 +242,11 @@ fn burst_color(scene: &Scene, playback: &Playback, emitter: &Emitter, hit: &Even
         ParticleColor::Gradient(_) => [1.0; 4],
         ParticleColor::Wall => match hit.kind {
             EventKind::Obstacle(i) => match playback.simulation().obstacles().get(i as usize) {
-                Some(ObstaclePart::Disc { color, .. } | ObstaclePart::Segment { color, .. }) => color.to_linear(),
+                Some(
+                    ObstaclePart::Disc { color, .. }
+                    | ObstaclePart::Segment { color, .. }
+                    | ObstaclePart::Shape { color, .. },
+                ) => color.to_linear(),
                 None => ball(),
             },
             EventKind::Escape(ring) => match &scene.container {

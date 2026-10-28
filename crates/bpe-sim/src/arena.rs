@@ -78,6 +78,16 @@ impl Outline {
         }
     }
 
+    /// The same outline with its gap closed.
+    pub fn ring_without_gap(outline: Outline) -> Outline {
+        match outline {
+            Outline::Ring { center, radius, sides, angle, thickness, .. } => {
+                Outline::Ring { center, radius, sides, angle, gap_half: 0.0, thickness }
+            }
+            other => other,
+        }
+    }
+
     pub fn thickness(&self) -> f32 {
         match *self {
             Outline::Ring { thickness, .. } | Outline::Box { thickness, .. } => thickness,
@@ -144,7 +154,7 @@ pub fn closed_outline(container: &Container, arena: ArenaState) -> Option<Outlin
             gap_half: 0.0,
             thickness,
         }),
-        // Custom outlines become wall pieces once custom shapes are in; until then, no walls.
+        // Rings are open walls, and custom shapes have their own collisions (see `shapes`).
         Container::Rings { .. } | Container::Custom { .. } => None,
     }
 }
@@ -155,14 +165,14 @@ fn dir(angle: f32) -> Vec2 {
 
 /// Velocity of a wall point that turns at `spin` rad/s and scales at `growth` per second
 /// around `center`.
-fn wall_velocity(point: Vec2, center: Vec2, spin: f32, growth: f32) -> Vec2 {
+pub(crate) fn wall_velocity(point: Vec2, center: Vec2, spin: f32, growth: f32) -> Vec2 {
     let r = point - center;
     r.perp() * spin + r * growth
 }
 
 /// Bounces the ball off a wall whose surface normal (pointing towards the ball) is `normal`
 /// and which moves at `wall`. Returns the impact speed if the ball was moving into the wall.
-fn bounce(ball: &mut Ball, normal: Vec2, wall: Vec2, restitution: f32) -> Option<f32> {
+pub(crate) fn bounce(ball: &mut Ball, normal: Vec2, wall: Vec2, restitution: f32) -> Option<f32> {
     let relative = ball.velocity - wall;
     let into = -relative.dot(normal);
     if into <= 0.0 {
@@ -174,6 +184,8 @@ fn bounce(ball: &mut Ball, normal: Vec2, wall: Vec2, restitution: f32) -> Option
 
 /// Keeps a ball inside a closed arena. Returns the contact point and impact speed of the
 /// hardest hit, if the ball was moving into a wall.
+// Inlined so a loop over every ball works out a box's or polygon's directions only once.
+#[inline(always)]
 pub fn collide_closed(ball: &mut Ball, outline: &Outline, arena: ArenaState, restitution: f32) -> Option<(Vec2, f32)> {
     let growth = arena.scale_rate / arena.scale.max(1e-3);
     match *outline {
@@ -204,6 +216,7 @@ pub fn collide_closed(ball: &mut Ball, outline: &Outline, arena: ArenaState, res
 }
 
 /// Keeps a ball on the inner side of each plane `(outward normal, distance from centre)`.
+#[inline(always)]
 fn collide_planes(
     ball: &mut Ball,
     center: Vec2,

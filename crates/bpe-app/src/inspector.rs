@@ -219,25 +219,44 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 Tab::Arena => {
                     // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
                     let flat = !view3d::section(ui, scene, &mut inspector.view3d);
-                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll, flat);
+                    arena(
+                        ui,
+                        &mut scene.container,
+                        &mut scene.arena_motion,
+                        &mut scene.physics,
+                        &mut scene.shapes,
+                        &mut roll,
+                        flat,
+                    );
                     if flat {
                         shapes::section(ui, scene, &mut inspector.shapes);
-                        obstacles(ui, &mut scene.obstacles);
+                        obstacles(ui, &mut scene.obstacles, &mut scene.shapes);
                     }
-                    // Pegs and walls are things you added, like balls, so a reset keeps them.
-                    let mut fresh = default_container(Shape::of(&scene.container));
-                    // A custom arena keeps which shape it is; only its settings go back.
-                    if let (Container::Custom { shape, .. }, Container::Custom { shape: fresh_shape, .. }) =
-                        (&scene.container, &mut fresh)
-                    {
-                        fresh_shape.clone_from(shape);
-                    }
+                    // Pegs and walls are things you added, like balls, so a reset keeps them. A
+                    // custom arena keeps its outline.
+                    let fresh = match &scene.container {
+                        Container::Custom { shape, .. } => Container::Custom {
+                            shape: shape.clone(),
+                            center: Vec2::ZERO,
+                            radius: shapes::ARENA_RADIUS,
+                            rotation: 0.0,
+                            thickness: LINE_WIDTH,
+                            color: LINE_COLOR,
+                        },
+                        other => default_container(Shape::of(other)),
+                    };
                     let motion = ArenaMotion::default();
+                    // Ball bumping lives on the Bounces tab, so this reset leaves it alone.
+                    let physics = Physics {
+                        ball_collisions: scene.physics.ball_collisions,
+                        contact: scene.physics.contact.clone(),
+                        ..Physics::default()
+                    };
                     // 3D (WS4): in 3D the reset puts back the 3D settings instead of the hidden flat arena.
                     let fresh_space = view3d::reset_target(scene);
                     let changed = (flat && scene.container != fresh)
                         || scene.arena_motion != motion
-                        || scene.physics != Physics::default()
+                        || scene.physics != physics
                         || scene.space() != fresh_space.as_ref();
                     if reset_tab(ui, changed) {
                         if flat {
@@ -247,13 +266,21 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                             scene.view = bpe_scene::View::Space(Box::new(space));
                         }
                         scene.arena_motion = motion;
-                        scene.physics = Physics::default();
+                        scene.physics = physics;
                     }
                 }
                 Tab::Bounces => {
                     bounces(ui, &mut scene.rules, &mut roll);
                     soft::bounces_section(ui, scene, &mut inspector.soft);
-                    reset_tab_to(ui, &mut scene.rules, BounceRules::default());
+                    let fresh = Physics::default();
+                    let changed = scene.rules != BounceRules::default()
+                        || scene.physics.ball_collisions != fresh.ball_collisions
+                        || scene.physics.contact != fresh.contact;
+                    if reset_tab(ui, changed) {
+                        scene.rules = BounceRules::default();
+                        scene.physics.ball_collisions = fresh.ball_collisions;
+                        scene.physics.contact = fresh.contact;
+                    }
                 }
                 Tab::Look => {
                     look(ui, &mut scene.look, &mut roll);
@@ -891,7 +918,7 @@ const RING_RADIUS: f32 = 508.0;
 const BOX_SIZE: Vec2 = Vec2::new(1000.0, 1000.0);
 const POLYGON_RADIUS: f32 = 480.0;
 const LINE_WIDTH: f32 = 3.0;
-const LINE_COLOR: Color = Color::rgb(0xd8, 0xdc, 0xd0);
+pub(super) const LINE_COLOR: Color = Color::rgb(0xd8, 0xdc, 0xd0);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Shape {
@@ -899,7 +926,6 @@ enum Shape {
     Box,
     Polygon,
     Rings,
-    /// A drawn or imported outline. Picked from the custom shapes section, not the buttons.
     Custom,
 }
 
@@ -950,10 +976,8 @@ impl Shape {
                 },
                 other => other,
             },
-            Shape::Custom => match old {
-                Container::Custom { .. } => old.clone(),
-                _ => Container::Custom { center, shape: String::new(), thickness, color },
-            },
+            // Needs the scene's shapes: see `shapes::make_custom`.
+            Shape::Custom => old.clone(),
         }
     }
 }
@@ -973,17 +997,23 @@ fn arena(
     container: &mut Container,
     motion: &mut ArenaMotion,
     physics: &mut Physics,
+    custom_shapes: &mut Vec<bpe_scene::Shape>,
     roll: &mut Option<Roll>,
     flat: bool,
 ) {
     // 3D (WS4): the flat shape only applies to a flat scene.
     if flat {
-        arena_shape(ui, container, roll);
+        arena_shape(ui, container, custom_shapes, roll);
     }
     arena_motion_and_world(ui, container, motion, physics, roll, flat);
 }
 
-fn arena_shape(ui: &mut Ui, container: &mut Container, roll: &mut Option<Roll>) {
+fn arena_shape(
+    ui: &mut Ui,
+    container: &mut Container,
+    custom_shapes: &mut Vec<bpe_scene::Shape>,
+    roll: &mut Option<Roll>,
+) {
     heading_dice(ui, "Shape", Group::Shape, roll);
     let current = Shape::of(container);
     let choices = [
@@ -995,29 +1025,24 @@ fn arena_shape(ui: &mut Ui, container: &mut Container, roll: &mut Option<Roll>) 
             "Escape rings",
             "Rings inside each other, each with a gap. A ring shatters when a ball gets out through its gap.",
         ),
+        (Shape::Custom, "Custom", "Any outline: draw it on the preview, import an SVG drawing or trace a picture."),
     ];
     ui.columns(choices.len(), |columns| {
         for (ui, (shape, name, help)) in columns.iter_mut().zip(choices) {
             let button = egui::Button::selectable(current == shape, name);
             if ui.add_sized([ui.available_width(), 30.0], button).on_hover_text(help).clicked() && current != shape {
-                *container = shape.make(container);
+                *container = match shape {
+                    Shape::Custom => shapes::make_custom(container, custom_shapes),
+                    _ => shape.make(container),
+                };
             }
         }
     });
     ui.add_space(6.0);
+    shapes::custom_arena(ui, container, custom_shapes);
     grid(ui, "arena", |ui| match container {
-        Container::Custom { thickness, color, .. } => {
-            slider(
-                ui,
-                "Line width",
-                "Thickness of the arena's wall.",
-                thickness,
-                LINE_WIDTH,
-                0.0..=40.0,
-                units(" px", 1),
-            );
-            color_row(ui, "Colour", "Colour of the arena's wall.", color, LINE_COLOR);
-        }
+        // Shown above, with its Draw and Import buttons.
+        Container::Custom { .. } => {}
         Container::Circle { radius, thickness, color, .. } => {
             slider(
                 ui,
@@ -1279,8 +1304,7 @@ fn arena_motion_and_world(
             units("", 2),
         );
     });
-    ui.checkbox(&mut physics.ball_collisions, "Balls bump into each other")
-        .on_hover_text("When off, balls pass through one another and only bounce off the wall.");
+    // "Balls bump into each other" is in the Bounces tab (see `soft::bounces_section`).
     more(ui, "arena-more", |ui| {
         grid(ui, "arena-more-grid", |ui| {
             key(ui, Property::SidewaysGravity);
@@ -1315,7 +1339,7 @@ fn arena_motion_and_world(
     });
 }
 
-fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
+fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>, custom_shapes: &mut Vec<bpe_scene::Shape>) {
     let peg = Color::rgb(0xc8, 0xd8, 0xff);
     let line = Color::rgb(0xd8, 0xdc, 0xd0);
     heading(ui, "Pegs and walls");
@@ -1416,12 +1440,16 @@ fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
                             slider(ui, "Width", "Thickness of the wall.", thickness, 4.0, 0.5..=60.0, units(" px", 1));
                             color_row(ui, "Colour", "", color, line);
                         }
-                        Obstacle::Shape { position, .. } => {
-                            position_row(
+                        Obstacle::Shape { shape, position, rotation, scale, thickness, color } => {
+                            shapes::obstacle_rows(
                                 ui,
-                                "Position",
-                                "Where the shape sits, from the centre of the video.",
+                                shape,
+                                custom_shapes,
                                 position,
+                                rotation,
+                                scale,
+                                thickness,
+                                color,
                             );
                         }
                     });
@@ -1455,6 +1483,7 @@ fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
                 color: line,
             });
         }
+        shapes::add_obstacle_buttons(ui, obstacles, custom_shapes);
     });
 }
 

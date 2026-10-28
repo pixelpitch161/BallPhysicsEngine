@@ -26,7 +26,8 @@ pub struct ObstacleGrid {
 }
 
 impl ObstacleGrid {
-    pub fn new(obstacles: &[ObstaclePart]) -> Self {
+    /// `shape_reach` gives how far each scene shape reaches from its middle, in its own units.
+    pub fn new(obstacles: &[ObstaclePart], shape_reach: impl Fn(u32) -> f32) -> Self {
         if obstacles.len() < MIN_OBSTACLES {
             return Self::default();
         }
@@ -37,6 +38,10 @@ impl ObstacleGrid {
                 ObstaclePart::Segment { from, to, thickness, .. } => {
                     let half = thickness.max(0.0) * 0.5;
                     (from.min(to) - half, from.max(to) + half)
+                }
+                ObstaclePart::Shape { shape, place, thickness, .. } => {
+                    let reach = place.size.abs() * shape_reach(shape) + thickness.max(0.0) * 0.5;
+                    (place.center - reach, place.center + reach)
                 }
             })
             .collect();
@@ -128,6 +133,8 @@ pub struct BallGrid {
     /// When the balls are packed closely, a table with every cell's start in `keyed` instead,
     /// covering the cells from `low` spanning `size`, numbered x-major.
     starts: Vec<u32>,
+    /// The other list `keyed` is sorted from and into, kept to reuse.
+    spare: Vec<((i32, i32), u32)>,
     low: (i32, i32),
     size: (i32, i32),
 }
@@ -173,13 +180,16 @@ impl BallGrid {
             let mut fill = std::mem::take(&mut self.table);
             fill.clear();
             fill.extend_from_slice(&self.starts);
-            let unsorted = std::mem::take(&mut self.keyed);
-            self.keyed.resize(n, ((0, 0), 0));
-            for &(cell, i) in &unsorted {
+            // Sort into last step's spare list, so no step allocates once the lists have grown.
+            let mut sorted = std::mem::take(&mut self.spare);
+            sorted.clear();
+            sorted.resize(n, ((0, 0), 0));
+            for &(cell, i) in &self.keyed {
                 let slot = self.slot(cell);
-                self.keyed[fill[slot] as usize] = (cell, i);
+                sorted[fill[slot] as usize] = (cell, i);
                 fill[slot] += 1;
             }
+            self.spare = std::mem::replace(&mut self.keyed, sorted);
             self.table = fill;
         } else {
             self.keyed.sort_unstable();

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+  <!-- A star with an open wave line under it, inside a group that moves and scales them. -->
+  <g transform="translate(150 150) scale(1.2)">
+    <polygon points="0,-100 24,-32 95,-31 38,12 59,81 0,40 -59,81 -38,12 -95,-31 -24,-32"/>
+    <path d="M -110 110 Q -55 70 0 110 T 110 110" fill="none" stroke="black"/>
+  </g>
+</svg>
