@@ -378,6 +378,23 @@ impl Renderer {
         self.effects.gpu_errors()
     }
 
+    // ---- Shader workspace (WS5): block previews of a node effect ----
+
+    /// Starts (or with `None` stops) drawing block previews of a node effect each frame.
+    pub fn set_effect_thumbnails(&mut self, request: Option<effects::ThumbnailRequest>) {
+        self.effects.set_thumbnails(request);
+    }
+
+    /// The atlas the block previews are drawn into, see [`effects::thumbnail_tile`].
+    pub fn effect_thumbnails(&mut self, device: &wgpu::Device) -> &wgpu::TextureView {
+        self.effects.thumbnail_atlas(device)
+    }
+
+    /// Whether the last frame drew the requested block previews.
+    pub fn effect_thumbnails_drawn(&self) -> bool {
+        self.effects.thumbnails_drawn()
+    }
+
     /// Starts feedback effects such as Echo afresh on the next frame.
     pub fn reset_effects(&mut self) {
         self.effects.reset();

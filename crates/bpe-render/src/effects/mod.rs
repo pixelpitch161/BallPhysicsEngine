@@ -20,6 +20,7 @@ pub mod graph;
 pub mod templates;
 
 pub(crate) use chain::EffectChain;
+pub use chain::{MAX_THUMBS, THUMB_SIZE, ThumbnailRequest, thumbnail_atlas_size, thumbnail_tile};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -151,6 +152,9 @@ impl EffectInfo {
         match graph::generate(source_graph, thumbnails) {
             Ok(generated) => {
                 let mut info = Self::parse(&id, &generated.source, None);
+                if thumbnails && let Ok(code) = &mut info.compiled {
+                    code.push_str(&thumbnail_entry(&info.params));
+                }
                 let mut problems = generated.warnings.clone();
                 if let Err(error) = &info.compiled {
                     problems.extend(error.lines().map(|line| {
@@ -299,6 +303,37 @@ fn assemble(source: &str, params: &[ParamInfo]) -> Result<String, String> {
             message
         })?;
     Ok(full)
+}
+
+/// The fragment entry point that draws one block of a node effect into the thumbnail atlas,
+/// tone mapped and sRGB-encoded like the finished picture.
+fn thumbnail_entry(params: &[ParamInfo]) -> String {
+    let mut code = String::from(
+        "
+fn thumb_shoulder(x: f32) -> f32 {
+    return select(x, 0.8 + 0.2 * (1.0 - exp(-(x - 0.8) / 0.2)), x >= 0.8);
+}
+
+fn thumb_encode(x: f32) -> f32 {
+    return select(1.055 * pow(max(x, 0.0), 1.0 / 2.4) - 0.055, x * 12.92, x <= 0.0031308);
+}
+
+@fragment
+fn fs_thumb(in: FsIn) -> @location(0) vec4<f32> {
+    var p: Params;
+",
+    );
+    for (i, param) in params.iter().enumerate() {
+        code.push_str(&format!("    p.{} = fx.params[{}][{}];\n", param.name, i / 4, i % 4));
+    }
+    code.push_str(
+        "    let raw = effect(in.uv, p);
+    let c = clamp(select(raw, vec3<f32>(0.0), raw != raw), vec3<f32>(0.0), vec3<f32>(64.0));
+    return vec4<f32>(thumb_encode(thumb_shoulder(c.r)), thumb_encode(thumb_shoulder(c.g)), thumb_encode(thumb_shoulder(c.b)), 1.0);
+}
+",
+    );
+    code
 }
 
 /// All the effects a scene can use: the built-ins plus custom files from the effect folders.
