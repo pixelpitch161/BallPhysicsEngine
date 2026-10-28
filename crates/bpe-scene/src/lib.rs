@@ -26,7 +26,7 @@ pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
 pub use gpu::GpuLayers;
-pub use music::{Instrument, Music, VoiceMap};
+pub use music::*;
 pub use particles::Emitter;
 pub use random::{Dice, Group, palette};
 pub use shapes::Shape;
