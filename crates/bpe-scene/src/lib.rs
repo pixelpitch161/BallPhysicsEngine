@@ -333,7 +333,8 @@ pub struct Sound {
     pub low_note: u8,
     pub high_note: u8,
     pub instrument: Instrument,
-    /// Instruments for particular kinds of event, over `instrument`.
+    /// Instruments for particular kinds of event. `instrument` plays every hit and escape that
+    /// no enabled row plays.
     pub voices: Vec<VoiceMap>,
     /// Wall hits slower than this (pixels per second along the wall normal) make no sound.
     pub min_impact_speed: f32,
@@ -694,6 +695,22 @@ impl Scene {
                 name: "Endless tunnel",
                 description: "Balls are pushed down a tunnel and break each ring when one finds its gap.",
                 scene: Scene::endless_tunnel(),
+            },
+            // Music workstream presets.
+            Preset {
+                name: "Marimba melody",
+                description: "Three balls play Ode to Joy on a marimba, one note per bounce.",
+                scene: Scene::marimba_melody(),
+            },
+            Preset {
+                name: "Beat-locked bounce",
+                description: "One ball steered so every bounce lands on the beat.",
+                scene: Scene::beat_locked_bounce(),
+            },
+            Preset {
+                name: "Drum machine",
+                description: "Balls in rings play a drum kit: kick, snare and a crash on every escape.",
+                scene: Scene::drum_machine(),
             },
         ]
     }

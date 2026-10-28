@@ -275,10 +275,10 @@ fn export_with(
     }
     let total = options.max_frames.map_or(scene.frame_count(), |m| m.min(scene.frame_count()));
 
-    let hits = bpe_sim::collect_wall_hits(scene);
-    let soundtrack = bpe_audio::render_soundtrack(scene, &hits, options.base_dir.as_deref())?;
+    // Music workstream: the song, beat sync and its clock, worked out with the soundtrack.
+    let sound = bpe_audio::render_scene(scene, options.base_dir.as_deref())?;
     let wav = TempFile::new("wav");
-    soundtrack.write_wav(&wav.0)?;
+    sound.mix.track.write_wav(&wav.0)?;
 
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
@@ -325,13 +325,13 @@ fn export_with(
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(options.effects.clone());
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
-    let mut playback = Playback::new(scene);
+    let mut playback = Playback::with_inputs(scene, &sound.inputs);
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
     let mut failed = None;
     for index in 0..total {
         let time = index as f64 / fps as f64;
-        playback.seek(time);
+        playback.seek(sound.sim_time(time));
         frame.fill(scene, &playback, pixel);
         renderer.render(device, queue, scene, time, &frame);
         let ready = match readback.push(device, queue, &renderer) {
@@ -395,11 +395,17 @@ pub fn export_still(
     scale: f32,
     ffmpeg: &Path,
     output: &Path,
+    base_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, scale);
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(effects.clone());
-    let mut playback = Playback::new(scene);
+    // Music workstream: a scene that follows a beat is simulated with it, on beat sync's clock.
+    let music = &scene.music;
+    let follows_beat = music.song.is_some() || music.bpm > 0.0 || music.beat_sync.mode != bpe_scene::SyncMode::Off;
+    let sound = if follows_beat { Some(bpe_audio::render_scene(scene, base_dir)?) } else { None };
+    let sim_time = |t: f64| sound.as_ref().map_or(t, |s| s.sim_time(t));
+    let mut playback = sound.as_ref().map_or_else(|| Playback::new(scene), |s| Playback::with_inputs(scene, &s.inputs));
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
     // Effects like Echo build up over many frames, so play the moments before `time` first.
@@ -409,11 +415,11 @@ pub fn export_still(
     let last = (time * fps).round() as u64;
     for index in first..last {
         let t = index as f64 / fps;
-        playback.seek(t);
+        playback.seek(sim_time(t));
         frame.fill(scene, &playback, pixel);
         renderer.render(device, queue, scene, t, &frame);
     }
-    playback.seek(time);
+    playback.seek(sim_time(time));
     frame.fill(scene, &playback, pixel);
     renderer.render(device, queue, scene, time, &frame);
     let pixels = renderer.read_output(device, queue)?;

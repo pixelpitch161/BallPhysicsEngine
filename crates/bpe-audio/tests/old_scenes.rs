@@ -26,6 +26,9 @@ const GOLDEN: &[(&str, u64)] = &[
     ("growing-ball.ron", 0x4e22ede5124f46bc),
 ];
 
+/// Presets added with the new sound features, which have no sound from before to keep.
+const NEW_PRESETS: &[&str] = &["Marimba melody", "Beat-locked bounce", "Drum machine"];
+
 fn hash(samples: &[f32]) -> u64 {
     // FNV-1a over the exact bits, so any change at all shows up.
     samples.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, s| (h ^ s.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3))
@@ -48,6 +51,11 @@ fn old_scenes_sound_identical() {
         let hits = bpe_sim::collect_wall_hits(&scene);
         let track = bpe_audio::render_soundtrack(&scene, &hits, None).unwrap();
         let got = hash(&track.samples);
+        // The editor and the exporter go through render_scene, which must agree.
+        let whole = bpe_audio::render_scene(&scene, None).unwrap();
+        if hash(&whole.mix.track.samples) != got {
+            failures.push(format!("{name}: render_scene differs from render_soundtrack"));
+        }
         if print {
             println!("    ({name:?}, 0x{got:016x}),");
             continue;
@@ -55,6 +63,7 @@ fn old_scenes_sound_identical() {
         match GOLDEN.iter().find(|(n, _)| *n == name) {
             Some((_, want)) if *want == got => {}
             Some((_, want)) => failures.push(format!("{name}: 0x{got:016x}, expected 0x{want:016x}")),
+            None if NEW_PRESETS.contains(&name.as_str()) => {}
             None => failures.push(format!("{name}: no golden hash")),
         }
     }

@@ -381,6 +381,122 @@ impl Scene {
             ..Self::default()
         }
     }
+
+    // Music workstream presets.
+
+    /// Three balls in a ring play Ode to Joy on a marimba, one note per bounce.
+    pub fn marimba_melody() -> Self {
+        let spawners = [(-140.0f32, 0), (0.0, 2), (140.0, 4)]
+            .iter()
+            .map(|&(x, c)| Spawner::Single {
+                position: Vec2::new(x, -120.0),
+                velocity: Vec2::new(x * 1.6 + 90.0, -260.0),
+                radius: 18.0,
+                color: RAINBOW[c],
+                depth: 0.0,
+                depth_velocity: 0.0,
+            })
+            .collect();
+        Self {
+            name: "Marimba melody".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 520.0), ..Physics::default() },
+            spawners,
+            look: Look { trail_seconds: 0.8, trail_width: 0.9, trail_opacity: 0.55, ball_glow: 0.45, ..Look::default() },
+            sound: Sound {
+                instrument: Instrument::library("Marimba"),
+                full_volume_speed: 1100.0,
+                ..Sound::default()
+            },
+            music: Music { melody: Some(Melody::default()), ..Music::default() },
+            video: Video { duration: 30.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// One ball under light gravity, steered so every bounce lands on the beat, with a soft
+    /// hi-hat ticking the tempo.
+    pub fn beat_locked_bounce() -> Self {
+        Self {
+            name: "Beat-locked bounce".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 150.0), ..Physics::default() },
+            spawners: vec![Spawner::Single {
+                position: Vec2::new(-60.0, -80.0),
+                velocity: Vec2::new(700.0, -350.0),
+                radius: 26.0,
+                color: Color::rgb(0xff, 0xd8, 0x2e),
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            look: Look {
+                trail_seconds: 1.6,
+                trail_width: 1.0,
+                trail_opacity: 0.6,
+                ball_glow: 0.6,
+                flash_size: 40.0,
+                bloom_strength: 0.3,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["Dm7", "G7", "Cmaj7", "Am7"], 2.0),
+                low_note: 55,
+                high_note: 79,
+                instrument: Instrument::library("Electric piano"),
+                voices: vec![VoiceMap {
+                    on: EventFilter::Beats,
+                    instrument: Instrument::library("Drum kit"),
+                    gain: -12.0,
+                    pitch: PitchMode::Fixed(42),
+                    enabled: true,
+                }],
+                ..Sound::default()
+            },
+            music: Music {
+                bpm: 120.0,
+                beat_sync: BeatSync { mode: SyncMode::Lock, subdivisions: 2, ..BeatSync::default() },
+                ..Music::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Balls in escape rings play a drum kit: kick on the rings, snare when balls meet, a
+    /// crash on every escape and a hi-hat on the beat, over a bass note on every bar.
+    pub fn drum_machine() -> Self {
+        let mut scene = Self::escape_rings();
+        scene.name = "Drum machine".into();
+        scene.physics.ball_collisions = true;
+        scene.spawners = [(-30.0f32, 260.0f32, Color::WHITE), (30.0, -260.0, RAINBOW[0]), (0.0, 120.0, RAINBOW[4])]
+            .iter()
+            .map(|&(x, vx, color)| Spawner::Single {
+                position: Vec2::new(x, -20.0),
+                velocity: Vec2::new(vx, -320.0),
+                radius: 12.0,
+                color,
+                depth: 0.0,
+                depth_velocity: 0.0,
+            })
+            .collect();
+        let drum = |on, key, gain| VoiceMap {
+            on,
+            instrument: Instrument::library("Drum kit"),
+            gain,
+            pitch: PitchMode::Fixed(key),
+            enabled: true,
+        };
+        scene.sound.instrument = Instrument::library("Synth bass");
+        scene.sound.low_note = 33;
+        scene.sound.high_note = 52;
+        scene.sound.voices = vec![
+            drum(EventFilter::Walls, 36, 0.0),
+            drum(EventFilter::BallHits, 38, -2.0),
+            drum(EventFilter::Escapes, 49, -3.0),
+            drum(EventFilter::Beats, 42, -12.0),
+            VoiceMap { on: EventFilter::Downbeats, instrument: Instrument::library("Synth bass"), gain: -4.0, ..VoiceMap::default() },
+        ];
+        scene.music.bpm = 110.0;
+        scene
+    }
 }
 
 // ---- 3D (WS4) ----

@@ -7,7 +7,7 @@ use anyhow::Context;
 use bpe_music::AudioFeatures;
 use bpe_scene::{Scene, SyncMode};
 use bpe_sim::beat_sync::{self, TimeWarp};
-use bpe_sim::{Event, EventKind, SimInputs, Simulation};
+use bpe_sim::{Event, SimInputs, Simulation};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -23,7 +23,9 @@ pub struct Song {
 }
 
 /// The last few songs loaded, by file, size and change time, so edits don't decode again.
-static SONGS: Mutex<Vec<(PathBuf, u64, Option<SystemTime>, Song)>> = Mutex::new(Vec::new());
+static SONGS: Mutex<Vec<KeptSong>> = Mutex::new(Vec::new());
+/// A loaded song with the file's path, size and change time when it was read.
+type KeptSong = (PathBuf, u64, Option<SystemTime>, Song);
 const KEPT_SONGS: usize = 3;
 
 /// Loads the scene's song, if it has one. Relative paths start from `base_dir`.
@@ -51,6 +53,21 @@ pub fn load_song(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<Optio
     }
     kept.push((full, len, changed, song.clone()));
     Ok(Some(song))
+}
+
+/// The scene's song if it's already loaded, without reading the file. The editor uses this to
+/// start the preview with the right beats straight after an edit.
+pub fn cached_song(scene: &Scene, base_dir: Option<&Path>) -> Option<Song> {
+    let path = scene.music.song.as_deref().filter(|p| !p.trim().is_empty())?;
+    let full = match base_dir {
+        Some(dir) if Path::new(path).is_relative() => dir.join(path),
+        _ => PathBuf::from(path),
+    };
+    let meta = std::fs::metadata(&full).ok()?;
+    let kept = SONGS.lock().unwrap_or_else(|e| e.into_inner());
+    kept.iter()
+        .find(|(p, l, c, _)| *p == full && *l == meta.len() && *c == meta.modified().ok())
+        .map(|(.., song)| song.clone())
 }
 
 /// The song's analysis moved into video time: the video starts `offset` seconds into the song.
@@ -101,6 +118,24 @@ pub struct SceneSound {
     pub on_beat: Option<f32>,
     /// Why the song couldn't be used, if it couldn't. The rest of the sound still plays.
     pub song_error: Option<String>,
+    /// The song, for drawing its waveform.
+    pub song: Option<Song>,
+}
+
+impl SceneSound {
+    /// The event log with every time in video time, for things drawn along the video.
+    pub fn video_events(&self) -> Vec<Event> {
+        let mut events = self.events.clone();
+        if let Some(warp) = &self.warp {
+            events.iter_mut().for_each(|e| e.time = warp.video_time(e.time));
+        }
+        events
+    }
+
+    /// The simulation time to show at video time `time`.
+    pub fn sim_time(&self, time: f64) -> f64 {
+        self.warp.as_ref().map_or(time, |w| w.sim_time(time))
+    }
 }
 
 /// Simulates the scene with its song and beat sync, and mixes its soundtrack.
@@ -137,7 +172,7 @@ pub fn render_scene(scene: &Scene, base_dir: Option<&Path>) -> anyhow::Result<Sc
         let sounding = events.iter().filter(|e| e.kind.is_bounce() && e.speed >= min_speed).map(|e| map(e.time));
         beat_sync::on_beat_share_of(sounding.filter(|&t| t <= duration), &beats, scene.music.beat_sync.tolerance as f64)
     });
-    Ok(SceneSound { mix, events, inputs, warp, beats, on_beat, song_error })
+    Ok(SceneSound { mix, events, inputs, warp, beats, on_beat, song_error, song })
 }
 
 fn simulate(scene: &Scene, inputs: &SimInputs, until: f64) -> Vec<Event> {
@@ -151,11 +186,6 @@ fn simulate(scene: &Scene, inputs: &SimInputs, until: f64) -> Vec<Event> {
 /// and the editor. `beats` must be sorted.
 pub fn on_beat_share(events: &[Event], beats: &[f64], tolerance: f64) -> f32 {
     beat_sync::on_beat_share(events, beats, tolerance)
-}
-
-/// Whether an event's time is already in video time (beats come from outside the simulation).
-pub(crate) fn in_video_clock(kind: EventKind) -> bool {
-    matches!(kind, EventKind::Beat { .. })
 }
 
 #[cfg(test)]

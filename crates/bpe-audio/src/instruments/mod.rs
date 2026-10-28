@@ -242,6 +242,54 @@ impl Voice {
     }
 }
 
+/// The presets in a SoundFont file as (bank, preset, name), for the editor's picker.
+pub fn soundfont_presets(path: &Path) -> anyhow::Result<Vec<(u32, u32, String)>> {
+    Ok(samples::Font::load(path, 0, 0)?.presets())
+}
+
+/// The notes a sample folder has recordings for, lowest first.
+pub fn folder_notes(path: &Path) -> anyhow::Result<Vec<u8>> {
+    Ok(samples::Folder::load(path)?.notes())
+}
+
+/// A short phrase on an instrument, so it can be heard before it's picked: a rising arpeggio,
+/// or a little beat on the drum kit. Interleaved stereo at [`SAMPLE_RATE`](crate::SAMPLE_RATE).
+pub fn preview(instrument: &Instrument, base_dir: Option<&Path>) -> anyhow::Result<Vec<f32>> {
+    let drums = matches!(instrument, Instrument::Library { name } if Builtin::from_name(name) == Some(Builtin::DrumKit))
+        || matches!(instrument, Instrument::SoundFont { bank, .. } if *bank >= 128);
+    let phrase: &[(f32, u8, f32)] = if drums {
+        &[(0.0, 36, 1.0), (0.25, 42, 0.6), (0.5, 38, 0.9), (0.75, 42, 0.6), (1.0, 36, 1.0), (1.25, 36, 0.8), (1.5, 38, 0.9), (1.75, 49, 0.8)]
+    } else {
+        &[(0.0, 60, 0.8), (0.18, 64, 0.8), (0.36, 67, 0.8), (0.54, 72, 1.0)]
+    };
+    let mut voice = Voice::new(instrument, base_dir)?;
+    let wanted: Vec<(u8, f32)> = phrase.iter().map(|&(_, n, v)| (n, v)).collect();
+    voice.prepare(&wanted);
+    let rate = crate::SAMPLE_RATE as f32;
+    let notes: Vec<(usize, Arc<[f32]>)> =
+        phrase.iter().map(|&(t, n, v)| ((t * rate) as usize, voice.note(n, v))).collect();
+    // Long notes are cut at four seconds with a short fade, so a preview never drags on.
+    let longest = (4.0 * rate) as usize;
+    let length = notes.iter().map(|(start, wave)| start + wave.len()).max().unwrap_or(0).min(longest);
+    let mut out = vec![0.0f32; length * 2];
+    for (start, wave) in &notes {
+        for (i, s) in wave.iter().enumerate() {
+            let at = start + i;
+            if at >= length {
+                break;
+            }
+            let fade = ((length - at) as f32 / (0.05 * rate)).min(1.0);
+            out[at * 2] += s * 0.7 * fade;
+            out[at * 2 + 1] += s * 0.7 * fade;
+        }
+    }
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak > 0.9 {
+        out.iter_mut().for_each(|s| *s *= 0.9 / peak);
+    }
+    Ok(out)
+}
+
 fn resolve(path: &str, base_dir: Option<&Path>) -> PathBuf {
     match base_dir {
         Some(dir) if Path::new(path).is_relative() => dir.join(path),

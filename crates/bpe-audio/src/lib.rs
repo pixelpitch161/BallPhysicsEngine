@@ -9,7 +9,8 @@ mod scene_sound;
 mod song;
 mod voices;
 
-pub use scene_sound::{SceneSound, Song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs};
+pub use bpe_music::{AudioFeatures, midi};
+pub use scene_sound::{SceneSound, Song, cached_song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs};
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
@@ -93,13 +94,9 @@ pub struct MixOptions<'a> {
 }
 
 impl MixOptions<'_> {
-    /// When an event is heard. Beats already come in video time; everything else happened in
-    /// simulation time.
+    /// When an event is heard. Every event, beats included, happened in simulation time.
     fn video_time(&self, event: &Event) -> f64 {
-        match self.time_map {
-            Some(map) if !scene_sound::in_video_clock(event.kind) => map(event.time),
-            _ => event.time,
-        }
+        self.time_map.map_or(event.time, |map| map(event.time))
     }
 }
 

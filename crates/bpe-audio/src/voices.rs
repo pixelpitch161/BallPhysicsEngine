@@ -5,7 +5,7 @@
 use crate::instruments::Voice;
 use crate::{ESCAPE_STRUM, MixOptions, PlayedNote, Progression, SAMPLE_RATE, STRUM_SPACING, Soundtrack, mix_notes, mix64};
 use bpe_music::midi::Step;
-use bpe_scene::{Advance, EventFilter, Instrument, PitchMode, Scene, VoiceMap};
+use bpe_scene::{Advance, EventFilter, Instrument, PitchMode, Scene};
 use bpe_sim::{Event, EventKind};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -156,7 +156,8 @@ struct Row {
     /// Place in the voices table, counting disabled rows, for the notes lane.
     index: u16,
     voice: Voice,
-    filter: EventFilter,
+    /// The events it plays; None for the scene's instrument, which plays what no row does.
+    filter: Option<EventFilter>,
     pitch: PitchMode,
     gain: f32,
 }
@@ -181,23 +182,37 @@ struct NoteOn {
     right: f32,
 }
 
-/// The rows that play: the voices table, or one row with the scene's instrument for every hit.
+/// The rows that play: each enabled row of the voices table, then the scene's own instrument
+/// for every hit and escape that no enabled row plays.
 fn rows(scene: &Scene, options: &MixOptions) -> anyhow::Result<Vec<Row>> {
     let sound = &scene.sound;
-    let fallback = [VoiceMap { instrument: sound.instrument.clone(), ..VoiceMap::default() }];
-    let table = if sound.voices.is_empty() { &fallback[..] } else { &sound.voices[..] };
-    table
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| v.enabled)
-        .map(|(index, v)| {
-            Ok(Row {
-                index: index as u16,
-                voice: Voice::new(&v.instrument, options.base_dir)?,
-                filter: v.on,
-                pitch: v.pitch,
-                gain: 10f32.powf(v.gain / 20.0),
-            })
+    let mut rows = Vec::new();
+    for (index, v) in sound.voices.iter().enumerate().filter(|(_, v)| v.enabled) {
+        rows.push(Row {
+            index: index as u16,
+            voice: Voice::new(&v.instrument, options.base_dir)?,
+            filter: Some(v.on),
+            pitch: v.pitch,
+            gain: 10f32.powf(v.gain / 20.0),
+        });
+    }
+    rows.push(Row {
+        index: sound.voices.len() as u16,
+        voice: Voice::new(&sound.instrument, options.base_dir)?,
+        filter: None,
+        pitch: PitchMode::Tune,
+        gain: 1.0,
+    });
+    Ok(rows)
+}
+
+/// Which rows play an event of this class.
+fn playing(rows: &[Row], class: Class) -> Vec<bool> {
+    let claimed = rows.iter().any(|r| r.filter.is_some_and(|f| class.matches(f)));
+    rows.iter()
+        .map(|r| match r.filter {
+            Some(filter) => class.matches(filter),
+            None => class.is_impact() && !claimed,
         })
         .collect()
 }
@@ -228,7 +243,8 @@ pub(crate) fn layer(
                 continue;
             }
         }
-        if !rows.iter().any(|r| class.matches(r.filter)) {
+        let plays = playing(&rows, class);
+        if !plays.contains(&true) {
             continue;
         }
         let time = options.video_time(event);
@@ -243,14 +259,14 @@ pub(crate) fn layer(
             PLAIN_VELOCITY
         };
         // The melody moves on once per event, however many voices play it.
-        let wants_tune = rows.iter().any(|r| class.matches(r.filter) && r.pitch == PitchMode::Tune);
+        let wants_tune = rows.iter().zip(&plays).any(|(r, &p)| p && r.pitch == PitchMode::Tune);
         let chosen = if wants_tune { tune.choose(index, event, class, time, impact) } else { None };
         // Beats and other events without a ball sit in the middle.
         let x = if event.ball_index().is_some() { event.position.x - center } else { 0.0 };
         let pan = (x / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         for (r, row) in rows.iter().enumerate() {
-            if !class.matches(row.filter) {
+            if !plays[r] {
                 continue;
             }
             let (keys, velocity, spacing, step) = match (row.pitch, &chosen) {
@@ -317,7 +333,7 @@ fn steal_voices(notes: &mut [NoteOn]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_scene::{Instrument, Melody};
+    use bpe_scene::{Instrument, Melody, VoiceMap};
 
     fn note(start: usize, len: usize) -> NoteOn {
         NoteOn { start, end: start + len, stolen: false, wave: vec![1.0; len].into(), left: 1.0, right: 1.0 }
@@ -403,6 +419,28 @@ mod tests {
         assert!(mix.notes.iter().filter(|n| n.key == 49).all(|n| n.voice == 1));
         let peak = mix.track.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.1 && peak <= 0.9);
+    }
+
+    #[test]
+    fn the_scene_instrument_plays_what_no_voice_does() {
+        let mut scene = Scene::escape_rings();
+        scene.sound.instrument = Instrument::library("Marimba");
+        scene.sound.voices = vec![VoiceMap {
+            on: EventFilter::Escapes,
+            instrument: Instrument::library("Drum kit"),
+            pitch: PitchMode::Fixed(49),
+            ..VoiceMap::default()
+        }];
+        let hits = bpe_sim::collect_wall_hits(&scene);
+        let mix = crate::mix(&scene, &hits, &MixOptions::default()).unwrap();
+        let sounding = hits
+            .iter()
+            .filter(|h| h.kind.is_bounce() && !matches!(h.kind, EventKind::Escape(_)))
+            .filter(|h| h.speed >= scene.sound.min_impact_speed && h.time < scene.video.duration as f64)
+            .count();
+        assert!(sounding > 0);
+        assert_eq!(mix.notes.iter().filter(|n| n.voice == 1).count(), sounding);
+        assert!(mix.notes.iter().filter(|n| n.voice == 0).all(|n| n.key == 49));
     }
 
     #[test]
