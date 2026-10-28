@@ -5,9 +5,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Reading SVG files and tracing pictures into custom shapes. Off for crates that only simulate.
+import = ["dep:usvg", "dep:image"]
+
 [dependencies]
 serde.workspace = true
 ron.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 bpe-graph.workspace = true
+usvg = { version = "0.49", default-features = false, optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"], optional = true }

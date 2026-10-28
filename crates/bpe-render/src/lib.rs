@@ -75,6 +75,8 @@ pub struct Renderer {
     background: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
+    /// Jelly, cloth and liquid fills (physics workstream).
+    soft: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
     downsample: wgpu::RenderPipeline,
@@ -82,6 +84,7 @@ pub struct Renderer {
     composite: wgpu::RenderPipeline,
     shape_buffer: GrowableBuffer,
     trail_buffer: GrowableBuffer,
+    soft_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     effects: effects::EffectChain,
@@ -97,6 +100,13 @@ impl Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene.wgsl").into()),
+        });
+        // Soft bodies (physics workstream): the scene shader plus a fragment for filled shapes.
+        let soft_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("soft body shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                [include_str!("shaders/scene.wgsl"), include_str!("shaders/soft.wgsl")].concat().into(),
+            ),
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
@@ -265,10 +275,21 @@ impl Renderer {
             &scene_shader,
             "vs_trail",
             "fs_trail",
-            &[Some(trail_layout)],
+            &[Some(trail_layout.clone())],
             TriangleList,
             HDR_FORMAT,
             Some(additive),
+        );
+        let soft = make(
+            "soft bodies",
+            &scene_pipeline_layout,
+            &soft_shader,
+            "vs_trail",
+            "fs_soft",
+            &[Some(trail_layout)],
+            TriangleList,
+            HDR_FORMAT,
+            Some(premultiplied),
         );
         let ball = make(
             "balls",
@@ -336,6 +357,7 @@ impl Renderer {
             background,
             shape,
             trail,
+            soft,
             ball,
             flash,
             downsample,
@@ -343,6 +365,7 @@ impl Renderer {
             composite,
             shape_buffer: GrowableBuffer::new("shape instances"),
             trail_buffer: GrowableBuffer::new("trail vertices"),
+            soft_buffer: GrowableBuffer::new("soft body vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             effects: effects::EffectChain::new(device, HDR_FORMAT),
@@ -428,6 +451,7 @@ impl Renderer {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
+        self.soft_buffer.upload(device, queue, bytemuck::cast_slice(&frame.soft));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
 
@@ -526,6 +550,11 @@ impl Renderer {
             pass.set_pipeline(&self.trail);
             pass.set_vertex_buffer(0, self.trail_buffer.slice());
             pass.draw(0..frame.trails.len() as u32, 0..1);
+        }
+        if !frame.soft.is_empty() {
+            pass.set_pipeline(&self.soft);
+            pass.set_vertex_buffer(0, self.soft_buffer.slice());
+            pass.draw(0..frame.soft.len() as u32, 0..1);
         }
         if !frame.balls.is_empty() {
             pass.set_pipeline(&self.ball);
@@ -809,6 +838,10 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
     )?;
     Ok((device, queue))
 }
+
+/// Picture tests for soft bodies, pockets and custom shapes (physics workstream).
+#[cfg(test)]
+mod soft_tests;
 
 #[cfg(test)]
 mod tests {

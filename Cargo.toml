@@ -31,6 +31,11 @@ rfd = "0.17"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The physics runs every scene's soft bodies and liquid in tests and in the editor's debug
+# builds, which is far too slow without optimisation.
+[profile.dev.package.bpe-sim]
+opt-level = 3
+
 [profile.dev]
 opt-level = 1
 

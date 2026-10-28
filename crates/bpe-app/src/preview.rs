@@ -253,6 +253,12 @@ impl Preview {
             return outcome;
         }
         let view = View { rect, scale: rect.width() / scene.video.width as f32 };
+        if crate::draw_shape::active(ui.ctx()) {
+            // Drawing a custom shape takes over the preview's clicks until it is done.
+            preview.drag = None;
+            crate::draw_shape::interact(ui, &response, scene, |p| view.to_world(p), |w| view.to_screen(w));
+            return outcome;
+        }
         let pointer = response.interact_pointer_pos().or(response.hover_pos());
         let hovered = pointer.and_then(|p| hit_test(scene, &view, p));
 
@@ -416,13 +422,14 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
                 (world - center).length() / (edge - center).length().max(1.0)
             });
             match &mut scene.container {
-                Container::Circle { radius, .. } | Container::Polygon { radius, .. } => {
+                Container::Circle { radius, .. }
+                | Container::Polygon { radius, .. }
+                | Container::Custom { radius, .. } => {
                     *radius = (*radius * scale.unwrap_or(1.0)).clamp(20.0, 1200.0).round()
                 }
                 Container::Rings { inner_radius, .. } => {
                     *inner_radius = (*inner_radius * scale.unwrap_or(1.0)).clamp(10.0, 1000.0).round()
                 }
-                Container::Custom { .. } => {}
                 Container::Rect { center, size, .. } => {
                     let d = ((world - *center).abs() * 2.0 / shown_size)
                         .clamp(Vec2::splat(40.0), Vec2::splat(2400.0))

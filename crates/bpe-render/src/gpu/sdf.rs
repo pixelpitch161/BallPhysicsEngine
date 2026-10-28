@@ -103,10 +103,13 @@ impl Walls {
                 Piece::Segment { from, to } => PieceGpu::segment(from, to, half),
             }));
         }
-        walls.pieces.extend(sim.obstacles().iter().map(|part| match *part {
-            ObstaclePart::Disc { center, radius, .. } => PieceGpu::disc(center, radius),
-            ObstaclePart::Segment { from, to, thickness, .. } => PieceGpu::segment(from, to, thickness * 0.5),
+        walls.pieces.extend(sim.obstacles().iter().filter_map(|part| match *part {
+            ObstaclePart::Disc { center, radius, .. } => Some(PieceGpu::disc(center, radius)),
+            ObstaclePart::Segment { from, to, thickness, .. } => Some(PieceGpu::segment(from, to, thickness * 0.5)),
+            ObstaclePart::Shape { .. } => None,
         }));
+        // A custom-shape arena and shape obstacles, as their outlines' straight pieces.
+        sim.shape_pieces(|from, to, half| walls.pieces.push(PieceGpu::segment(from, to, half)));
         walls
     }
 

@@ -32,6 +32,15 @@ const GOLDEN: &[(&str, u64)] = &[
     ("Smoke rings", 0x25786636c35c9c93),
     ("Liquid fill", 0xf788edc3a22cc412),
     ("Million swarm", 0xa7f7b25358aaf2f7),
+    // Soft body, ball contact and custom shape presets, recorded when they arrived.
+    ("Billiards", 0x51160c3bb73ec44a),
+    ("Stacking", 0x6ca25176c7f7376d),
+    ("Newton's cradle", 0x7f730473a8afbc56),
+    ("Jelly", 0xe292c7fbbfccf4dd),
+    ("Rope bridge", 0x883f6a1176a5c110),
+    ("Cloth", 0x29c64398cda8d4f3),
+    ("Heart arena", 0xd8059958a87f274a),
+    ("Liquid", 0x77ff8a6c99504c2e),
     // Rules preset: the same bounces as "Escape and multiply", built from rule blocks.
     ("Escape and multiply (rules)", 0x0721ea1f2df9d8aa),
     ("reference-reel.ron", 0xdcee90b73c18a4ad),
