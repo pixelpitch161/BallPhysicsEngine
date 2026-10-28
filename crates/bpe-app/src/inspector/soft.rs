@@ -11,11 +11,34 @@ use bpe_scene::{
 };
 use eframe::egui::{self, RichText, Ui};
 
+/// One soft thing, by its kind and place in its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoftPick {
+    Jelly(usize),
+    Rope(usize),
+    Cloth(usize),
+    Liquid,
+}
+
 /// Panel state for this section that is not part of the scene.
 #[derive(Default)]
 pub struct State {
     /// Counts dice rolls, so each roll comes out different.
     rolls: u64,
+    /// The soft thing last clicked here or in the preview, highlighted and given handles.
+    pub selected: Option<SoftPick>,
+    /// Set when the preview picked something, so its card scrolls into view once.
+    pub scroll_to: bool,
+}
+
+impl State {
+    /// Picks a soft thing from the preview.
+    pub fn pick(&mut self, pick: SoftPick) {
+        if self.selected != Some(pick) {
+            self.scroll_to = true;
+        }
+        self.selected = Some(pick);
+    }
 }
 
 impl State {
@@ -39,6 +62,38 @@ enum Kind {
     Cloth,
 }
 
+impl Kind {
+    fn pick(self, index: usize) -> SoftPick {
+        match self {
+            Kind::Jelly => SoftPick::Jelly(index),
+            Kind::Rope => SoftPick::Rope(index),
+            Kind::Cloth => SoftPick::Cloth(index),
+        }
+    }
+}
+
+/// A soft thing's card frame, outlined when it is selected. Clicking anywhere on the card
+/// selects it, and picking it in the preview scrolls it into view.
+fn card_frame(ui: &mut Ui, pick: SoftPick, state: &mut State, add: impl FnOnce(&mut Ui)) {
+    let is_selected = state.selected == Some(pick);
+    let card = egui::Frame::new()
+        .fill(theme::CARD)
+        .stroke(egui::Stroke::new(
+            if is_selected { 1.5 } else { 1.0 },
+            if is_selected { theme::ACCENT } else { theme::LINE },
+        ))
+        .corner_radius(8.0)
+        .inner_margin(10.0)
+        .show(ui, add);
+    // Watch for a click without claiming it, so the sliders inside still get theirs.
+    if card.response.contains_pointer() && ui.input(|i| i.pointer.primary_clicked()) {
+        state.selected = Some(pick);
+    }
+    if is_selected && std::mem::take(&mut state.scroll_to) {
+        card.response.scroll_to_me(Some(egui::Align::Center));
+    }
+}
+
 /// A card with a title, Remove, Duplicate and dice buttons, and its rows.
 fn card(
     ui: &mut Ui,
@@ -46,32 +101,28 @@ fn card(
     title: String,
     kind: Kind,
     change: &mut Option<Change>,
+    state: &mut State,
     add: impl FnOnce(&mut Ui),
 ) {
     ui.push_id(id, |ui| {
-        egui::Frame::new()
-            .fill(theme::CARD)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(8.0)
-            .inner_margin(10.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(title).strong().color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Remove").on_hover_text("Delete this").clicked() {
-                            *change = Some(Change::Remove(kind, id.1));
-                        }
-                        if ui.small_button("Duplicate").on_hover_text("Add a copy of this").clicked() {
-                            *change = Some(Change::Duplicate(kind, id.1));
-                        }
-                        if dice_button(ui, "Roll random settings for this").clicked() {
-                            *change = Some(Change::Roll(kind, id.1));
-                        }
-                    });
+        card_frame(ui, kind.pick(id.1), state, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).strong().color(theme::TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Remove").on_hover_text("Delete this").clicked() {
+                        *change = Some(Change::Remove(kind, id.1));
+                    }
+                    if ui.small_button("Duplicate").on_hover_text("Add a copy of this").clicked() {
+                        *change = Some(Change::Duplicate(kind, id.1));
+                    }
+                    if dice_button(ui, "Roll random settings for this").clicked() {
+                        *change = Some(Change::Roll(kind, id.1));
+                    }
                 });
-                ui.add_space(4.0);
-                add(ui);
             });
+            ui.add_space(4.0);
+            add(ui);
+        });
         ui.add_space(6.0);
     });
 }
@@ -92,20 +143,23 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     let mut change = None;
     for (index, jelly) in bodies.jelly.iter_mut().enumerate() {
         let title = format!("Jelly balls · {} × {}", jelly.columns, jelly.rows);
-        card(ui, ("jelly", index), title, Kind::Jelly, &mut change, |ui| jelly_rows(ui, jelly));
+        card(ui, ("jelly", index), title, Kind::Jelly, &mut change, state, |ui| jelly_rows(ui, jelly));
     }
     for (index, rope) in bodies.ropes.iter_mut().enumerate() {
-        card(ui, ("rope", index), "Rope".into(), Kind::Rope, &mut change, |ui| rope_rows(ui, rope));
+        card(ui, ("rope", index), "Rope".into(), Kind::Rope, &mut change, state, |ui| rope_rows(ui, rope));
     }
     for (index, cloth) in bodies.cloths.iter_mut().enumerate() {
-        card(ui, ("cloth", index), "Cloth".into(), Kind::Cloth, &mut change, |ui| cloth_rows(ui, cloth));
+        card(ui, ("cloth", index), "Cloth".into(), Kind::Cloth, &mut change, state, |ui| cloth_rows(ui, cloth));
     }
     match change {
-        Some(Change::Remove(kind, i)) => match kind {
-            Kind::Jelly => drop(bodies.jelly.remove(i)),
-            Kind::Rope => drop(bodies.ropes.remove(i)),
-            Kind::Cloth => drop(bodies.cloths.remove(i)),
-        },
+        Some(Change::Remove(kind, i)) => {
+            match kind {
+                Kind::Jelly => drop(bodies.jelly.remove(i)),
+                Kind::Rope => drop(bodies.ropes.remove(i)),
+                Kind::Cloth => drop(bodies.cloths.remove(i)),
+            }
+            state.selected = None;
+        }
         Some(Change::Duplicate(kind, i)) => {
             // The copy goes a little to the side, so it doesn't sit exactly on the original.
             let shift = Vec2::new(60.0, 60.0);
@@ -124,6 +178,7 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
                     bodies.cloths.insert(i + 1, copy);
                 }
             }
+            state.selected = Some(kind.pick(i + 1));
         }
         Some(Change::Roll(kind, i)) => {
             let mut dice = state.dice();
@@ -138,12 +193,15 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Jelly balls").on_hover_text("A block of squishy balls that wobble when they land").clicked() {
             bodies.jelly.push(Jelly { columns: 2, rows: 2, ..Jelly::default() });
+            state.selected = Some(SoftPick::Jelly(bodies.jelly.len() - 1));
         }
         if ui.button("+ Rope").on_hover_text("A rope held at both ends that balls bounce on").clicked() {
             bodies.ropes.push(Rope::default());
+            state.selected = Some(SoftPick::Rope(bodies.ropes.len() - 1));
         }
         if ui.button("+ Cloth").on_hover_text("A sheet hanging from its top edge that balls push around").clicked() {
             bodies.cloths.push(Cloth::default());
+            state.selected = Some(SoftPick::Cloth(bodies.cloths.len() - 1));
         }
     });
     if !none {

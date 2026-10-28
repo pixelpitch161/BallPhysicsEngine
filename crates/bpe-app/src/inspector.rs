@@ -222,6 +222,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
+                    let picked_before = (inspector.selected, inspector.soft.selected);
                     balls(
                         ui,
                         &mut scene.spawners,
@@ -232,8 +233,21 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         space,
                     );
                     soft::section(ui, scene, &mut inspector.soft);
+                    // One thing is selected at a time: a ball group or a soft thing.
+                    if inspector.soft.selected.is_some() && inspector.soft.selected != picked_before.1 {
+                        inspector.selected = None;
+                        inspector.looks.picked.clear();
+                    } else if inspector.selected.is_some() && inspector.selected != picked_before.0 {
+                        inspector.soft.selected = None;
+                    }
                     gpu::section(ui, scene, &mut inspector.gpu);
-                    liquid::section(ui, scene, &mut inspector.liquid);
+                    let liquid = ui.scope(|ui| liquid::section(ui, scene, &mut inspector.liquid)).response;
+                    // Liquid picked in the preview: bring its section into view.
+                    if inspector.soft.selected == Some(soft::SoftPick::Liquid)
+                        && std::mem::take(&mut inspector.soft.scroll_to)
+                    {
+                        liquid.scroll_to_me(Some(egui::Align::Center));
+                    }
                 }
                 Tab::Arena => {
                     // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
