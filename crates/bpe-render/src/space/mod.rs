@@ -231,7 +231,9 @@ impl SpaceFrame {
         self.camera = camera_for(space, sim, time as f32, aspect);
 
         for ball in sim.balls() {
-            self.balls.push(SpaceBall { center: ball.position.into(), radius: ball.radius, color: ball.color });
+            // Removed balls keep their slot, so ball numbers in events still line up, but draw nothing.
+            let radius = if ball.alive { ball.radius } else { 0.0 };
+            self.balls.push(SpaceBall { center: ball.position.into(), radius, color: ball.color });
         }
         self.gates.extend(sim.gates().take(MAX_GATES).map(|g| GateFrame {
             z: g.z,
@@ -263,6 +265,9 @@ impl SpaceFrame {
         let eye = self.camera.position;
         let mut points = Vec::new();
         for (index, ball) in sim.balls().iter().enumerate() {
+            if !ball.alive {
+                continue;
+            }
             points.clear();
             points.push(ball.position);
             points.extend(sim.trail(index));
