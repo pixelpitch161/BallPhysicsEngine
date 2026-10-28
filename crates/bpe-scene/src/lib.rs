@@ -5,16 +5,32 @@
 //! output video, with the origin at the centre of the frame and y pointing down.
 
 mod animation;
+mod bodies;
+mod captions;
 mod color;
 mod effect;
+mod gpu;
+pub mod logic;
+mod music;
+mod particles;
 mod presets;
 mod random;
+mod shapes;
+mod view;
 
-pub use animation::{Ease, Key, Property, SAME_TIME, Track, Value};
+pub use animation::{Ease, Key, Modulator, Property, SAME_TIME, Track, Value};
+pub use bodies::*;
+pub use bpe_graph::Graph;
+pub use captions::*;
 pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
+pub use gpu::*;
+pub use music::*;
+pub use particles::*;
 pub use random::{Dice, Group, palette};
+pub use shapes::*;
+pub use view::*;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -38,6 +54,26 @@ pub struct Scene {
     pub sound: Sound,
     /// Settings that change over time, one track of keyframes each.
     pub animation: Vec<Track>,
+    /// Rules: "when this happens, do that" graphs run inside the simulation.
+    pub logic: Vec<Graph>,
+    /// Named outlines that a custom arena or shaped obstacles use.
+    pub shapes: Vec<Shape>,
+    /// Jelly balls, ropes, cloth and small fluids.
+    pub bodies: Bodies,
+    /// Swarms and big fluids drawn on the graphics card.
+    pub gpu: GpuLayers,
+    /// Particles that burst out on hits and rule actions.
+    pub particles: Vec<Emitter>,
+    /// Flat 2D or 3D space.
+    pub view: View,
+    /// Shader effects built from blocks, used by effects named "graph:<name>".
+    pub shader_graphs: Vec<Graph>,
+    /// Settings that pulse with the music.
+    pub modulators: Vec<Modulator>,
+    /// The song, beat sync and MIDI melody.
+    pub music: Music,
+    /// Text drawn over the video.
+    pub captions: Vec<Caption>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,6 +149,15 @@ pub enum Container {
         /// Colours from the smallest ring to the biggest, spread evenly.
         gradient: Vec<Color>,
     },
+    /// An arena with any outline, from [`Scene::shapes`] by name.
+    Custom {
+        /// Where the shape's origin sits.
+        #[serde(default)]
+        center: Vec2,
+        shape: String,
+        thickness: f32,
+        color: Color,
+    },
 }
 
 /// Turning and shrinking applied to the whole arena.
@@ -156,6 +201,13 @@ pub enum Obstacle {
         thickness: f32,
         color: Color,
     },
+    /// An outline from [`Scene::shapes`] by name, placed, turned (degrees) and scaled.
+    Shape {
+        shape: String,
+        position: Vec2,
+        rotation: f32,
+        scale: f32,
+    },
 }
 
 /// One peg or wall piece, with grids expanded into single pegs.
@@ -177,12 +229,22 @@ pub enum Spawner {
         velocity: Vec2,
         /// Colours from the top row to the bottom row, spread evenly.
         gradient: Vec<Color>,
+        /// Distance into the screen in 3D, in pixels. Ignored in 2D.
+        #[serde(default)]
+        depth: f32,
+        /// Speed into the screen in 3D, in pixels per second. Ignored in 2D.
+        #[serde(default)]
+        depth_velocity: f32,
     },
     Single {
         position: Vec2,
         velocity: Vec2,
         radius: f32,
         color: Color,
+        #[serde(default)]
+        depth: f32,
+        #[serde(default)]
+        depth_velocity: f32,
     },
     /// Balls dropped one after another from the same spot.
     Stream {
@@ -197,6 +259,10 @@ pub enum Spawner {
         jitter: f32,
         /// Colours from the first ball to the last, spread evenly.
         gradient: Vec<Color>,
+        #[serde(default)]
+        depth: f32,
+        #[serde(default)]
+        depth_velocity: f32,
     },
 }
 
@@ -266,6 +332,8 @@ pub struct Sound {
     pub low_note: u8,
     pub high_note: u8,
     pub instrument: Instrument,
+    /// Instruments for particular kinds of event, over `instrument`.
+    pub voices: Vec<VoiceMap>,
     /// Wall hits slower than this (pixels per second along the wall normal) make no sound.
     pub min_impact_speed: f32,
     /// Impact speed that plays at full note volume.
@@ -291,14 +359,6 @@ pub struct ChordStep {
     /// Chord name such as "C", "Am", "G7", "Dsus4", "Fmaj7".
     pub chord: String,
     pub seconds: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Instrument {
-    /// A soft synthesised pluck. `decay` is seconds to fade by 60 dB, `brightness` 0 to 1.
-    Pluck { decay: f32, brightness: f32 },
-    /// A WAV file played at the pitch of `root_note` and pitched up or down from there.
-    Sample { path: String, root_note: u8 },
 }
 
 impl Default for Scene {
@@ -329,12 +389,24 @@ impl Default for Scene {
                     Color::rgb(0xff, 0x6a, 0x5c),
                     Color::rgb(0xff, 0xb8, 0x2e),
                 ],
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             rules: BounceRules::default(),
             look: Look::default(),
             effects: Vec::new(),
             sound: Sound::default(),
             animation: Vec::new(),
+            logic: Vec::new(),
+            shapes: Vec::new(),
+            bodies: Bodies::default(),
+            gpu: GpuLayers::default(),
+            particles: Vec::new(),
+            view: View::default(),
+            shader_graphs: Vec::new(),
+            modulators: Vec::new(),
+            music: Music::default(),
+            captions: Vec::new(),
         }
     }
 }
@@ -418,6 +490,7 @@ impl Default for Sound {
             low_note: 48,
             high_note: 84,
             instrument: Instrument::Pluck { decay: 0.9, brightness: 0.5 },
+            voices: Vec::new(),
             min_impact_speed: 20.0,
             full_volume_speed: 600.0,
             stereo_width: 0.6,
@@ -433,7 +506,8 @@ impl Container {
             Container::Circle { center, .. }
             | Container::Rect { center, .. }
             | Container::Polygon { center, .. }
-            | Container::Rings { center, .. } => center,
+            | Container::Rings { center, .. }
+            | Container::Custom { center, .. } => center,
         }
     }
 
@@ -442,7 +516,8 @@ impl Container {
             Container::Circle { center, .. }
             | Container::Rect { center, .. }
             | Container::Polygon { center, .. }
-            | Container::Rings { center, .. } => center,
+            | Container::Rings { center, .. }
+            | Container::Custom { center, .. } => center,
         }
     }
 
@@ -451,16 +526,18 @@ impl Container {
             Container::Circle { thickness, .. }
             | Container::Rect { thickness, .. }
             | Container::Polygon { thickness, .. }
-            | Container::Rings { thickness, .. } => thickness,
+            | Container::Rings { thickness, .. }
+            | Container::Custom { thickness, .. } => thickness,
         }
     }
 
     /// The arena's main colour (the smallest ring's colour for rings).
     pub fn color(&self) -> Color {
         match self {
-            Container::Circle { color, .. } | Container::Rect { color, .. } | Container::Polygon { color, .. } => {
-                *color
-            }
+            Container::Circle { color, .. }
+            | Container::Rect { color, .. }
+            | Container::Polygon { color, .. }
+            | Container::Custom { color, .. } => *color,
             Container::Rings { gradient, .. } => gradient.first().copied().unwrap_or(Color::WHITE),
         }
     }
@@ -474,6 +551,8 @@ impl Container {
             Container::Rings { count, inner_radius, spacing, .. } => {
                 ring_radius(inner_radius, spacing, count.max(1) - 1)
             }
+            // Until custom shapes are measured, treat them like the default ring.
+            Container::Custom { .. } => 508.0,
         }
     }
 
@@ -515,6 +594,8 @@ impl Obstacle {
             Obstacle::Line { from, to, thickness, color } => {
                 out.push(ObstaclePart::Segment { from, to, thickness, color })
             }
+            // Shaped obstacles are flattened into wall pieces once custom shapes are in.
+            Obstacle::Shape { .. } => {}
         }
     }
 }
@@ -622,6 +703,8 @@ impl Scene {
                     velocity: Vec2::new(angle.cos(), angle.sin()) * 520.0,
                     radius: 12.0,
                     color,
+                    depth: 0.0,
+                    depth_velocity: 0.0,
                 }
             })
             .collect();
@@ -664,6 +747,8 @@ impl Scene {
                 radius: 8.0,
                 velocity: Vec2::new(420.0, -150.0),
                 gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6)],
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 400.0), ..Physics::default() },
             rules: BounceRules {
@@ -691,6 +776,8 @@ impl Scene {
                 velocity: Vec2::new(380.0, 0.0),
                 radius: 110.0,
                 color: Color::rgb(0x3e, 0x9b, 0xff),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             look: Look {
                 trail_seconds: 0.4,
@@ -725,6 +812,8 @@ impl Scene {
                 velocity: Vec2::new(420.0, 0.0),
                 radius: 18.0,
                 color: Color::rgb(0xff, 0x5c, 0xa8),
+                depth: 0.0,
+                depth_velocity: 0.0,
             }],
             rules: BounceRules { speed_gain: 1.02, grow: 2.5, max_radius: 300.0, ..BounceRules::default() },
             look: Look { trail_seconds: 0.5, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },

@@ -1,0 +1,12 @@
+//! 3D: Flat or 3D, camera and lights (top of the Arena tab). Owned by the 3D workstream, which
+//! fills in this placeholder.
+
+use bpe_scene::Scene;
+use eframe::egui::Ui;
+
+/// Panel state for this section that is not part of the scene.
+#[derive(Default)]
+pub struct State {}
+
+/// Draws the section. Edits go straight into `scene`; the app keeps them as undo steps.
+pub fn section(_ui: &mut Ui, _scene: &mut Scene, _state: &mut State) {}

@@ -6,7 +6,7 @@
 
 use bpe_render::{EffectLibrary, FrameData, Renderer, wgpu};
 use bpe_scene::{Color, Ease, Effect, Key, Property, Scene, Spawner, Track, Value};
-use bpe_sim::{Playback, WallHit};
+use bpe_sim::{Event, Playback};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -152,7 +152,7 @@ pub fn profile_scene(
     Ok(Report {
         name: name.to_string(),
         balls,
-        hits: hits.len(),
+        hits: hits.iter().filter(|e| e.kind.is_bounce()).count(),
         simulate,
         sound,
         frames,
@@ -205,14 +205,16 @@ fn hasher() -> std::collections::hash_map::DefaultHasher {
     std::collections::hash_map::DefaultHasher::new()
 }
 
-fn hash_hits(hits: &[WallHit]) -> u64 {
+/// Hashes the bounces only, so fingerprints stay comparable with logs from before other events
+/// (spawns, beats, rule actions) were recorded.
+fn hash_hits(hits: &[Event]) -> u64 {
     let mut hash = hasher();
-    for hit in hits {
+    for hit in hits.iter().filter(|e| e.kind.is_bounce()) {
         hit.time.to_bits().hash(&mut hash);
         hit.ball.hash(&mut hash);
         hit.position.x.to_bits().hash(&mut hash);
         hit.position.y.to_bits().hash(&mut hash);
-        hit.impact_speed.to_bits().hash(&mut hash);
+        hit.speed.to_bits().hash(&mut hash);
         format!("{:?}", hit.kind).hash(&mut hash);
     }
     hash.finish()

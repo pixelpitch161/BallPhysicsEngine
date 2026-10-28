@@ -79,6 +79,12 @@ pub struct Track {
     pub keys: Vec<Key>,
 }
 
+/// A setting that follows the music, such as an effect amount pulsing with the bass. Owned by
+/// the audio-reactive workstream, which replaces this placeholder.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Modulator {}
+
 impl Ease {
     pub const ALL: [Ease; 5] = [Ease::Smooth, Ease::Linear, Ease::EaseIn, Ease::EaseOut, Ease::Hold];
 
@@ -335,9 +341,10 @@ impl Property {
             Property::BackgroundTop => Some(&mut scene.look.background_top),
             Property::BackgroundBottom => Some(&mut scene.look.background_bottom),
             Property::ArenaColor => match &mut scene.container {
-                Container::Circle { color, .. } | Container::Rect { color, .. } | Container::Polygon { color, .. } => {
-                    Some(color)
-                }
+                Container::Circle { color, .. }
+                | Container::Rect { color, .. }
+                | Container::Polygon { color, .. }
+                | Container::Custom { color, .. } => Some(color),
                 Container::Rings { .. } => None,
             },
             _ => None,

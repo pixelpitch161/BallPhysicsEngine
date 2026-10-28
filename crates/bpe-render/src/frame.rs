@@ -1,7 +1,7 @@
 //! What to draw for one video frame, built on the CPU from the simulation.
 
 use bpe_scene::{Color, Container, ObstaclePart, Scene, Vec2};
-use bpe_sim::{HitKind, Outline, Playback};
+use bpe_sim::{Counts, Event, EventKind, Outline, Playback};
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::TAU;
 
@@ -104,7 +104,28 @@ pub struct FrameData {
     pub pulse: f32,
     /// Walls, pegs, string-art lines and ring shards, drawn under the trails and balls.
     pub shapes: Vec<ShapeInstance>,
+    /// Every event in the last [`EVENT_MEMORY`] seconds, oldest first, for particles, shaders
+    /// and captions.
+    pub events: Vec<Event>,
+    /// The song's bass, mid and treble (0 to 1) and how far through the current beat it is.
+    /// All zero with no song.
+    pub audio: [f32; 4],
+    /// The song's overall loudness, 0 to 1.
+    pub level: f32,
+    /// Running totals now: balls, hits, escapes, rule counters.
+    pub counts: Counts,
+    /// Swarms and big fluids (GPU workstream).
+    pub gpu: crate::gpu::GpuFrame,
+    /// Hit particles (GPU workstream).
+    pub particles: crate::particles::ParticleFrame,
+    /// The 3D picture (3D workstream).
+    pub space: crate::space::SpaceFrame,
+    /// Captions (captions workstream).
+    pub text: crate::text::TextFrame,
 }
+
+/// How far back [`FrameData::events`] reaches, in seconds.
+pub const EVENT_MEMORY: f64 = 3.0;
 
 impl FrameData {
     /// Builds the frame for the playback's current time. `pixel` is the size of one output
@@ -117,7 +138,7 @@ impl FrameData {
 
     pub fn fill(&mut self, scene: &Scene, playback: &Playback, pixel: f32) {
         let animated;
-        let scene = if scene.animation.is_empty() {
+        let scene = if scene.animation.is_empty() && scene.modulators.is_empty() {
             scene
         } else {
             animated = scene.at_time(playback.simulation().time() as f32);
@@ -134,13 +155,16 @@ impl FrameData {
         self.push_walls(scene, playback);
         self.push_strings(scene, playback);
 
-        for ball in sim.balls() {
+        for ball in sim.balls().iter().filter(|b| b.alive) {
             self.balls.push(BallInstance { center: ball.position.into(), radius: ball.radius, color: ball.color });
         }
 
         if look.trail_seconds > 0.0 && look.trail_opacity > 0.0 {
             let mut points = Vec::new();
             for (index, ball) in sim.balls().iter().enumerate() {
+                if !ball.alive {
+                    continue;
+                }
                 points.clear();
                 points.push(ball.position);
                 points.extend(sim.trail(index));
@@ -152,13 +176,14 @@ impl FrameData {
         if look.flash_strength > 0.0 && look.flash_seconds > 0.0 {
             let now = sim.time();
             let full_speed = scene.sound.full_volume_speed.max(1.0);
-            for hit in playback.recent_hits(look.flash_seconds as f64) {
+            for hit in playback.recent_events(look.flash_seconds as f64).iter().filter(|e| e.kind.is_bounce()) {
                 let age = (now - hit.time) as f32 / look.flash_seconds;
-                let intensity = (hit.impact_speed / full_speed).min(1.5) * (-3.0 * age).exp() * 0.35;
+                let intensity = (hit.speed / full_speed).min(1.5) * (-3.0 * age).exp() * 0.35;
                 if intensity < 0.002 {
                     continue;
                 }
-                let c = sim.balls()[hit.ball as usize].color;
+                let Some(ball) = hit.ball_index().and_then(|i| sim.balls().get(i)) else { continue };
+                let c = ball.color;
                 let color = [
                     (c[0] + 1.0) * 0.5 * intensity,
                     (c[1] + 1.0) * 0.5 * intensity,
@@ -173,9 +198,9 @@ impl FrameData {
             let now = sim.time();
             let full_speed = scene.sound.full_volume_speed.max(1.0);
             let mut energy = 0.0;
-            for hit in playback.recent_hits(HIT_MEMORY).iter().rev() {
+            for hit in playback.recent_events(HIT_MEMORY).iter().rev().filter(|e| e.kind.is_bounce()) {
                 let age = (now - hit.time).max(0.0) as f32;
-                let strength = (hit.impact_speed / full_speed).min(1.5);
+                let strength = (hit.speed / full_speed).min(1.5);
                 energy += strength * (-6.0 * age).exp();
                 if self.hits.len() < crate::MAX_EFFECT_HITS {
                     let color = sim.balls().get(hit.ball as usize).map_or([1.0; 4], |b| b.color);
@@ -186,6 +211,22 @@ impl FrameData {
         } else {
             self.pulse = 0.0;
         }
+
+        let now = sim.time();
+        self.events.clear();
+        self.events.extend_from_slice(playback.recent_events(EVENT_MEMORY));
+        (self.audio, self.level) = match &sim.inputs().music {
+            Some(music) => {
+                let at = music.at(now);
+                ([at.bass, at.mid, at.treble, music.beat_phase(now)], at.level)
+            }
+            None => ([0.0; 4], 0.0),
+        };
+        self.counts = playback.counts_at(now);
+        self.gpu.fill(scene, playback);
+        self.particles.fill(scene, playback, &self.events);
+        self.space.fill(scene, playback);
+        self.text.fill(scene, playback, &self.counts);
     }
 }
 
@@ -205,7 +246,7 @@ impl FrameData {
         let lit_seconds = look.flash_seconds.max(0.3) as f64;
         let mut last_hit = vec![f64::NEG_INFINITY; sim.obstacles().len()];
         for hit in playback.recent_hits(lit_seconds) {
-            if let HitKind::Obstacle(i) = hit.kind {
+            if let EventKind::Obstacle(i) = hit.kind {
                 last_hit[i as usize] = hit.time;
             }
         }
@@ -270,10 +311,10 @@ impl FrameData {
         let mut total = 0;
         // Only look this far back, so long clips with many balls stay quick to draw.
         for hit in playback.hits().iter().rev().take(MAX_STRING_SCAN) {
-            if matches!(hit.kind, HitKind::Escape(_)) {
+            let Some(index) = hit.ball_index().filter(|&i| i < balls.len() && hit.kind.is_hit()) else {
                 continue;
-            }
-            let count = &mut counts[hit.ball as usize];
+            };
+            let count = &mut counts[index];
             if *count >= per_ball {
                 continue;
             }
@@ -281,7 +322,7 @@ impl FrameData {
             if *count == per_ball {
                 full += 1;
             }
-            let ball = &balls[hit.ball as usize];
+            let ball = &balls[index];
             let c = ball.color;
             let color = [c[0], c[1], c[2], look.string_opacity];
             self.shapes.push(ShapeInstance::capsule(hit.position, ball.position, look.string_width * 0.5, color, 0.0));

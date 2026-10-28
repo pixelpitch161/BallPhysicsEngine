@@ -1,4 +1,5 @@
 use crate::audio_out::AudioOut;
+use crate::command_palette::{Action, Command, CommandPalette};
 use crate::explorer::Explorer;
 use crate::export::ExportPanel;
 use crate::gallery::Gallery;
@@ -6,6 +7,8 @@ use crate::inspector::{self, Inspector, Tab};
 use crate::keys;
 use crate::preview::{Preview, PreviewQuality};
 use crate::timeline::{HitSummary, Timeline};
+use crate::workspace::Workspace;
+use crate::{batch, node_editor, rules_workspace, shader_workspace};
 use crate::{settings, theme};
 use bpe_audio::Soundtrack;
 use bpe_scene::{Property, Scene, Value};
@@ -63,6 +66,13 @@ pub struct StudioApp {
     /// Show the performance meter over the preview.
     show_stats: bool,
     meter: Meter,
+    workspace: Workspace,
+    rules: rules_workspace::State,
+    shaders: shader_workspace::State,
+    batch: batch::State,
+    palette: CommandPalette,
+    /// Whether the preview floats over the Rules, Shaders and Batch workspaces.
+    floating_preview: bool,
 }
 
 /// Editor frame rate and timings for the performance meter.
@@ -198,6 +208,12 @@ impl StudioApp {
             preview_quality: PreviewQuality::default(),
             show_stats: false,
             meter: Meter::default(),
+            workspace: Workspace::default(),
+            rules: rules_workspace::State::default(),
+            shaders: shader_workspace::State::default(),
+            batch: batch::State::default(),
+            palette: CommandPalette::default(),
+            floating_preview: true,
         }
     }
 
@@ -438,6 +454,14 @@ impl StudioApp {
         if pressed(Modifiers::COMMAND, Key::O) {
             self.guard(Pending::Open, ctx);
         }
+        if pressed(Modifiers::COMMAND, Key::K) {
+            self.palette.toggle();
+        }
+        for (key, workspace) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4].into_iter().zip(Workspace::ALL) {
+            if pressed(Modifiers::COMMAND, key) {
+                self.workspace = workspace;
+            }
+        }
         if typing {
             return;
         }
@@ -447,14 +471,16 @@ impl StudioApp {
         if pressed(Modifiers::COMMAND, Key::Z) {
             self.undo();
         }
-        if ctx.input(|i| i.key_pressed(Key::Space)) {
+        // Over a block canvas, Space adds a block and Delete removes one.
+        let canvas_keys = node_editor::take_wants_keyboard(ctx) && self.workspace != Workspace::Scene;
+        if !canvas_keys && ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
         }
         if ctx.input(|i| i.key_pressed(Key::F3)) {
             self.show_stats = !self.show_stats;
         }
         // Arrow keys belong to a slider or button that has the keyboard focus.
-        if ctx.memory(|m| m.focused().is_some()) {
+        if canvas_keys || ctx.memory(|m| m.focused().is_some()) {
             return;
         }
         let fps = self.scene.video.fps.max(1) as f64;
@@ -509,6 +535,8 @@ impl StudioApp {
                 self.clicked = Some(ToolbarClick::Redo);
             }
             ui.separator();
+            self.workspace_switch(ui);
+            ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
             let saved_label = match (&self.scene_path, self.was_unsaved) {
@@ -541,6 +569,110 @@ impl StudioApp {
                 }
             });
         });
+    }
+
+    /// Scene | Rules | Shaders | Batch, as one segmented control.
+    fn workspace_switch(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (i, workspace) in Workspace::ALL.into_iter().enumerate() {
+            let selected = self.workspace == workspace;
+            let text = if selected {
+                RichText::new(workspace.name()).color(Color32::WHITE)
+            } else {
+                RichText::new(workspace.name())
+            };
+            let button = egui::Button::selectable(selected, text);
+            if ui.add(button).on_hover_text(format!("{} (Ctrl+{})", workspace.help(), i + 1)).clicked() {
+                self.workspace = workspace;
+            }
+        }
+        ui.spacing_mut().item_spacing.x = 8.0;
+    }
+
+    /// The live preview and the speed meter over it.
+    fn preview(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) -> crate::preview::Outcome {
+        let outcome = Preview::show(
+            &mut self.preview,
+            ui,
+            frame,
+            &mut self.scene,
+            &mut self.playback,
+            self.time,
+            self.playing,
+            self.inspector.selected,
+            &self.inspector.effects.library,
+            self.preview_quality,
+        );
+        if self.show_stats {
+            let stats = self.preview.as_ref().map(|p| p.stats).unwrap_or_default();
+            draw_meter(
+                ui,
+                &self.meter,
+                &stats,
+                self.playback.events().iter().filter(|e| e.is_hit()).count(),
+                self.playing,
+            );
+        }
+        outcome
+    }
+
+    fn run_command(&mut self, command: Command, ctx: &egui::Context) {
+        match command {
+            Command::Workspace(workspace) => self.workspace = workspace,
+            Command::Tab(tab) => self.inspector.tab = tab,
+            Command::Setting { label, tab, property } => {
+                self.inspector.tab = tab;
+                crate::command_palette::point_at(ctx, &label, tab, property);
+            }
+            Command::Action(action) => match action {
+                Action::New => self.gallery.open(),
+                Action::Open => self.clicked = Some(ToolbarClick::Open),
+                Action::Save => self.clicked = Some(ToolbarClick::Save),
+                Action::SaveAs => self.clicked = Some(ToolbarClick::SaveAs),
+                Action::Undo => self.clicked = Some(ToolbarClick::Undo),
+                Action::Redo => self.clicked = Some(ToolbarClick::Redo),
+                Action::Export => self.export.open = true,
+                Action::Explore => self.clicked = Some(ToolbarClick::Explore),
+                Action::PlayPause => self.set_playing(!self.playing),
+                Action::Restart => self.seek(0.0),
+                Action::SpeedMeter => self.show_stats = !self.show_stats,
+                Action::TogglePreview => self.floating_preview = !self.floating_preview,
+            },
+        }
+    }
+
+    /// The preview in a small window over a workspace's canvas, in the bottom right corner
+    /// until moved.
+    fn floating_preview(
+        &mut self,
+        ctx: &egui::Context,
+        area: egui::Rect,
+        frame: &mut eframe::Frame,
+    ) -> crate::preview::Outcome {
+        let mut outcome = crate::preview::Outcome::default();
+        if !self.floating_preview {
+            return outcome;
+        }
+        let mut open = true;
+        egui::Window::new("Preview")
+            .id(egui::Id::unique("floating preview"))
+            .open(&mut open)
+            .default_size([270.0, 520.0])
+            .min_size([160.0, 240.0])
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .default_pos(area.right_bottom() - egui::vec2(16.0, 16.0))
+            .constrain_to(area)
+            .collapsible(true)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.set_min_size(ui.available_size());
+                outcome = self.preview(ui, frame);
+            });
+        if !open {
+            self.floating_preview = false;
+            self.status = "Preview hidden. Ctrl+K, \"floating preview\" brings it back.".into();
+        }
+        outcome
     }
 
     fn transport(&mut self, ui: &mut egui::Ui) {
@@ -668,7 +800,7 @@ impl eframe::App for StudioApp {
         }
         let tab_open = self.inspector.tab == Tab::Effects;
         self.inspector.effects.poll(&ctx, &self.scene, self.base_dir(), tab_open);
-        let modal_open = self.gallery.open || self.explorer.open || self.confirm.is_some();
+        let modal_open = self.gallery.open || self.explorer.open || self.confirm.is_some() || self.palette.open;
         if !modal_open {
             self.shortcuts(&ctx);
         }
@@ -706,24 +838,17 @@ impl eframe::App for StudioApp {
         let central = egui::Frame::new().fill(theme::BACKGROUND);
         let outcome = egui::CentralPanel::default()
             .frame(central)
-            .show(ui, |ui| {
-                let outcome = Preview::show(
-                    &mut self.preview,
-                    ui,
-                    frame,
-                    &mut self.scene,
-                    &mut self.playback,
-                    self.time,
-                    self.playing,
-                    self.inspector.selected,
-                    &self.inspector.effects.library,
-                    self.preview_quality,
-                );
-                if self.show_stats {
-                    let stats = self.preview.as_ref().map(|p| p.stats).unwrap_or_default();
-                    draw_meter(ui, &self.meter, &stats, self.playback.hits().len(), self.playing);
+            .show(ui, |ui| match self.workspace {
+                Workspace::Scene => self.preview(ui, frame),
+                workspace => {
+                    let area = ui.max_rect();
+                    egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| match workspace {
+                        Workspace::Rules => rules_workspace::show(ui, &mut self.scene, &mut self.rules, None),
+                        Workspace::Shaders => shader_workspace::show(ui, &mut self.scene, &mut self.shaders),
+                        _ => batch::show(ui, &mut self.scene, &mut self.batch),
+                    });
+                    self.floating_preview(&ctx, area, frame)
                 }
-                outcome
             })
             .inner;
         self.meter.catching_up = outcome.catching_up;
@@ -793,6 +918,9 @@ impl eframe::App for StudioApp {
             separate = true;
         }
         self.confirm_dialog(&ctx);
+        if let Some(command) = self.palette.show(&ctx, &self.scene) {
+            self.run_command(command, &ctx);
+        }
 
         if std::mem::take(&mut self.swapped) {
             // Already handled by undo, redo or opening a scene.

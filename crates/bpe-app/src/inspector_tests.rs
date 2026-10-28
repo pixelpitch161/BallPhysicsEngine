@@ -198,8 +198,14 @@ fn launch(scene: &Scene) -> Vec2 {
 }
 
 fn single_ball(velocity: Vec2) -> Scene {
-    let spawners =
-        vec![Spawner::Single { position: Vec2::new(40.0, -30.0), velocity, radius: 33.0, color: Color::WHITE }];
+    let spawners = vec![Spawner::Single {
+        position: Vec2::new(40.0, -30.0),
+        velocity,
+        radius: 33.0,
+        color: Color::WHITE,
+        depth: 0.0,
+        depth_velocity: 0.0,
+    }];
     Scene { spawners, ..Scene::default() }
 }
 

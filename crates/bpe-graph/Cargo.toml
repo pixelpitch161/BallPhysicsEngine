@@ -1,0 +1,12 @@
+[package]
+name = "bpe-graph"
+description = "Node graphs shared by rules and shader effects: wiring, types, validation and order"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+ron.workspace = true

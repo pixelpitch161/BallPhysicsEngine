@@ -7,7 +7,7 @@ pub mod chord;
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
-use bpe_sim::{HitKind, WallHit};
+use bpe_sim::{Event, EventKind};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -49,12 +49,13 @@ impl Soundtrack {
     }
 }
 
-/// Builds the soundtrack for a scene from its wall hits. Relative sample paths are resolved
-/// against `base_dir`, normally the folder the scene file lives in.
-pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path>) -> anyhow::Result<Soundtrack> {
+/// Builds the soundtrack for a scene from its event log: a note for each hit and a strum for
+/// each escape. Relative sample paths are resolved against `base_dir`, normally the folder the
+/// scene file lives in.
+pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path>) -> anyhow::Result<Soundtrack> {
     let sound = &scene.sound;
     let mut track = Soundtrack::silent(scene.video.duration);
-    if !sound.enabled || hits.is_empty() {
+    if !sound.enabled || !events.iter().any(|e| e.kind.is_bounce()) {
         return Ok(track);
     }
     let progression = Progression::new(scene)?;
@@ -65,8 +66,9 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
 
     // First list every note to play, in the order of the hits.
     let mut notes: Vec<Placed> = Vec::new();
-    for (index, hit) in hits.iter().enumerate() {
-        if hit.impact_speed < sound.min_impact_speed {
+    // Counted over bounces only, so other events (spawns, beats) don't change which notes play.
+    for (index, hit) in events.iter().filter(|e| e.kind.is_bounce()).enumerate() {
+        if hit.speed < sound.min_impact_speed {
             continue;
         }
         let start = (hit.time * SAMPLE_RATE as f64).round() as usize;
@@ -78,13 +80,13 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
             continue;
         }
         let pick = (mix64(sound.seed ^ index as u64) % candidates.len() as u64) as usize;
-        let velocity = ((hit.impact_speed - sound.min_impact_speed) / speed_range).clamp(0.0, 1.0);
+        let velocity = ((hit.speed - sound.min_impact_speed) / speed_range).clamp(0.0, 1.0);
         let pan = ((hit.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // An escape plays a quick rising strum of the chord, from the picked note upwards.
         let (count, gain, spacing) = match hit.kind {
-            HitKind::Escape(_) => (ESCAPE_STRUM, 0.8, SAMPLE_RATE as usize * 35 / 1000),
-            HitKind::Wall | HitKind::Obstacle(_) => (1, velocity * velocity.sqrt(), 0),
+            EventKind::Escape(_) => (ESCAPE_STRUM, 0.8, SAMPLE_RATE as usize * 35 / 1000),
+            _ => (1, velocity * velocity.sqrt(), 0),
         };
         let (left, right) = (gain * angle.cos(), gain * angle.sin());
         let pick = pick.min(candidates.len().saturating_sub(count));
@@ -220,6 +222,8 @@ impl Voice {
             Instrument::Pluck { decay, brightness } => {
                 Source::Pluck { decay: decay.max(0.02), brightness: brightness.clamp(0.0, 1.0) }
             }
+            // The instrument library isn't in yet, so library instruments play the pluck.
+            Instrument::Library { .. } => Source::Pluck { decay: 0.9, brightness: 0.5 },
             Instrument::Sample { path, root_note } => {
                 let full = match base_dir {
                     Some(dir) if Path::new(path).is_relative() => dir.join(path),
@@ -418,7 +422,7 @@ fn mix64(mut x: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn default_track() -> (Scene, Vec<WallHit>, Soundtrack) {
+    fn default_track() -> (Scene, Vec<Event>, Soundtrack) {
         let scene = Scene::default();
         let hits = bpe_sim::collect_wall_hits(&scene);
         let track = render_soundtrack(&scene, &hits, None).unwrap();
@@ -501,7 +505,7 @@ mod tests {
     fn escapes_strum_the_chord() {
         let scene = Scene::escape_rings();
         let hits = bpe_sim::collect_wall_hits(&scene);
-        let escape = hits.iter().find(|h| matches!(h.kind, HitKind::Escape(_))).unwrap();
+        let escape = hits.iter().find(|h| matches!(h.kind, EventKind::Escape(_))).unwrap();
         let track = render_soundtrack(&scene, &[*escape], None).unwrap();
         // The strum's notes start one after another, so the sound keeps getting new onsets.
         let start = (escape.time * SAMPLE_RATE as f64) as usize;

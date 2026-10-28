@@ -1,18 +1,32 @@
-//! The timeline under the preview: a ruler to scrub along, the video's end to drag, a strip
-//! showing when balls hit things, and a row of keyframes for each animated setting.
+//! The timeline under the preview: a ruler to scrub along, the video's end to drag, lanes that
+//! show what happens over time (song, notes, bounces, rules, text), and a row of keyframes for
+//! each animated setting.
+//!
+//! Each lane is its own file implementing [`lanes::Lane`]; the timeline stacks them under the
+//! ruler, each with a header that collapses it.
+
+mod bounces;
+pub mod lanes;
+mod notes;
+mod rules;
+mod song;
+mod text;
+
+pub use lanes::{Lane, LaneContext, Scale};
 
 use crate::inspector::Tab;
 use crate::keys::{self, KeyState};
 use crate::theme;
 use bpe_scene::{Ease, Property, SAME_TIME, Scene, Value};
-use bpe_sim::{HitKind, WallHit};
+use bpe_sim::{Event, EventKind};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 
 /// Width of the names column on the left.
 const HEADER: f32 = 190.0;
 const RULER: f32 = 22.0;
-const BOUNCES: f32 = 30.0;
 const ROW: f32 = 26.0;
+/// Height of a collapsed lane.
+const COLLAPSED: f32 = 16.0;
 /// Screen points within which a dragged keyframe snaps to the playhead, the start or the end.
 const SNAP: f32 = 6.0;
 /// Bounce counts are kept in slices of this many per second.
@@ -26,14 +40,19 @@ pub struct HitSummary {
     /// Times balls escaped a ring.
     escapes: Vec<f32>,
     total: usize,
+    /// The whole video's event log, for lanes that show more than bounces.
+    #[allow(dead_code)] // read by the rules, notes and text lanes as they fill in
+    pub events: std::sync::Arc<Vec<Event>>,
 }
 
 impl HitSummary {
-    pub fn new(hits: &[WallHit]) -> Self {
+    pub fn new(events: &[Event]) -> Self {
         let mut counts = Vec::new();
         let mut escapes = Vec::new();
-        for hit in hits {
-            if let HitKind::Escape(_) = hit.kind {
+        let mut total = 0;
+        for hit in events.iter().filter(|e| e.kind.is_bounce()) {
+            total += 1;
+            if let EventKind::Escape(_) = hit.kind {
                 escapes.push(hit.time as f32);
                 continue;
             }
@@ -43,7 +62,7 @@ impl HitSummary {
             }
             counts[bucket] += 1;
         }
-        Self { counts, escapes, total: hits.len() }
+        Self { counts, escapes, total, events: std::sync::Arc::new(events.to_vec()) }
     }
 
     /// The most hits in any slice from `from` to `to` seconds.
@@ -64,9 +83,12 @@ enum Drag {
     Key { property: Property, index: usize },
 }
 
-#[derive(Default)]
 pub struct Timeline {
     hits: Option<HitSummary>,
+    /// Song, notes, bounces, rules and text, top to bottom.
+    lanes: Vec<Box<dyn Lane>>,
+    /// Lanes folded down to their header, by id.
+    collapsed: std::collections::BTreeSet<&'static str>,
     drag: Option<Drag>,
     /// The selected keyframe, by setting and index.
     selected: Option<(Property, usize)>,
@@ -86,28 +108,30 @@ pub struct Outcome {
     pub show_tab: Option<Tab>,
 }
 
-/// Converts between seconds and screen x across the lanes.
-#[derive(Clone, Copy)]
-struct Scale {
-    left: f32,
-    width: f32,
-    span: f32,
-}
-
-impl Scale {
-    fn x(&self, time: f32) -> f32 {
-        self.left + time / self.span * self.width
-    }
-
-    fn time(&self, x: f32) -> f32 {
-        ((x - self.left) / self.width * self.span).max(0.0)
-    }
-}
-
 /// Rounds to the nearest video frame.
 fn to_frame(time: f32, fps: u32) -> f32 {
     let fps = fps.max(1) as f32;
     (time * fps).round() / fps
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Self {
+            hits: None,
+            lanes: vec![
+                Box::new(song::SongLane::default()),
+                Box::new(notes::NotesLane::default()),
+                Box::new(bounces::BouncesLane),
+                Box::new(rules::RulesLane::default()),
+                Box::new(text::TextLane::default()),
+            ],
+            collapsed: Default::default(),
+            drag: None,
+            selected: None,
+            held_span: None,
+            rows_seen: 0,
+        }
+    }
 }
 
 impl Timeline {
@@ -172,17 +196,42 @@ impl Timeline {
             ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
         }
 
-        // Bounces.
-        let (strip, strip_response) =
-            ui.allocate_exact_size(egui::vec2(full.width(), BOUNCES), Sense::click_and_drag());
-        self.draw_bounces(ui, strip, scale, scene);
+        // Lanes.
+        let mut scrub_areas = vec![ruler_response];
+        let context = LaneContext { scene, scale, time, hits: self.hits.as_ref() };
+        for lane in &mut self.lanes {
+            if !lane.visible(&context) {
+                continue;
+            }
+            let id = lane.id();
+            let collapsed = self.collapsed.contains(id);
+            let height = if collapsed { COLLAPSED } else { lane.height(&context) };
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(full.width(), height), Sense::click_and_drag());
+            let header = Rect::from_min_max(rect.min, Pos2::new(scale.left - 8.0, rect.bottom()));
+            let area = Rect::from_x_y_ranges(scale.left..=rect.right(), rect.top() + 2.0..=rect.bottom() - 2.0);
+            if lanes::lane_header(ui, header, id, &lane.title(&context), collapsed) {
+                if collapsed {
+                    self.collapsed.remove(id);
+                } else {
+                    self.collapsed.insert(id);
+                }
+            }
+            if collapsed {
+                ui.painter_at(area).rect_filled(area, 3.0, theme::CARD.gamma_multiply(0.5));
+            } else {
+                lane.draw(ui, area, &context);
+            }
+            if !lane.interact(ui, area, &response, &context) {
+                scrub_areas.push(response);
+            }
+        }
 
         // Starting a drag. The end handle sits on top of the ruler, so it goes first.
         if self.drag.is_none() {
             if end_response.drag_started() {
                 self.drag = Some(Drag::End);
                 self.held_span = Some(span);
-            } else if [&ruler_response, &strip_response].iter().any(|r| r.is_pointer_button_down_on() || r.clicked())
+            } else if scrub_areas.iter().any(|r| r.is_pointer_button_down_on() || r.clicked())
                 && pointer.is_some_and(|p| p.x >= lanes_left)
             {
                 self.drag = Some(Drag::Scrub);
@@ -335,87 +384,6 @@ impl Timeline {
         painter.line_segment([Pos2::new(end, lane.top()), Pos2::new(end, lane.bottom())], Stroke::new(2.0, color));
         let grip = Rect::from_center_size(Pos2::new(end, lane.center().y), egui::vec2(7.0, 14.0));
         painter.rect_filled(grip, 2.0, color);
-    }
-
-    fn draw_bounces(&self, ui: &Ui, rect: Rect, scale: Scale, scene: &Scene) {
-        let painter = ui.painter_at(rect);
-        let lane = Rect::from_x_y_ranges(scale.left..=rect.right(), rect.top() + 2.0..=rect.bottom() - 2.0);
-        painter.rect_filled(lane, 3.0, theme::CARD);
-        let Some(hits) = &self.hits else {
-            painter.text(
-                rect.left_center() + egui::vec2(4.0, 0.0),
-                Align2::LEFT_CENTER,
-                "Bounces",
-                FontId::proportional(13.0),
-                theme::TEXT,
-            );
-            painter.text(
-                lane.left_center() + egui::vec2(8.0, 0.0),
-                Align2::LEFT_CENTER,
-                "Working out the bounces…",
-                FontId::proportional(12.0),
-                theme::MUTED,
-            );
-            return;
-        };
-        painter.text(
-            rect.left_center() + egui::vec2(4.0, 0.0),
-            Align2::LEFT_CENTER,
-            format!("Bounces  {}", hits.total),
-            FontId::proportional(13.0),
-            theme::TEXT,
-        );
-
-        // Chord changes, faintly behind the bars.
-        let sound = &scene.sound;
-        let cycle: f32 = sound.progression.iter().map(|c| c.seconds.max(0.0)).sum();
-        if sound.enabled && cycle > 0.05 {
-            let mut t = 0.0;
-            'chords: loop {
-                for step in &sound.progression {
-                    if t > scale.span.min(scene.video.duration) {
-                        break 'chords;
-                    }
-                    let x = scale.x(t);
-                    painter.line_segment(
-                        [Pos2::new(x, lane.top()), Pos2::new(x, lane.bottom())],
-                        Stroke::new(1.0, theme::LINE),
-                    );
-                    if step.seconds * scale.width / scale.span > 24.0 {
-                        painter.text(
-                            Pos2::new(x + 3.0, lane.top() + 1.0),
-                            Align2::LEFT_TOP,
-                            &step.chord,
-                            FontId::proportional(10.5),
-                            theme::MUTED.gamma_multiply(0.8),
-                        );
-                    }
-                    t += step.seconds.max(0.0);
-                }
-            }
-        }
-
-        // One bar per two screen points, as tall as the busiest moment under it.
-        let busiest = hits.busiest(0.0, scene.video.duration).max(1) as f32;
-        let column = 2.0;
-        let mut x = lane.left();
-        while x < lane.right() {
-            let (from, to) = (scale.time(x), scale.time(x + column));
-            let count = hits.busiest(from, to);
-            if count > 0 {
-                let height = (count as f32 / busiest).sqrt() * (lane.height() - 4.0);
-                let bar =
-                    Rect::from_min_max(Pos2::new(x, lane.bottom() - height), Pos2::new(x + column, lane.bottom()));
-                painter.rect_filled(bar, 0.0, theme::ACCENT.gamma_multiply(0.75));
-            }
-            x += column;
-        }
-        for &escape in &hits.escapes {
-            let x = scale.x(escape);
-            let mark =
-                vec![Pos2::new(x - 4.0, lane.top()), Pos2::new(x + 4.0, lane.top()), Pos2::new(x, lane.top() + 7.0)];
-            painter.add(egui::Shape::convex_polygon(mark, theme::WARNING, Stroke::NONE));
-        }
     }
 
     /// One row per animated setting: its name and buttons on the left, its keyframes on the right.
@@ -715,7 +683,7 @@ mod tests {
         scene.video.duration = 6.0;
         let hits = bpe_sim::collect_wall_hits(&scene);
         let summary = HitSummary::new(&hits);
-        let escapes = hits.iter().filter(|h| matches!(h.kind, HitKind::Escape(_))).count();
+        let escapes = hits.iter().filter(|h| matches!(h.kind, EventKind::Escape(_))).count();
         assert!(escapes > 0);
         assert_eq!(summary.escapes.len(), escapes);
         assert_eq!(summary.counts.iter().sum::<u32>() as usize, hits.len() - escapes);
