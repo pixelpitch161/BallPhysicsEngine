@@ -5,7 +5,7 @@
 //! Locks are shared with the lock buttons next to the dice in the tabs, through the egui
 //! context, so locking a part in either place shows in both.
 
-use crate::inspector::{ball_look, paint_dice, soft};
+use crate::inspector::{ball_look, liquid, paint_dice, soft};
 use crate::theme;
 use bpe_render::EffectLibrary;
 use bpe_scene::{Dice, Group, Scene};
@@ -65,7 +65,7 @@ pub fn sections(scene: &Scene, library: &EffectLibrary) -> Vec<Section> {
     if scene.gpu.swarm.enabled {
         balls.push((Part::Swarm, "Swarm".into()));
     }
-    if scene.gpu.fluid.enabled {
+    if scene.gpu.fluid.enabled || scene.bodies.fluid.count > 0 {
         balls.push((Part::Liquid, "Liquid".into()));
     }
     let bodies = &scene.bodies;
@@ -140,7 +140,9 @@ pub fn roll(part: Part, scene: &mut Scene, dice: &mut Dice, amount: f32, library
         }
         Part::Particles => scene.particles.iter_mut().for_each(|e| e.roll(dice, amount)),
         Part::Swarm => scene.gpu.swarm.roll(dice, amount),
-        Part::Liquid => scene.gpu.fluid.roll(dice, amount),
+        // Big liquid when it is on by itself, as in the Liquid section; otherwise small.
+        Part::Liquid if scene.gpu.fluid.enabled && scene.bodies.fluid.count == 0 => scene.gpu.fluid.roll(dice, amount),
+        Part::Liquid => liquid::roll_small(&mut scene.bodies.fluid, dice),
         Part::Jelly(i) => {
             if let Some(jelly) = scene.bodies.jelly.get_mut(i) {
                 soft::roll_jelly(jelly, dice);
