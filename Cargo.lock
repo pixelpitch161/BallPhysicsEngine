@@ -246,6 +246,7 @@ dependencies = [
  "bpe-render",
  "bpe-scene",
  "bpe-sim",
+ "bytemuck",
 ]
 
 [[package]]

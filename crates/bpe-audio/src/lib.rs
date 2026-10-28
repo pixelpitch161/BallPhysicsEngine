@@ -10,6 +10,7 @@ use bpe_scene::{Instrument, Scene};
 use bpe_sim::{HitKind, WallHit};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Peak ceiling for the final mix, about -1 dBFS, which streaming platforms expect.
@@ -62,6 +63,8 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
     let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
 
+    // First list every note to play, in the order of the hits.
+    let mut notes: Vec<Placed> = Vec::new();
     for (index, hit) in hits.iter().enumerate() {
         if hit.impact_speed < sound.min_impact_speed {
             continue;
@@ -79,30 +82,84 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
         let pan = ((hit.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // An escape plays a quick rising strum of the chord, from the picked note upwards.
-        let (notes, gain, spacing) = match hit.kind {
+        let (count, gain, spacing) = match hit.kind {
             HitKind::Escape(_) => (ESCAPE_STRUM, 0.8, SAMPLE_RATE as usize * 35 / 1000),
             HitKind::Wall | HitKind::Obstacle(_) => (1, velocity * velocity.sqrt(), 0),
         };
         let (left, right) = (gain * angle.cos(), gain * angle.sin());
-        let pick = pick.min(candidates.len().saturating_sub(notes));
-        for (n, &note) in candidates[pick..].iter().take(notes).enumerate() {
+        let pick = pick.min(candidates.len().saturating_sub(count));
+        for (n, &note) in candidates[pick..].iter().take(count).enumerate() {
             let start = start + n * spacing;
             if start >= frames {
                 break;
             }
-            let wave = voice.note(note);
-            let end = (start + wave.len()).min(frames);
-            let out = &mut track.samples[start * 2..end * 2];
-            for (frame, &s) in out.chunks_exact_mut(2).zip(wave.iter()) {
-                frame[0] += s * left;
-                frame[1] += s * right;
-            }
+            notes.push(Placed { start, note, left, right });
         }
     }
 
+    // Each note's sound is made once, all of them side by side.
+    let mut wanted: Vec<u8> = notes.iter().map(|n| n.note).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    voice.prepare(&wanted);
+    mix(&mut track.samples, &notes, &voice);
     normalize_loudness(&mut track.samples, sound.target_loudness);
     limit_peaks(&mut track.samples);
     Ok(track)
+}
+
+/// One note placed in the mix.
+struct Placed {
+    /// First frame.
+    start: usize,
+    note: u8,
+    left: f32,
+    right: f32,
+}
+
+/// How many threads to share work between.
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32)
+}
+
+/// Adds every note into `samples` (interleaved stereo). The clip is cut into stretches that are
+/// mixed side by side on all cores. Within a stretch the notes are added in their listed order,
+/// so each sample gets exactly the same sum, in the same order, as mixing them one by one.
+fn mix(samples: &mut [f32], notes: &[Placed], voice: &Voice) {
+    let frames = samples.len() / 2;
+    let pieces = (threads() * 4).min(frames.div_ceil(4096)).max(1);
+    let stretch = frames.div_ceil(pieces).max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let chunks: Vec<std::sync::Mutex<&mut [f32]>> =
+        samples.chunks_mut(stretch * 2).map(std::sync::Mutex::new).collect();
+    let work = || {
+        loop {
+            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(chunk) = chunks.get(k) else { break };
+            let mut out = chunk.lock().unwrap();
+            let (first, last) = (k * stretch, k * stretch + out.len() / 2);
+            for placed in notes {
+                let wave = voice.get(placed.note);
+                let end = (placed.start + wave.len()).min(frames);
+                if placed.start >= last || end <= first {
+                    continue;
+                }
+                let (from, to) = (placed.start.max(first), end.min(last));
+                let wave = &wave[from - placed.start..to - placed.start];
+                let out = &mut out[(from - first) * 2..(to - first) * 2];
+                for (frame, &s) in out.chunks_exact_mut(2).zip(wave) {
+                    frame[0] += s * placed.left;
+                    frame[1] += s * placed.right;
+                }
+            }
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads().min(pieces) {
+            scope.spawn(work);
+        }
+        work();
+    });
 }
 
 /// Chord progression laid out in time, with the playable notes of each chord precomputed.
@@ -142,8 +199,15 @@ impl Progression {
 /// Renders single notes for an instrument and caches them by MIDI note.
 struct Voice {
     source: Source,
-    cache: HashMap<u8, Vec<f32>>,
+    cache: HashMap<u8, Arc<Vec<f32>>>,
 }
+
+/// Pluck notes made by earlier mixes, by (decay, brightness, note), so that remixing after an
+/// edit that doesn't change the instrument skips making them again.
+static PLUCKS: Mutex<Option<KeptPlucks>> = Mutex::new(None);
+type KeptPlucks = HashMap<(u32, u32, u8), Arc<Vec<f32>>>;
+/// Most pluck notes kept between mixes (about 1.5 MB each for a long note).
+const KEPT_PLUCKS: usize = 256;
 
 enum Source {
     Pluck { decay: f32, brightness: f32 },
@@ -168,12 +232,60 @@ impl Voice {
         Ok(Self { source, cache: HashMap::new() })
     }
 
-    fn note(&mut self, note: u8) -> &[f32] {
-        let source = &self.source;
-        self.cache.entry(note).or_insert_with(|| match source {
+    fn render(&self, note: u8) -> Vec<f32> {
+        match &self.source {
             Source::Pluck { decay, brightness } => pluck(note, *decay, *brightness),
             Source::Sample { wave, rate, root_note } => repitch(wave, *rate, note as f32 - *root_note as f32),
-        })
+        }
+    }
+
+    /// Makes the sound of each of `notes` that isn't made yet, on all cores.
+    fn prepare(&mut self, notes: &[u8]) {
+        let pluck_key = match self.source {
+            Source::Pluck { decay, brightness } => Some((decay.to_bits(), brightness.to_bits())),
+            Source::Sample { .. } => None,
+        };
+        if let Some((decay, brightness)) = pluck_key {
+            let kept = PLUCKS.lock().unwrap_or_else(|e| e.into_inner());
+            for &note in notes {
+                if let Some(wave) = kept.as_ref().and_then(|k| k.get(&(decay, brightness, note))) {
+                    self.cache.insert(note, wave.clone());
+                }
+            }
+        }
+        let missing: Vec<u8> = notes.iter().copied().filter(|n| !self.cache.contains_key(n)).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let made = std::sync::Mutex::new(Vec::new());
+        let this = &*self;
+        let work = || {
+            loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&note) = missing.get(k) else { break };
+                let wave = this.render(note);
+                made.lock().unwrap().push((note, Arc::new(wave)));
+            }
+        };
+        std::thread::scope(|scope| {
+            for _ in 1..threads().min(missing.len()) {
+                scope.spawn(work);
+            }
+            work();
+        });
+        let made = made.into_inner().unwrap();
+        if let Some((decay, brightness)) = pluck_key {
+            let mut kept = PLUCKS.lock().unwrap_or_else(|e| e.into_inner());
+            let kept = kept.get_or_insert_with(HashMap::new);
+            if kept.len() + made.len() > KEPT_PLUCKS {
+                kept.clear();
+            }
+            kept.extend(made.iter().map(|(note, wave)| ((decay, brightness, *note), wave.clone())));
+        }
+        self.cache.extend(made);
+    }
+
+    /// A note made by [`Voice::prepare`].
+    fn get(&self, note: u8) -> &[f32] {
+        self.cache.get(&note).map_or(&[], |wave| wave.as_slice())
     }
 }
 
@@ -328,6 +440,52 @@ mod tests {
         let first = (hits[0].time * SAMPLE_RATE as f64) as usize;
         assert!(track.samples[..first * 2].iter().all(|&s| s == 0.0));
         assert!(track.samples[first * 2..(first + 2000) * 2].iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn mixing_on_many_cores_matches_mixing_one_note_at_a_time() {
+        for scene in [Scene::default(), Scene::escape_rings(), Scene::multiplying_balls()] {
+            let hits = bpe_sim::collect_wall_hits(&scene);
+            let notes: Vec<Placed> = (0..400)
+                .map(|i| Placed {
+                    start: (hits[i % hits.len()].time * SAMPLE_RATE as f64) as usize + i * 37,
+                    note: 50 + (i % 30) as u8,
+                    left: 0.1 + (i % 7) as f32 * 0.05,
+                    right: 0.4 - (i % 5) as f32 * 0.03,
+                })
+                .collect();
+            let mut voice = Voice::new(&scene.sound.instrument, None).unwrap();
+            let wanted: Vec<u8> = (50..80).collect();
+            voice.prepare(&wanted);
+            let mut parallel = Soundtrack::silent(scene.video.duration).samples;
+            mix(&mut parallel, &notes, &voice);
+            let mut serial = Soundtrack::silent(scene.video.duration).samples;
+            let frames = serial.len() / 2;
+            for placed in &notes {
+                let wave = voice.get(placed.note);
+                if placed.start >= frames {
+                    continue;
+                }
+                let end = (placed.start + wave.len()).min(frames);
+                for (frame, &s) in serial[placed.start * 2..end * 2].chunks_exact_mut(2).zip(wave) {
+                    frame[0] += s * placed.left;
+                    frame[1] += s * placed.right;
+                }
+            }
+            assert!(parallel.iter().zip(&serial).all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
+    }
+
+    #[test]
+    fn kept_notes_sound_the_same_as_new_ones() {
+        let scene = Scene::default();
+        let Instrument::Pluck { decay, brightness } = scene.sound.instrument else { panic!() };
+        let mut voice = Voice::new(&scene.sound.instrument, None).unwrap();
+        voice.prepare(&[60, 64]);
+        let mut again = Voice::new(&scene.sound.instrument, None).unwrap();
+        again.prepare(&[60, 64, 67]);
+        assert_eq!(again.get(60), pluck(60, decay.max(0.02), brightness.clamp(0.0, 1.0)).as_slice());
+        assert_eq!(again.get(67), voice.render(67).as_slice());
     }
 
     #[test]

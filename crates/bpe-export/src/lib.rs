@@ -5,8 +5,10 @@
 //! H.264 video and AAC audio into one mp4. Export does not run in real time: a slow
 //! machine just takes longer, and the result is identical.
 
+pub mod profile;
+
 use anyhow::{Context, bail};
-use bpe_render::{EffectLibrary, FrameData, Renderer, wgpu};
+use bpe_render::{EffectLibrary, FrameData, Readback, Renderer, wgpu};
 use bpe_scene::Scene;
 use bpe_sim::Playback;
 use std::io::{Read, Write};
@@ -29,6 +31,189 @@ pub struct ExportOptions {
     pub base_dir: Option<PathBuf>,
     /// Where the scene's shader effects come from. Built-ins only unless folders are set.
     pub effects: EffectLibrary,
+    /// Which video encoder to use.
+    pub encoder: Encoder,
+}
+
+/// The program that compresses the video. The graphics card encoders are much faster than the
+/// CPU and leave it free for drawing; the picture going in is exactly the same either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoder {
+    /// The fastest one that works on this computer.
+    Auto,
+    /// x264 on the CPU: works everywhere, smallest files for the quality.
+    Cpu,
+    /// NVIDIA graphics cards.
+    Nvidia,
+    /// AMD graphics cards.
+    Amd,
+    /// Intel graphics (Quick Sync).
+    Intel,
+}
+
+impl Encoder {
+    pub const GPU: [Encoder; 3] = [Encoder::Nvidia, Encoder::Amd, Encoder::Intel];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Encoder::Auto => "automatic",
+            Encoder::Cpu => "CPU (x264)",
+            Encoder::Nvidia => "NVIDIA graphics card (NVENC)",
+            Encoder::Amd => "AMD graphics card (AMF)",
+            Encoder::Intel => "Intel graphics (Quick Sync)",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "auto" => Encoder::Auto,
+            "cpu" | "x264" => Encoder::Cpu,
+            "nvidia" | "nvenc" => Encoder::Nvidia,
+            "amd" | "amf" => Encoder::Amd,
+            "intel" | "qsv" => Encoder::Intel,
+            _ => return None,
+        })
+    }
+
+    /// ffmpeg arguments for this encoder at x264-style quality `crf` and speed `preset`.
+    fn args(self, crf: u8, preset: &str) -> Vec<String> {
+        let crf = crf.to_string();
+        let slow = matches!(preset, "slow" | "slower" | "veryslow" | "placebo");
+        let fast = matches!(preset, "ultrafast" | "superfast" | "veryfast" | "faster" | "fast");
+        let args: Vec<&str> = match self {
+            Encoder::Auto | Encoder::Cpu => {
+                vec!["-c:v", "libx264", "-preset", preset, "-crf", &crf, "-pix_fmt", "yuv420p", "-profile:v", "high"]
+            }
+            Encoder::Nvidia => {
+                let speed = if slow {
+                    "p6"
+                } else if fast {
+                    "p2"
+                } else {
+                    "p4"
+                };
+                vec![
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    speed,
+                    "-tune",
+                    "hq",
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    &crf,
+                    "-b:v",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-profile:v",
+                    "high",
+                ]
+            }
+            Encoder::Amd => {
+                let speed = if slow {
+                    "quality"
+                } else if fast {
+                    "speed"
+                } else {
+                    "balanced"
+                };
+                vec![
+                    "-c:v",
+                    "h264_amf",
+                    "-quality",
+                    speed,
+                    "-rc",
+                    "cqp",
+                    "-qp_i",
+                    &crf,
+                    "-qp_p",
+                    &crf,
+                    "-qp_b",
+                    &crf,
+                    "-pix_fmt",
+                    "nv12",
+                    "-profile:v",
+                    "high",
+                ]
+            }
+            Encoder::Intel => {
+                let speed = if slow {
+                    "slower"
+                } else if fast {
+                    "veryfast"
+                } else {
+                    "medium"
+                };
+                vec![
+                    "-c:v",
+                    "h264_qsv",
+                    "-preset",
+                    speed,
+                    "-global_quality",
+                    &crf,
+                    "-pix_fmt",
+                    "nv12",
+                    "-profile:v",
+                    "high",
+                ]
+            }
+        };
+        args.into_iter().map(String::from).collect()
+    }
+}
+
+/// The graphics card encoders that work with this ffmpeg on this computer, fastest first.
+/// Each is tried on a tiny clip once, and the answer is remembered.
+pub fn gpu_encoders(ffmpeg: &Path) -> Vec<Encoder> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static FOUND: Mutex<Option<HashMap<PathBuf, Vec<Encoder>>>> = Mutex::new(None);
+    if let Some(found) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|f| f.get(ffmpeg)) {
+        return found.clone();
+    }
+    let working: Vec<Encoder> = Encoder::GPU.into_iter().filter(|&encoder| encoder_works(ffmpeg, encoder)).collect();
+    FOUND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(ffmpeg.to_path_buf(), working.clone());
+    working
+}
+
+/// Whether ffmpeg can encode a few frames with `encoder`.
+fn encoder_works(ffmpeg: &Path, encoder: Encoder) -> bool {
+    let mut command = Command::new(ffmpeg);
+    command.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:r=30"]);
+    command.args(["-frames:v", "3"]);
+    command.args(encoder.args(20, "medium"));
+    command.args(["-f", "null", "-"]);
+    let Ok(mut child) = spawn(command, ffmpeg) else { return false };
+    drop(child.stdin.take());
+    // A missing driver can make ffmpeg hang for a while, so give up after a few seconds.
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < std::time::Duration::from_secs(8) => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// The encoder `choice` stands for on this computer.
+pub fn resolve_encoder(choice: Encoder, ffmpeg: &Path) -> Encoder {
+    match choice {
+        Encoder::Auto => gpu_encoders(ffmpeg).first().copied().unwrap_or(Encoder::Cpu),
+        other => other,
+    }
 }
 
 impl ExportOptions {
@@ -42,18 +227,45 @@ impl ExportOptions {
             max_frames: None,
             base_dir: None,
             effects: EffectLibrary::new(),
+            encoder: Encoder::Auto,
         }
     }
 }
 
 /// Renders `scene` to an mp4. `progress` is called after every frame with (done, total);
-/// return `false` from it to cancel, which deletes the partial file.
+/// return `false` from it to cancel, which deletes the partial file. If a graphics card
+/// encoder fails, the export starts again on the CPU.
 pub fn export_video(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     scene: &Scene,
     options: &ExportOptions,
     mut progress: impl FnMut(u32, u32) -> bool,
+) -> anyhow::Result<Encoder> {
+    let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
+    match export_with(device, queue, scene, options, encoder, &mut progress) {
+        Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
+            export_with(device, queue, scene, options, Encoder::Cpu, &mut progress)
+                .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
+            Ok(Encoder::Cpu)
+        }
+        result => result.map(|()| encoder),
+    }
+}
+
+const CANCELLED: &str = "export cancelled";
+/// Frames that can be on their way back from the graphics card at once.
+const FRAMES_IN_FLIGHT: usize = 3;
+/// Finished frames that can wait for ffmpeg at once.
+const FRAMES_QUEUED: usize = 4;
+
+fn export_with(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    options: &ExportOptions,
+    encoder: Encoder,
+    progress: &mut impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<()> {
     let (width, height) = output_size(scene, options.scale);
     let fps = scene.video.fps.max(1);
@@ -85,8 +297,7 @@ pub fn export_video(
     ffmpeg.arg("-i").arg(&wav.0);
     ffmpeg.args(["-map", "0:v", "-map", "1:a"]);
     ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
-    ffmpeg.args(["-c:v", "libx264", "-preset", &options.preset, "-crf", &options.crf.to_string()]);
-    ffmpeg.args(["-pix_fmt", "yuv420p", "-profile:v", "high"]);
+    ffmpeg.args(encoder.args(options.crf, &options.preset));
     ffmpeg.args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
     ffmpeg.args(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest", "-f", "mp4"]);
     ffmpeg.arg(&output);
@@ -94,33 +305,80 @@ pub fn export_video(
     let mut stdin = child.stdin.take().context("ffmpeg stdin")?;
     let stderr = collect_stderr(&mut child);
 
+    // ffmpeg is fed on its own thread, so drawing carries on while it encodes.
+    let (frames, queued) = std::sync::mpsc::sync_channel::<Vec<u8>>(FRAMES_QUEUED);
+    let writer = std::thread::spawn(move || -> std::io::Result<()> {
+        for pixels in queued {
+            stdin.write_all(&pixels)?;
+        }
+        Ok(())
+    });
+    let stop = |child: &mut Child, writer: std::thread::JoinHandle<std::io::Result<()>>, kill: bool| {
+        if kill {
+            let _ = child.kill();
+        }
+        let written = writer.join().unwrap_or(Ok(()));
+        let _ = child.wait();
+        written
+    };
+
     let mut renderer = Renderer::new(device, width, height);
     renderer.set_effect_library(options.effects.clone());
+    let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
     let mut playback = Playback::new(scene);
     let mut frame = FrameData::default();
     let pixel = renderer.pixel_size(scene);
+    let mut failed = None;
     for index in 0..total {
         let time = index as f64 / fps as f64;
         playback.seek(time);
         frame.fill(scene, &playback, pixel);
         renderer.render(device, queue, scene, time, &frame);
-        let pixels = renderer.read_output(device, queue)?;
-        if let Err(error) = stdin.write_all(&pixels) {
-            drop(stdin);
-            let _ = child.wait();
-            bail!("ffmpeg stopped accepting frames ({error}): {}", stderr.join().unwrap_or_default());
+        let ready = match readback.push(device, queue, &renderer) {
+            Ok(ready) => ready,
+            Err(error) => {
+                failed = Some(error);
+                break;
+            }
+        };
+        if let Some(pixels) = ready
+            && frames.send(pixels).is_err()
+        {
+            break;
         }
         if !progress(index + 1, total) {
-            drop(stdin);
-            let _ = child.kill();
-            let _ = child.wait();
+            drop(frames);
+            let _ = stop(&mut child, writer, true);
             let _ = std::fs::remove_file(&output);
-            bail!("export cancelled");
+            bail!(CANCELLED);
         }
     }
-    drop(stdin);
+    if failed.is_none() {
+        match readback.finish(device) {
+            Ok(rest) => {
+                for pixels in rest {
+                    if frames.send(pixels).is_err() {
+                        break;
+                    }
+                }
+            }
+            Err(error) => failed = Some(error),
+        }
+    }
+    drop(frames);
+    if let Some(error) = failed {
+        let _ = stop(&mut child, writer, true);
+        let _ = std::fs::remove_file(&output);
+        return Err(error);
+    }
+    if let Err(error) = writer.join().unwrap_or(Ok(())) {
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&output);
+        bail!("ffmpeg stopped accepting frames ({error}): {}", stderr.join().unwrap_or_default());
+    }
     let status = child.wait()?;
     if !status.success() {
+        let _ = std::fs::remove_file(&output);
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
     Ok(())

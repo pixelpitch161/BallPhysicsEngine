@@ -19,6 +19,8 @@ const MOST_COLUMNS: usize = 5;
 pub const VARIATIONS: usize = 9;
 /// Each thumbnail loops over the first this many seconds of its scene.
 const LOOP_SECONDS: f64 = 10.0;
+/// Most time one preview spends catching its simulation up in an editor frame.
+const THUMB_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
 /// "More like this" keeps changes at most this big, so the new batch stays close to the pick.
 const CLOSER: f32 = 0.3;
 
@@ -314,7 +316,11 @@ impl Explorer {
         let time = self.started.elapsed().as_secs_f64();
         for (cell, thumb) in self.cells.iter().zip(&mut self.thumbs) {
             let time = time % LOOP_SECONDS.min(cell.scene.video.duration as f64).max(0.5);
-            thumb.playback.seek(time);
+            // A heavy variation catches up over a few frames rather than holding up the others.
+            if !thumb.playback.seek_within(time, Some(THUMB_BUDGET)) {
+                ctx.request_repaint();
+            }
+            let time = thumb.playback.simulation().time();
             thumb.frame.fill(&cell.scene, &thumb.playback, thumb.renderer.pixel_size(&cell.scene));
             thumb.renderer.render(device, &render_state.queue, &cell.scene, time, &thumb.frame);
         }

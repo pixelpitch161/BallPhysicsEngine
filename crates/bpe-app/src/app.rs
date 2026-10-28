@@ -4,7 +4,7 @@ use crate::export::ExportPanel;
 use crate::gallery::Gallery;
 use crate::inspector::{self, Inspector, Tab};
 use crate::keys;
-use crate::preview::Preview;
+use crate::preview::{Preview, PreviewQuality};
 use crate::timeline::{HitSummary, Timeline};
 use crate::{settings, theme};
 use bpe_audio::Soundtrack;
@@ -58,6 +58,24 @@ pub struct StudioApp {
     /// The scene was swapped wholesale this frame (undo, redo, open), so it is not a new edit.
     swapped: bool,
     status: String,
+    /// How sharp the preview is drawn.
+    preview_quality: PreviewQuality,
+    /// Show the performance meter over the preview.
+    show_stats: bool,
+    meter: Meter,
+}
+
+/// Editor frame rate and timings for the performance meter.
+#[derive(Default)]
+struct Meter {
+    last_frame: Option<Instant>,
+    /// Smoothed time between editor frames, in milliseconds.
+    frame_ms: f32,
+    /// Smoothed time the editor spends on one frame, in milliseconds.
+    work_ms: f32,
+    /// How long the last soundtrack took to make.
+    sound_ms: Option<f32>,
+    catching_up: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -102,13 +120,17 @@ impl History {
     }
 }
 
+/// A finished soundtrack: its generation, the result, the hits it was made from, and how long
+/// it took in milliseconds.
+type SoundResult = (u64, anyhow::Result<Soundtrack>, HitSummary, f32);
+
 /// Mixes the soundtrack on a background thread whenever the scene changes.
 struct SoundJob {
     generation: u64,
     dirty_since: Option<Instant>,
     running: bool,
-    sender: Sender<(u64, anyhow::Result<Soundtrack>, HitSummary)>,
-    receiver: Receiver<(u64, anyhow::Result<Soundtrack>, HitSummary)>,
+    sender: Sender<SoundResult>,
+    receiver: Receiver<SoundResult>,
     error: Option<String>,
 }
 
@@ -173,6 +195,9 @@ impl StudioApp {
             closing: false,
             swapped: false,
             status,
+            preview_quality: PreviewQuality::default(),
+            show_stats: false,
+            meter: Meter::default(),
         }
     }
 
@@ -289,11 +314,12 @@ impl StudioApp {
     }
 
     fn update_soundtrack(&mut self, ctx: &egui::Context) {
-        while let Ok((generation, result, hits)) = self.sound.receiver.try_recv() {
+        while let Ok((generation, result, hits, took)) = self.sound.receiver.try_recv() {
             self.sound.running = false;
             if generation != self.sound.generation {
                 continue;
             }
+            self.meter.sound_ms = Some(took);
             self.timeline.set_hits(hits);
             match result {
                 Ok(track) => {
@@ -316,9 +342,11 @@ impl StudioApp {
             let (generation, scene, base_dir, sender, ctx) =
                 (self.sound.generation, self.scene.clone(), self.base_dir(), self.sound.sender.clone(), ctx.clone());
             std::thread::spawn(move || {
+                let started = Instant::now();
                 let hits = bpe_sim::collect_wall_hits(&scene);
                 let result = bpe_audio::render_soundtrack(&scene, &hits, base_dir.as_deref());
-                let _ = sender.send((generation, result, HitSummary::new(&hits)));
+                let took = started.elapsed().as_secs_f32() * 1000.0;
+                let _ = sender.send((generation, result, HitSummary::new(&hits), took));
                 ctx.request_repaint();
             });
         } else if self.sound.dirty_since.is_some() {
@@ -421,6 +449,9 @@ impl StudioApp {
         }
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
+        }
+        if ctx.input(|i| i.key_pressed(Key::F3)) {
+            self.show_stats = !self.show_stats;
         }
         // Arrow keys belong to a slider or button that has the keyboard focus.
         if ctx.memory(|m| m.focused().is_some()) {
@@ -538,6 +569,23 @@ impl StudioApp {
                 audio.set_muted(self.muted);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.show_stats, "Speed meter")
+                    .on_hover_text("Show the frame rate and how long each part of the editor takes (F3)");
+                egui::ComboBox::from_id_salt("preview-quality")
+                    .selected_text(self.preview_quality.label())
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        for quality in PreviewQuality::ALL {
+                            ui.selectable_value(&mut self.preview_quality, quality, quality.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "How sharp the preview is. Half or Quarter keeps big scenes and effect stacks smooth \
+                         on a slower computer. Exported videos are always full quality.",
+                    );
+                ui.label(RichText::new("Preview").color(theme::MUTED));
+                ui.add_space(8.0);
                 ui.label(RichText::new("Arrow keys step a frame, Shift+arrow a second").small().color(theme::MUTED));
             });
         });
@@ -609,6 +657,11 @@ impl StudioApp {
 impl eframe::App for StudioApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let frame_started = Instant::now();
+        if let Some(last) = self.meter.last_frame.replace(frame_started) {
+            let ms = (frame_started - last).as_secs_f32() * 1000.0;
+            self.meter.frame_ms += (ms.min(1000.0) - self.meter.frame_ms) * 0.1;
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Pending::Close);
@@ -654,7 +707,7 @@ impl eframe::App for StudioApp {
         let outcome = egui::CentralPanel::default()
             .frame(central)
             .show(ui, |ui| {
-                Preview::show(
+                let outcome = Preview::show(
                     &mut self.preview,
                     ui,
                     frame,
@@ -664,9 +717,19 @@ impl eframe::App for StudioApp {
                     self.playing,
                     self.inspector.selected,
                     &self.inspector.effects.library,
-                )
+                    self.preview_quality,
+                );
+                if self.show_stats {
+                    let stats = self.preview.as_ref().map(|p| p.stats).unwrap_or_default();
+                    draw_meter(ui, &self.meter, &stats, self.playback.hits().len(), self.playing);
+                }
+                outcome
             })
             .inner;
+        self.meter.catching_up = outcome.catching_up;
+        if outcome.catching_up {
+            ctx.request_repaint();
+        }
         if let Some(preview) = &self.preview {
             self.inspector.effects.gpu_errors = preview.effect_gpu_errors().to_vec();
         }
@@ -747,6 +810,49 @@ impl eframe::App for StudioApp {
         if self.playing || self.export.busy() {
             ctx.request_repaint();
         }
+        if self.show_stats {
+            // Keep the meter's numbers fresh.
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        let work = frame_started.elapsed().as_secs_f32() * 1000.0;
+        self.meter.work_ms += (work - self.meter.work_ms) * 0.1;
+    }
+}
+
+/// The performance meter, in the top left corner of the preview.
+fn draw_meter(ui: &egui::Ui, meter: &Meter, stats: &crate::preview::Stats, hits: usize, playing: bool) {
+    let fps = if meter.frame_ms > 0.0 { 1000.0 / meter.frame_ms } else { 0.0 };
+    let speed = if playing || meter.catching_up {
+        format!("{fps:.0} fps · {:.1} ms a frame", meter.work_ms)
+    } else {
+        format!("paused, redrawn only on changes · {:.1} ms a frame", meter.work_ms)
+    };
+    let mut lines = vec![
+        speed,
+        format!("physics {:.1} ms{}", stats.simulate, if meter.catching_up { " (catching up)" } else { "" }),
+    ];
+    if stats.drew {
+        lines.push(format!("shapes {:.1} ms · drawing {:.1} ms", stats.build, stats.draw));
+    } else {
+        lines.push("picture unchanged, not redrawn".into());
+    }
+    lines.push(format!("{} balls · {} shapes · {hits} hits so far", stats.balls, stats.shapes));
+    if let Some(sound) = meter.sound_ms {
+        lines.push(format!("sound rebuilt in {sound:.0} ms"));
+    }
+    let painter = ui.painter();
+    let font = egui::FontId::monospace(12.0);
+    let origin = ui.max_rect().min + egui::vec2(16.0, 16.0);
+    let galleys: Vec<_> = lines.into_iter().map(|l| painter.layout_no_wrap(l, font.clone(), Color32::WHITE)).collect();
+    let width = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
+    let height: f32 = galleys.iter().map(|g| g.size().y).sum();
+    let back = egui::Rect::from_min_size(origin, egui::vec2(width + 16.0, height + 12.0));
+    painter.rect_filled(back, 6.0, Color32::from_black_alpha(190));
+    let mut y = origin.y + 6.0;
+    for galley in galleys {
+        let h = galley.size().y;
+        painter.galley(egui::pos2(origin.x + 8.0, y), galley, Color32::WHITE);
+        y += h;
     }
 }
 

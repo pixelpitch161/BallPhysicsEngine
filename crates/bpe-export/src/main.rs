@@ -12,6 +12,7 @@ Usage:
   bpe-render <scene.ron | preset> --still <seconds> <out.png> [--scale F]
   bpe-render <scene.ron | preset> --wav <out.wav>
   bpe-render <preset> --save-scene <out.ron>
+  bpe-render <scene.ron | preset | all> --profile [--scale F] [--gpu-frames N]
 
 A preset is a built-in scene named in lower case with dashes, such as escape-rings or plinko.
 `default` is the reference reel. `bpe-render --presets` lists them all.
@@ -21,7 +22,12 @@ Options:
   --frames N       render only the first N frames
   --crf N          H.264 quality, lower is better (default 18)
   --preset NAME    x264 speed preset (default medium)
-  --ffmpeg PATH    ffmpeg executable (default: found automatically)";
+  --ffmpeg PATH    ffmpeg executable (default: found automatically)
+  --encoder NAME   auto (default), cpu, nvidia, amd or intel. auto uses the graphics card's
+                   encoder when ffmpeg can, which is much faster, and the CPU otherwise
+  --profile        time the simulation, sound, frames and drawing, and print a fingerprint
+                   of the result (`all` profiles every preset plus some extra-heavy scenes)
+  --gpu-frames N   frames to draw on the graphics card when profiling (default 30, 0 skips)";
 
 fn main() {
     if let Err(error) = run() {
@@ -41,6 +47,9 @@ fn run() -> anyhow::Result<()> {
             println!("{:22} {}", slug(preset.name), preset.description);
         }
         return Ok(());
+    }
+    if args.iter().any(|a| a == "--profile") {
+        return profile(&args);
     }
     let preset = Scene::presets().into_iter().find(|p| slug(p.name) == args[0]);
     let (scene, base_dir) = if args[0] == "default" {
@@ -78,6 +87,11 @@ fn run() -> anyhow::Result<()> {
             "--crf" => options.crf = value()?.parse()?,
             "--preset" => options.preset = value()?.clone(),
             "--ffmpeg" => options.ffmpeg = value()?.into(),
+            "--encoder" => {
+                let name = value()?;
+                options.encoder = bpe_export::Encoder::from_name(name)
+                    .with_context(|| format!("unknown encoder {name}: use auto, cpu, nvidia, amd or intel"))?;
+            }
             "--still" => still = Some(value()?.parse::<f64>()?),
             "--save-scene" => {
                 scene.save(value()?)?;
@@ -101,14 +115,46 @@ fn run() -> anyhow::Result<()> {
 
     options.output = output;
     let started = std::time::Instant::now();
-    export_video(&device, &queue, &scene, &options, |done, total| {
+    let encoder = export_video(&device, &queue, &scene, &options, |done, total| {
         if done % 30 == 0 || done == total {
             print!("\rframe {done}/{total}");
             let _ = std::io::stdout().flush();
         }
         true
     })?;
-    println!("\nwrote {} in {:.1} s", options.output.display(), started.elapsed().as_secs_f32());
+    println!(
+        "\nwrote {} in {:.1} s, encoded with the {}",
+        options.output.display(),
+        started.elapsed().as_secs_f32(),
+        encoder.name()
+    );
+    Ok(())
+}
+
+fn profile(args: &[String]) -> anyhow::Result<()> {
+    let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1));
+    let scale: f32 = value("--scale").map_or(Ok(0.5), |v| v.parse())?;
+    let gpu_frames: u32 = value("--gpu-frames").map_or(Ok(30), |v| v.parse())?;
+    let scenes = if args[0] == "all" {
+        bpe_export::profile::heavy_scenes()
+    } else if args[0] == "default" {
+        vec![("Reference reel".to_string(), Scene::default())]
+    } else if let Some(preset) = Scene::presets().into_iter().find(|p| slug(p.name) == args[0]) {
+        vec![(preset.name.to_string(), preset.scene)]
+    } else {
+        let path = PathBuf::from(&args[0]);
+        vec![(args[0].clone(), Scene::load(&path).with_context(|| format!("loading {}", path.display()))?)]
+    };
+    let device = if gpu_frames > 0 { bpe_render::headless_device().ok() } else { None };
+    if gpu_frames > 0 && device.is_none() {
+        eprintln!("no GPU found, skipping drawing");
+    }
+    println!("{}", bpe_export::profile::Report::header());
+    for (name, scene) in scenes {
+        let gpu = device.as_ref().map(|(d, q)| (d, q));
+        let report = bpe_export::profile::profile_scene(&name, &scene, gpu, scale, gpu_frames)?;
+        println!("{}", report.row());
+    }
     Ok(())
 }
 

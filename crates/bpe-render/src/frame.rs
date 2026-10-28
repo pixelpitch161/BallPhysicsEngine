@@ -314,7 +314,9 @@ fn push_streak(out: &mut Vec<TrailVertex>, points: &[Vec2], half_width: f32, col
     if n < 2 || half_width <= 0.0 {
         return;
     }
-    let direction = |i: usize| (points[i + 1] - points[i]).try_normalize();
+    // Each segment's direction, worked out once: every segment's corners need its neighbours' too.
+    let directions: Vec<Option<Vec2>> = points.windows(2).map(|w| (w[1] - w[0]).try_normalize()).collect();
+    let direction = |i: usize| directions[i];
     // At a gentle bend the two segments share a side vector so the strip has no gaps. At a sharp
     // bend (a bounce) each segment keeps its own, which avoids a folded spike at the corner.
     let side_at = |i: usize, own: Vec2| {

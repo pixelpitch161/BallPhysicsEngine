@@ -58,6 +58,14 @@ cargo run --release -p bpe-app -- scenes/growing-ball.ron
 - **Bottom bar:** play and pause (Space), back to the start, scrub through time, the video's length, loop and mute.
 - **Export video:** pick Best, Good or Quick draft, and the editor saves an mp4 with sound to your Videos folder, named after the scene. It finds ffmpeg by itself, including a winget install that is not on `PATH` yet. Video size, frame rate and the ffmpeg location are under Advanced. When it finishes, Play video and Show in folder open the result.
 
+## Speed
+
+- **Speed meter:** tick **Speed meter** in the bottom bar (or press F3) to see the frame rate and how long the physics, shape building, drawing and last sound rebuild took.
+- **Preview quality:** Full, Half or Quarter in the bottom bar. Lower keeps big swarms and effect stacks smooth on a slower computer. Exports are always full quality.
+- **Long scenes:** after an edit with the playhead far in, the simulation catches up over a few frames instead of freezing the editor. Snapshots every half second make scrubbing backwards instant.
+- **Graphics card encoding:** export uses the NVIDIA, AMD or Intel video encoder when ffmpeg can (much faster than the CPU) and falls back to the CPU otherwise. It is under Export video, Advanced, and on the command line as `--encoder auto|cpu|nvidia|amd|intel`.
+- **Profiling:** `bpe-render all --profile` times the physics, sound, frame building and drawing for every preset plus some extra-heavy scenes, and prints a fingerprint of everything each one produces. Two builds that print the same fingerprints make exactly the same videos.
+
 ## Shader effects
 
 The Effects tab stacks full-screen shader effects over the finished picture, applied top to bottom: Echo, Kaleidoscope, Shockwaves, Colour split, Colour cycle, Liquid, Mirror, Pixels, Film and Glitch, plus ready-made looks that combine them. Each has an Amount and its own sliders, and they are saved in the scene and rendered into exports.

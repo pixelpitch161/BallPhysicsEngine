@@ -1,14 +1,14 @@
 //! The "Export video" window: pick a file and a quality, then render the mp4 on a thread.
 
 use crate::theme;
-use bpe_export::ExportOptions;
+use bpe_export::{Encoder, ExportOptions};
 use bpe_render::EffectLibrary;
 use bpe_scene::Scene;
 use eframe::egui::{self, DragValue, RichText};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -46,11 +46,19 @@ pub struct ExportPanel {
     job: Option<ExportJob>,
     finished: Option<Result<Finished, String>>,
     effects: EffectLibrary,
+    /// Use the graphics card's video encoder when there is one.
+    use_gpu: bool,
+    /// The graphics card encoders that work here, once checked, for the ffmpeg they were checked with.
+    gpu_encoders: Arc<Mutex<Option<CheckedEncoders>>>,
 }
+
+/// The graphics card encoders that work, and the ffmpeg they were checked with.
+type CheckedEncoders = (PathBuf, Vec<Encoder>);
 
 struct Finished {
     path: PathBuf,
     seconds: f32,
+    encoder: Encoder,
 }
 
 struct ExportJob {
@@ -58,13 +66,13 @@ struct ExportJob {
     done: Arc<AtomicU32>,
     total: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
-    receiver: Receiver<anyhow::Result<()>>,
+    receiver: Receiver<anyhow::Result<Encoder>>,
     started: Instant,
 }
 
 impl ExportPanel {
     pub fn new() -> Self {
-        Self {
+        let panel = Self {
             open: false,
             path: None,
             quality: Quality::Best,
@@ -72,6 +80,32 @@ impl ExportPanel {
             job: None,
             finished: None,
             effects: EffectLibrary::new(),
+            use_gpu: true,
+            gpu_encoders: Arc::default(),
+        };
+        panel.check_encoders();
+        panel
+    }
+
+    /// Finds out in the background which graphics card encoders work with the chosen ffmpeg.
+    fn check_encoders(&self) {
+        let Some(ffmpeg) = self.ffmpeg.clone() else { return };
+        if self.gpu_encoders.lock().unwrap().as_ref().is_some_and(|(checked, _)| *checked == ffmpeg) {
+            return;
+        }
+        let found = self.gpu_encoders.clone();
+        std::thread::spawn(move || {
+            let encoders = bpe_export::gpu_encoders(&ffmpeg);
+            *found.lock().unwrap() = Some((ffmpeg, encoders));
+        });
+    }
+
+    /// The graphics card encoder export will use, if any, or None while still checking.
+    fn gpu_encoder(&self) -> Option<Option<Encoder>> {
+        let found = self.gpu_encoders.lock().unwrap();
+        match (found.as_ref(), &self.ffmpeg) {
+            (Some((checked, encoders)), Some(ffmpeg)) if checked == ffmpeg => Some(encoders.first().copied()),
+            _ => None,
         }
     }
 
@@ -96,7 +130,9 @@ impl ExportPanel {
             && let Ok(result) = job.receiver.try_recv()
         {
             self.finished = Some(match result {
-                Ok(()) => Ok(Finished { path: job.path.clone(), seconds: job.started.elapsed().as_secs_f32() }),
+                Ok(encoder) => {
+                    Ok(Finished { path: job.path.clone(), seconds: job.started.elapsed().as_secs_f32(), encoder })
+                }
                 Err(error) if job.cancel.load(Ordering::Relaxed) => Err(format!("Export cancelled. {error}")),
                 Err(error) => Err(format!("{error:#}")),
             });
@@ -201,6 +237,27 @@ impl ExportPanel {
                             && let Some(chosen) = rfd::FileDialog::new().set_title("Find ffmpeg").pick_file()
                         {
                             self.ffmpeg = Some(chosen);
+                            self.check_encoders();
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Video encoder").on_hover_text(
+                        "The graphics card can compress the video much faster than the CPU. The picture going \
+                         in is exactly the same; files can be a little bigger.",
+                    );
+                    ui.vertical(|ui| match self.gpu_encoder() {
+                        None if self.ffmpeg.is_some() => {
+                            ui.label(RichText::new("Checking your graphics card…").small().color(theme::MUTED));
+                        }
+                        Some(Some(encoder)) => {
+                            ui.checkbox(&mut self.use_gpu, format!("Use the {} (faster)", encoder.name()));
+                        }
+                        _ => {
+                            ui.label(
+                                RichText::new("CPU. Your graphics card's encoder isn't available to ffmpeg.")
+                                    .small()
+                                    .color(theme::MUTED),
+                            );
                         }
                     });
                     ui.end_row();
@@ -243,6 +300,9 @@ impl ExportPanel {
                 ui.add_space(6.0);
                 let name = done.path.file_name().unwrap_or_default().to_string_lossy();
                 ui.label(RichText::new(format!("Saved {name} in {}.", minutes(done.seconds))).color(theme::TEXT));
+                ui.label(
+                    RichText::new(format!("Encoded with the {}.", done.encoder.name())).small().color(theme::MUTED),
+                );
                 ui.horizontal(|ui| {
                     if ui.button("Play video").clicked() {
                         open_file(&done.path);
@@ -274,6 +334,11 @@ impl ExportPanel {
         options.ffmpeg = ffmpeg;
         options.base_dir = base_dir;
         options.effects = self.effects.clone();
+        // Still checking counts as no: a CPU export always works.
+        options.encoder = match self.gpu_encoder() {
+            Some(Some(encoder)) if self.use_gpu => encoder,
+            _ => Encoder::Cpu,
+        };
         let (device, queue, scene, ctx) =
             (render_state.device.clone(), render_state.queue.clone(), scene.clone(), ctx.clone());
         let (done, total, cancel) = (
