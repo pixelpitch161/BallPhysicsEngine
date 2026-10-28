@@ -97,6 +97,13 @@ pub struct Simulation {
     pending: Vec<(u64, Ball)>,
     /// Arena size still to shrink away from hits, eased in over a few steps.
     shrink_owed: f32,
+    /// How far shrinking has taken the arena, as a fraction of its size. Its animated size
+    /// multiplies this.
+    shrunk: f32,
+    /// Whether keyframes change how balls move, so settings are looked up every step.
+    animated: bool,
+    /// Degrees the arena has turned, added up step by step when its spin is animated.
+    turned: f64,
     /// Scratch space for wall pieces and positions before the step.
     pieces: Vec<Piece>,
     previous: Vec<Vec2>,
@@ -134,6 +141,9 @@ impl Simulation {
             obstacles: scene.obstacle_parts(),
             pending,
             shrink_owed: 0.0,
+            shrunk: 1.0,
+            animated: scene.animates_simulation(),
+            turned: 0.0,
             pieces: Vec::new(),
             previous: Vec::new(),
             trail_len,
@@ -385,13 +395,26 @@ impl Simulation {
         self.balls.push(ball);
     }
 
-    /// Turns and shrinks the arena for the current time.
+    /// Turns and shrinks the arena for the current time, after setting animated settings to
+    /// their values now.
     fn update_arena(&mut self) {
-        let motion = &self.scene.arena_motion;
         let time = self.time();
+        if self.animated {
+            self.scene.apply_animation(time as f32, true);
+        }
+        let motion = &self.scene.arena_motion;
         self.arena.spin = motion.spin.to_radians();
-        self.arena.angle = (motion.spin as f64 * time).to_radians().rem_euclid(std::f64::consts::TAU) as f32;
+        if self.animated {
+            if self.step > 0 {
+                self.turned += motion.spin as f64 * self.dt as f64;
+            }
+        } else {
+            self.turned = motion.spin as f64 * time;
+        }
+        self.arena.angle = self.turned.to_radians().rem_euclid(std::f64::consts::TAU) as f32;
+        let size = motion.size.max(0.01);
         if self.step == 0 {
+            self.arena.scale = size;
             return;
         }
         // Shrinking from hits is eased in rather than done in one jump, so walls move smoothly
@@ -400,7 +423,8 @@ impl Simulation {
         self.shrink_owed -= owed;
         let change = -motion.shrink_speed / self.arena_size * self.dt - owed;
         let (low, high) = self.scale_limits();
-        let scale = (self.arena.scale + change).clamp(low, high);
+        self.shrunk = (self.shrunk + change).clamp(low, high);
+        let scale = self.shrunk * size;
         self.arena.scale_rate = (scale - self.arena.scale) / self.dt;
         self.arena.scale = scale;
     }
@@ -633,6 +657,7 @@ fn resolve_pair(balls: &mut [Ball], i: usize, j: usize, restitution: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bpe_scene::{Ease, Key, Property, Track, Value};
 
     #[test]
     fn rolled_scenes_simulate_cleanly() {
@@ -1034,5 +1059,70 @@ mod tests {
     fn slow_scenes_take_one_step_at_a_time() {
         let sim = Simulation::new(&Scene::default());
         assert_eq!(sim.substeps(), 1);
+    }
+
+    fn keyframes(property: Property, keys: &[(f32, f32)], ease: Ease) -> Track {
+        Track { property, keys: keys.iter().map(|&(time, v)| Key { time, value: Value::Number(v), ease }).collect() }
+    }
+
+    #[test]
+    fn animated_gravity_takes_over_from_its_keyframe() {
+        let mut scene = Scene::big_ball();
+        let still = scene.clone();
+        scene.animation.push(keyframes(Property::Gravity, &[(1.0, 1200.0), (1.5, -800.0)], Ease::Linear));
+        let (mut a, mut b) = (Simulation::new(&still), Simulation::new(&scene));
+        a.advance_to(1.0, &mut Vec::new());
+        b.advance_to(1.0, &mut Vec::new());
+        assert_eq!(a.balls(), b.balls());
+        a.advance_to(2.0, &mut Vec::new());
+        b.advance_to(2.0, &mut Vec::new());
+        assert_ne!(a.balls(), b.balls());
+        assert_eq!(b.scene().physics.gravity.y, -800.0);
+        assert_eq!(collect_wall_hits(&scene), collect_wall_hits(&scene));
+    }
+
+    #[test]
+    fn animated_arena_size_moves_the_wall_and_keeps_balls_in() {
+        let mut scene = Scene::default();
+        scene.video.duration = 8.0;
+        let size = keyframes(Property::ArenaSize, &[(0.0, 1.0), (3.0, 0.5), (6.0, 1.3)], Ease::Smooth);
+        scene.animation.push(size.clone());
+        let Container::Circle { center, radius, .. } = scene.container else { unreachable!() };
+        let mut sim = Simulation::new(&scene);
+        let mut hits = Vec::new();
+        for quarter in 1..=32 {
+            let time = quarter as f64 * 0.25;
+            sim.advance_to(time, &mut hits);
+            let expected = size.value_at(sim.time() as f32).and_then(Value::number).unwrap();
+            assert!((sim.arena().scale - expected).abs() < 1e-4, "at {time}: {} vs {expected}", sim.arena().scale);
+            for ball in sim.balls() {
+                let reach = (ball.position - center).length() + ball.radius;
+                assert!(reach <= radius * sim.arena().scale + 0.5, "ball outside at {time}");
+            }
+        }
+    }
+
+    #[test]
+    fn animated_spin_adds_up() {
+        let mut scene = Scene::spinning_hexagon();
+        scene.arena_motion.spin = 0.0;
+        scene.animation.push(keyframes(Property::ArenaSpin, &[(0.0, 0.0), (2.0, 90.0)], Ease::Linear));
+        let mut sim = Simulation::new(&scene);
+        sim.advance_to(2.0, &mut Vec::new());
+        // Speeding up steadily from 0 to 90°/s over 2 s turns it 90°.
+        let degrees = sim.arena().angle.to_degrees();
+        assert!((degrees - 90.0).abs() < 0.5, "turned {degrees}");
+        assert_no_leaks(&scene, 6.0);
+    }
+
+    #[test]
+    fn rings_that_pulse_in_size_never_leak() {
+        let mut scene = Scene::escape_rings();
+        scene.animation.push(keyframes(
+            Property::ArenaSize,
+            &[(0.0, 1.0), (1.0, 0.7), (2.0, 1.1), (3.0, 0.8)],
+            Ease::Smooth,
+        ));
+        assert_no_leaks(&scene, 6.0);
     }
 }

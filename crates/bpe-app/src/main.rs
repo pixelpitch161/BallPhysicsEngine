@@ -11,9 +11,11 @@ mod gallery;
 mod inspector;
 #[cfg(test)]
 mod inspector_tests;
+mod keys;
 mod preview;
 mod settings;
 mod theme;
+mod timeline;
 
 fn main() -> eframe::Result {
     let scene_path = std::env::args().nth(1).map(std::path::PathBuf::from);

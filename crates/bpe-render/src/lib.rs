@@ -385,8 +385,15 @@ impl Renderer {
         scene.video.width as f32 / self.targets.width.max(1) as f32
     }
 
-    /// Draws one frame into the output texture.
+    /// Draws one frame into the output texture, with animated settings at their values at `time`.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, time: f64, frame: &FrameData) {
+        let animated;
+        let scene = if scene.animation.is_empty() {
+            scene
+        } else {
+            animated = scene.at_time(time as f32);
+            &animated
+        };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
@@ -746,6 +753,23 @@ mod tests {
         let pixels = render_at(&device, &queue, &mut renderer, &scene, &[1.04, 1.06]);
         assert_eq!(pixels.len(), 90 * 160 * 4);
         assert!(brightness(&pixels) > 0);
+    }
+
+    #[test]
+    fn keyframes_change_the_picture_over_time() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::default();
+        let plain = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        let mut background = bpe_scene::Track::new(bpe_scene::Property::BackgroundTop);
+        background.set_key(1.0, bpe_scene::Value::Color(scene.look.background_top));
+        background.set_key(3.0, bpe_scene::Value::Color(bpe_scene::Color::rgb(200, 40, 40)));
+        scene.animation.push(background);
+        // Before the first keyframe the picture is as it was.
+        let before = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[0.5]);
+        let still = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &Scene::default(), &[0.5]);
+        assert_eq!(before, still);
+        let animated = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        assert!(brightness(&animated) > brightness(&plain) + 100_000, "the background should be turning red");
     }
 
     #[test]

@@ -4,11 +4,13 @@
 //! exporter all read from it, and nothing else. World coordinates are pixels of the
 //! output video, with the origin at the centre of the frame and y pointing down.
 
+mod animation;
 mod color;
 mod effect;
 mod presets;
 mod random;
 
+pub use animation::{Ease, Key, Property, SAME_TIME, Track, Value};
 pub use color::Color;
 pub use effect::Effect;
 pub use glam::Vec2;
@@ -34,6 +36,8 @@ pub struct Scene {
     /// Shader effects applied to the finished picture, in order.
     pub effects: Vec<Effect>,
     pub sound: Sound,
+    /// Settings that change over time, one track of keyframes each.
+    pub animation: Vec<Track>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -123,6 +127,8 @@ pub struct ArenaMotion {
     pub shrink_per_hit: f32,
     /// The arena never shrinks below this radius in pixels.
     pub min_size: f32,
+    /// Size of the arena compared to its shape's size, 1 being as set. Mostly for animating.
+    pub size: f32,
 }
 
 /// Something fixed inside the arena that balls bounce off, from either side.
@@ -328,6 +334,7 @@ impl Default for Scene {
             look: Look::default(),
             effects: Vec::new(),
             sound: Sound::default(),
+            animation: Vec::new(),
         }
     }
 }
@@ -369,7 +376,7 @@ impl Default for BounceRules {
 
 impl Default for ArenaMotion {
     fn default() -> Self {
-        Self { spin: 0.0, shrink_speed: 0.0, shrink_per_hit: 0.0, min_size: 60.0 }
+        Self { spin: 0.0, shrink_speed: 0.0, shrink_per_hit: 0.0, min_size: 60.0, size: 1.0 }
     }
 }
 
@@ -585,6 +592,11 @@ impl Scene {
                 description: "Balls drop one by one through a board of pegs into bins.",
                 scene: Scene::plinko(),
             },
+            Preset {
+                name: "Pulsing ring",
+                description: "Keyframes make the ring breathe in and out while the colours change.",
+                scene: Scene::pulsing_ring(),
+            },
         ]
     }
 
@@ -745,7 +757,11 @@ impl Scene {
     }
 
     pub fn from_ron(text: &str) -> anyhow::Result<Self> {
-        Ok(ron::from_str(text)?)
+        let mut scene: Self = ron::from_str(text)?;
+        for track in &mut scene.animation {
+            track.sort();
+        }
+        Ok(scene)
     }
 
     pub fn to_ron(&self) -> anyhow::Result<String> {

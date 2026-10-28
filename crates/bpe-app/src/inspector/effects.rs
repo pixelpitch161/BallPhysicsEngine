@@ -1,10 +1,10 @@
 //! The Effects tab: a stack of shader effects applied to the finished picture, top to bottom.
 
-use super::{Roll, dice_button, grid, heading, hint, label, percent, resettable, slider};
+use super::{Roll, dice_button, grid, heading, hint, key, label, percent, resettable, slider};
 use crate::theme;
 use bpe_render::EffectLibrary;
 use bpe_render::effects::{self as fx, EffectInfo, ParamKind};
-use bpe_scene::{Dice, Effect, Scene};
+use bpe_scene::{Dice, Effect, Property, Scene};
 use eframe::egui::{self, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -140,7 +140,8 @@ pub fn roll_effect(effect: &mut Effect, library: &EffectLibrary, dice: &mut Dice
     }
 }
 
-pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>, roll: &mut Option<Roll>) {
+pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, scene: &mut Scene, roll: &mut Option<Roll>) {
+    let effects = &mut scene.effects;
     ui.label(
         RichText::new(
             "Effects change the whole picture, one after another from top to bottom. They are saved in the scene and show in the exported video.",
@@ -148,7 +149,7 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>, ro
         .color(theme::MUTED),
     );
     ui.add_space(6.0);
-    add_buttons(ui, panel, effects);
+    let replaced = add_buttons(ui, panel, effects);
     ui.add_space(10.0);
 
     if effects.is_empty() {
@@ -164,20 +165,51 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>, ro
         });
         ui.add_space(8.0);
     }
+    // Keyframes on an effect move with it.
+    let swap = |a: usize, b: usize| {
+        move |k: u32| {
+            Some(if k == a as u32 {
+                b as u32
+            } else if k == b as u32 {
+                a as u32
+            } else {
+                k
+            })
+        }
+    };
     match action {
-        Some((i, CardAction::Up)) => effects.swap(i, i - 1),
-        Some((i, CardAction::Down)) => effects.swap(i, i + 1),
+        Some((i, CardAction::Up)) => {
+            effects.swap(i, i - 1);
+            scene.remap_effect_tracks(swap(i, i - 1));
+        }
+        Some((i, CardAction::Down)) => {
+            effects.swap(i, i + 1);
+            scene.remap_effect_tracks(swap(i, i + 1));
+        }
         Some((i, CardAction::Remove)) => {
             effects.remove(i);
+            let i = i as u32;
+            scene.remap_effect_tracks(|k| match k {
+                k if k == i => None,
+                k if k > i => Some(k - 1),
+                k => Some(k),
+            });
         }
         Some((i, CardAction::Duplicate)) => {
             let copy = effects[i].clone();
             effects.insert(i + 1, copy);
+            let i = i as u32;
+            scene.remap_effect_tracks(|k| Some(if k > i { k + 1 } else { k }));
+            scene.copy_effect_tracks(i, i + 1);
         }
         Some((i, CardAction::EditCopy)) => edit_copy(panel, &mut effects[i]),
         Some((i, CardAction::Roll)) => *roll = Some(Roll::Effect(i)),
         None => {}
     }
+    if replaced {
+        scene.remap_effect_tracks(|_| None);
+    }
+    let effects = &mut scene.effects;
 
     ui.add_space(6.0);
     heading(ui, "Your own effects");
@@ -216,7 +248,9 @@ pub fn show(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>, ro
     }
 }
 
-fn add_buttons(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>) {
+/// The add buttons. Returns whether the effects were replaced by a look.
+fn add_buttons(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>) -> bool {
+    let mut replaced = false;
     ui.horizontal(|ui| {
         ui.menu_button(RichText::new("+ Add effect").strong(), |ui| {
             ui.set_min_width(300.0);
@@ -243,11 +277,13 @@ fn add_buttons(ui: &mut Ui, panel: &mut EffectsPanel, effects: &mut Vec<Effect>)
             for (name, about, stack) in looks() {
                 if ui.button(name).on_hover_text(about).clicked() {
                     *effects = stack;
+                    replaced = true;
                     ui.close();
                 }
             }
         });
     });
+    replaced
 }
 
 enum CardAction {
@@ -357,6 +393,7 @@ fn effect_card(
         ui.add_space(4.0);
         ui.add_enabled_ui(effect.enabled, |ui| {
             grid(ui, "params", |ui| {
+                key(ui, Property::EffectAmount(index as u32));
                 slider(
                     ui,
                     "Amount",
@@ -367,7 +404,7 @@ fn effect_card(
                     percent,
                 );
                 for param in &info.params {
-                    param_row(ui, effect, param);
+                    param_row(ui, effect, index, param);
                 }
             });
         });
@@ -375,10 +412,11 @@ fn effect_card(
     action
 }
 
-fn param_row(ui: &mut Ui, effect: &mut Effect, param: &fx::ParamInfo) {
+fn param_row(ui: &mut Ui, effect: &mut Effect, index: usize, param: &fx::ParamInfo) {
     let stored = effect.params.get(&param.name).copied().filter(|v| v.is_finite());
     let mut value = stored.unwrap_or(param.default);
     let text = pretty_name(&param.name);
+    key(ui, Property::EffectParam(index as u32, param.name.clone()));
     match param.kind {
         ParamKind::Toggle => {
             let name = label(ui, &text, &param.help);
@@ -454,7 +492,7 @@ fn paint_icon(ui: &Ui, response: &egui::Response, icon: Icon) {
 }
 
 /// `left_right` to "Left right".
-fn pretty_name(name: &str) -> String {
+pub(crate) fn pretty_name(name: &str) -> String {
     let text = name.replace('_', " ");
     let mut chars = text.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()

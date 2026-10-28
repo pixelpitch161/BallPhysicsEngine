@@ -649,3 +649,64 @@ fn rolling_chords_keeps_the_notes() {
     assert_ne!(sound.progression, scene.sound.progression);
     assert_eq!(Sound { progression: scene.sound.progression.clone(), ..sound.clone() }, scene.sound);
 }
+
+/// The inspector with keyframe diamonds, run the way the app runs it: diamonds ask for keyframes
+/// and the requests are applied once the panel is drawn.
+fn keyed_harness(tab: Tab, scene: Scene, time: f32) -> Harness<'static, State> {
+    let state = State { inspector: Inspector { tab, ..Inspector::default() }, scene };
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(460.0, 2400.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(240)
+        .allow_missing_glyphs()
+        .with_context_setup(crate::theme::apply)
+        .build_ui_state(
+            move |ui, state: &mut State| {
+                crate::keys::publish(ui.ctx(), &state.scene, time);
+                inspector::show(ui, &mut state.inspector, &mut state.scene);
+                let requests = crate::keys::take_requests(ui.ctx());
+                crate::keys::apply_requests(&mut state.scene, requests, time, |_| None);
+            },
+            state,
+        );
+    harness.run();
+    harness
+}
+
+/// Clicks the keyframe diamond after a setting's name and its "?".
+fn click_diamond(harness: &mut Harness<'_, State>, label: &str) {
+    let name = harness.get_by_label(label).rect();
+    // Name, a 5 point gap, the 16 point "?", another gap, then the 16 point diamond.
+    let pos = egui::pos2(name.right() + 5.0 + 16.0 + 5.0 + 8.0, name.center().y);
+    click_at(harness, pos);
+    harness.run();
+}
+
+#[test]
+fn the_diamond_beside_a_setting_animates_it() {
+    let mut harness = keyed_harness(Tab::Look, Scene::default(), 2.0);
+    click_diamond(&mut harness, "Overall glow");
+    let scene = &harness.state().scene;
+    let track = scene.track(&bpe_scene::Property::Bloom).expect("bloom should be animated");
+    assert_eq!(track.keys.len(), 1);
+    assert_eq!(track.keys[0].time, 2.0);
+    assert_eq!(track.keys[0].value, bpe_scene::Value::Number(Look::default().bloom_strength));
+
+    // A second click on the same moment removes the keyframe, and with it the animation.
+    click_diamond(&mut harness, "Overall glow");
+    assert!(harness.state().scene.animation.is_empty());
+}
+
+#[test]
+fn effect_sliders_have_diamonds_that_follow_the_effect() {
+    let scene = Scene { effects: vec![Effect::new("film"), Effect::new("echo")], ..Scene::default() };
+    let mut harness = keyed_harness(Tab::Effects, scene, 0.0);
+    // The second "Amount" belongs to the echo effect.
+    let amounts: Vec<egui::Rect> = harness.get_all_by_label("Amount").map(|n| n.rect()).collect();
+    assert_eq!(amounts.len(), 2);
+    let pos = egui::pos2(amounts[1].right() + 5.0 + 16.0 + 5.0 + 8.0, amounts[1].center().y);
+    click_at(&mut harness, pos);
+    harness.run();
+    let animated: Vec<_> = harness.state().scene.animation.iter().map(|t| t.property.clone()).collect();
+    assert_eq!(animated, [bpe_scene::Property::EffectAmount(1)]);
+}

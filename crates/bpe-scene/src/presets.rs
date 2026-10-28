@@ -307,4 +307,62 @@ impl Scene {
             ..Self::default()
         }
     }
+
+    /// Keyframes in action: the ring breathes in and out while the colours and glow change.
+    pub fn pulsing_ring() -> Self {
+        let number = |time, v| Key { time, value: Value::Number(v), ease: Ease::Smooth };
+        let colour = |time, c| Key { time, value: Value::Color(c), ease: Ease::Smooth };
+        let spawners = RAINBOW
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| {
+                let angle = i as f32 / RAINBOW.len() as f32 * std::f32::consts::TAU;
+                Spawner::Single {
+                    position: Vec2::from_angle(angle) * 120.0,
+                    velocity: Vec2::from_angle(angle + 1.2) * 420.0,
+                    radius: 14.0,
+                    color,
+                }
+            })
+            .collect();
+        Self {
+            name: "Pulsing ring".into(),
+            physics: Physics { gravity: Vec2::new(0.0, 300.0), ..Physics::default() },
+            spawners,
+            look: Look { trail_seconds: 0.6, trail_width: 0.8, trail_opacity: 0.55, ball_glow: 0.3, ..Look::default() },
+            animation: vec![
+                Track {
+                    property: Property::ArenaSize,
+                    keys: vec![
+                        number(0.0, 1.0),
+                        number(4.0, 0.55),
+                        number(8.0, 1.0),
+                        number(12.0, 0.45),
+                        number(16.0, 1.0),
+                    ],
+                },
+                Track {
+                    property: Property::BackgroundTop,
+                    keys: vec![
+                        colour(0.0, Color::rgb(0x02, 0x02, 0x2a)),
+                        colour(8.0, Color::rgb(0x2a, 0x05, 0x3a)),
+                        colour(16.0, Color::rgb(0x06, 0x12, 0x48)),
+                    ],
+                },
+                Track {
+                    property: Property::Bloom,
+                    keys: vec![number(0.0, 0.15), number(12.0, 0.45), number(16.0, 0.25)],
+                },
+            ],
+            sound: Sound {
+                progression: chords(&["Am", "F", "C", "G"], 4.0),
+                low_note: 57,
+                high_note: 88,
+                instrument: Instrument::Pluck { decay: 1.2, brightness: 0.55 },
+                ..Sound::default()
+            },
+            video: Video { duration: 16.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
 }
