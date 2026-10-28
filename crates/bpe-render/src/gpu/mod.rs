@@ -286,8 +286,8 @@ impl GpuLayers {
         size: (u32, u32),
     ) {
         let video = frame.gpu.video;
-        if let (true, Some((source, inputs))) = (scene.gpu.is_active(), &frame.gpu.source) {
-            let caught_up = self.step_to(device, queue, source, inputs, time, video, frame.gpu.budget);
+        if let (true, Some(source)) = (scene.gpu.is_active(), &frame.gpu.source) {
+            let caught_up = self.step_to(device, queue, source, time, video, frame.gpu.budget);
             frame.gpu.behind.set(!caught_up);
         } else if self.driver.is_some() {
             self.driver = None;
@@ -327,8 +327,7 @@ impl GpuLayers {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        scene: &Scene,
-        inputs: &SimInputs,
+        (scene, inputs): &(Scene, SimInputs),
         time: f64,
         video: (u32, u32),
         budget: Option<std::time::Duration>,
@@ -455,7 +454,7 @@ impl GpuLayers {
             }
             self.steps_run += 1;
             let driver = self.driver.as_mut().unwrap();
-            if step % driver.interval == 0 && driver.checkpoints.last().is_none_or(|c| c.step < step) {
+            if step.is_multiple_of(driver.interval) && driver.checkpoints.last().is_none_or(|c| c.step < step) {
                 driver.checkpoints.push(Checkpoint {
                     step,
                     sim: driver.sim.clone(),

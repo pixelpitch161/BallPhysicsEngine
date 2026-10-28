@@ -126,10 +126,10 @@ fn event_row(
                 None => "None",
             })
             .show_ui(ui, |ui| {
-                if ui.selectable_label(shown.is_none(), "None").clicked() {
-                    if let Some(i) = index {
-                        *remove = Some(i);
-                    }
+                if ui.selectable_label(shown.is_none(), "None").clicked()
+                    && let Some(i) = index
+                {
+                    *remove = Some(i);
                 }
                 for preset in ParticlePreset::ALL {
                     ui.horizontal(|ui| {

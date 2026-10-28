@@ -314,7 +314,7 @@ fn rolled_scene(seed: u64, points: u32, drops: u32) -> Scene {
     scene.gpu.swarm.enabled = true;
     scene.gpu.swarm.count = points;
     scene.gpu.fluid.roll(&mut dice, 1.0);
-    scene.gpu.fluid.enabled = seed % 2 == 0;
+    scene.gpu.fluid.enabled = seed.is_multiple_of(2);
     scene.gpu.fluid.count = drops;
     scene
 }
