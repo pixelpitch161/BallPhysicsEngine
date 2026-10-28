@@ -205,9 +205,10 @@ pub struct SimStats {
     pub broken: bool,
 }
 
-/// Simulates `scene` once, without drawing or mixing sound.
+/// Simulates `scene` once, without drawing or mixing sound. Beats come from the scene's tempo,
+/// so beat sync and beat rules play out as they do without a song.
 pub fn simulate(scene: &Scene) -> SimStats {
-    simulate_with(scene, &bpe_sim::SimInputs::default())
+    simulate_with(scene, &bpe_sim::beat_sync::inputs(scene, None))
 }
 
 /// [`simulate`] with the song's beats, as the finished video plays it.

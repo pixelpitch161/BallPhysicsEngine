@@ -835,7 +835,27 @@ impl Scene {
         ]
         .into_iter()
         .chain(Scene::gpu_presets())
+        .chain(Scene::showcase_presets())
         .collect()
+    }
+
+    /// Scenes that use every feature at once, saved in `scenes/showcase/` by the integration
+    /// tests in `bpe-export/tests/showcase.rs`.
+    pub fn showcase_presets() -> Vec<Preset> {
+        let load = |text: &str| Scene::from_ron(text).expect("showcase scenes are checked by the tests");
+        vec![
+            Preset {
+                name: "Everything at once",
+                description: "Every feature together: a heart arena with jelly, rope, liquid, a swarm, rules, \
+                              node shaders, a melody on the beat and captions.",
+                scene: load(include_str!("../../../scenes/showcase/everything.ron")),
+            },
+            Preset {
+                name: "Everything in 3D",
+                description: "Rules, confetti, node shaders, a melody on the beat and captions in a neon cube.",
+                scene: load(include_str!("../../../scenes/showcase/everything-3d.ron")),
+            },
+        ]
     }
 
     /// Eight balls fired outwards from the centre, each its own colour, with long trails.

@@ -124,6 +124,11 @@ impl BodyState {
     pub fn new(scene: &Scene) -> Self {
         Self { world: build(&scene.bodies), owed: 0.0, impacts: Vec::new() }
     }
+
+    /// No soft bodies at all.
+    pub fn empty() -> Self {
+        Self { world: build(&bpe_scene::Bodies::default()), owed: 0.0, impacts: Vec::new() }
+    }
 }
 
 /// Moves soft bodies forward and collides them with walls and balls. Called after every

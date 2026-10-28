@@ -89,7 +89,13 @@ impl Gallery {
             for preset in &self.presets {
                 let scale = THUMB.x * pixels / preset.scene.video.width as f32;
                 let (width, height) = bpe_export::output_size(&preset.scene, scale);
-                let renderer = Renderer::new(device, width, height);
+                let mut renderer = Renderer::new(device, width, height);
+                // A preset's own node effects, in a library of its own.
+                if !preset.scene.shader_graphs.is_empty() {
+                    let library = bpe_render::EffectLibrary::new();
+                    library.sync_graphs(&preset.scene.shader_graphs);
+                    renderer.set_effect_library(library);
+                }
                 let texture = render_state.renderer.write().register_native_texture(
                     device,
                     renderer.output_view(),
@@ -98,7 +104,7 @@ impl Gallery {
                 self.thumbs.push(Thumb {
                     renderer,
                     texture,
-                    playback: Playback::new(&preset.scene),
+                    playback: Playback::with_inputs(&preset.scene, &bpe_audio::sim_inputs(&preset.scene, None)),
                     frame: FrameData::default(),
                 });
             }

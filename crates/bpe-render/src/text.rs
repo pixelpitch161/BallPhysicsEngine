@@ -527,12 +527,25 @@ fn values_with(scene: &Scene, playback: &bpe_sim::Playback, counts: &Counts) -> 
         hits: counts.hits,
         escapes: counts.escapes,
         rings,
-        // Rule counters by number, for {counter:1} and so on.
-        counters: counts.counters.iter().enumerate().map(|(i, v)| ((i + 1).to_string(), v.round() as i64)).collect(),
+        counters: counter_values(playback, counts),
         seed: scene.sound.seed,
         hit_pulse: pulse,
         ..TextValues::default()
     }
+}
+
+/// Rule counters by name, for {counter:score}, and by number, for {counter:1} and so on.
+fn counter_values(playback: &bpe_sim::Playback, counts: &Counts) -> std::collections::BTreeMap<String, i64> {
+    let names = playback.simulation().rules().counter_names();
+    let mut values = std::collections::BTreeMap::new();
+    for (i, value) in counts.counters.iter().enumerate() {
+        let value = value.round() as i64;
+        if let Some(name) = names.get(i) {
+            values.insert(name.clone(), value);
+        }
+        values.entry((i + 1).to_string()).or_insert(value);
+    }
+    values
 }
 
 /// The live values the captions show this frame. Part of [`crate::FrameData`].
@@ -1017,6 +1030,26 @@ mod tests {
         let during = white(render(&device, &queue, &scene, 3.0));
         let after = white(render(&device, &queue, &scene, 5.0));
         assert!(during > before + 300 && during > after + 300, "{before} {during} {after}");
+    }
+
+    #[test]
+    fn rule_counters_show_by_name_and_number() {
+        use bpe_graph::Catalog;
+        let mut scene = Scene::multiplying_balls();
+        let catalog = bpe_sim::rules::catalog();
+        let mut graph = bpe_graph::Graph::new("Score");
+        let wall = graph.add(catalog.spec("wall").unwrap(), [0.0, 0.0]);
+        let add = graph.add(catalog.spec("counter_add").unwrap(), [260.0, 0.0]);
+        graph.node_mut(add).unwrap().params.insert("counter".into(), bpe_graph::Param::Text("score".into()));
+        graph.connect(bpe_graph::Link { from: (wall, 0), to: (add, 0) }, catalog);
+        scene.logic = vec![graph];
+        let mut playback = bpe_sim::Playback::new(&scene);
+        playback.seek(4.0);
+        let values = text_values(&scene, &playback);
+        let hits = values.counters.get("score").copied().unwrap_or(0);
+        assert!(hits > 0, "{:?}", values.counters);
+        assert_eq!(values.counters.get("1"), Some(&hits));
+        assert_eq!(bpe_scene::fill_caption("score {counter:score}", &values), format!("score {hits}"));
     }
 
     #[test]

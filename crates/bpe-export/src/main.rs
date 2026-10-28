@@ -86,6 +86,7 @@ fn run() -> anyhow::Result<()> {
     let mut options = ExportOptions::new("out.mp4");
     options.base_dir = base_dir.clone();
     options.effects.set_folders(bpe_render::effects::default_folders(base_dir.as_deref()));
+    options.effects.sync_graphs(&scene.shader_graphs);
     for info in options.effects.list() {
         let used = scene.effects.iter().any(|e| e.enabled && e.shader == info.id);
         if let (true, Some(error)) = (used, info.error()) {

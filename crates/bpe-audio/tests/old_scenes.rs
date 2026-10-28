@@ -48,7 +48,8 @@ const GOLDEN: &[(&str, u64)] = &[
 ];
 
 /// Presets added with the new sound features, which have no sound from before to keep.
-const NEW_PRESETS: &[&str] = &["Marimba melody", "Beat-locked bounce", "Drum machine"];
+const NEW_PRESETS: &[&str] =
+    &["Marimba melody", "Beat-locked bounce", "Drum machine", "Everything at once", "Everything in 3D"];
 
 fn hash(samples: &[f32]) -> u64 {
     // FNV-1a over the exact bits, so any change at all shows up.

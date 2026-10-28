@@ -133,7 +133,9 @@ pub fn profile_scene(
     if let Some((device, queue)) = gpu {
         let (width, height) = crate::output_size(scene, scale);
         let mut renderer = Renderer::new(device, width, height);
-        renderer.set_effect_library(EffectLibrary::new());
+        let library = EffectLibrary::new();
+        library.sync_graphs(&scene.shader_graphs);
+        renderer.set_effect_library(library);
         let mut playback = Playback::new(scene);
         let mut hash = hasher();
         let started = Instant::now();

@@ -297,8 +297,8 @@ impl FrameData {
         self.audio[3] = beat_phase(self.song.as_deref().or(self.mix.as_deref()), now);
         self.counts = playback.counts_at(now);
         self.gpu.fill(scene, playback);
-        self.particles.fill(scene, playback, &self.events);
         self.space.fill(scene, playback);
+        self.particles.fill(scene, playback, self.space.active.then_some(&self.space));
         if self.space.active {
             // 3D (WS4): effects react to hits where they show on screen.
             self.pulse = self.space.effect_hits(scene, now, playback.events(), &mut self.hits);
