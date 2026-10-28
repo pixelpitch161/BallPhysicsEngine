@@ -6,7 +6,7 @@
 //! in sync.
 
 mod arena;
-mod beat_sync;
+pub mod beat_sync;
 mod bodies;
 mod broadphase;
 pub mod events;
