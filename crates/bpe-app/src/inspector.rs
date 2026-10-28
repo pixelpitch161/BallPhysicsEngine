@@ -10,6 +10,7 @@
 pub mod ball_look;
 pub mod effects;
 pub mod gpu;
+pub mod liquid;
 pub mod music;
 pub mod particles;
 pub mod rules;
@@ -21,11 +22,12 @@ pub mod view3d;
 pub use effects::EffectsPanel;
 pub(crate) use effects::pretty_name;
 
+use crate::dice_panel::{Part, lock_button};
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, EffectTarget, Group, Look, Obstacle, Physics,
-    Property, Scene, Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, EffectTarget, Group, List, Look, Obstacle, Physics,
+    PresetKind, Property, Scene, Sound, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -146,6 +148,7 @@ pub struct Inspector {
     pub shapes: shapes::State,
     pub particles: particles::State,
     pub gpu: gpu::State,
+    pub liquid: liquid::State,
     pub view3d: view3d::State,
     pub music: music::State,
     /// Ball groups' own looks: which groups are picked together, and a copied look.
@@ -166,6 +169,7 @@ impl Default for Inspector {
             shapes: Default::default(),
             particles: Default::default(),
             gpu: Default::default(),
+            liquid: Default::default(),
             view3d: Default::default(),
             music: Default::default(),
             looks: Default::default(),
@@ -211,6 +215,7 @@ impl Inspector {
 pub const ARROW_SECONDS: f32 = 0.35;
 
 pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
+    crate::setting_locks::publish(ui.ctx(), scene);
     tab_bar(ui, &mut inspector.tab);
     crate::command_palette::drawing_tab(ui.ctx(), inspector.tab);
     let mut roll = None;
@@ -219,6 +224,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => {
                     let space = scene.space().is_some(); // 3D (WS4)
+                    let picked_before = (inspector.selected, inspector.soft.selected);
                     let shaders = BallShaders::new(scene, &inspector.effects.library);
                     let change = balls(
                         ui,
@@ -226,13 +232,28 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         &mut inspector.selected,
                         &mut inspector.looks,
                         &scene.look,
+                        (&scene.sound, &mut inspector.music),
                         &mut roll,
                         space,
                         &shaders,
                     );
                     change.apply(scene);
                     soft::section(ui, scene, &mut inspector.soft);
+                    // One thing is selected at a time: a ball group or a soft thing.
+                    if inspector.soft.selected.is_some() && inspector.soft.selected != picked_before.1 {
+                        inspector.selected = None;
+                        inspector.looks.picked.clear();
+                    } else if inspector.selected.is_some() && inspector.selected != picked_before.0 {
+                        inspector.soft.selected = None;
+                    }
                     gpu::section(ui, scene, &mut inspector.gpu);
+                    let liquid = ui.scope(|ui| liquid::section(ui, scene, &mut inspector.liquid)).response;
+                    // Liquid picked in the preview: bring its section into view.
+                    if inspector.soft.selected == Some(soft::SoftPick::Liquid)
+                        && std::mem::take(&mut inspector.soft.scroll_to)
+                    {
+                        liquid.scroll_to_me(Some(egui::Align::Center));
+                    }
                 }
                 Tab::Arena => {
                     // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
@@ -288,6 +309,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Bounces => {
+                    crate::my_presets::bar(ui, PresetKind::Bounces, scene);
                     bounces(ui, &mut scene.rules, &mut roll);
                     soft::bounces_section(ui, scene, &mut inspector.soft);
                     let fresh = Physics::default();
@@ -301,11 +323,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Look => {
+                    crate::my_presets::bar(ui, PresetKind::Look, scene);
                     look(ui, &mut scene.look, &mut roll);
                     particles::section(ui, scene, &mut inspector.particles);
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
+                    crate::my_presets::bar(ui, PresetKind::Effects, scene);
                     effects::show(ui, &mut inspector.effects, scene, &mut roll);
                     if reset_tab(ui, !scene.effects.is_empty()) {
                         scene.effects.clear();
@@ -314,13 +338,19 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 }
                 Tab::Sound => {
                     // Music workstream: the whole Sound tab, its reset button included, lives in music.rs.
+                    crate::my_presets::bar(ui, PresetKind::Sound, scene);
                     music::section(ui, scene, &mut inspector.music, &mut roll);
                 }
-                Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
+                Tab::Rules => {
+                    crate::my_presets::bar(ui, PresetKind::Rules, scene);
+                    rules::section(ui, scene, &mut inspector.rules)
+                }
                 Tab::Text => {
+                    crate::my_presets::bar(ui, PresetKind::Captions, scene);
                     text::show(ui, &mut inspector.text, scene, &mut roll);
                     if reset_tab(ui, !scene.captions.is_empty()) {
                         scene.captions.clear();
+                        scene.remap_tracks(List::Captions, |_| None);
                     }
                 }
             }
@@ -352,7 +382,7 @@ fn tip(ui: &mut Ui) {
     ui.label(
         RichText::new(
             "Tip: double-click a setting's name or slider, or Alt+click it, to reset it. \
-             Hold Shift while dragging a slider for fine changes. A dice rolls random settings for its group.",
+             Hold Shift while dragging a slider for fine changes. A dice rolls random settings for its group; right-click a setting to lock it.",
         )
         .small()
         .color(theme::MUTED),
@@ -417,6 +447,7 @@ fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) 
             if dice_button(ui, &format!("Roll random {} settings", group.name())).clicked() {
                 *roll = Some(Roll::Group(group));
             }
+            lock_button(ui, Part::Group(group));
         });
     });
 }
@@ -425,6 +456,9 @@ fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) 
 pub fn dice_button(ui: &mut Ui, what: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::click());
     let response = response.on_hover_text(format!("{what}. Ctrl+Z puts them back."));
+    if response.clicked() {
+        crate::setting_locks::note_roll(ui.ctx());
+    }
     paint_dice(ui.painter(), rect, response.hovered());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -509,10 +543,31 @@ fn reset_clicked(response: &Response) -> bool {
 
 /// Puts a setting back to its default on a double-click, an Alt+click or the right-click menu.
 fn resettable<T: PartialEq>(response: Response, value: &mut T, default: T) -> Response {
+    let lock = crate::setting_locks::path_of(&response.ctx, value);
+    resettable_locking(response, value, default, lock)
+}
+
+/// [`resettable`] for a value that is shown converted (launch speed from a velocity): `lock` is
+/// the path of the setting it is converted from.
+fn resettable_locking<T: PartialEq>(
+    response: Response,
+    value: &mut T,
+    default: T,
+    lock: Option<crate::setting_locks::Path>,
+) -> Response {
     let mut reset = reset_clicked(&response);
+    if let Some(path) = &lock
+        && crate::setting_locks::is_locked(&response.ctx, path)
+    {
+        crate::setting_locks::paint_marker(
+            &response.ctx.layer_painter(response.layer_id),
+            response.rect.left_center() - egui::vec2(7.0, 0.0),
+        );
+    }
     let target = crate::setting_menu::Target {
         property: crate::setting_menu::take_row_property(&response.ctx),
         label: String::new(),
+        lock,
     };
     response.context_menu(|ui| {
         reset |= crate::setting_menu::items(ui, &target, *value != default);
@@ -670,7 +725,14 @@ fn plain_color_list(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str) {
 }
 
 fn color_list_with(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str, alpha: Alpha) {
+    let lock = crate::setting_locks::path_of(ui.ctx(), colors);
     ui.horizontal_wrapped(|ui| {
+        if let Some(path) = &lock
+            && crate::setting_locks::is_locked(ui.ctx(), path)
+        {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 18.0), Sense::hover());
+            crate::setting_locks::paint_marker(ui.painter(), rect.center());
+        }
         let mut remove = None;
         for (i, c) in colors.iter_mut().enumerate() {
             ui.push_id(i, |ui| {
@@ -681,6 +743,9 @@ fn color_list_with(ui: &mut Ui, colors: &mut Vec<Color>, add_label: &str, alpha:
                     if ui.button("Remove colour").clicked() {
                         remove = Some(i);
                         ui.close();
+                    }
+                    if let Some(path) = &lock {
+                        crate::setting_locks::menu_item(ui, path);
                     }
                 });
             });
@@ -734,8 +799,10 @@ fn launch_rows(ui: &mut Ui, velocity: &mut Vec2, default: Vec2) {
         -180.0..=180.0,
         units("°", 0),
     );
-    let speed_response = resettable(speed_response, &mut speed, default_speed);
-    let angle_response = resettable(angle_response, &mut angle, default_angle);
+    // Speed and direction both come from the velocity, so they lock together.
+    let lock = crate::setting_locks::path_of(&speed_response.ctx, velocity);
+    let speed_response = resettable_locking(speed_response, &mut speed, default_speed, lock.clone());
+    let angle_response = resettable_locking(angle_response, &mut angle, default_angle, lock);
     // Only on a real edit: the sliders round the numbers they show, which would nudge the velocity.
     if speed_response.changed() || angle_response.changed() || (speed, angle) != before {
         let radians = angle.to_radians();
@@ -757,6 +824,7 @@ fn new_grid() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -769,6 +837,7 @@ fn new_ball() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -784,6 +853,7 @@ fn new_stream() -> Spawner {
         depth: 0.0,
         depth_velocity: 0.0,
         style: Some(BallStyle::default()),
+        sound: None,
     }
 }
 
@@ -820,15 +890,18 @@ fn fx_graph_id(name: &str) -> String {
 /// What the ball cards changed that reaches outside the balls: effects follow their groups.
 #[derive(Default)]
 pub(crate) struct BallsChange {
-    removed: Option<usize>,
-    duplicated: Option<usize>,
+    /// A group was removed or copied.
+    edit: Option<ListEdit>,
     /// A group picked a shader to wear (`Some(id)`) or took its shader off (`None`).
     shader: Option<(usize, Option<String>)>,
 }
 
 impl BallsChange {
     fn apply(self, scene: &mut Scene) {
-        if let Some(removed) = self.removed {
+        if let Some(edit) = self.edit {
+            edit.apply(scene, List::BallGroups);
+        }
+        if let Some(ListEdit::Removed(removed)) = self.edit {
             // Shaders on the deleted balls go with them, keyframes and all.
             let mut index = 0;
             while index < scene.effects.len() {
@@ -839,17 +912,12 @@ impl BallsChange {
                     }
                     None => {
                         scene.effects.remove(index);
-                        let i = index as u32;
-                        scene.remap_effect_tracks(|k| match k {
-                            k if k == i => None,
-                            k if k > i => Some(k - 1),
-                            k => Some(k),
-                        });
+                        scene.removed_item(List::Effects, index);
                     }
                 }
             }
         }
-        if let Some(index) = self.duplicated {
+        if let Some(ListEdit::Duplicated(index)) = self.edit {
             let index = index as u32;
             // The copy sits right after the original: later groups move down one, and the copy
             // wears copies of the original's shaders.
@@ -862,12 +930,23 @@ impl BallsChange {
             }
             let copies: Vec<usize> =
                 (0..scene.effects.len()).filter(|&i| scene.effects[i].target == EffectTarget::Group(index)).collect();
-            for (added, i) in copies.into_iter().enumerate() {
-                let mut copy = scene.effects[i + added].clone();
+            for i in copies {
+                let mut copy = scene.effects[i].clone();
                 copy.target = EffectTarget::Group(index + 1);
                 let at = scene.effects.len() as u32;
                 scene.effects.push(copy);
-                scene.copy_effect_tracks((i + added) as u32, at);
+                scene.copy_tracks(List::Effects, i as u32, at);
+            }
+        }
+        if let Some(ListEdit::Swapped(a, b)) = self.edit {
+            for effect in &mut scene.effects {
+                if let EffectTarget::Group(n) = &mut effect.target {
+                    if *n == a as u32 {
+                        *n = b as u32;
+                    } else if *n == b as u32 {
+                        *n = a as u32;
+                    }
+                }
             }
         }
         if let Some((group, shader)) = self.shader {
@@ -885,12 +964,7 @@ impl BallsChange {
                 (Some(id), None) => scene.effects.push(bpe_scene::Effect::new(id).on(target)),
                 (None, Some(i)) => {
                     scene.effects.remove(i);
-                    let i = i as u32;
-                    scene.remap_effect_tracks(|k| match k {
-                        k if k == i => None,
-                        k if k > i => Some(k - 1),
-                        k => Some(k),
-                    });
+                    scene.removed_item(List::Effects, i);
                 }
                 (None, None) => {}
             }
@@ -905,6 +979,7 @@ fn balls(
     selected: &mut Option<usize>,
     looks: &mut ball_look::State,
     look: &Look,
+    (scene_sound, music): (&Sound, &mut music::State),
     roll: &mut Option<Roll>,
     space: bool,
     shaders: &BallShaders,
@@ -966,6 +1041,7 @@ fn balls(
                         if dice_button(ui, "Roll random settings for these balls").clicked() {
                             *roll = Some(Roll::Group(Group::Balls(index)));
                         }
+                        lock_button(ui, Part::Group(Group::Balls(index)));
                     });
                 });
                 ui.add_space(4.0);
@@ -1084,6 +1160,7 @@ fn balls(
                     view3d::spawner_depth(ui, spawner); // 3D (WS4)
                 }
                 ball_look::section(ui, index, spawner.style_mut(), look, looks);
+                music::ball_section(ui, index, spawner.sound_mut(), scene_sound, music);
                 if let Some(pick) = ball_look::shader_row(ui, index, shaders) {
                     change.shader = Some((index, pick));
                 }
@@ -1102,13 +1179,13 @@ fn balls(
         spawners.insert(index + 1, copy);
         *selected = Some(index + 1);
         looks.picked.clear();
-        change.duplicated = Some(index);
+        change.edit = Some(ListEdit::Duplicated(index));
     }
     if let Some(index) = remove {
         spawners.remove(index);
         *selected = None;
         looks.picked.clear();
-        change.removed = Some(index);
+        change.edit = Some(ListEdit::Removed(index));
         change.shader = None;
     }
     ui.horizontal_wrapped(|ui| {
@@ -1126,6 +1203,26 @@ fn balls(
         }
     });
     change
+}
+
+/// A change to the order of a list whose items can have animated settings, so their
+/// keyframes can follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListEdit {
+    Removed(usize),
+    /// A copy was put just after this item.
+    Duplicated(usize),
+    Swapped(usize, usize),
+}
+
+impl ListEdit {
+    pub fn apply(self, scene: &mut Scene, list: List) {
+        match self {
+            ListEdit::Removed(i) => scene.removed_item(list, i),
+            ListEdit::Duplicated(i) => scene.duplicated_item(list, i),
+            ListEdit::Swapped(a, b) => scene.swapped_items(list, a, b),
+        }
+    }
 }
 
 const RING_RADIUS: f32 = 508.0;
@@ -2018,11 +2115,11 @@ mod tests {
         assert_eq!(scene.effects, vec![Effect::new("liquid").on(EffectTarget::Group(2))]);
         // A copy of the group wears a copy, and the groups after it move along.
         scene.effects.push(Effect::new("film").on(EffectTarget::Group(5)));
-        BallsChange { duplicated: Some(2), ..Default::default() }.apply(&mut scene);
+        BallsChange { edit: Some(super::ListEdit::Duplicated(2)), ..Default::default() }.apply(&mut scene);
         let targets: Vec<_> = scene.effects.iter().map(|e| e.target).collect();
         assert_eq!(targets, [EffectTarget::Group(2), EffectTarget::Group(6), EffectTarget::Group(3)]);
         // Removing a group removes its shader, and the groups after it move back.
-        BallsChange { removed: Some(2), ..Default::default() }.apply(&mut scene);
+        BallsChange { edit: Some(super::ListEdit::Removed(2)), ..Default::default() }.apply(&mut scene);
         let targets: Vec<_> = scene.effects.iter().map(|e| e.target).collect();
         assert_eq!(targets, [EffectTarget::Group(5), EffectTarget::Group(2)]);
         // Taking the shader off removes it.

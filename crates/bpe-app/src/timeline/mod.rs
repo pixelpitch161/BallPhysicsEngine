@@ -6,6 +6,7 @@
 //! ruler, each with a header that collapses it.
 
 mod bounces;
+mod ease;
 pub mod lanes;
 mod notes;
 /// WS5: settings that pulse with the music.
@@ -546,10 +547,39 @@ impl Timeline {
                     self.selected = Some((property.clone(), index));
                     ui.label(egui::RichText::new("Change towards the next keyframe").small().color(theme::MUTED));
                     for ease in Ease::ALL {
-                        if ui.radio(key.ease == ease, ease.name()).clicked() {
+                        if ease::choice(ui, ease, key.ease) {
                             action = Some(KeyAction::Ease(index, ease));
                             ui.close();
                         }
+                    }
+                    let own = matches!(key.ease, Ease::Curve(_));
+                    ui.horizontal(|ui| {
+                        ease::icon(
+                            ui,
+                            Ease::Curve(key.ease.as_curve()),
+                            if own { theme::ACCENT_TEXT } else { theme::MUTED },
+                        );
+                        ui.menu_button(if own { "Own curve (editing)" } else { "Own curve…" }, |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Drag the two handles. Steep parts change fast, flat parts slowly.",
+                                )
+                                .small()
+                                .color(theme::MUTED),
+                            );
+                            let mut curve = key.ease.as_curve();
+                            if ease::editor(ui, &mut curve) {
+                                action = Some(KeyAction::Ease(index, Ease::Curve(curve)));
+                            }
+                        });
+                    });
+                    if ui
+                        .button("Use this curve for the whole row")
+                        .on_hover_text("Every keyframe of this setting eases the same way")
+                        .clicked()
+                    {
+                        action = Some(KeyAction::EaseAll(key.ease));
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Go to this keyframe").clicked() {
@@ -564,6 +594,7 @@ impl Timeline {
             }
             match action {
                 Some(KeyAction::Ease(index, ease)) => scene.animation[row].keys[index].ease = ease,
+                Some(KeyAction::EaseAll(ease)) => scene.animation[row].keys.iter_mut().for_each(|k| k.ease = ease),
                 Some(KeyAction::Delete(index)) => {
                     self.selected = Some((property.clone(), index));
                     self.delete_selected(scene);
@@ -617,6 +648,7 @@ impl Timeline {
 
 enum KeyAction {
     Ease(usize, Ease),
+    EaseAll(Ease),
     Delete(usize),
 }
 

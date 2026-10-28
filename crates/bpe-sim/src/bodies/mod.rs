@@ -189,7 +189,8 @@ pub(crate) fn step(
     state.impacts.clear();
     state.world.take_impacts(time, resting, &mut state.impacts);
     for &(body, position, speed, ball) in &state.impacts {
-        events.push(Event { time, ball, position, depth: 0.0, speed, kind: EventKind::Soft { body } });
+        let group = sim.balls.get(ball as usize).map_or(crate::NO_GROUP, |b| b.group);
+        events.push(Event { time, ball, group, position, depth: 0.0, speed, kind: EventKind::Soft { body } });
     }
 }
 

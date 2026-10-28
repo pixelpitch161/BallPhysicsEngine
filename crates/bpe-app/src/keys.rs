@@ -8,7 +8,7 @@
 
 use crate::inspector::Tab;
 use crate::theme;
-use bpe_scene::{Property, SAME_TIME, Scene, Track, Value};
+use bpe_scene::{List, Property, SAME_TIME, Scene, Track, Value};
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,6 +68,47 @@ pub fn take_requests(ctx: &egui::Context) -> Vec<Request> {
 
 pub fn request(ctx: &egui::Context, request: Request) {
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<Request>>(requests_id()).push(request));
+}
+
+/// What the blocks on the open node canvas belong to, so their settings can be keyframed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Canvas {
+    /// The rule set at this index in the scene's rules.
+    Rule(u32),
+    /// A node effect: a block's value is keyframed by making it one of the effect's sliders.
+    Shader,
+}
+
+fn canvas_id() -> egui::Id {
+    egui::Id::unique("keyframe canvas")
+}
+
+fn shader_keys_id() -> egui::Id {
+    egui::Id::unique("keyframe shader inputs")
+}
+
+/// Tells the node canvas drawn next what its blocks belong to.
+pub fn set_canvas(ctx: &egui::Context, canvas: Option<Canvas>) {
+    ctx.data_mut(|d| d.insert_temp(canvas_id(), canvas));
+}
+
+pub fn canvas(ctx: &egui::Context) -> Option<Canvas> {
+    ctx.data(|d| d.get_temp::<Option<Canvas>>(canvas_id())).flatten()
+}
+
+/// Asks for a keyframe on a node effect block's value, as (block id, input name), once it has
+/// become one of the effect's sliders.
+pub fn request_shader_key(ctx: &egui::Context, node: u32, input: String) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(u32, String)>>(shader_keys_id()).push((node, input)));
+}
+
+pub fn take_shader_keys(ctx: &egui::Context) -> Vec<(u32, String)> {
+    ctx.data_mut(|d| d.remove_temp::<Vec<(u32, String)>>(shader_keys_id())).unwrap_or_default()
+}
+
+/// Whether a setting is animated, from what [`publish`] said this frame.
+pub fn is_animated(ctx: &egui::Context, property: &Property) -> bool {
+    ctx.data(|d| d.get_temp::<Arc<Status>>(status_id())).is_some_and(|s| s.animated.contains_key(property))
 }
 
 /// Whether a setting is not animated, animated, or has a keyframe at the playhead.
@@ -185,12 +226,23 @@ pub fn stop_animating(scene: &mut Scene, property: &Property, time: f32) {
 /// scene: an animated setting that changed gets a keyframe at `time`, and every animated
 /// setting gets its plain value from `base` again.
 pub fn write_back(base: &Scene, shown: &Scene, mut edited: Scene, time: f32) -> Scene {
-    // When effects were added, removed or reordered, effect indices no longer line up between
-    // the copies, so effect settings are left as they are this frame.
-    let restructured = shown.animation != edited.animation || shown.effects.len() != edited.effects.len();
+    // When effects, ball groups, captions or rules were added, removed or reordered, indices no
+    // longer line up between the copies, so their settings are left as they are this frame.
+    let tracks_changed = shown.animation != edited.animation;
+    let lengths = |s: &Scene| [s.effects.len(), s.spawners.len(), s.captions.len(), s.logic.len()];
+    let (before, after) = (lengths(shown), lengths(&edited));
+    let restructured = |list: List| {
+        let i = match list {
+            List::Effects => 0,
+            List::BallGroups => 1,
+            List::Captions => 2,
+            List::Rules => 3,
+        };
+        tracks_changed || before[i] != after[i]
+    };
     let properties: Vec<Property> = edited.animation.iter().map(|t| t.property.clone()).collect();
     for property in properties {
-        if restructured && property.effect().is_some() {
+        if property.item().is_some_and(|(list, _)| restructured(list)) {
             continue;
         }
         let now = property.get(&edited);
@@ -256,6 +308,57 @@ pub fn name(property: &Property, scene: &Scene) -> String {
         Property::LightBrightness => "Light brightness".into(),
         Property::Glass => "Glass".into(),
         Property::EdgeGlow => "Edge glow".into(),
+        Property::SongVolume => "Song volume".into(),
+        Property::SongDucking => "Song dip under hits".into(),
+        Property::StereoWidth => "Stereo width".into(),
+        Property::QuietestHit => "Quietest hit heard".into(),
+        Property::LoudestHit => "Full volume at".into(),
+        Property::Ball(i, setting) => {
+            let group = match scene.spawners.get(*i as usize) {
+                Some(bpe_scene::Spawner::Grid { .. }) => "Block of balls",
+                Some(bpe_scene::Spawner::Single { .. }) => "Single ball",
+                Some(bpe_scene::Spawner::Stream { .. }) => "Stream of balls",
+                None => "Missing balls",
+            };
+            format!("{group} {} {}", i + 1, setting.name())
+        }
+        Property::Caption(i, setting) => {
+            let caption = scene.captions.get(*i as usize).map_or("Missing caption".to_string(), |c| {
+                let name = c.default_name();
+                let name = if c.name.trim().is_empty() { name } else { c.name.clone() };
+                format!("\"{}\"", short(&name, 18))
+            });
+            format!("{caption} {}", setting.name())
+        }
+        Property::Rule(rule, id, param) => {
+            let Some(graph) = scene.logic.get(*rule as usize) else { return "Missing rule".into() };
+            let spec = graph.node(*id).and_then(|n| bpe_graph::Catalog::spec(bpe_sim::rules::catalog(), &n.kind));
+            let block = spec.map_or("block".to_string(), |s| s.title.to_lowercase());
+            let label = spec.and_then(|s| s.param_spec(param)).map_or(param.clone(), |p| p.label.to_lowercase());
+            format!("{}: {block} {label}", short(&graph.name, 20))
+        }
+    }
+}
+
+/// `text` cut to `most` letters, with "…" when cut.
+fn short(text: &str, most: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= most {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(most.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// A rule block setting's value when the block leaves it at the catalog's default.
+pub fn rule_default(scene: &Scene, property: &Property) -> Option<Value> {
+    let Property::Rule(rule, id, name) = property else { return None };
+    let node = scene.logic.get(*rule as usize)?.node(*id)?;
+    let spec = bpe_graph::Catalog::spec(bpe_sim::rules::catalog(), &node.kind)?;
+    match spec.param_spec(name)?.default {
+        bpe_graph::Param::Number(v) => Some(Value::Number(v)),
+        bpe_graph::Param::Color(c) => Some(Value::Color(bpe_scene::Color::from_linear(c))),
+        _ => None,
     }
 }
 
@@ -264,6 +367,14 @@ pub fn tab(property: &Property) -> Tab {
     match property {
         Property::SpeedGain => Tab::Bounces,
         Property::EffectAmount(_) | Property::EffectParam(..) => Tab::Effects,
+        Property::Ball(..) => Tab::Balls,
+        Property::Caption(..) => Tab::Text,
+        Property::Rule(..) => Tab::Rules,
+        Property::SongVolume
+        | Property::SongDucking
+        | Property::StereoWidth
+        | Property::QuietestHit
+        | Property::LoudestHit => Tab::Sound,
         Property::BackgroundTop
         | Property::BackgroundBottom
         | Property::TrailWidth
@@ -375,5 +486,54 @@ mod tests {
         let twice = Scene { effects: vec![Effect::new("echo"), Effect::new("film"), Effect::new("echo")], ..scene };
         assert_eq!(name(&Property::EffectAmount(2), &twice), "Echo 2 amount");
         assert_eq!(name(&Property::EffectAmount(1), &twice), "Film amount");
+    }
+
+    #[test]
+    fn new_settings_have_names_and_tabs() {
+        let mut scene = Scene::default();
+        scene.captions.push(bpe_scene::Caption::new("Can it escape?", bpe_scene::CaptionStyle::Hook));
+        scene.logic.push(bpe_sim::rules::recipes().remove(0).graph);
+        let flash = scene.logic[0].nodes.iter().find(|n| n.kind == "flash").unwrap().id;
+        let cases = [
+            (Property::Ball(0, bpe_scene::BallSetting::Glow), Tab::Balls, "1 glow"),
+            (Property::Caption(0, bpe_scene::CaptionSetting::Size), Tab::Text, "\"Can it escape?\" size"),
+            (Property::Rule(0, flash, "strength".into()), Tab::Rules, "Escape and multiply: flash the screen strength"),
+            (Property::SongVolume, Tab::Sound, "Song volume"),
+        ];
+        for (property, want_tab, part) in cases {
+            let name = name(&property, &scene);
+            assert!(name.contains(part), "{name}");
+            assert_eq!(tab(&property), want_tab, "{property:?}");
+        }
+        assert_eq!(name(&Property::Caption(5, bpe_scene::CaptionSetting::X), &scene), "Missing caption left and right");
+        // A rule setting left at its default starts from the catalog's value.
+        let strength = Property::Rule(0, flash, "strength".into());
+        let mut plain = scene.clone();
+        plain.logic[0].node_mut(flash).unwrap().params.remove("strength");
+        assert!(matches!(rule_default(&plain, &strength), Some(Value::Number(_))));
+        apply_requests(&mut plain, vec![Request::Toggle(strength.clone())], 1.0, |p| rule_default(&scene, p));
+        assert_eq!(plain.track(&strength).unwrap().keys.len(), 1);
+    }
+
+    #[test]
+    fn editing_an_animated_ball_look_adds_a_keyframe() {
+        let mut base = Scene::default();
+        *base.spawners[0].style_mut() = Some(bpe_scene::BallStyle::default());
+        let glow = Property::Ball(0, bpe_scene::BallSetting::Glow);
+        apply_requests(&mut base, vec![Request::Toggle(glow.clone())], 0.0, |_| None);
+        let shown = base.at_time(2.0);
+        let mut edited = shown.clone();
+        edited.spawners[0].style_mut().as_mut().unwrap().glow = 0.7;
+        let result = write_back(&base, &shown, edited, 2.0);
+        assert_eq!(result.track(&glow).unwrap().keys.len(), 2);
+        assert_eq!(result.at_time(2.0).spawners[0].style().unwrap().glow, 0.7);
+        assert_eq!(result.spawners[0].style().unwrap().glow, 0.0, "the plain value stays");
+
+        // A frame that removed a ball group leaves ball settings alone.
+        let shown = result.at_time(2.0);
+        let mut edited = shown.clone();
+        edited.spawners.remove(0);
+        edited.removed_item(List::BallGroups, 0);
+        assert_eq!(write_back(&result, &shown, edited.clone(), 2.0), edited);
     }
 }

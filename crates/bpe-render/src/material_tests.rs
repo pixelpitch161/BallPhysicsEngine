@@ -32,6 +32,7 @@ fn scene(target: EffectTarget) -> Scene {
         depth: 0.0,
         depth_velocity: 0.0,
         style: None,
+        sound: None,
     };
     scene.spawners = vec![ball(LEFT_BALL), ball(RIGHT_BALL)];
     let mut b = Builder::new("Green");

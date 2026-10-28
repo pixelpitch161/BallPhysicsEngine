@@ -298,13 +298,13 @@ impl SpaceFrame {
         for (index, ball) in sim.balls().iter().enumerate() {
             // Removed balls keep their slot, so ball numbers in events still line up, but draw nothing.
             let radius = if ball.alive { ball.radius } else { 0.0 };
-            match style_of(scene, ball.group) {
-                None => {
-                    self.balls.push(SpaceBall::classic(ball.position, radius, ball.color).tagged(ball.group, index))
-                }
+            match style_of(scene, ball.group as u32) {
+                None => self
+                    .balls
+                    .push(SpaceBall::classic(ball.position, radius, ball.color).tagged(ball.group as u32, index)),
                 Some(style) => {
-                    let drawn =
-                        SpaceBall::styled(ball.position, radius, ball.color, style, now).tagged(ball.group, index);
+                    let drawn = SpaceBall::styled(ball.position, radius, ball.color, style, now)
+                        .tagged(ball.group as u32, index);
                     if style.glow > 0.0 && radius > 0.0 && style.opacity > 0.0 {
                         // The halo reaches out like the 2D one: about 2.5 glow sizes past the edge.
                         let size = radius * (1.0 + style.glow_size.max(0.05) * 2.5);
@@ -355,7 +355,7 @@ impl SpaceFrame {
             if !ball.alive {
                 continue;
             }
-            let (samples, half_width, c, opacity) = match style_of(scene, ball.group) {
+            let (samples, half_width, c, opacity) = match style_of(scene, ball.group as u32) {
                 None if classic => (classic_samples, ball.radius * look.trail_width, ball.color, look.trail_opacity),
                 Some(style) if style.trail_seconds > 0.0 && style.trail_opacity > 0.0 && style.trail_width > 0.0 => {
                     let (fill, second, outline) = crate::frame::style_colors(style, ball.color, time);

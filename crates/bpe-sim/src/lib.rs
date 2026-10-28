@@ -18,7 +18,7 @@ pub mod space;
 
 pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring_outline};
 pub use contacts::Touch;
-pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
+pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, NO_GROUP, WallHit};
 
 use bpe_music::AudioFeatures;
 use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Placement, Scene, Spawner, Vec2};
@@ -494,7 +494,7 @@ impl Simulation {
             if !ball.alive {
                 continue;
             }
-            let prev = self.previous[index];
+            let (prev, group) = (self.previous[index], ball.group);
             // The closed arena is checked here, with copies made before the loop, so the
             // compiler can work out a box's or polygon's directions once instead of per ball.
             let closed_hit = closed.as_ref().and_then(|o| arena::collide_closed(ball, o, arena_state, restitution));
@@ -504,12 +504,20 @@ impl Simulation {
                 self.other_arena_hit(ball, prev, &frame, rings, closed_hit)
             };
             if let Some((position, speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
-                found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind: EventKind::Wall });
+                found.push(Event {
+                    time,
+                    ball: index as u32,
+                    group,
+                    position,
+                    depth: 0.0,
+                    speed,
+                    kind: EventKind::Wall,
+                });
             }
             self.bounce_obstacles(ball, prev, restitution, |part, hit| {
                 if let Some((position, speed)) = hit.filter(|(_, speed)| *speed >= resting) {
                     let kind = EventKind::Obstacle(part as u32);
-                    found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind });
+                    found.push(Event { time, ball: index as u32, group, position, depth: 0.0, speed, kind });
                 }
             });
             for ring in rings {
@@ -520,7 +528,7 @@ impl Simulation {
                     let speed = ball.velocity.length();
                     let kind = EventKind::Escape(k as u32);
                     let position = ball.position;
-                    found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind });
+                    found.push(Event { time, ball: index as u32, group, position, depth: 0.0, speed, kind });
                 }
             }
         }
@@ -797,7 +805,8 @@ impl Simulation {
     fn spawn(&mut self, ball: Ball, time: f64, events: &mut Vec<Event>) {
         let index = self.balls.len() as u32;
         let (position, speed) = (ball.position, ball.velocity.length());
-        events.push(Event { time, ball: index, position, depth: 0.0, speed, kind: EventKind::Spawn });
+        let group = ball.group;
+        events.push(Event { time, ball: index, group, position, depth: 0.0, speed, kind: EventKind::Spawn });
         self.add_ball(ball);
     }
 
@@ -806,9 +815,17 @@ impl Simulation {
         let Some(ball) = self.balls.get_mut(index).filter(|b| b.alive) else { return };
         ball.alive = false;
         self.removed += 1;
-        let position = ball.position;
+        let (position, group) = (ball.position, ball.group);
         ball.velocity = Vec2::ZERO;
-        events.push(Event { time, ball: index as u32, position, depth: 0.0, speed: 0.0, kind: EventKind::Remove });
+        events.push(Event {
+            time,
+            ball: index as u32,
+            group,
+            position,
+            depth: 0.0,
+            speed: 0.0,
+            kind: EventKind::Remove,
+        });
     }
 
     /// Balls still in play.
@@ -831,6 +848,9 @@ impl Simulation {
             let song = self.inputs.music.as_deref().map(|music| move |t: f64| music_levels(music, t));
             let audio = Audio { song: song.as_ref().map(|f| f as Listener), mix: None };
             self.scene.apply_animation_with(time as f32, true, &audio);
+            if self.scene.animates(bpe_scene::List::Rules) {
+                self.rules.retune(&self.scene);
+            }
         }
         let motion = &self.scene.arena_motion;
         self.arena.spin = motion.spin.to_radians();
@@ -1245,6 +1265,39 @@ mod tests {
     use grid::BallGrid;
 
     #[test]
+    fn events_say_which_ball_group_they_came_from() {
+        let mut scene = Scene::default();
+        scene.video.duration = 8.0;
+        scene.rules.spawn_per_hit = 1;
+        scene.rules.max_balls = 30;
+        let ball = |x: f32| Spawner::Single {
+            position: Vec2::new(x, 0.0),
+            velocity: Vec2::new(350.0, -250.0),
+            radius: 20.0,
+            color: Color::WHITE,
+            depth: 0.0,
+            depth_velocity: 0.0,
+            style: None,
+            sound: None,
+        };
+        scene.spawners = vec![ball(-200.0), ball(200.0)];
+        for scene in [scene.clone(), Scene { view: bpe_scene::View::Space(Default::default()), ..scene }] {
+            let events = collect_wall_hits(&scene);
+            // Balls split off another keep its group, so ball numbers past the first two follow
+            // their parents; every event of one ball names the same group.
+            let mut groups = std::collections::HashMap::new();
+            for e in events.iter().filter(|e| e.ball_index().is_some()) {
+                assert!(e.group < 2);
+                assert_eq!(*groups.entry(e.ball).or_insert(e.group), e.group);
+            }
+            assert_eq!(groups.get(&0), Some(&0));
+            assert_eq!(groups.get(&1), Some(&1));
+            assert!(groups.len() > 2, "{}", groups.len());
+            assert!(events.iter().filter(|e| e.ball_index().is_none()).all(|e| e.group == NO_GROUP));
+        }
+    }
+
+    #[test]
     fn counts_match_a_plain_sum_across_tally_blocks_and_seeks() {
         let scene = Scene::presets().into_iter().find(|p| p.name == "Plinko").unwrap().scene;
         let mut playback = Playback::new(&scene);
@@ -1489,6 +1542,7 @@ mod tests {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             },
             Spawner::Single {
                 position: Vec2::new(50.0, 0.0),
@@ -1498,6 +1552,7 @@ mod tests {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             },
         ];
         let mut sim = Simulation::new(&scene);

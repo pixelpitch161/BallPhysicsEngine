@@ -91,7 +91,8 @@ pub fn take_requests(ctx: &egui::Context) -> Vec<Request> {
 
 /// Whether this setting can pulse with the music: every setting that can be animated can.
 pub fn available(target: &Target) -> bool {
-    target.property.is_some()
+    // Sound settings pulsing with the soundtrack would be following themselves.
+    target.property.as_ref().is_some_and(|p| !p.affects_sound())
 }
 
 /// The submenu: which part of the music to follow, plus the pulse's settings once it has one.
@@ -466,7 +467,7 @@ mod tests {
 
     #[test]
     fn every_setting_can_pulse() {
-        let target = Target { property: Some(Property::Exposure), label: String::new() };
+        let target = Target { property: Some(Property::Exposure), label: String::new(), lock: None };
         assert!(available(&target));
         assert!(!available(&Target::default()));
         for property in Property::PLAIN {

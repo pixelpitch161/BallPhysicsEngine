@@ -103,6 +103,7 @@ pub(crate) fn ball_ball(sim: &mut Simulation, dt: f32, time: f64, closed: Option
         events.push(Event {
             time,
             ball: touch.a,
+            group: sim.balls[a].group,
             position: touch.position,
             depth: 0.0,
             speed: touch.speed,
@@ -122,11 +123,12 @@ fn pockets(sim: &mut Simulation, time: f64, events: &mut Vec<Event>) {
         let pocket =
             sim.scene.physics.contact.pockets.iter().position(|p| ball.position.distance(p.position) < p.radius);
         if let Some(k) = pocket {
-            let speed = ball.velocity.length();
+            let (speed, group) = (ball.velocity.length(), ball.group);
             let position = sim.scene.physics.contact.pockets[k].position;
             events.push(Event {
                 time,
                 ball: index as u32,
+                group,
                 position,
                 depth: 0.0,
                 speed,

@@ -27,11 +27,12 @@ pub struct Ball3 {
     /// Linear-light RGBA.
     pub color: [f32; 4],
     pub wall_hits: u32,
+    /// Which spawner made the ball, by its place in the scene's list. Split balls keep their
+    /// parent's.
+    pub group: u16,
     /// False once a rule removed the ball. It keeps its place in the list so ball numbers in
     /// events stay valid.
     pub alive: bool,
-    /// Index of the spawner that made it, which decides its look. Split balls keep their parent's.
-    pub group: u32,
 }
 
 /// One of the tunnel's rings at the current moment.
@@ -393,7 +394,8 @@ impl SpaceSimulation {
                 Touch::Ball(other) => (EventKind::Ball(other), 0),
             };
             spawns.extend((0..children).map(|_| ball_index));
-            events.push(event(time, ball_index, position, speed, kind));
+            let group = ball.group;
+            events.push(event(time, ball_index, group, position, speed, kind));
         }
         for parent in spawns {
             if self.alive_count() >= self.scene.rules.max_balls as usize {
@@ -407,7 +409,7 @@ impl SpaceSimulation {
     /// Adds a ball after the start, with its spawn event.
     fn add_ball(&mut self, ball: Ball3, time: f64, events: &mut Vec<Event>) {
         let index = self.balls.len() as u32;
-        events.push(event(time, index, ball.position, ball.velocity.length(), EventKind::Spawn));
+        events.push(event(time, index, ball.group, ball.position, ball.velocity.length(), EventKind::Spawn));
         self.trail.extend(std::iter::repeat_n(ball.position, self.trail_len));
         self.balls.push(ball);
     }
@@ -471,8 +473,8 @@ impl SpaceSimulation {
     }
 }
 
-fn event(time: f64, ball: u32, position: Vec3, speed: f32, kind: EventKind) -> Event {
-    Event { time, ball, position: Vec2::new(position.x, position.y), depth: position.z, speed, kind }
+fn event(time: f64, ball: u32, group: u16, position: Vec3, speed: f32, kind: EventKind) -> Event {
+    Event { time, ball, group, position: Vec2::new(position.x, position.y), depth: position.z, speed, kind }
 }
 
 /// The harder of two hits.
@@ -619,8 +621,8 @@ fn split_ball(parent: &Ball3, index: usize, spread: f32) -> Ball3 {
         radius: parent.radius,
         color: rotate_hue(parent.color, 137.5f32.to_radians()),
         wall_hits: 0,
-        alive: true,
         group: parent.group,
+        alive: true,
     }
 }
 
@@ -639,25 +641,24 @@ fn spawn_plan(scene: &Scene, space: &Space, steps_per_second: u32) -> Vec<(u64, 
     let reach = space.container.size() * 0.5;
     let scatter = space.scatter.clamp(0.0, 1.0);
     let mut plan = Vec::new();
-    let group = std::cell::Cell::new(0);
-    let mut add = |step: u64, position: Vec2, velocity: Vec2, radius: f32, color: [f32; 4], depth: (f32, f32)| {
-        let seed = plan.len() as u64 * 7 + 0xd3;
-        let z = depth.0 + unit_noise(seed) * reach * scatter;
-        let vz = depth.1 + unit_noise(seed + 1) * velocity.length() * scatter;
-        let ball = Ball3 {
-            position: position.extend(z),
-            velocity: velocity.extend(vz),
-            radius,
-            color,
-            wall_hits: 0,
-            alive: true,
-            group: group.get(),
+    let mut add =
+        |step: u64, position: Vec2, velocity: Vec2, radius: f32, color: [f32; 4], (depth, group): ((f32, f32), u16)| {
+            let seed = plan.len() as u64 * 7 + 0xd3;
+            let z = depth.0 + unit_noise(seed) * reach * scatter;
+            let vz = depth.1 + unit_noise(seed + 1) * velocity.length() * scatter;
+            let ball = Ball3 {
+                position: position.extend(z),
+                velocity: velocity.extend(vz),
+                radius,
+                color,
+                wall_hits: 0,
+                group,
+                alive: true,
+            };
+            plan.push((step, ball));
         };
-        plan.push((step, ball));
-    };
-    for (index, spawner) in scene.spawners.iter().enumerate() {
-        group.set(index as u32);
-        let depth = spawner_depth(spawner);
+    for (group, spawner) in scene.spawners.iter().enumerate() {
+        let depth = (spawner_depth(spawner), group.min(u16::MAX as usize) as u16);
         match spawner {
             Spawner::Grid { center, columns, rows, spacing, radius, velocity, gradient, .. } => {
                 let size = Vec2::new(columns.saturating_sub(1) as f32, rows.saturating_sub(1) as f32) * *spacing;
@@ -733,6 +734,10 @@ impl crate::rules::RuleBalls for SpaceSimulation {
         self.balls[i].radius
     }
 
+    fn group(&self, i: usize) -> u16 {
+        self.balls[i].group
+    }
+
     fn set_radius(&mut self, i: usize, radius: f32) {
         self.balls[i].radius = radius.max(0.5);
     }
@@ -740,7 +745,7 @@ impl crate::rules::RuleBalls for SpaceSimulation {
     fn remove(&mut self, i: usize, time: f64, events: &mut Vec<Event>) {
         let Some(ball) = self.balls.get_mut(i).filter(|b| b.alive) else { return };
         ball.alive = false;
-        events.push(event(time, i as u32, ball.position, 0.0, EventKind::Remove));
+        events.push(event(time, i as u32, ball.group, ball.position, 0.0, EventKind::Remove));
     }
 
     fn spawn_from(&mut self, parent: usize, spread: f32, at: Option<Vec2>, time: f64, events: &mut Vec<Event>) -> bool {
@@ -956,7 +961,16 @@ mod tests {
     }
 
     fn single(position: Vec2, velocity: Vec2, radius: f32, depth: f32, depth_velocity: f32) -> Spawner {
-        Spawner::Single { position, velocity, radius, color: Color::WHITE, depth, depth_velocity, style: None }
+        Spawner::Single {
+            position,
+            velocity,
+            radius,
+            color: Color::WHITE,
+            depth,
+            depth_velocity,
+            style: None,
+            sound: None,
+        }
     }
 
     fn run(scene: &Scene, seconds: f64) -> (SpaceSimulation, Vec<Event>) {
@@ -1062,6 +1076,7 @@ mod tests {
             depth: 0.0,
             depth_velocity: 0.0,
             style: None,
+            sound: None,
         }];
         scene.rules.spawn_per_hit = 1;
         scene.rules.max_balls = 40;

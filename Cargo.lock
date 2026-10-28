@@ -233,6 +233,8 @@ dependencies = [
  "egui-wgpu",
  "egui_kittest",
  "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

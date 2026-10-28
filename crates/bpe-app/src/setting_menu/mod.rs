@@ -16,6 +16,8 @@ pub struct Target {
     pub property: Option<Property>,
     /// The setting's name as shown.
     pub label: String,
+    /// Where the setting lives in the scene, when dice can change it.
+    pub lock: Option<crate::setting_locks::Path>,
 }
 
 /// Fills an open context menu for `target`. Returns true when "Reset to default" was clicked;
@@ -31,6 +33,9 @@ pub fn items(ui: &mut Ui, target: &Target, can_reset: bool) -> bool {
     {
         keys::request(ui.ctx(), keys::Request::Toggle(property.clone()));
         ui.close();
+    }
+    if let Some(path) = &target.lock {
+        crate::setting_locks::menu_item(ui, path);
     }
     if pulse::available(target) {
         ui.menu_button("Pulse with music", |ui| pulse::menu(ui, target));

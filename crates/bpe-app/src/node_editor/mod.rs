@@ -1228,7 +1228,42 @@ fn param_row(ui: &mut egui::Ui, node: &mut Node, spec: &ParamSpec, wired: bool) 
         ui.add(egui::Label::new(egui::RichText::new(&spec.label).size(12.5).color(theme::MUTED)).sense(Sense::click()));
     let label = if spec.help.is_empty() { label } else { label.on_hover_text(&spec.help) };
     let exposed = node.exposed.contains(&spec.name);
+    let canvas = crate::keys::canvas(ui.ctx());
+    let keyframeable = match (canvas, &spec.default) {
+        (Some(crate::keys::Canvas::Rule(_)), Param::Number(_) | Param::Color(_)) => true,
+        (Some(crate::keys::Canvas::Shader), Param::Number(_)) => !wired,
+        _ => false,
+    };
+    let animated = match canvas {
+        Some(crate::keys::Canvas::Rule(rule)) => {
+            crate::keys::is_animated(ui.ctx(), &bpe_scene::Property::Rule(rule, node.id, spec.name.clone()))
+        }
+        _ => false,
+    };
+    if animated {
+        let at = label.rect.left_center() - vec2(6.0, 0.0);
+        crate::keys::paint_diamond(ui.painter(), at, 3.5, crate::keys::KeyState::Animated, theme::ACCENT_TEXT);
+    }
     label.context_menu(|ui| {
+        if keyframeable
+            && ui
+                .button("Keyframe at the playhead")
+                .on_hover_text("Animate this value: it changes over the video, shown as a row on the timeline")
+                .clicked()
+        {
+            match canvas {
+                Some(crate::keys::Canvas::Rule(rule)) => crate::keys::request(
+                    ui.ctx(),
+                    crate::keys::Request::Toggle(bpe_scene::Property::Rule(rule, node.id, spec.name.clone())),
+                ),
+                _ => {
+                    // A node effect's value is animated as one of the effect's sliders.
+                    node.exposed.insert(spec.name.clone());
+                    crate::keys::request_shader_key(ui.ctx(), node.id, spec.name.clone());
+                }
+            }
+            ui.close();
+        }
         let text = if exposed { "Hide from the Rules tab" } else { "Show in the Rules tab" };
         if ui.button(text).clicked() {
             if exposed {

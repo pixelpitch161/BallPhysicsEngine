@@ -30,6 +30,9 @@ pub struct State {
     /// The name being typed, until it is confirmed.
     rename: Option<String>,
     note: Option<String>,
+    /// Block values to keyframe once the effect has been rebuilt with them as sliders, as (block
+    /// id, input name, frames waited).
+    pending_keys: Vec<(u32, String, u32)>,
 }
 
 impl Default for State {
@@ -41,6 +44,7 @@ impl Default for State {
             visible: Vec::new(),
             rename: None,
             note: None,
+            pending_keys: Vec::new(),
         }
     }
 }
@@ -117,6 +121,9 @@ pub fn show(
     };
     library.sync_graphs(&scene.shader_graphs);
     let info = library.get(&fx::graph::effect_id(&scene.shader_graphs[index].name));
+    if !state.pending_keys.is_empty() {
+        keyframe_new_sliders(ui.ctx(), scene, index, info.as_deref(), state);
+    }
 
     egui::Panel::left("shader side")
         .resizable(false)
@@ -144,7 +151,10 @@ pub fn show(
     let canvas = ui.available_rect_before_wrap();
     let live = Live { tiles, problems };
     let graph = &mut scene.shader_graphs[index];
+    crate::keys::set_canvas(ui.ctx(), Some(crate::keys::Canvas::Shader));
     state.editor.show(ui, graph, catalog(), Some(&live));
+    crate::keys::set_canvas(ui.ctx(), None);
+    state.pending_keys.extend(crate::keys::take_shader_keys(ui.ctx()).into_iter().map(|(n, i)| (n, i, 0)));
     state.visible = graph
         .nodes
         .iter()
@@ -376,6 +386,39 @@ fn welcome(ui: &mut Ui, scene: &mut Scene, state: &mut State, library: &EffectLi
     });
 }
 
+/// Keyframes block values that were asked for, once the effect has been rebuilt with them
+/// as sliders.
+fn keyframe_new_sliders(
+    ctx: &egui::Context,
+    scene: &Scene,
+    index: usize,
+    info: Option<&EffectInfo>,
+    state: &mut State,
+) {
+    let id = fx::graph::effect_id(&scene.shader_graphs[index].name);
+    let card = scene.effects.iter().position(|e| e.shader == id);
+    let sliders = info.and_then(|i| i.graph.as_ref()).and_then(|g| g.generated.as_ref()).map(|g| &g.sliders);
+    let mut note = None;
+    state.pending_keys.retain_mut(|(node, input, waited)| {
+        *waited += 1;
+        let Some(slider) = sliders.and_then(|s| s.iter().find(|s| s.node == *node && s.input == *input)) else {
+            // The effect is still being rebuilt, or the value can't be a slider.
+            return *waited < 120;
+        };
+        match card {
+            Some(card) => crate::keys::request(
+                ctx,
+                crate::keys::Request::Toggle(bpe_scene::Property::EffectParam(card as u32, slider.name.clone())),
+            ),
+            None => note = Some("Add this effect to the video first: its keyframes live on the effect.".to_string()),
+        }
+        false
+    });
+    if note.is_some() {
+        state.note = note;
+    }
+}
+
 /// Beside the canvas: the effect's sliders, the selected block's help, and problems.
 fn side(ui: &mut Ui, scene: &mut Scene, index: usize, info: Option<&EffectInfo>, state: &State) {
     let name = scene.shader_graphs[index].name.clone();
@@ -395,7 +438,10 @@ fn side(ui: &mut Ui, scene: &mut Scene, index: usize, info: Option<&EffectInfo>,
             for param in &info.params {
                 let stored = effect.params.get(&param.name).copied().filter(|v| v.is_finite());
                 let mut value = stored.unwrap_or(param.default);
-                ui.label(crate::inspector::pretty_name(&param.name)).on_hover_text(&param.help);
+                ui.horizontal(|ui| {
+                    ui.label(crate::inspector::pretty_name(&param.name)).on_hover_text(&param.help);
+                    crate::keys::diamond(ui, bpe_scene::Property::EffectParam(card as u32, param.name.clone()));
+                });
                 let range = param.min.min(param.max)..=param.max.max(param.min);
                 let changed = match param.kind {
                     fx::ParamKind::Toggle => {

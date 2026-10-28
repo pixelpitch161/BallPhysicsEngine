@@ -10,7 +10,7 @@
 
 use crate::{Ball, Event, EventKind, NO_BALL};
 use bpe_graph::{Catalog, Graph, Node, NodeSpec, Param, ParamSpec, PinSpec, PinType, SpecList};
-use bpe_scene::{Scene, Vec2};
+use bpe_scene::{Property, Scene, Vec2};
 use std::sync::{Arc, LazyLock};
 
 /// At most this many actions run in one step, however many rules fire, so a rule that
@@ -48,6 +48,8 @@ pub trait RuleBalls {
     fn color(&self, i: usize) -> [f32; 4];
     fn set_color(&mut self, i: usize, color: [f32; 4]);
     fn radius(&self, i: usize) -> f32;
+    /// Which spawner made the ball, as [`crate::Ball::group`].
+    fn group(&self, i: usize) -> u16;
     fn set_radius(&mut self, i: usize, radius: f32);
     /// Takes the ball out and records a [`EventKind::Remove`] event.
     fn remove(&mut self, i: usize, time: f64, events: &mut Vec<Event>);
@@ -441,7 +443,7 @@ pub fn recipes() -> Vec<Recipe> {
 // ---------- compiling ----------
 
 /// One block, ready to run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Block {
     kind: Kind,
     rule: u16,
@@ -458,7 +460,7 @@ struct Block {
     outputs: Vec<Vec<u32>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Program {
     blocks: Vec<Block>,
     starts: Vec<u32>,
@@ -721,6 +723,44 @@ impl RuleState {
         program.outputs.get(program.blocks[index].pick)
     }
 
+    /// Puts the values of keyframed rule settings in `scene` (the scene at this moment) into the
+    /// compiled rules, so they take effect from now on. Rules aren't compiled again: only the
+    /// numbers and colours of the blocks with animated settings change.
+    pub fn retune(&mut self, scene: &Scene) {
+        let catalog = catalog();
+        let properties =
+            scene.animation.iter().map(|t| &t.property).chain(scene.modulators.iter().map(|m| &m.property));
+        for property in properties {
+            let Property::Rule(rule, id, _) = property else { continue };
+            let Ok(rule) = u16::try_from(*rule) else { continue };
+            let Some(index) = self.block_index(rule, *id) else { continue };
+            let Some(node) = scene.logic.get(rule as usize).and_then(|g| g.node(*id)) else { continue };
+            let Some(spec) = catalog.spec(&node.kind) else { continue };
+            let Some(program) = self.program.as_mut() else { return };
+            let old = &program.blocks[index];
+            let mut block = old.clone();
+            // Blocks with an output add a new one while compiling: compile into a scratch
+            // program and put that output in place of the old one.
+            let mut scratch = Program { counters: program.counters.clone(), ..Program::default() };
+            compile_block(&mut scratch, &mut block, node, spec);
+            let output = scratch.outputs.pop();
+            if output.is_some() {
+                block.pick = old.pick;
+            }
+            let same_output = output.as_ref().is_none_or(|o| program.outputs.get(old.pick) == Some(o));
+            if block == *old && same_output {
+                continue;
+            }
+            let program = Arc::make_mut(program);
+            if let Some(output) = output
+                && let Some(slot) = program.outputs.get_mut(block.pick)
+            {
+                *slot = output;
+            }
+            program.blocks[index] = block;
+        }
+    }
+
     fn block_index(&self, rule: u16, id: u32) -> Option<usize> {
         let program = self.program.as_ref()?;
         let found = program.index.binary_search_by_key(&(rule, id), |(key, _)| *key).ok()?;
@@ -954,9 +994,10 @@ fn act(
     let target = ball_input(state, program, index, 1, context, balls);
     let emit = |events: &mut Vec<Event>, ball: Option<usize>, amount: f32, balls: &dyn RuleBalls| {
         let position = ball.map_or_else(|| balls.center(), |b| balls.position(b));
+        let group = ball.map_or(crate::NO_GROUP, |b| balls.group(b));
         let ball = ball.map_or(NO_BALL, |b| b as u32);
         let kind = EventKind::Action { rule: block.rule, action: block.id as u16 };
-        events.push(Event { time: now, ball, position, depth: 0.0, speed: amount, kind });
+        events.push(Event { time: now, ball, group, position, depth: 0.0, speed: amount, kind });
     };
     match block.kind {
         Kind::Spawn => {
@@ -1168,6 +1209,9 @@ impl RuleBalls for FlatBalls<'_> {
     }
     fn radius(&self, i: usize) -> f32 {
         self.0.balls[i].radius
+    }
+    fn group(&self, i: usize) -> u16 {
+        self.0.balls[i].group
     }
     fn set_radius(&mut self, i: usize, radius: f32) {
         self.0.balls[i].radius = radius;

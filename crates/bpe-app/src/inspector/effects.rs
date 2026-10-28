@@ -444,10 +444,11 @@ fn effect_card(
                 if icon(ui, Icon::Up, index > 0).on_hover_text("Move up").clicked() {
                     action = Some(CardAction::Up);
                 }
-                if info.as_ref().is_some_and(|i| !i.params.is_empty())
-                    && dice_button(ui, "Roll random settings for this effect").clicked()
-                {
-                    action = Some(CardAction::Roll);
+                if info.as_ref().is_some_and(|i| !i.params.is_empty()) {
+                    if dice_button(ui, "Roll random settings for this effect").clicked() {
+                        action = Some(CardAction::Roll);
+                    }
+                    crate::dice_panel::lock_button(ui, crate::dice_panel::Part::Effect(index));
                 }
             });
         });

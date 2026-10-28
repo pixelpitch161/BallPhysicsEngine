@@ -16,14 +16,15 @@ mod music;
 mod particles;
 mod presets;
 mod random;
+mod saved;
 #[cfg(feature = "import")]
 pub mod shape_import;
 pub mod shapes;
 mod view;
 
 pub use animation::{
-    Audio, AudioBand, AudioFrom, Curve, Ease, Key, Levels, Listener, Modulator, Property, SAME_TIME, Track, Value,
-    remap_effect_modulators,
+    Audio, AudioBand, AudioFrom, BallSetting, Bezier, CaptionSetting, Curve, Ease, Key, Levels, List, Listener,
+    Modulator, Property, SAME_TIME, Track, Value, remap_effect_modulators,
 };
 pub use ball_style::*;
 pub use bodies::*;
@@ -37,6 +38,7 @@ pub use gpu::*;
 pub use music::*;
 pub use particles::*;
 pub use random::{Dice, Group, palette};
+pub use saved::{PresetData, PresetKind, SavedPreset, file_name as saved_file_name};
 pub use shapes::{Placement, Shape};
 pub use view::*;
 
@@ -277,6 +279,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
     Single {
         position: Vec2,
@@ -290,6 +295,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
     /// Balls dropped one after another from the same spot.
     Stream {
@@ -311,6 +319,9 @@ pub enum Spawner {
         /// How the balls look. None draws them the classic way, following the Look tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<BallStyle>,
+        /// How the balls sound. None plays them like the rest of the scene, as the Sound tab says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<BallSound>,
     },
 }
 
@@ -453,6 +464,7 @@ impl Default for Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             rules: BounceRules::default(),
             look: Look::default(),
@@ -576,6 +588,20 @@ impl Spawner {
     pub fn style_mut(&mut self) -> &mut Option<BallStyle> {
         match self {
             Spawner::Grid { style, .. } | Spawner::Single { style, .. } | Spawner::Stream { style, .. } => style,
+        }
+    }
+
+    pub fn sound(&self) -> Option<&BallSound> {
+        match self {
+            Spawner::Grid { sound, .. } | Spawner::Single { sound, .. } | Spawner::Stream { sound, .. } => {
+                sound.as_ref()
+            }
+        }
+    }
+
+    pub fn sound_mut(&mut self) -> &mut Option<BallSound> {
+        match self {
+            Spawner::Grid { sound, .. } | Spawner::Single { sound, .. } | Spawner::Stream { sound, .. } => sound,
         }
     }
 }
@@ -867,6 +893,11 @@ impl Scene {
                 scene: Scene::ball_looks(),
             },
             Preset {
+                name: "Ball band",
+                description: "Four balls, each with its own sound: a kick drum, a bass, the chords and high bells.",
+                scene: Scene::ball_band(),
+            },
+            Preset {
                 name: "Shader materials",
                 description: "Lava balls, rainbow walls and glowing pegs: node shaders on things, not the whole picture.",
                 scene: Scene::shader_materials(),
@@ -922,6 +953,7 @@ impl Scene {
                     depth: 0.0,
                     depth_velocity: 0.0,
                     style: None,
+                    sound: None,
                 }
             })
             .collect();
@@ -967,6 +999,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             physics: Physics { gravity: Vec2::new(0.0, 400.0), ..Physics::default() },
             rules: BounceRules {
@@ -997,6 +1030,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             look: Look {
                 trail_seconds: 0.4,
@@ -1034,6 +1068,7 @@ impl Scene {
                 depth: 0.0,
                 depth_velocity: 0.0,
                 style: None,
+                sound: None,
             }],
             rules: BounceRules { speed_gain: 1.02, grow: 2.5, max_radius: 300.0, ..BounceRules::default() },
             look: Look { trail_seconds: 0.5, trail_width: 0.9, trail_opacity: 0.5, ball_glow: 0.3, ..Look::default() },

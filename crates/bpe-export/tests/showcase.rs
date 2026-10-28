@@ -203,6 +203,7 @@ pub fn everything() -> Scene {
             depth: 0.0,
             depth_velocity: 0.0,
             style: None,
+            sound: None,
         }],
         physics: Physics {
             gravity: Vec2::new(0.0, 500.0),
