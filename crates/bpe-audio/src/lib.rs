@@ -4,11 +4,13 @@
 //! is mixed offline, so the preview and the exported video play the very same audio.
 
 pub mod chord;
+pub mod instruments;
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
 use bpe_sim::{Event, EventKind};
 use std::collections::HashMap;
+use instruments::{load_mono, pluck, repitch};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -232,6 +234,8 @@ impl Voice {
                 let (wave, rate) = load_mono(&full).with_context(|| format!("loading sample {}", full.display()))?;
                 Source::Sample { wave, rate, root_note: *root_note }
             }
+            // The library's instruments play through the voices table instead.
+            other => anyhow::bail!("{other:?} doesn't play through the classic sound"),
         };
         Ok(Self { source, cache: HashMap::new() })
     }
@@ -291,71 +295,6 @@ impl Voice {
     fn get(&self, note: u8) -> &[f32] {
         self.cache.get(&note).map_or(&[], |wave| wave.as_slice())
     }
-}
-
-fn midi_to_hz(note: f32) -> f32 {
-    440.0 * 2f32.powf((note - 69.0) / 12.0)
-}
-
-/// A soft plucked tone: a few harmonics that fade faster the higher they are.
-fn pluck(note: u8, decay: f32, brightness: f32) -> Vec<f32> {
-    let freq = midi_to_hz(note as f32);
-    let sr = SAMPLE_RATE as f32;
-    let len = (decay * sr) as usize;
-    let attack = 0.003 * sr;
-    let partials: Vec<(f32, f32, f32)> = (1..=8)
-        .map(|k| {
-            let k = k as f32;
-            let amp = brightness.powf(k - 1.0) / k;
-            // -60 dB (ln 1000 = 6.9) over `decay`, faster for higher partials.
-            let rate = 6.9 * (1.0 + (k - 1.0) * 0.8) / decay;
-            (freq * k, amp, rate)
-        })
-        .filter(|(f, amp, _)| *f < sr * 0.45 && *amp > 1e-3)
-        .collect();
-    let norm: f32 = partials.iter().map(|p| p.1).sum();
-    (0..len)
-        .map(|i| {
-            let t = i as f32 / sr;
-            let onset = (i as f32 / attack).min(1.0);
-            let s: f32 = partials
-                .iter()
-                .map(|(f, amp, rate)| amp * (-rate * t).exp() * (std::f32::consts::TAU * f * t).sin())
-                .sum();
-            s * onset / norm
-        })
-        .collect()
-}
-
-/// Resamples a mono sample so it plays `semitones` higher (or lower) at [`SAMPLE_RATE`].
-fn repitch(wave: &[f32], rate: f32, semitones: f32) -> Vec<f32> {
-    let step = 2f32.powf(semitones / 12.0) * rate / SAMPLE_RATE as f32;
-    let len = (wave.len() as f32 / step) as usize;
-    (0..len)
-        .map(|i| {
-            let x = i as f32 * step;
-            let j = x as usize;
-            let f = x - j as f32;
-            let a = wave.get(j).copied().unwrap_or(0.0);
-            let b = wave.get(j + 1).copied().unwrap_or(0.0);
-            a + (b - a) * f
-        })
-        .collect()
-}
-
-fn load_mono(path: &Path) -> anyhow::Result<(Vec<f32>, f32)> {
-    let mut reader = hound::WavReader::open(path)?;
-    let spec = reader.spec();
-    let channels = spec.channels.max(1) as usize;
-    let interleaved: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
-        hound::SampleFormat::Int => {
-            let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
-            reader.samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect::<Result<_, _>>()?
-        }
-    };
-    let mono = interleaved.chunks(channels).map(|c| c.iter().sum::<f32>() / channels as f32).collect();
-    Ok((mono, spec.sample_rate as f32))
 }
 
 /// Scales the mix so its loud passages sit at `target_db` RMS (roughly LUFS for this kind of
