@@ -146,8 +146,37 @@ impl SpaceSimulation {
             trail_filled: 0,
         };
         sim.update_arena();
+        let mut balls = std::mem::take(&mut sim.balls);
+        for ball in &mut balls {
+            sim.place_inside(ball);
+        }
+        sim.balls = balls;
         sim.record_trail();
         sim
+    }
+
+    /// Moves a new ball inside the container, for balls placed for a bigger 2D arena.
+    fn place_inside(&self, ball: &mut Ball3) {
+        let arena = self.arena;
+        let p = &mut ball.position;
+        match self.space.container {
+            Container3d::Sphere { radius } => {
+                let room = (radius * arena.scale - ball.radius).max(0.0);
+                *p = p.clamp_length_max(room);
+            }
+            Container3d::Cube { size } => {
+                let room = (size * 0.5 * arena.scale - ball.radius).max(0.0);
+                let turn = glam::Quat::from_rotation_y(arena.angle);
+                *p = turn * (turn.inverse() * *p).clamp(Vec3::splat(-room), Vec3::splat(room));
+            }
+            Container3d::Tunnel { radius, .. } => {
+                let room = (radius * arena.scale - ball.radius).max(0.0);
+                let across = Vec2::new(p.x, p.y).clamp_length_max(room);
+                let back = arena.back + ball.radius;
+                let front = self.gates().next().map_or(f32::INFINITY, |gate| gate.z - ball.radius);
+                *p = across.extend(p.z.min(front).max(back));
+            }
+        }
     }
 
     pub fn scene(&self) -> &Scene {
@@ -233,7 +262,8 @@ impl SpaceSimulation {
 
     pub fn step(&mut self, events: &mut Vec<Event>) {
         while self.pending.last().is_some_and(|(step, _)| *step <= self.step) {
-            let (_, ball) = self.pending.pop().unwrap();
+            let (_, mut ball) = self.pending.pop().unwrap();
+            self.place_inside(&mut ball);
             self.add_ball(ball);
         }
         let ceiling = self.speed_ceiling();
@@ -832,6 +862,33 @@ mod tests {
             assert!(!a.is_empty());
             assert_eq!(a, b);
             assert_eq!(a_sim.balls(), b_sim.balls());
+        }
+    }
+
+    /// Seeking through a playback, backwards and forwards and in odd steps, gives exactly the
+    /// events and balls of one straight run, including after its snapshots are thinned.
+    #[test]
+    fn playback_seeks_match_a_straight_run() {
+        for container in [Container3d::Sphere { radius: 400.0 }, Container3d::Cube { size: 700.0 }, Container3d::tunnel(350.0)] {
+            let mut scene = space_scene(container);
+            scene.physics.ball_collisions = true;
+            scene.rules.spawn_per_escape = 1;
+            let mut straight = crate::Playback::new(&scene);
+            straight.seek(4.0);
+            let mut jumpy = crate::Playback::new(&scene);
+            for time in [2.0, 0.6, 3.3, 0.1, 3.9, 2.2, 4.0] {
+                jumpy.seek(time);
+            }
+            assert_eq!(jumpy.events(), straight.events());
+            assert_eq!(jumpy.space().unwrap().balls(), straight.space().unwrap().balls());
+            // The flat side has no balls: it only keeps time.
+            assert!(straight.simulation().balls().is_empty());
+            assert_eq!(straight.counts_at(4.0).balls as usize, straight.space().unwrap().balls().len());
+            assert_eq!(crate::collect_wall_hits(&scene).len(), {
+                let mut whole = crate::Playback::new(&scene);
+                whole.seek(scene.video.duration as f64);
+                whole.events().len()
+            });
         }
     }
 

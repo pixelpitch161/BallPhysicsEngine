@@ -351,8 +351,8 @@ fn lights(ui: &mut Ui, space: &mut Space, state: &mut State) {
         );
         color_row(ui, "Sky colour", "Light from above.", &mut lights.ambient_top, d.ambient_top);
         color_row(ui, "Ground colour", "Light from below.", &mut lights.ambient_bottom, d.ambient_bottom);
-        label(ui, "Shadows", "Whether balls cast shadows on each other and the walls.");
-        ui.checkbox(&mut lights.shadows, "");
+        let name = label(ui, "Shadows", "Whether balls cast shadows on each other and the walls.");
+        ui.checkbox(&mut lights.shadows, "").labelled_by(name.id);
         ui.end_row();
     });
     more(ui, "lights-more", |ui| {
@@ -465,5 +465,87 @@ fn heading_with_dice(ui: &mut Ui, text: &str, what: &str, roll: impl FnOnce()) {
         .inner;
     if clicked {
         roll();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::inspector::{self, Inspector, Tab};
+    use bpe_scene::{CameraMode, Container3d, Scene, View};
+    use eframe::egui;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    struct State {
+        inspector: Inspector,
+        scene: Scene,
+    }
+
+    fn harness(tab: Tab, scene: Scene) -> Harness<'static, State> {
+        let state = State { inspector: Inspector { tab, ..Inspector::default() }, scene };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(460.0, 3000.0))
+            .with_max_steps(240)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(|ui, state: &mut State| inspector::show(ui, &mut state.inspector, &mut state.scene), state);
+        harness.run();
+        harness
+    }
+
+    fn click(harness: &mut Harness<'_, State>, label: &str) {
+        harness.get_by_label(label).click();
+        harness.run();
+    }
+
+    #[test]
+    fn switching_to_3d_and_back_keeps_the_3d_settings() {
+        let mut harness = harness(Tab::Arena, Scene::default());
+        assert!(harness.query_by_label("3D CONTAINER").is_none());
+        assert!(harness.query_by_label("SHAPE").is_some());
+        click(&mut harness, "3D");
+        assert!(harness.state().scene.space().is_some());
+        // The flat arena's shape and pegs make way for the 3D settings.
+        assert!(harness.query_by_label("3D CONTAINER").is_some());
+        assert!(harness.query_by_label("CAMERA").is_some());
+        assert!(harness.query_by_label("LIGHTS").is_some());
+        assert!(harness.query_by_label("SHAPE").is_none());
+
+        click(&mut harness, "Cube");
+        let space = harness.state().scene.space().unwrap().clone();
+        assert!(matches!(space.container, Container3d::Cube { .. }));
+        click(&mut harness, "Flat");
+        assert_eq!(harness.state().scene.view, View::Flat);
+        click(&mut harness, "3D");
+        assert_eq!(harness.state().scene.space(), Some(&space));
+    }
+
+    #[test]
+    fn camera_modes_and_dice_change_the_camera() {
+        let scene = Scene { view: View::Space(Box::default()), ..Scene::default() };
+        let mut harness = harness(Tab::Arena, scene);
+        click(&mut harness, "Orbit");
+        assert!(matches!(harness.state().scene.space().unwrap().camera.mode, CameraMode::Orbit { .. }));
+        assert!(harness.query_by_label("Orbit speed").is_some());
+        let before = harness.state().scene.space().unwrap().clone();
+        click(&mut harness, "Roll a random camera");
+        let after = harness.state().scene.space().unwrap();
+        assert_ne!(after.camera, before.camera);
+        assert_eq!(after.lights, before.lights);
+        click(&mut harness, "Roll random lights and colours");
+        assert_ne!(harness.state().scene.space().unwrap().lights, before.lights);
+        click(&mut harness, "Fit to the container");
+        let fitted = bpe_scene::Camera::fit(&before.container, 9.0 / 16.0);
+        let camera = &harness.state().scene.space().unwrap().camera;
+        assert!(camera.position.distance(fitted.position) < 0.01, "{camera:?}");
+    }
+
+    #[test]
+    fn balls_get_depth_rows_in_3d_only() {
+        let harness_flat = harness(Tab::Balls, Scene::default());
+        assert!(harness_flat.query_by_label("Depth").is_none());
+        let scene = Scene { view: View::Space(Box::default()), ..Scene::default() };
+        let harness = harness(Tab::Balls, scene);
+        assert!(harness.query_by_label("Depth").is_some());
+        assert!(harness.query_by_label("Depth speed").is_some());
     }
 }

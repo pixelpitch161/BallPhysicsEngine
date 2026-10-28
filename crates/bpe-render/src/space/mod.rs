@@ -564,6 +564,80 @@ mod tests {
     }
 }
 
+/// Random scenes in 3D: every preset rolled with every group at full strength, put in each 3D
+/// container with a rolled camera and lights, then simulated and turned into frames.
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use bpe_scene::{Dice, Group, View};
+    use bpe_sim::Playback;
+
+    const GROUPS: [Group; 11] = [
+        Group::Shape,
+        Group::Movement,
+        Group::World,
+        Group::Bounces,
+        Group::NewBalls,
+        Group::Background,
+        Group::Trails,
+        Group::Glow,
+        Group::Strings,
+        Group::Chords,
+        Group::Notes,
+    ];
+
+    pub(crate) fn rolled(seed: u64) -> Scene {
+        let presets = Scene::presets();
+        let base = &presets[seed as usize % presets.len()].scene;
+        let groups: Vec<Group> = (0..base.spawners.len()).map(Group::Balls).chain(GROUPS).collect();
+        let mut scene = base.variation(&groups, seed, 1.0);
+        let mut dice = Dice::mixed(seed, 0x3d);
+        let container = match seed % 3 {
+            0 => Container3d::Sphere { radius: dice.range(150.0, 900.0) },
+            1 => Container3d::Cube { size: dice.range(200.0, 1500.0) },
+            _ => Container3d::tunnel(dice.range(150.0, 700.0)),
+        };
+        let mut space = scene.space().cloned().unwrap_or_default();
+        space.container = container;
+        space.scatter = dice.unit();
+        space.gravity_depth = dice.range(-1500.0, 1500.0);
+        space.roll_camera(&mut dice, 9.0 / 16.0);
+        space.roll_lights(&mut dice);
+        scene.view = View::Space(Box::new(space));
+        scene
+    }
+
+    #[test]
+    fn five_hundred_rolled_scenes_run_in_3d() {
+        let seeds: u64 = std::env::var("BPE_FUZZ_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
+        for seed in 0..seeds {
+            let scene = rolled(seed);
+            let mut playback = Playback::new(&scene);
+            let mut frame = crate::FrameData::default();
+            for time in [0.0, 0.7, 1.5] {
+                playback.seek(time);
+                frame.fill(&scene, &playback, 1.0);
+                let sim = playback.space().expect("3D scene");
+                let reach = scene.space().unwrap().container.size() * sim.arena().scale.max(1.0) * 2.0 + 100.0;
+                for ball in sim.balls() {
+                    assert!(ball.position.is_finite() && ball.velocity.is_finite(), "seed {seed}: {ball:?}");
+                    if !matches!(scene.space().unwrap().container, Container3d::Tunnel { .. }) {
+                        assert!(ball.position.length() <= reach, "seed {seed} at {time}: ball escaped to {} (container {:?}, arena {:?}, radius {}, motion {:?})", ball.position, scene.space().unwrap().container, sim.arena(), ball.radius, scene.arena_motion);
+                    }
+                }
+                assert!(frame.space.active && frame.space.camera.view_projection.is_finite(), "seed {seed}");
+                assert!(frame.space.balls.len() == sim.balls().len(), "seed {seed}");
+            }
+            assert!(playback.events().iter().all(|e| e.position.is_finite() && e.depth.is_finite()), "seed {seed}");
+            // Going back gives the same events as the first time.
+            let count = playback.events_between(0.0, 1.0).len();
+            playback.seek(0.3);
+            playback.seek(1.5);
+            assert_eq!(playback.events_between(0.0, 1.0).len(), count, "seed {seed}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod gpu_tests {
     use super::*;
