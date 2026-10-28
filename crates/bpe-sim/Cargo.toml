@@ -9,3 +9,4 @@ license.workspace = true
 bpe-scene.workspace = true
 bpe-music.workspace = true
 glam.workspace = true
+rayon = "1"

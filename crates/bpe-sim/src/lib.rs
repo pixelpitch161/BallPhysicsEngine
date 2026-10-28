@@ -7,19 +7,23 @@
 
 mod arena;
 pub mod beat_sync;
-mod bodies;
-mod broadphase;
+pub mod bodies;
+pub mod broadphase;
+pub mod contacts;
 pub mod events;
 mod grid;
 pub mod rules;
+pub mod shapes;
 pub mod space;
 
 pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring_outline};
+pub use contacts::Touch;
 pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
 
 use bpe_music::AudioFeatures;
-use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Scene, Spawner, Vec2};
+use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Placement, Scene, Spawner, Vec2};
 use grid::ObstacleGrid;
+use shapes::ShapeWalls;
 use std::sync::Arc;
 
 /// The music at `time` as modulators read it (WS5). The renderer uses the same, so physics and
@@ -55,8 +59,20 @@ const MAX_SUBSTEPS: u32 = 64;
 /// Roughly how long the arena takes to shrink by a hit's amount.
 const SHRINK_EASE_SECONDS: f32 = 0.06;
 
+/// What every bounce off the walls shares within one substep: see `Simulation::wall_frame`.
+#[derive(Clone, Copy)]
+pub(crate) struct WallFrame {
+    closed: Option<Outline>,
+    pivot: Vec2,
+    thickness: f32,
+    growth: f32,
+    restitution: f32,
+    /// A custom-shape arena's shape index and placement.
+    custom: Option<(usize, Placement)>,
+}
+
 /// An unbroken escape ring during one step.
-struct RingNow {
+pub(crate) struct RingNow {
     index: u32,
     outline: Outline,
     /// Radians per second it turns.
@@ -122,6 +138,8 @@ pub struct Simulation {
     obstacle_grid: ObstacleGrid,
     /// Scratch space for obstacle lookups.
     nearby: Vec<u32>,
+    /// A substep's wall hits before the bounce rules run, kept to reuse.
+    found: Vec<Event>,
     /// Balls that appear later, as (step, ball), latest first.
     pending: Vec<(u64, Ball)>,
     /// Arena size still to shrink away from hits, eased in over a few steps.
@@ -150,10 +168,16 @@ pub struct Simulation {
     /// Ball-to-ball contact state.
     broadphase: broadphase::Broadphase,
     /// Jelly balls, ropes, cloth and small fluid.
-    #[allow(dead_code)]
     bodies: bodies::BodyState,
     /// Compiled rules and their counters.
     rules: rules::RuleState,
+    /// One entry per scene shape that the arena or an obstacle uses, by shape index.
+    shape_walls: Vec<Option<ShapeWalls>>,
+    /// How a custom-shape arena moved since the last step, as a turn and scale to apply to
+    /// old positions. Nothing after a step's first substep, as walls move once per step.
+    custom_moved: Vec2,
+    /// The scene shape a custom-shape arena uses, by index.
+    custom_shape: Option<usize>,
 }
 
 impl Simulation {
@@ -187,6 +211,7 @@ impl Simulation {
             obstacles: scene.obstacle_parts(),
             obstacle_grid: ObstacleGrid::default(),
             nearby: Vec::new(),
+            found: Vec::new(),
             pending,
             shrink_owed: 0.0,
             shrunk: 1.0,
@@ -205,9 +230,16 @@ impl Simulation {
             bodies: bodies::BodyState::new(scene),
             rules: rules::RuleState::new(scene),
             removed: 0,
+            shape_walls: shape_walls(scene),
+            custom_moved: Vec2::X,
+            custom_shape: match &scene.container {
+                Container::Custom { shape, .. } => scene.shape_index(shape).map(|i| i as usize),
+                _ => None,
+            },
         };
         sim.controller = beat_sync::Controller::new(scene, inputs);
-        sim.obstacle_grid = ObstacleGrid::new(&sim.obstacles);
+        let shapes = &scene.shapes;
+        sim.obstacle_grid = ObstacleGrid::new(&sim.obstacles, |s| shapes.get(s as usize).map_or(1.0, |s| s.reach()));
         sim.update_arena();
         sim.record_trail();
         sim
@@ -338,10 +370,13 @@ impl Simulation {
             }
         }
         let rate = self.scene.physics.steps_per_second.max(1) as f64;
+        // Custom shapes (marked: physics workstream): the arena shape moves like the rings.
+        self.custom_moved = Vec2::from_angle(self.arena.spin * dt) * (1.0 + growth * dt);
         for i in 0..substeps {
             // The walls only move once per step, so after the first substep they stay put.
             if i == 1 {
                 rings.iter_mut().for_each(|ring| ring.moved = Vec2::X);
+                self.custom_moved = Vec2::X;
             }
             let time = ((self.step - 1) as f64 + (i + 1) as f64 / substeps as f64) / rate;
             self.announce_beats(time, events);
@@ -364,8 +399,11 @@ impl Simulation {
     fn substeps(&self) -> u32 {
         let fastest = self.balls.iter().map(|b| b.velocity.length()).fold(0.0f32, f32::max);
         let travel = (fastest + self.scene.physics.gravity.length() * self.dt) * self.dt;
+        // Balls that bump into each other with the contact solver mustn't jump past one
+        // another either (marked: physics workstream).
+        let safe = broadphase::safe_move(self).unwrap_or(SAFE_MOVE);
         // A NaN casts to 0, which the clamp turns into a single step.
-        ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS)
+        ((travel / safe).ceil() as u32).clamp(1, MAX_SUBSTEPS)
     }
 
     /// Adds a beat event for each beat up to `until` seconds.
@@ -394,87 +432,56 @@ impl Simulation {
         let drag = (1.0 - physics.air_drag * dt).max(0.0);
         self.previous.clear();
         self.previous.extend(self.balls.iter().map(|b| b.position));
-        for ball in self.balls.iter_mut().filter(|b| b.alive) {
+        for (i, ball) in self.balls.iter_mut().enumerate().filter(|(_, b)| b.alive) {
+            // Balls at rest in a pile stay exactly where they are until something wakes them
+            // (marked: physics workstream).
+            if self.broadphase.is_asleep(i) {
+                continue;
+            }
             ball.velocity = (ball.velocity + physics.gravity * dt) * drag;
             ball.position += ball.velocity * dt;
         }
-        broadphase::ball_ball(self, time, events);
+        broadphase::ball_ball(self, dt, time, closed, events);
         self.collide_walls(time, closed, rings, events);
-        bodies::step(self, dt, time, events);
+        bodies::step(self, dt, time, closed, rings, events);
     }
 
     /// Bounces balls off the arena, rings, pegs and walls, and applies the bounce rules.
     fn collide_walls(&mut self, time: f64, closed: Option<Outline>, rings: &[RingNow], events: &mut Vec<Event>) {
         let restitution = self.scene.physics.restitution;
-        let container = &self.scene.container;
-        let growth = self.arena.scale_rate / self.arena.scale.max(1e-3);
-        let pivot = container.center();
-        let thickness = container.thickness();
+        let pivot = self.scene.container.center();
 
         // Touches slower than this are balls resting on something, not bounces. They still push
         // the ball out but don't count as hits, so resting balls don't buzz or flicker.
         let resting = self.scene.physics.gravity.length() * self.dt * 4.0 + 1.0;
-        let mut found = Vec::new();
-        for (index, ball) in self.balls.iter_mut().enumerate() {
+        let mut found = std::mem::take(&mut self.found);
+        found.clear();
+        // Taken out while bouncing, so the bounce helpers can borrow the rest of the simulation.
+        let frame = self.wall_frame(closed, restitution);
+        let arena_state = self.arena;
+        let mut balls = std::mem::take(&mut self.balls);
+        for (index, ball) in balls.iter_mut().enumerate() {
             if !ball.alive {
                 continue;
             }
             let prev = self.previous[index];
-            let mut wall_hit = match &closed {
-                Some(outline) => arena::collide_closed(ball, outline, self.arena, restitution),
-                None => None,
+            // The closed arena is checked here, with copies made before the loop, so the
+            // compiler can work out a box's or polygon's directions once instead of per ball.
+            let closed_hit = closed.as_ref().and_then(|o| arena::collide_closed(ball, o, arena_state, restitution));
+            let wall_hit = if frame.custom.is_none() && rings.is_empty() {
+                closed_hit
+            } else {
+                self.other_arena_hit(ball, prev, &frame, rings, closed_hit)
             };
-            for ring in rings {
-                // A ring that broke earlier in this step is already gone.
-                if self.breaks[ring.index as usize].is_some() {
-                    continue;
-                }
-                let seen = pivot + ring.moved.rotate(prev - pivot);
-                for piece in &self.pieces[ring.pieces.clone()] {
-                    if let Some((position, speed)) =
-                        arena::collide_piece(ball, seen, piece, thickness, pivot, ring.spin, growth, restitution)
-                        && wall_hit.is_none_or(|(_, s)| speed > s)
-                    {
-                        wall_hit = Some((position, speed));
-                    }
-                }
-            }
             if let Some((position, speed)) = wall_hit.filter(|(_, speed)| *speed >= resting) {
                 found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind: EventKind::Wall });
             }
-            let mut obstacle = |ball: &mut Ball, part: usize| {
-                let hit = match self.obstacles[part] {
-                    ObstaclePart::Disc { center, radius, .. } => {
-                        arena::collide_disc(ball, prev, center, radius, restitution)
-                    }
-                    ObstaclePart::Segment { from, to, thickness, .. } => {
-                        let piece = Piece::Segment { from, to };
-                        arena::collide_piece(ball, prev, &piece, thickness, Vec2::ZERO, 0.0, 0.0, restitution)
-                    }
-                };
+            self.bounce_obstacles(ball, prev, restitution, |part, hit| {
                 if let Some((position, speed)) = hit.filter(|(_, speed)| *speed >= resting) {
                     let kind = EventKind::Obstacle(part as u32);
                     found.push(Event { time, ball: index as u32, position, depth: 0.0, speed, kind });
                 }
-            };
-            if self.obstacle_grid.enabled() {
-                // Only the pegs and walls near the ball's path, in the same order as checking all
-                // of them. Bouncing off one moves the ball, so the rest are looked up again.
-                let nearby = &mut self.nearby;
-                self.obstacle_grid.query(prev, ball.position, ball.radius, None, nearby);
-                let mut next = 0;
-                while let Some(&part) = nearby.get(next) {
-                    let before = ball.position;
-                    obstacle(ball, part as usize);
-                    next += 1;
-                    if ball.position != before {
-                        self.obstacle_grid.query(prev, ball.position, ball.radius, Some(part), nearby);
-                        next = 0;
-                    }
-                }
-            } else {
-                (0..self.obstacles.len()).for_each(|part| obstacle(ball, part));
-            }
+            });
             for ring in rings {
                 let (k, outline) = (ring.index as usize, &ring.outline);
                 let seen = pivot + ring.moved.rotate(prev - pivot);
@@ -487,11 +494,12 @@ impl Simulation {
                 }
             }
         }
+        self.balls = balls;
 
         let mut spawns = Vec::new();
-        let center = container.center();
+        let center = pivot;
         let ceiling = self.speed_ceiling();
-        for event in found {
+        for &event in &found {
             let ball = &mut self.balls[event.ball as usize];
             let rules = &self.scene.rules;
             let children = match event.kind {
@@ -510,6 +518,7 @@ impl Simulation {
             spawns.extend((0..children).map(|_| (event.ball, start)));
             events.push(event);
         }
+        self.found = found;
         for (parent, start) in spawns {
             if self.alive_balls() >= self.scene.rules.max_balls as usize {
                 break;
@@ -517,6 +526,240 @@ impl Simulation {
             let mut child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
             child.position = start;
             self.spawn(child, time, events);
+        }
+    }
+
+    /// What every bounce off the walls shares within one substep, worked out once.
+    pub(crate) fn wall_frame(&self, closed: Option<Outline>, restitution: f32) -> WallFrame {
+        let container = &self.scene.container;
+        WallFrame {
+            closed,
+            pivot: container.center(),
+            thickness: container.thickness(),
+            growth: self.arena.scale_rate / self.arena.scale.max(1e-3),
+            restitution,
+            custom: self.custom_arena(),
+        }
+    }
+
+    /// Bounces something round (a soft body's point, or a probe) off every wall: the arena,
+    /// its rings, pegs, lines and shapes. Returns the hardest hit.
+    pub(crate) fn bounce_point(
+        &mut self,
+        ball: &mut Ball,
+        prev: Vec2,
+        frame: &WallFrame,
+        rings: &[RingNow],
+    ) -> Option<(Vec2, f32)> {
+        let mut best = self.arena_hit(ball, prev, frame, rings);
+        self.bounce_obstacles(ball, prev, frame.restitution, |_, hit| {
+            if let Some(h) = hit
+                && best.is_none_or(|(_, s)| h.1 > s)
+            {
+                best = Some(h);
+            }
+        });
+        best
+    }
+
+    /// Bounces a ball off the arena's own walls (its outline, custom shape and unbroken rings)
+    /// and returns the hardest hit. `prev` is turned along with any wall that moved this step,
+    /// so a turning wall never looks as if it passed the ball.
+    #[inline]
+    fn arena_hit(&mut self, ball: &mut Ball, prev: Vec2, frame: &WallFrame, rings: &[RingNow]) -> Option<(Vec2, f32)> {
+        // Done here rather than in `other_arena_hit` so it's inlined into the loop over every
+        // ball, where the compiler works out the box's directions once rather than per ball.
+        let wall_hit =
+            frame.closed.as_ref().and_then(|o| arena::collide_closed(ball, o, self.arena, frame.restitution));
+        self.other_arena_hit(ball, prev, frame, rings, wall_hit)
+    }
+
+    /// The custom-shape arena and rings part of `arena_hit`, given the hit off the closed arena.
+    fn other_arena_hit(
+        &mut self,
+        ball: &mut Ball,
+        prev: Vec2,
+        frame: &WallFrame,
+        rings: &[RingNow],
+        mut wall_hit: Option<(Vec2, f32)>,
+    ) -> Option<(Vec2, f32)> {
+        let WallFrame { pivot, thickness, growth, restitution, custom, .. } = *frame;
+        // A custom-shape arena (marked: physics workstream).
+        if let Some((shape, place)) = custom
+            && let Some(walls) = self.shape_walls[shape].as_mut()
+        {
+            let seen = pivot + self.custom_moved.rotate(prev - pivot);
+            let motion = (pivot, self.arena.spin, growth);
+            if let Some(hit) = walls.collide(ball, seen, place, thickness, motion, restitution, true)
+                && wall_hit.is_none_or(|(_, s)| hit.1 > s)
+            {
+                wall_hit = Some(hit);
+            }
+        }
+        for ring in rings {
+            // A ring that broke earlier in this step is already gone.
+            if self.breaks[ring.index as usize].is_some() {
+                continue;
+            }
+            let seen = pivot + ring.moved.rotate(prev - pivot);
+            for piece in &self.pieces[ring.pieces.clone()] {
+                if let Some((position, speed)) =
+                    arena::collide_piece(ball, seen, piece, thickness, pivot, ring.spin, growth, restitution)
+                    && wall_hit.is_none_or(|(_, s)| speed > s)
+                {
+                    wall_hit = Some((position, speed));
+                }
+            }
+        }
+        wall_hit
+    }
+
+    /// Bounces a ball off each peg, line and shape near its path, lowest index first, and
+    /// calls `hit` with each one's result.
+    fn bounce_obstacles(
+        &mut self,
+        ball: &mut Ball,
+        prev: Vec2,
+        restitution: f32,
+        mut hit: impl FnMut(usize, Option<(Vec2, f32)>),
+    ) {
+        if self.obstacle_grid.enabled() {
+            // Only the pegs and walls near the ball's path, in the same order as checking all
+            // of them. Bouncing off one moves the ball, so the rest are looked up again.
+            let mut nearby = std::mem::take(&mut self.nearby);
+            self.obstacle_grid.query(prev, ball.position, ball.radius, None, &mut nearby);
+            let mut next = 0;
+            while let Some(&part) = nearby.get(next) {
+                let before = ball.position;
+                hit(part as usize, self.obstacle_hit(ball, prev, part as usize, restitution));
+                next += 1;
+                if ball.position != before {
+                    self.obstacle_grid.query(prev, ball.position, ball.radius, Some(part), &mut nearby);
+                    next = 0;
+                }
+            }
+            self.nearby = nearby;
+        } else {
+            for part in 0..self.obstacles.len() {
+                hit(part, self.obstacle_hit(ball, prev, part, restitution));
+            }
+        }
+    }
+
+    /// Bounces a ball off obstacle part `part`.
+    fn obstacle_hit(&mut self, ball: &mut Ball, prev: Vec2, part: usize, restitution: f32) -> Option<(Vec2, f32)> {
+        match self.obstacles[part] {
+            ObstaclePart::Disc { center, radius, .. } => arena::collide_disc(ball, prev, center, radius, restitution),
+            ObstaclePart::Segment { from, to, thickness, .. } => {
+                let piece = Piece::Segment { from, to };
+                arena::collide_piece(ball, prev, &piece, thickness, Vec2::ZERO, 0.0, 0.0, restitution)
+            }
+            ObstaclePart::Shape { shape, place, thickness, .. } => {
+                let walls = self.shape_walls.get_mut(shape as usize).and_then(Option::as_mut)?;
+                walls.collide(ball, prev, place, thickness, (Vec2::ZERO, 0.0, 0.0), restitution, false)
+            }
+        }
+    }
+
+    /// Jelly balls, ropes, cloth and liquid as they are now.
+    pub fn soft(&self) -> &bodies::SoftWorld {
+        &self.bodies.world
+    }
+
+    /// Cuts rope or cloth number `body` at `along` (0 to 1 along it). For rules.
+    pub fn cut_soft(&mut self, body: usize, along: f32) -> bool {
+        self.bodies.world.cut(body, along)
+    }
+
+    /// Pins or frees point `point` of soft body `body`. For rules.
+    pub fn pin_soft(&mut self, body: usize, point: usize, pinned: bool) -> bool {
+        self.bodies.world.set_pinned(body, point, pinned)
+    }
+
+    /// A custom-shape arena right now: its shape index and placement.
+    fn custom_arena(&self) -> Option<(usize, Placement)> {
+        Some((self.custom_shape?, self.arena_placement()?))
+    }
+
+    /// Where a custom-shape arena is right now, after turning and shrinking.
+    pub fn arena_placement(&self) -> Option<Placement> {
+        match self.scene.container {
+            Container::Custom { center, radius, rotation, .. } => Some(Placement {
+                center,
+                size: radius * self.arena.scale,
+                rotation: rotation.to_radians() + self.arena.angle,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The flattened outline of scene shape `shape`, in the shape's own units, if the arena or
+    /// an obstacle uses it.
+    pub fn shape_lines(&self, shape: usize) -> Option<&[bpe_scene::shapes::Polyline]> {
+        self.shape_walls.get(shape)?.as_ref().map(|w| w.lines())
+    }
+
+    /// Angle each ball has turned from spinning, in radians, for drawing its highlight.
+    pub fn ball_angle(&self, ball: usize) -> f32 {
+        self.broadphase.angle(ball)
+    }
+
+    /// Whether a ball is resting asleep in a pile.
+    pub fn ball_asleep(&self, ball: usize) -> bool {
+        self.broadphase.is_asleep(ball)
+    }
+
+    /// Every wall as straight pieces and arcs, as it is right now: the arena, unbroken rings,
+    /// lines, custom shapes and (as full circles) pegs. For the graphics card's swarms and
+    /// liquid, which bake them into a distance field. Clears `out` first.
+    pub fn wall_pieces(&self, out: &mut Vec<Piece>) {
+        out.clear();
+        if let Some(outline) = closed_outline(&self.scene.container, self.arena) {
+            match outline {
+                Outline::Ring { center, radius, sides: 0, .. } => {
+                    out.push(Piece::Arc { center, radius, start: 0.0, sweep: std::f32::consts::TAU })
+                }
+                _ => outline_pieces(&Outline::ring_without_gap(outline), out),
+            }
+        }
+        for (_, outline) in self.ring_outlines() {
+            outline_pieces(&outline, out);
+        }
+        if let Some((shape, place)) = self.custom_arena()
+            && let Some(walls) = &self.shape_walls[shape]
+        {
+            out.extend(walls.world_pieces(place).map(|(from, to)| Piece::Segment { from, to }));
+        }
+        for part in &self.obstacles {
+            match *part {
+                ObstaclePart::Disc { center, radius, .. } => {
+                    out.push(Piece::Arc { center, radius, start: 0.0, sweep: std::f32::consts::TAU })
+                }
+                ObstaclePart::Segment { from, to, .. } => out.push(Piece::Segment { from, to }),
+                ObstaclePart::Shape { shape, place, .. } => {
+                    if let Some(Some(walls)) = self.shape_walls.get(shape as usize) {
+                        out.extend(walls.world_pieces(place).map(|(from, to)| Piece::Segment { from, to }));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The straight pieces of a custom-shape arena and of shape obstacles as they are now, as
+    /// (from, to, half thickness).
+    pub fn shape_pieces(&self, mut f: impl FnMut(Vec2, Vec2, f32)) {
+        if let Some((shape, place)) = self.custom_arena()
+            && let Some(walls) = &self.shape_walls[shape]
+        {
+            let half = self.scene.container.thickness() * 0.5;
+            walls.world_pieces(place).for_each(|(from, to)| f(from, to, half));
+        }
+        for part in &self.obstacles {
+            if let ObstaclePart::Shape { shape, place, thickness, .. } = *part
+                && let Some(Some(walls)) = self.shape_walls.get(shape as usize)
+            {
+                walls.world_pieces(place).for_each(|(from, to)| f(from, to, thickness * 0.5));
+            }
         }
     }
 
@@ -529,7 +772,6 @@ impl Simulation {
     }
 
     /// Takes a ball out of the scene and records its remove event. Its place in the list stays.
-    #[allow(dead_code)]
     fn remove(&mut self, index: usize, time: f64, events: &mut Vec<Event>) {
         let Some(ball) = self.balls.get_mut(index).filter(|b| b.alive) else { return };
         ball.alive = false;
@@ -931,6 +1173,28 @@ fn apply_bounce_rules(ball: &mut Ball, scene: &Scene, ceiling: f32) {
     }
 }
 
+/// Collision walls for every scene shape that the arena or an obstacle uses, by shape index.
+fn shape_walls(scene: &Scene) -> Vec<Option<ShapeWalls>> {
+    let mut walls: Vec<Option<ShapeWalls>> = vec![None; scene.shapes.len()];
+    let mut need = |name: &str, size: f32| {
+        if let Some(i) = scene.shape_index(name) {
+            let i = i as usize;
+            if walls[i].is_none() {
+                walls[i] = Some(ShapeWalls::new(&scene.shapes[i], size));
+            }
+        }
+    };
+    if let Container::Custom { shape, radius, .. } = &scene.container {
+        need(shape, *radius);
+    }
+    for obstacle in &scene.obstacles {
+        if let bpe_scene::Obstacle::Shape { shape, scale, .. } = obstacle {
+            need(shape, *scale);
+        }
+    }
+    walls
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,7 +1238,8 @@ mod tests {
                 let mut hits = Vec::new();
                 sim.advance_to(4.0, &mut hits);
                 let most = (rolled.rules.max_balls + rolled.ball_count()) as usize;
-                assert!(sim.balls().len() <= most, "{} seed {seed}", preset.name);
+                // Removed balls (in pockets) keep their place in the list, so count those in play.
+                assert!(sim.alive_balls() <= most, "{} seed {seed}", preset.name);
                 for ball in sim.balls() {
                     assert!(ball.position.is_finite() && ball.velocity.is_finite(), "{} seed {seed}", preset.name);
                     // Nothing flies far out of the frame, unless it escaped all the rings.

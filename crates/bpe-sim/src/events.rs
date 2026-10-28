@@ -16,7 +16,8 @@ pub enum EventKind {
     Wall,
     /// A ball hit a peg or wall piece, by its index in [`bpe_scene::Scene::obstacle_parts`].
     Obstacle(u32),
-    /// The ball escaped through the gap of this ring, which shattered.
+    /// The ball escaped through the gap of this ring, which shattered, or fell into this
+    /// pocket (see [`bpe_scene::BallContact::pockets`]).
     Escape(u32),
     /// A ball hit another ball, by the other ball's index.
     Ball(u32),

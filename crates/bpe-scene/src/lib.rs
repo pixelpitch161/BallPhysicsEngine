@@ -15,7 +15,9 @@ mod music;
 mod particles;
 mod presets;
 mod random;
-mod shapes;
+#[cfg(feature = "import")]
+pub mod shape_import;
+pub mod shapes;
 mod view;
 
 pub use animation::{
@@ -33,7 +35,7 @@ pub use gpu::*;
 pub use music::*;
 pub use particles::*;
 pub use random::{Dice, Group, palette};
-pub use shapes::*;
+pub use shapes::{Placement, Shape};
 pub use view::*;
 
 use serde::{Deserialize, Serialize};
@@ -103,6 +105,8 @@ pub struct Physics {
     pub air_drag: f32,
     /// Whether balls bounce off each other. Off means they pass through one another.
     pub ball_collisions: bool,
+    /// How balls bump into each other when `ball_collisions` is on.
+    pub contact: BallContact,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -153,12 +157,18 @@ pub enum Container {
         /// Colours from the smallest ring to the biggest, spread evenly.
         gradient: Vec<Color>,
     },
-    /// An arena with any outline, from [`Scene::shapes`] by name.
+    /// A custom shape from [`Scene::shapes`], by name. Balls stay inside its closed outlines.
     Custom {
-        /// Where the shape's origin sits.
+        shape: String,
+        /// Where the shape's middle sits.
         #[serde(default)]
         center: Vec2,
-        shape: String,
+        /// Distance from the centre to the shape's farthest point.
+        #[serde(default = "custom_radius")]
+        radius: f32,
+        /// Degrees, clockwise.
+        #[serde(default)]
+        rotation: f32,
         thickness: f32,
         color: Color,
     },
@@ -205,20 +215,43 @@ pub enum Obstacle {
         thickness: f32,
         color: Color,
     },
-    /// An outline from [`Scene::shapes`] by name, placed, turned (degrees) and scaled.
+    /// A custom shape from [`Scene::shapes`], by name. Balls bounce off its outline from
+    /// either side.
     Shape {
         shape: String,
         position: Vec2,
+        /// Degrees, clockwise.
         rotation: f32,
+        /// Distance from `position` to the shape's farthest point, in pixels.
         scale: f32,
+        #[serde(default = "shape_thickness")]
+        thickness: f32,
+        #[serde(default = "shape_color")]
+        color: Color,
     },
 }
 
 /// One peg or wall piece, with grids expanded into single pegs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ObstaclePart {
-    Disc { center: Vec2, radius: f32, color: Color },
-    Segment { from: Vec2, to: Vec2, thickness: f32, color: Color },
+    Disc {
+        center: Vec2,
+        radius: f32,
+        color: Color,
+    },
+    Segment {
+        from: Vec2,
+        to: Vec2,
+        thickness: f32,
+        color: Color,
+    },
+    /// A custom shape, by its index in [`Scene::shapes`].
+    Shape {
+        shape: u32,
+        place: Placement,
+        thickness: f32,
+        color: Color,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -366,6 +399,18 @@ pub struct ChordStep {
     pub seconds: f32,
 }
 
+fn custom_radius() -> f32 {
+    480.0
+}
+
+fn shape_thickness() -> f32 {
+    4.0
+}
+
+fn shape_color() -> Color {
+    Color::rgb(0xc8, 0xd8, 0xff)
+}
+
 impl Default for Scene {
     fn default() -> Self {
         Self {
@@ -430,6 +475,7 @@ impl Default for Physics {
             restitution: 1.0,
             air_drag: 0.0,
             ball_collisions: false,
+            contact: BallContact::default(),
         }
     }
 }
@@ -551,13 +597,13 @@ impl Container {
     /// is half its longer side, and for rings the biggest ring's radius.
     pub fn size(&self) -> f32 {
         match *self {
-            Container::Circle { radius, .. } | Container::Polygon { radius, .. } => radius,
+            Container::Circle { radius, .. } | Container::Polygon { radius, .. } | Container::Custom { radius, .. } => {
+                radius
+            }
             Container::Rect { size, .. } => size.x.max(size.y) * 0.5,
             Container::Rings { count, inner_radius, spacing, .. } => {
                 ring_radius(inner_radius, spacing, count.max(1) - 1)
             }
-            // Until custom shapes are measured, treat them like the default ring.
-            Container::Custom { .. } => 508.0,
         }
     }
 
@@ -599,7 +645,7 @@ impl Obstacle {
             Obstacle::Line { from, to, thickness, color } => {
                 out.push(ObstaclePart::Segment { from, to, thickness, color })
             }
-            // Shaped obstacles are flattened into wall pieces once custom shapes are in.
+            // Shapes are looked up by name, which needs the scene: see `Scene::obstacle_parts`.
             Obstacle::Shape { .. } => {}
         }
     }
@@ -610,9 +656,37 @@ impl Scene {
     pub fn obstacle_parts(&self) -> Vec<ObstaclePart> {
         let mut parts = Vec::new();
         for obstacle in &self.obstacles {
-            obstacle.parts(&mut parts);
+            match obstacle {
+                Obstacle::Shape { shape, position, rotation, scale, thickness, color } => {
+                    // A shape that isn't there (renamed or deleted) is simply left out.
+                    if let Some(index) = self.shape_index(shape) {
+                        let place = Placement { center: *position, size: *scale, rotation: rotation.to_radians() };
+                        parts.push(ObstaclePart::Shape { shape: index, place, thickness: *thickness, color: *color });
+                    }
+                }
+                _ => obstacle.parts(&mut parts),
+            }
         }
         parts
+    }
+
+    /// Index in [`Scene::shapes`] of the shape called `name`.
+    pub fn shape_index(&self, name: &str) -> Option<u32> {
+        self.shapes.iter().position(|s| s.name == name).map(|i| i as u32)
+    }
+
+    /// The shape called `name`.
+    pub fn shape(&self, name: &str) -> Option<&Shape> {
+        self.shapes.iter().find(|s| s.name == name)
+    }
+
+    /// A name for a new shape that no other shape has, starting from `base`.
+    pub fn unique_shape_name(&self, base: &str) -> String {
+        let base = if base.trim().is_empty() { "Shape" } else { base.trim() };
+        if self.shape(base).is_none() {
+            return base.to_string();
+        }
+        (2..).map(|n| format!("{base} {n}")).find(|name| self.shape(name).is_none()).unwrap()
     }
 
     /// Built-in starting points shown in the editor's preset gallery, each with a one-line description.
@@ -714,6 +788,43 @@ impl Scene {
                 name: "Drum machine",
                 description: "Balls in rings play a drum kit: kick, snare and a crash on every escape.",
                 scene: Scene::drum_machine(),
+            },
+            // Physics workstream presets.
+            Preset {
+                name: "Billiards",
+                description: "A pool break from above: the cue ball smashes into a rack of fifteen.",
+                scene: Scene::billiards(),
+            },
+            Preset {
+                name: "Stacking",
+                description: "Hundreds of balls pour into a box and pile up into a still heap.",
+                scene: Scene::stacking(),
+            },
+            Preset {
+                name: "Newton's cradle",
+                description: "One ball knocks into a row of five and the last one flies off.",
+                scene: Scene::newtons_cradle(),
+            },
+            Preset {
+                name: "Jelly",
+                description: "Squishy jelly balls drop into a ring and wobble against each other.",
+                scene: Scene::jelly(),
+            },
+            Preset {
+                name: "Rope bridge",
+                description: "A sagging rope catches a stream of falling balls.",
+                scene: Scene::rope_bridge(),
+            },
+            Preset { name: "Cloth", description: "Balls are fired into a hanging curtain.", scene: Scene::cloth() },
+            Preset {
+                name: "Heart arena",
+                description: "Glowing balls bounce around inside a heart-shaped arena.",
+                scene: Scene::heart_arena(),
+            },
+            Preset {
+                name: "Liquid",
+                description: "Liquid sloshes into a box and balls splash down into it.",
+                scene: Scene::liquid(),
             },
         ]
         .into_iter()

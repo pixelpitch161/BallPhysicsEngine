@@ -279,8 +279,9 @@ impl Scene {
                 Room::Circle { center, radius: (inner - wall).max(1.0) }
             }
             Container::Rect { center, size, .. } => Room::Box { center, half: (size * 0.5 - wall).max(Vec2::ONE) },
-            Container::Custom { center, .. } => {
-                Room::Circle { center, radius: (self.container.size() - wall).max(1.0) }
+            Container::Custom { ref shape, center, radius, .. } => {
+                let inner = self.shape(shape).map_or(0.3, |s| s.inner_radius());
+                Room::Circle { center, radius: (radius * inner - wall).max(1.0) }
             }
         }
     }
@@ -302,6 +303,10 @@ impl Scene {
                 crate::ObstaclePart::Segment { from, to, thickness, .. } => {
                     reach(from, thickness * 0.5);
                     reach(to, thickness * 0.5);
+                }
+                crate::ObstaclePart::Shape { shape, place, thickness, .. } => {
+                    let size = self.shapes.get(shape as usize).map_or(1.0, |s| s.reach());
+                    reach(place.center, place.size * size + thickness * 0.5)
                 }
             }
         }
@@ -424,6 +429,10 @@ impl Scene {
 
     fn roll_shape(&mut self, dice: &mut Dice, amount: f32) {
         let (far, half) = self.obstacle_reach();
+        let custom_shape = match &self.container {
+            Container::Custom { shape, .. } => self.shape(shape).cloned(),
+            _ => None,
+        };
         let line = line_color(dice);
         let thickness = dice.range(1.5, 8.0);
         match &mut self.container {
@@ -448,6 +457,17 @@ impl Scene {
                 }
                 set(radius, dice.range(300.0, MAX_ARENA_RADIUS), amount);
                 *radius = radius.max((far + 20.0) / (PI / (*sides).max(3) as f32).cos());
+                let turn = if dice.chance(0.5) { 0.0 } else { dice.range(-180.0, 180.0) };
+                set(rotation, turn, amount);
+                set(t, thickness, amount);
+                set_color(color, line, dice, amount);
+            }
+            Container::Custom { radius, rotation, thickness: t, color, .. } => {
+                set(radius, dice.range(300.0, MAX_ARENA_RADIUS), amount);
+                // Big enough that the shape's nearest wall clears every peg, within reason: a
+                // thin shape would need to be far bigger than the video.
+                let inner = custom_shape.as_ref().map_or(1.0, |s| s.inner_radius()).max(0.35);
+                *radius = radius.max(((far + 20.0) / inner).min(2.0 * MAX_ARENA_RADIUS));
                 let turn = if dice.chance(0.5) { 0.0 } else { dice.range(-180.0, 180.0) };
                 set(rotation, turn, amount);
                 set(t, thickness, amount);
@@ -486,10 +506,6 @@ impl Scene {
                     let fits = ((MAX_ARENA_RADIUS - *inner_radius) / *spacing).floor().max(0.0) as u32 + 1;
                     *count = (*count).min(fits).max(1);
                 }
-            }
-            Container::Custom { thickness: t, color, .. } => {
-                set(t, thickness, amount);
-                set_color(color, line, dice, amount);
             }
         }
     }
@@ -746,7 +762,7 @@ mod tests {
                     let name = format!("{} seed {seed} amount {amount}", preset.name);
                     assert!(balls_inside(&scene), "balls outside the arena: {name}");
                     assert!(fits_frame(&scene) || !fits_frame(&preset.scene), "arena too big: {name}");
-                    assert!(scene.ball_count() >= 1, "{name}");
+                    assert!(scene.ball_count() >= 1 || !scene.bodies.is_empty(), "{name}");
                     assert!(scene.sound.low_note <= scene.sound.high_note, "{name}");
                     assert!(scene.rules.max_balls >= 1, "{name}");
                     for step in &scene.sound.progression {

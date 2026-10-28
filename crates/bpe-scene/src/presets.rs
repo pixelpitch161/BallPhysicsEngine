@@ -784,3 +784,409 @@ impl Scene {
         }
     }
 }
+
+// ---------- Balls bumping into each other, soft bodies and custom shapes ----------
+
+/// Contact settings for scenes made for balls bumping into each other.
+fn bumping(quality: u32, friction: f32, spin: bool) -> BallContact {
+    BallContact { quality, friction, spin, ..BallContact::default() }
+}
+
+impl Scene {
+    /// A pool break seen from above: a cue ball smashes into a rack of fifteen.
+    pub fn billiards() -> Self {
+        let colors = [
+            Color::rgb(0xff, 0xd2, 0x3e),
+            Color::rgb(0x3e, 0x7b, 0xff),
+            Color::rgb(0xff, 0x3e, 0x3e),
+            Color::rgb(0x9a, 0x4d, 0xff),
+            Color::rgb(0xff, 0x8a, 0x2e),
+            Color::rgb(0x2e, 0xc8, 0x6a),
+            Color::rgb(0xb8, 0x2e, 0x4a),
+            Color::rgb(0x30, 0x30, 0x38),
+        ];
+        let radius = 26.0;
+        let mut spawners = Vec::new();
+        let mut k = 0;
+        // A triangle pointing at the cue ball, rows of 1 to 5 balls.
+        for row in 0..5 {
+            for i in 0..=row {
+                let x = (i as f32 - row as f32 * 0.5) * radius * 2.02;
+                let y = -180.0 - row as f32 * radius * 1.75;
+                spawners.push(Spawner::Single {
+                    position: Vec2::new(x, y),
+                    velocity: Vec2::ZERO,
+                    radius,
+                    color: colors[k % colors.len()],
+                    depth: 0.0,
+                    depth_velocity: 0.0,
+                });
+                k += 1;
+            }
+        }
+        spawners.push(Spawner::Single {
+            position: Vec2::new(4.0, 520.0),
+            // Just under the default speed limit, so the break isn't slowed on its first step.
+            velocity: Vec2::new(-12.0, -2990.0),
+            radius,
+            color: Color::rgb(0xf4, 0xf0, 0xe6),
+            depth: 0.0,
+            depth_velocity: 0.0,
+        });
+        Self {
+            name: "Billiards".into(),
+            container: Container::Rect {
+                center: Vec2::ZERO,
+                size: Vec2::new(760.0, 1500.0),
+                thickness: 14.0,
+                color: Color::rgb(0x6b, 0x3f, 0x22),
+            },
+            spawners,
+            physics: Physics {
+                gravity: Vec2::ZERO,
+                restitution: 0.9,
+                air_drag: 0.18,
+                ball_collisions: true,
+                contact: BallContact {
+                    // Corner and middle pockets, just inside the cushions.
+                    pockets: [(-1.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (1.0, 1.0)]
+                        .map(|(x, y)| Pocket {
+                            position: Vec2::new(x * 364.0, y * 734.0),
+                            radius: if y == 0.0 { 46.0 } else { 56.0 },
+                        })
+                        .to_vec(),
+                    ..bumping(8, 0.08, true)
+                },
+                ..Physics::default()
+            },
+            look: Look {
+                background_top: Color::rgb(0x0b, 0x4a, 0x2c),
+                background_bottom: Color::rgb(0x05, 0x26, 0x16),
+                trail_seconds: 0.12,
+                trail_width: 0.6,
+                ball_glow: 0.15,
+                flash_size: 22.0,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["C", "G", "Am", "F"], 3.0),
+                low_note: 60,
+                high_note: 90,
+                instrument: Instrument::Pluck { decay: 0.35, brightness: 0.7 },
+                min_impact_speed: 40.0,
+                full_volume_speed: 1600.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 15.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Hundreds of balls pour into a box and pile up into a heap that holds still.
+    pub fn stacking() -> Self {
+        Self {
+            name: "Stacking".into(),
+            container: Container::Rect {
+                center: Vec2::new(0.0, 100.0),
+                size: Vec2::new(800.0, 1300.0),
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Stream {
+                position: Vec2::new(0.0, -480.0),
+                velocity: Vec2::new(0.0, 200.0),
+                radius: 16.0,
+                count: 320,
+                interval: 0.045,
+                jitter: 220.0,
+                gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            physics: Physics {
+                gravity: Vec2::new(0.0, 1400.0),
+                restitution: 0.35,
+                ball_collisions: true,
+                contact: bumping(12, 0.4, false),
+                ..Physics::default()
+            },
+            rules: BounceRules { max_balls: 400, ..BounceRules::default() },
+            look: Look { trail_seconds: 0.0, ball_glow: 0.2, flash_strength: 0.25, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["F", "C", "G", "Am"], 3.0),
+                low_note: 60,
+                high_note: 92,
+                instrument: Instrument::Pluck { decay: 0.4, brightness: 0.6 },
+                min_impact_speed: 150.0,
+                full_volume_speed: 1500.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 22.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Five balls in a row: one swings in, the last one flies out, and back again.
+    pub fn newtons_cradle() -> Self {
+        let radius = 50.0;
+        let silver = Color::rgb(0xd8, 0xdc, 0xe8);
+        let mut spawners: Vec<Spawner> = (0..5)
+            .map(|i| Spawner::Single {
+                position: Vec2::new((i as f32 - 2.0) * radius * 2.0, 0.0),
+                velocity: Vec2::ZERO,
+                radius,
+                color: silver,
+                depth: 0.0,
+                depth_velocity: 0.0,
+            })
+            .collect();
+        spawners.push(Spawner::Single {
+            position: Vec2::new(-420.0, 0.0),
+            velocity: Vec2::new(900.0, 0.0),
+            radius,
+            color: Color::rgb(0xff, 0x8a, 0x2e),
+            depth: 0.0,
+            depth_velocity: 0.0,
+        });
+        Self {
+            name: "Newton's cradle".into(),
+            container: Container::Rect {
+                center: Vec2::ZERO,
+                size: Vec2::new(1000.0, 104.0),
+                thickness: 2.0,
+                color: Color::rgb(0x50, 0x55, 0x70),
+            },
+            spawners,
+            physics: Physics {
+                gravity: Vec2::ZERO,
+                restitution: 1.0,
+                ball_collisions: true,
+                contact: BallContact { sleep: false, ..bumping(16, 0.0, false) },
+                ..Physics::default()
+            },
+            look: Look { trail_seconds: 0.2, trail_width: 0.9, ball_glow: 0.3, flash_size: 30.0, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Am", "Em", "F", "G"], 3.0),
+                low_note: 64,
+                high_note: 88,
+                instrument: Instrument::Pluck { decay: 1.4, brightness: 0.6 },
+                ..Sound::default()
+            },
+            video: Video { duration: 15.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Squishy jelly balls drop into a ring and wobble against each other.
+    pub fn jelly() -> Self {
+        Self {
+            name: "Jelly".into(),
+            spawners: Vec::new(),
+            bodies: Bodies {
+                jelly: vec![Jelly {
+                    center: Vec2::new(0.0, -220.0),
+                    columns: 3,
+                    rows: 3,
+                    spacing: 175.0,
+                    radius: 75.0,
+                    velocity: Vec2::new(120.0, 0.0),
+                    points: 28,
+                    squishiness: 0.6,
+                    gradient: RAINBOW.to_vec(),
+                }],
+                ..Bodies::default()
+            },
+            physics: Physics { gravity: Vec2::new(0.0, 900.0), ..Physics::default() },
+            look: Look { trail_seconds: 0.0, flash_size: 40.0, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["C", "Am", "F", "G"], 2.5),
+                low_note: 48,
+                high_note: 72,
+                instrument: Instrument::Pluck { decay: 1.0, brightness: 0.35 },
+                full_volume_speed: 900.0,
+                ..Sound::default()
+            },
+            video: Video { duration: 18.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A rope slung across the arena catches a stream of balls and bounces them off.
+    pub fn rope_bridge() -> Self {
+        Self {
+            name: "Rope bridge".into(),
+            container: Container::Rect {
+                center: Vec2::ZERO,
+                size: Vec2::new(900.0, 1500.0),
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Stream {
+                position: Vec2::new(0.0, -620.0),
+                velocity: Vec2::ZERO,
+                radius: 14.0,
+                count: 60,
+                interval: 0.25,
+                jitter: 260.0,
+                gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            bodies: Bodies {
+                ropes: vec![Rope {
+                    from: Vec2::new(-440.0, 0.0),
+                    to: Vec2::new(440.0, 0.0),
+                    points: 48,
+                    slack: 1.12,
+                    thickness: 10.0,
+                    ..Rope::default()
+                }],
+                ..Bodies::default()
+            },
+            physics: Physics { gravity: Vec2::new(0.0, 1000.0), restitution: 0.8, ..Physics::default() },
+            look: Look { trail_seconds: 0.25, trail_width: 0.7, ball_glow: 0.3, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["G", "D", "Em", "C"], 3.0),
+                low_note: 55,
+                high_note: 86,
+                instrument: Instrument::Pluck { decay: 0.8, brightness: 0.5 },
+                ..Sound::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A curtain hangs from the top while balls are fired into it.
+    pub fn cloth() -> Self {
+        Self {
+            name: "Cloth".into(),
+            container: Container::Rect {
+                center: Vec2::ZERO,
+                size: Vec2::new(1000.0, 1700.0),
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Stream {
+                position: Vec2::new(0.0, 700.0),
+                velocity: Vec2::new(0.0, -1500.0),
+                radius: 22.0,
+                count: 30,
+                interval: 0.5,
+                jitter: 300.0,
+                gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            bodies: Bodies {
+                cloths: vec![Cloth {
+                    center: Vec2::new(0.0, -300.0),
+                    size: Vec2::new(760.0, 640.0),
+                    columns: 36,
+                    rows: 30,
+                    pin: ClothPin::TopCorners,
+                    ..Cloth::default()
+                }],
+                ..Bodies::default()
+            },
+            physics: Physics { gravity: Vec2::new(0.0, 700.0), restitution: 0.7, ..Physics::default() },
+            look: Look { trail_seconds: 0.3, trail_width: 0.7, ball_glow: 0.3, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Dm", "Bb", "F", "C"], 3.0),
+                low_note: 50,
+                high_note: 81,
+                instrument: Instrument::Pluck { decay: 1.2, brightness: 0.4 },
+                ..Sound::default()
+            },
+            video: Video { duration: 18.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Glowing balls bounce around inside a heart.
+    pub fn heart_arena() -> Self {
+        let heart = Shape::heart();
+        Self {
+            name: "Heart arena".into(),
+            container: Container::Custom {
+                shape: heart.name.clone(),
+                center: Vec2::new(0.0, 40.0),
+                radius: 500.0,
+                rotation: 0.0,
+                thickness: 5.0,
+                color: Color::rgb(0xff, 0x6a, 0x9c),
+            },
+            shapes: vec![heart],
+            spawners: vec![Spawner::Grid {
+                center: Vec2::new(0.0, 60.0),
+                columns: 12,
+                rows: 12,
+                spacing: 18.0,
+                radius: 5.0,
+                velocity: Vec2::new(-380.0, -320.0),
+                gradient: vec![
+                    Color::rgb(0xff, 0x3e, 0x8e),
+                    Color::rgb(0xff, 0xb8, 0x2e),
+                    Color::rgb(0xff, 0x6a, 0x9c),
+                ],
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 300.0), ..Physics::default() },
+            look: Look {
+                background_top: Color::rgb(0x2a, 0x02, 0x1a),
+                background_bottom: Color::rgb(0x06, 0x00, 0x04),
+                trail_seconds: 0.35,
+                ball_glow: 0.2,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["F", "Am", "Dm", "Bb"], 3.0),
+                low_note: 57,
+                high_note: 88,
+                ..Sound::default()
+            },
+            video: Video { duration: 20.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A block of liquid sloshes into a box and balls splash down into it.
+    pub fn liquid() -> Self {
+        Self {
+            name: "Liquid".into(),
+            container: Container::Rect {
+                center: Vec2::new(0.0, 150.0),
+                size: Vec2::new(860.0, 1200.0),
+                thickness: 4.0,
+                color: Color::rgb(0xd8, 0xdc, 0xd0),
+            },
+            spawners: vec![Spawner::Stream {
+                position: Vec2::new(0.0, -420.0),
+                velocity: Vec2::ZERO,
+                radius: 24.0,
+                count: 8,
+                interval: 1.5,
+                jitter: 250.0,
+                gradient: vec![Color::rgb(0xff, 0x8a, 0x2e), Color::rgb(0xff, 0x3e, 0x8e)],
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            bodies: Bodies {
+                fluid: Fluid {
+                    count: 3000,
+                    center: Vec2::new(-200.0, 100.0),
+                    size: Vec2::new(380.0, 600.0),
+                    radius: 6.0,
+                    thickness: 0.15,
+                    ..Fluid::default()
+                },
+                ..Bodies::default()
+            },
+            physics: Physics { gravity: Vec2::new(0.0, 1200.0), restitution: 0.6, ..Physics::default() },
+            look: Look { trail_seconds: 0.0, ball_glow: 0.3, ..Look::default() },
+            video: Video { duration: 15.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+}
