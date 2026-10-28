@@ -31,7 +31,7 @@ use eframe::egui::{
 };
 use std::ops::RangeInclusive;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Balls,
     Arena,
@@ -208,6 +208,7 @@ pub const ARROW_SECONDS: f32 = 0.35;
 
 pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
     tab_bar(ui, &mut inspector.tab);
+    crate::command_palette::drawing_tab(ui.ctx(), inspector.tab);
     let mut roll = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
@@ -419,6 +420,7 @@ fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         let response = hint(ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())), help);
+        crate::command_palette::setting_row(&response, text);
         if !help.is_empty() {
             help_icon(ui, help);
         }

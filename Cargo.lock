@@ -217,6 +217,7 @@ dependencies = [
  "anyhow",
  "bpe-audio",
  "bpe-export",
+ "bpe-graph",
  "bpe-render",
  "bpe-scene",
  "bpe-sim",
