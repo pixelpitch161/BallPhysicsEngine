@@ -50,7 +50,8 @@ fn caption_layout_per_frame() {
 #[test]
 #[ignore]
 fn prescoring_rate() {
-    let presets = Scene::presets();
+    // Flat scenes; 3D ones simulate a whole 3D world and are timed by `prescoring_per_preset`.
+    let presets: Vec<_> = Scene::presets().into_iter().filter(|p| p.scene.space().is_none()).collect();
     let library = EffectLibrary::new();
     let vary = Vary::parse("balls,arena,bounces,look,captions").unwrap();
     let weights = Weights::default();
@@ -81,4 +82,24 @@ fn prescoring_rate() {
         rate / threads as f64,
         rate / threads as f64 * 8.0
     );
+}
+
+#[test]
+#[ignore]
+fn prescoring_per_preset() {
+    for preset in Scene::presets() {
+        let mut scene = preset.scene.clone();
+        scene.video.duration = 30.0;
+        let started = Instant::now();
+        let stats = score::simulate(&scene);
+        let simulated = started.elapsed().as_secs_f64();
+        score::parts(&scene, &stats, &ScoreInputs::default());
+        eprintln!(
+            "{:<28} {:6.0} ms  ({} events)",
+            preset.name,
+            started.elapsed().as_secs_f64() * 1000.0,
+            stats.hits.len()
+        );
+        let _ = simulated;
+    }
 }

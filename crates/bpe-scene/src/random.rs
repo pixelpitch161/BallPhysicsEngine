@@ -879,6 +879,17 @@ mod tests {
         assert!(spacing < 19.0);
     }
 
+    /// Whether two RON texts are the same apart from tiny differences in their numbers.
+    fn nearly_same(a: &str, b: &str) -> bool {
+        let split = |s: &str| s.split(|c: char| "(),[]: ".contains(c)).map(str::to_string).collect::<Vec<_>>();
+        let (a, b) = (split(a), split(b));
+        a.len() == b.len()
+            && a.iter().zip(&b).all(|(x, y)| match (x.parse::<f64>(), y.parse::<f64>()) {
+                (Ok(x), Ok(y)) => (x - y).abs() <= 1e-5 * x.abs().max(y.abs()).max(1.0),
+                _ => x == y,
+            })
+    }
+
     #[test]
     fn old_seeds_still_make_the_same_scenes() {
         // Variations of every preset made by the explorer before new groups were added (one scene
@@ -895,7 +906,11 @@ mod tests {
                 let preset = presets.iter().find(|p| p.name == expected.name).expect("an old preset was removed");
                 let groups: Vec<Group> =
                     (0..preset.scene.spawners.len()).map(Group::Balls).chain(old_groups.iter().copied()).collect();
-                assert_eq!(preset.scene.variation(&groups, seed, amount), expected, "{} seed {seed}", preset.name);
+                // Release and debug builds can round the last bit of a float differently, so
+                // numbers only need to agree to a few parts in a million.
+                let rolled = ron::to_string(&preset.scene.variation(&groups, seed, amount)).unwrap();
+                let expected = ron::to_string(&expected).unwrap();
+                assert!(nearly_same(&rolled, &expected), "{} seed {seed}:\n{rolled}\n{expected}", preset.name);
                 checked += 1;
             }
         }
