@@ -5,8 +5,11 @@
 
 pub mod chord;
 pub mod instruments;
+mod scene_sound;
 mod song;
 mod voices;
+
+pub use scene_sound::{SceneSound, Song, in_video_time, load_song, on_beat_share, render_scene, sim_inputs};
 
 use anyhow::Context;
 use bpe_scene::{Instrument, Scene};
@@ -90,8 +93,13 @@ pub struct MixOptions<'a> {
 }
 
 impl MixOptions<'_> {
-    fn video_time(&self, time: f64) -> f64 {
-        self.time_map.map_or(time, |map| map(time))
+    /// When an event is heard. Beats already come in video time; everything else happened in
+    /// simulation time.
+    fn video_time(&self, event: &Event) -> f64 {
+        match self.time_map {
+            Some(map) if !scene_sound::in_video_clock(event.kind) => map(event.time),
+            _ => event.time,
+        }
     }
 }
 
@@ -152,7 +160,7 @@ fn classic_layer(
         if hit.speed < sound.min_impact_speed {
             continue;
         }
-        let time = options.video_time(hit.time);
+        let time = options.video_time(hit);
         let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;

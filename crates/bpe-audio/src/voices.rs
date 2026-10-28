@@ -231,7 +231,7 @@ pub(crate) fn layer(
         if !rows.iter().any(|r| class.matches(r.filter)) {
             continue;
         }
-        let time = options.video_time(event.time);
+        let time = options.video_time(event);
         let start = (time * SAMPLE_RATE as f64).round() as usize;
         if start >= frames {
             break;
