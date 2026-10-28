@@ -109,7 +109,9 @@ impl Palette {
                         }
                         let selected = index == self.highlighted;
                         let row = ui.add(
-                            egui::Button::selectable(selected, &spec.title).min_size(vec2(ui.available_width(), 24.0)),
+                            egui::Button::selectable(selected, spec.title.as_str())
+                                .shortcut_text(RichText::new(&spec.category).small())
+                                .min_size(vec2(ui.available_width(), 24.0)),
                         );
                         if selected && (up || down) {
                             row.scroll_to_me(None);

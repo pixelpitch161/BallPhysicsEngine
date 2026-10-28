@@ -111,6 +111,8 @@ pub struct RingBreak {
 pub struct Simulation {
     scene: Scene,
     balls: Vec<Ball>,
+    /// How many of `balls` have been removed; they stay in the list so indices hold.
+    removed: usize,
     step: u64,
     dt: f32,
     arena: ArenaState,
@@ -205,6 +207,7 @@ impl Simulation {
             broadphase: broadphase::Broadphase::default(),
             bodies: bodies::BodyState::new(scene),
             rules: rules::RuleState::new(scene),
+            removed: 0,
         };
         sim.controller = beat_sync::Controller::new(scene, inputs);
         sim.obstacle_grid = ObstacleGrid::new(&sim.obstacles);
@@ -511,7 +514,7 @@ impl Simulation {
             events.push(event);
         }
         for (parent, start) in spawns {
-            if self.balls.len() >= self.scene.rules.max_balls as usize {
+            if self.alive_balls() >= self.scene.rules.max_balls as usize {
                 break;
             }
             let mut child = split_ball(&self.balls[parent as usize], self.balls.len(), self.scene.rules.spawn_spread);
@@ -533,9 +536,15 @@ impl Simulation {
     fn remove(&mut self, index: usize, time: f64, events: &mut Vec<Event>) {
         let Some(ball) = self.balls.get_mut(index).filter(|b| b.alive) else { return };
         ball.alive = false;
+        self.removed += 1;
         let position = ball.position;
         ball.velocity = Vec2::ZERO;
         events.push(Event { time, ball: index as u32, position, depth: 0.0, speed: 0.0, kind: EventKind::Remove });
+    }
+
+    /// Balls still in play.
+    pub fn alive_balls(&self) -> usize {
+        self.balls.len() - self.removed
     }
 
     /// Adds a ball partway through, with a trail that starts where it is.
@@ -620,9 +629,12 @@ pub struct Playback {
     /// were at the time.
     checkpoints: Vec<(Simulation, usize)>,
     checkpoint_every: u64,
-    /// Balls there at the very start, which [`Playback::counts_at`] counts from.
-    start_balls: u32,
+    /// Running totals after every [`TALLY_STRIDE`] events, so [`Playback::counts_at`] only
+    /// adds up the events since the last one.
+    tally: Vec<Counts>,
 }
+
+const TALLY_STRIDE: usize = 2048;
 
 impl Playback {
     /// A playback of `scene` with no song.
@@ -635,7 +647,8 @@ impl Playback {
         let checkpoint_every = (CHECKPOINT_SECONDS * scene.physics.steps_per_second.max(1) as f64).ceil() as u64;
         let checkpoints = vec![(sim.clone(), 0)];
         let start_balls = sim.balls().len() as u32;
-        Self { sim, events: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1), start_balls }
+        let tally = vec![Counts { balls: start_balls, ..Counts::default() }];
+        Self { sim, events: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1), tally }
     }
 
     pub fn simulation(&self) -> &Simulation {
@@ -671,9 +684,15 @@ impl Playback {
 
     /// Running totals at `time`, as far as the playback has run.
     pub fn counts_at(&self, time: f64) -> Counts {
-        let mut counts = Counts { balls: self.start_balls, ..Counts::default() };
         let end = self.events.partition_point(|e| e.time <= time);
-        for event in &self.events[..end] {
+        let block = (end / TALLY_STRIDE).min(self.tally.len() - 1);
+        let mut counts = self.tally[block].clone();
+        self.count(&mut counts, &self.events[block * TALLY_STRIDE..end]);
+        counts
+    }
+
+    fn count(&self, counts: &mut Counts, events: &[Event]) {
+        for event in events {
             counts.add(event);
             if let EventKind::Action { rule, action } = event.kind
                 && let Some((counter, amount)) = self.sim.rules.counter_change(rule, action)
@@ -684,7 +703,17 @@ impl Playback {
                 counts.counters[counter] += amount;
             }
         }
-        counts
+    }
+
+    /// Brings the running totals in line with the events after they grew or were cut back.
+    fn update_tally(&mut self) {
+        self.tally.truncate(self.events.len() / TALLY_STRIDE + 1);
+        while self.tally.len() * TALLY_STRIDE <= self.events.len() {
+            let block = self.tally.len();
+            let mut counts = self.tally[block - 1].clone();
+            self.count(&mut counts, &self.events[(block - 1) * TALLY_STRIDE..block * TALLY_STRIDE]);
+            self.tally.push(counts);
+        }
     }
 
     pub fn seek(&mut self, time: f64) {
@@ -715,9 +744,11 @@ impl Playback {
                 && self.sim.step.is_multiple_of(8)
                 && started.elapsed() >= budget
             {
+                self.update_tally();
                 return self.sim.step >= target;
             }
         }
+        self.update_tally();
         true
     }
 
@@ -860,6 +891,28 @@ mod tests {
     use bpe_scene::{Ease, Key, Property, Track, Value};
     use broadphase::{collide_balls, resolve_pair};
     use grid::BallGrid;
+
+    #[test]
+    fn counts_match_a_plain_sum_across_tally_blocks_and_seeks() {
+        let scene = Scene::presets().into_iter().find(|p| p.name == "Plinko").unwrap().scene;
+        let mut playback = Playback::new(&scene);
+        let end = scene.video.duration as f64;
+        playback.seek(end);
+        assert!(playback.events().len() > 3 * TALLY_STRIDE, "needs several blocks, has {}", playback.events().len());
+        let plain = |playback: &Playback, time: f64| {
+            let mut counts = Counts { balls: playback.tally[0].balls, ..Counts::default() };
+            playback.events().iter().filter(|e| e.time <= time).for_each(|e| counts.add(e));
+            counts
+        };
+        for time in [0.0, 0.5, end * 0.3, end * 0.7, end] {
+            assert_eq!(playback.counts_at(time), plain(&playback, time), "at {time}");
+        }
+        playback.seek(end * 0.4);
+        playback.seek(end * 0.8);
+        for time in [1.0, end * 0.4, end * 0.79] {
+            assert_eq!(playback.counts_at(time), plain(&playback, time), "after seeking, at {time}");
+        }
+    }
 
     #[test]
     fn rolled_scenes_simulate_cleanly() {

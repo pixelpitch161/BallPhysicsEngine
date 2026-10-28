@@ -197,9 +197,9 @@ fn dropping_a_wire_on_empty_space_offers_only_blocks_that_fit() {
     drag(&mut harness, a, b);
     assert!(harness.state().editor.palette.is_some());
     // "When a ball hits" has no trigger input, so it isn't offered.
-    assert!(harness.query_by_label("When a ball hits").is_none());
-    assert!(harness.query_by_label("Flash the screen").is_some());
-    harness.get_by_label("Spawn balls").click();
+    assert!(harness.query_by_label_contains("When a ball hits").is_none());
+    assert!(harness.query_by_label_contains("Flash the screen").is_some());
+    harness.get_by_label_contains("Spawn balls").click();
     harness.run();
     let state = harness.state();
     let id = state.graph.nodes.iter().find(|n| n.kind == "spawn").expect("spawn added").id;

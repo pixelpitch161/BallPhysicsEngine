@@ -211,7 +211,8 @@ impl FrameData {
                 if intensity < 0.002 {
                     continue;
                 }
-                let c = sim.balls()[hit.ball as usize].color;
+                let Some(ball) = hit.ball_index().and_then(|i| sim.balls().get(i)) else { continue };
+                let c = ball.color;
                 let color = [
                     (c[0] + 1.0) * 0.5 * intensity,
                     (c[1] + 1.0) * 0.5 * intensity,
@@ -346,10 +347,10 @@ impl FrameData {
         let mut total = 0;
         // Only look this far back, so long clips with many balls stay quick to draw.
         for hit in playback.hits().iter().rev().take(MAX_STRING_SCAN) {
-            if !hit.kind.is_hit() {
+            let Some(index) = hit.ball_index().filter(|&i| i < balls.len() && hit.kind.is_hit()) else {
                 continue;
-            }
-            let count = &mut counts[hit.ball as usize];
+            };
+            let count = &mut counts[index];
             if *count >= per_ball {
                 continue;
             }
@@ -357,7 +358,7 @@ impl FrameData {
             if *count == per_ball {
                 full += 1;
             }
-            let ball = &balls[hit.ball as usize];
+            let ball = &balls[index];
             let c = ball.color;
             let color = [c[0], c[1], c[2], look.string_opacity];
             self.shapes.push(ShapeInstance::capsule(hit.position, ball.position, look.string_width * 0.5, color, 0.0));

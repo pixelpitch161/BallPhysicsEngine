@@ -26,11 +26,11 @@ pub fn items(ui: &mut Ui, target: &Target, can_reset: bool) -> bool {
         reset = true;
         ui.close();
     }
-    if let Some(property) = &target.property {
-        if ui.button("Keyframe at the playhead").on_hover_text("Animate this setting from here").clicked() {
-            keys::request(ui.ctx(), keys::Request::Toggle(property.clone()));
-            ui.close();
-        }
+    if let Some(property) = &target.property
+        && ui.button("Keyframe at the playhead").on_hover_text("Animate this setting from here").clicked()
+    {
+        keys::request(ui.ctx(), keys::Request::Toggle(property.clone()));
+        ui.close();
     }
     if pulse::available(target) {
         ui.menu_button("Pulse with music", |ui| pulse::menu(ui, target));
