@@ -1,4 +1,4 @@
-//! Soft bodies: jelly balls, ropes, cloth and liquid (Balls tab), and how balls bump into each
+//! Soft bodies: jelly balls, ropes and cloth (Balls tab), and how balls bump into each
 //! other (Bounces tab).
 
 use super::{
@@ -6,16 +6,39 @@ use super::{
 };
 use crate::theme;
 use bpe_scene::{
-    BallContact, CPU_FLUID_LIMIT, Cloth, ClothPin, Color, Container, Dice, Fluid, GOOD_CONTACT_QUALITY, Jelly, Pocket,
-    Rope, Scene, Vec2, palette,
+    BallContact, Cloth, ClothPin, Color, Container, Dice, GOOD_CONTACT_QUALITY, Jelly, Pocket, Rope, Scene, Vec2,
+    palette,
 };
 use eframe::egui::{self, RichText, Ui};
+
+/// One soft thing, by its kind and place in its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoftPick {
+    Jelly(usize),
+    Rope(usize),
+    Cloth(usize),
+    Liquid,
+}
 
 /// Panel state for this section that is not part of the scene.
 #[derive(Default)]
 pub struct State {
     /// Counts dice rolls, so each roll comes out different.
     rolls: u64,
+    /// The soft thing last clicked here or in the preview, highlighted and given handles.
+    pub selected: Option<SoftPick>,
+    /// Set when the preview picked something, so its card scrolls into view once.
+    pub scroll_to: bool,
+}
+
+impl State {
+    /// Picks a soft thing from the preview.
+    pub fn pick(&mut self, pick: SoftPick) {
+        if self.selected != Some(pick) {
+            self.scroll_to = true;
+        }
+        self.selected = Some(pick);
+    }
 }
 
 impl State {
@@ -39,6 +62,38 @@ enum Kind {
     Cloth,
 }
 
+impl Kind {
+    fn pick(self, index: usize) -> SoftPick {
+        match self {
+            Kind::Jelly => SoftPick::Jelly(index),
+            Kind::Rope => SoftPick::Rope(index),
+            Kind::Cloth => SoftPick::Cloth(index),
+        }
+    }
+}
+
+/// A soft thing's card frame, outlined when it is selected. Clicking anywhere on the card
+/// selects it, and picking it in the preview scrolls it into view.
+fn card_frame(ui: &mut Ui, pick: SoftPick, state: &mut State, add: impl FnOnce(&mut Ui)) {
+    let is_selected = state.selected == Some(pick);
+    let card = egui::Frame::new()
+        .fill(theme::CARD)
+        .stroke(egui::Stroke::new(
+            if is_selected { 1.5 } else { 1.0 },
+            if is_selected { theme::ACCENT } else { theme::LINE },
+        ))
+        .corner_radius(8.0)
+        .inner_margin(10.0)
+        .show(ui, add);
+    // Watch for a click without claiming it, so the sliders inside still get theirs.
+    if card.response.contains_pointer() && ui.input(|i| i.pointer.primary_clicked()) {
+        state.selected = Some(pick);
+    }
+    if is_selected && std::mem::take(&mut state.scroll_to) {
+        card.response.scroll_to_me(Some(egui::Align::Center));
+    }
+}
+
 /// A card with a title, Remove, Duplicate and dice buttons, and its rows.
 fn card(
     ui: &mut Ui,
@@ -46,67 +101,65 @@ fn card(
     title: String,
     kind: Kind,
     change: &mut Option<Change>,
+    state: &mut State,
     add: impl FnOnce(&mut Ui),
 ) {
     ui.push_id(id, |ui| {
-        egui::Frame::new()
-            .fill(theme::CARD)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(8.0)
-            .inner_margin(10.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(title).strong().color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Remove").on_hover_text("Delete this").clicked() {
-                            *change = Some(Change::Remove(kind, id.1));
-                        }
-                        if ui.small_button("Duplicate").on_hover_text("Add a copy of this").clicked() {
-                            *change = Some(Change::Duplicate(kind, id.1));
-                        }
-                        if dice_button(ui, "Roll random settings for this").clicked() {
-                            *change = Some(Change::Roll(kind, id.1));
-                        }
-                    });
+        card_frame(ui, kind.pick(id.1), state, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).strong().color(theme::TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Remove").on_hover_text("Delete this").clicked() {
+                        *change = Some(Change::Remove(kind, id.1));
+                    }
+                    if ui.small_button("Duplicate").on_hover_text("Add a copy of this").clicked() {
+                        *change = Some(Change::Duplicate(kind, id.1));
+                    }
+                    if dice_button(ui, "Roll random settings for this").clicked() {
+                        *change = Some(Change::Roll(kind, id.1));
+                    }
                 });
-                ui.add_space(4.0);
-                add(ui);
             });
+            ui.add_space(4.0);
+            add(ui);
+        });
         ui.add_space(6.0);
     });
 }
 
-/// Jelly balls, ropes, cloth and liquid in the Balls tab.
+/// Jelly balls, ropes and cloth in the Balls tab. Liquid has its own section (`liquid`).
 pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     ui.add_space(10.0);
     heading(ui, "Soft things");
     let bodies = &mut scene.bodies;
-    if bodies.is_empty() && bodies.fluid.count == 0 {
+    // Liquid also lives in `bodies`, but it has its own section and ignores the solver passes.
+    let none = bodies.jelly.is_empty() && bodies.ropes.is_empty() && bodies.cloths.is_empty();
+    if none {
         ui.label(
-            RichText::new("Squishy jelly balls, ropes, cloth and liquid that balls can bump into. Add some below.")
+            RichText::new("Squishy jelly balls, ropes and cloth that balls can bump into. Add some below.")
                 .color(theme::MUTED),
         );
     }
     let mut change = None;
     for (index, jelly) in bodies.jelly.iter_mut().enumerate() {
         let title = format!("Jelly balls · {} × {}", jelly.columns, jelly.rows);
-        card(ui, ("jelly", index), title, Kind::Jelly, &mut change, |ui| jelly_rows(ui, jelly));
+        card(ui, ("jelly", index), title, Kind::Jelly, &mut change, state, |ui| jelly_rows(ui, jelly));
     }
     for (index, rope) in bodies.ropes.iter_mut().enumerate() {
-        card(ui, ("rope", index), "Rope".into(), Kind::Rope, &mut change, |ui| rope_rows(ui, rope));
+        card(ui, ("rope", index), "Rope".into(), Kind::Rope, &mut change, state, |ui| rope_rows(ui, rope));
     }
     for (index, cloth) in bodies.cloths.iter_mut().enumerate() {
-        card(ui, ("cloth", index), "Cloth".into(), Kind::Cloth, &mut change, |ui| cloth_rows(ui, cloth));
-    }
-    if bodies.fluid.count > 0 {
-        liquid_card(ui, &mut bodies.fluid);
+        card(ui, ("cloth", index), "Cloth".into(), Kind::Cloth, &mut change, state, |ui| cloth_rows(ui, cloth));
     }
     match change {
-        Some(Change::Remove(kind, i)) => match kind {
-            Kind::Jelly => drop(bodies.jelly.remove(i)),
-            Kind::Rope => drop(bodies.ropes.remove(i)),
-            Kind::Cloth => drop(bodies.cloths.remove(i)),
-        },
+        Some(Change::Remove(kind, i)) => {
+            match kind {
+                Kind::Jelly => drop(bodies.jelly.remove(i)),
+                Kind::Rope => drop(bodies.ropes.remove(i)),
+                Kind::Cloth => drop(bodies.cloths.remove(i)),
+            }
+            state.selected = None;
+        }
         Some(Change::Duplicate(kind, i)) => {
             // The copy goes a little to the side, so it doesn't sit exactly on the original.
             let shift = Vec2::new(60.0, 60.0);
@@ -125,6 +178,7 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
                     bodies.cloths.insert(i + 1, copy);
                 }
             }
+            state.selected = Some(kind.pick(i + 1));
         }
         Some(Change::Roll(kind, i)) => {
             let mut dice = state.dice();
@@ -139,20 +193,18 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Jelly balls").on_hover_text("A block of squishy balls that wobble when they land").clicked() {
             bodies.jelly.push(Jelly { columns: 2, rows: 2, ..Jelly::default() });
+            state.selected = Some(SoftPick::Jelly(bodies.jelly.len() - 1));
         }
         if ui.button("+ Rope").on_hover_text("A rope held at both ends that balls bounce on").clicked() {
             bodies.ropes.push(Rope::default());
+            state.selected = Some(SoftPick::Rope(bodies.ropes.len() - 1));
         }
         if ui.button("+ Cloth").on_hover_text("A sheet hanging from its top edge that balls push around").clicked() {
             bodies.cloths.push(Cloth::default());
-        }
-        if bodies.fluid.count == 0
-            && ui.button("+ Liquid").on_hover_text("A block of liquid that splashes and settles").clicked()
-        {
-            bodies.fluid = Fluid { count: 2000, ..Fluid::default() };
+            state.selected = Some(SoftPick::Cloth(bodies.cloths.len() - 1));
         }
     });
-    if !bodies.is_empty() {
+    if !none {
         more(ui, "soft-more", |ui| {
             grid(ui, "soft-more-grid", |ui| {
                 slider(
@@ -361,66 +413,6 @@ fn cloth_rows(ui: &mut Ui, cloth: &mut Cloth) {
             );
         });
     });
-}
-
-fn liquid_card(ui: &mut Ui, fluid: &mut Fluid) {
-    let defaults = Fluid::default();
-    let mut remove = false;
-    ui.push_id("liquid", |ui| {
-        egui::Frame::new()
-            .fill(theme::CARD)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(8.0)
-            .inner_margin(10.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Liquid · {} drops", fluid.count)).strong().color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        remove = ui.small_button("Remove").on_hover_text("Take the liquid out").clicked();
-                    });
-                });
-                ui.add_space(4.0);
-                grid(ui, "liquid", |ui| {
-                    slider(
-                        ui,
-                        "Drops",
-                        "How many drops of liquid there are. Above 8000, the graphics card's liquid takes over: it looks the same but its drops make no sounds.",
-                        &mut fluid.count,
-                        2000,
-                        1..=20_000,
-                        |s| s.logarithmic(true),
-                    );
-                    slider(ui, "Drop size", "Radius of each drop in pixels.", &mut fluid.radius, defaults.radius, 2.0..=30.0, units(" px", 1));
-                    slider(
-                        ui,
-                        "Thickness",
-                        "0% flows like water, 100% oozes like honey.",
-                        &mut fluid.thickness,
-                        defaults.thickness,
-                        0.0..=1.0,
-                        percent,
-                    );
-                    color_row(ui, "Colour", "", &mut fluid.color, defaults.color);
-                });
-                if fluid.count > CPU_FLUID_LIMIT {
-                    ui.label(
-                        RichText::new("This much liquid runs on the graphics card, so its splashes make no sounds.")
-                            .color(theme::MUTED),
-                    );
-                }
-                more(ui, "liquid-more", |ui| {
-                    grid(ui, "liquid-more-grid", |ui| {
-                        position_row(ui, "Start position", "Where the middle of the liquid starts, from the centre of the video.", &mut fluid.center);
-                        slider(ui, "Start width", "Width of the block the liquid starts as.", &mut fluid.size.x, defaults.size.x, 20.0..=1080.0, units(" px", 0));
-                        launch_rows(ui, &mut fluid.velocity, Vec2::ZERO);
-                    });
-                });
-            });
-        ui.add_space(6.0);
-    });
-    if remove {
-        fluid.count = 0;
-    }
 }
 
 fn roll_jelly(jelly: &mut Jelly, dice: &mut Dice) {
@@ -645,13 +637,10 @@ mod tests {
         click(&mut harness, "+ Jelly balls");
         click(&mut harness, "+ Rope");
         click(&mut harness, "+ Cloth");
-        click(&mut harness, "+ Liquid");
         let bodies = &harness.state().scene.bodies;
         assert_eq!((bodies.jelly.len(), bodies.ropes.len(), bodies.cloths.len()), (1, 1, 1));
-        assert!(bodies.fluid.count > 0);
         harness.get_by_label("Squishiness");
         harness.get_by_label("Slack");
-        harness.get_by_label("Drops");
         // The rope's card: duplicate it, then remove the copy.
         // After the ball cards and the jelly's card.
         let rope = harness.state().scene.spawners.len() + 1;

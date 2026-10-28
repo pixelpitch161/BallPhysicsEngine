@@ -6,7 +6,7 @@ use crate::export::ExportPanel;
 use crate::gallery::Gallery;
 use crate::inspector::{self, Inspector, Tab};
 use crate::keys;
-use crate::preview::{Preview, PreviewQuality};
+use crate::preview::{Pick, Preview, PreviewQuality};
 use crate::timeline::{HitSummary, Timeline};
 use crate::workspace::Workspace;
 use crate::{node_editor, rules_workspace, shader_workspace};
@@ -257,6 +257,7 @@ impl StudioApp {
         self.history = History::default();
         self.swapped = true;
         self.inspector.selected = None;
+        self.inspector.soft.selected = None;
         self.time = 0.0;
         self.set_playing(false);
         self.scene_changed();
@@ -652,7 +653,7 @@ impl StudioApp {
             // Music workstream: Warp shows the simulation on its bent clock.
             self.warp.as_ref().map_or(self.time, |w| w.sim_time(self.time)),
             self.playing,
-            self.inspector.selected,
+            self.inspector.selected.map(Pick::Balls).or(self.inspector.soft.selected.map(Pick::Soft)),
             &self.inspector.effects.library,
             self.preview_quality,
         );
@@ -951,9 +952,19 @@ impl eframe::App for StudioApp {
         if outcome.drag_started {
             self.seek(0.0);
         }
-        if let Some(index) = outcome.selected {
-            self.inspector.selected = Some(index);
-            self.inspector.tab = Tab::Balls;
+        match outcome.selected {
+            Some(Pick::Balls(index)) => {
+                self.inspector.selected = Some(index);
+                self.inspector.soft.selected = None;
+                self.inspector.tab = Tab::Balls;
+            }
+            Some(Pick::Soft(pick)) => {
+                self.inspector.selected = None;
+                self.inspector.looks.picked.clear();
+                self.inspector.soft.pick(pick);
+                self.inspector.tab = Tab::Balls;
+            }
+            None => {}
         }
         if let Some(shown) = shown
             && !self.swapped
