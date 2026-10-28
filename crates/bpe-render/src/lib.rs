@@ -4,9 +4,12 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
+pub mod effects;
 mod frame;
 
-pub use frame::{BallInstance, FlashInstance, FrameData, TrailVertex};
+pub use effects::EffectLibrary;
+pub use effects::chain::MAX_HITS as MAX_EFFECT_HITS;
+pub use frame::{BallInstance, FlashInstance, FrameData, RecentHit, TrailVertex};
 pub use wgpu;
 
 use bpe_scene::{Container, Scene};
@@ -59,6 +62,7 @@ impl Globals {
 struct Targets {
     width: u32,
     height: u32,
+    hdr_texture: wgpu::Texture,
     hdr: wgpu::TextureView,
     bloom: Vec<wgpu::TextureView>,
     output: wgpu::Texture,
@@ -85,6 +89,7 @@ pub struct Renderer {
     trail_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
+    effects: effects::EffectChain,
     targets: Targets,
 }
 
@@ -322,6 +327,7 @@ impl Renderer {
             trail_buffer: GrowableBuffer::new("trail vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
+            effects: effects::EffectChain::new(device, HDR_FORMAT),
             targets,
         }
     }
@@ -335,6 +341,26 @@ impl Renderer {
             self.targets =
                 Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
         }
+    }
+
+    /// The effects this renderer can use. Built-ins only, unless [`Renderer::set_effect_library`] was called.
+    pub fn effect_library(&self) -> &EffectLibrary {
+        self.effects.library()
+    }
+
+    /// Shares a library (usually one with custom effect folders) with this renderer.
+    pub fn set_effect_library(&mut self, library: EffectLibrary) {
+        self.effects.set_library(library);
+    }
+
+    /// Effects the GPU refused even though they passed the shader check, as (id, message).
+    pub fn effect_gpu_errors(&self) -> &[(String, String)] {
+        self.effects.gpu_errors()
+    }
+
+    /// Starts feedback effects such as Echo afresh on the next frame.
+    pub fn reset_effects(&mut self) {
+        self.effects.reset();
     }
 
     /// The finished image: sRGB-encoded `Rgba8Unorm`.
@@ -381,6 +407,16 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
         }
+        self.effects.apply(
+            device,
+            queue,
+            &mut encoder,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            scene,
+            time,
+            frame,
+        );
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -481,7 +517,10 @@ impl Targets {
             })
         };
         let render_and_sample = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let hdr = texture("hdr", width, height, HDR_FORMAT, render_and_sample).create_view(&Default::default());
+        // The effect chain copies its result back into the HDR image.
+        let copyable = render_and_sample | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        let hdr_texture = texture("hdr", width, height, HDR_FORMAT, copyable);
+        let hdr = hdr_texture.create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -513,7 +552,7 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
             ],
         });
-        Self { width, height, hdr, bloom, output, output_view, down_sources, up_sources, composite }
+        Self { width, height, hdr_texture, hdr, bloom, output, output_view, down_sources, up_sources, composite }
     }
 }
 
@@ -605,5 +644,93 @@ mod tests {
         let pixels = renderer.read_output(&device, &queue).unwrap();
         assert_eq!(pixels.len(), 270 * 480 * 4);
         assert!(pixels.chunks(4).any(|p| p[0] > 100), "expected some bright pixels");
+    }
+
+    fn render_at(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &mut Renderer,
+        scene: &Scene,
+        times: &[f64],
+    ) -> Vec<u8> {
+        let mut playback = Playback::new(scene);
+        let mut frame = FrameData::default();
+        for &time in times {
+            playback.seek(time);
+            frame.fill(scene, &playback, renderer.pixel_size(scene));
+            renderer.render(device, queue, scene, time, &frame);
+        }
+        renderer.read_output(device, queue).unwrap()
+    }
+
+    fn brightness(pixels: &[u8]) -> u64 {
+        pixels.chunks(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum()
+    }
+
+    #[test]
+    fn every_builtin_effect_changes_the_picture() {
+        let Ok((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available, skipping");
+            return;
+        };
+        let mut scene = Scene::default();
+        let times: Vec<f64> = (0..20).map(|i| 3.0 + i as f64 / 60.0).collect();
+        let plain = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &times);
+        for info in EffectLibrary::new().list() {
+            scene.effects = vec![bpe_scene::Effect::new(info.id.clone())];
+            // Turn on every switch so toggled code paths run too.
+            for param in info.params.iter().filter(|p| p.kind == effects::ParamKind::Toggle) {
+                scene.effects[0].params.insert(param.name.clone(), 1.0);
+            }
+            let mut renderer = Renderer::new(&device, 135, 240);
+            let pixels = render_at(&device, &queue, &mut renderer, &scene, &times);
+            assert!(renderer.effect_gpu_errors().is_empty(), "{}: {:?}", info.id, renderer.effect_gpu_errors());
+            assert_ne!(pixels, plain, "{} left the picture unchanged", info.id);
+            assert!(brightness(&pixels) > brightness(&plain) / 4, "{} made the picture nearly black", info.id);
+        }
+    }
+
+    #[test]
+    fn switched_off_or_unknown_effects_change_nothing() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::default();
+        let plain = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        let mut off = bpe_scene::Effect::new("kaleidoscope");
+        off.enabled = false;
+        let mut zero = bpe_scene::Effect::new("liquid");
+        zero.amount = 0.0;
+        scene.effects = vec![off, zero, bpe_scene::Effect::new("no_such_effect")];
+        let pixels = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[2.0]);
+        assert_eq!(pixels, plain);
+    }
+
+    #[test]
+    fn echo_builds_up_and_restarts_after_a_seek() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut scene = Scene::rainbow_trails();
+        scene.look.trail_seconds = 0.0;
+        scene.effects = vec![bpe_scene::Effect::new("echo").with("fade", 0.95)];
+        let mut renderer = Renderer::new(&device, 135, 240);
+        let single = render_at(&device, &queue, &mut renderer, &scene, &[2.0]);
+        let times: Vec<f64> = (1..=60).map(|i| 1.0 + i as f64 / 60.0).collect();
+        let built_up = render_at(&device, &queue, &mut renderer, &scene, &times);
+        assert!(brightness(&built_up) > brightness(&single) + 1000, "echo should leave trails");
+        // Jumping back starts again from a clean slate, the same as a fresh renderer.
+        let again = render_at(&device, &queue, &mut renderer, &scene, &[2.0, 0.5]);
+        let fresh = render_at(&device, &queue, &mut Renderer::new(&device, 135, 240), &scene, &[0.5]);
+        assert!(again == fresh, "a seek backwards should clear the echo");
+    }
+
+    #[test]
+    fn effects_survive_a_resize_and_a_stack() {
+        let Ok((device, queue)) = headless_device() else { return };
+        let effects = ["echo", "kaleidoscope", "shockwave", "color_split", "film"];
+        let scene = Scene { effects: effects.into_iter().map(bpe_scene::Effect::new).collect(), ..Scene::default() };
+        let mut renderer = Renderer::new(&device, 135, 240);
+        render_at(&device, &queue, &mut renderer, &scene, &[1.0, 1.02]);
+        renderer.resize(&device, 90, 160);
+        let pixels = render_at(&device, &queue, &mut renderer, &scene, &[1.04, 1.06]);
+        assert_eq!(pixels.len(), 90 * 160 * 4);
+        assert!(brightness(&pixels) > 0);
     }
 }

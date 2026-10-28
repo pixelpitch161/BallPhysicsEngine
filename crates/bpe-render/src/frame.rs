@@ -29,11 +29,31 @@ pub struct FlashInstance {
     pub color: [f32; 4],
 }
 
+/// A wall hit that shader effects can react to.
+#[derive(Clone, Copy, Debug)]
+pub struct RecentHit {
+    /// World position of the hit.
+    pub position: [f32; 2],
+    /// Seconds since the hit.
+    pub age: f32,
+    /// Impact speed relative to the scene's full-volume speed, 0 to 1.5.
+    pub strength: f32,
+    /// Linear colour of the ball that hit.
+    pub color: [f32; 4],
+}
+
+/// How far back effects can see wall hits, in seconds.
+const HIT_MEMORY: f64 = 3.0;
+
 #[derive(Clone, Debug, Default)]
 pub struct FrameData {
     pub balls: Vec<BallInstance>,
     pub trails: Vec<TrailVertex>,
     pub flashes: Vec<FlashInstance>,
+    /// The newest wall hits, newest first, at most [`crate::MAX_EFFECT_HITS`].
+    pub hits: Vec<RecentHit>,
+    /// 0 to 1: jumps when balls hit the wall and fades over a fraction of a second.
+    pub pulse: f32,
 }
 
 impl FrameData {
@@ -49,6 +69,7 @@ impl FrameData {
         self.balls.clear();
         self.trails.clear();
         self.flashes.clear();
+        self.hits.clear();
         let sim = playback.simulation();
         let look = &scene.look;
 
@@ -85,6 +106,24 @@ impl FrameData {
                 ];
                 self.flashes.push(FlashInstance { center: hit.position.into(), size: look.flash_size, color });
             }
+        }
+
+        if !scene.effects.is_empty() {
+            let now = sim.time();
+            let full_speed = scene.sound.full_volume_speed.max(1.0);
+            let mut energy = 0.0;
+            for hit in playback.recent_hits(HIT_MEMORY).iter().rev() {
+                let age = (now - hit.time).max(0.0) as f32;
+                let strength = (hit.impact_speed / full_speed).min(1.5);
+                energy += strength * (-6.0 * age).exp();
+                if self.hits.len() < crate::MAX_EFFECT_HITS {
+                    let color = sim.balls().get(hit.ball as usize).map_or([1.0; 4], |b| b.color);
+                    self.hits.push(RecentHit { position: hit.position.into(), age, strength, color });
+                }
+            }
+            self.pulse = 1.0 - (-energy).exp();
+        } else {
+            self.pulse = 0.0;
         }
     }
 }

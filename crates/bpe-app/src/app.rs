@@ -513,6 +513,8 @@ impl eframe::App for StudioApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Pending::Close);
         }
+        let tab_open = self.inspector.tab == Tab::Effects;
+        self.inspector.effects.poll(&ctx, &self.scene, self.base_dir(), tab_open);
         let modal_open = self.gallery.open || self.confirm.is_some();
         if !modal_open {
             self.shortcuts(&ctx);
@@ -544,9 +546,13 @@ impl eframe::App for StudioApp {
                     self.time,
                     self.playing,
                     self.inspector.selected,
+                    &self.inspector.effects.library,
                 )
             })
             .inner;
+        if let Some(preview) = &self.preview {
+            self.inspector.effects.gpu_errors = preview.effect_gpu_errors().to_vec();
+        }
         if outcome.clicked {
             self.set_playing(false);
         }
@@ -559,7 +565,7 @@ impl eframe::App for StudioApp {
         }
 
         let base_dir = self.base_dir();
-        self.export.show(&ctx, frame, &mut self.scene, base_dir);
+        self.export.show(&ctx, frame, &mut self.scene, base_dir, &self.inspector.effects.library);
         if let Some(scene) = self.gallery.show(&ctx, frame) {
             self.guard(Pending::Replace(Box::new(scene)), &ctx);
         }
@@ -568,8 +574,12 @@ impl eframe::App for StudioApp {
         if std::mem::take(&mut self.swapped) {
             // Already handled by undo, redo or opening a scene.
         } else if self.scene != before {
+            // Effects only change the picture, so the simulation and sound can stay as they are.
+            let effects_only = Scene { effects: before.effects.clone(), ..self.scene.clone() } == before;
             self.record_edit(before);
-            self.scene_changed();
+            if !effects_only {
+                self.scene_changed();
+            }
         }
         self.end_merging(&ctx);
 

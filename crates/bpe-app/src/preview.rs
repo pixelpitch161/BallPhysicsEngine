@@ -3,7 +3,7 @@
 
 use crate::inspector::ARROW_SECONDS;
 use crate::theme;
-use bpe_render::{FrameData, Renderer};
+use bpe_render::{EffectLibrary, FrameData, Renderer};
 use bpe_scene::{Container, Scene, Spawner, Vec2};
 use bpe_sim::Playback;
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
@@ -61,6 +61,11 @@ impl View {
 }
 
 impl Preview {
+    /// Effects the GPU refused even though they passed the shader check, as (id, message).
+    pub fn effect_gpu_errors(&self) -> &[(String, String)] {
+        self.renderer.effect_gpu_errors()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn show(
         slot: &mut Option<Self>,
@@ -71,6 +76,7 @@ impl Preview {
         time: f64,
         playing: bool,
         selected: Option<usize>,
+        effects: &EffectLibrary,
     ) -> Outcome {
         let Some(render_state) = frame.wgpu_render_state() else {
             ui.label("The preview needs the wgpu renderer.");
@@ -90,7 +96,8 @@ impl Preview {
 
         let device = &render_state.device;
         let preview = slot.get_or_insert_with(|| {
-            let renderer = Renderer::new(device, width, height);
+            let mut renderer = Renderer::new(device, width, height);
+            renderer.set_effect_library(effects.clone());
             let texture = render_state.renderer.write().register_native_texture(
                 device,
                 renderer.output_view(),

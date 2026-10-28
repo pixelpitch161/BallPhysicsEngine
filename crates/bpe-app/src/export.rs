@@ -2,6 +2,7 @@
 
 use crate::theme;
 use bpe_export::ExportOptions;
+use bpe_render::EffectLibrary;
 use bpe_scene::Scene;
 use eframe::egui::{self, DragValue, RichText};
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ pub struct ExportPanel {
     ffmpeg: Option<PathBuf>,
     job: Option<ExportJob>,
     finished: Option<Result<Finished, String>>,
+    effects: EffectLibrary,
 }
 
 struct Finished {
@@ -69,6 +71,7 @@ impl ExportPanel {
             ffmpeg: bpe_export::find_ffmpeg(),
             job: None,
             finished: None,
+            effects: EffectLibrary::new(),
         }
     }
 
@@ -80,7 +83,15 @@ impl ExportPanel {
         self.path.clone().unwrap_or_else(|| videos_dir().join(format!("{}.mp4", safe_file_name(&scene.name))))
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, frame: &eframe::Frame, scene: &mut Scene, base_dir: Option<PathBuf>) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        scene: &mut Scene,
+        base_dir: Option<PathBuf>,
+        effects: &EffectLibrary,
+    ) {
+        self.effects = effects.clone();
         if let Some(job) = &self.job
             && let Ok(result) = job.receiver.try_recv()
         {
@@ -262,6 +273,7 @@ impl ExportPanel {
         options.preset = preset.into();
         options.ffmpeg = ffmpeg;
         options.base_dir = base_dir;
+        options.effects = self.effects.clone();
         let (device, queue, scene, ctx) =
             (render_state.device.clone(), render_state.queue.clone(), scene.clone(), ctx.clone());
         let (done, total, cancel) = (

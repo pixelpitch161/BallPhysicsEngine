@@ -45,6 +45,18 @@ fn run() -> anyhow::Result<()> {
 
     let mut options = ExportOptions::new("out.mp4");
     options.base_dir = base_dir.clone();
+    options.effects.set_folders(bpe_render::effects::default_folders(base_dir.as_deref()));
+    for info in options.effects.list() {
+        let used = scene.effects.iter().any(|e| e.enabled && e.shader == info.id);
+        if let (true, Some(error)) = (used, info.error()) {
+            eprintln!("warning: effect {} is skipped because it has an error:\n{error}", info.id);
+        }
+    }
+    for effect in scene.effects.iter().filter(|e| e.enabled) {
+        if options.effects.get(&effect.shader).is_none() {
+            eprintln!("warning: effect {} not found, skipping it", effect.shader);
+        }
+    }
     let mut output = None;
     let mut still = None;
     let mut rest = args[1..].iter();
@@ -74,7 +86,7 @@ fn run() -> anyhow::Result<()> {
     let (device, queue) = bpe_render::headless_device().context("no usable GPU found")?;
 
     if let Some(time) = still {
-        return export_still(&device, &queue, &scene, time, options.scale, &options.ffmpeg, &output);
+        return export_still(&device, &queue, &scene, &options.effects, time, options.scale, &options.ffmpeg, &output);
     }
 
     options.output = output;

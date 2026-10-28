@@ -5,8 +5,10 @@
 //! output video, with the origin at the centre of the frame and y pointing down.
 
 mod color;
+mod effect;
 
 pub use color::Color;
+pub use effect::Effect;
 pub use glam::Vec2;
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,8 @@ pub struct Scene {
     pub spawners: Vec<Spawner>,
     pub rules: BounceRules,
     pub look: Look,
+    /// Shader effects applied to the finished picture, in order.
+    pub effects: Vec<Effect>,
     pub sound: Sound,
 }
 
@@ -188,6 +192,7 @@ impl Default for Scene {
             }],
             rules: BounceRules::default(),
             look: Look::default(),
+            effects: Vec::new(),
             sound: Sound::default(),
         }
     }
