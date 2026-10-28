@@ -16,6 +16,8 @@
 //! replaces it. [`EffectLibrary::refresh`] reloads files that changed on disk.
 
 pub mod chain;
+pub mod graph;
+pub mod templates;
 
 pub(crate) use chain::EffectChain;
 
@@ -25,7 +27,7 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 /// Most sliders one effect can have.
-pub const MAX_PARAMS: usize = 8;
+pub const MAX_PARAMS: usize = 16;
 const PRELUDE: &str = include_str!("prelude.wgsl");
 
 const BUILTINS: &[(&str, &str)] = &[
@@ -76,6 +78,20 @@ pub struct EffectInfo {
     pub compiled: Result<String, String>,
     /// Whether the shader reads its previous frame, which needs an extra texture.
     pub uses_prev: bool,
+    /// For a node effect, the graph it was made from and what went wrong on which block.
+    pub graph: Option<GraphInfo>,
+}
+
+/// How a node effect's graph turned into a shader.
+#[derive(Debug)]
+pub struct GraphInfo {
+    pub graph: graph::Graph,
+    /// The generated effect file, when the graph got that far.
+    pub generated: Option<graph::Generated>,
+    /// Problems by block. Non-empty with a working shader means warnings on unused blocks.
+    pub problems: Vec<graph::Problem>,
+    /// True for the node effects that come with the program.
+    pub builtin: bool,
 }
 
 impl EffectInfo {
@@ -115,11 +131,68 @@ impl EffectInfo {
             user_source: source.to_string(),
             compiled,
             uses_prev: source.contains("prev("),
+            graph: None,
         }
     }
 
+    /// Builds a node effect from its graph. Problems are reported by block, never a panic.
+    pub fn from_graph(graph: &graph::Graph, builtin: bool) -> Self {
+        Self::from_graph_with(graph, builtin, false)
+    }
+
+    /// Like [`EffectInfo::from_graph`], but for the Shaders workspace: computes every block so
+    /// `fx.view` can show any of them.
+    pub fn graph_thumbnails(graph: &graph::Graph) -> Self {
+        Self::from_graph_with(graph, false, true)
+    }
+
+    fn from_graph_with(source_graph: &graph::Graph, builtin: bool, thumbnails: bool) -> Self {
+        let id = graph::effect_id(&source_graph.name);
+        match graph::generate(source_graph, thumbnails) {
+            Ok(generated) => {
+                let mut info = Self::parse(&id, &generated.source, None);
+                let mut problems = generated.warnings.clone();
+                if let Err(error) = &info.compiled {
+                    problems.extend(error.lines().map(|line| {
+                        let node = line
+                            .strip_prefix("line ")
+                            .and_then(|rest| rest.split_once(':'))
+                            .and_then(|(n, _)| n.parse::<usize>().ok())
+                            .and_then(|n| generated.node_at_line(n));
+                        graph::Problem { node, message: format!("The shader check failed: {line}") }
+                    }));
+                }
+                info.graph = Some(GraphInfo { graph: source_graph.clone(), generated: Some(generated), problems, builtin });
+                info
+            }
+            Err(problems) => {
+                let summary = problems.iter().map(|p| p.message.as_str()).collect::<Vec<_>>().join("\n");
+                Self {
+                    id,
+                    title: source_graph.name.clone(),
+                    about: String::new(),
+                    params: Vec::new(),
+                    path: None,
+                    user_source: String::new(),
+                    compiled: Err(summary),
+                    uses_prev: false,
+                    graph: Some(GraphInfo { graph: source_graph.clone(), generated: None, problems, builtin }),
+                }
+            }
+        }
+    }
+
+    /// Whether it comes with the program, rather than from a file or the scene.
     pub fn is_builtin(&self) -> bool {
-        self.path.is_none()
+        match &self.graph {
+            Some(graph) => graph.builtin,
+            None => self.path.is_none(),
+        }
+    }
+
+    /// Whether it is a node effect, built from blocks.
+    pub fn is_graph(&self) -> bool {
+        self.graph.is_some()
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -238,6 +311,8 @@ pub struct EffectLibrary {
 struct Inner {
     builtins: BTreeMap<String, Arc<EffectInfo>>,
     custom: BTreeMap<String, (Arc<EffectInfo>, Option<SystemTime>)>,
+    /// Node effects from the scene, by id. They replace built-in node effects of the same name.
+    graphs: BTreeMap<String, Arc<EffectInfo>>,
     folders: Vec<PathBuf>,
     /// Goes up whenever a custom effect is added, changed or removed.
     revision: u64,
@@ -258,13 +333,52 @@ impl Default for EffectLibrary {
 impl EffectLibrary {
     /// A library holding only the built-in effects.
     pub fn new() -> Self {
-        let builtins = BUILTINS
+        let mut builtins: BTreeMap<_, _> = BUILTINS
             .iter()
             .map(|(id, source)| (id.to_string(), Arc::new(EffectInfo::parse(id, source, None))))
             .collect();
-        Self {
-            inner: Arc::new(RwLock::new(Inner { builtins, custom: BTreeMap::new(), folders: Vec::new(), revision: 0 })),
+        for graph in templates::graphs() {
+            let info = EffectInfo::from_graph(&graph, true);
+            builtins.insert(info.id.clone(), Arc::new(info));
         }
+        let inner = Inner { builtins, custom: BTreeMap::new(), graphs: BTreeMap::new(), folders: Vec::new(), revision: 0 };
+        Self { inner: Arc::new(RwLock::new(inner)) }
+    }
+
+    /// Makes the scene's node effects available as `graph:Name`, rebuilding only graphs that
+    /// changed. Cheap to call every frame. Returns whether anything changed.
+    pub fn sync_graphs(&self, graphs: &[graph::Graph]) -> bool {
+        let unchanged = {
+            let inner = self.inner.read().unwrap();
+            inner.graphs.len() == graphs.len()
+                && graphs.iter().all(|g| {
+                    inner
+                        .graphs
+                        .get(&graph::effect_id(&g.name))
+                        .and_then(|info| info.graph.as_ref())
+                        .is_some_and(|info| info.graph == *g)
+                })
+        };
+        if unchanged {
+            return false;
+        }
+        let mut fresh = BTreeMap::new();
+        {
+            let inner = self.inner.read().unwrap();
+            for g in graphs {
+                let id = graph::effect_id(&g.name);
+                if fresh.contains_key(&id) {
+                    continue; // The first graph of a name wins, like the effect folders.
+                }
+                let current = inner.graphs.get(&id).filter(|i| i.graph.as_ref().is_some_and(|info| info.graph == *g));
+                let info = current.cloned().unwrap_or_else(|| Arc::new(EffectInfo::from_graph(g, false)));
+                fresh.insert(id, info);
+            }
+        }
+        let mut inner = self.inner.write().unwrap();
+        inner.graphs = fresh;
+        inner.revision += 1;
+        true
     }
 
     /// Sets the folders searched for custom `.wgsl` effects (earlier folders win) and loads them.
@@ -335,15 +449,25 @@ impl EffectLibrary {
         changed
     }
 
+<<<<<<< HEAD
     /// A number that changes whenever the custom effects change.
     pub fn revision(&self) -> u64 {
         self.inner.read().unwrap().revision
     }
 
     /// Looks up an effect by id. A custom file overrides a built-in of the same name.
+=======
+    /// Looks up an effect by id. A custom file overrides a built-in of the same name, and a
+    /// scene's node effect overrides a built-in node effect.
+>>>>>>> 509a9e0 (WIP shader graph compiler)
     pub fn get(&self, id: &str) -> Option<Arc<EffectInfo>> {
         let inner = self.inner.read().unwrap();
-        inner.custom.get(id).map(|(info, _)| info.clone()).or_else(|| inner.builtins.get(id).cloned())
+        inner
+            .custom
+            .get(id)
+            .map(|(info, _)| info.clone())
+            .or_else(|| inner.graphs.get(id).cloned())
+            .or_else(|| inner.builtins.get(id).cloned())
     }
 
     /// The built-in version of an effect, even when a custom file overrides it.
@@ -351,7 +475,8 @@ impl EffectLibrary {
         self.inner.read().unwrap().builtins.get(id).cloned()
     }
 
-    /// Every available effect: built-ins in their usual order, then custom ones by name.
+    /// Every available effect: built-ins in their usual order, built-in node effects, the
+    /// scene's node effects, then custom files by name.
     pub fn list(&self) -> Vec<Arc<EffectInfo>> {
         let inner = self.inner.read().unwrap();
         let mut list: Vec<_> = BUILTINS
@@ -360,6 +485,14 @@ impl EffectLibrary {
                 inner.custom.get(*id).map(|(info, _)| info.clone()).unwrap_or_else(|| inner.builtins[*id].clone())
             })
             .collect();
+        list.extend(
+            inner
+                .builtins
+                .iter()
+                .filter(|(id, info)| info.is_graph() && !inner.graphs.contains_key(*id))
+                .map(|(_, info)| info.clone()),
+        );
+        list.extend(inner.graphs.values().cloned());
         list.extend(
             inner.custom.iter().filter(|(id, _)| !inner.builtins.contains_key(*id)).map(|(_, (info, _))| info.clone()),
         );

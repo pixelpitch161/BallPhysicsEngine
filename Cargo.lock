@@ -277,6 +277,7 @@ dependencies = [
  "bytemuck",
  "naga",
  "pollster 1.0.1",
+ "serde",
  "wgpu",
 ]
 

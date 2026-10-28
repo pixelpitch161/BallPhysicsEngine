@@ -12,4 +12,5 @@ wgpu.workspace = true
 bytemuck.workspace = true
 anyhow.workspace = true
 pollster.workspace = true
+serde.workspace = true
 naga = { version = "30", features = ["wgsl-in"] }
