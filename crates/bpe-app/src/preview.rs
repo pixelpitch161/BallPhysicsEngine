@@ -5,7 +5,7 @@ use crate::inspector::ARROW_SECONDS;
 use crate::theme;
 use bpe_render::{EffectLibrary, FrameData, Renderer};
 use bpe_scene::{Container, Scene, Spawner, Vec2};
-use bpe_sim::Playback;
+use bpe_sim::{ArenaState, Outline, Playback};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 
 pub struct Preview {
@@ -172,14 +172,34 @@ impl Preview {
 fn spawner_center(spawner: &Spawner) -> Vec2 {
     match spawner {
         Spawner::Grid { center, .. } => *center,
-        Spawner::Single { position, .. } => *position,
+        Spawner::Single { position, .. } | Spawner::Stream { position, .. } => *position,
     }
 }
 
 fn spawner_velocity(spawner: &Spawner) -> Vec2 {
     match spawner {
-        Spawner::Grid { velocity, .. } | Spawner::Single { velocity, .. } => *velocity,
+        Spawner::Grid { velocity, .. } | Spawner::Single { velocity, .. } | Spawner::Stream { velocity, .. } => {
+            *velocity
+        }
     }
+}
+
+/// The round or polygon outline that the arena's edge handle resizes: the arena itself, or the
+/// smallest of the escape rings. None for a box, which has its own handles.
+fn edge_outline(container: &Container) -> Option<Outline> {
+    let start = ArenaState::default();
+    match container {
+        Container::Rect { .. } => None,
+        Container::Rings { .. } => bpe_sim::ring_outline(container, 0, 0.0, start),
+        _ => bpe_sim::closed_outline(container, start),
+    }
+}
+
+/// The point on a ring or polygon outline in the direction of `world` from its centre.
+fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
+    let Outline::Ring { center, angle, .. } = *outline else { return outline.center() };
+    let d = world - center;
+    outline.point(d.y.atan2(d.x) - angle)
 }
 
 /// Half the width and height of a ball group, in world pixels.
@@ -189,7 +209,7 @@ fn spawner_half_size(spawner: &Spawner) -> Vec2 {
             (columns.saturating_sub(1)) as f32 * spacing / 2.0 + radius,
             (rows.saturating_sub(1)) as f32 * spacing / 2.0 + radius,
         ),
-        Spawner::Single { radius, .. } => Vec2::splat(*radius),
+        Spawner::Single { radius, .. } | Spawner::Stream { radius, .. } => Vec2::splat(*radius),
     }
 }
 
@@ -208,12 +228,14 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
             return Some(Handle::Aim(i));
         }
     }
-    match scene.container {
-        Container::Circle { center, radius, .. } => {
-            if ((world - center).length() - radius).abs() <= reach {
-                return Some(Handle::Edge { x: true, y: true });
-            }
+    if let Some(outline) = edge_outline(&scene.container) {
+        let edge = outline_point_towards(&outline, world);
+        if edge.distance(world) <= reach {
+            return Some(Handle::Edge { x: true, y: true });
         }
+    }
+    match scene.container {
+        Container::Circle { .. } | Container::Polygon { .. } | Container::Rings { .. } => {}
         Container::Rect { center, size, .. } => {
             let d = (world - center).abs();
             let half = size / 2.0;
@@ -229,7 +251,7 @@ fn hit_test(scene: &Scene, view: &View, pos: Pos2) -> Option<Handle> {
         let half = spawner_half_size(spawner).max(Vec2::splat(reach));
         let inside = match spawner {
             Spawner::Grid { .. } => d.x <= half.x && d.y <= half.y,
-            Spawner::Single { .. } => d.length() <= half.x,
+            Spawner::Single { .. } | Spawner::Stream { .. } => d.length() <= half.x,
         };
         if inside {
             return Some(Handle::Body(i));
@@ -244,7 +266,7 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
             let target = (world - drag.offset).round();
             match &mut scene.spawners[i] {
                 Spawner::Grid { center, .. } => *center = target,
-                Spawner::Single { position, .. } => *position = target,
+                Spawner::Single { position, .. } | Spawner::Stream { position, .. } => *position = target,
             }
         }
         Handle::Aim(i) => {
@@ -252,23 +274,36 @@ fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
             let center = spawner_center(spawner);
             let velocity = ((world - center) / ARROW_SECONDS).clamp_length_max(3000.0).round();
             match spawner {
-                Spawner::Grid { velocity: v, .. } | Spawner::Single { velocity: v, .. } => *v = velocity,
+                Spawner::Grid { velocity: v, .. }
+                | Spawner::Single { velocity: v, .. }
+                | Spawner::Stream { velocity: v, .. } => *v = velocity,
             }
         }
-        Handle::Edge { x, y } => match &mut scene.container {
-            Container::Circle { center, radius, .. } => {
-                *radius = (world - *center).length().clamp(20.0, 1200.0).round()
-            }
-            Container::Rect { center, size, .. } => {
-                let d = ((world - *center).abs() * 2.0).clamp(Vec2::splat(40.0), Vec2::splat(2400.0)).round();
-                if x {
-                    size.x = d.x;
+        Handle::Edge { x, y } => {
+            // Scale the outline so it passes under the pointer.
+            let scale = edge_outline(&scene.container).map(|outline| {
+                let edge = outline_point_towards(&outline, world);
+                let center = outline.center();
+                (world - center).length() / (edge - center).length().max(1.0)
+            });
+            match &mut scene.container {
+                Container::Circle { radius, .. } | Container::Polygon { radius, .. } => {
+                    *radius = (*radius * scale.unwrap_or(1.0)).clamp(20.0, 1200.0).round()
                 }
-                if y {
-                    size.y = d.y;
+                Container::Rings { inner_radius, .. } => {
+                    *inner_radius = (*inner_radius * scale.unwrap_or(1.0)).clamp(10.0, 1000.0).round()
+                }
+                Container::Rect { center, size, .. } => {
+                    let d = ((world - *center).abs() * 2.0).clamp(Vec2::splat(40.0), Vec2::splat(2400.0)).round();
+                    if x {
+                        size.x = d.x;
+                    }
+                    if y {
+                        size.y = d.y;
+                    }
                 }
             }
-        },
+        }
     }
 }
 
@@ -279,27 +314,37 @@ fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, sel
     // Arena edge.
     let edge_active = matches!(active, Some(Handle::Edge { .. }));
     let edge_stroke = Stroke::new(if edge_active { 2.5 } else { 1.0 }, if edge_active { theme::ACCENT } else { faint });
-    let edge_dot = match scene.container {
-        Container::Circle { center, radius, .. } => {
+    let edge_dot = match (&scene.container, edge_outline(&scene.container)) {
+        (Container::Rect { center, size, .. }, _) => {
             if edge_active {
-                painter.circle_stroke(view.to_screen(center), radius * view.scale, edge_stroke);
-            }
-            view.to_screen(center + Vec2::new(radius, 0.0))
-        }
-        Container::Rect { center, size, .. } => {
-            if edge_active {
-                let r = Rect::from_center_size(view.to_screen(center), egui::vec2(size.x, size.y) * view.scale);
+                let r = Rect::from_center_size(view.to_screen(*center), egui::vec2(size.x, size.y) * view.scale);
                 painter.rect_stroke(r, 0.0, edge_stroke, egui::StrokeKind::Middle);
             }
-            view.to_screen(center + size / 2.0)
+            Some(view.to_screen(*center + *size / 2.0))
         }
+        (_, Some(outline)) => {
+            let center = outline.center();
+            if edge_active {
+                let points: Vec<Pos2> = (0..=96)
+                    .map(|i| {
+                        let towards = center + Vec2::from_angle(i as f32 / 96.0 * std::f32::consts::TAU);
+                        view.to_screen(outline_point_towards(&outline, towards))
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(points, edge_stroke));
+            }
+            Some(view.to_screen(outline_point_towards(&outline, center + Vec2::X)))
+        }
+        (_, None) => None,
     };
-    painter.circle(
-        edge_dot,
-        5.0,
-        if edge_active { theme::ACCENT } else { theme::TEXT },
-        Stroke::new(1.5, Color32::BLACK),
-    );
+    if let Some(edge_dot) = edge_dot {
+        painter.circle(
+            edge_dot,
+            5.0,
+            if edge_active { theme::ACCENT } else { theme::TEXT },
+            Stroke::new(1.5, Color32::BLACK),
+        );
+    }
 
     for (i, spawner) in scene.spawners.iter().enumerate() {
         let highlighted = selected == Some(i) || matches!(active, Some(Handle::Body(j) | Handle::Aim(j)) if j == i);
@@ -314,6 +359,10 @@ fn draw_handles(ui: &Ui, scene: &Scene, view: &View, active: Option<Handle>, sel
             }
             Spawner::Single { .. } => {
                 painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
+            }
+            Spawner::Stream { .. } => {
+                painter.circle_stroke(center, half.x, Stroke::new(1.2, color));
+                painter.circle_stroke(center, half.x + 5.0, Stroke::new(1.0, color.gamma_multiply(0.6)));
             }
         }
 

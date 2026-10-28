@@ -8,10 +8,13 @@ use std::path::PathBuf;
 
 const USAGE: &str = "\
 Usage:
-  bpe-render <scene.ron | default | growing-ball> <out.mp4> [options]
-  bpe-render <scene.ron | default | growing-ball> --still <seconds> <out.png> [--scale F]
-  bpe-render <scene.ron | default | growing-ball> --wav <out.wav>
-  bpe-render default --save-scene <out.ron>
+  bpe-render <scene.ron | preset> <out.mp4> [options]
+  bpe-render <scene.ron | preset> --still <seconds> <out.png> [--scale F]
+  bpe-render <scene.ron | preset> --wav <out.wav>
+  bpe-render <preset> --save-scene <out.ron>
+
+A preset is a built-in scene named in lower case with dashes, such as escape-rings or plinko.
+`default` is the reference reel. `bpe-render --presets` lists them all.
 
 Options:
   --scale F        render at a fraction of the scene's size, for quick drafts
@@ -33,10 +36,17 @@ fn run() -> anyhow::Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
+    if args[0] == "--presets" {
+        for preset in Scene::presets() {
+            println!("{:22} {}", slug(preset.name), preset.description);
+        }
+        return Ok(());
+    }
+    let preset = Scene::presets().into_iter().find(|p| slug(p.name) == args[0]);
     let (scene, base_dir) = if args[0] == "default" {
         (Scene::default(), None)
-    } else if args[0] == "growing-ball" {
-        (Scene::growing_ball(), None)
+    } else if let Some(preset) = preset {
+        (preset.scene, None)
     } else {
         let path = PathBuf::from(&args[0]);
         let scene = Scene::load(&path).with_context(|| format!("loading {}", path.display()))?;
@@ -100,4 +110,9 @@ fn run() -> anyhow::Result<()> {
     })?;
     println!("\nwrote {} in {:.1} s", options.output.display(), started.elapsed().as_secs_f32());
     Ok(())
+}
+
+/// A preset's name as typed on the command line: "Escape rings" is `escape-rings`.
+fn slug(name: &str) -> String {
+    name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-")
 }

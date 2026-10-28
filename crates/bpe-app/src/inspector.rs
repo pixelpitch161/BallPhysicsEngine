@@ -11,7 +11,10 @@ mod effects;
 pub use effects::EffectsPanel;
 
 use crate::theme;
-use bpe_scene::{BounceRules, ChordStep, Color, Container, Instrument, Look, Physics, Scene, Sound, Spawner, Vec2};
+use bpe_scene::{
+    ArenaMotion, BounceRules, ChordStep, Color, Container, Instrument, Look, Obstacle, Physics, Scene, Sound, Spawner,
+    Vec2,
+};
 use eframe::egui::{
     self, Color32, DragValue, Popup, PopupCloseBehavior, Response, RichText, Sense, Slider, Ui, emath::Numeric,
 };
@@ -110,10 +113,16 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
             match inspector.tab {
                 Tab::Balls => balls(ui, &mut scene.spawners, &mut inspector.selected),
                 Tab::Arena => {
-                    arena(ui, &mut scene.container, &mut scene.physics);
-                    let fresh = default_container(matches!(scene.container, Container::Circle { .. }));
-                    if reset_tab(ui, scene.container != fresh || scene.physics != Physics::default()) {
+                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics);
+                    obstacles(ui, &mut scene.obstacles);
+                    // Pegs and walls are things you added, like balls, so a reset keeps them.
+                    let fresh = default_container(Shape::of(&scene.container));
+                    let motion = ArenaMotion::default();
+                    let changed =
+                        scene.container != fresh || scene.arena_motion != motion || scene.physics != Physics::default();
+                    if reset_tab(ui, changed) {
                         scene.container = fresh;
+                        scene.arena_motion = motion;
                         scene.physics = Physics::default();
                     }
                 }
@@ -500,6 +509,18 @@ fn new_ball() -> Spawner {
     }
 }
 
+fn new_stream() -> Spawner {
+    Spawner::Stream {
+        position: Vec2::new(0.0, -400.0),
+        velocity: Vec2::ZERO,
+        radius: 10.0,
+        count: 50,
+        interval: 0.2,
+        jitter: 20.0,
+        gradient: vec![Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xff, 0x3e, 0xc8)],
+    }
+}
+
 fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>) {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
@@ -510,6 +531,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
         let title = match spawner {
             Spawner::Grid { columns, rows, .. } => format!("Block of balls · {columns} × {rows}"),
             Spawner::Single { .. } => "Single ball".to_string(),
+            Spawner::Stream { count, .. } => format!("Stream of balls · {count}"),
         };
         let is_selected = *selected == Some(index);
         ui.push_id(index, |ui| {
@@ -595,6 +617,52 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
                             });
                         });
                     }
+                    Spawner::Stream { position, velocity, radius, count, interval, jitter, gradient } => {
+                        grid(ui, "stream", |ui| {
+                            slider(ui, "How many", "How many balls are dropped in total.", count, 50, 1..=2000, log_units(""));
+                            slider(
+                                ui,
+                                "Time between",
+                                "Seconds between one ball and the next.",
+                                interval,
+                                0.2,
+                                0.0..=5.0,
+                                units(" s", 2),
+                            );
+                            slider(
+                                ui,
+                                "Ball size",
+                                "Radius of each ball in pixels. The video is 1080 pixels wide.",
+                                radius,
+                                10.0,
+                                0.5..=200.0,
+                                units(" px", 1),
+                            );
+                            slider(
+                                ui,
+                                "Wobble",
+                                "Each ball starts up to this far left or right of the drop point, so they don't all fall the same way.",
+                                jitter,
+                                20.0,
+                                0.0..=500.0,
+                                units(" px", 0),
+                            );
+                            launch_rows(ui, velocity, Vec2::ZERO);
+                            label(ui, "Colours", "Colours from the first ball to the last, blended evenly.");
+                            color_list(ui, gradient, "+");
+                            ui.end_row();
+                        });
+                        more(ui, "stream-more", |ui| {
+                            grid(ui, "stream-more-grid", |ui| {
+                                position_row(
+                                    ui,
+                                    "Drop point",
+                                    "Where the balls appear, measured from the centre of the video. You can also drag it in the preview.",
+                                    position,
+                                );
+                            });
+                        });
+                    }
                 }
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
@@ -614,7 +682,7 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
         spawners.remove(index);
         *selected = None;
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button("+ Add a block of balls").clicked() {
             spawners.push(new_grid());
             *selected = Some(spawners.len() - 1);
@@ -623,41 +691,112 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>)
             spawners.push(new_ball());
             *selected = Some(spawners.len() - 1);
         }
+        if ui.button("+ Add a stream").on_hover_text("Balls dropped one after another, like a Plinko board").clicked() {
+            spawners.push(new_stream());
+            *selected = Some(spawners.len() - 1);
+        }
     });
 }
 
 const RING_RADIUS: f32 = 508.0;
 const BOX_SIZE: Vec2 = Vec2::new(1000.0, 1000.0);
+const POLYGON_RADIUS: f32 = 480.0;
 const LINE_WIDTH: f32 = 3.0;
 const LINE_COLOR: Color = Color::rgb(0xd8, 0xdc, 0xd0);
 const SAMPLE_ROOT_NOTE: u8 = 60;
 
-/// A ring or box in the middle of the video at its usual size.
-fn default_container(circle: bool) -> Container {
-    if circle {
-        Container::Circle { center: Vec2::ZERO, radius: RING_RADIUS, thickness: LINE_WIDTH, color: LINE_COLOR }
-    } else {
-        Container::Rect { center: Vec2::ZERO, size: BOX_SIZE, thickness: LINE_WIDTH, color: LINE_COLOR }
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Ring,
+    Box,
+    Polygon,
+    Rings,
+}
+
+impl Shape {
+    fn of(container: &Container) -> Self {
+        match container {
+            Container::Circle { .. } => Shape::Ring,
+            Container::Rect { .. } => Shape::Box,
+            Container::Polygon { .. } => Shape::Polygon,
+            Container::Rings { .. } => Shape::Rings,
+        }
+    }
+
+    /// A fresh arena of this shape that keeps the old one's position, line width and colour.
+    fn make(self, old: &Container) -> Container {
+        let (center, thickness, color) = (old.center(), old.thickness(), old.color());
+        match self {
+            Shape::Ring => Container::Circle { center, radius: RING_RADIUS, thickness, color },
+            Shape::Box => Container::Rect { center, size: BOX_SIZE, thickness, color },
+            Shape::Polygon => {
+                Container::Polygon { center, radius: POLYGON_RADIUS, sides: 6, rotation: 0.0, thickness, color }
+            }
+            Shape::Rings => match Scene::escape_rings().container {
+                Container::Rings {
+                    count,
+                    inner_radius,
+                    spacing,
+                    sides,
+                    gap,
+                    spin,
+                    spin_step,
+                    gap_offset,
+                    gradient,
+                    ..
+                } => Container::Rings {
+                    center,
+                    count,
+                    inner_radius,
+                    spacing,
+                    sides,
+                    gap,
+                    spin,
+                    spin_step,
+                    gap_offset,
+                    thickness: thickness.max(4.0),
+                    gradient,
+                },
+                other => other,
+            },
+        }
     }
 }
 
-fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
+/// An arena of this shape in the middle of the video at its usual size.
+fn default_container(shape: Shape) -> Container {
+    let ring = Container::Circle { center: Vec2::ZERO, radius: RING_RADIUS, thickness: LINE_WIDTH, color: LINE_COLOR };
+    match shape {
+        Shape::Ring => ring,
+        Shape::Rings => Scene::escape_rings().container,
+        _ => shape.make(&ring),
+    }
+}
+
+fn arena(ui: &mut Ui, container: &mut Container, motion: &mut ArenaMotion, physics: &mut Physics) {
     heading(ui, "Shape");
-    ui.horizontal(|ui| {
-        let is_circle = matches!(container, Container::Circle { .. });
-        let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        if ui.add_sized([width, 30.0], egui::Button::selectable(is_circle, "Ring")).clicked() && !is_circle {
-            let (center, thickness, color) = container_basics(container);
-            *container = Container::Circle { center, radius: RING_RADIUS, thickness, color };
-        }
-        if ui.add_sized([width, 30.0], egui::Button::selectable(!is_circle, "Box")).clicked() && is_circle {
-            let (center, thickness, color) = container_basics(container);
-            *container = Container::Rect { center, size: BOX_SIZE, thickness, color };
+    let current = Shape::of(container);
+    let choices = [
+        (Shape::Ring, "Ring", "A round arena."),
+        (Shape::Box, "Box", "A rectangle."),
+        (Shape::Polygon, "Polygon", "A triangle, square, hexagon or any shape with equal sides."),
+        (
+            Shape::Rings,
+            "Escape rings",
+            "Rings inside each other, each with a gap. A ring shatters when a ball gets out through its gap.",
+        ),
+    ];
+    ui.columns(choices.len(), |columns| {
+        for (ui, (shape, name, help)) in columns.iter_mut().zip(choices) {
+            let button = egui::Button::selectable(current == shape, name);
+            if ui.add_sized([ui.available_width(), 30.0], button).on_hover_text(help).clicked() && current != shape {
+                *container = shape.make(container);
+            }
         }
     });
     ui.add_space(6.0);
-    let center = grid_with(ui, "arena", move |ui| match container {
-        Container::Circle { center, radius, thickness, color } => {
+    grid(ui, "arena", |ui| match container {
+        Container::Circle { radius, thickness, color, .. } => {
             slider(
                 ui,
                 "Size",
@@ -677,9 +816,8 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 units(" px", 1),
             );
             color_row(ui, "Line colour", "", color, LINE_COLOR);
-            center
         }
-        Container::Rect { center, size, thickness, color } => {
+        Container::Rect { size, thickness, color, .. } => {
             slider(
                 ui,
                 "Width",
@@ -708,9 +846,157 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
                 units(" px", 1),
             );
             color_row(ui, "Line colour", "", color, LINE_COLOR);
-            center
+        }
+        Container::Polygon { radius, sides, rotation, thickness, color, .. } => {
+            slider(ui, "Sides", "3 is a triangle, 4 a square, 6 a hexagon.", sides, 6, 3..=12, |s| s);
+            slider(
+                ui,
+                "Size",
+                "Distance from the centre to each corner, in pixels. You can also drag a corner in the preview.",
+                radius,
+                POLYGON_RADIUS,
+                20.0..=1200.0,
+                units(" px", 0),
+            );
+            slider(
+                ui,
+                "Turn",
+                "Turns the shape. At 0° it has a flat side at the bottom.",
+                rotation,
+                0.0,
+                -180.0..=180.0,
+                units("°", 0),
+            );
+            slider(ui, "Line width", "Thickness of the line. 0 hides it.", thickness, 3.0, 0.0..=40.0, units(" px", 1));
+            color_row(ui, "Line colour", "", color, LINE_COLOR);
+        }
+        Container::Rings { count, inner_radius, spacing, gap, spin, spin_step, thickness, gradient, .. } => {
+            slider(ui, "Rings", "How many rings there are.", count, 10, 1..=60, |s| s);
+            slider(
+                ui,
+                "Smallest ring",
+                "Radius of the smallest ring, where the balls start. You can also drag it in the preview.",
+                inner_radius,
+                110.0,
+                10.0..=1000.0,
+                units(" px", 0),
+            );
+            slider(
+                ui,
+                "Ring spacing",
+                "Distance from one ring to the next.",
+                spacing,
+                38.0,
+                4.0..=300.0,
+                units(" px", 0),
+            );
+            slider(
+                ui,
+                "Gap size",
+                "How wide each ring's gap is. Bigger gaps are easier to escape through.",
+                gap,
+                50.0,
+                0.0..=180.0,
+                units("°", 0),
+            );
+            slider(
+                ui,
+                "Spin",
+                "How fast the smallest ring turns, in degrees per second. Negative turns the other way.",
+                spin,
+                70.0,
+                -360.0..=360.0,
+                units("°/s", 0),
+            );
+            slider(
+                ui,
+                "Spin change",
+                "Added to the spin of each ring further out, so the gaps drift apart.",
+                spin_step,
+                9.0,
+                -90.0..=90.0,
+                units("°/s", 1),
+            );
+            slider(ui, "Line width", "Thickness of each ring.", thickness, 6.0, 0.0..=40.0, units(" px", 1));
+            label(ui, "Colours", "Colours from the smallest ring to the biggest, blended evenly.");
+            color_list(ui, gradient, "+");
+            ui.end_row();
         }
     });
+    if let Container::Rings { sides, gap_offset, .. } = container {
+        more(ui, "rings-more", |ui| {
+            grid(ui, "rings-more-grid", |ui| {
+                let mut round = *sides < 3;
+                label(ui, "Ring shape", "Round rings, or polygons with this many sides.");
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::selectable(round, "Round")).clicked() {
+                        round = true;
+                        *sides = 0;
+                    }
+                    if ui.add(egui::Button::selectable(!round, "Polygon")).clicked() && round {
+                        round = false;
+                        *sides = 6;
+                    }
+                });
+                ui.end_row();
+                if !round {
+                    slider(ui, "Sides", "3 is a triangle, 4 a square, 6 a hexagon.", sides, 6, 3..=12, |s| s);
+                }
+                slider(
+                    ui,
+                    "Gap offset",
+                    "How far each ring's gap is turned from the one inside it at the start.",
+                    gap_offset,
+                    20.0,
+                    -180.0..=180.0,
+                    units("°", 0),
+                );
+            });
+        });
+    }
+    let d = ArenaMotion::default();
+    heading(ui, "Movement");
+    grid(ui, "motion", |ui| {
+        slider(
+            ui,
+            "Arena spin",
+            "Turns the whole arena, in degrees per second. Negative turns it the other way.",
+            &mut motion.spin,
+            d.spin,
+            -360.0..=360.0,
+            units("°/s", 0),
+        );
+        slider(
+            ui,
+            "Shrink",
+            "Pixels per second the arena closes in. Negative values make it grow.",
+            &mut motion.shrink_speed,
+            d.shrink_speed,
+            -100.0..=100.0,
+            units(" px/s", 1),
+        );
+        slider(
+            ui,
+            "Shrink per hit",
+            "Pixels the arena closes in every time a ball hits it.",
+            &mut motion.shrink_per_hit,
+            d.shrink_per_hit,
+            0.0..=50.0,
+            units(" px", 1),
+        );
+        if motion.shrink_speed > 0.0 || motion.shrink_per_hit > 0.0 {
+            slider(
+                ui,
+                "Smallest size",
+                "The arena stops shrinking at this radius.",
+                &mut motion.min_size,
+                d.min_size,
+                1.0..=1000.0,
+                log_units(" px"),
+            );
+        }
+    });
+    let center = container.center_mut();
 
     let defaults = Physics::default();
     heading(ui, "World");
@@ -775,17 +1061,138 @@ fn arena(ui: &mut Ui, container: &mut Container, physics: &mut Physics) {
     });
 }
 
-/// Runs a grid and passes its result out, for a borrow that must outlive the grid.
-fn grid_with<R>(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Grid::new(id).num_columns(2).spacing([12.0, 10.0]).min_col_width(130.0).show(ui, add).inner
-}
-
-fn container_basics(container: &Container) -> (Vec2, f32, Color) {
-    match *container {
-        Container::Circle { center, thickness, color, .. } | Container::Rect { center, thickness, color, .. } => {
-            (center, thickness, color)
-        }
+fn obstacles(ui: &mut Ui, obstacles: &mut Vec<Obstacle>) {
+    let peg = Color::rgb(0xc8, 0xd8, 0xff);
+    let line = Color::rgb(0xd8, 0xdc, 0xd0);
+    heading(ui, "Pegs and walls");
+    if obstacles.is_empty() {
+        ui.label(RichText::new("Pegs and walls inside the arena that balls bounce off.").color(theme::MUTED));
     }
+    let mut remove = None;
+    for (index, obstacle) in obstacles.iter_mut().enumerate() {
+        let title = match obstacle {
+            Obstacle::Peg { .. } => "Peg".to_string(),
+            Obstacle::PegGrid { columns, rows, .. } => format!("Pegs · {columns} × {rows}"),
+            Obstacle::Line { .. } => "Wall".to_string(),
+        };
+        ui.push_id(("obstacle", index), |ui| {
+            egui::Frame::new()
+                .fill(theme::CARD)
+                .stroke(egui::Stroke::new(1.0, theme::LINE))
+                .corner_radius(8.0)
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(title).strong().color(theme::TEXT));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Remove").clicked() {
+                                remove = Some(index);
+                            }
+                        });
+                    });
+                    grid(ui, "obstacle", |ui| match obstacle {
+                        Obstacle::Peg { position, radius, color } => {
+                            slider(
+                                ui,
+                                "Size",
+                                "Radius of the peg in pixels.",
+                                radius,
+                                12.0,
+                                1.0..=300.0,
+                                units(" px", 1),
+                            );
+                            position_row(
+                                ui,
+                                "Position",
+                                "Where the peg is, measured from the centre of the video.",
+                                position,
+                            );
+                            color_row(ui, "Colour", "", color, peg);
+                        }
+                        Obstacle::PegGrid { center, columns, rows, spacing, radius, stagger, color } => {
+                            slider(ui, "Pegs across", "How many pegs in each row.", columns, 11, 1..=60, |s| s);
+                            slider(ui, "Rows", "How many rows of pegs.", rows, 12, 1..=60, |s| s);
+                            slider(
+                                ui,
+                                "Peg size",
+                                "Radius of each peg in pixels.",
+                                radius,
+                                7.0,
+                                1.0..=100.0,
+                                units(" px", 1),
+                            );
+                            slider(
+                                ui,
+                                "Gap across",
+                                "Distance between pegs in a row.",
+                                &mut spacing.x,
+                                84.0,
+                                4.0..=400.0,
+                                units(" px", 0),
+                            );
+                            slider(
+                                ui,
+                                "Gap down",
+                                "Distance between rows.",
+                                &mut spacing.y,
+                                76.0,
+                                4.0..=400.0,
+                                units(" px", 0),
+                            );
+                            label(ui, "Zigzag", "Shift every other row by half a gap, like a Plinko board.");
+                            ui.checkbox(stagger, "Shift every other row");
+                            ui.end_row();
+                            position_row(
+                                ui,
+                                "Position",
+                                "Where the middle of the pegs is, measured from the centre of the video.",
+                                center,
+                            );
+                            color_row(ui, "Colour", "", color, peg);
+                        }
+                        Obstacle::Line { from, to, thickness, color } => {
+                            position_row(
+                                ui,
+                                "From",
+                                "One end of the wall, measured from the centre of the video.",
+                                from,
+                            );
+                            position_row(ui, "To", "The other end of the wall.", to);
+                            slider(ui, "Width", "Thickness of the wall.", thickness, 4.0, 0.5..=60.0, units(" px", 1));
+                            color_row(ui, "Colour", "", color, line);
+                        }
+                    });
+                });
+        });
+        ui.add_space(8.0);
+    }
+    if let Some(index) = remove {
+        obstacles.remove(index);
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("+ Add pegs").on_hover_text("A board of pegs, like Plinko").clicked() {
+            obstacles.push(Obstacle::PegGrid {
+                center: Vec2::ZERO,
+                columns: 11,
+                rows: 12,
+                spacing: Vec2::new(84.0, 76.0),
+                radius: 7.0,
+                stagger: true,
+                color: peg,
+            });
+        }
+        if ui.button("+ Add one peg").clicked() {
+            obstacles.push(Obstacle::Peg { position: Vec2::ZERO, radius: 12.0, color: peg });
+        }
+        if ui.button("+ Add a wall").on_hover_text("A straight wall between two points").clicked() {
+            obstacles.push(Obstacle::Line {
+                from: Vec2::new(-150.0, 0.0),
+                to: Vec2::new(150.0, 0.0),
+                thickness: 4.0,
+                color: line,
+            });
+        }
+    });
 }
 
 fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
@@ -847,6 +1254,47 @@ fn bounces(ui: &mut Ui, rules: &mut BounceRules) {
         let add_label = if rules.recolor.is_empty() { "+ Pick colours" } else { "+" };
         color_list(ui, &mut rules.recolor, add_label);
         ui.end_row();
+    });
+    heading(ui, "New balls");
+    grid(ui, "spawn", |ui| {
+        slider(
+            ui,
+            "Per hit",
+            "New balls that split off a ball every time it hits the wall or a peg. Try the Multiplying balls preset.",
+            &mut rules.spawn_per_hit,
+            defaults.spawn_per_hit,
+            0..=5,
+            |s| s,
+        );
+        slider(
+            ui,
+            "Per escape",
+            "New balls that appear in the middle every time a ball escapes a ring. Only for escape rings.",
+            &mut rules.spawn_per_escape,
+            defaults.spawn_per_escape,
+            0..=10,
+            |s| s,
+        );
+        if rules.spawn_per_hit > 0 || rules.spawn_per_escape > 0 {
+            slider(
+                ui,
+                "Most balls",
+                "No new balls are added once there are this many.",
+                &mut rules.max_balls,
+                defaults.max_balls,
+                1..=5000,
+                log_units(""),
+            );
+            slider(
+                ui,
+                "Spread",
+                "New balls fly off up to this many degrees either side of the ball they came from.",
+                &mut rules.spawn_spread,
+                defaults.spawn_spread,
+                0.0..=180.0,
+                units("°", 0),
+            );
+        }
     });
 }
 
@@ -929,8 +1377,49 @@ fn look(ui: &mut Ui, look: &mut Look) {
             percent,
         );
     });
+    heading(ui, "String art");
+    grid(ui, "strings", |ui| {
+        slider(
+            ui,
+            "Lines per ball",
+            "Draws a line from each ball to the places it hit, up to this many of its latest hits. 0 turns it off. Try the String art preset.",
+            &mut look.string_lines,
+            d.string_lines,
+            0..=2000,
+            |s| s,
+        );
+        if look.string_lines > 0 {
+            slider(
+                ui,
+                "Line brightness",
+                "How bright each line is.",
+                &mut look.string_opacity,
+                d.string_opacity,
+                0.0..=1.0,
+                percent,
+            );
+            slider(
+                ui,
+                "Line width",
+                "Width of each line in pixels.",
+                &mut look.string_width,
+                d.string_width,
+                0.2..=10.0,
+                units(" px", 1),
+            );
+        }
+    });
     more(ui, "look-more", |ui| {
         grid(ui, "look-more-grid", |ui| {
+            slider(
+                ui,
+                "Shatter pieces",
+                "How many pieces an escape ring breaks into. 0 makes rings vanish without pieces.",
+                &mut look.shatter_pieces,
+                d.shatter_pieces,
+                0..=200,
+                |s| s,
+            );
             slider(
                 ui,
                 "Flash length",

@@ -6,14 +6,16 @@
 pub mod chord;
 
 use anyhow::Context;
-use bpe_scene::{Container, Instrument, Scene};
-use bpe_sim::WallHit;
+use bpe_scene::{Instrument, Scene};
+use bpe_sim::{HitKind, WallHit};
 use std::collections::HashMap;
 use std::path::Path;
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Peak ceiling for the final mix, about -1 dBFS, which streaming platforms expect.
 const PEAK_CEILING: f32 = 0.89;
+/// Notes in the strum that plays when a ball escapes a ring.
+const ESCAPE_STRUM: usize = 4;
 
 /// Interleaved stereo audio at [`SAMPLE_RATE`].
 #[derive(Clone, Debug, Default)]
@@ -56,10 +58,7 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
     }
     let progression = Progression::new(scene)?;
     let mut voice = Voice::new(&sound.instrument, base_dir)?;
-    let (center, half_width) = match &scene.container {
-        Container::Circle { center, radius, .. } => (center.x, *radius),
-        Container::Rect { center, size, .. } => (center.x, size.x * 0.5),
-    };
+    let (center, half_width) = (scene.container.center().x, scene.container.half_width());
     let speed_range = (sound.full_volume_speed - sound.min_impact_speed).max(1.0);
     let frames = track.frames();
 
@@ -75,19 +74,29 @@ pub fn render_soundtrack(scene: &Scene, hits: &[WallHit], base_dir: Option<&Path
         if candidates.is_empty() {
             continue;
         }
-        let note = candidates[(mix64(sound.seed ^ index as u64) % candidates.len() as u64) as usize];
+        let pick = (mix64(sound.seed ^ index as u64) % candidates.len() as u64) as usize;
         let velocity = ((hit.impact_speed - sound.min_impact_speed) / speed_range).clamp(0.0, 1.0);
-        let gain = velocity * velocity.sqrt();
         let pan = ((hit.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+        // An escape plays a quick rising strum of the chord, from the picked note upwards.
+        let (notes, gain, spacing) = match hit.kind {
+            HitKind::Escape(_) => (ESCAPE_STRUM, 0.8, SAMPLE_RATE as usize * 35 / 1000),
+            HitKind::Wall | HitKind::Obstacle(_) => (1, velocity * velocity.sqrt(), 0),
+        };
         let (left, right) = (gain * angle.cos(), gain * angle.sin());
-
-        let wave = voice.note(note);
-        let end = (start + wave.len()).min(frames);
-        let out = &mut track.samples[start * 2..end * 2];
-        for (frame, &s) in out.chunks_exact_mut(2).zip(wave.iter()) {
-            frame[0] += s * left;
-            frame[1] += s * right;
+        let pick = pick.min(candidates.len().saturating_sub(notes));
+        for (n, &note) in candidates[pick..].iter().take(notes).enumerate() {
+            let start = start + n * spacing;
+            if start >= frames {
+                break;
+            }
+            let wave = voice.note(note);
+            let end = (start + wave.len()).min(frames);
+            let out = &mut track.samples[start * 2..end * 2];
+            for (frame, &s) in out.chunks_exact_mut(2).zip(wave.iter()) {
+                frame[0] += s * left;
+                frame[1] += s * right;
+            }
         }
     }
 
@@ -328,5 +337,20 @@ mod tests {
         // 0-4.2 s is C major, 4.2-8.2 s is Dsus4.
         assert!(progression.notes_at(1.0).iter().all(|n| [0, 4, 7].contains(&(n % 12))));
         assert!(progression.notes_at(5.0).iter().all(|n| [2, 7, 9].contains(&(n % 12))));
+    }
+
+    #[test]
+    fn escapes_strum_the_chord() {
+        let scene = Scene::escape_rings();
+        let hits = bpe_sim::collect_wall_hits(&scene);
+        let escape = hits.iter().find(|h| matches!(h.kind, HitKind::Escape(_))).unwrap();
+        let track = render_soundtrack(&scene, &[*escape], None).unwrap();
+        // The strum's notes start one after another, so the sound keeps getting new onsets.
+        let start = (escape.time * SAMPLE_RATE as f64) as usize;
+        let spacing = SAMPLE_RATE as usize * 35 / 1000;
+        let at = |frame: usize| track.samples[frame * 2..(frame + 200) * 2].iter().map(|s| s.abs()).fold(0.0, f32::max);
+        assert!(at(start) > 0.0);
+        assert!(at(start + 3 * spacing) > 0.0);
+        assert!(track.samples[..start * 2].iter().all(|&s| s == 0.0));
     }
 }

@@ -51,15 +51,19 @@ impl Gallery {
                     .color(theme::MUTED),
             );
             ui.add_space(10.0);
-            egui::Grid::new("presets").spacing([14.0, 14.0]).show(ui, |ui| {
-                for (i, preset) in self.presets.iter().enumerate() {
-                    if card(ui, preset, self.thumbs.get(i).map(|t| t.texture)).clicked() {
-                        picked = Some(preset.scene.clone());
+            // Leave room for the title and buttons; the presets scroll when they don't all fit.
+            let max_height = (ctx.content_rect().height() - 220.0).max(THUMB.y + 80.0);
+            egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+                egui::Grid::new("presets").spacing([14.0, 14.0]).show(ui, |ui| {
+                    for (i, preset) in self.presets.iter().enumerate() {
+                        if card(ui, preset, self.thumbs.get(i).map(|t| t.texture)).clicked() {
+                            picked = Some(preset.scene.clone());
+                        }
+                        if i % 3 == 2 {
+                            ui.end_row();
+                        }
                     }
-                    if i % 3 == 2 {
-                        ui.end_row();
-                    }
-                }
+                });
             });
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
