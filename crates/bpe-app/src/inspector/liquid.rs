@@ -120,7 +120,7 @@ fn make_big(scene: &mut Scene, state: &mut State) {
     scene.gpu.fluid.enabled = true;
 }
 
-fn roll_small(fluid: &mut Fluid, dice: &mut bpe_scene::Dice) {
+pub(crate) fn roll_small(fluid: &mut Fluid, dice: &mut bpe_scene::Dice) {
     fluid.thickness = dice.range(0.0, 0.8);
     fluid.radius = dice.range(4.0, 10.0);
     if dice.chance(1.0) {

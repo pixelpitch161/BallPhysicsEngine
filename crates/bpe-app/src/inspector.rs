@@ -22,11 +22,12 @@ pub mod view3d;
 pub use effects::EffectsPanel;
 pub(crate) use effects::pretty_name;
 
+use crate::dice_panel::{Part, lock_button};
 use crate::keys::mark_next as key;
 use crate::theme;
 use bpe_scene::{
-    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, Property, Scene,
-    Spawner, Vec2,
+    ArenaMotion, BallStyle, BounceRules, Color, Container, Dice, Group, Look, Obstacle, Physics, PresetKind, Property,
+    Scene, Spawner, Vec2,
 };
 use eframe::egui::{
     self, Color32, DragValue, Popup, Response, RichText, Sense, Slider, Ui, color_picker::Alpha, emath::Numeric,
@@ -303,6 +304,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Bounces => {
+                    crate::my_presets::bar(ui, PresetKind::Bounces, scene);
                     bounces(ui, &mut scene.rules, &mut roll);
                     soft::bounces_section(ui, scene, &mut inspector.soft);
                     let fresh = Physics::default();
@@ -316,11 +318,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                     }
                 }
                 Tab::Look => {
+                    crate::my_presets::bar(ui, PresetKind::Look, scene);
                     look(ui, &mut scene.look, &mut roll);
                     particles::section(ui, scene, &mut inspector.particles);
                     reset_tab_to(ui, &mut scene.look, Look::default());
                 }
                 Tab::Effects => {
+                    crate::my_presets::bar(ui, PresetKind::Effects, scene);
                     effects::show(ui, &mut inspector.effects, scene, &mut roll);
                     if reset_tab(ui, !scene.effects.is_empty()) {
                         scene.effects.clear();
@@ -329,10 +333,15 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                 }
                 Tab::Sound => {
                     // Music workstream: the whole Sound tab, its reset button included, lives in music.rs.
+                    crate::my_presets::bar(ui, PresetKind::Sound, scene);
                     music::section(ui, scene, &mut inspector.music, &mut roll);
                 }
-                Tab::Rules => rules::section(ui, scene, &mut inspector.rules),
+                Tab::Rules => {
+                    crate::my_presets::bar(ui, PresetKind::Rules, scene);
+                    rules::section(ui, scene, &mut inspector.rules)
+                }
                 Tab::Text => {
+                    crate::my_presets::bar(ui, PresetKind::Captions, scene);
                     text::show(ui, &mut inspector.text, scene, &mut roll);
                     if reset_tab(ui, !scene.captions.is_empty()) {
                         scene.captions.clear();
@@ -432,6 +441,7 @@ fn heading_dice(ui: &mut Ui, text: &str, group: Group, roll: &mut Option<Roll>) 
             if dice_button(ui, &format!("Roll random {} settings", group.name())).clicked() {
                 *roll = Some(Roll::Group(group));
             }
+            lock_button(ui, Part::Group(group));
         });
     });
 }
@@ -867,6 +877,7 @@ fn balls(
                         if dice_button(ui, "Roll random settings for these balls").clicked() {
                             *roll = Some(Roll::Group(Group::Balls(index)));
                         }
+                        lock_button(ui, Part::Group(Group::Balls(index)));
                     });
                 });
                 ui.add_space(4.0);

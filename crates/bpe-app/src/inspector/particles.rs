@@ -44,6 +44,9 @@ pub fn section(ui: &mut Ui, scene: &mut Scene, state: &mut State) {
                     emitter.roll(&mut dice, 1.0);
                 }
             }
+            if !scene.particles.is_empty() {
+                crate::dice_panel::lock_button(ui, crate::dice_panel::Part::Particles);
+            }
         });
     });
     ui.label(

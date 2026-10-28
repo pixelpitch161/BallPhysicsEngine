@@ -765,7 +765,11 @@ mod tests {
             velocity: Vec2::new(200.0, 0.0),
             ..Jelly::default()
         });
-        scene.bodies.ropes.push(Rope { from: Vec2::new(-300.0, 500.0), to: Vec2::new(300.0, 500.0), ..Rope::default() });
+        scene.bodies.ropes.push(Rope {
+            from: Vec2::new(-300.0, 500.0),
+            to: Vec2::new(300.0, 500.0),
+            ..Rope::default()
+        });
         scene.bodies.cloths.push(Cloth { center: Vec2::new(0.0, -500.0), ..Cloth::default() });
         scene
     }
