@@ -218,6 +218,7 @@ impl EffectChain {
         time: f64,
         frame: &FrameData,
     ) {
+        self.library.sync_graphs(&scene.shader_graphs);
         let active: Vec<_> = scene
             .effects
             .iter()
@@ -353,6 +354,8 @@ impl EffectChain {
         base.resolution = [width as f32, height as f32];
         base.time = time as f32;
         base.pulse = frame.pulse;
+        base.audio = frame.audio.map(|v| if v.is_finite() { v } else { 0.0 });
+        base.level = if frame.level.is_finite() { frame.level } else { 0.0 };
         base.dt = dt;
         base.scale = width as f32 / video.width.max(1) as f32;
         base.hit_count = frame.hits.len().min(MAX_HITS) as u32;

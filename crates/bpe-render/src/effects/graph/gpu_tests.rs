@@ -20,7 +20,7 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 
 fn render(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, graphs: &[super::Graph]) -> Vec<u8> {
     let mut renderer = Renderer::new(device, 216, 384);
-    renderer.effect_library().sync_graphs(graphs);
+    let scene = &Scene { shader_graphs: graphs.to_vec(), ..scene.clone() };
     let mut playback = Playback::new(scene);
     let mut frame = FrameData::default();
     // Several frames in a row, so feedback effects build up their history.
@@ -106,9 +106,12 @@ fn block_previews_draw_each_block() {
     let info = std::sync::Arc::new(crate::effects::EffectInfo::graph_thumbnails(&graph));
     let generated = info.graph.as_ref().unwrap().generated.as_ref().unwrap();
     assert_eq!(generated.thumbnails, [red, green]);
-    let scene = Scene { effects: vec![Effect::new(super::effect_id("Previews"))], ..Scene::default() };
+    let scene = Scene {
+        effects: vec![Effect::new(super::effect_id("Previews"))],
+        shader_graphs: vec![graph.clone()],
+        ..Scene::default()
+    };
     let mut renderer = Renderer::new(&device, 108, 192);
-    renderer.effect_library().sync_graphs(std::slice::from_ref(&graph));
     renderer.set_effect_thumbnails(Some(crate::effects::ThumbnailRequest { effect: 0, info, views: vec![1, 2] }));
     let playback = Playback::new(&scene);
     let frame = FrameData::build(&scene, &playback, renderer.pixel_size(&scene));
@@ -220,7 +223,7 @@ fn graph_gpu_cost() {
     };
     let time_frames = |scene: &Scene| {
         let mut renderer = Renderer::new(&device, width, height);
-        renderer.effect_library().sync_graphs(std::slice::from_ref(&graph));
+        let scene = &Scene { shader_graphs: vec![graph.clone()], ..scene.clone() };
         let mut playback = Playback::new(scene);
         playback.seek(4.0);
         let frame = FrameData::build(scene, &playback, renderer.pixel_size(scene));

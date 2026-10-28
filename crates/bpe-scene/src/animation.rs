@@ -371,6 +371,53 @@ impl Scene {
         self.animation = tracks;
     }
 
+    /// The scene at `time` with keyframes and modulators applied, following `audio`.
+    pub fn at_time_with(&self, time: f32, audio: &Audio) -> Scene {
+        let mut scene = self.clone();
+        scene.apply_animation_with(time, false, audio);
+        scene
+    }
+
+    /// [`Scene::apply_animation`], then every modulator on top. Safe to call again and again on
+    /// the same scene, as the simulation does every step: number settings start each time from
+    /// their plain or keyframed value, not from last step's pulse.
+    pub fn apply_animation_with(&mut self, time: f32, simulation_only: bool, audio: &Audio) {
+        self.apply_animation(time, simulation_only);
+        if self.modulators.is_empty() {
+            return;
+        }
+        let mut modulators = std::mem::take(&mut self.modulators);
+        for m in &mut modulators {
+            if simulation_only && !m.property.affects_simulation() {
+                continue;
+            }
+            let Some(current) = m.property.get(self) else { continue };
+            let keyed = self.track(&m.property).is_some_and(|t| !t.keys.is_empty());
+            let base = match current {
+                Value::Number(v) if !keyed => Value::Number(v - m.applied),
+                other => other,
+            };
+            let value = m.modulate(base, time as f64, audio);
+            m.applied = match (base, value) {
+                (Value::Number(b), Value::Number(v)) => v - b,
+                _ => 0.0,
+            };
+            if value != current {
+                m.property.set(self, value);
+            }
+        }
+        self.modulators = modulators;
+    }
+
+    /// Whether any setting pulses with the music.
+    pub fn has_modulators(&self) -> bool {
+        self.modulators.iter().any(|m| m.enabled)
+    }
+
+    pub fn modulator(&self, property: &Property) -> Option<&Modulator> {
+        self.modulators.iter().find(|m| m.property == *property)
+    }
+
     pub fn track(&self, property: &Property) -> Option<&Track> {
         self.animation.iter().find(|t| t.property == *property)
     }
@@ -382,11 +429,14 @@ impl Scene {
     /// Whether any animated setting changes how balls move.
     pub fn animates_simulation(&self) -> bool {
         self.animation.iter().any(|t| t.property.affects_simulation() && !t.keys.is_empty())
+            || self.modulators.iter().any(|m| m.enabled && m.property.affects_simulation())
     }
 
     /// Keeps effect animations attached to their effects after the effect list changes:
     /// `map` gives each old effect index its new one, or None if the effect is gone.
+    /// Modulators on effects move with them too.
     pub fn remap_effect_tracks(&mut self, map: impl Fn(u32) -> Option<u32>) {
+        remap_effect_modulators(&mut self.modulators, &map);
         self.animation.retain_mut(|track| {
             let Some(old) = track.property.effect() else { return true };
             let Some(new) = map(old) else { return false };
@@ -400,6 +450,21 @@ impl Scene {
 
     /// Copies the animations of effect `from` onto effect `to`, replacing any it had.
     pub fn copy_effect_tracks(&mut self, from: u32, to: u32) {
+        self.modulators.retain(|m| m.property.effect() != Some(to));
+        let modulators: Vec<Modulator> = self
+            .modulators
+            .iter()
+            .filter(|m| m.property.effect() == Some(from))
+            .map(|m| {
+                let mut copy = m.clone();
+                match &mut copy.property {
+                    Property::EffectAmount(i) | Property::EffectParam(i, _) => *i = to,
+                    _ => {}
+                }
+                copy
+            })
+            .collect();
+        self.modulators.extend(modulators);
         self.animation.retain(|t| t.property.effect() != Some(to));
         let copies: Vec<Track> = self
             .animation
@@ -492,7 +557,7 @@ impl std::fmt::Debug for Audio<'_> {
 }
 
 /// "Pulse with music": moves a setting with the music, on top of its value or keyframes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Modulator {
     pub property: Property,
@@ -507,6 +572,23 @@ pub struct Modulator {
     /// For colour settings: the colour the music pushes towards.
     pub color: Color,
     pub enabled: bool,
+    /// How far this modulator last moved a number setting in a scene changed in place, such as
+    /// the simulation's own copy, so the next step starts again from the plain value.
+    #[serde(skip)]
+    applied: f32,
+}
+
+impl PartialEq for Modulator {
+    fn eq(&self, other: &Self) -> bool {
+        self.property == other.property
+            && self.source == other.source
+            && self.from == other.from
+            && self.amount == other.amount
+            && self.smoothing == other.smoothing
+            && self.curve == other.curve
+            && self.color == other.color
+            && self.enabled == other.enabled
+    }
 }
 
 impl Default for Modulator {
@@ -520,6 +602,7 @@ impl Default for Modulator {
             curve: Curve::Linear,
             color: Color::WHITE,
             enabled: true,
+            applied: 0.0,
         }
     }
 }
@@ -598,9 +681,10 @@ impl Modulator {
     /// How strongly the music pushes the setting at `time`, from 0 to about 1, after smoothing
     /// and the curve. None when the music it listens to isn't there.
     pub fn strength(&self, time: f64, audio: &Audio) -> Option<f32> {
+        // Without a mixed soundtrack, the song alone is the next best thing for visuals.
         let listener = match self.listens_to() {
             AudioFrom::Song => audio.song?,
-            AudioFrom::Mix => audio.mix?,
+            AudioFrom::Mix => audio.mix.or(audio.song)?,
         };
         let smoothing = if self.smoothing.is_finite() { self.smoothing.clamp(0.0, MAX_SMOOTHING) } else { 0.0 };
         let raw = if smoothing < 0.005 {
@@ -692,10 +776,10 @@ mod tests {
     fn modulators_rest_without_music() {
         let m = Modulator::new(Property::Bloom, AudioBand::Bass);
         assert_eq!(m.modulate(Value::Number(0.3), 1.0, &Audio::default()), Value::Number(0.3));
-        // A visual setting doesn't follow the song alone, by default.
+        // Without a mixed soundtrack, a visual setting follows the song.
         let song = steady(Levels { bass: 1.0, ..Levels::default() });
         let audio = Audio { song: Some(&song), mix: None };
-        assert_eq!(m.modulate(Value::Number(0.3), 1.0, &audio), Value::Number(0.3));
+        assert_eq!(m.modulate(Value::Number(0.3), 1.0, &audio), Value::Number(0.8));
     }
 
     #[test]
@@ -791,6 +875,47 @@ mod tests {
         remap_effect_modulators(&mut modulators, |i| if i == 0 { None } else { Some(i - 1) });
         let properties: Vec<_> = modulators.iter().map(|m| m.property.clone()).collect();
         assert_eq!(properties, [Property::EffectParam(1, "zoom".into()), Property::Bloom]);
+    }
+
+    #[test]
+    fn modulators_never_pile_up_when_applied_in_place() {
+        let song = steady(Levels { bass: 1.0, ..Levels::default() });
+        let audio = Audio { song: Some(&song), mix: None };
+        let mut scene = Scene::default();
+        let gravity = scene.physics.gravity.y;
+        scene.modulators.push(Modulator { amount: 50.0, smoothing: 0.0, ..Modulator::new(Property::Gravity, AudioBand::Bass) });
+        assert!(scene.animates_simulation());
+        for step in 0..10 {
+            scene.apply_animation_with(step as f32 / 240.0, true, &audio);
+            assert_eq!(scene.physics.gravity.y, gravity + 50.0);
+        }
+        // A quiet moment puts the plain value back.
+        let quiet = steady(Levels::default());
+        scene.apply_animation_with(1.0, true, &Audio { song: Some(&quiet), mix: None });
+        assert_eq!(scene.physics.gravity.y, gravity);
+        // Keyframes are the base when there are some.
+        let mut track = Track::new(Property::Gravity);
+        track.set_key(0.0, Value::Number(500.0));
+        scene.animation.push(track);
+        for _ in 0..3 {
+            scene.apply_animation_with(2.0, true, &audio);
+            assert_eq!(scene.physics.gravity.y, 550.0);
+        }
+        // The plain scene used for pictures is never changed by at_time_with.
+        let shown = scene.at_time_with(2.0, &audio);
+        assert_eq!(shown.physics.gravity.y, 550.0);
+        assert_eq!(shown, scene, "the hidden offset doesn't count as a change");
+    }
+
+    #[test]
+    fn effect_modulators_move_and_copy_with_their_effects() {
+        let mut scene = Scene::default();
+        scene.effects = vec![Effect::new("echo"), Effect::new("film")];
+        scene.modulators.push(Modulator::new(Property::EffectAmount(1), AudioBand::Treble));
+        scene.copy_effect_tracks(1, 0);
+        assert_eq!(scene.modulators.len(), 2);
+        scene.remap_effect_tracks(|i| if i == 0 { None } else { Some(0) });
+        assert_eq!(scene.modulators.iter().map(|m| m.property.clone()).collect::<Vec<_>>(), [Property::EffectAmount(0)]);
     }
 
     #[test]

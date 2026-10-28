@@ -7,10 +7,9 @@
 //! caused them, and a broken graph never panics.
 
 pub mod catalog;
-mod model;
 
+pub use bpe_graph::{Graph, Link, Node, Note, Param};
 pub use catalog::{Block, Category, Control, Default, Input, Output, Ty};
-pub use model::{Graph, Link, Node, Note, Param};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -69,10 +68,11 @@ impl Generated {
     }
 }
 
-/// Every block, looked up by kind.
+/// Every block, looked up by kind. Also the catalog the node editor uses for shader graphs.
 pub struct Catalog {
     blocks: Vec<Block>,
     by_kind: BTreeMap<&'static str, usize>,
+    specs: Vec<bpe_graph::NodeSpec>,
 }
 
 impl Catalog {
@@ -81,7 +81,8 @@ impl Catalog {
         CATALOG.get_or_init(|| {
             let blocks = catalog::blocks();
             let by_kind = blocks.iter().enumerate().map(|(i, b)| (b.kind, i)).collect();
-            Catalog { blocks, by_kind }
+            let specs = blocks.iter().map(node_spec).collect();
+            Catalog { blocks, by_kind, specs }
         })
     }
 
@@ -92,6 +93,66 @@ impl Catalog {
     pub fn all(&self) -> &[Block] {
         &self.blocks
     }
+}
+
+impl bpe_graph::Catalog for Catalog {
+    fn spec(&self, kind: &str) -> Option<&bpe_graph::NodeSpec> {
+        self.by_kind.get(kind).map(|&i| &self.specs[i])
+    }
+
+    fn all(&self) -> &[bpe_graph::NodeSpec] {
+        &self.specs
+    }
+
+    /// Wires may be type-checked loosely: the compiler converts numbers to positions and colours
+    /// and colours to brightness, works out what flows through "any value" pins, and reports
+    /// anything that still doesn't fit on the block.
+    #[cfg(any())] // TEMPORARY until bpe-graph's Catalog::accepts lands.
+    fn accepts(&self, to: bpe_graph::PinType, from: bpe_graph::PinType) -> bool {
+        use bpe_graph::PinType::*;
+        let value = |t| matches!(t, Number | Vector | Color | Field | Bool);
+        value(to) && value(from) && !matches!((to, from), (Vector, Color) | (Color, Vector))
+    }
+}
+
+fn pin_type(ty: Ty) -> bpe_graph::PinType {
+    match ty {
+        Ty::Number => bpe_graph::PinType::Number,
+        Ty::Vector => bpe_graph::PinType::Vector,
+        Ty::Color => bpe_graph::PinType::Color,
+        Ty::Any => bpe_graph::PinType::Field,
+    }
+}
+
+/// What the node editor needs to know about a block: its pins, and a setting for every input
+/// that is used when nothing is plugged in.
+fn node_spec(block: &Block) -> bpe_graph::NodeSpec {
+    use bpe_graph::{NodeSpec, ParamSpec, PinSpec};
+    let mut spec = NodeSpec::new(block.kind, block.title, block.category.name(), block.help);
+    for input in &block.inputs {
+        spec = spec.input(PinSpec::new(input.name, pin_type(input.ty)).help(input.help));
+        let label = catalog_label(input.name);
+        let param = match (input.default, input.control) {
+            (Default::Number(v), Control::Toggle) => ParamSpec::new(input.name, label, Param::Bool(v > 0.5)),
+            (Default::Number(v), _) => ParamSpec::number(input.name, &label, v, input.min, input.max),
+            (Default::Vector(v), _) => ParamSpec { range: (input.min, input.max), ..ParamSpec::new(input.name, label, Param::Vector(v)) },
+            (Default::Color([r, g, b]), _) => ParamSpec::new(input.name, label, Param::Color([r, g, b, 1.0])),
+            // Unplugged, these use the pixel or the picture; there's nothing to set.
+            (Default::Position | Default::Picture, _) => continue,
+        };
+        spec = spec.param(param.help(input.help));
+    }
+    for output in &block.outputs {
+        spec = spec.output(PinSpec::new(output.name, pin_type(output.ty)));
+    }
+    spec
+}
+
+/// `in_low` to "In low".
+fn catalog_label(name: &str) -> String {
+    let text = name.replace('_', " ");
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// The effect id a scene uses for the graph called `name`.

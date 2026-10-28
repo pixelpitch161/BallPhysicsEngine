@@ -272,12 +272,13 @@ name = "bpe-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bpe-graph",
+ "bpe-music",
  "bpe-scene",
  "bpe-sim",
  "bytemuck",
  "naga",
  "pollster 1.0.1",
- "serde",
  "wgpu",
 ]
 

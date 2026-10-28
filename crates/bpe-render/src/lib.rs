@@ -420,7 +420,7 @@ impl Renderer {
         let scene = if scene.animation.is_empty() && scene.modulators.is_empty() {
             scene
         } else {
-            animated = scene.at_time(time as f32);
+            animated = frame.with_audio(|audio| scene.at_time_with(time as f32, audio));
             &animated
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(scene, self.targets.width, time)));

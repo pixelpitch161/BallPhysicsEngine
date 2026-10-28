@@ -18,7 +18,7 @@ pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring
 pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
 
 use bpe_music::AudioFeatures;
-use bpe_scene::{Color, Container, ObstaclePart, Scene, Spawner, Vec2};
+use bpe_scene::{Audio, Color, Container, Levels, Listener, ObstaclePart, Scene, Spawner, Vec2};
 use grid::ObstacleGrid;
 use std::sync::Arc;
 
@@ -528,7 +528,16 @@ impl Simulation {
     fn update_arena(&mut self) {
         let time = self.time();
         if self.animated {
-            self.scene.apply_animation(time as f32, true);
+            // Modulators on settings that move balls follow the song only (WS5).
+            let song = self.inputs.music.as_deref().map(|music| {
+                move |t: f64| {
+                    let at = music.at(t);
+                    let beat = music.beat_phase(t);
+                    Levels { bass: at.bass, mid: at.mid, treble: at.treble, level: at.level, beat, onset: at.onset }
+                }
+            });
+            let audio = Audio { song: song.as_ref().map(|f| f as Listener), mix: None };
+            self.scene.apply_animation_with(time as f32, true, &audio);
         }
         let motion = &self.scene.arena_motion;
         self.arena.spin = motion.spin.to_radians();
