@@ -532,7 +532,10 @@ impl Simulation {
             let song = self.inputs.music.as_deref().map(|music| {
                 move |t: f64| {
                     let at = music.at(t);
-                    let beat = music.beat_phase(t);
+                    // Rests (1) outside the beats, like the renderer.
+                    let beats = &music.beats;
+                    let inside = beats.len() >= 2 && t >= beats[0] && t < beats[beats.len() - 1];
+                    let beat = if inside { music.beat_phase(t) } else { 1.0 };
                     Levels { bass: at.bass, mid: at.mid, treble: at.treble, level: at.level, beat, onset: at.onset }
                 }
             });

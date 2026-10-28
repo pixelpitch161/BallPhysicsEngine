@@ -251,3 +251,68 @@ fn graph_gpu_cost() {
     println!("{width}x{height}, per frame: no effects {plain:.2} ms, kaleidoscope {:.2} ms extra, 40-block graph {:.2} ms extra", builtin - plain, nodes - plain);
     println!("graph to checked WGSL {to_wgsl:?}, to a GPU shader module {to_module:?}");
 }
+
+/// A soundtrack analysis with the bass at `bass` the whole time and a beat every half second.
+fn steady_music(bass: f32) -> std::sync::Arc<bpe_music::AudioFeatures> {
+    let frames = 200 * 20;
+    std::sync::Arc::new(bpe_music::AudioFeatures {
+        rate: 200.0,
+        bass: vec![bass; frames],
+        mid: vec![bass * 0.5; frames],
+        treble: vec![bass; frames],
+        level: vec![bass; frames],
+        onset: vec![0.0; frames],
+        beats: (0..40).map(|i| i as f64 * 0.5).collect(),
+        downbeats: Vec::new(),
+        bpm: 120.0,
+    })
+}
+
+fn render_with_mix(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, bass: Option<f32>) -> Vec<u8> {
+    let mut renderer = Renderer::new(device, 108, 192);
+    let mut playback = Playback::new(scene);
+    let mut frame = FrameData { mix: bass.map(steady_music), ..FrameData::default() };
+    for i in 0..6 {
+        let time = 4.0 + i as f64 / 60.0;
+        playback.seek(time);
+        frame.fill(scene, &playback, renderer.pixel_size(scene));
+        renderer.render(device, queue, scene, time, &frame);
+    }
+    renderer.read_output(device, queue).unwrap()
+}
+
+#[test]
+fn effects_pulse_with_the_music() {
+    let Some((device, queue)) = gpu() else { return };
+    // Every built-in "pulse with music" effect reacts to the bass, and only when asked to.
+    for id in ["shockwave", "kaleidoscope", "color_cycle", "liquid", "echo", "glitch"] {
+        let off = Scene { effects: vec![Effect::new(id)], ..Scene::default() };
+        let on = Scene { effects: vec![Effect::new(id).with("music", 1.0)], ..Scene::default() };
+        let quiet = render_with_mix(&device, &queue, &off, None);
+        assert_eq!(quiet, render_with_mix(&device, &queue, &off, Some(1.0)), "{id} pulses with the music set to 0");
+        let (moved, _) = difference(&render_with_mix(&device, &queue, &on, Some(0.0)), &render_with_mix(&device, &queue, &on, Some(1.0)));
+        assert!(moved > 0.02, "{id} doesn't react to the bass ({moved})");
+    }
+    // So do the music templates. Without music, beats rest.
+    for graph in templates::graphs() {
+        let scene = Scene { effects: vec![Effect::new(super::effect_id(&graph.name))], ..Scene::default() };
+        let (moved, _) = difference(&render_with_mix(&device, &queue, &scene, None), &render_with_mix(&device, &queue, &scene, Some(1.0)));
+        assert!(moved > 0.02, "{} doesn't react to the music ({moved})", graph.name);
+    }
+}
+
+#[test]
+fn modulators_pulse_settings_in_the_picture() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut scene = Scene::default();
+    scene.modulators.push(bpe_scene::Modulator {
+        amount: 2.0,
+        ..bpe_scene::Modulator::new(bpe_scene::Property::Exposure, bpe_scene::AudioBand::Bass)
+    });
+    let loud = render_with_mix(&device, &queue, &scene, Some(1.0));
+    let quiet = render_with_mix(&device, &queue, &scene, Some(0.0));
+    let plain = render_with_mix(&device, &queue, &Scene::default(), Some(1.0));
+    assert_eq!(quiet, plain, "silence leaves the setting alone");
+    let brighter = loud.iter().map(|&v| v as u64).sum::<u64>() > quiet.iter().map(|&v| v as u64).sum::<u64>();
+    assert!(brighter, "loud bass should raise the exposure");
+}

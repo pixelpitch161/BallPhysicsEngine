@@ -9,7 +9,7 @@
 fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
     let band = floor(uv.y * round(p.bands));
     let tick = floor(fx.time * p.rate);
-    let level = max(p.amount * mix(1.0, fx.pulse, p.react), p.amount * p.music * bass());
+    let level = p.amount * (mix(1.0, fx.pulse, p.react) + p.music * bass());
     let on = step(1.0 - level * 0.7, hash21(vec2<f32>(band * 0.37, tick)));
     let shift = (hash21(vec2<f32>(band, tick + 7.0)) - 0.5) * 0.2 * level * on;
     let split = 0.01 * level * on;

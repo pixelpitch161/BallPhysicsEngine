@@ -575,7 +575,8 @@ pub struct Modulator {
     /// How far this modulator last moved a number setting in a scene changed in place, such as
     /// the simulation's own copy, so the next step starts again from the plain value.
     #[serde(skip)]
-    applied: f32,
+    #[doc(hidden)]
+    pub applied: f32,
 }
 
 impl PartialEq for Modulator {

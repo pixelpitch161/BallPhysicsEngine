@@ -139,8 +139,20 @@ pub fn levels(features: &bpe_music::AudioFeatures, time: f64) -> bpe_scene::Leve
         mid: at.mid,
         treble: at.treble,
         level: at.level,
-        beat: features.beat_phase(time),
+        beat: beat_phase(Some(features), time),
         onset: at.onset,
+    }
+}
+
+/// How far through the current beat `time` is, from 0 on the beat to 1 just before the next.
+/// 1 (resting, as if the next beat were about to come) without beats, before the first and after
+/// the last, so beat-driven visuals stay still rather than stuck on a beat.
+pub fn beat_phase(features: Option<&bpe_music::AudioFeatures>, time: f64) -> f32 {
+    match features {
+        Some(f) if f.beats.len() >= 2 && time >= f.beats[0] && time < f.beats[f.beats.len() - 1] => {
+            f.beat_phase(time)
+        }
+        _ => 1.0,
     }
 }
 
@@ -257,9 +269,9 @@ impl FrameData {
         // from the song, whose beat is steadier than the bounces'.
         if let Some(mix) = &self.mix {
             let at = mix.at(now);
-            let beat = if self.song.is_some() { self.audio[3] } else { mix.beat_phase(now) };
-            (self.audio, self.level) = ([at.bass, at.mid, at.treble, beat], at.level);
+            (self.audio, self.level) = ([at.bass, at.mid, at.treble, 0.0], at.level);
         }
+        self.audio[3] = beat_phase(self.song.as_deref().or(self.mix.as_deref()), now);
         self.counts = playback.counts_at(now);
         self.gpu.fill(scene, playback);
         self.particles.fill(scene, playback, &self.events);

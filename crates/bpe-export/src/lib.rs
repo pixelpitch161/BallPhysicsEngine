@@ -327,6 +327,8 @@ fn export_with(
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
     let mut playback = Playback::new(scene);
     let mut frame = FrameData::default();
+    // Effects and modulators that pulse with the music follow the finished soundtrack.
+    frame.mix = Some(bpe_render::effects::mix_features(&soundtrack.samples, bpe_audio::SAMPLE_RATE, 2));
     let pixel = renderer.pixel_size(scene);
     let mut failed = None;
     for index in 0..total {

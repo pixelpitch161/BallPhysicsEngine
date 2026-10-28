@@ -531,6 +531,13 @@ impl EffectLibrary {
     }
 }
 
+/// Analyses a finished soundtrack (interleaved samples) so visuals can follow everything you
+/// hear, bounce sounds included. Set the result as [`crate::FrameData::mix`]. About 40 ms for
+/// 30 seconds.
+pub fn mix_features(samples: &[f32], rate: u32, channels: u16) -> Arc<bpe_music::AudioFeatures> {
+    Arc::new(bpe_music::analyze_mix(samples, rate, channels))
+}
+
 /// Turns a file name into an effect id: lower case, with spaces and dashes as `_`.
 pub fn effect_id(name: &str) -> String {
     name.trim().to_lowercase().replace([' ', '-'], "_")
