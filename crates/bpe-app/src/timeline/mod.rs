@@ -13,6 +13,7 @@ mod song;
 mod text;
 
 pub use lanes::{Lane, LaneContext, Scale};
+pub use rules::rule_color;
 
 use crate::inspector::Tab;
 use crate::keys::{self, KeyState};

@@ -45,7 +45,15 @@ fn random_variations_stay_sane_and_repeatable() {
         let groups: Vec<Group> = (0..preset.scene.spawners.len()).map(Group::Balls).chain(GROUPS).collect();
         let mut scene = preset.scene.variation(&groups, seed, 1.0);
         scene.video.duration = seconds as f32;
+        // Every third variation also runs every rule recipe.
+        if seed % 3 == 0 {
+            scene.logic = bpe_sim::rules::recipes().into_iter().map(|r| r.graph).collect();
+        }
+        let started = std::time::Instant::now();
         let (events, sim) = run(&scene, seconds);
+        if std::env::var_os("FUZZ_VERBOSE").is_some() {
+            eprintln!("{} seed {seed}: {:.2} s, {} events", preset.name, started.elapsed().as_secs_f64(), events.len());
+        }
         let label = format!("{} seed {seed}", preset.name);
         if sim.balls().iter().any(|b| !b.position.is_finite() || !b.velocity.is_finite()) {
             failures.push(format!("{label}: a ball's position or speed is not a number"));
@@ -69,7 +77,18 @@ fn random_variations_stay_sane_and_repeatable() {
             straight.advance_to(playback.simulation().time(), &mut Vec::new());
             let a: Vec<_> = playback.simulation().balls().iter().map(|b| b.position).collect();
             let b: Vec<_> = straight.balls().iter().map(|b| b.position).collect();
-            if a != b {
+            // A 3D scene's balls live in its 3D side; compare with a playback that only went forwards.
+            let same = match playback.space() {
+                Some(space) => {
+                    let mut forwards = Playback::new(&scene);
+                    forwards.seek(playback.simulation().time());
+                    let a: Vec<_> = space.balls().iter().map(|b| b.position).collect();
+                    let b: Vec<_> = forwards.space().unwrap().balls().iter().map(|b| b.position).collect();
+                    a == b
+                }
+                None => a == b,
+            };
+            if !same {
                 failures.push(format!("{label}: seeking ended somewhere else than playing"));
             }
         }

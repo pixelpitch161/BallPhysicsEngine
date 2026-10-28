@@ -257,3 +257,12 @@ fn twenty_rules_are_cheap() {
     let extra_ms = (time(&scene) - time(&plain)) / steps * 1000.0;
     assert!(extra_ms < 0.1, "rules cost {extra_ms:.4} ms a step");
 }
+
+#[test]
+fn the_rules_preset_matches_its_recipe_and_multiplies() {
+    let scene = preset("Escape and multiply (rules)");
+    assert_eq!(scene.logic, vec![recipe("Escape and multiply")]);
+    let events = run(&scene);
+    let escapes = count(&events, |k| matches!(k, EventKind::Escape(_)));
+    assert!(escapes > 3 && count(&events, |k| *k == EventKind::Spawn) > escapes);
+}

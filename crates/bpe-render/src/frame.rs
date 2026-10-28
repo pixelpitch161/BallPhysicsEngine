@@ -124,6 +124,9 @@ pub struct FrameData {
     pub text: crate::text::TextFrame,
 }
 
+/// How long a rule's screen flash lasts.
+const RULE_FLASH_SECONDS: f64 = 0.8;
+
 /// How far back [`FrameData::events`] reaches, in seconds.
 pub const EVENT_MEMORY: f64 = 3.0;
 
@@ -196,6 +199,22 @@ impl FrameData {
                         1.0,
                     ];
                     self.flashes.push(FlashInstance { center: hit.position.into(), size: look.flash_size, color });
+                }
+            }
+
+            // Rule flashes cover the whole picture and fade over about half a second.
+            let rules = sim.rules();
+            if !rules.is_empty() {
+                let now = sim.time();
+                let size = 3.0 * (scene.video.width + scene.video.height) as f32;
+                for event in playback.recent_events(RULE_FLASH_SECONDS).iter() {
+                    let Some(bpe_sim::rules::RuleOutput::Flash { color, strength }) = rules.output(event) else {
+                        continue;
+                    };
+                    let fade = (-6.0 * (now - event.time).max(0.0) as f32).exp() * strength * 0.5;
+                    // Alpha above 1 tells the shader this flash ignores the scene's own flash strength.
+                    let color = [color[0] * fade, color[1] * fade, color[2] * fade, 2.0];
+                    self.flashes.push(FlashInstance { center: scene.container.center().into(), size, color });
                 }
             }
 

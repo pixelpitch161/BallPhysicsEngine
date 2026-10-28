@@ -35,6 +35,7 @@ pub enum RuleOutput {
 
 /// The balls and world rules act on. The flat simulation provides one for its own balls, and
 /// 3D mode for its balls, so the same rules work in both.
+#[allow(clippy::len_without_is_empty)]
 pub trait RuleBalls {
     /// Ball slots, removed ones included.
     fn len(&self) -> usize;
@@ -1119,7 +1120,7 @@ fn value(
         Kind::BallSpeed => {
             let ball = match block.inputs.first().copied().flatten() {
                 Some((from, _)) if program.blocks[from as usize].kind == Kind::RandomBall => random_ball(state, balls),
-                _ => Some(context.ball as usize).filter(|_| context.ball != NO_BALL),
+                _ => (context.ball != NO_BALL).then_some(context.ball as usize),
             };
             ball.filter(|&b| b < balls.len()).map_or(0.0, |b| balls.velocity(b).length())
         }

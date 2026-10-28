@@ -55,7 +55,8 @@ impl Soundtrack {
 pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path>) -> anyhow::Result<Soundtrack> {
     let sound = &scene.sound;
     let mut track = Soundtrack::silent(scene.video.duration);
-    if !sound.enabled || !events.iter().any(|e| e.kind.is_bounce()) {
+    let rule_events = events.iter().any(|e| matches!(e.kind, EventKind::Action { .. }));
+    if !sound.enabled || !(rule_events || events.iter().any(|e| e.kind.is_bounce())) {
         return Ok(track);
     }
     let progression = Progression::new(scene)?;
@@ -96,6 +97,23 @@ pub fn render_soundtrack(scene: &Scene, events: &[Event], base_dir: Option<&Path
                 break;
             }
             notes.push(Placed { start, note, left, right });
+        }
+    }
+
+    // Notes played by rules: the chord's lowest note now, moved by the rule's pitch.
+    if rule_events {
+        let rules = bpe_sim::rules::RuleState::new(scene);
+        for event in events {
+            let Some(bpe_sim::rules::RuleOutput::Note { pitch, volume }) = rules.output(event) else { continue };
+            let start = (event.time * SAMPLE_RATE as f64).round() as usize;
+            let Some(&root) = progression.notes_at(event.time).first() else { continue };
+            if start >= frames {
+                break;
+            }
+            let note = (root as f32 + pitch.round()).clamp(0.0, 127.0) as u8;
+            let pan = ((event.position.x - center) / half_width.max(1.0)).clamp(-1.0, 1.0) * sound.stereo_width;
+            let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            notes.push(Placed { start, note, left: volume * angle.cos(), right: volume * angle.sin() });
         }
     }
 

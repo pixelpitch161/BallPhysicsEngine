@@ -133,6 +133,8 @@ pub struct NodeEditor {
     drag: Drag,
     palette: Option<Palette>,
     pub show_minimap: bool,
+    /// Room on the right that fitting the view leaves clear, such as under a floating preview.
+    pub fit_inset_right: f32,
     /// A short explanation, such as why a wire was refused, and when it was shown.
     message: Option<(String, f64)>,
     /// The canvas transform and screen rect from the last frame, for tests and the palette.
@@ -165,6 +167,7 @@ impl NodeEditor {
             drag: Drag::None,
             palette: None,
             show_minimap: true,
+            fit_inset_right: 0.0,
             message: None,
             to_screen: TSTransform::IDENTITY,
             screen: Rect::NOTHING,
@@ -238,7 +241,8 @@ impl NodeEditor {
             .map(|n| layout(n, catalog.spec(&n.kind), live.and_then(|l| l.thumbnail(n.id))))
             .collect();
         if !self.fitted && screen.width() > 10.0 {
-            self.fit(graph, &layouts, screen);
+            let inset = self.fit_inset_right.min(screen.width() * 0.5);
+            self.fit(graph, &layouts, screen.with_max_x(screen.max.x - inset));
             self.fitted = true;
         }
 
@@ -1247,54 +1251,59 @@ fn param_row(ui: &mut egui::Ui, node: &mut Node, spec: &ParamSpec, wired: bool) 
             ui.label(egui::RichText::new("from wire").size(12.0).italics().color(theme::MUTED));
             return;
         }
-        let current = node.params.get(&spec.name).cloned().unwrap_or_else(|| spec.default.clone());
-        let mut value = current.clone();
-        let label_id = label.id;
-        match &mut value {
-            Param::Number(v) => {
-                let (lo, hi) = spec.range;
-                let mut drag = egui::DragValue::new(v).speed(((hi - lo) / 300.0).max(0.001));
-                if hi > lo {
-                    drag = drag.range(lo..=hi);
-                }
-                ui.add(drag).labelled_by(label_id);
-            }
-            Param::Bool(b) => {
-                ui.checkbox(b, "").labelled_by(label_id);
-            }
-            Param::Text(t) => {
-                ui.add(egui::TextEdit::singleline(t).desired_width(100.0)).labelled_by(label_id);
-            }
-            Param::Color(c) => {
-                let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                let response =
-                    egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::OnlyBlend);
-                if response.labelled_by(label_id).changed() {
-                    let [r, g, b, a] = rgba.to_rgba_unmultiplied();
-                    *c = [r, g, b, a];
-                }
-            }
-            Param::Vector(v) => {
-                ui.add(egui::DragValue::new(&mut v[1]).speed(1.0).prefix("y ")).labelled_by(label_id);
-                ui.add(egui::DragValue::new(&mut v[0]).speed(1.0).prefix("x ")).labelled_by(label_id);
-            }
-            Param::Choice(choice) => {
-                egui::ComboBox::from_id_salt((node.id, &spec.name))
-                    .selected_text(choice.as_str())
-                    .width(96.0)
-                    .show_ui(ui, |ui| {
-                        for option in &spec.choices {
-                            ui.selectable_value(choice, option.clone(), option);
-                        }
-                    })
-                    .response
-                    .labelled_by(label_id);
-            }
-        }
-        if value != current {
-            node.params.insert(spec.name.clone(), value);
-        }
+        param_control(ui, node, spec, label.id);
     });
+}
+
+/// The control for one block setting (a number box, tick box, colour and so on), named by the
+/// label with id `label_id` for screen readers.
+pub(crate) fn param_control(ui: &mut egui::Ui, node: &mut Node, spec: &ParamSpec, label_id: Id) {
+    let current = node.params.get(&spec.name).cloned().unwrap_or_else(|| spec.default.clone());
+    let mut value = current.clone();
+    match &mut value {
+        Param::Number(v) => {
+            let (lo, hi) = spec.range;
+            let mut drag = egui::DragValue::new(v).speed(((hi - lo) / 300.0).max(0.001));
+            if hi > lo {
+                drag = drag.range(lo..=hi);
+            }
+            ui.add(drag).labelled_by(label_id);
+        }
+        Param::Bool(b) => {
+            ui.checkbox(b, "").labelled_by(label_id);
+        }
+        Param::Text(t) => {
+            ui.add(egui::TextEdit::singleline(t).desired_width(100.0)).labelled_by(label_id);
+        }
+        Param::Color(c) => {
+            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let response =
+                egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::OnlyBlend);
+            if response.labelled_by(label_id).changed() {
+                let [r, g, b, a] = rgba.to_rgba_unmultiplied();
+                *c = [r, g, b, a];
+            }
+        }
+        Param::Vector(v) => {
+            ui.add(egui::DragValue::new(&mut v[1]).speed(1.0).prefix("y ")).labelled_by(label_id);
+            ui.add(egui::DragValue::new(&mut v[0]).speed(1.0).prefix("x ")).labelled_by(label_id);
+        }
+        Param::Choice(choice) => {
+            egui::ComboBox::from_id_salt((node.id, &spec.name))
+                .selected_text(choice.as_str())
+                .width(96.0)
+                .show_ui(ui, |ui| {
+                    for option in &spec.choices {
+                        ui.selectable_value(choice, option.clone(), option);
+                    }
+                })
+                .response
+                .labelled_by(label_id);
+        }
+    }
+    if value != current {
+        node.params.insert(spec.name.clone(), value);
+    }
 }
 
 /// The colour of a wire carrying this type.
