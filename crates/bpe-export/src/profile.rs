@@ -122,7 +122,7 @@ pub fn profile_scene(
         }
     }
     let frames = started.elapsed();
-    let balls = playback.simulation().balls().len();
+    let balls = playback.space().map_or(playback.simulation().balls().len(), |space| space.balls().len()); // 3D (WS4)
 
     let started = Instant::now();
     playback.seek(scene.video.duration as f64 * 0.9);

@@ -419,8 +419,8 @@ impl Renderer {
         self.captions.prepare(device, queue, scene, frame);
         // Render order: background, walls and shapes (or the whole 3D picture), swarms and
         // fluids, trails, balls, flashes, particles; then effects, bloom and captions.
-        if self.space.active(scene) {
-            self.space.draw(device, queue, &mut encoder, &self.targets.hdr, scene, frame, time);
+        if self.space.active(scene, frame) {
+            self.space.draw(device, queue, &mut encoder, &self.targets.hdr, size, scene, frame, time); // 3D (WS4): size
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "particles", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.particles.draw(&mut pass, &self.globals_group);
@@ -928,7 +928,8 @@ mod tests {
             let mut playback = Playback::new(&scene);
             playback.seek(2.0);
             let frame = FrameData::build(&scene, &playback, renderer.pixel_size(&scene));
-            assert!(!frame.shapes.is_empty(), "{} draws no walls", preset.name);
+            // 3D (WS4): a 3D scene draws its container in the 3D pass instead.
+            assert!(!frame.shapes.is_empty() || frame.space.active, "{} draws no walls", preset.name);
             renderer.render(&device, &queue, &scene, 2.0, &frame);
             renderer.read_output(&device, &queue).unwrap();
         }

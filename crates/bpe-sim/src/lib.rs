@@ -12,7 +12,7 @@ mod broadphase;
 pub mod events;
 mod grid;
 pub mod rules;
-mod space;
+pub mod space;
 
 pub use arena::{ArenaState, Outline, Piece, closed_outline, outline_pieces, ring_outline};
 pub use events::{Counts, Event, EventKind, HitKind, NO_BALL, WallHit};
@@ -608,6 +608,8 @@ pub struct Playback {
     /// Running totals after every [`TALLY_STRIDE`] events, so [`Playback::counts_at`] only
     /// adds up the events since the last one.
     tally: Vec<Counts>,
+    /// 3D (WS4): a 3D scene runs this, and `sim` (with no balls) only keeps time and beats.
+    space: Option<space::SpaceTrack>,
 }
 
 const TALLY_STRIDE: usize = 2048;
@@ -619,16 +621,30 @@ impl Playback {
     }
 
     pub fn with_inputs(scene: &Scene, inputs: &SimInputs) -> Self {
-        let sim = Simulation::with_inputs(scene, inputs);
+        // 3D (WS4)
+        let space = scene.space().map(|_| space::SpaceTrack::new(scene));
+        let sim = match space {
+            Some(_) => Simulation::with_inputs(&space::time_keeper(scene), inputs),
+            None => Simulation::with_inputs(scene, inputs),
+        };
         let checkpoint_every = (CHECKPOINT_SECONDS * scene.physics.steps_per_second.max(1) as f64).ceil() as u64;
         let checkpoints = vec![(sim.clone(), 0)];
-        let start_balls = sim.balls().len() as u32;
+        let start_balls = match &space {
+            Some(space) => space.sim.balls().len() as u32,
+            None => sim.balls().len() as u32,
+        };
         let tally = vec![Counts { balls: start_balls, ..Counts::default() }];
-        Self { sim, events: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1), tally }
+        Self { sim, events: Vec::new(), checkpoints, checkpoint_every: checkpoint_every.max(1), tally, space }
     }
 
+    /// The simulation. For a 3D scene it has no balls; see [`Playback::space`].
     pub fn simulation(&self) -> &Simulation {
         &self.sim
+    }
+
+    /// The 3D simulation, for a 3D scene.
+    pub fn space(&self) -> Option<&space::SpaceSimulation> {
+        self.space.as_ref().map(|space| &space.sim)
     }
 
     /// Everything that happened up to the current time, oldest first.
@@ -707,10 +723,17 @@ impl Playback {
             let (sim, events) = &self.checkpoints[index];
             self.sim = sim.clone();
             self.events.truncate(*events);
+            if let Some(space) = &mut self.space {
+                space.restore(self.sim.step);
+            }
         }
         let started = budget.map(|_| std::time::Instant::now());
         while self.sim.step < target {
+            let from = self.events.len();
             self.sim.step(&mut self.events);
+            if let Some(space) = &mut self.space {
+                space.step(&mut self.events, from);
+            }
             if self.sim.step.is_multiple_of(self.checkpoint_every)
                 && self.checkpoints.last().is_some_and(|(sim, _)| sim.step < self.sim.step)
             {
@@ -730,18 +753,38 @@ impl Playback {
 
     fn save_checkpoint(&mut self) {
         self.checkpoints.push((self.sim.clone(), self.events.len()));
-        let bytes: usize = self.checkpoints.iter().map(|(sim, _)| sim.memory()).sum();
+        if let Some(space) = &mut self.space {
+            space.save_checkpoint();
+        }
+        let mut bytes: usize = self.checkpoints.iter().map(|(sim, _)| sim.memory()).sum();
+        bytes += self.space.as_ref().map_or(0, |space| space.memory());
         if bytes > CHECKPOINT_BYTES && self.checkpoints.len() > 2 {
             // Keep the first one and every other one after it, and take them half as often.
             self.checkpoint_every *= 2;
             let every = self.checkpoint_every;
             self.checkpoints.retain(|(sim, _)| sim.step.is_multiple_of(every));
+            if let Some(space) = &mut self.space {
+                space.thin(every);
+            }
         }
     }
 }
 
 /// Runs a whole scene from the start and returns every event, for building the soundtrack.
 pub fn collect_events(scene: &Scene, inputs: &SimInputs) -> Vec<Event> {
+    if scene.space().is_some() {
+        // 3D (WS4): both sides step together, as in a playback, without its snapshots.
+        let mut keeper = Simulation::with_inputs(&space::time_keeper(scene), inputs);
+        let mut space = space::SpaceTrack::new(scene);
+        let mut events = Vec::new();
+        let target = (scene.video.duration as f64 * scene.physics.steps_per_second as f64).floor() as u64;
+        while keeper.step < target {
+            let from = events.len();
+            keeper.step(&mut events);
+            space.step(&mut events, from);
+        }
+        return events;
+    }
     let mut sim = Simulation::with_inputs(scene, inputs);
     let mut events = Vec::new();
     sim.advance_to(scene.video.duration as f64, &mut events);

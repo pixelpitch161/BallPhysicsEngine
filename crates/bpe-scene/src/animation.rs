@@ -39,6 +39,21 @@ pub enum Property {
     EffectAmount(u32),
     /// A slider of the effect at this index, by name.
     EffectParam(u32, String),
+    // ---- 3D (WS4): see `crate::view`. They only change the picture. ----
+    /// Degrees around the target, from in front.
+    CameraTurn,
+    /// Degrees above the target.
+    CameraHeight,
+    CameraDistance,
+    CameraFov,
+    /// Where the main light comes from, in degrees.
+    LightTurn,
+    LightHeight,
+    LightBrightness,
+    /// How much the glass of the container shows.
+    Glass,
+    /// Glow of the container's edges and tunnel rings.
+    EdgeGlow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -112,6 +127,15 @@ impl Ease {
 }
 
 impl Value {
+    /// Whether two values are the same but for rounding errors, such as a 3D camera angle
+    /// read back after another angle changed.
+    pub fn same(self, other: Value) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => (a - b).abs() <= 1e-4 * a.abs().max(b.abs()).max(1.0),
+            (a, b) => a == b,
+        }
+    }
+
     pub fn number(self) -> Option<f32> {
         match self {
             Value::Number(v) => Some(v),
@@ -217,6 +241,24 @@ impl Property {
         Property::StringWidth,
     ];
 
+    /// 3D (WS4): the settings of a 3D scene. A flat scene has none of them.
+    pub const SPACE: [Property; 9] = [
+        Property::CameraTurn,
+        Property::CameraHeight,
+        Property::CameraDistance,
+        Property::CameraFov,
+        Property::LightTurn,
+        Property::LightHeight,
+        Property::LightBrightness,
+        Property::Glass,
+        Property::EdgeGlow,
+    ];
+
+    /// 3D (WS4): whether this is one of [`Property::SPACE`].
+    pub fn is_space(&self) -> bool {
+        Property::SPACE.contains(self)
+    }
+
     /// Whether changing it changes how balls move (and so the sound), not just the picture.
     pub fn affects_simulation(&self) -> bool {
         matches!(
@@ -275,6 +317,8 @@ impl Property {
             Property::StringWidth => number(look.string_width),
             Property::EffectAmount(i) => number(scene.effects.get(*i as usize)?.amount),
             Property::EffectParam(i, name) => number(*scene.effects.get(*i as usize)?.params.get(name)?),
+            // 3D (WS4)
+            property => number(scene.space()?.number(property)?),
         }
     }
 
@@ -285,6 +329,8 @@ impl Property {
             Value::Number(v) => {
                 if let Some(slot) = self.number_mut(scene) {
                     *slot = v;
+                } else if let Some(space) = scene.space_mut() {
+                    space.set_number(self, v); // 3D (WS4)
                 }
             }
             Value::Color(c) => {
@@ -520,6 +566,24 @@ mod tests {
             assert_eq!(property.get(&copy), Some(changed), "{property:?}");
             property.copy(&scene, &mut copy);
             assert_eq!(copy, scene, "{property:?}");
+        }
+    }
+
+    /// 3D (WS4)
+    #[test]
+    fn every_space_setting_round_trips() {
+        let scene = Scene { view: crate::View::Space(Box::default()), ..Scene::default() };
+        for property in Property::SPACE {
+            assert_eq!(property.get(&Scene::default()), None, "{property:?}");
+            let Some(Value::Number(v)) = property.get(&scene) else { panic!("{property:?}") };
+            let changed = Value::Number(v + 1.5);
+            let mut copy = scene.clone();
+            property.set(&mut copy, changed);
+            let Some(Value::Number(now)) = property.get(&copy) else { panic!() };
+            assert!((now - (v + 1.5)).abs() < 0.01, "{property:?}: {now} after setting {}", v + 1.5);
+            property.copy(&scene, &mut copy);
+            let Some(Value::Number(back)) = property.get(&copy) else { panic!() };
+            assert!((back - v).abs() < 0.01, "{property:?}");
         }
     }
 

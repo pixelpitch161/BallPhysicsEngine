@@ -382,3 +382,128 @@ impl Scene {
         }
     }
 }
+
+// ---- 3D (WS4) ----
+
+/// 3D settings around `container`, with the camera framing it for a 9:16 video.
+fn space(container: Container3d, change: impl FnOnce(&mut Space)) -> View {
+    let mut space = Space { camera: Camera::fit(&container, 9.0 / 16.0), container, ..Space::default() };
+    change(&mut space);
+    View::Space(Box::new(space))
+}
+
+impl Scene {
+    /// A block of balls tumbling inside a glass sphere while the camera circles it.
+    pub fn glass_sphere() -> Self {
+        Self {
+            name: "Glass sphere".into(),
+            view: space(Container3d::Sphere { radius: 380.0 }, |space| {
+                space.camera.mode = CameraMode::Orbit { speed: 10.0 };
+                space.material.glass = 0.45;
+            }),
+            spawners: vec![Spawner::Grid {
+                center: Vec2::new(0.0, -120.0),
+                columns: 12,
+                rows: 12,
+                spacing: 26.0,
+                radius: 9.0,
+                velocity: Vec2::new(180.0, 0.0),
+                gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 0.0,
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 900.0), ball_collisions: true, ..Physics::default() },
+            look: Look { trail_seconds: 0.25, trail_opacity: 0.4, flash_size: 24.0, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Am", "F", "C", "G"], 2.5),
+                instrument: Instrument::Pluck { decay: 0.8, brightness: 0.5 },
+                ..Sound::default()
+            },
+            video: Video { duration: 30.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// A few fast balls with long trails inside a turning cube with glowing edges.
+    pub fn neon_cube() -> Self {
+        let spawners = RAINBOW
+            .iter()
+            .enumerate()
+            .map(|(i, &color)| {
+                let angle = i as f32 / RAINBOW.len() as f32 * std::f32::consts::TAU;
+                Spawner::Single {
+                    position: Vec2::from_angle(angle) * 80.0,
+                    velocity: Vec2::from_angle(angle + 0.9) * 700.0,
+                    radius: 16.0,
+                    color,
+                    depth: (i as f32 - 2.5) * 40.0,
+                    depth_velocity: if i % 2 == 0 { 450.0 } else { -450.0 },
+                }
+            })
+            .collect();
+        Self {
+            name: "Neon cube".into(),
+            view: space(Container3d::Cube { size: 600.0 }, |space| {
+                space.material.glass = 0.15;
+                space.material.glass_color = Color::rgb(0xff, 0x4d, 0xd8);
+                space.material.edge_glow = 2.5;
+                space.material.roughness = 0.15;
+                space.lights.ambient_top = Color::rgb(0x6a, 0x3d, 0xff);
+                space.lights.ambient_bottom = Color::rgb(0x10, 0x04, 0x28);
+                space.scatter = 0.0;
+            }),
+            spawners,
+            arena_motion: ArenaMotion { spin: 18.0, ..ArenaMotion::default() },
+            physics: Physics { gravity: Vec2::ZERO, ..Physics::default() },
+            look: Look {
+                trail_seconds: 0.8,
+                trail_width: 0.7,
+                trail_opacity: 0.7,
+                flash_size: 40.0,
+                bloom_strength: 0.35,
+                ..Look::default()
+            },
+            sound: Sound {
+                progression: chords(&["Em", "C", "G", "D"], 2.0),
+                low_note: 60,
+                high_note: 88,
+                instrument: Instrument::Pluck { decay: 0.6, brightness: 0.7 },
+                ..Sound::default()
+            },
+            video: Video { duration: 24.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+
+    /// Balls pushed down an endless tunnel, breaking each ring when one finds its gap.
+    pub fn endless_tunnel() -> Self {
+        Self {
+            name: "Endless tunnel".into(),
+            view: space(Container3d::tunnel(330.0), |space| {
+                space.material.edge_glow = 1.6;
+                space.scatter = 0.3;
+            }),
+            spawners: vec![Spawner::Grid {
+                center: Vec2::ZERO,
+                columns: 4,
+                rows: 4,
+                spacing: 60.0,
+                radius: 14.0,
+                velocity: Vec2::new(260.0, -340.0),
+                gradient: RAINBOW.to_vec(),
+                depth: 0.0,
+                depth_velocity: 300.0,
+            }],
+            physics: Physics { gravity: Vec2::new(0.0, 500.0), ball_collisions: true, ..Physics::default() },
+            rules: BounceRules { speed_gain: 1.01, max_speed: 1500.0, ..BounceRules::default() },
+            look: Look { trail_seconds: 0.4, trail_opacity: 0.5, flash_size: 30.0, ..Look::default() },
+            sound: Sound {
+                progression: chords(&["Dm", "Bb", "F", "C"], 2.5),
+                instrument: Instrument::Pluck { decay: 1.0, brightness: 0.6 },
+                ..Sound::default()
+            },
+            video: Video { duration: 30.0, ..Video::default() },
+            ..Self::default()
+        }
+    }
+}

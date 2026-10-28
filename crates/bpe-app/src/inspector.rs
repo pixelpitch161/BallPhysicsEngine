@@ -214,15 +214,19 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
             match inspector.tab {
                 Tab::Balls => {
-                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll);
+                    let space = scene.space().is_some(); // 3D (WS4)
+                    balls(ui, &mut scene.spawners, &mut inspector.selected, &mut roll, space);
                     soft::section(ui, scene, &mut inspector.soft);
                     gpu::section(ui, scene, &mut inspector.gpu);
                 }
                 Tab::Arena => {
-                    view3d::section(ui, scene, &mut inspector.view3d);
-                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll);
-                    shapes::section(ui, scene, &mut inspector.shapes);
-                    obstacles(ui, &mut scene.obstacles);
+                    // 3D (WS4): a 3D scene has its own container, and no flat shapes or pegs.
+                    let flat = !view3d::section(ui, scene, &mut inspector.view3d);
+                    arena(ui, &mut scene.container, &mut scene.arena_motion, &mut scene.physics, &mut roll, flat);
+                    if flat {
+                        shapes::section(ui, scene, &mut inspector.shapes);
+                        obstacles(ui, &mut scene.obstacles);
+                    }
                     // Pegs and walls are things you added, like balls, so a reset keeps them.
                     let mut fresh = default_container(Shape::of(&scene.container));
                     // A custom arena keeps which shape it is; only its settings go back.
@@ -232,10 +236,19 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, scene: &mut Scene) {
                         fresh_shape.clone_from(shape);
                     }
                     let motion = ArenaMotion::default();
-                    let changed =
-                        scene.container != fresh || scene.arena_motion != motion || scene.physics != Physics::default();
+                    // 3D (WS4): in 3D the reset puts back the 3D settings instead of the hidden flat arena.
+                    let fresh_space = view3d::reset_target(scene);
+                    let changed = (flat && scene.container != fresh)
+                        || scene.arena_motion != motion
+                        || scene.physics != Physics::default()
+                        || scene.space() != fresh_space.as_ref();
                     if reset_tab(ui, changed) {
-                        scene.container = fresh;
+                        if flat {
+                            scene.container = fresh;
+                        }
+                        if let Some(space) = fresh_space {
+                            scene.view = bpe_scene::View::Space(Box::new(space));
+                        }
                         scene.arena_motion = motion;
                         scene.physics = Physics::default();
                     }
@@ -698,7 +711,7 @@ fn new_stream() -> Spawner {
     }
 }
 
-fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>) {
+fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>, roll: &mut Option<Roll>, space: bool) {
     if spawners.is_empty() {
         ui.label(RichText::new("There are no balls yet. Add some below.").color(theme::MUTED));
     }
@@ -844,6 +857,9 @@ fn balls(ui: &mut Ui, spawners: &mut Vec<Spawner>, selected: &mut Option<usize>,
                         });
                     }
                 }
+                if space {
+                    view3d::spawner_depth(ui, spawner); // 3D (WS4)
+                }
             });
             // Watch for a click anywhere on the card without claiming it, so the sliders,
             // colour buttons and menus inside still get their clicks.
@@ -966,7 +982,16 @@ fn arena(
     motion: &mut ArenaMotion,
     physics: &mut Physics,
     roll: &mut Option<Roll>,
+    flat: bool,
 ) {
+    // 3D (WS4): the flat shape only applies to a flat scene.
+    if flat {
+        arena_shape(ui, container, roll);
+    }
+    arena_motion_and_world(ui, container, motion, physics, roll, flat);
+}
+
+fn arena_shape(ui: &mut Ui, container: &mut Container, roll: &mut Option<Roll>) {
     heading_dice(ui, "Shape", Group::Shape, roll);
     let current = Shape::of(container);
     let choices = [
@@ -1162,6 +1187,16 @@ fn arena(
             });
         });
     }
+}
+
+fn arena_motion_and_world(
+    ui: &mut Ui,
+    container: &mut Container,
+    motion: &mut ArenaMotion,
+    physics: &mut Physics,
+    roll: &mut Option<Roll>,
+    flat: bool,
+) {
     let d = ArenaMotion::default();
     heading_dice(ui, "Movement", Group::Movement, roll);
     grid(ui, "motion", |ui| {
@@ -1275,12 +1310,15 @@ fn arena(
                 60..=2000,
                 log_units(" steps/s"),
             );
-            position_row(
-                ui,
-                "Arena position",
-                "Where the centre of the arena is, measured from the centre of the video.",
-                center,
-            );
+            // 3D (WS4): the 3D container is always in the middle.
+            if flat {
+                position_row(
+                    ui,
+                    "Arena position",
+                    "Where the centre of the arena is, measured from the centre of the video.",
+                    center,
+                );
+            }
         });
     });
 }
