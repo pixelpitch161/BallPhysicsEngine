@@ -132,10 +132,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
-    let catching_up = !studio.playback.seek_within(studio.time, Some(CATCH_UP_BUDGET));
+    // The playhead is in video time; the beat sync's warp says which moment of the run to show.
+    let catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
     // While catching up, the picture shows the moment the simulation has got to.
-    let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.time };
+    let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.sim_time() };
     let drawn = Drawn {
         scene: studio.scene.clone(),
         time: shown_time,

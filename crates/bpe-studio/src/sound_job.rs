@@ -1,8 +1,8 @@
 //! Mixes the soundtrack on a background thread whenever an edit changes what it would sound
 //! like, a moment after the last such edit.
 
-use bpe_core::{Resolved, Scene, Settings, SlotId, ThingId};
-use bpe_kit::{Kit, SceneSettings};
+use bpe_core::{Owner, Resolved, Scene, Settings, SlotId, ThingId};
+use bpe_kit::{Kit, SceneSettings, TimeWarp};
 use bpe_runtime::{EventKind, Log, Sims, World, fingerprint};
 use eframe::egui;
 use std::sync::Arc;
@@ -17,8 +17,12 @@ pub struct Mixed {
     generation: u64,
     /// Interleaved stereo at the mixer's sample rate.
     pub track: Arc<Vec<f32>>,
-    /// When every hit happens, in seconds, for the transport's hit lane.
+    /// When every hit happens, in video seconds, for the transport's hit lane.
     pub hits: Vec<f32>,
+    /// The scene's beats, in video seconds.
+    pub beats: Vec<f32>,
+    /// The beat sync's time warp the video plays through.
+    pub warp: TimeWarp,
 }
 
 pub struct SoundJob {
@@ -29,14 +33,25 @@ pub struct SoundJob {
     running: bool,
     sender: Sender<Mixed>,
     receiver: Receiver<Mixed>,
-    /// The hits of the last finished mix.
+    /// The hits of the last finished mix, in video seconds.
     pub hits: Vec<f32>,
+    /// The beats of the last finished mix, in video seconds.
+    pub beats: Vec<f32>,
 }
 
 impl Default for SoundJob {
     fn default() -> Self {
         let (sender, receiver) = channel();
-        Self { generation: 0, fingerprint: None, dirty_since: None, running: false, sender, receiver, hits: Vec::new() }
+        Self {
+            generation: 0,
+            fingerprint: None,
+            dirty_since: None,
+            running: false,
+            sender,
+            receiver,
+            hits: Vec::new(),
+            beats: Vec::new(),
+        }
     }
 }
 
@@ -63,6 +78,7 @@ impl SoundJob {
             self.running = false;
             if mixed.generation == self.generation {
                 self.hits = mixed.hits.clone();
+                self.beats = mixed.beats.clone();
                 landed = Some(mixed);
             }
         }
@@ -74,8 +90,9 @@ impl SoundJob {
             let (generation, scene, resolved, kit, sender, ctx) =
                 (self.generation, scene.clone(), resolved.clone(), kit.clone(), self.sender.clone(), ctx.clone());
             std::thread::spawn(move || {
-                let (track, hits) = mix(&scene, &resolved, &kit);
-                let _ = sender.send(Mixed { generation, track: Arc::new(track), hits });
+                let mut mixed = mix(&scene, &resolved, &kit);
+                mixed.generation = generation;
+                let _ = sender.send(mixed);
                 ctx.request_repaint();
             });
         } else if self.dirty_since.is_some() {
@@ -85,21 +102,31 @@ impl SoundJob {
     }
 }
 
-/// Runs the whole scene and mixes it: the track and when every hit happens.
-fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> (Vec<f32>, Vec<f32>) {
+/// Runs the whole scene and mixes it: the track, when every hit and beat happens in the video,
+/// and the time warp the video plays through.
+fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Mixed {
     let settings =
         resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     let mut world = World::build(scene, resolved, &kit.sims);
     let mut log = Log::default();
     world.advance_to(settings.duration.max(0.0) as f64, &kit.sims, &mut log);
     let rate = world.steps_per_second;
-    let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit).map(|e| e.time(rate) as f32).collect();
-    (bpe_kit::mix_scene(scene, resolved, &log, kit).samples, hits)
+    let warp = bpe_kit::warp_for(scene, resolved, &log);
+    let hits = log
+        .events()
+        .iter()
+        .filter(|e| e.kind == EventKind::Hit)
+        .map(|e| warp.video_time(e.time(rate)) as f32)
+        .collect();
+    let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
+    let track = bpe_kit::mix_scene(scene, resolved, &log, kit).samples;
+    Mixed { generation: 0, track: Arc::new(track), hits, beats, warp }
 }
 
-/// Everything the soundtrack depends on: the physics, every Sound module in use, and the
-/// root's chords, loudness, seed, length and width. Two scenes that differ only in how they
-/// look fingerprint the same, so a colour edit never remixes.
+/// Everything the soundtrack depends on: the physics, every Sound module in use, the root's
+/// chords, loudness, seed, length, width and music settings, and every key or pulse on a
+/// Sound setting. Two scenes that differ only in how they look fingerprint the same, so a
+/// colour edit never remixes.
 pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
     let mut h = fingerprint(scene, resolved, sims) ^ 0x9e37_79b9_7f4a_7c15;
     let mut mix = |text: &str| {
@@ -120,6 +147,21 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     if let Some(root) = resolved.things.get(&ThingId::ROOT) {
         let s = SceneSettings::from_params(&root.params);
         mix(&format!("{:?} {:?} {} {:?} {}", s.chords, s.loudness, s.seed, s.duration, s.width));
+        mix(&format!(
+            "{:?} {} {} {} {} {:?} {} {}",
+            s.song, s.song_offset, s.song_volume, s.ducking, s.bpm, s.beat_sync, s.subdivisions, s.warp_strength
+        ));
+    }
+    let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
+        (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
+        (Owner::Thing(_), None) => false,
+        (Owner::Module(m), _) => scene.library.modules.get(&m).is_some_and(|m| m.slot == SlotId::Sound),
+    };
+    for (a, track) in scene.tracks.iter().filter(|(a, _)| sound_setting(a)) {
+        mix(&format!("{a:?} {track:?}"));
+    }
+    for (a, pulse) in scene.pulses.iter().filter(|(a, _)| sound_setting(a)) {
+        mix(&format!("{a:?} {pulse:?}"));
     }
     h
 }
@@ -167,13 +209,44 @@ mod tests {
     #[test]
     fn mixing_a_scene_gives_a_track_and_its_hits() {
         let kit = bpe_kit::kit();
-        let scene = bpe_kit::new_scene(&kit.registry);
+        let mut scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let (track, hits) = mix(&scene, &resolved, &kit);
+        let mixed = mix(&scene, &resolved, &kit);
         let duration = SceneSettings::default().duration;
-        assert_eq!(track.len(), (duration * bpe_mix::SAMPLE_RATE as f32) as usize * 2);
-        assert!(!hits.is_empty());
-        assert!(hits.windows(2).all(|w| w[0] <= w[1]));
-        assert!(hits.iter().all(|&t| (0.0..=duration).contains(&t)));
+        assert_eq!(mixed.track.len(), (duration * bpe_mix::SAMPLE_RATE as f32) as usize * 2);
+        assert!(!mixed.hits.is_empty());
+        assert!(mixed.hits.windows(2).all(|w| w[0] <= w[1]));
+        assert!(mixed.hits.iter().all(|&t| (0.0..=duration).contains(&t)));
+        assert!(mixed.beats.is_empty() && mixed.warp.is_identity(), "no music, no beats");
+        // A tempo gives beats; beat sync gives a warp.
+        let bpm = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bpm".into() };
+        let sync = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "beat_sync".into() };
+        scene.set_at(&kit.registry, &bpm, Value::Number(120.0)).unwrap();
+        scene.set_at(&kit.registry, &sync, Value::Choice("warp".into())).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let mixed = mix(&scene, &resolved, &kit);
+        assert_eq!(mixed.beats.len(), 42);
+        assert!(!mixed.warp.is_identity());
+    }
+
+    #[test]
+    fn a_tempo_edit_changes_the_sound_fingerprint_and_a_look_key_does_not() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let reg = &kit.registry;
+        let before = sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims);
+        let look = module_named(&scene, "Plain look");
+        let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
+        scene.set_key(reg, &glow, 1.0, Value::Number(1.0)).unwrap();
+        assert_eq!(sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims), before);
+        let bpm = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bpm".into() };
+        scene.set_at(reg, &bpm, Value::Number(100.0)).unwrap();
+        let with_tempo = sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims);
+        assert_ne!(with_tempo, before);
+        // A key on a Sound setting changes it too.
+        let sound = module_named(&scene, "Default sound");
+        let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
+        scene.set_key(reg, &volume, 3.0, Value::Number(-10.0)).unwrap();
+        assert_ne!(sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims), with_tempo);
     }
 }

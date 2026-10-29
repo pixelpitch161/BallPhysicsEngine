@@ -6,10 +6,11 @@ use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::preview::Preview;
 use crate::sound_job::SoundJob;
+use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{inspector, preview, settings, theme, transport, tree};
+use crate::{inspector, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
-use bpe_kit::{Kit, SceneSettings};
+use bpe_kit::{Kit, SceneSettings, TimeWarp};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub sound: SoundJob,
+    pub timeline: Timeline,
 }
 
 enum ToolbarClick {
@@ -59,8 +61,11 @@ pub struct Studio {
     pub playback: Playback,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
-    /// The playhead, in seconds.
+    /// The playhead, in video seconds.
     pub time: f64,
+    /// The beat sync's time warp from the last mix: which moment of the run each video time
+    /// shows. The identity without beat sync.
+    pub warp: TimeWarp,
     pub playing: bool,
     pub looping: bool,
     pub muted: bool,
@@ -114,6 +119,7 @@ impl Studio {
             fingerprint,
             kit,
             time: 0.0,
+            warp: TimeWarp::identity(),
             playing: false,
             looping: true,
             muted: false,
@@ -142,6 +148,11 @@ impl Studio {
 
     pub fn duration(&self) -> f64 {
         self.settings().duration.max(0.0) as f64
+    }
+
+    /// The moment of the run the playhead shows, through the beat sync's time warp.
+    pub fn sim_time(&self) -> f64 {
+        self.warp.sim_time(self.time)
     }
 
     pub fn unsaved(&self) -> bool {
@@ -226,7 +237,7 @@ impl Studio {
     /// the rest a budget per frame.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek_within(self.time, Some(CATCH_UP_BUDGET));
+        self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(audio) = &self.audio
         {
@@ -292,12 +303,13 @@ impl Studio {
         if std::mem::take(&mut self.sound_dirty) {
             self.panels.sound.mark(&self.scene, &self.resolved, &self.kit.sims);
         }
-        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit)
-            && let Some(audio) = &self.audio
-        {
-            audio.set_track(mixed.track);
-            if self.playing {
-                audio.play_from(self.time);
+        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit) {
+            self.warp = mixed.warp;
+            if let Some(audio) = &self.audio {
+                audio.set_track(mixed.track);
+                if self.playing {
+                    audio.play_from(self.time);
+                }
             }
         }
     }
@@ -485,6 +497,11 @@ impl Studio {
             if let Some(error) = &self.audio_error {
                 ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
+            let song = self.settings().song;
+            if !song.trim().is_empty() && bpe_kit::load_song(&song).is_none() {
+                let text = format!("The song {song} couldn't be opened; the video has no song.");
+                ui.label(RichText::new(text).small().color(theme::WARNING));
+            }
         });
     }
 
@@ -545,13 +562,13 @@ impl eframe::App for Studio {
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_line(ui));
-        egui::Panel::bottom("transport")
+        egui::Panel::bottom("timeline")
             .frame(bar_frame())
             .resizable(true)
-            .default_size(110.0)
-            .min_size(80.0)
-            .max_size(320.0)
-            .show(ui, |ui| transport::show(ui, self));
+            .default_size(190.0)
+            .min_size(110.0)
+            .max_size(520.0)
+            .show(ui, |ui| timeline::show(ui, self));
         let tree = egui::Panel::left("tree")
             .default_size(260.0)
             .min_size(180.0)
@@ -577,6 +594,7 @@ impl eframe::App for Studio {
             .show(ui, |ui| {
                 // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
                 ui.set_min_width(ui.available_width());
+                let time = self.sim_time();
                 inspector::show(
                     ui,
                     &mut self.panels.inspector,
@@ -584,6 +602,7 @@ impl eframe::App for Studio {
                     &self.kit,
                     &self.resolved,
                     self.selected,
+                    time,
                 )
             });
         let outcome = egui::CentralPanel::default()
@@ -706,6 +725,17 @@ mod tests {
         assert_eq!(studio.scene.name, "New scene");
         assert!(!studio.unsaved());
         assert!(studio.history.undo.is_empty());
+    }
+
+    #[test]
+    fn seeking_goes_through_the_warp() {
+        let mut studio = Studio::headless();
+        let beats: Vec<f64> = (0..40).map(|k| k as f64 * 0.5).collect();
+        studio.warp = TimeWarp::fit(&[1.1], &beats, 0.5, 20.0);
+        studio.seek(1.0);
+        assert_eq!(studio.time, 1.0, "the playhead stays in video time");
+        assert!((studio.sim_time() - 1.1).abs() < 1e-6);
+        assert!((studio.playback.time() - 1.1).abs() < 1.0 / 240.0 + 1e-9, "{}", studio.playback.time());
     }
 
     #[test]
