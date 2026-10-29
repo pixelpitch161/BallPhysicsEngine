@@ -21,6 +21,7 @@ egui-wgpu.workspace = true
 cpal.workspace = true
 rfd.workspace = true
 anyhow.workspace = true
+glam.workspace = true
 
 [dev-dependencies]
 egui_kittest = "0.37"

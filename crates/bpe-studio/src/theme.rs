@@ -14,7 +14,6 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x7c, 0x6c, 0xff);
 pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xa8, 0x9d, 0xff);
 pub const WARNING: Color32 = Color32::from_rgb(0xf2, 0xc4, 0x6d);
 // Used by the sound job's error line.
-#[allow(dead_code)]
 pub const ERROR: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
 
 pub fn apply(ctx: &egui::Context) {

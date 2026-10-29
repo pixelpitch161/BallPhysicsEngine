@@ -1,9 +1,13 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
+use crate::audio_out::AudioOut;
+use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
+use crate::preview::Preview;
+use crate::sound_job::SoundJob;
 use crate::tree::Tree;
-use crate::{inspector, settings, theme, tree};
+use crate::{inspector, preview, settings, theme, transport, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Playback, fingerprint};
@@ -19,13 +23,15 @@ pub enum Pending {
     New,
 }
 
-/// What the panels remember between frames. Later tasks add the tree, inspector, preview,
-/// transport, export window and sound job.
+/// What the panels remember between frames.
 #[derive(Default)]
 pub struct Panels {
     pub tree: Tree,
     pub inspector: Inspector,
-    pub export_open: bool,
+    /// The preview's renderer, made on the first frame with a window.
+    pub preview: Option<Preview>,
+    pub export: ExportWindow,
+    pub sound: SoundJob,
 }
 
 enum ToolbarClick {
@@ -60,6 +66,12 @@ pub struct Studio {
     pub panels: Panels,
     /// The soundtrack no longer matches the scene.
     pub sound_dirty: bool,
+    /// The speakers, when there are any.
+    pub audio: Option<AudioOut>,
+    /// Why there is no sound, when there isn't.
+    pub audio_error: Option<String>,
+    /// Scrubbing paused the playback; it starts again when the scrub ends.
+    pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     recorded: bool,
     closing: bool,
@@ -71,6 +83,10 @@ impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         let mut studio = Self::headless();
+        match AudioOut::new() {
+            Ok(audio) => studio.audio = Some(audio),
+            Err(error) => studio.audio_error = Some(format!("No sound: {error:#}")),
+        }
         if let Some(path) = scene_path.or_else(settings::last_scene) {
             studio.open_path(&path);
         }
@@ -102,6 +118,9 @@ impl Studio {
             confirm: None,
             panels: Panels::default(),
             sound_dirty: true,
+            audio: None,
+            audio_error: None,
+            resume_after_scrub: false,
             recorded: false,
             closing: false,
             last_tick: None,
@@ -201,6 +220,11 @@ impl Studio {
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
         self.playback.seek(self.time);
+        if self.playing
+            && let Some(audio) = &self.audio
+        {
+            audio.play_from(self.time);
+        }
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -209,9 +233,24 @@ impl Studio {
         }
         self.playing = playing;
         self.last_tick = None;
+        if let Some(audio) = &self.audio {
+            if playing {
+                audio.play_from(self.time);
+            } else {
+                audio.pause();
+            }
+        }
     }
 
-    /// Moves the playhead with the clock while playing.
+    /// Tells the speakers whether they are muted.
+    pub fn sync_mute(&self) {
+        if let Some(audio) = &self.audio {
+            audio.set_muted(self.muted);
+        }
+    }
+
+    /// Moves the playhead while playing: with the speakers' clock when there are any, so the
+    /// picture and the sound stay together, else with the wall clock.
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
@@ -219,14 +258,40 @@ impl Studio {
             return;
         }
         let duration = self.duration();
-        let next = self.time + dt;
+        let mut next = self.time + dt;
+        if let Some(audio) = &self.audio {
+            // The speakers move in buffer-sized steps; follow them only when the frame clock has
+            // drifted away from them.
+            let heard = audio.position();
+            if (next - heard).abs() > 0.05 {
+                next = heard;
+            }
+        }
         if next < duration {
             self.time = next;
         } else if self.looping {
             self.time = 0.0;
+            if let Some(audio) = &self.audio {
+                audio.play_from(0.0);
+            }
         } else {
             self.time = duration;
-            self.playing = false;
+            self.set_playing(false);
+        }
+    }
+
+    /// Hands a sound-changing edit to the mixer, and plays a finished mix.
+    fn update_sound(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.sound_dirty) {
+            self.panels.sound.mark(&self.scene, &self.resolved, &self.kit.sims);
+        }
+        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit)
+            && let Some(audio) = &self.audio
+        {
+            audio.set_track(mixed.track);
+            if self.playing {
+                audio.play_from(self.time);
+            }
         }
     }
 
@@ -404,8 +469,14 @@ impl Studio {
     fn status_line(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small().color(theme::MUTED));
-            if self.sound_dirty {
+            if self.sound_dirty || self.panels.sound.busy() {
                 ui.label(RichText::new("· Updating sound…").small().color(theme::MUTED));
+            }
+            if self.panels.export.busy() {
+                ui.label(RichText::new("· Exporting…").small().color(theme::MUTED));
+            }
+            if let Some(error) = &self.audio_error {
+                ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
         });
     }
@@ -441,37 +512,17 @@ impl Studio {
             self.perform(action, ctx);
         }
     }
-
-    /// Play, the playhead and the loop and mute switches. A later task adds the scrubber.
-    fn transport(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let label = if self.playing { "Pause" } else { "Play" };
-            if ui.button(label).on_hover_text("Play or pause (Space)").clicked() {
-                self.set_playing(!self.playing);
-            }
-            if ui.button("Start").on_hover_text("Back to the start (Home)").clicked() {
-                self.seek(0.0);
-            }
-            ui.label(RichText::new(format!("{} / {}", clock(self.time), clock(self.duration()))).monospace());
-            ui.checkbox(&mut self.looping, "Loop");
-            ui.checkbox(&mut self.muted, "Mute");
-        });
-    }
-
-    fn placeholder(ui: &mut egui::Ui, name: &str) {
-        ui.add_space(8.0);
-        ui.label(RichText::new(name).strong().color(theme::MUTED));
-    }
 }
 
 impl eframe::App for Studio {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        self.update_sound(&ctx);
         let before = self.scene.clone();
         self.recorded = false;
         if self.confirm.is_none() {
@@ -488,7 +539,7 @@ impl eframe::App for Studio {
             .default_size(110.0)
             .min_size(80.0)
             .max_size(320.0)
-            .show(ui, |ui| self.transport(ui));
+            .show(ui, |ui| transport::show(ui, self));
         let tree = egui::Panel::left("tree")
             .default_size(260.0)
             .min_size(180.0)
@@ -523,9 +574,27 @@ impl eframe::App for Studio {
                     self.selected,
                 )
             });
-        egui::CentralPanel::default()
+        let outcome = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
-            .show(ui, |ui| Self::placeholder(ui, "Preview"));
+            .show(ui, |ui| preview::show(ui, frame, self))
+            .inner;
+        if outcome.clicked {
+            self.set_playing(false);
+        }
+        if outcome.drag_started {
+            // Dragging lays the scene out, so show where everything starts.
+            self.set_playing(false);
+            self.seek(0.0);
+        }
+        if outcome.selected.is_some() {
+            self.selected = outcome.selected;
+        }
+        if outcome.catching_up {
+            ctx.request_repaint();
+        }
+        let base_dir = self.base_dir();
+        let settings = self.settings();
+        self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
 
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
@@ -534,7 +603,7 @@ impl eframe::App for Studio {
             Some(ToolbarClick::SaveAs) => _ = self.save(true),
             Some(ToolbarClick::Undo) => _ = self.undo(),
             Some(ToolbarClick::Redo) => _ = self.redo(),
-            Some(ToolbarClick::Export) => self.panels.export_open = true,
+            Some(ToolbarClick::Export) => self.panels.export.open = true,
             None => {}
         }
         self.confirm_dialog(&ctx);
@@ -561,10 +630,10 @@ fn bar_frame() -> egui::Frame {
         .stroke(Stroke::new(1.0, theme::LINE))
 }
 
-/// Seconds as m:ss.t.
+/// Seconds as m:ss.ff.
 pub(crate) fn clock(seconds: f64) -> String {
-    let tenths = (seconds.max(0.0) * 10.0).floor() as u64;
-    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+    let hundredths = (seconds.max(0.0) * 100.0).floor() as u64;
+    format!("{}:{:02}.{:02}", hundredths / 6000, hundredths / 100 % 60, hundredths % 100)
 }
 
 fn file_label(path: &Path) -> String {

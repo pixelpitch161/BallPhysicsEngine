@@ -4,10 +4,15 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod audio_out;
+mod export_window;
 mod history;
 mod inspector;
+mod preview;
 mod settings;
+mod sound_job;
 mod theme;
+mod transport;
 mod tree;
 mod widgets;
 

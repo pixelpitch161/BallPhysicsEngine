@@ -416,6 +416,7 @@ dependencies = [
  "eframe",
  "egui-wgpu",
  "egui_kittest",
+ "glam",
  "rfd",
 ]
 
