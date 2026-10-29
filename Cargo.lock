@@ -251,6 +251,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bpe-core",
+ "bpe-gfx",
+ "bpe-kit",
+ "bpe-mix",
+ "bpe-runtime",
+]
+
+[[package]]
 name = "bpe-core"
 version = "0.1.0"
 dependencies = [
