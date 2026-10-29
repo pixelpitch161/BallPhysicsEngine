@@ -11,7 +11,7 @@ use bpe_core::{Attach, Resolved, Scene, SlotId, Target, ThingId, Transform, Valu
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
-use crate::pairs::{Grid, Prepared, collide_pairs, pop};
+use crate::pairs::{Pairs, Prepared, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, Sims, ThingState};
 use crate::pose::Pose;
 use crate::solids::Solids;
@@ -51,7 +51,7 @@ pub struct World {
     /// The built things in tree order: parents before children.
     order: Vec<ThingId>,
     /// Scratch space for the ball-to-ball stage.
-    grid: Grid,
+    pairs: Pairs,
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce only).
@@ -74,7 +74,7 @@ impl World {
             tags: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
-            grid: Grid::default(),
+            pairs: Pairs::default(),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
@@ -212,7 +212,7 @@ impl World {
     }
 
     fn substep(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, gravity, bodies, walls, solids, modules, kinds, tags, grid, .. } = self;
+        let World { step, gravity, bodies, walls, solids, modules, kinds, tags, pairs, .. } = self;
         let step = *step;
         let gravity = *gravity;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
@@ -233,7 +233,8 @@ impl World {
         }
 
         // Collide and Respond, then the Hit events: first the walls around the balls, then the
-        // solids among them.
+        // solids among them. What each ball touched holds it up in the pair solve after.
+        let mut supports: Vec<Support> = Vec::new();
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             let own = mover_bounce.and_then(|(kind, state)| Some((sims.module(kind)?, state.as_ref())));
@@ -248,6 +249,12 @@ impl World {
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let Some(contact) = keep_inside(&mut bodies.position[i], velocity, radius, wall) else { continue };
+                    supports.push(Support {
+                        thing: *mover,
+                        item: i as u32,
+                        normal: contact.normal,
+                        wall_velocity: contact.wall_velocity,
+                    });
                     respond(decider, &contact, bodies, i, limits, special);
                     if contact.speed >= limits.resting {
                         bodies.hits[i] += 1;
@@ -296,6 +303,12 @@ impl World {
                         else {
                             continue;
                         };
+                        supports.push(Support {
+                            thing: *mover,
+                            item: i as u32,
+                            normal: contact.normal,
+                            wall_velocity: contact.wall_velocity,
+                        });
                         respond(decider, &contact, bodies, i, limits, special);
                         if contact.speed >= limits.resting {
                             bodies.hits[i] += 1;
@@ -321,7 +334,7 @@ impl World {
         }
 
         // Balls against balls.
-        collide_pairs(bodies, modules, &matcher, sims, grid, step, limits, log);
+        collide_pairs(bodies, modules, &matcher, sims, pairs, &supports, step, dt, limits, log);
     }
 }
 
@@ -695,6 +708,22 @@ mod tests {
         assert!(l1.events().iter().any(|e| e.b.is_some_and(|b| b.thing == DOTS)), "balls hit each other");
         assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 160.0));
         assert!(l1.events().windows(2).all(|p| p[0].step <= p[1].step));
+    }
+
+    #[test]
+    fn a_pile_of_balls_settles_instead_of_boiling() {
+        let (scene, resolved, sims) = dots_pile(60);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(4.0, &sims, &mut log);
+        let bodies = &w.bodies[&DOTS];
+        let average = bodies.velocity.iter().map(|v| v.length()).sum::<f32>() / bodies.len() as f32;
+        let late = log.events().iter().filter(|e| e.step > 3 * w.steps_per_second as u64).count();
+        assert!(average < 10.0, "a pile at rest barely moves, not {average} px/s");
+        assert!(late < 10, "a pile at rest stops ticking, not {late} hits in its fourth second");
+        // The ring is 2 px thick and the dots 5 px wide: none sinks into the floor.
+        let farthest = bodies.position.iter().map(|p| p.length()).fold(0.0f32, f32::max);
+        assert!(farthest <= 144.5, "nothing sinks through the floor: {farthest}");
     }
 
     #[test]

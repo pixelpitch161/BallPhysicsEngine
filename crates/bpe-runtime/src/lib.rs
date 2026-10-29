@@ -17,7 +17,7 @@ pub mod world;
 
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
-pub use pairs::Grid;
+pub use pairs::{Grid, Pairs, Support};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;

@@ -35,8 +35,8 @@ pub struct BasicBounce {
     /// Only balls on these things are bumped into; both sides have to agree.
     #[setting(label = "Which balls", group = "Other balls")]
     pub balls_to_hit: Target,
-    /// How much sideways speed rubs off when balls touch each other.
-    #[setting(label = "Friction", range(0, 1), group = "Other balls", keyframe, random)]
+    /// How much sideways speed rubs off when the ball touches walls, obstacles or other balls.
+    #[setting(label = "Friction", range(0, 1), keyframe, random)]
     pub friction: f32,
     /// Use the settings below when hitting the things picked here.
     #[setting(label = "Different against some things", group = "Against some things")]

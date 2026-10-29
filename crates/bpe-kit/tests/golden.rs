@@ -13,7 +13,7 @@ const SECONDS: f64 = 20.0;
 
 fn playbacks() -> Vec<(String, Playback)> {
     let kit = kit();
-    scenes::stage2(&kit.registry)
+    scenes::all(&kit.registry)
         .into_iter()
         .map(|(name, scene)| {
             let resolved = bpe_core::resolve(&scene, &kit.registry);
@@ -71,6 +71,7 @@ fn the_scenes_are_lively() {
         let hits = playback.log().len();
         let least = match name.as_str() {
             "Reel block" => 1000,
+            "Peg board" | "Ball pit" => 100,
             "One ball" => 10,
             _ => 1,
         };

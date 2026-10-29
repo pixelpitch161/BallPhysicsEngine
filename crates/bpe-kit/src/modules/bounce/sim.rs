@@ -19,6 +19,16 @@ fn answer(
     grow: f32,
 ) {
     let mut v = reflect(bodies.velocity[item], contact, bounciness);
+    // Friction rubs sideways speed off, up to what the push off the wall allows.
+    if b.friction > 0.0 {
+        let relative = v - contact.wall_velocity;
+        let sideways = relative - contact.normal * relative.dot(contact.normal);
+        let speed = sideways.length();
+        let most = b.friction * contact.speed.max(0.0) * (1.0 + bounciness);
+        if speed > 1e-6 {
+            v -= sideways * (speed.min(most) / speed);
+        }
+    }
     // Resting touches push the ball out but are not hits: no gain, no growth.
     if contact.speed >= limits.resting {
         v *= b.speed_gain;
@@ -103,7 +113,7 @@ impl ModuleSim for BasicBounceSim {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{BALLS, one_ball_with_bounce};
+    use crate::testing::{ARENA, BALLS, one_ball_with_bounce};
     use bpe_core::{SlotId, Target, Value, resolve, resolve_slot};
     use bpe_runtime::{EventKind, Log, Party, Playback, World};
     use glam::Vec2;
@@ -142,6 +152,31 @@ mod tests {
         let mut log = Log::default();
         w.advance_to(0.2, &kit.sims, &mut log);
         assert!(log.events().iter().all(|e| e.b.is_none_or(|b| b.thing != BALLS)));
+    }
+
+    #[test]
+    fn friction_rubs_speed_off_against_the_arena() {
+        // A ball sliding along the floor of a box, with no bounce to lift it off.
+        let speed_after = |friction: f64| {
+            let (mut scene, _, kit) = one_ball_with_bounce(|p| {
+                p.set("bounciness", Value::Number(0.0));
+                p.set("friction", Value::Number(friction));
+            });
+            let arena = scene.things.get_mut(&ARENA).unwrap();
+            arena.params.set("shape", Value::Choice("box".into()));
+            arena.params.set("width", Value::Number(900.0));
+            arena.params.set("height", Value::Number(900.0));
+            let balls = scene.things.get_mut(&BALLS).unwrap();
+            balls.transform.position = Vec2::new(-300.0, 420.0);
+            balls.params.set("velocity", Value::Vec2([100.0, 0.0]));
+            let resolved = resolve(&scene, &kit.registry);
+            let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+            playback.seek(3.0);
+            playback.world().bodies[&BALLS].velocity[0].length()
+        };
+        let (slick, rough) = (speed_after(0.0), speed_after(0.6));
+        assert!(slick > 90.0, "nothing slows a slick ball: {slick}");
+        assert!(rough < 10.0, "friction stops the ball: {rough}");
     }
 
     #[test]

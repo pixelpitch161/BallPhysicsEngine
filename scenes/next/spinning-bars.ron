@@ -1,0 +1,210 @@
+(
+    format: 2,
+    name: "Spinning bars",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "radius": Number(500.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ring",
+            kind: "balls",
+            parent: Some(0),
+            params: {
+                "arrangement": Choice("ring"),
+                "count": Int(18),
+                "radius": Number(12.0),
+                "ring_radius": Number(380.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Bars",
+            kind: "folder",
+            parent: Some(0),
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Bar 1",
+            kind: "obstacle",
+            parent: Some(3),
+            attach: Ride(
+                offset: (0.0, 0.0),
+                turn_with_parent: true,
+                item: None,
+            ),
+            params: {
+                "length": Number(600.0),
+                "shape": Choice("bar"),
+                "spin": Number(40.0),
+                "thickness": Number(10.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        5: (
+            id: 5,
+            name: "Bar 2",
+            kind: "obstacle",
+            parent: Some(3),
+            attach: Ride(
+                offset: (0.0, 0.0),
+                turn_with_parent: true,
+                item: None,
+            ),
+            transform: (
+                position: (0.0, 0.0),
+                rotation: 1.0471976,
+            ),
+            params: {
+                "length": Number(600.0),
+                "shape": Choice("bar"),
+                "spin": Number(40.0),
+                "thickness": Number(10.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        6: (
+            id: 6,
+            name: "Bar 3",
+            kind: "obstacle",
+            parent: Some(3),
+            attach: Ride(
+                offset: (0.0, 0.0),
+                turn_with_parent: true,
+                item: None,
+            ),
+            transform: (
+                position: (0.0, 0.0),
+                rotation: 2.0943952,
+            ),
+            params: {
+                "length": Number(600.0),
+                "shape": Choice("bar"),
+                "spin": Number(40.0),
+                "thickness": Number(10.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "speed_gain": Number(1.0099999904632568),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Bar look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#7fe8ff"),
+                    "glow": Number(0.30000001192092896),
+                },
+            ),
+        },
+    ),
+    next_thing: 7,
+    next_module: 6,
+)
