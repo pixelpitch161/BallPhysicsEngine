@@ -48,15 +48,15 @@ pub struct BallInstance {
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
-/// 0 ring or polygon, 1 box.
+/// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct ShapeInstance {
     /// Centre, angle.
     pub a: [f32; 4],
-    /// Ring: radius, sides. Box: half width, half height.
+    /// Ring: radius, sides. Box: half width, half height. Capsule: both ends.
     pub b: [f32; 4],
-    /// Kind, half line width, glow strength.
+    /// Kind, half line width (a capsule's radius), glow strength.
     pub c: [f32; 4],
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
@@ -79,6 +79,18 @@ impl ShapeInstance {
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
             },
+        }
+    }
+
+    /// A filled rounded line from `from` to `to`, `radius` wide on each side. The same point
+    /// twice is a filled disc.
+    pub fn capsule(from: glam::Vec2, to: glam::Vec2, radius: f32, color: [f32; 4], glow: f32) -> Self {
+        let mid = (from + to) * 0.5;
+        Self {
+            a: [mid.x, mid.y, 0.0, 0.0],
+            b: [from.x, from.y, to.x, to.y],
+            c: [2.0, radius, glow, 0.0],
+            color: blend_alpha(color),
         }
     }
 }
@@ -379,6 +391,10 @@ mod tests {
         assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
         let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
         assert_eq!(ShapeInstance::outline(&b, [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
+        let capsule = ShapeInstance::capsule(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(4.0, 0.0), 1.5, [1.0; 4], 0.2);
+        assert_eq!(capsule.a, [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(capsule.b, [0.0, 0.0, 4.0, 0.0]);
+        assert_eq!(capsule.c, [2.0, 1.5, 0.2, 0.0]);
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);

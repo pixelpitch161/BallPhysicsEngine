@@ -248,6 +248,16 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
             }
         }
     }
+    for (id, st) in world.states.iter().filter(|(id, _)| shown(id)) {
+        let Some(soft) = st.as_any().downcast_ref::<bpe_kit::SoftState>() else { continue };
+        for point in &soft.world.points {
+            let grab = (point.radius * 1.5).max(8.0 / view.scale);
+            let distance = (point.position - p).length();
+            if distance <= grab && best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, *id));
+            }
+        }
+    }
     if let Some((_, id)) = best {
         return Some(Handle::Body(id));
     }
@@ -377,6 +387,21 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None);
         // The arrow tip sits a quarter second of launch speed from the ball.
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(75.0, -250.0))), Some(Handle::Aim(ThingId(2))));
+    }
+
+    #[test]
+    fn hit_testing_grabs_a_soft_body_by_its_points() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let soft = studio.scene.add_thing(&studio.kit.registry, "soft", ThingId::ROOT).unwrap();
+        studio.scene.things.get_mut(&soft).unwrap().transform.position = Vec2::new(0.0, 300.0);
+        studio.after_edit(before);
+        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25 };
+        // The top of the jelly's skin, 120 px above its middle.
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 182.0))), Some(Handle::Body(soft)));
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None, "the hollow middle");
+        apply_drag(&mut studio.scene, Drag { handle: Handle::Body(soft), offset: Vec2::ZERO }, Vec2::new(10.0, 20.0));
+        assert_eq!(studio.scene.things[&soft].transform.position, Vec2::new(10.0, 20.0));
     }
 
     #[test]

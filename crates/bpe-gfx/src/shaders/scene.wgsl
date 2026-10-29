@@ -53,9 +53,9 @@ const GLOW_REACH: f32 = 36.0;
 struct ShapeIn {
     // Centre xy, angle.
     @location(0) a: vec4<f32>,
-    // Ring: radius, sides. Box: half size.
+    // Ring: radius, sides. Box: half size. Capsule: both ends.
     @location(1) b: vec4<f32>,
-    // Kind (0 ring/polygon, 1 box), half line width, glow.
+    // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
 };
@@ -78,7 +78,9 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
         reach += GLOW_REACH;
     }
     var extent = s.b.x;
-    if s.c.x > 0.5 {
+    if s.c.x > 1.5 {
+        extent = length(s.b.zw - s.b.xy) * 0.5;
+    } else if s.c.x > 0.5 {
         extent = length(s.b.xy);
     }
     let world = s.a.xy + corner * (extent + reach);
@@ -136,8 +138,11 @@ fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32) -> f32 {
     return segment_distance(p, a, b);
 }
 
-// Distance from a pixel to a wall's centre line.
+// Distance from a pixel to a wall's centre line, or to a capsule's spine.
 fn shape_distance(in: ShapeOut) -> f32 {
+    if in.c.x > 1.5 {
+        return segment_distance(in.world, in.b.xy, in.b.zw);
+    }
     if in.c.x < 0.5 {
         return ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z);
     }
