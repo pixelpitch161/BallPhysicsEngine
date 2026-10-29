@@ -135,7 +135,8 @@ pub fn show(
         Some(Action::Add(kind)) => {
             // Beside the selected thing, or under Scene defaults.
             let parent = selected.and_then(|s| scene.things.get(&s)).and_then(|t| t.parent).unwrap_or(ThingId::ROOT);
-            if let Ok(id) = scene.add_thing(reg, kind, parent) {
+            // The kit links the starter modules a kind needs, such as a liquid's surface look.
+            if let Ok(id) = bpe_kit::add_thing(scene, reg, kind, parent) {
                 *selected = Some(id);
                 out.edited = true;
             }
@@ -259,21 +260,96 @@ fn paint_eye(painter: &egui::Painter, rect: Rect, open: bool, ink: Color32) {
     }
 }
 
-/// A ring for an arena, a disc for balls, a square for the scene, a diamond for anything else.
+/// The shape drawn next to a thing of some kind in the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Icon {
+    /// An arena.
+    Ring,
+    /// Balls.
+    Disc,
+    /// The scene's defaults.
+    Square,
+    /// An emitter: a nozzle with drops leaving it.
+    Spout,
+    /// A liquid.
+    Drop,
+    /// A swarm: a scatter of dots.
+    Dots,
+    /// A field: lines of wind.
+    Wind,
+    /// Anything else.
+    Diamond,
+}
+
+fn icon_shape(kind: &str) -> Icon {
+    match kind {
+        "arena" => Icon::Ring,
+        "balls" => Icon::Disc,
+        "scene" => Icon::Square,
+        "emitter" => Icon::Spout,
+        "liquid" => Icon::Drop,
+        "swarm" => Icon::Dots,
+        "field" => Icon::Wind,
+        _ => Icon::Diamond,
+    }
+}
+
 fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
     let c = rect.center();
     let r = rect.width() * 0.32;
-    match kind {
-        "arena" => {
-            painter.circle_stroke(c, r, Stroke::new(1.5, ink));
+    let stroke = Stroke::new(1.5, ink);
+    match icon_shape(kind) {
+        Icon::Ring => {
+            painter.circle_stroke(c, r, stroke);
         }
-        "balls" => {
+        Icon::Disc => {
             painter.circle_filled(c, r * 0.8, ink);
         }
-        "scene" => {
+        Icon::Square => {
             painter.rect_filled(Rect::from_center_size(c, Vec2::splat(r * 1.6)), 2.0, ink);
         }
-        _ => {
+        Icon::Spout => {
+            // A nozzle at the bottom and three drops rising from it.
+            let base = c + Vec2::new(0.0, r);
+            painter.add(egui::Shape::convex_polygon(
+                vec![base + Vec2::new(-r * 0.8, 0.0), base + Vec2::new(r * 0.8, 0.0), base + Vec2::new(0.0, -r * 0.9)],
+                ink,
+                Stroke::NONE,
+            ));
+            for (dx, dy) in [(-0.55, -0.5), (0.0, -0.95), (0.55, -0.5)] {
+                painter.circle_filled(c + Vec2::new(dx * r, dy * r), r * 0.22, ink);
+            }
+        }
+        Icon::Drop => {
+            // A droplet: a round bottom with a point at the top.
+            let bottom = c + Vec2::new(0.0, r * 0.25);
+            painter.circle_filled(bottom, r * 0.72, ink);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    bottom + Vec2::new(-r * 0.7, -r * 0.15),
+                    c + Vec2::new(0.0, -r * 1.05),
+                    bottom + Vec2::new(r * 0.7, -r * 0.15),
+                ],
+                ink,
+                Stroke::NONE,
+            ));
+        }
+        Icon::Dots => {
+            for (dx, dy) in [(-0.7, -0.5), (0.5, -0.8), (0.8, 0.4), (-0.3, 0.7), (0.0, -0.1)] {
+                painter.circle_filled(c + Vec2::new(dx * r, dy * r), r * 0.26, ink);
+            }
+        }
+        Icon::Wind => {
+            // Three lines of wind, the middle one longest, each ending in a curl.
+            for (dy, len) in [(-0.6, 0.7), (0.0, 1.0), (0.6, 0.55)] {
+                let y = c.y + dy * r;
+                let from = egui::pos2(c.x - r, y);
+                let to = egui::pos2(c.x - r + 2.0 * r * len, y);
+                painter.line_segment([from, to], stroke);
+                painter.circle_stroke(to + Vec2::new(0.0, -r * 0.22), r * 0.22, stroke);
+            }
+        }
+        Icon::Diamond => {
             let points =
                 vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
             painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
@@ -455,5 +531,31 @@ mod tests {
         h.get_by_label("Show Ball").click();
         h.run();
         assert!(h.state().scene.things[&ThingId(2)].enabled);
+    }
+
+    #[test]
+    fn adding_a_liquid_from_the_tree_links_liquid_surface() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Liquid").click();
+        h.run();
+        let s = h.state();
+        let id = s.selected.expect("the new liquid is selected");
+        assert_eq!(s.scene.things[&id].kind, "liquid");
+        let bpe_core::SlotLink::Linked { module, .. } = &s.scene.things[&id].slots[&SlotId::Look] else {
+            panic!("the liquid starts with its own look")
+        };
+        assert_eq!(s.scene.library.modules[module].name, "Liquid surface");
+        assert!(h.query_by_label("Liquid").is_some());
+    }
+
+    #[test]
+    fn icons_exist_for_every_kit_kind() {
+        let reg = bpe_kit::registry();
+        for kind in reg.things() {
+            assert_ne!(icon_shape(kind.id()), Icon::Diamond, "{} has no icon of its own", kind.id());
+        }
+        assert_eq!(icon_shape("something-else"), Icon::Diamond);
     }
 }

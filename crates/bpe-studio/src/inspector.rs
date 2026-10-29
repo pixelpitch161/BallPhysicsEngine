@@ -162,11 +162,27 @@ pub fn show(
                             }
                         }
                         ui.separator();
-                        if let Some(first) = reg.modules_for(slot).next()
-                            && ui.button(format!("New {} module…", slot.name())).clicked()
-                        {
-                            edits.push(Edit::NewModule { slot, kind: first.id(), copy_from: shown_module });
-                            ui.close();
+                        // One kind for the slot: a plain button. Several: a submenu, one entry per kind.
+                        let kinds: Vec<&dyn bpe_core::ModuleKind> = reg.modules_for(slot).collect();
+                        let title = format!("New {} module…", slot.name());
+                        match kinds.as_slice() {
+                            [] => {}
+                            [only] => {
+                                if ui.button(title).on_hover_text(only.help()).clicked() {
+                                    edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
+                                    ui.close();
+                                }
+                            }
+                            many => {
+                                ui.menu_button(title, |ui| {
+                                    for k in many {
+                                        if ui.button(k.name()).on_hover_text(k.help()).clicked() {
+                                            edits.push(Edit::NewModule { slot, kind: k.id(), copy_from: shown_module });
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
                         }
                         if ui.selectable_label(matches!(link, SlotLink::Inherit), "Inherit").clicked() {
                             edits.push(Edit::Inherit(slot));
@@ -246,8 +262,11 @@ pub fn show(
                 let name = format!("{} {}", thing.name, slot.name());
                 match scene.add_module(reg, kind, &name) {
                     Ok(module) => {
-                        if let Some(params) =
-                            copy_from.and_then(|c| scene.library.modules.get(&c)).map(|m| m.params.clone())
+                        // The current module's settings carry over when the new one is the same kind.
+                        if let Some(params) = copy_from
+                            .and_then(|c| scene.library.modules.get(&c))
+                            .filter(|m| m.kind == kind)
+                            .map(|m| m.params.clone())
                             && let Some(m) = scene.library.modules.get_mut(&module)
                         {
                             m.params = params;
@@ -413,6 +432,8 @@ mod tests {
         h.run();
         h.get_by_label("New Look module…").click();
         h.run();
+        h.get_by_label("Classic").click();
+        h.run();
         let s = h.state();
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(1)].slots[&SlotId::Look] else { panic!() };
         assert_eq!(s.scene.library.modules[module].name, "Arena Look");
@@ -433,5 +454,33 @@ mod tests {
         h.get_by_label("Motion").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots.get(&SlotId::Motion), Some(&SlotLink::Inherit));
+    }
+
+    #[test]
+    fn the_new_module_menu_lists_every_kind_of_the_slot() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("New Look module…").click();
+        h.run();
+        for name in ["Classic", "Liquid surface", "Glowing dots"] {
+            assert!(h.query_by_label(name).is_some(), "{name} is offered");
+        }
+        h.get_by_label("Glowing dots").click();
+        h.run();
+        let s = h.state();
+        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
+        assert_eq!(s.scene.library.modules[module].kind, "look.swarm");
+        assert_eq!(s.scene.library.modules[module].name, "Ball Look");
+        // Bounce has one kind, so its menu keeps the plain button that makes the module at once.
+        // The ball's Motion, Bounce and Sound are inherited; Bounce's picker is the second.
+        h.get_all_by_label_contains("from Scene defaults").nth(1).expect("the bounce picker").click();
+        h.run();
+        h.get_by_label("New Bounce module…").click();
+        h.run();
+        let s = h.state();
+        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Bounce] else { panic!() };
+        assert_eq!(s.scene.library.modules[module].kind, "bounce.basic");
+        assert_eq!(s.scene.library.modules[module].name, "Ball Bounce");
     }
 }

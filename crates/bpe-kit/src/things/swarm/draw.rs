@@ -3,10 +3,8 @@
 
 use bpe_core::{Settings, SlotId};
 use bpe_gfx::{DrawCx, Flock, Frame, SwarmLayer, SwarmLook, ThingDraw};
-use bpe_runtime::state;
 
-use super::SwarmStart;
-use super::sim::SwarmState;
+use super::{SwarmSettings, SwarmStart};
 use crate::modules::look_swarm::{SwarmColors, SwarmLook as Look};
 use crate::modules::motion_flock::Flocking;
 
@@ -18,8 +16,9 @@ impl ThingDraw for SwarmDraw {
     }
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        let Some(st) = cx.world.states.get(&cx.thing.id) else { return };
-        let st = state::<SwarmState>(st.as_ref());
+        // From the live settings, not the world's copy: changing a swarm never rebuilds the
+        // physics, and the picture must follow the inspector all the same.
+        let settings = SwarmSettings::from_params(&cx.resolved.params);
         let look = match cx.resolved.slots.get(&SlotId::Look) {
             Some(l) if l.kind == "look.swarm" => Look::from_params(&l.params),
             _ => Look::default(),
@@ -30,15 +29,15 @@ impl ThingDraw for SwarmDraw {
         };
         frame.swarms.push(SwarmLayer {
             thing: cx.thing.id,
-            count: st.settings.count,
-            start: match st.settings.start {
+            count: settings.count,
+            start: match settings.start {
                 SwarmStart::Fill => bpe_gfx::SwarmStart::Fill,
                 SwarmStart::Centre => bpe_gfx::SwarmStart::Centre,
                 SwarmStart::Ring => bpe_gfx::SwarmStart::Ring,
             },
             center: cx.thing.transform.position.into(),
-            seed: st.settings.seed,
-            release_seconds: st.settings.release_seconds,
+            seed: settings.seed,
+            release_seconds: settings.release_seconds,
             look: SwarmLook {
                 size: look.size,
                 brightness: look.brightness,
@@ -108,5 +107,18 @@ mod tests {
         moved.things.get_mut(&crate::testing::BALLS).unwrap().transform.position = Vec2::new(5.0, 5.0);
         let resolved_moved = bpe_core::resolve(&moved, &kit.registry);
         assert_ne!(fingerprint(&moved, &resolved_moved, &kit.sims), before);
+    }
+
+    #[test]
+    fn a_setting_change_shows_without_rebuilding_the_world() {
+        // Swarm settings never touch the physics, so the editor keeps its world; the picture
+        // must still follow the inspector.
+        let (mut scene, resolved, kit, me) = scene_with("swarm", "Fireflies", Vec2::ZERO, |_| {});
+        let world = World::build(&scene, &resolved, &kit.sims);
+        scene.things.get_mut(&me).unwrap().params.set("count", Value::Int(777));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!(frame.swarms[0].count, 777);
     }
 }
