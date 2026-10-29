@@ -315,7 +315,10 @@ dependencies = [
  "bpe-core",
  "bpe-gfx",
  "bpe-mix",
+ "bpe-render",
  "bpe-runtime",
+ "bpe-scene",
+ "bpe-sim",
  "glam",
  "png",
 ]
