@@ -127,9 +127,11 @@ impl World {
         self.tags.get(&id)
     }
 
-    /// Whether `thing` uses the Rules module linked on `owner` (the owner itself included).
+    /// Whether `thing` uses the Rules module linked on `owner`. A thing is always in its own
+    /// scope, so "me" means at least the thing itself.
     pub fn in_scope(&self, owner: ThingId, thing: ThingId) -> bool {
-        self.scope.get(&owner).is_some_and(|s| s.contains(&thing))
+        (owner == thing && self.kinds.contains_key(&thing))
+            || self.scope.get(&owner).is_some_and(|s| s.contains(&thing))
     }
 
     /// Whether a thing belongs to a target, as the rules on `me` see it.

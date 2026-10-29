@@ -1,6 +1,7 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
 //! its settings, its simulation, its drawing and its sound side by side.
 
+pub mod graphs;
 pub mod modules;
 pub mod scenes;
 #[cfg(test)]
@@ -15,6 +16,7 @@ use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
 use glam::Vec2;
 
+pub use graphs::{graph_problems, resolve_scene, role_of};
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
