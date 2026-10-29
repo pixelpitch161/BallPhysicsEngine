@@ -7,6 +7,7 @@ use glam::Vec2;
 use super::{EmitterSettings, Trigger};
 use crate::rng::Rng;
 use crate::things::balls::sim::BallsState;
+use crate::things::liquid::sim::LiquidState;
 
 pub struct EmitterSim;
 
@@ -27,6 +28,9 @@ pub fn item_radius(world: &World, thing: ThingId) -> Option<f32> {
     let st = world.states.get(&thing)?;
     if let Some(balls) = st.as_any().downcast_ref::<BallsState>() {
         return Some(balls.settings.radius);
+    }
+    if let Some(liquid) = st.as_any().downcast_ref::<LiquidState>() {
+        return Some(liquid.radius());
     }
     None
 }

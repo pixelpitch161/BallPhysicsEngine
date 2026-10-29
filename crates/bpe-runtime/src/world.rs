@@ -168,7 +168,11 @@ impl World {
                 if speed > limits.ceiling {
                     bodies.velocity[i] *= limits.ceiling / speed;
                 }
-                fastest = fastest.max(speed.min(limits.ceiling));
+                // Silent bodies (liquid particles) are held inside the walls by their own solver,
+                // so they never decide how finely everything else is stepped.
+                if !bodies.silent {
+                    fastest = fastest.max(speed.min(limits.ceiling));
+                }
                 bodies.previous[i] = bodies.position[i];
             }
         }
@@ -524,6 +528,25 @@ mod tests {
         assert!(log.is_empty(), "{:?}", log.events());
         assert_eq!(w.bodies[&DOTS].hits[0], 0);
         assert!(w.bodies[&DOTS].position[0].length() < 100.0, "it still bounces off the wall");
+    }
+
+    #[test]
+    fn silent_bodies_do_not_add_substeps() {
+        let (scene, resolved, sims) = dots_in_ring(1);
+        let plain = {
+            let mut w = World::build(&scene, &resolved, &sims);
+            let mut log = Log::default();
+            w.advance_to(3.0, &sims, &mut log);
+            log
+        };
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut fast = Bodies { silent: true, ..Bodies::default() };
+        fast.push(Vec2::ZERO, Vec2::new(50_000.0, 0.0), 2.0);
+        w.bodies.insert(ThingId(9), fast);
+        let mut log = Log::default();
+        w.advance_to(3.0, &sims, &mut log);
+        assert_eq!(log, plain, "a liquid's speed never changes how the balls are stepped");
+        assert!(w.bodies[&ThingId(9)].position[0].is_finite() && w.bodies[&ThingId(9)].position[0].length() < 100.0);
     }
 
     #[test]

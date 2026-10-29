@@ -38,6 +38,10 @@ pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
 pub use things::field::{Falloff, FieldKind, FieldKindChoice, FieldSettings, FieldShape};
+pub use things::liquid::draw::LiquidDraw;
+pub use things::liquid::pbf::Rect;
+pub use things::liquid::sim::{LiquidSim, LiquidState};
+pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -50,6 +54,7 @@ pub fn sims() -> Sims {
     s.add_thing(BallsSim);
     s.add_thing(EmitterSim);
     s.add_thing(FieldSim);
+    s.add_thing(LiquidSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(FlowingSim);
@@ -62,6 +67,7 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ArenaDraw);
     d.add(BallsDraw);
+    d.add(LiquidDraw);
     d
 }
 
@@ -111,6 +117,7 @@ pub fn registry() -> Registry {
     r.add_thing(BallsKind);
     r.add_thing(EmitterKind);
     r.add_thing(FieldKind);
+    r.add_thing(LiquidKind);
     r.add_module(ClassicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
