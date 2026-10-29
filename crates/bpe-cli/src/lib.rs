@@ -8,7 +8,7 @@
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings, resolve};
 use bpe_gfx::{Frame, Readback, Renderer, build_frame, wgpu};
-use bpe_kit::{Kit, SceneSettings, mix_scene};
+use bpe_kit::{Kit, SceneSettings, flow_source, mix_scene};
 use bpe_runtime::{Log, World};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -310,12 +310,15 @@ fn export_with(
     let mut world = World::build(scene, &resolved, &kit.sims);
     let mut log = Log::default();
     let mut frame = Frame::default();
+    // Liquids and swarms on the graphics card step with the frames; without a time budget
+    // every frame waits for them, so the clip never skips.
+    let source = flow_source(scene, &resolved, &kit.sims, None);
     let mut failed = None;
     for index in 0..total {
         let time = index as f64 / fps as f64;
         world.advance_to(time, &kit.sims, &mut log);
         build_frame(scene, &resolved, &world, &log, time, &kit.draws, &mut frame);
-        renderer.render(device, queue, &frame);
+        while !renderer.render_with_flow(device, queue, &frame, &source).caught_up {}
         let ready = match readback.push(device, queue, &renderer) {
             Ok(ready) => ready,
             Err(error) => {

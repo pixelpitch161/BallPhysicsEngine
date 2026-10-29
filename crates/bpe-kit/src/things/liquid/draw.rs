@@ -1,13 +1,43 @@
 //! Drawing the liquid: with the Liquid surface look its particles go to the renderer's surface
-//! layer; with any other look they are plain dots.
+//! layer; with any other look they are plain dots. A liquid on the graphics card has no
+//! particles here, so it sends what the renderer needs to run it, and is always a surface.
 
 use bpe_core::{Settings, SlotId};
-use bpe_gfx::{BallInstance, DrawCx, Frame, LiquidLayer, Points, ThingDraw};
+use bpe_gfx::{BallInstance, DrawCx, Frame, GpuLiquid, LiquidLayer, Points, ThingDraw};
+use bpe_runtime::state;
 
+use super::sim::LiquidState;
+use crate::modules::bounce::BasicBounce;
 use crate::modules::look::ClassicLook;
 use crate::modules::look_liquid::LiquidLook;
+use crate::modules::motion_liquid::Flowing;
 
 pub struct LiquidDraw;
+
+/// The surface look: the Liquid surface module's settings, or that module's defaults in the
+/// classic look's colour when the liquid wears any other look.
+fn surface_look(cx: &DrawCx) -> Option<LiquidLook> {
+    let look = cx.resolved.slots.get(&SlotId::Look)?;
+    Some(if look.kind == "look.liquid" {
+        LiquidLook::from_params(&look.params)
+    } else {
+        LiquidLook { color: ClassicLook::from_params(&look.params).color, ..LiquidLook::default() }
+    })
+}
+
+fn layer(cx: &DrawCx, look: &LiquidLook, points: Points, radius: f32) -> LiquidLayer {
+    LiquidLayer {
+        thing: cx.thing.id,
+        points,
+        radius,
+        color: look.color.to_linear(),
+        clarity: look.clarity,
+        refraction: look.refraction,
+        highlight: look.highlight,
+        smoothing: look.smoothing,
+        glow: look.glow,
+    }
+}
 
 impl ThingDraw for LiquidDraw {
     fn kind(&self) -> &'static str {
@@ -15,22 +45,40 @@ impl ThingDraw for LiquidDraw {
     }
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
         let Some(look) = cx.resolved.slots.get(&SlotId::Look) else { return };
+        let Some(st) = cx.world.states.get(&cx.thing.id) else { return };
+        let st = state::<LiquidState>(st.as_ref());
+        if st.gpu {
+            let flowing = match cx.world.module_state(cx.thing.id, SlotId::Motion) {
+                Some(("motion.liquid", m)) => state::<Flowing>(m).clone(),
+                _ => Flowing::default(),
+            };
+            let bounciness = match cx.world.module_state(cx.thing.id, SlotId::Bounce) {
+                Some(("bounce.basic", b)) => state::<BasicBounce>(b).bounciness,
+                _ => 0.0,
+            };
+            let gpu = GpuLiquid {
+                count: st.settings.count,
+                region: [st.region.min.x, st.region.min.y, st.region.max.x, st.region.max.y],
+                pour_seconds: st.settings.pour_seconds,
+                pour_from: st.position.into(),
+                seed: st.settings.seed,
+                viscosity: flowing.viscosity,
+                stiffness: flowing.stiffness,
+                ball_push: flowing.ball_push,
+                gravity_scale: flowing.gravity_scale,
+                bounciness,
+            };
+            let Some(look) = surface_look(cx) else { return };
+            frame.liquids.push(layer(cx, &look, Points::Gpu(gpu), st.radius()));
+            return;
+        }
+        let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
         let alive = (0..bodies.len()).filter(|&i| bodies.alive[i]);
         if look.kind == "look.liquid" {
             let look = LiquidLook::from_params(&look.params);
-            frame.liquids.push(LiquidLayer {
-                thing: cx.thing.id,
-                points: Points::Cpu(alive.map(|i| bodies.position[i].into()).collect()),
-                radius: bodies.radius.first().copied().unwrap_or(0.0),
-                color: look.color.to_linear(),
-                clarity: look.clarity,
-                refraction: look.refraction,
-                highlight: look.highlight,
-                smoothing: look.smoothing,
-                glow: look.glow,
-            });
+            let points = Points::Cpu(alive.map(|i| bodies.position[i].into()).collect());
+            frame.liquids.push(layer(cx, &look, points, bodies.radius.first().copied().unwrap_or(0.0)));
         } else {
             let color = ClassicLook::from_params(&look.params).color.to_linear();
             frame.balls.extend(alive.map(|i| BallInstance {
@@ -88,5 +136,39 @@ mod tests {
         assert_eq!(dot.color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(dot.glow, 0.0);
         assert!((dot.radius - world.bodies[&me].radius[0]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_big_liquid_draws_a_gpu_layer_with_its_bounce() {
+        let (mut scene, _, kit, me) = scene_with("liquid", "Deep pool", Vec2::new(0.0, -500.0), |p| {
+            p.set("count", Value::Int(5000));
+            p.set("pour_seconds", Value::Number(2.0));
+            p.set("seed", Value::Int(7));
+        });
+        let look = scene.add_module(&kit.registry, "look.liquid", "Blue").unwrap();
+        scene.link(&kit.registry, me, SlotId::Look, look).unwrap();
+        let bounce = scene.add_module(&kit.registry, "bounce.basic", "Soft landing").unwrap();
+        scene.library.modules.get_mut(&bounce).unwrap().params.set("bounciness", Value::Number(0.0));
+        scene.link(&kit.registry, me, SlotId::Bounce, bounce).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        assert!(!world.bodies.contains_key(&me), "a GPU liquid has no bodies here");
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!(frame.liquids.len(), 1);
+        let layer = &frame.liquids[0];
+        assert_eq!(layer.thing, me);
+        let Points::Gpu(gpu) = &layer.points else { panic!("a big liquid runs on the graphics card") };
+        assert_eq!(gpu.count, 5000);
+        assert_eq!((gpu.pour_seconds, gpu.pour_from, gpu.seed), (2.0, [0.0, -500.0], 7));
+        assert_eq!(gpu.bounciness, 0.0);
+        let flowing = crate::Flowing::default();
+        assert_eq!(
+            (gpu.viscosity, gpu.stiffness, gpu.ball_push, gpu.gravity_scale),
+            (flowing.viscosity, flowing.stiffness, flowing.ball_push, flowing.gravity_scale)
+        );
+        // A pool fills the bottom 35% of the arena's box.
+        assert!(gpu.region[1] > 0.0 && gpu.region[3] > gpu.region[1], "{:?}", gpu.region);
+        assert!((layer.clarity, layer.smoothing) == (0.45, 6.0));
     }
 }

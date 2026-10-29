@@ -11,7 +11,7 @@ pub mod things;
 use std::sync::Arc;
 
 use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, ThingId};
-use bpe_gfx::Draws;
+use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
 use glam::Vec2;
@@ -45,6 +45,9 @@ pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
+pub use things::swarm::draw::SwarmDraw;
+pub use things::swarm::sim::{SwarmSim, SwarmState};
+pub use things::swarm::{SwarmKind, SwarmSettings, SwarmStart};
 
 /// Every kind's simulation part, for the runtime.
 pub fn sims() -> Sims {
@@ -55,6 +58,7 @@ pub fn sims() -> Sims {
     s.add_thing(EmitterSim);
     s.add_thing(FieldSim);
     s.add_thing(LiquidSim);
+    s.add_thing(SwarmSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(FlowingSim);
@@ -68,6 +72,7 @@ pub fn draws() -> Draws {
     d.add(ArenaDraw);
     d.add(BallsDraw);
     d.add(LiquidDraw);
+    d.add(SwarmDraw);
     d
 }
 
@@ -88,6 +93,28 @@ pub struct Kit {
 
 pub fn kit() -> Kit {
     Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
+}
+
+/// What the renderer's graphics-card layers step along with: the scene, keyed by its physics
+/// fingerprint so a change that moves the balls starts the layers over, and each ball thing's
+/// colour for swarms coloured by the nearest ball. `budget` caps how long one frame may spend
+/// catching up; `None` always catches up, as an export must.
+pub fn flow_source<'a>(
+    scene: &'a Scene,
+    resolved: &'a Resolved,
+    sims: &'a Sims,
+    budget: Option<std::time::Duration>,
+) -> FlowSource<'a> {
+    let ball_colors = resolved
+        .things
+        .iter()
+        .filter(|(_, r)| r.kind == "balls")
+        .filter_map(|(id, r)| {
+            let look = r.slots.get(&SlotId::Look)?;
+            (look.kind == "look.classic").then(|| (*id, ClassicLook::from_params(&look.params).color.to_linear()))
+        })
+        .collect();
+    FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
 }
 
 /// What the mixer needs from the root's settings.
@@ -118,6 +145,7 @@ pub fn registry() -> Registry {
     r.add_thing(EmitterKind);
     r.add_thing(FieldKind);
     r.add_thing(LiquidKind);
+    r.add_thing(SwarmKind);
     r.add_module(ClassicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);

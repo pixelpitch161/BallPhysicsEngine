@@ -104,3 +104,37 @@ fn output_sizes_are_even_and_encoders_have_names() {
     }
     assert_eq!(Encoder::from_name("quantum"), None);
 }
+
+#[test]
+fn exporting_a_scene_with_a_swarm_and_gpu_liquid_makes_a_clip() {
+    use bpe_core::{SlotId, ThingId, Value};
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("fps", Value::Int(12));
+    let swarm = scene.add_thing(&kit.registry, "swarm", ThingId::ROOT).unwrap();
+    scene.things.get_mut(&swarm).unwrap().params.set("count", Value::Int(2000));
+    let liquid = scene.add_thing(&kit.registry, "liquid", ThingId::ROOT).unwrap();
+    scene.things.get_mut(&liquid).unwrap().params.set("count", Value::Int(5000));
+    let look = scene.add_module(&kit.registry, "look.liquid", "Liquid surface").unwrap();
+    scene.link(&kit.registry, liquid, SlotId::Look, look).unwrap();
+    let dir = temp_dir("flow");
+    let mut options = ExportOptions::new(dir.join("flow.mp4"));
+    options.max_frames = Some(12);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv"])
+        .arg(dir.join("flow.mp4"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let duration: f64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("format,"))
+        .and_then(|d| d.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no duration in {text}"));
+    assert!((duration - 1.0).abs() < 0.15, "{duration}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
