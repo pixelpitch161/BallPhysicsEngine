@@ -22,7 +22,7 @@ pub enum ArenaShape {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ArenaSettings {
     /// A round ring, a box, a regular polygon or a capsule.
-    #[setting(label = "Shape", simple, random)]
+    #[setting(label = "Shape", simple, random, structural)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
     #[setting(label = "Radius", range(20, 2000), unit = "px", simple, keyframe, random(150, 500))]

@@ -201,7 +201,7 @@ pub fn show(ctx: &egui::Context, win: &mut BatchWindow, kit: &Arc<Kit>, weights:
         .open(&mut open)
         .resizable(true)
         .collapsible(false)
-        .default_pos(egui::pos2(12.0, 12.0))
+        .default_pos(egui::pos2(12.0, theme::BELOW_TOOLBAR))
         .default_size(egui::vec2(860.0, 560.0))
         .show(ctx, |ui| {
             ui.horizontal_top(|ui| {
@@ -253,7 +253,9 @@ fn settings_column(ui: &mut Ui, win: &mut BatchWindow) {
             let amount = ui.label("How much to change");
             ui.add(egui::Slider::new(&mut win.spec.amount, 0.0..=1.0).show_value(false))
                 .labelled_by(amount.id)
-                .on_hover_text("Left keeps the videos close to your scene; right lets anything change");
+                .on_hover_text(
+                    "Left keeps the videos close to your scene; shapes and arrangements only change near the right end",
+                );
             ui.end_row();
             let quality = ui.label("Quality");
             egui::ComboBox::from_id_salt("batch-quality")
@@ -324,6 +326,11 @@ fn rejected_name(rejected: Rejected) -> &'static str {
     }
 }
 
+/// A warning beside the start button, wrapped so it never widens the window.
+fn warning(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).color(theme::WARNING)).wrap());
+}
+
 /// The progress bar or the start button; returns whether Start was clicked.
 fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
     let mut start = false;
@@ -371,19 +378,15 @@ fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
                 start = true;
             }
             if win.ffmpeg.is_none() {
-                ui.label(
-                    RichText::new(
-                        "Ball Studio needs ffmpeg to make videos and couldn't find it. Point to it in Export video…",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "Ball Studio needs ffmpeg to make videos and couldn't find it. Point to it in Export video…",
                 );
             } else if resumable && win.manifest.as_ref().is_some_and(|m| m.base != win.base) {
-                ui.label(
-                    RichText::new(
-                        "This batch was started from an earlier version of the scene, and carrying on uses that \
-                         version. Choose another folder to batch the scene as it is now.",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "This batch was started from an earlier version of the scene, and carrying on uses that \
+                     version. Choose another folder to batch the scene as it is now.",
                 );
             } else if different {
                 if ui
@@ -394,11 +397,9 @@ fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
                 {
                     win.spec = manifest.spec.clone();
                 }
-                ui.label(
-                    RichText::new(
-                        "This folder holds a batch with other settings. Choose another folder, or use its settings.",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "This folder holds a batch with other settings. Choose another folder, or use its settings.",
                 );
             }
         });
@@ -439,43 +440,44 @@ fn cards(ui: &mut Ui, win: &BatchWindow) {
 }
 
 fn card(ui: &mut Ui, folder: &Path, job: &batch::Job) {
+    // The frame's inside follows the row's layout, so the card's lines need a column of their own.
     egui::Frame::new().fill(theme::PANEL).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
-        ui.set_width(CARD_WIDTH);
-        ui.label(RichText::new(format!("Seed {}", job.seed)).strong());
-        let colour = match job.status {
-            Status::Kept => theme::ACCENT_TEXT,
-            Status::Failed => theme::ERROR,
-            Status::Rejected | Status::Skipped => theme::MUTED,
-            _ => theme::TEXT,
-        };
-        let status = ui.label(RichText::new(job.status.word()).color(colour));
-        if let Some(error) = &job.error {
-            status.on_hover_text(error);
-        }
-        match job.score {
-            Some(score) => {
-                _ = ui.label(format!("Score {:.0}", score * 100.0)).on_hover_ui(|ui| {
-                    if let Some(parts) = &job.parts {
-                        for (name, value, meaning) in parts.list() {
-                            ui.label(format!("{name}: {:.0}  {meaning}", value * 100.0));
-                        }
-                    }
-                })
+        ui.vertical(|ui| {
+            ui.set_width(CARD_WIDTH);
+            ui.label(RichText::new(format!("Seed {}", job.seed)).strong());
+            let colour = match job.status {
+                Status::Kept => theme::ACCENT_TEXT,
+                Status::Failed => theme::ERROR,
+                Status::Rejected | Status::Skipped => theme::MUTED,
+                _ => theme::TEXT,
+            };
+            let status = ui.label(RichText::new(job.status.word()).color(colour));
+            if let Some(error) = &job.error {
+                status.on_hover_text(error);
             }
-            None => _ = ui.label(RichText::new("—").color(theme::MUTED)),
-        }
-        if job.status == Status::Kept
-            && let Some(file) = &job.file
-        {
-            ui.horizontal(|ui| {
+            match job.score {
+                Some(score) => {
+                    _ = ui.label(format!("Score {:.0}", score * 100.0)).on_hover_ui(|ui| {
+                        if let Some(parts) = &job.parts {
+                            for (name, value, meaning) in parts.list() {
+                                ui.label(format!("{name}: {:.0}  {meaning}", value * 100.0));
+                            }
+                        }
+                    })
+                }
+                None => _ = ui.label(RichText::new("—").color(theme::MUTED)),
+            }
+            if job.status == Status::Kept
+                && let Some(file) = &job.file
+            {
                 if ui.small_button("Open").on_hover_text("Play the video").clicked() {
                     open_file(&folder.join(file));
                 }
                 if ui.small_button("Show in folder").clicked() {
                     show_in_folder(&folder.join(file));
                 }
-            });
-        }
+            }
+        })
     });
 }
 
@@ -616,6 +618,65 @@ mod tests {
         assert_eq!(h.query_all_by_label("Open").count(), 1, "only the kept video can be opened");
         assert!(h.query_by_label_contains("Finished: kept 1 of 2").is_some());
         assert!(h.query_by_label("Finished").is_some(), "the start button says the batch is done");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_batch_window_opens_below_the_toolbar() {
+        let kit = kit();
+        let mut window = BatchWindow::default();
+        window.open_with(&new_scene(&kit.registry), 0.5);
+        let h = harness(window);
+        let title = h.get_by_label("Batch").rect();
+        assert!(title.top() >= crate::theme::BELOW_TOOLBAR, "the window covers the toolbar: {title:?}");
+    }
+
+    #[test]
+    fn a_kept_card_and_a_long_warning_stay_inside_the_window() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let dir = temp_dir("narrow");
+        let spec = BatchSpec { count: 2, keep: 1, ..BatchSpec::default() };
+        let kept =
+            Job { seed: 1, status: Status::Kept, score: Some(0.8), file: Some("x.mp4".into()), ..Job::default() };
+        Manifest { spec, base: scene.clone(), phase: Phase::Done, jobs: vec![kept] }.save(&dir).unwrap();
+        let mut window = BatchWindow::default();
+        window.open_with(&scene, 0.5);
+        window.folder = dir.clone();
+        window.ffmpeg = Some("ffmpeg".into());
+        let h = harness(window);
+        assert!(h.query_by_label_contains("other settings").is_some(), "the folder holds a batch with other settings");
+        let width = h.get_by_label("Batch").rect().width();
+        assert!(width <= 900.0, "the warning widens the window to {width}");
+        let card = h.get_by_label("Seed 1").rect().left();
+        let buttons = h.get_all_by_label("Show in folder").map(|b| b.rect()).chain([h.get_by_label("Open").rect()]);
+        for button in buttons.filter(|b| b.left() >= card) {
+            assert!(button.right() <= card + CARD_WIDTH + 1.0, "{button:?} sticks out of the card at {card}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn many_cards_stack_their_lines_and_wrap_inside_the_window() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let dir = temp_dir("many");
+        let spec = BatchSpec { count: 24, keep: 3, ..BatchSpec::default() };
+        let jobs =
+            (1..=24).map(|seed| Job { seed, status: Status::Skipped, score: Some(0.5), ..Job::default() }).collect();
+        Manifest { spec: spec.clone(), base: scene.clone(), phase: Phase::Done, jobs }.save(&dir).unwrap();
+        let mut window = BatchWindow { spec, ..BatchWindow::default() };
+        window.open_with(&scene, 0.5);
+        window.folder = dir.clone();
+        let h = harness(window);
+        let first = h.get_by_label("Seed 1").rect();
+        let status = h.get_all_by_label("Skipped").next().expect("a status word").rect();
+        assert!(status.top() >= first.bottom() - 1.0, "a card's lines stack: seed {first:?}, status {status:?}");
+        assert!(h.get_by_label("Seed 24").rect().top() > first.bottom(), "the cards wrap onto more rows");
+        for seed in 1..=24 {
+            let card = h.get_by_label(&format!("Seed {seed}")).rect();
+            assert!(card.right() <= 1100.0, "seed {seed} runs off the screen: {card:?}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

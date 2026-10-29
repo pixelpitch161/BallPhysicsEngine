@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(def("balls", "ring_radius").dice_range(), Some((60.0, 400.0)));
         assert_eq!(def("balls", "velocity").dice_range(), Some((100.0, 900.0)));
         assert_eq!(def("arena", "radius").dice_range(), Some((150.0, 500.0)));
-        assert_eq!(def("obstacle", "radius").dice_range(), Some((10.0, 200.0)));
+        assert_eq!(def("obstacle", "radius").dice_range(), Some((6.0, 60.0)));
         assert_eq!(def("liquid", "count").dice_range(), Some((500.0, 20000.0)));
         assert_eq!(def("swarm", "count").dice_range(), Some((500.0, 50000.0)));
         assert_eq!(def("soft", "size").dice_range(), Some((60.0, 400.0)));

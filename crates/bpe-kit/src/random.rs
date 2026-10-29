@@ -143,6 +143,10 @@ fn card_settings(scene: &Scene, reg: &Registry, id: ThingId, slot: SlotId, out: 
     }));
 }
 
+/// How far the dice go until someone moves "How much": far enough to surprise, near enough
+/// that the scene stays recognisable.
+pub const START_AMOUNT: f32 = 0.5;
+
 /// A new value for `def`, or `None` when the dice leave this setting alone. `amount` 1 picks
 /// something new; a smaller amount moves part of the way there from `current`.
 pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32) -> Option<Value> {
@@ -165,21 +169,24 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         Value::Bool(b) => (dice.unit() < amount * 0.5).then_some(Value::Bool(!b)),
         Value::Choice(_) => {
             let bpe_core::ValueType::Choice(names) = def.ty else { return None };
-            if names.is_empty() || dice.unit() >= amount {
+            let chance = if def.flags.structural { structural_chance(amount) } else { amount };
+            if names.is_empty() || dice.unit() >= chance {
                 return None;
             }
             Some(Value::Choice(names[dice.next_u32() as usize % names.len()].into()))
         }
         Value::Color(c) => {
-            let rolled = if amount >= 1.0 { palette(dice, 1)[0] } else { c.shift_hue(turn(dice, amount)) };
-            Some(Value::Color(Color { a: c.a, ..rolled }))
+            let rolled = if amount >= 1.0 { like(palette(dice, 1)[0], *c) } else { c.shift_hue(turn(dice, amount)) };
+            Some(Value::Color(rolled))
         }
         Value::Colors(list) => {
             if list.is_empty() {
                 return None;
             }
             if amount >= 1.0 {
-                return Some(Value::Colors(palette(dice, list.len())));
+                return Some(Value::Colors(
+                    palette(dice, list.len()).into_iter().zip(list).map(|(n, c)| like(n, *c)).collect(),
+                ));
             }
             let t = turn(dice, amount);
             Some(Value::Colors(list.iter().map(|c| c.shift_hue(t)).collect()))
@@ -187,6 +194,19 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         Value::Vec2([x, y]) => Some(Value::Vec2(roll_vec2([*x, *y], def.dice_range(), def.range, dice, amount))),
         Value::Text(_) | Value::Target(_) => None,
     }
+}
+
+/// How likely a structural choice is to change: never up to three quarters, then rising to
+/// certain at "All new", so a roll keeps a peg board a peg board unless asked for everything new.
+fn structural_chance(amount: f32) -> f32 {
+    ((amount - 0.75) / 0.25).clamp(0.0, 1.0)
+}
+
+/// `new`'s hue and saturation with `old`'s brightness and transparency, so a dark background
+/// stays dark and a see-through colour stays see-through.
+fn like(new: Color, old: Color) -> Color {
+    let (h, s, _) = new.to_hsv();
+    Color { a: old.a, ..Color::from_hsv(h, s, old.to_hsv().2) }
 }
 
 /// Up to half a turn around the colour wheel either way, scaled by the amount.
@@ -382,6 +402,72 @@ mod tests {
             }
         }
         assert!(rolls(&gradient, &Value::Colors(Vec::new()), 1.0, 5).is_empty(), "no colours stay no colours");
+    }
+
+    #[test]
+    fn shapes_and_arrangements_stay_put_until_close_to_all_new() {
+        let reg = registry();
+        for (kind, key) in
+            [("balls", "arrangement"), ("obstacle", "shape"), ("arena", "shape"), ("soft", "shape"), ("field", "kind")]
+        {
+            let d = def(&reg, kind, key);
+            assert!(d.flags.structural, "{kind}.{key} decides what the thing is");
+            let ValueType::Choice(names) = d.ty else { panic!("{kind}.{key} is a choice") };
+            let first = Value::Choice(names[0].into());
+            assert!(rolls(&d, &first, 0.75, 200).is_empty(), "{kind}.{key} stays put at three quarters");
+            assert!(rolls(&d, &first, 1.0, 50).iter().any(|v| *v != first), "{kind}.{key} changes at All new");
+        }
+        let instrument = def(&reg, "sound.notes", "instrument");
+        assert!(!instrument.flags.structural);
+        let ValueType::Choice(names) = instrument.ty else { panic!("instrument is a choice") };
+        let first = Value::Choice(names[0].into());
+        assert!(rolls(&instrument, &first, 0.5, 50).iter().any(|v| *v != first), "other choices change half way");
+    }
+
+    #[test]
+    fn a_peg_board_rolled_half_way_keeps_room_for_its_balls() {
+        let reg = registry();
+        let (_, board) = crate::scenes::all(&reg).into_iter().find(|(n, _)| n == "Peg board").expect("the peg board");
+        let number = |scene: &Scene, kind: &str, key: &str| -> f64 {
+            let thing = scene.things.values().find(|t| t.kind == kind).expect(kind);
+            match thing.params.get(key) {
+                Some(Value::Number(x)) => *x,
+                other => panic!("{kind}.{key} is {other:?}"),
+            }
+        };
+        for seed in 0..60 {
+            let mut scene = board.clone();
+            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: START_AMOUNT });
+            let gap = number(&scene, "obstacle", "spacing") - 2.0 * number(&scene, "obstacle", "radius");
+            let ball = 2.0 * number(&scene, "balls", "radius");
+            assert!(gap > ball, "seed {seed}: pegs {gap:.0} px apart jam balls {ball:.0} px wide");
+        }
+    }
+
+    #[test]
+    fn a_full_colour_roll_keeps_brightness_and_transparency() {
+        let reg = registry();
+        let top = def(&reg, "scene", "background_top");
+        let navy = Color { r: 10, g: 12, b: 48, a: 200 };
+        let (_, _, dark) = navy.to_hsv();
+        let new = rolls(&top, &Value::Color(navy), 1.0, 30);
+        assert!(new.iter().any(|v| *v != Value::Color(navy)), "a new colour comes up");
+        for v in new {
+            let Value::Color(c) = v else { panic!("{v:?}") };
+            let (_, _, value) = c.to_hsv();
+            assert!((value - dark).abs() < 0.02, "a dark background stays dark: {c:?}");
+            assert_eq!(c.a, 200, "and keeps its transparency");
+        }
+        let gradient = def(&reg, "look.classic", "gradient");
+        let list = vec![Color { r: 20, g: 20, b: 60, a: 128 }, Color::rgb(255, 200, 0)];
+        for v in rolls(&gradient, &Value::Colors(list.clone()), 1.0, 30) {
+            let Value::Colors(new) = v else { panic!("{v:?}") };
+            assert_eq!(new.len(), 2);
+            for (c, was) in new.iter().zip(&list) {
+                assert!((c.to_hsv().2 - was.to_hsv().2).abs() < 0.02, "{c:?} keeps the brightness of {was:?}");
+                assert_eq!(c.a, was.a, "{c:?} keeps the transparency of {was:?}");
+            }
+        }
     }
 
     #[test]

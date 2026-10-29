@@ -42,7 +42,7 @@ pub enum Falloff {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct FieldSettings {
     /// What the field does to what passes through it.
-    #[setting(label = "Kind", simple, random)]
+    #[setting(label = "Kind", simple, random, structural)]
     pub kind: FieldKindChoice,
     /// How hard it pushes, as an acceleration.
     #[setting(label = "Strength", range(0, 5000), unit = "px/s²", simple, keyframe, random(200, 2500), pulse)]

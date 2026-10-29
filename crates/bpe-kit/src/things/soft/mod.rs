@@ -41,7 +41,7 @@ pub enum Pinned {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SoftSettings {
     /// A jelly ball, a rope or a sheet of cloth.
-    #[setting(label = "Shape", simple, random)]
+    #[setting(label = "Shape", simple, random, structural)]
     pub shape: SoftShape,
     /// A jelly ball's radius, a rope's length, or a cloth's width.
     #[setting(label = "Size", range(20, 1500), unit = "px", simple, random(60, 400))]

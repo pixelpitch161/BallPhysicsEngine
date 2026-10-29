@@ -32,10 +32,11 @@ pub enum MovePath {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ObstacleSettings {
     /// A round peg, a bar, a grid of pegs, a hollow polygon or a hollow ring.
-    #[setting(label = "Shape", simple, random)]
+    #[setting(label = "Shape", simple, random, structural)]
     pub shape: ObstacleShape,
-    /// Peg, grid peg, polygon or ring: from the middle to the edge.
-    #[setting(label = "Size", range(2, 800), unit = "px", simple, keyframe, random(10, 200))]
+    /// Peg, grid peg, polygon or ring: from the middle to the edge. The dice keep it small enough
+    /// that a rolled peg grid still lets balls through.
+    #[setting(label = "Size", range(2, 800), unit = "px", simple, keyframe, random(6, 60))]
     pub radius: f32,
     /// Bar only.
     #[setting(label = "Length", range(10, 4000), unit = "px", simple, keyframe, random(40, 600))]

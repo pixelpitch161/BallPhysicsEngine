@@ -92,7 +92,7 @@ impl Default for BatchSpec {
             keep: 10,
             first_seed: 1,
             prescreen: 4,
-            amount: 0.5,
+            amount: bpe_kit::random::START_AMOUNT,
             quality: Quality::Good,
             rejected: Rejected::Move,
         }
