@@ -30,7 +30,14 @@ pub struct ClassicLook {
 
 impl Default for ClassicLook {
     fn default() -> Self {
-        Self { color: Color::WHITE, glow: 0.12, flash: 0.4, gradient: Vec::new(), flash_size: 26.0, flash_seconds: 0.25 }
+        Self {
+            color: Color::WHITE,
+            glow: 0.12,
+            flash: 0.4,
+            gradient: Vec::new(),
+            flash_size: 26.0,
+            flash_seconds: 0.25,
+        }
     }
 }
 

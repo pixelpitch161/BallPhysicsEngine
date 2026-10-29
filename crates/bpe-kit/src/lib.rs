@@ -113,7 +113,8 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let motion = scene.add_module(reg, "motion.basic", "Default motion").expect("kit kinds are registered");
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
     let sound = scene.add_module(reg, "sound.notes", "Default sound").expect("kit kinds are registered");
-    for (slot, m) in [(SlotId::Look, look), (SlotId::Motion, motion), (SlotId::Bounce, bounce), (SlotId::Sound, sound)] {
+    for (slot, m) in [(SlotId::Look, look), (SlotId::Motion, motion), (SlotId::Bounce, bounce), (SlotId::Sound, sound)]
+    {
         scene.link(reg, root, slot, m).expect("the root has every slot");
     }
     scene.add_thing(reg, "arena", root).expect("kit kinds are registered");

@@ -17,7 +17,7 @@ use bpe_runtime::{Event, Log};
 
 pub use chords::{Chords, pitch_classes};
 pub use instruments::{Instrument, NoteCache};
-pub use level::{limit_peaks, mix64, mix_notes, normalize_loudness};
+pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 

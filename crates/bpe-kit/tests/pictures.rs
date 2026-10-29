@@ -32,7 +32,8 @@ fn every_stage_scene_draws_a_picture() {
         if std::env::var_os("BPE_SAVE_RENDERS").is_some() {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");
             std::fs::create_dir_all(&dir).unwrap();
-            let file = std::fs::File::create(dir.join(format!("{}.png", name.to_lowercase().replace(' ', "-")))).unwrap();
+            let file =
+                std::fs::File::create(dir.join(format!("{}.png", name.to_lowercase().replace(' ', "-")))).unwrap();
             let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), W, H);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);

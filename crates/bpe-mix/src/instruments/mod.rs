@@ -5,8 +5,8 @@ pub mod dsp;
 pub mod synth;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use bpe_core::Choice;
 
@@ -123,7 +123,14 @@ pub struct NoteCache {
 
 impl NoteCache {
     /// One note, rendered now if it isn't cached.
-    pub fn get(&mut self, instrument: Instrument, key: u8, velocity: f32, decay: f32, brightness: f32) -> Arc<Vec<f32>> {
+    pub fn get(
+        &mut self,
+        instrument: Instrument,
+        key: u8,
+        velocity: f32,
+        decay: f32,
+        brightness: f32,
+    ) -> Arc<Vec<f32>> {
         let s = slot(instrument, key, velocity, decay, brightness);
         self.notes.entry(s).or_insert_with(|| Arc::new(render_slot(s))).clone()
     }

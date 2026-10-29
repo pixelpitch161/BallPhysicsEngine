@@ -55,7 +55,9 @@ impl ThingSim for ArenaSim {
         let rotation = thing.transform.rotation;
         let thickness = settings.thickness;
         let base = match settings.shape {
-            ArenaShape::Circle => Outline::Ring { center, radius: settings.radius, sides: 0, angle: rotation, thickness },
+            ArenaShape::Circle => {
+                Outline::Ring { center, radius: settings.radius, sides: 0, angle: rotation, thickness }
+            }
             ArenaShape::Polygon => Outline::Ring {
                 center,
                 radius: settings.radius,

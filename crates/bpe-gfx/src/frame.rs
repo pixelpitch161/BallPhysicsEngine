@@ -229,7 +229,8 @@ mod tests {
     #[test]
     fn outlines_and_blending_follow_the_old_renderer() {
         use bpe_runtime::Outline;
-        let ring = Outline::Ring { center: glam::Vec2::new(1.0, 2.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 4.0 };
+        let ring =
+            Outline::Ring { center: glam::Vec2::new(1.0, 2.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 4.0 };
         let s = ShapeInstance::outline(&ring, [1.0, 0.5, 0.0, 1.0], 0.1);
         assert_eq!(s.a, [1.0, 2.0, 0.3, 0.0]);
         assert_eq!(s.b, [50.0, 6.0, 0.0, 0.0]);

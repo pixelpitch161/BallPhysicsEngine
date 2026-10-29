@@ -273,7 +273,8 @@ mod tests {
 
     #[test]
     fn inside_and_point_agree_on_the_outline() {
-        let outline = Outline::Ring { center: Vec2::new(10.0, 0.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 2.0 };
+        let outline =
+            Outline::Ring { center: Vec2::new(10.0, 0.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 2.0 };
         assert!(outline.inside(Vec2::new(10.0, 0.0)));
         assert!(!outline.inside(Vec2::new(100.0, 0.0)));
         let rim = outline.point(1.0);

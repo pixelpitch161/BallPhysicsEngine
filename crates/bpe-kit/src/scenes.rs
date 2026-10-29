@@ -246,9 +246,17 @@ mod tests {
     fn the_shipped_scene_files_match_the_code() {
         let reg = registry();
         for (name, scene) in scenes::stage2(&reg) {
-            let file = format!("{}/../../scenes/next/{}.ron", env!("CARGO_MANIFEST_DIR"), name.to_lowercase().replace(' ', "-"));
+            let file = format!(
+                "{}/../../scenes/next/{}.ron",
+                env!("CARGO_MANIFEST_DIR"),
+                name.to_lowercase().replace(' ', "-")
+            );
             let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e} (run with BPE_BLESS=1)"));
-            assert_eq!(bpe_core::load(&text, &reg).unwrap(), scene, "{name}: scenes/next is stale, run with BPE_BLESS=1");
+            assert_eq!(
+                bpe_core::load(&text, &reg).unwrap(),
+                scene,
+                "{name}: scenes/next is stale, run with BPE_BLESS=1"
+            );
         }
     }
 }

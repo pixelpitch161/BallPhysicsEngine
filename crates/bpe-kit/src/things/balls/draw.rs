@@ -125,7 +125,8 @@ mod tests {
             p.set("rows", bpe_core::Value::Int(3));
         });
         let mut scene = scene;
-        let m = bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
+        let m =
+            bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
         scene.library.modules.get_mut(&m).unwrap().params.set(
             "gradient",
             bpe_core::Value::Colors(vec![bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]),
