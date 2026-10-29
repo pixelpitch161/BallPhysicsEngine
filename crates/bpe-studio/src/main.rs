@@ -9,6 +9,7 @@ mod export_window;
 mod history;
 mod inspector;
 mod preview;
+mod selection;
 mod settings;
 mod sound_job;
 mod theme;

@@ -199,7 +199,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if active.is_some() {
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
-    draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selected));
+    draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
     draw_hint(ui, rect, "Drag balls to move them · drag the arrow tip to aim · drag the arena's edge to resize");
     studio.panels.preview = Some(preview);
     outcome

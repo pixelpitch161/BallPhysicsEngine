@@ -5,6 +5,7 @@ use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::preview::Preview;
+use crate::selection::Selection;
 use crate::sound_job::SoundJob;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, theme, transport, tree};
@@ -64,7 +65,7 @@ pub struct Studio {
     pub playing: bool,
     pub looping: bool,
     pub muted: bool,
-    pub selected: Option<ThingId>,
+    pub selection: Selection,
     pub history: History,
     pub status: String,
     pub confirm: Option<Pending>,
@@ -117,7 +118,7 @@ impl Studio {
             playing: false,
             looping: true,
             muted: false,
-            selected: None,
+            selection: Selection::default(),
             history: History::default(),
             status: "Ready.".into(),
             confirm: None,
@@ -185,7 +186,7 @@ impl Studio {
         self.scene = scene;
         self.path = path;
         self.history = History::default();
-        self.selected = None;
+        self.selection.clear();
         self.time = 0.0;
         self.set_playing(false);
         self.recorded = true;
@@ -560,9 +561,12 @@ impl eframe::App for Studio {
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selected)
+                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selection)
             })
             .inner;
+        if let Some(message) = tree.message {
+            self.status = message;
+        }
         if tree.removed.is_some() {
             // Deleting is always its own undo step.
             self.recorded = true;
@@ -583,7 +587,7 @@ impl eframe::App for Studio {
                     &mut self.scene,
                     &self.kit,
                     &self.resolved,
-                    self.selected,
+                    self.selection.primary,
                 )
             });
         let outcome = egui::CentralPanel::default()
@@ -598,8 +602,8 @@ impl eframe::App for Studio {
             self.set_playing(false);
             self.seek(0.0);
         }
-        if outcome.selected.is_some() {
-            self.selected = outcome.selected;
+        if let Some(id) = outcome.selected {
+            self.selection.set(id);
         }
         if outcome.catching_up {
             ctx.request_repaint();
