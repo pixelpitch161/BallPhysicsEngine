@@ -6,6 +6,9 @@
 
 pub mod effects;
 mod frame;
+pub mod particles;
+#[cfg(test)]
+mod pictures;
 
 pub use frame::{
     BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, HitMark, LookInstance, ModuleDraw,
@@ -68,16 +71,19 @@ pub struct Renderer {
     background: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
+    look: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
     /// What is where, for effects on things (see object.wgsl).
     shape_object: wgpu::RenderPipeline,
     ball_object: wgpu::RenderPipeline,
+    look_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     shape_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
+    look_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     targets: Targets,
 }
@@ -87,7 +93,14 @@ impl Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
             source: wgpu::ShaderSource::Wgsl(
-                [include_str!("shaders/scene.wgsl"), include_str!("shaders/object.wgsl")].concat().into(),
+                [
+                    include_str!("shaders/scene.wgsl"),
+                    include_str!("shaders/object.wgsl"),
+                    include_str!("shaders/ball_look.wgsl"),
+                    include_str!("shaders/styled.wgsl"),
+                ]
+                .concat()
+                .into(),
             ),
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -212,6 +225,10 @@ impl Renderer {
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
         let ball_attributes =
             wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
+        let look_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
+        ];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,
@@ -253,6 +270,17 @@ impl Renderer {
             HDR_FORMAT,
             Some(premultiplied),
         );
+        let look = make(
+            "styled balls",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_look",
+            "fs_look",
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
         let flash = make(
             "flashes",
             &scene_pipeline_layout,
@@ -282,6 +310,17 @@ impl Renderer {
             "vs_ball",
             "fs_ball_object",
             &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
+        );
+        let look_object = make(
+            "styled ball objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_look",
+            "fs_look_object",
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -330,15 +369,18 @@ impl Renderer {
             background,
             shape,
             ball,
+            look,
             flash,
             shape_object,
             ball_object,
+            look_object,
             chain: effects::chain::Chain::new(device),
             downsample,
             upsample,
             composite,
             shape_buffer: GrowableBuffer::new("shape instances"),
             ball_buffer: GrowableBuffer::new("ball instances"),
+            look_buffer: GrowableBuffer::new("styled ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             targets,
         }
@@ -378,6 +420,7 @@ impl Renderer {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
+        self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
@@ -402,6 +445,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
                 pass.draw(0..4, 0..frame.balls.len() as u32);
             }
+            if !frame.looks.is_empty() {
+                pass.set_pipeline(&self.look);
+                pass.set_vertex_buffer(0, self.look_buffer.slice());
+                pass.draw(0..4, 0..frame.looks.len() as u32);
+            }
         }
         if wants_objects {
             let view = &self.targets.object.as_ref().expect("made above").1;
@@ -416,6 +464,11 @@ impl Renderer {
                 pass.set_pipeline(&self.ball_object);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
                 pass.draw(0..4, 0..frame.balls.len() as u32);
+            }
+            if !frame.looks.is_empty() {
+                pass.set_pipeline(&self.look_object);
+                pass.set_vertex_buffer(0, self.look_buffer.slice());
+                pass.draw(0..4, 0..frame.looks.len() as u32);
             }
         }
         let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v);
