@@ -7,6 +7,7 @@
 pub mod flow;
 mod frame;
 
+use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BallInstance, DrawCx, Draws, FlashInstance, Flock, Frame, GpuLiquid, LiquidLayer, Points, ShapeInstance,
@@ -45,7 +46,15 @@ impl Globals {
 struct Targets {
     width: u32,
     height: u32,
+    hdr_texture: wgpu::Texture,
     hdr: wgpu::TextureView,
+    /// A copy of the HDR image from before the liquids, which they bend and tint.
+    behind: wgpu::Texture,
+    behind_view: wgpu::TextureView,
+    /// Half-size liquid thickness pictures: the splat target and the blur's scratch.
+    thickness: wgpu::TextureView,
+    blur: wgpu::TextureView,
+    thickness_size: (u32, u32),
     bloom: Vec<wgpu::TextureView>,
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
@@ -72,6 +81,7 @@ pub struct Renderer {
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     targets: Targets,
+    surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
     flow: Option<FlowLayers>,
 }
@@ -307,6 +317,7 @@ impl Renderer {
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             targets,
+            surface: flow::surface::Surface::new(device),
             flow: None,
         }
     }
@@ -356,13 +367,13 @@ impl Renderer {
         self.flow.as_ref()
     }
 
-    /// Draws one frame into the output texture. GPU liquids and swarms are left to
-    /// [`Renderer::render_with_flow`]; a CPU liquid's points are drawn here as plain dots.
+    /// Draws one frame into the output texture. GPU liquids and swarms are stepped by
+    /// [`Renderer::render_with_flow`]; here they are only drawn. Liquids are shaded between
+    /// the walls and the balls, over a copy of what is behind them.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
-        let balls = with_liquid_dots(frame);
-        self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&balls));
+        self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
@@ -380,10 +391,31 @@ impl Renderer {
             if let Some(flow) = &self.flow {
                 flow.draw_swarms(&mut pass, &self.globals_group, frame);
             }
-            if !balls.is_empty() {
+        }
+        if !frame.liquids.is_empty() {
+            encoder.copy_texture_to_texture(
+                self.targets.hdr_texture.as_image_copy(),
+                self.targets.behind.as_image_copy(),
+                wgpu::Extent3d { width: self.targets.width, height: self.targets.height, depth_or_array_layers: 1 },
+            );
+            for (slot, layer) in frame.liquids.iter().enumerate() {
+                let points = match &layer.points {
+                    Points::Cpu(points) => Some(flow::surface::PointsBinding::Cpu(points)),
+                    Points::Gpu(_) => self.flow.as_ref().and_then(|f| f.gpu_points(layer.thing)),
+                };
+                if let Some(points) = points {
+                    let world = (frame.width, frame.height);
+                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, layer, points);
+                }
+            }
+        }
+        {
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            if !frame.balls.is_empty() {
                 pass.set_pipeline(&self.ball);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
-                pass.draw(0..4, 0..balls.len() as u32);
+                pass.draw(0..4, 0..frame.balls.len() as u32);
             }
             if !frame.flashes.is_empty() {
                 pass.set_pipeline(&self.flash);
@@ -491,7 +523,22 @@ impl Targets {
             })
         };
         let render_and_sample = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let hdr = texture("hdr", width, height, HDR_FORMAT, render_and_sample).create_view(&Default::default());
+        let hdr_texture = texture("hdr", width, height, HDR_FORMAT, render_and_sample | wgpu::TextureUsages::COPY_SRC);
+        let hdr = hdr_texture.create_view(&Default::default());
+        let behind = texture(
+            "behind",
+            width,
+            height,
+            HDR_FORMAT,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        let behind_view = behind.create_view(&Default::default());
+        let thickness_size = ((width / 2).max(1), (height / 2).max(1));
+        let thickness =
+            texture("liquid thickness", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+                .create_view(&Default::default());
+        let blur = texture("liquid blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+            .create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -523,27 +570,24 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
             ],
         });
-        Self { width, height, hdr, bloom, output, output_view, down_sources, up_sources, composite }
-    }
-}
-
-/// The frame's balls, followed by a dot for every point of its CPU liquids.
-fn with_liquid_dots(frame: &Frame) -> std::borrow::Cow<'_, [BallInstance]> {
-    if !frame.liquids.iter().any(|l| matches!(l.points, Points::Cpu(_))) {
-        return std::borrow::Cow::Borrowed(&frame.balls);
-    }
-    let mut balls = frame.balls.clone();
-    for liquid in &frame.liquids {
-        if let Points::Cpu(points) = &liquid.points {
-            balls.extend(points.iter().map(|&center| BallInstance {
-                center,
-                radius: liquid.radius,
-                glow: liquid.glow,
-                color: liquid.color,
-            }));
+        Self {
+            width,
+            height,
+            hdr_texture,
+            hdr,
+            behind,
+            behind_view,
+            thickness,
+            blur,
+            thickness_size,
+            bloom,
+            output,
+            output_view,
+            down_sources,
+            up_sources,
+            composite,
         }
     }
-    std::borrow::Cow::Owned(balls)
 }
 
 fn begin_pass<'a>(
@@ -712,35 +756,111 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
 }
 
 #[cfg(test)]
-mod liquid_dot_tests {
+mod surface_tests {
     use super::*;
     use bpe_core::ThingId;
+    use bpe_runtime::Outline;
 
-    #[test]
-    fn cpu_liquid_points_are_drawn_as_dots() {
-        let Ok((device, queue)) = headless_device() else {
-            eprintln!("no GPU adapter available, skipping");
-            return;
-        };
-        let mut renderer = Renderer::new(&device, 90, 160);
-        let mut frame = Frame::default();
-        renderer.render(&device, &queue, &frame);
-        let dark = renderer.read_output(&device, &queue).unwrap();
-        frame.liquids.push(LiquidLayer {
+    const W: u32 = 270;
+    const H: u32 = 480;
+
+    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+        match headless_device() {
+            Ok(pair) => Some(pair),
+            Err(_) => {
+                eprintln!("no GPU adapter available, skipping");
+                None
+            }
+        }
+    }
+
+    /// A 200×200 block of particles around `center`, as a liquid thing's draw part sends them.
+    fn block(center: [f32; 2], clarity: f32, refraction: f32) -> LiquidLayer {
+        let mut points = Vec::new();
+        let spacing = 200.0 / 22.0;
+        for row in 0..22 {
+            for col in 0..22 {
+                let shift = if row % 2 == 1 { spacing * 0.5 } else { 0.0 };
+                points.push([
+                    center[0] - 100.0 + spacing * 0.5 + col as f32 * spacing + shift,
+                    center[1] - 100.0 + spacing * 0.5 + row as f32 * spacing * 0.866,
+                ]);
+            }
+        }
+        LiquidLayer {
             thing: ThingId(1),
-            points: Points::Cpu(vec![[0.0, 0.0], [100.0, 100.0]]),
-            radius: 80.0,
-            color: [0.2, 0.5, 1.0, 1.0],
-            clarity: 0.45,
-            refraction: 0.5,
+            points: Points::Cpu(points),
+            radius: spacing * 0.5,
+            color: [0.1, 0.3, 1.0, 1.0],
+            clarity,
+            refraction,
             highlight: 0.8,
             smoothing: 6.0,
             glow: 0.0,
+        }
+    }
+
+    fn pixel(pixels: &[u8], x: f32, y: f32) -> [u8; 4] {
+        let (px, py) = (((x + 540.0) / 4.0) as usize, ((y + 960.0) / 4.0) as usize);
+        let i = (py * W as usize + px) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+
+    fn render(renderer: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) -> Vec<u8> {
+        renderer.render(device, queue, frame);
+        renderer.read_output(device, queue).unwrap()
+    }
+
+    #[test]
+    fn cpu_points_draw_a_coloured_surface() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.5));
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let blue = pixels.chunks(4).filter(|p| p[2] > 100 && p[2] as i32 > p[0] as i32 + 40).count();
+        assert!(blue > 1200, "{blue} blue pixels for a 50×50 block");
+        let far = pixels.chunks(4).enumerate().filter(|(i, p)| {
+            let (x, y) = ((i % W as usize) as f32 * 4.0 - 540.0, (i / W as usize) as f32 * 4.0 - 960.0);
+            (x.abs() > 160.0 || (y - 300.0).abs() > 160.0) && (p[0] > 40 || p[1] > 40 || p[2] > 40)
         });
-        renderer.render(&device, &queue, &frame);
-        let lit = renderer.read_output(&device, &queue).unwrap();
-        let bright = |p: &[u8]| p.chunks(4).filter(|c| c[2] > 100).count();
-        assert_eq!(bright(&dark), 0);
-        assert!(bright(&lit) > 100, "{}", bright(&lit));
+        assert_eq!(far.count(), 0, "nothing lights up far from the block");
+        // The body is one smooth sheet: the centre pixel and its neighbour agree.
+        let a = pixel(&pixels, 0.0, 300.0);
+        let b = pixel(&pixels, 8.0, 300.0);
+        assert!(a[2] > 120 && (a[2] as i32 - b[2] as i32).abs() < 20, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn the_surface_sits_behind_the_balls_and_in_front_of_the_wall() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let ring =
+            Outline::Ring { center: glam::Vec2::new(0.0, 300.0), radius: 60.0, sides: 0, angle: 0.0, thickness: 12.0 };
+        let mut frame = Frame::default();
+        frame.shapes.push(ShapeInstance::outline(&ring, [1.0, 1.0, 1.0, 1.0], 0.0));
+        let plain = render(&mut renderer, &device, &queue, &frame);
+        let wall_before = pixel(&plain, 60.0, 300.0);
+        assert!(wall_before[0] > 150, "{wall_before:?}: the wall is white");
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.0));
+        frame.balls.push(BallInstance { center: [0.0, 300.0], radius: 30.0, glow: 0.0, color: [1.0, 1.0, 1.0, 1.0] });
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let ball = pixel(&pixels, 0.0, 300.0);
+        assert!(ball[0] > 180 && ball[1] > 180, "{ball:?}: the ball stays white over the liquid");
+        let wall = pixel(&pixels, 60.0, 300.0);
+        assert!(wall[0] < wall_before[0] - 40 && wall[2] > wall[0], "{wall:?}: the wall under the liquid is tinted");
+    }
+
+    #[test]
+    fn clarity_one_is_see_through() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.0));
+        let opaque = pixel(&render(&mut renderer, &device, &queue, &frame), 0.0, 300.0);
+        frame.liquids[0].clarity = 1.0;
+        let clear = pixel(&render(&mut renderer, &device, &queue, &frame), 0.0, 300.0);
+        assert!(opaque[2] > 150, "{opaque:?}");
+        assert!(clear[2] < opaque[2] / 2, "{clear:?} over black shows mostly the black behind");
     }
 }

@@ -221,6 +221,8 @@ pub struct LiquidGpu {
     count: u32,
     cells: u32,
     blocks: u32,
+    spacing: f32,
+    pour_steps: f32,
     /// Position and velocity of each particle; the only state a checkpoint needs.
     state: wgpu::Buffer,
     /// Holds the params, the state and the working buffers (which live only in the group).
@@ -300,7 +302,7 @@ impl LiquidGpu {
             layout: &pipelines.layout,
             entries: &entries,
         });
-        Self { desc: desc.clone(), count, cells, blocks, state, group }
+        Self { desc: desc.clone(), count, cells, blocks, spacing, pour_steps, state, group }
     }
 
     /// What the liquid was made from; a frame with a different one remakes it.
@@ -309,9 +311,23 @@ impl LiquidGpu {
     }
 
     /// Particles that fit; less than asked for when the region could not hold them.
-    #[cfg(test)]
     pub fn count(&self) -> u32 {
         self.count
+    }
+
+    /// Distance between resting particles, in world pixels.
+    pub fn spacing(&self) -> f32 {
+        self.spacing
+    }
+
+    /// Layer steps the pour takes; 0 when the liquid starts in place.
+    pub fn pour_steps(&self) -> f32 {
+        self.pour_steps
+    }
+
+    /// Position and velocity of each particle, 16 bytes each, as the surface reads them.
+    pub fn positions_buffer(&self) -> &wgpu::Buffer {
+        &self.state
     }
 
     /// Records one step ([`SUBSTEPS`] substeps), reading the step inputs at `offset`.

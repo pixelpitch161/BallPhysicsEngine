@@ -9,6 +9,7 @@
 mod inputs;
 mod liquid;
 mod sdf;
+pub(crate) mod surface;
 mod swarm;
 mod util;
 
@@ -231,6 +232,21 @@ impl FlowLayers {
     pub(crate) fn liquid(&self, thing: ThingId) -> Option<&LiquidGpu> {
         match self.layers.get(&thing)? {
             Layer::Liquid(l) => Some(l),
+            Layer::Swarm(_) => None,
+        }
+    }
+
+    /// Where a GPU liquid's particles are, for the surface pass; `None` when the frame's
+    /// layer is not (yet) running.
+    pub(crate) fn gpu_points(&self, thing: ThingId) -> Option<surface::PointsBinding<'_>> {
+        match self.layers.get(&thing)? {
+            Layer::Liquid(l) => Some(surface::PointsBinding::Gpu {
+                buffer: l.positions_buffer(),
+                count: l.count(),
+                spacing: l.spacing(),
+                pour_steps: l.pour_steps(),
+                step: self.step(),
+            }),
             Layer::Swarm(_) => None,
         }
     }

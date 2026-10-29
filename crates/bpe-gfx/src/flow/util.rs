@@ -75,3 +75,17 @@ pub const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
 pub fn groups(count: u32, size: u32) -> u32 {
     count.div_ceil(size).max(1)
 }
+
+/// A float texture sampled with a filtering sampler.
+pub fn float_texture_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
