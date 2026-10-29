@@ -388,6 +388,10 @@ pub(crate) fn collide_pairs(
     hits.sort_by_key(|h| (balls[h.a].thing, balls[h.a].item, balls[h.b].thing, balls[h.b].item));
     for hit in &hits {
         let (a, b) = (&balls[hit.a], &balls[hit.b]);
+        // A ball that popped on an earlier hit this substep is gone: nothing more hits it.
+        if [a, b].iter().any(|side| !bodies[&side.thing].alive[side.item as usize]) {
+            continue;
+        }
         for side in [a, b] {
             bodies.get_mut(&side.thing).expect("gathered").hits[side.item as usize] += 1;
         }

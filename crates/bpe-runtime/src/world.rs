@@ -241,6 +241,7 @@ impl World {
             {
                 sim.forces(state.as_ref(), bodies, gravity, dt);
             }
+            bodies.start.copy_from_slice(&bodies.position);
             for i in 0..bodies.len() {
                 if bodies.alive[i] {
                     let v = bodies.velocity[i];
@@ -308,7 +309,7 @@ impl World {
                     if (bodies.position[i] - solids.pose.position).length_squared() > near * near {
                         continue;
                     }
-                    let previous = bodies.position[i] - bodies.velocity[i] * dt;
+                    let previous = bodies.start[i];
                     for (part, (solid, (center, bound))) in solids.parts.iter().zip(&solids.bounds).enumerate() {
                         let near = bound + radius + SAFE_MOVE;
                         if (bodies.position[i] - *center).length_squared() > near * near {
@@ -657,6 +658,31 @@ mod tests {
         assert_eq!(w.order, vec![ThingId::ROOT, WALL, late, DOTS]);
         w.step(&sims, &mut Log::default());
         assert_eq!(w.poses[&late].position, Vec2::new(300.0, 0.0));
+    }
+
+    #[test]
+    fn a_wall_bounce_does_not_fake_a_path_through_a_peg_outside() {
+        // A peg sits just outside the ring's top. A dot shot up at the top bounces off the ring in
+        // the same substep as its sweep against the peg: the sweep must follow the path the dot
+        // took (up to the ring), not one made up from its bounced-back speed, which would cross
+        // the peg and throw the dot out of the ring.
+        let (mut scene, _, sims) = dots_and_peg();
+        let reg = reg();
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let inner = 100.0 - 1.0 - 5.0;
+        scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, -(inner + 5.0 + 10.0 + 2.0));
+        scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -(inner - 1.0));
+        scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, -600.0]));
+        let resolved = resolve(&scene, &reg);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        for _ in 0..30 {
+            w.step(&sims, &mut log);
+            let p = w.bodies[&DOTS].position[0];
+            assert!(p.length() <= inner + 1e-3, "the dot stays inside the ring: {p:?}");
+        }
+        assert!(log.events().iter().all(|e| e.b.is_none_or(|b| b.thing != PEG)), "{:?}", log.events());
+        assert!(log.events().iter().any(|e| e.b.is_some_and(|b| b.thing == WALL)), "it did bounce off the ring");
     }
 
     #[test]

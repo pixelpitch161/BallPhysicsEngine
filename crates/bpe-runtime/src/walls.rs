@@ -53,6 +53,8 @@ pub struct Wall {
     pub spin: f32,
     /// Fraction of its size the wall grows per second; negative while shrinking.
     pub growth: f32,
+    /// How fast the whole wall is moving, in pixels per second, when it rides something.
+    pub velocity: Vec2,
 }
 
 /// Where a ball met a wall.
@@ -165,10 +167,10 @@ pub fn wall_velocity(point: Vec2, center: Vec2, spin: f32, growth: f32) -> Vec2 
 }
 
 /// The contact at `point` against a wall whose surface normal (towards the ball) is `normal`,
-/// when the ball is moving into it.
+/// when the ball is moving into it, relative to the wall's own motion.
 fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wall) -> Option<Contact> {
     let point = position + outward * radius;
-    let wall_velocity = wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
+    let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
     let speed = (velocity - wall_velocity).dot(outward);
     (speed > 0.0).then_some(Contact { point, normal: -outward, speed, wall_velocity })
 }
@@ -289,7 +291,22 @@ mod tests {
             outline: Outline::Ring { center: Vec2::ZERO, radius, sides: 0, angle: 0.0, thickness: 2.0 },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         }
+    }
+
+    #[test]
+    fn a_wall_that_rides_along_pushes_a_resting_ball() {
+        // The ring moves right at 50 px/s; a still ball at its left edge is run into by it.
+        let wall = Wall { velocity: Vec2::new(50.0, 0.0), ..ring(100.0) };
+        let mut p = Vec2::new(-95.0, 0.0);
+        let c = keep_inside(&mut p, Vec2::ZERO, 5.0, &wall).expect("the wall runs into the ball");
+        assert!((c.speed - 50.0).abs() < 1e-3, "{c:?}");
+        assert_eq!(c.wall_velocity, Vec2::new(50.0, 0.0));
+        assert!((c.normal - Vec2::new(1.0, 0.0)).length() < 1e-3);
+        // A still ring leaves a still ball alone.
+        let mut p = Vec2::new(-95.0, 0.0);
+        assert!(keep_inside(&mut p, Vec2::ZERO, 5.0, &ring(100.0)).is_none());
     }
 
     #[test]
@@ -325,7 +342,7 @@ mod tests {
                 thickness: 2.0,
             },
         ] {
-            let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+            let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
             let mut p = Vec2::new(900.0, 700.0);
             keep_inside(&mut p, Vec2::ZERO, 5.0, &wall);
             assert!(p.is_finite() && outline.inside(p), "{outline:?} left the ball at {p}");
@@ -359,6 +376,7 @@ mod tests {
             outline: Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 100.0), angle: 0.0, thickness: 2.0 },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         };
         let mut p = Vec2::new(99.0, 99.0);
         let c = keep_inside(&mut p, Vec2::new(10.0, 40.0), 5.0, &wall).unwrap();
@@ -388,7 +406,7 @@ mod tests {
             angle: 0.0,
             thickness: 2.0,
         };
-        let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+        let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
         // In the corner, where a sharp box would allow (94, 94), the round one does not.
         let mut p = Vec2::new(94.0, 94.0);
         let c = keep_inside(&mut p, Vec2::new(10.0, 10.0), 5.0, &wall).unwrap();
@@ -426,6 +444,7 @@ mod tests {
             },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         };
         let mut wide = Vec2::new(5.0, 99.0);
         let c = keep_inside(&mut wide, Vec2::new(0.0, 10.0), 20.0, &capsule).unwrap();
@@ -442,6 +461,7 @@ mod tests {
             },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         };
         let mut t = Vec2::new(-94.0, 94.0);
         keep_inside(&mut t, Vec2::new(-10.0, 10.0), 5.0, &turned).unwrap();
@@ -455,7 +475,7 @@ mod tests {
         assert!(p.length() < 1e-3);
         // A box too low for the ball pins it on that axis only; it still bounces off the ends.
         let outline = Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 5.0), angle: 0.0, thickness: 2.0 };
-        let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+        let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
         let mut p = Vec2::new(99.0, 3.0);
         let c = keep_inside(&mut p, Vec2::new(50.0, 10.0), 20.0, &wall).expect("the end wall is hit");
         assert!(p.y.abs() < 1e-3 && (p.x - 79.0).abs() < 1e-3, "{p:?}");

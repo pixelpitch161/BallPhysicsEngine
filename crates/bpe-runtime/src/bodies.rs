@@ -8,8 +8,11 @@ pub struct Bodies {
     pub position: Vec<Vec2>,
     pub velocity: Vec<Vec2>,
     pub radius: Vec<f32>,
-    /// Where the ball was at the start of the step, for sweeps and trails.
+    /// Where the ball was at the start of the step, for trails.
     pub previous: Vec<Vec2>,
+    /// Where the ball was before the current substep moved it, so a hit on a solid can sweep the
+    /// path it really took, whatever a wall did to it since.
+    pub start: Vec<Vec2>,
     pub alive: Vec<bool>,
     /// How many times the ball has hit something.
     pub hits: Vec<u32>,
@@ -23,6 +26,7 @@ impl Bodies {
         self.velocity.push(velocity);
         self.radius.push(radius);
         self.previous.push(position);
+        self.start.push(position);
         self.alive.push(true);
         self.hits.push(0);
         row
@@ -42,7 +46,7 @@ impl Bodies {
 
     /// Bytes the table takes, for playback budgets.
     pub fn memory(&self) -> usize {
-        self.position.capacity() * std::mem::size_of::<Vec2>() * 3
+        self.position.capacity() * std::mem::size_of::<Vec2>() * 4
             + self.radius.capacity() * std::mem::size_of::<f32>()
             + self.alive.capacity()
             + self.hits.capacity() * std::mem::size_of::<u32>()

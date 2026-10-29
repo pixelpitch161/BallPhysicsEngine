@@ -4,6 +4,7 @@
 use crate::{
     Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId, Value,
 };
+use glam::Vec2;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
@@ -298,8 +299,37 @@ impl Scene {
         let parent = self.things[&first].parent.unwrap_or(ThingId::ROOT);
         let folder = self.add_thing(reg, "folder", parent)?;
         self.move_before(folder, first)?;
+        // Things that rode the old parent keep riding: the folder rides it in their place (on the
+        // one ball they all rode, if they agreed on one) and they ride the folder as before.
+        let riders: Vec<Attach> = moving
+            .iter()
+            .filter(|id| self.things[id].parent == Some(parent))
+            .map(|id| self.things[id].attach)
+            .filter(|a| matches!(a, Attach::Ride { .. }))
+            .collect();
+        if let Some(Attach::Ride { item, .. }) = riders.first().copied()
+            && parent != ThingId::ROOT
+        {
+            let shared = riders.iter().all(|a| matches!(a, Attach::Ride { item: i, .. } if *i == item));
+            let item = if shared { item } else { None };
+            self.set_attach(folder, Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item })?;
+            for id in &moving {
+                if let Attach::Ride { item: Some(_), .. } = self.things[id].attach
+                    && shared
+                {
+                    let t = self.things.get_mut(id).expect("gathered above");
+                    if let Attach::Ride { item, .. } = &mut t.attach {
+                        *item = None;
+                    }
+                }
+            }
+        }
         for id in moving {
-            self.set_parent(id, folder, Attach::Group)?;
+            let attach = match self.things[&id].attach {
+                ride @ Attach::Ride { .. } if self.things[&id].parent == Some(parent) => ride,
+                _ => Attach::Group,
+            };
+            self.set_parent(id, folder, attach)?;
         }
         Ok(folder)
     }
@@ -454,6 +484,35 @@ mod tests {
         assert_eq!((s.things[&b].parent, s.things[&d].parent), (Some(f), Some(c)));
         assert!(matches!(s.make_folder(&r, &[ThingId::ROOT]), Err(EditError::Root)));
         assert!(matches!(s.make_folder(&r, &[]), Err(EditError::Root)));
+    }
+
+    #[test]
+    fn make_folder_keeps_riders_riding_through_the_folder() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let arena = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let c = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let ride = |offset: f32, item| Attach::Ride { offset: Vec2::new(offset, 0.0), turn_with_parent: true, item };
+        s.set_parent(b, arena, ride(10.0, Some(3))).unwrap();
+        s.set_parent(c, arena, ride(20.0, Some(3))).unwrap();
+        let f = s.make_folder(&r, &[b, c]).unwrap();
+        // Both rode ball 3 of the arena: the folder rides that ball and they ride the folder.
+        assert_eq!(s.things[&f].parent, Some(arena));
+        assert_eq!(s.things[&f].attach, Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item: Some(3) });
+        assert_eq!((s.things[&b].parent, s.things[&b].attach), (Some(f), ride(10.0, None)));
+        assert_eq!((s.things[&c].parent, s.things[&c].attach), (Some(f), ride(20.0, None)));
+        // Riders of different balls keep their own items; the folder rides the parent's place.
+        let d = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let e = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.set_parent(d, arena, ride(1.0, Some(1))).unwrap();
+        s.set_parent(e, arena, ride(2.0, Some(2))).unwrap();
+        let g = s.make_folder(&r, &[d, e]).unwrap();
+        assert_eq!(s.things[&g].attach, Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item: None });
+        assert_eq!((s.things[&d].attach, s.things[&e].attach), (ride(1.0, Some(1)), ride(2.0, Some(2))));
+        // Grouped things stay grouped, and a folder at the top level never rides.
+        let h = s.make_folder(&r, &[arena]).unwrap();
+        assert_eq!((s.things[&h].attach, s.things[&arena].attach), (Attach::Group, Attach::Group));
     }
 
     #[test]

@@ -1201,3 +1201,12 @@ fn dragging_a_rider_moves_its_offset_and_obstacles_are_grabbable() {
 - `cargo test --workspace` passes with the stage 2 golden lines unchanged and five new ones; clippy and fmt are clean.
 - In `ball-studio-next`: an Obstacle can be added (peg, bar, peg grid, polygon, ring), spun and moved on a path; things can be grouped into folders, collapsed, reordered and re-parented by dragging, and set to ride on a parent (Alt-drop, the Attach row or the context menu); balls can hit each other and pop; a Target picker fills every Target setting; a shared module's settings edited on one thing show orange dots with Reset/Push, "Make unique" copies it; the Library window lists, renames, duplicates, deletes and drags modules onto things; Ctrl/Shift-click selects several things and edits apply to all of them.
 - `/mnt/project-files/ballphysics/modular-revamp/stage3/` holds the Windows exe, scenes, screenshots, an mp4 and `REPORT.md`; the PR is merged; the memory file is written.
+
+## Deviations noted at review time
+
+- `Wall` gained a `velocity` field after all (a riding arena's travel speed must reach `contact`, or a ball pushed by its trailing wall never registers); the only literals were in this repo and were updated.
+- The sole-user write rule has one more clause: a thing that already has overrides keeps writing overrides even when it is the module's only user.
+- `EditError::WouldLoop` is worded "A thing can't go inside itself or its own children." in the tree's status line.
+- The Library disables Delete for a module in use (the users are named in the details pane) rather than refusing with a message.
+- Main moved on (stage 5) before this stage merged, so the branch carries a merge commit instead of a rebase; the stage 2 and stage 5 golden lines are byte-identical to main's.
+- The solid sweep now starts where the substep began, which re-blessed three stage 3 golden lines once (Peg board, Spinning bars, Pitch climb).

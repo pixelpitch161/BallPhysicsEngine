@@ -35,6 +35,13 @@ impl ModuleMix for NoteSoundMix {
             let count = hits.entry(ball).or_insert(0);
             *count += 1;
             let count = *count;
+            // Two balls of this thing hitting each other: the other one has hit too.
+            if let Some(other) = other
+                && other != ball
+                && other.thing == thing
+            {
+                *hits.entry(other).or_insert(0) += 1;
+            }
             let wanted = match s.plays_when {
                 PlaysWhen::Hitting => hitting,
                 PlaysWhen::BeingHit => !hitting,

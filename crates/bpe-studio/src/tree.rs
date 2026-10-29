@@ -80,6 +80,11 @@ pub fn show(
     let mut visible: Vec<ThingId> = Vec::new();
     // The add button keeps its place at the bottom; the rows scroll in what is left.
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.label(
+            RichText::new("Drag rows to reorder · drop on a row to group · hold Alt to ride")
+                .small()
+                .color(theme::MUTED),
+        );
         ui.menu_button("+ Add thing", |ui| {
             for kind in reg.things().filter(|k| k.id() != "scene") {
                 if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
@@ -290,41 +295,59 @@ pub fn apply_drop(scene: &mut Scene, dragged: ThingId, onto: ThingId, drop: Drop
         return Ok(());
     }
     let world = world_position(scene, dragged).ok_or(EditError::Missing(dragged))?;
-    match drop {
+    let (parent, attach) = match drop {
         Drop::Before | Drop::After => {
             let parent = scene.things.get(&onto).ok_or(EditError::Missing(onto))?.parent.ok_or(EditError::Root)?;
-            let attach = keeping_place(scene, dragged, parent, scene.things[&dragged].attach, world);
-            scene.set_parent(dragged, parent, attach)?;
-            match drop {
-                Drop::Before => scene.move_before(dragged, onto),
-                _ => match next_sibling(scene, onto) {
-                    Some(next) => scene.move_before(dragged, next),
-                    None => Ok(()),
-                },
-            }
+            (parent, scene.things[&dragged].attach)
         }
-        Drop::Into(attach) => {
-            let attach = keeping_place(scene, dragged, onto, attach, world);
-            scene.set_parent(dragged, onto, attach)
-        }
+        Drop::Into(attach) => (onto, attach),
+    };
+    let attach = keeping_place(scene, dragged, parent, attach, world);
+    scene.set_parent(dragged, parent, attach)?;
+    if attach == Attach::Group {
+        // Grouped, the thing's own position is where it shows: the spot it had while riding.
+        scene.things.get_mut(&dragged).expect("moved above").transform.position = world;
     }
+    match drop {
+        Drop::Before => scene.move_before(dragged, onto),
+        Drop::After => match next_sibling(scene, onto) {
+            Some(next) => scene.move_before(dragged, next),
+            None => Ok(()),
+        },
+        Drop::Into(_) => Ok(()),
+    }
+}
+
+/// Where the thing sits on screen and which way it faces before anything moves, in video
+/// pixels and radians: its own transform, or its ride's place worked out from the parent's (and
+/// the parent's own ride, all the way up), turning the offset with the parent when the ride says
+/// so. Riding one ball of a Balls parent counts as riding the parent's place.
+fn world_place(scene: &Scene, id: ThingId) -> Option<(glam::Vec2, f32)> {
+    let thing = scene.things.get(&id)?;
+    let own = (thing.transform.position, thing.transform.rotation);
+    let Attach::Ride { offset, turn_with_parent, .. } = thing.attach else { return Some(own) };
+    let Some((parent, angle)) = thing.parent.and_then(|p| world_place(scene, p)) else { return Some(own) };
+    Some(if turn_with_parent {
+        (parent + glam::Vec2::from_angle(angle).rotate(offset), angle + thing.transform.rotation)
+    } else {
+        (parent + offset, thing.transform.rotation)
+    })
 }
 
 /// Where the thing sits on screen before it moves: its own position, or its ride's.
 fn world_position(scene: &Scene, id: ThingId) -> Option<glam::Vec2> {
-    let thing = scene.things.get(&id)?;
-    Some(match (&thing.attach, thing.parent.and_then(|p| scene.things.get(&p))) {
-        (Attach::Ride { offset, .. }, Some(parent)) => parent.transform.position + *offset,
-        _ => thing.transform.position,
-    })
+    world_place(scene, id).map(|(position, _)| position)
 }
 
-/// The attach to use under `parent` so that a rider stays put on screen.
+/// The attach to use under `parent` so that a rider stays put on screen: its offset is measured
+/// from the parent's place, turned back by the parent's angle when the ride turns with it.
 fn keeping_place(scene: &Scene, id: ThingId, parent: ThingId, attach: Attach, world: glam::Vec2) -> Attach {
     match attach {
         Attach::Ride { turn_with_parent, item, .. } if parent != ThingId::ROOT && parent != id => {
-            let anchor = scene.things.get(&parent).map(|p| p.transform.position).unwrap_or_default();
-            Attach::Ride { offset: world - anchor, turn_with_parent, item }
+            let (anchor, angle) = world_place(scene, parent).unwrap_or_default();
+            let offset = world - anchor;
+            let offset = if turn_with_parent { glam::Vec2::from_angle(-angle).rotate(offset) } else { offset };
+            Attach::Ride { offset, turn_with_parent, item }
         }
         Attach::Ride { .. } => Attach::Group,
         Attach::Group => Attach::Group,
@@ -332,11 +355,16 @@ fn keeping_place(scene: &Scene, id: ThingId, parent: ThingId, attach: Attach, wo
 }
 
 /// Switches a thing between riding on and being grouped under the parent it has, without it
-/// jumping on screen.
+/// jumping on screen. A thing that already rides takes the ride as given: an offset, turn or
+/// item typed in the inspector is what the user wants, not where the thing happens to be.
 pub(crate) fn reattach(scene: &mut Scene, id: ThingId, attach: Attach) -> Result<(), EditError> {
     let world = world_position(scene, id).ok_or(EditError::Missing(id))?;
     let parent = scene.things[&id].parent.ok_or(EditError::Root)?;
-    let attach = keeping_place(scene, id, parent, attach, world);
+    let rides = matches!(scene.things[&id].attach, Attach::Ride { .. });
+    let attach = match attach {
+        Attach::Ride { .. } if rides && parent != ThingId::ROOT => attach,
+        _ => keeping_place(scene, id, parent, attach, world),
+    };
     scene.set_attach(id, attach)?;
     if attach == Attach::Group {
         scene.things.get_mut(&id).expect("checked above").transform.position = world;
@@ -1013,7 +1041,37 @@ mod tests {
         assert!(
             matches!(scene.things[&ThingId(2)].attach, Attach::Ride { offset, .. } if offset == glam::Vec2::new(10.0, 0.0))
         );
+        // Already riding, a new offset (typed in the inspector) is taken as it is.
+        let typed = Attach::Ride { offset: glam::Vec2::new(0.0, -100.0), turn_with_parent: false, item: None };
+        reattach(&mut scene, ThingId(2), typed).unwrap();
+        assert_eq!(scene.things[&ThingId(2)].attach, typed);
         assert!(matches!(reattach(&mut scene, ThingId::ROOT, Attach::Group), Err(EditError::Root)));
+    }
+
+    #[test]
+    fn a_rider_dropped_at_the_top_level_keeps_its_place_and_turned_parents_are_measured_right() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let f = scene.add_thing(&kit.registry, "folder", ThingId::ROOT).unwrap();
+        scene.things.get_mut(&ThingId(1)).unwrap().transform.position = glam::Vec2::new(100.0, 100.0);
+        let ride = Attach::Ride { offset: glam::Vec2::new(0.0, -50.0), turn_with_parent: true, item: None };
+        scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
+        // Dropped beside the folder at the top level, the balls stop riding where they were.
+        apply_drop(&mut scene, ThingId(2), f, Drop::Before).unwrap();
+        assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
+        assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
+        assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(100.0, 50.0));
+        // The arena is turned a quarter: riding it from (100, 50) is an offset of (-50, 0) before
+        // the turn, which the turn puts above the centre.
+        scene.things.get_mut(&ThingId(1)).unwrap().transform.rotation = std::f32::consts::FRAC_PI_2;
+        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
+        let Attach::Ride { offset, .. } = scene.things[&ThingId(2)].attach else { panic!() };
+        assert!((offset - glam::Vec2::new(-50.0, 0.0)).length() < 1e-3, "{offset:?}");
+        assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
+        // A folder riding the arena carries its own riders' places along.
+        apply_drop(&mut scene, f, ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, ThingId(2), f, Drop::Into(ride)).unwrap();
+        assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
     }
 
     #[test]

@@ -194,8 +194,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drag = None;
     }
     if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
-        let world = studio.playback.world().clone();
-        apply_drag(&mut studio.scene, &world, drag, view.to_world(pos));
+        apply_drag(&mut studio.scene, studio.playback.world(), drag, view.to_world(pos));
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
         && let Some(handle) = hovered
@@ -284,8 +283,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         return Some(Handle::Body(id));
     }
     for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
-        let grab = solids.reach.max(SPOT_GRAB / view.scale);
-        if (solids.pose.position - p).length() <= grab {
+        // Each part's own circle, so the gaps of a peg grid or the inside of a ring stay free.
+        let grab = SPOT_GRAB / view.scale;
+        let on_part = solids.bounds.iter().any(|(center, bound)| (*center - p).length() <= bound + grab);
+        if on_part || (solids.pose.position - p).length() <= grab {
             return Some(Handle::Body(*id));
         }
     }

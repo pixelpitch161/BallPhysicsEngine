@@ -212,7 +212,7 @@ impl ThingSim for TestWall {
         let base = world.anchor(thing.id);
         let outline =
             Outline::Ring { center: base.position, radius: s.radius, sides: 0, angle: base.angle, thickness: 2.0 };
-        world.walls.insert(thing.id, Wall { outline, spin: s.spin, growth: 0.0 });
+        world.walls.insert(thing.id, Wall { outline, spin: s.spin, growth: 0.0, velocity: base.velocity });
         world.poses.insert(thing.id, Pose { spin: s.spin, ..base });
         world.states.insert(thing.id, Box::new(s.spin));
     }
@@ -226,9 +226,10 @@ impl ThingSim for TestWall {
             pose.position = base.position;
             pose.velocity = base.velocity;
         }
-        if let Some(Wall { outline: Outline::Ring { center, angle, .. }, .. }) = world.walls.get_mut(&thing) {
+        if let Some(Wall { outline: Outline::Ring { center, angle, .. }, velocity, .. }) = world.walls.get_mut(&thing) {
             *angle += spin * dt;
             *center = base.position;
+            *velocity = base.velocity;
         }
     }
 }

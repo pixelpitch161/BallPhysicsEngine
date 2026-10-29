@@ -95,7 +95,7 @@ impl ThingSim for ArenaSim {
         };
         let st = ArenaState { settings, base, angle: 0.0, scale: 1.0, anchor };
         let spin = st.settings.spin.to_radians();
-        world.walls.insert(thing.id, Wall { outline: base, spin, growth: 0.0 });
+        world.walls.insert(thing.id, Wall { outline: base, spin, growth: 0.0, velocity: anchor.velocity });
         world.poses.insert(thing.id, Pose { spin: anchor.spin + spin, ..anchor });
         world.states.insert(thing.id, Box::new(st));
     }
@@ -114,7 +114,7 @@ impl ThingSim for ArenaSim {
             st.scale = (st.scale * (1.0 - shrink * dt)).max(floor);
         }
         let outline = st.outline(&anchor);
-        let wall = Wall { outline, spin, growth: if shrinking { -shrink } else { 0.0 } };
+        let wall = Wall { outline, spin, growth: if shrinking { -shrink } else { 0.0 }, velocity: anchor.velocity };
         world.walls.insert(thing, wall);
         world.poses.insert(
             thing,
