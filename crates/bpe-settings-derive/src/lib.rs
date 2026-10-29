@@ -33,6 +33,7 @@ struct FieldAttrs {
     keyframe: bool,
     random: bool,
     pulse: bool,
+    structural: bool,
 }
 
 /// The `(min, max)` after an option such as `range`.
@@ -70,6 +71,8 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 }
             } else if p.is_ident("pulse") {
                 a.pulse = true;
+            } else if p.is_ident("structural") {
+                a.structural = true;
             } else {
                 return Err(meta.error("unknown setting option"));
             }
@@ -120,7 +123,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let (range, dice) = (span(a.range), span(a.dice));
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
-        let (keyframe, random, pulse) = (a.keyframe, a.random, a.pulse);
+        let (keyframe, random, pulse, structural) = (a.keyframe, a.random, a.pulse, a.structural);
         defs.push(quote! {
             ::bpe_core::SettingDef {
                 key: #key,
@@ -133,7 +136,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 unit: #unit,
                 group: #group,
                 depth: #depth,
-                flags: ::bpe_core::Flags { keyframe: #keyframe, random: #random, pulse: #pulse },
+                flags: ::bpe_core::Flags { keyframe: #keyframe, random: #random, pulse: #pulse, structural: #structural },
             }
         });
         reads.push(quote! {

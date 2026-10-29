@@ -19,7 +19,7 @@ pub enum Arrangement {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BallsSettings {
     /// One ball, a block of rows and columns, or a ring.
-    #[setting(label = "Arrangement", simple, random)]
+    #[setting(label = "Arrangement", simple, random, structural)]
     pub arrangement: Arrangement,
     /// How big each ball is.
     #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random(6, 60))]

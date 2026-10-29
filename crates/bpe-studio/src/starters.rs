@@ -160,18 +160,19 @@ fn starter_card(ui: &mut Ui, win: &StartWindow, index: usize, has_picture: bool,
         let text = if has_picture { "…" } else { "" };
         let picture = thumbs::show(ui, win.thumbs.get(index), card_size(), text).interact(Sense::click());
         let take = |choice: &mut Choice| *choice = Choice::Scene(Box::new(scene.clone()));
+        let corner = picture.rect.right_bottom() - egui::vec2(6.0, 6.0);
         if picture.on_hover_text(format!("Start from {name}")).clicked() {
             take(choice);
         }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(name).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let button = egui::Button::new(RichText::new("Use").color(Color32::WHITE)).fill(theme::ACCENT).small();
-                if ui.add(button).on_hover_text(format!("Start from {name}")).clicked() {
-                    take(choice);
-                }
-            });
-        });
+        // "Use" sits on the picture's corner, so the name below has the card's whole width.
+        let spot = egui::Rect::from_min_max(corner - egui::vec2(44.0, 22.0), corner);
+        let button = egui::Button::new(RichText::new("Use").color(Color32::WHITE))
+            .fill(theme::ACCENT)
+            .wrap_mode(egui::TextWrapMode::Extend);
+        if ui.put(spot, button).on_hover_text(format!("Start from {name}")).clicked() {
+            take(choice);
+        }
+        ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
     });
 }
 
@@ -210,6 +211,17 @@ mod tests {
             );
         h.run();
         h
+    }
+
+    #[test]
+    fn a_long_starter_name_never_runs_under_its_use_button() {
+        let h = harness(Vec::new());
+        let buttons: Vec<egui::Rect> = h.get_all_by_label("Use").map(|b| b.rect()).collect();
+        assert_eq!(buttons.len(), bpe_kit::scenes::STARTERS.len());
+        for (name, button) in bpe_kit::scenes::STARTERS.iter().zip(&buttons) {
+            let label = h.get_by_label(name).rect();
+            assert!(!label.intersects(*button), "{name} runs under its Use button: {label:?} {button:?}");
+        }
     }
 
     #[test]

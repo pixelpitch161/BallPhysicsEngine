@@ -7,7 +7,7 @@ use crate::theme;
 use crate::thumbs::{self, Thumb, Thumbnailer};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_gfx::{Frame, build_frame_at};
-use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
+use bpe_kit::random::{Roll, START_AMOUNT, Scope, fresh_seed, roll};
 use bpe_kit::score::{Parts, Sampled, Score, learn, sample, score};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::Playback;
@@ -114,7 +114,7 @@ impl Default for Explorer {
             open: false,
             base: Scene::default(),
             seed: 0,
-            amount: 1.0,
+            amount: START_AMOUNT,
             cells: Vec::new(),
             weights: Parts::WEIGHTS,
             persist: false,
@@ -133,7 +133,7 @@ impl Explorer {
     /// Opens the window on `scene` with nine fresh variations.
     pub fn open_from(&mut self, scene: &Scene, kit: &Kit) {
         self.base = scene.clone();
-        self.amount = 1.0;
+        self.amount = START_AMOUNT;
         self.reroll_with(fresh_seed(), kit);
         self.open = true;
     }
@@ -294,7 +294,7 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio, state: Option<&RenderState
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
-            .default_pos(egui::pos2(12.0, 12.0))
+            .default_pos(egui::pos2(12.0, theme::BELOW_TOOLBAR))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Roll again").on_hover_text("Nine new variations of the original").clicked() {
@@ -304,7 +304,7 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio, state: Option<&RenderState
                     let amount = ui.label(RichText::new("How much").strong());
                     ui.add(egui::Slider::new(&mut ex.amount, 0.0..=1.0).show_value(false))
                         .labelled_by(amount.id)
-                        .on_hover_text("How far the next roll goes from the original: a little, or something new");
+                        .on_hover_text("How far the next roll goes from the original; shapes and arrangements only change near the right end");
                     ui.separator();
                     if ui
                         .button("Make a batch of these…")
@@ -488,9 +488,16 @@ mod tests {
     }
 
     #[test]
+    fn the_explorer_opens_below_the_toolbar() {
+        let h = harness();
+        let title = h.get_by_label("Explore").rect();
+        assert!(title.top() >= crate::theme::BELOW_TOOLBAR, "the window covers the toolbar: {title:?}");
+    }
+
+    #[test]
     fn more_like_this_narrows_the_amount_and_rebases() {
         let mut h = harness();
-        assert_eq!(h.state().panels.explorer.amount, 1.0);
+        assert_eq!(h.state().panels.explorer.amount, 0.5, "the explorer starts half way");
         let liked = h.state().panels.explorer.cells[2].scene.clone();
         h.get_all_by_label("More like this").nth(2).expect("the second variation's button").click();
         h.run();

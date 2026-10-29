@@ -19,6 +19,9 @@ pub struct Flags {
     pub random: bool,
     /// It can pulse to the beat or to hits.
     pub pulse: bool,
+    /// It decides what the thing is, such as its shape or how its balls are arranged, so the
+    /// dice only change it close to "All new".
+    pub structural: bool,
 }
 
 /// One setting of a thing or module kind.

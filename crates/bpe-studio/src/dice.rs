@@ -4,7 +4,7 @@
 use crate::app::Studio;
 use crate::theme;
 use bpe_core::Scene;
-use bpe_kit::random::{Scope, fresh_seed};
+use bpe_kit::random::{START_AMOUNT, Scope, fresh_seed};
 use eframe::egui::{self, Color32, Response, RichText, Sense, Stroke, Ui, Vec2};
 
 /// A die: a rounded square with three dots down the diagonal.
@@ -43,7 +43,7 @@ pub struct RandomizeWindow {
 
 impl Default for RandomizeWindow {
     fn default() -> Self {
-        Self { open: false, whole_scene: true, amount: 1.0, seed: 0, last: None }
+        Self { open: false, whole_scene: true, amount: START_AMOUNT, seed: 0, last: None }
     }
 }
 
@@ -79,7 +79,12 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio) {
     let mut open = true;
     {
         let win = &mut studio.panels.randomize;
-        egui::Window::new("Randomize").open(&mut open).resizable(false).default_width(320.0).show(ctx, |ui| {
+        egui::Window::new("Randomize")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(320.0)
+            .default_pos(egui::pos2(270.0, theme::BELOW_TOOLBAR))
+            .show(ctx, |ui| {
             ui.label(RichText::new("What to roll").strong());
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut win.whole_scene, true, "Whole scene")
@@ -93,7 +98,7 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio) {
             ui.add_space(6.0);
             let amount = ui.label(RichText::new("How much").strong());
             ui.add(egui::Slider::new(&mut win.amount, 0.0..=1.0).show_value(false)).labelled_by(amount.id).on_hover_text(
-                "All the way is something new; a little keeps things close to what they are",
+                "All the way is something new, shapes and arrangements too; less keeps the scene recognisable",
             );
             ui.horizontal(|ui| {
                 ui.label(RichText::new("A little").small().color(theme::MUTED));
@@ -175,6 +180,19 @@ mod tests {
             .build_ui_state(|ui, s: &mut Studio| show(ui.ctx(), s), studio);
         h.run();
         h
+    }
+
+    #[test]
+    fn the_window_opens_below_the_toolbar() {
+        let h = harness();
+        let title = h.get_by_label("Randomize").rect();
+        assert!(title.top() >= crate::theme::BELOW_TOOLBAR, "the window covers the toolbar: {title:?}");
+    }
+
+    #[test]
+    fn the_dice_start_half_way_so_a_roll_keeps_the_scene_recognisable() {
+        assert_eq!(RandomizeWindow::default().amount, 0.5);
+        assert_eq!(Studio::headless().panels.randomize.amount, 0.5, "the toolbar die rolls half way too");
     }
 
     #[test]

@@ -266,37 +266,39 @@ fn list(ui: &mut Ui, lib: &mut LibraryWindow, scene: &Scene, kit: &Kit, action: 
 fn preset_row(ui: &mut Ui, kit: &Kit, index: usize, preset: &Preset, confirming: bool, action: &mut Option<Action>) {
     let module = &preset.module;
     let known = kit.registry.module(&module.kind).is_some();
+    // The name gets its own line: the list is narrow and its buttons would cover it.
     ui.horizontal(|ui| {
-        ui.label(&module.name).on_hover_text(preset.path.display().to_string());
         ui.label(RichText::new(module.slot.name()).small().color(theme::MUTED));
         if !known {
             ui.label(RichText::new("missing kind").small().color(theme::ERROR))
                 .on_hover_text(format!("This version of Ball Studio doesn't know \"{}\"", module.kind));
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // A preset file can't be undone, so Delete asks once more.
-            if confirming {
-                if ui.small_button("Keep").clicked() {
-                    *action = Some(Action::KeepPreset);
-                }
-                let delete = egui::Button::new(RichText::new("Delete for good").color(theme::ERROR)).small();
-                if ui.add(delete).on_hover_text("Delete the preset file; this can't be undone").clicked() {
-                    *action = Some(Action::DeletePreset(index));
-                }
-                return;
-            }
-            if ui.small_button("Delete").on_hover_text("Delete the preset file").clicked() {
-                *action = Some(Action::AskDeletePreset(index));
-            }
-            if ui
-                .add_enabled(known, egui::Button::new("Add to scene").small())
-                .on_hover_text("A copy of this preset in the scene's Library")
-                .clicked()
-            {
-                *action = Some(Action::AddPreset(index));
-            }
-        });
+        ui.add(egui::Label::new(&module.name).truncate()).on_hover_text(preset.path.display().to_string());
     });
+    ui.horizontal(|ui| {
+        // A preset file can't be undone, so Delete asks once more.
+        if confirming {
+            let delete = egui::Button::new(RichText::new("Delete for good").color(theme::ERROR)).small();
+            if ui.add(delete).on_hover_text("Delete the preset file; this can't be undone").clicked() {
+                *action = Some(Action::DeletePreset(index));
+            }
+            if ui.small_button("Keep").clicked() {
+                *action = Some(Action::KeepPreset);
+            }
+            return;
+        }
+        if ui
+            .add_enabled(known, egui::Button::new("Add to scene").small())
+            .on_hover_text("A copy of this preset in the scene's Library")
+            .clicked()
+        {
+            *action = Some(Action::AddPreset(index));
+        }
+        if ui.small_button("Delete").on_hover_text("Delete the preset file").clicked() {
+            *action = Some(Action::AskDeletePreset(index));
+        }
+    });
+    ui.add_space(4.0);
 }
 
 /// One module in the list: its draggable name, how many things use it, and a note when its
@@ -603,6 +605,9 @@ mod tests {
         assert_eq!(s.scene.library.modules.len(), before + 1);
         let added = s.scene.library.modules.values().find(|m| m.name == "Neon").expect("added from the preset");
         assert_eq!(s.lib.selected, Some(added.id));
+        // Back up the list, which scrolled down to the presets.
+        h.get_by_label_contains("Plain look").scroll_to_me();
+        h.run();
         h.get_by_label_contains("Plain look").click();
         h.run();
         h.get_by_label("Save as preset").click();
@@ -611,6 +616,29 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().any(|p| p.module.name == "Plain look"));
         assert_eq!(h.query_all_by_label("Add to scene").count(), 2, "the list is read again after saving");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_preset_name_never_runs_under_its_buttons() {
+        let dir = std::env::temp_dir().join(format!("bpe-library-preset-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let mut module = scene.library.modules.values().find(|m| m.name == "Ball look").expect("the ball look").clone();
+        module.name = "Long glowing neon look".into();
+        crate::presets::save_in(&dir, &module).unwrap();
+        let mut h = harness();
+        h.state_mut().lib.presets_dir = Some(dir.clone());
+        h.state_mut().lib.look_again();
+        h.run();
+        h.get_by_label("Add to scene").scroll_to_me();
+        h.run();
+        let name = h.get_by_label("Long glowing neon look").rect();
+        for button in ["Add to scene", "Delete"] {
+            let button = h.get_by_label(button).rect();
+            assert!(!name.intersects(button), "the name {name:?} runs under {button:?}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

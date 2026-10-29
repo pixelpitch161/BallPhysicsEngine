@@ -12,6 +12,9 @@ pub const TEXT: Color32 = Color32::from_rgb(0xe7, 0xe8, 0xf0);
 pub const MUTED: Color32 = Color32::from_rgb(0x90, 0x95, 0xab);
 pub const ACCENT: Color32 = Color32::from_rgb(0x7c, 0x6c, 0xff);
 pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xa8, 0x9d, 0xff);
+
+/// Where a tool window's top edge starts, so it opens clear of the toolbar.
+pub const BELOW_TOOLBAR: f32 = 52.0;
 pub const WARNING: Color32 = Color32::from_rgb(0xf2, 0xc4, 0x6d);
 /// The dot before a setting a thing changed for itself.
 pub const OVERRIDE: Color32 = Color32::from_rgb(0xff, 0xa8, 0x4a);
