@@ -134,7 +134,7 @@
                             (
                                 id: 3,
                                 kind: "when.hit",
-                                pos: (40.0, 180.0),
+                                pos: (40.0, 280.0),
                                 params: {
                                     "what": Text("anything"),
                                     "who": Text("me"),
@@ -145,7 +145,7 @@
                             (
                                 id: 4,
                                 kind: "do.counter",
-                                pos: (260.0, 180.0),
+                                pos: (260.0, 280.0),
                                 params: {
                                     "add": Number(1.0),
                                     "id": Number(1.0),

@@ -21,7 +21,7 @@ struct Chain<'a> {
 }
 
 const STEP_X: f32 = 220.0;
-const STEP_Y: f32 = 140.0;
+const STEP_Y: f32 = 240.0;
 
 impl<'a> Chain<'a> {
     fn new(g: &'a mut Graph) -> Self {
