@@ -8,6 +8,7 @@ pub mod events;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
+pub mod solids;
 #[cfg(test)]
 pub mod testing;
 pub mod walls;
@@ -18,5 +19,6 @@ pub use events::{Event, EventKind, Log, Party};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
+pub use solids::{Solid, Solids, keep_outside};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
 pub use world::{World, fingerprint};

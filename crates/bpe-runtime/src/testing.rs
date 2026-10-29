@@ -8,10 +8,11 @@ use bpe_core::{
 use glam::Vec2;
 
 use crate::plugins::{ModuleSim, Sims, ThingSim, ThingState};
-use crate::{Bodies, Contact, Limits, Outline, Pose, Wall, World};
+use crate::{Bodies, Contact, Limits, Outline, Pose, Solid, Solids, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
+pub const PEG: ThingId = ThingId(3);
 
 #[derive(Settings)]
 struct RootSettings {
@@ -54,12 +55,24 @@ impl Default for DotsSettings {
     }
 }
 
+#[derive(Settings)]
+struct PegSettings {
+    #[setting(label = "Radius", range(1, 1000))]
+    radius: f32,
+}
+impl Default for PegSettings {
+    fn default() -> Self {
+        Self { radius: 10.0 }
+    }
+}
+
 #[derive(Default, Settings)]
 struct NoSettings {}
 
 struct RootKind;
 struct WallKind;
 struct DotsKind;
+struct PegKind;
 struct StickyKind;
 struct BouncyKind;
 
@@ -93,6 +106,7 @@ macro_rules! thing_kind {
 thing_kind!(RootKind, "scene", RootSettings);
 thing_kind!(WallKind, "wall", WallSettings);
 thing_kind!(DotsKind, "dots", DotsSettings);
+thing_kind!(PegKind, "peg", PegSettings);
 
 macro_rules! bounce_kind {
     ($t:ty, $id:literal) => {
@@ -184,6 +198,25 @@ impl ThingSim for TestDots {
     }
 }
 
+/// A round peg at the thing's place that rides along with its parent.
+pub struct TestPeg;
+impl ThingSim for TestPeg {
+    fn kind(&self) -> &'static str {
+        "peg"
+    }
+    fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
+        let s = PegSettings::from_params(&resolved.params);
+        world.states.insert(thing.id, Box::new(s.radius));
+        self.scripted(thing.id, world);
+    }
+    fn scripted(&self, thing: ThingId, world: &mut World) {
+        let radius = world.states.get(&thing).map_or(10.0, |s| *crate::state::<f32>(s.as_ref()));
+        let pose = world.anchor(thing);
+        world.poses.insert(thing, pose);
+        world.solids.insert(thing, Solids::new(pose, vec![Solid::Disc { center: pose.position, radius }]));
+    }
+}
+
 /// Gravity for everything, so balls fall.
 struct TestGravity;
 impl ModuleSim for TestGravity {
@@ -255,6 +288,7 @@ pub fn reg() -> Registry {
     r.add_thing(RootKind);
     r.add_thing(WallKind);
     r.add_thing(DotsKind);
+    r.add_thing(PegKind);
     r.add_module(GravityKind);
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
@@ -266,6 +300,7 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_thing(TestRoot);
     s.add_thing(TestWall);
     s.add_thing(TestDots);
+    s.add_thing(TestPeg);
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
@@ -292,6 +327,20 @@ pub fn ring_with_rider(offset: Vec2, turn: bool) -> (Scene, Resolved, Sims) {
     scene.things.get_mut(&WALL).unwrap().params.set("spin", Value::Number(1.0));
     scene.set_parent(DOTS, WALL, Attach::Ride { offset, turn_with_parent: turn, item: None }).unwrap();
     let resolved = resolve(&scene, &reg());
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// One still dot above a peg inside the ring, so it falls onto the peg.
+pub fn dots_and_peg() -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    let reg = reg();
+    let peg = scene.add_thing(&reg, "peg", ThingId::ROOT).unwrap();
+    assert_eq!(peg, PEG);
+    scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, 40.0);
+    scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -50.0);
+    scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)
 }

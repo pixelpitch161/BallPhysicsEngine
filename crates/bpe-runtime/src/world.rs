@@ -11,9 +11,11 @@ use bpe_core::{Attach, Resolved, Scene, SlotId, ThingId, Transform, Value};
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
+use crate::plugins::ModuleSim;
 use crate::plugins::{Limits, Sims, ThingState};
 use crate::pose::Pose;
-use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, reflect};
+use crate::solids::Solids;
+use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, keep_outside, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -38,6 +40,8 @@ pub struct World {
     pub bodies: BTreeMap<ThingId, Bodies>,
     /// The closed wall of every thing that is one.
     pub walls: BTreeMap<ThingId, Wall>,
+    /// The solid pieces of every thing that has some: pegs, bars, rings balls bounce off.
+    pub solids: BTreeMap<ThingId, Solids>,
     /// Whatever a thing's sim keeps between steps.
     pub states: BTreeMap<ThingId, Box<dyn ThingState>>,
     /// Where every placed thing is right now. Sims write it in `build` and `scripted`; riders
@@ -63,6 +67,7 @@ impl World {
             gravity: Vec2::ZERO,
             bodies: BTreeMap::new(),
             walls: BTreeMap::new(),
+            solids: BTreeMap::new(),
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -195,7 +200,7 @@ impl World {
     }
 
     fn substep(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, gravity, bodies, walls, modules, .. } = self;
+        let World { step, gravity, bodies, walls, solids, modules, .. } = self;
         let step = *step;
         let gravity = *gravity;
 
@@ -214,11 +219,13 @@ impl World {
             }
         }
 
-        // Collide and Respond, then the Hit events.
+        // Collide and Respond, then the Hit events: first the walls around the balls, then the
+        // solids among them.
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             for (wall_id, wall) in walls.iter() {
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
+                let decider = decide(sims, wall_bounce, mover_bounce);
                 for i in 0..bodies.len() {
                     if !bodies.alive[i] {
                         continue;
@@ -226,16 +233,7 @@ impl World {
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let Some(contact) = keep_inside(&mut bodies.position[i], velocity, radius, wall) else { continue };
-                    let decider = wall_bounce
-                        .and_then(|(kind, state)| {
-                            let sim = sims.module(kind)?;
-                            sim.takes_over(state.as_ref()).then_some((sim, state))
-                        })
-                        .or_else(|| mover_bounce.and_then(|(kind, state)| Some((sims.module(kind)?, state))));
-                    match decider {
-                        Some((sim, state)) => sim.respond(state.as_ref(), &contact, bodies, i, limits),
-                        None => bodies.velocity[i] = reflect(velocity, &contact, 1.0),
-                    }
+                    respond(decider, &contact, bodies, i, limits);
                     if contact.speed >= limits.resting {
                         bodies.hits[i] += 1;
                         log.push(Event {
@@ -250,7 +248,75 @@ impl World {
                     }
                 }
             }
+            for (solid_id, solids) in solids.iter() {
+                if solid_id == mover {
+                    continue;
+                }
+                let solid_bounce = modules.get(solid_id).and_then(|m| m.get(&SlotId::Bounce));
+                let decider = decide(sims, solid_bounce, mover_bounce);
+                for i in 0..bodies.len() {
+                    if !bodies.alive[i] {
+                        continue;
+                    }
+                    let radius = bodies.radius[i];
+                    let near = solids.reach + radius + SAFE_MOVE;
+                    if (bodies.position[i] - solids.pose.position).length_squared() > near * near {
+                        continue;
+                    }
+                    let previous = bodies.position[i] - bodies.velocity[i] * dt;
+                    for (part, (solid, (center, bound))) in solids.parts.iter().zip(&solids.bounds).enumerate() {
+                        let near = bound + radius + SAFE_MOVE;
+                        if (bodies.position[i] - *center).length_squared() > near * near {
+                            continue;
+                        }
+                        let velocity = bodies.velocity[i];
+                        let Some(contact) =
+                            keep_outside(&mut bodies.position[i], previous, velocity, radius, solid, &solids.pose)
+                        else {
+                            continue;
+                        };
+                        respond(decider, &contact, bodies, i, limits);
+                        if contact.speed >= limits.resting {
+                            bodies.hits[i] += 1;
+                            log.push(Event {
+                                step,
+                                kind: EventKind::Hit,
+                                a: Party { thing: *mover, item: i as u32 },
+                                b: Some(Party { thing: *solid_id, item: part as u32 }),
+                                point: contact.point,
+                                normal: contact.normal,
+                                speed: contact.speed,
+                            });
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// A prepared Bounce module: its kind and state.
+type Bounce<'a> = Option<&'a (String, Box<dyn ThingState>)>;
+
+/// Who answers a contact: the hit thing's Bounce when it takes over, else the mover's.
+fn decide<'a>(sims: &'a Sims, hit: Bounce<'a>, mover: Bounce<'a>) -> Option<(&'a dyn ModuleSim, &'a dyn ThingState)> {
+    hit.and_then(|(kind, state)| {
+        let sim = sims.module(kind)?;
+        sim.takes_over(state.as_ref()).then_some((sim, state.as_ref()))
+    })
+    .or_else(|| mover.and_then(|(kind, state)| Some((sims.module(kind)?, state.as_ref()))))
+}
+
+fn respond(
+    decider: Option<(&dyn ModuleSim, &dyn ThingState)>,
+    contact: &crate::Contact,
+    bodies: &mut Bodies,
+    i: usize,
+    limits: &Limits,
+) {
+    match decider {
+        Some((sim, state)) => sim.respond(state, contact, bodies, i, limits),
+        None => bodies.velocity[i] = reflect(bodies.velocity[i], contact, 1.0),
     }
 }
 
@@ -351,7 +417,9 @@ impl Hasher {
 mod tests {
     use super::*;
     use crate::plugins::Sims;
-    use crate::testing::{DOTS, TestDots, TestRoot, WALL, dots_in_ring, dots_in_sticky_ring, reg, ring_with_rider};
+    use crate::testing::{
+        DOTS, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring, reg, ring_with_rider,
+    };
     use bpe_core::{Attach, SlotId, ThingId, Value, resolve};
 
     #[test]
@@ -491,6 +559,21 @@ mod tests {
         assert_eq!(w.order, vec![ThingId::ROOT, WALL, late, DOTS]);
         w.step(&sims, &mut Log::default());
         assert_eq!(w.poses[&late].position, Vec2::new(300.0, 0.0));
+    }
+
+    #[test]
+    fn balls_bounce_off_a_peg_and_log_it_against_its_part() {
+        let (scene, resolved, sims) = dots_and_peg();
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &sims, &mut log);
+        let hit = log.events().iter().find(|e| e.b.is_some_and(|b| b.thing == PEG)).expect("the dot lands on the peg");
+        assert_eq!(hit.b, Some(Party { thing: PEG, item: 0 }));
+        assert!(hit.normal.y < 0.0, "{hit:?}");
+        assert_eq!(hit.a, Party { thing: DOTS, item: 0 });
+        let p = w.bodies[&DOTS].position[0];
+        assert!(p.is_finite() && (p - Vec2::new(0.0, 40.0)).length() >= 15.0 - 1e-3, "{p:?}");
+        assert_eq!(w.solids[&PEG].reach, 10.0);
     }
 
     #[test]
