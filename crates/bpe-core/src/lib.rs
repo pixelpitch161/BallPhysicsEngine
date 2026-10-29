@@ -9,10 +9,20 @@
 extern crate self as bpe_core;
 
 pub mod color;
+pub mod ids;
+pub mod library;
+pub mod registry;
+pub mod scene;
 pub mod settings;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod value;
 
 pub use color::Color;
+pub use ids::{KindId, ModuleId, SlotId, ThingId};
+pub use library::{Library, Module, ModuleGraph};
+pub use registry::{ModuleKind, Registry, ThingKind};
+pub use scene::{Attach, Scene, SlotLink, Target, Thing, Transform};
 pub use settings::{Choice, Depth, Flags, SettingDef, SettingValue, Settings};
 pub use value::{Params, Value, ValueType};
 

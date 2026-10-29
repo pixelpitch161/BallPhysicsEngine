@@ -254,6 +254,7 @@ dependencies = [
 name = "bpe-core"
 version = "0.1.0"
 dependencies = [
+ "bpe-graph",
  "bpe-settings-derive",
  "glam",
  "ron",

@@ -14,3 +14,4 @@ serde.workspace = true
 ron.workspace = true
 glam.workspace = true
 bpe-settings-derive.workspace = true
+bpe-graph.workspace = true

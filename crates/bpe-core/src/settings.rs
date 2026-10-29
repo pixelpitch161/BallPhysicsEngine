@@ -1,7 +1,7 @@
 //! The settings schema: one description of each setting drives the inspector, keyframes, dice,
 //! locks and pulses.
 
-use crate::{Color, Params, Value, ValueType};
+use crate::{Color, Params, Target, Value, ValueType};
 
 /// Whether a setting shows in a module's first, short view or only under More.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +194,18 @@ impl SettingValue for String {
     }
     fn from_value(v: &Value) -> Option<Self> {
         if let Value::Text(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
+impl SettingValue for Target {
+    fn value_type() -> ValueType {
+        ValueType::Target
+    }
+    fn to_value(&self) -> Value {
+        Value::Target(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Target(x) = v { Some(x.clone()) } else { None }
     }
 }
 
