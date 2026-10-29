@@ -78,7 +78,7 @@ pub struct HitBurst {
     #[setting(label = "Colour from", simple, random)]
     pub source: BurstSource,
     /// The particles' colour when the burst has its own.
-    #[setting(label = "Colour", keyframe, random)]
+    #[setting(label = "Colour", when = "source=own", keyframe, random)]
     pub color: Color,
     /// How wide the burst fans out from the direction of the bounce.
     #[setting(label = "Spread", range(0, 360), unit = "°", keyframe, random)]

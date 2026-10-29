@@ -90,6 +90,7 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
         group: "",
         depth: Depth::Simple,
         flags: Flags { keyframe: true, random: true, pulse: true, structural: false },
+        when: "",
     }];
     for p in &header.params {
         let mut label = p.key.replace('_', " ");
@@ -134,6 +135,7 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
             group: "",
             depth: if p.simple { Depth::Simple } else { Depth::More },
             flags,
+            when: "",
         });
     }
     defs

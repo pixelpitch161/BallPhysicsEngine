@@ -27,29 +27,35 @@ pub struct ClassicLook {
     #[setting(label = "Colour", simple, keyframe, random)]
     pub color: Color,
     /// How brightly the halo shines.
-    #[setting(label = "Glow", range(0, 2), simple, keyframe, random, pulse)]
+    #[setting(label = "Glow", when = "thing!=liquid", range(0, 2), simple, keyframe, random, pulse)]
     pub glow: f32,
     /// How bright the flash on each hit is.
-    #[setting(label = "Flash", range(0, 3), simple, keyframe, random)]
+    #[setting(label = "Flash", when = "thing=balls", range(0, 3), simple, keyframe, random)]
     pub flash: f32,
     /// Spread across the balls from the first row to the last; empty uses Colour.
-    #[setting(label = "Colours", random)]
+    #[setting(label = "Colours", when = "thing=balls", keyframe, random)]
     pub gradient: Vec<Color>,
     /// What spreads the Colours across the balls: the row they start in, their order, how fast
     /// they go, or how often they have hit.
-    #[setting(label = "Colours follow", group = "Colours")]
+    #[setting(label = "Colours follow", when = "thing=balls and gradient", group = "Colours")]
     pub gradient_by: GradientBy,
     /// The speed in px/s, or number of hits, at which the last colour is reached.
-    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random(1, 200))]
+    #[setting(
+        label = "Colours end at",
+        when = "thing=balls and gradient and gradient_by=speed|hits",
+        range(1, 20000),
+        group = "Colours",
+        random(1, 200)
+    )]
     pub gradient_full: f32,
     /// Every hit turns the colour this far round the colour wheel.
-    #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Colours", keyframe, random)]
+    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Colours", keyframe, random)]
     pub hue_per_hit: f32,
     /// How big the flash is.
-    #[setting(label = "Flash size", range(0, 300), unit = "px", keyframe)]
+    #[setting(label = "Flash size", when = "thing=balls and flash", range(0, 300), unit = "px", keyframe)]
     pub flash_size: f32,
     /// How long the flash lasts.
-    #[setting(label = "Flash time", range(0.02, 2), unit = "s")]
+    #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s")]
     pub flash_seconds: f32,
 }
 

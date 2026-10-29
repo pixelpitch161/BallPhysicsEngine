@@ -1,22 +1,19 @@
 //! The Library window: every shared module by slot, to rename, duplicate, delete, edit and drag
 //! onto a thing in the tree.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::presets::{self, Preset};
 use crate::settings;
 use crate::theme;
 use crate::widgets::{GridCx, TargetChoices, settings_grid_marked};
-use bpe_core::{Address, Depth, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
+use bpe_core::{Address, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Key, RichText, Sense, Ui};
 
 pub struct LibraryWindow {
     pub open: bool,
     pub selected: Option<ModuleId>,
-    /// The depth each module's settings are open at.
-    pub depth: BTreeMap<ModuleId, Depth>,
     renaming: Option<ModuleId>,
     rename_text: String,
     focus_rename: bool,
@@ -34,7 +31,6 @@ impl Default for LibraryWindow {
         Self {
             open: false,
             selected: None,
-            depth: BTreeMap::new(),
             renaming: None,
             rename_text: String::new(),
             focus_rename: false,
@@ -81,6 +77,8 @@ enum Action {
     Delete(ModuleId),
     SelectUsers(ModuleId),
     Set(ModuleId, &'static str, bpe_core::Value),
+    /// A look's colour list: one colour goes in Colour, several in Colours.
+    Colours(ModuleId, Vec<bpe_core::Color>),
     Lock(ModuleId, &'static str, bool),
     SavePreset(ModuleId),
     /// A preset by its place in the list.
@@ -165,6 +163,20 @@ pub fn show(
             Err(e) => out.message = Some(e.to_string()),
         },
         Some(Action::SelectUsers(m)) => out.select = Some(scene.users_of(m)),
+        Some(Action::Colours(m, list)) => {
+            let at = |key: &str| Address { owner: Owner::Module(m), slot: None, key: key.into() };
+            let (colour, colours) = match &list[..] {
+                [one] => (*one, Vec::new()),
+                _ => (list[0], list),
+            };
+            let result = scene
+                .set_at(reg, &at(crate::widgets::COLOUR), bpe_core::Value::Color(colour))
+                .and_then(|()| scene.set_at(reg, &at(crate::widgets::COLOURS), bpe_core::Value::Colors(colours)));
+            match result {
+                Ok(()) => out.edited = true,
+                Err(e) => out.message = Some(e.to_string()),
+            }
+        }
         Some(Action::Set(m, key, value)) => {
             let a = Address { owner: Owner::Module(m), slot: None, key: key.into() };
             match scene.set_at(reg, &a, value) {
@@ -431,21 +443,27 @@ fn details(
     });
     ui.separator();
     let Some(kind) = reg.module(&m.kind) else { return };
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Settings").strong());
-        ui.add_space(8.0);
-        crate::inspector::depth_switch(ui, lib.depth.entry(id).or_insert(Depth::Simple), None);
-    });
-    let depth = lib.depth.get(&id).copied().unwrap_or(Depth::Simple);
+    ui.label(RichText::new("Settings").strong());
     let choices = TargetChoices::from_scene(scene, reg);
     let get = |key: &str| {
         let a = Address { owner: Owner::Module(id), slot: None, key: key.into() };
         scene.value_at(reg, &a).expect("a module's settings all resolve")
     };
     let locked = |key: &str| scene.is_locked(&Address { owner: Owner::Module(id), slot: None, key: key.into() });
-    let cx =
-        GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None, locked: &locked };
-    let out = settings_grid_marked(ui, ("library", id), kind.settings(), depth, get, &cx);
+    // No thing is picked here, so a setting shows when it applies to any kind of thing.
+    let applies = |d: &bpe_core::SettingDef| d.applies(None, &|k| Some(get(k)));
+    let cx = GridCx {
+        choices: &choices,
+        overridden: &|_| false,
+        inherited: &|_| None,
+        marks: &|_| None,
+        locked: &locked,
+        applies: &applies,
+    };
+    let out = settings_grid_marked(ui, ("library", id), kind.settings(), get, &cx);
+    if let Some(edit) = out.colours {
+        *action = Some(Action::Colours(id, edit.list));
+    }
     if let Some((key, lock)) = out.locks.into_iter().next() {
         *action = Some(Action::Lock(id, key, lock));
     }

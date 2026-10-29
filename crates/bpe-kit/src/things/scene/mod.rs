@@ -68,12 +68,12 @@ pub struct SceneSettings {
     #[setting(label = "Song", unit = "file", group = "Song")]
     pub song: String,
     /// How far into the song the video starts. Negative starts the song late.
-    #[setting(label = "Song starts at", range(-60, 60), unit = "s", group = "Song")]
+    #[setting(label = "Song starts at", when = "song", range(-60, 60), unit = "s", group = "Song")]
     pub song_offset: f32,
-    #[setting(label = "Song volume", range(-40, 6), unit = "dB", group = "Song")]
+    #[setting(label = "Song volume", when = "song", range(-40, 6), unit = "dB", group = "Song")]
     pub song_volume: f32,
     /// How much the song dips while the hit sounds play.
-    #[setting(label = "Ducks under hits", range(0, 1), group = "Song")]
+    #[setting(label = "Ducks under hits", when = "song", range(0, 1), group = "Song")]
     pub ducking: f32,
     /// A steady beat; 0 follows the song's beats, or 120 without a song.
     #[setting(label = "Tempo", range(0, 300), unit = "bpm", group = "Beat")]

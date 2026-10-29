@@ -67,10 +67,29 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
                 _ => fail(d.key, "only numbers can have a range".into()),
             }
         }
-        if (d.flags.keyframe || d.flags.pulse)
-            && !matches!(d.ty, ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color)
+        if d.flags.pulse && !matches!(d.ty, ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color) {
+            fail(d.key, format!("a {:?} setting can't be pulsed", d.ty));
+        }
+        if d.flags.keyframe
+            && !matches!(
+                d.ty,
+                ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color | ValueType::Colors
+            )
         {
-            fail(d.key, format!("a {:?} setting can't be keyframed or pulsed", d.ty));
+            fail(d.key, format!("a {:?} setting can't be keyframed", d.ty));
+        }
+    }
+    // A condition may only name the thing's kind or this kind's own settings.
+    for d in defs {
+        let terms = d.when.split(" or ").flat_map(|all| all.split(" and "));
+        for term in terms.map(str::trim).filter(|t| !t.is_empty()) {
+            let key = term.split(['=', '!']).find(|k| !k.is_empty()).unwrap_or("").trim();
+            if key != "thing" && !defs.iter().any(|o| o.key == key) {
+                fails.push(format!(
+                    "{id}: setting \"{}\": its condition names \"{key}\", which isn't a setting here",
+                    d.key
+                ));
+            }
         }
     }
     let simple = defs.iter().filter(|d| d.depth == Depth::Simple).count();

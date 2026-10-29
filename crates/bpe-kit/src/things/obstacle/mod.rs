@@ -36,13 +36,13 @@ pub struct ObstacleSettings {
     pub shape: ObstacleShape,
     /// Peg, grid peg, polygon or ring: from the middle to the edge. The dice keep it small enough
     /// that a rolled peg grid still lets balls through.
-    #[setting(label = "Size", range(2, 800), unit = "px", simple, keyframe, random(6, 60))]
+    #[setting(label = "Size", when = "shape!=bar", range(2, 800), unit = "px", simple, keyframe, random(6, 60))]
     pub radius: f32,
     /// Bar only.
-    #[setting(label = "Length", range(10, 4000), unit = "px", simple, keyframe, random(40, 600))]
+    #[setting(label = "Length", when = "shape=bar", range(10, 4000), unit = "px", simple, keyframe, random(40, 600))]
     pub length: f32,
     /// Bar, polygon and ring: how thick the wall is.
-    #[setting(label = "Thickness", range(1, 200), unit = "px", simple, keyframe)]
+    #[setting(label = "Thickness", when = "shape=bar|polygon|ring", range(1, 200), unit = "px", simple, keyframe)]
     pub thickness: f32,
     /// How fast it turns, clockwise.
     #[setting(label = "Spin", range(-720, 720), unit = "deg/s", simple, keyframe, random(-240, 240))]
@@ -51,28 +51,28 @@ pub struct ObstacleSettings {
     #[setting(label = "Moves along", simple)]
     pub path: MovePath,
     /// Line: how far each way. Circle: x is the circle's radius.
-    #[setting(label = "Travel", unit = "px", group = "Movement", keyframe)]
+    #[setting(label = "Travel", when = "path!=still", unit = "px", group = "Movement", keyframe)]
     pub path_distance: Vec2,
     /// How long one trip there and back, or once round, takes.
-    #[setting(label = "Round trip", range(0.2, 120), unit = "s", group = "Movement")]
+    #[setting(label = "Round trip", when = "path!=still", range(0.2, 120), unit = "s", group = "Movement")]
     pub path_seconds: f32,
     /// Where along the trip it starts, as a fraction of one round trip.
-    #[setting(label = "Start phase", range(0, 1), unit = "turns", group = "Movement")]
+    #[setting(label = "Start phase", when = "path!=still", range(0, 1), unit = "turns", group = "Movement")]
     pub path_phase: f32,
     /// Polygon only.
-    #[setting(label = "Sides", range(3, 12), group = "Shape details", random)]
+    #[setting(label = "Sides", when = "shape=polygon", range(3, 12), group = "Shape details", random)]
     pub sides: u32,
     /// Peg grid only.
-    #[setting(label = "Columns", range(1, 100), group = "Shape details")]
+    #[setting(label = "Columns", when = "shape=peg_grid", range(1, 100), group = "Shape details")]
     pub columns: u32,
     /// Peg grid only.
-    #[setting(label = "Rows", range(1, 100), group = "Shape details")]
+    #[setting(label = "Rows", when = "shape=peg_grid", range(1, 100), group = "Shape details")]
     pub rows: u32,
     /// Peg grid only: from one peg's middle to the next.
-    #[setting(label = "Spacing", range(4, 1000), unit = "px", group = "Shape details")]
+    #[setting(label = "Spacing", when = "shape=peg_grid", range(4, 1000), unit = "px", group = "Shape details")]
     pub spacing: f32,
     /// Peg grid: shift every other row by half a step, like a Plinko board.
-    #[setting(label = "Stagger", group = "Shape details")]
+    #[setting(label = "Stagger", when = "shape=peg_grid", group = "Shape details")]
     pub stagger: bool,
 }
 

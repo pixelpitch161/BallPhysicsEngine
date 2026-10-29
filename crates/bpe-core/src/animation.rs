@@ -227,7 +227,8 @@ fn clamp_to(v: Value, range: Option<(f64, f64)>) -> Value {
 
 impl Value {
     /// `t` of the way from this value to `other`: numbers and points move straight, colours
-    /// blend in linear light, anything else switches over at the end.
+    /// blend in linear light (lists of colours one by one, when they are as long), anything
+    /// else switches over at the end.
     pub fn lerp(&self, other: &Value, t: f32) -> Value {
         let t64 = t as f64;
         match (self, other) {
@@ -235,6 +236,9 @@ impl Value {
             (Value::Int(a), Value::Int(b)) => Value::Int((*a as f64 + (*b - *a) as f64 * t64).round() as i64),
             (Value::Vec2(a), Value::Vec2(b)) => Value::Vec2([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
             (Value::Color(a), Value::Color(b)) => Value::Color(Color::mix(*a, *b, t)),
+            (Value::Colors(a), Value::Colors(b)) if a.len() == b.len() => {
+                Value::Colors(a.iter().zip(b).map(|(a, b)| Color::mix(*a, *b, t)).collect())
+            }
             _ => {
                 if t < 1.0 {
                     self.clone()

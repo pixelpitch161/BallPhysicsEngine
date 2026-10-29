@@ -25,7 +25,15 @@ pub struct ArenaSettings {
     #[setting(label = "Shape", simple, random, structural)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
-    #[setting(label = "Radius", range(20, 2000), unit = "px", simple, keyframe, random(150, 500))]
+    #[setting(
+        label = "Radius",
+        when = "shape=circle|polygon",
+        range(20, 2000),
+        unit = "px",
+        simple,
+        keyframe,
+        random(150, 500)
+    )]
     pub radius: f32,
     /// How thick the wall is drawn.
     #[setting(label = "Thickness", range(0, 40), unit = "px", simple, keyframe)]
@@ -34,22 +42,22 @@ pub struct ArenaSettings {
     #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe, random(-120, 120))]
     pub spin: f32,
     /// Box only.
-    #[setting(label = "Width", range(20, 4000), unit = "px")]
+    #[setting(label = "Width", when = "shape=box|capsule", range(20, 4000), unit = "px")]
     pub width: f32,
     /// Box only.
-    #[setting(label = "Height", range(20, 4000), unit = "px")]
+    #[setting(label = "Height", when = "shape=box|capsule", range(20, 4000), unit = "px")]
     pub height: f32,
     /// Box only: how round the corners are.
-    #[setting(label = "Corner radius", range(0, 1000), unit = "px", keyframe, random(0, 200))]
+    #[setting(label = "Corner radius", when = "shape=box", range(0, 1000), unit = "px", keyframe, random(0, 200))]
     pub corner: f32,
     /// Polygon only.
-    #[setting(label = "Sides", range(3, 12), random)]
+    #[setting(label = "Sides", when = "shape=polygon", range(3, 12), random)]
     pub sides: u32,
     /// How much of its size the arena loses each second.
     #[setting(label = "Shrink", range(0, 1), unit = "per s", keyframe)]
     pub shrink: f32,
     /// The arena stops shrinking at this size.
-    #[setting(label = "Smallest size", range(10, 2000), unit = "px")]
+    #[setting(label = "Smallest size", when = "shrink", range(10, 2000), unit = "px")]
     pub min_size: f32,
 }
 

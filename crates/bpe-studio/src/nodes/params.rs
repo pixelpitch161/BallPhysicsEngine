@@ -35,10 +35,18 @@ pub fn param_control(ui: &mut Ui, spec: &ParamSpec, param: &mut Param, scene: &S
             let (lo, hi) = spec.range;
             if hi > lo && (hi - lo) < 20_000.0 {
                 ui.spacing_mut().slider_width = 70.0;
-                // A template may hold a value past the slider's end; only the user's own edits
-                // are clamped, so drawing a block never changes it.
-                ui.add(egui::Slider::new(v, lo..=hi).show_value(true).clamping(egui::SliderClamping::Edits))
-                    .labelled_by(label);
+                // Even steps, like the inspector's sliders. A template may hold a value past the
+                // slider's end; only the user's own edits are clamped, so drawing a block never
+                // changes it.
+                let feel = crate::widgets::number_feel((hi - lo) as f64, false);
+                let slider = egui::Slider::new(v, lo..=hi)
+                    .show_value(true)
+                    .smart_aim(false)
+                    .step_by(feel.step)
+                    .max_decimals(feel.decimals)
+                    .drag_value_speed(feel.drag_speed)
+                    .clamping(egui::SliderClamping::Edits);
+                ui.add(slider).labelled_by(label);
             } else {
                 let mut drag = egui::DragValue::new(v).speed(((hi - lo) / 300.0).max(0.001));
                 if hi > lo {

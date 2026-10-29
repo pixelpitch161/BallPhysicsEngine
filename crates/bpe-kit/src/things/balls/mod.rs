@@ -28,19 +28,19 @@ pub struct BallsSettings {
     #[setting(label = "Launch speed", unit = "px/s", simple, random(100, 900))]
     pub velocity: Vec2,
     /// Block only.
-    #[setting(label = "Columns", range(1, 200), simple, random(1, 30))]
+    #[setting(label = "Columns", when = "arrangement=block", range(1, 200), simple, random(1, 30))]
     pub columns: u32,
     /// Block only.
-    #[setting(label = "Rows", range(1, 200), simple, random(1, 30))]
+    #[setting(label = "Rows", when = "arrangement=block", range(1, 200), simple, random(1, 30))]
     pub rows: u32,
     /// Block only: from one ball's middle to the next.
-    #[setting(label = "Spacing", range(1, 400), unit = "px", simple, random(8, 60))]
+    #[setting(label = "Spacing", when = "arrangement=block", range(1, 400), unit = "px", simple, random(8, 60))]
     pub spacing: f32,
     /// Ring only.
-    #[setting(label = "Count", range(1, 2000), random(3, 200))]
+    #[setting(label = "Count", when = "arrangement=ring", range(1, 2000), random(3, 200))]
     pub count: u32,
     /// Ring only.
-    #[setting(label = "Ring radius", range(1, 2000), unit = "px", random(60, 400))]
+    #[setting(label = "Ring radius", when = "arrangement=ring", range(1, 2000), unit = "px", random(60, 400))]
     pub ring_radius: f32,
 }
 

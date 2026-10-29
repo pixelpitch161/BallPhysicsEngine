@@ -39,7 +39,7 @@ pub struct StreakTrail {
     #[setting(label = "Colour from", simple, random)]
     pub source: TrailSource,
     /// The streak's colour when it has its own.
-    #[setting(label = "Colour", simple, keyframe, random)]
+    #[setting(label = "Colour", when = "source=own", simple, keyframe, random)]
     pub color: Color,
     /// Add: the streak glows and adds its light. Cover: it paints over what is behind it.
     #[setting(label = "Blend", simple, random)]

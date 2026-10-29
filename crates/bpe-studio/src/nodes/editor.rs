@@ -1204,19 +1204,15 @@ fn param_row(
         ui.add(egui::Label::new(egui::RichText::new(&spec.label).size(12.5).color(theme::MUTED)).sense(Sense::click()));
     let label = if spec.help.is_empty() { label } else { label.on_hover_text(&spec.help) };
     let exposed = node.exposed.contains(&spec.name);
-    let mut simple = None;
+    let simple = None;
     label.context_menu(|ui| {
         let text = if exposed { "Take off the card" } else { "Show on the card" };
-        if ui.button(text).on_hover_text("A setting on the card is a slider at More depth").clicked() {
+        if ui.button(text).on_hover_text("A setting on the card shows in the inspector, under the module").clicked() {
             if exposed {
                 node.exposed.remove(&spec.name);
             } else {
                 node.exposed.insert(spec.name.clone());
             }
-            ui.close();
-        }
-        if exposed && ui.button("Show at Simple").on_hover_text("Also show it on the Simple card").clicked() {
-            simple = Some((node.id, spec.name.clone()));
             ui.close();
         }
         if ui.button("Reset").clicked() {

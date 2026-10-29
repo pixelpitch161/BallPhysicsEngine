@@ -55,7 +55,7 @@ pub struct EmitterSettings {
     #[setting(label = "On")]
     pub on: Trigger,
     /// Whose hits it listens to when it releases on hits.
-    #[setting(label = "Listen to")]
+    #[setting(label = "Listen to", when = "on=hit")]
     pub listen: Target,
     /// Changes the scatter without changing anything else.
     #[setting(label = "Seed", range(0, 1000000), random)]

@@ -27,6 +27,7 @@ struct FieldAttrs {
     label: Option<LitStr>,
     unit: Option<LitStr>,
     group: Option<LitStr>,
+    when: Option<LitStr>,
     range: Option<(Expr, Expr)>,
     dice: Option<(Expr, Expr)>,
     simple: bool,
@@ -57,6 +58,8 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.unit = Some(meta.value()?.parse()?);
             } else if p.is_ident("group") {
                 a.group = Some(meta.value()?.parse()?);
+            } else if p.is_ident("when") {
+                a.when = Some(meta.value()?.parse()?);
             } else if p.is_ident("range") {
                 a.range = Some(pair(&meta)?);
             } else if p.is_ident("simple") {
@@ -116,6 +119,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         let label = a.label.ok_or_else(|| syn::Error::new(field.span(), "setting needs a label = \"...\""))?;
         let unit = a.unit.map(|s| s.value()).unwrap_or_default();
         let group = a.group.map(|s| s.value()).unwrap_or_default();
+        let when = a.when.map(|s| s.value()).unwrap_or_default();
         let help = help(field);
         let span = |r: Option<(Expr, Expr)>| match r {
             Some((min, max)) => quote!(::std::option::Option::Some(((#min) as f64, (#max) as f64))),
@@ -137,6 +141,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 group: #group,
                 depth: #depth,
                 flags: ::bpe_core::Flags { keyframe: #keyframe, random: #random, pulse: #pulse, structural: #structural },
+                when: #when,
             }
         });
         reads.push(quote! {
