@@ -1,0 +1,150 @@
+//! Particles: puffs of sparks, smoke, confetti, stars, shards or rings where balls hit.
+
+pub mod draw;
+
+use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+
+pub struct HitBurstKind;
+
+/// What a burst is made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BurstPreset {
+    #[default]
+    Sparks,
+    Smoke,
+    Confetti,
+    Stars,
+    Shards,
+    Rings,
+}
+
+impl BurstPreset {
+    /// The shape's number in particles.wgsl.
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Sparks => 0,
+            Self::Smoke => 1,
+            Self::Confetti => 2,
+            Self::Stars => 3,
+            Self::Shards => 4,
+            Self::Rings => 5,
+        }
+    }
+
+    /// Whether the preset glows (adds its light) when the blend is left to it.
+    pub fn glows(self) -> bool {
+        matches!(self, Self::Sparks | Self::Stars | Self::Rings)
+    }
+}
+
+/// Where a burst takes its colour from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BurstSource {
+    /// The colour of the ball that hit.
+    #[default]
+    Ball,
+    /// The burst's own Colour setting.
+    Own,
+}
+
+/// Whether particles add their light or paint over what is behind them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BurstBlend {
+    /// Sparks, stars and rings glow; smoke, confetti and shards cover.
+    #[default]
+    Auto,
+    Add,
+    Cover,
+}
+
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct HitBurst {
+    /// What the burst is made of.
+    #[setting(label = "Preset", simple, random)]
+    pub preset: BurstPreset,
+    /// How many particles each hit lets off.
+    #[setting(label = "Count", range(1, 200), simple, keyframe, random)]
+    pub count: i32,
+    /// How fast the particles fly.
+    #[setting(label = "Speed", range(0, 2000), unit = "px/s", simple, keyframe, random, pulse)]
+    pub speed: f32,
+    /// How big each particle is; for rings, how big the ring grows.
+    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random)]
+    pub size: f32,
+    /// How long the particles last.
+    #[setting(label = "Life", range(0.05, 3), unit = "s", simple, keyframe, random)]
+    pub life: f32,
+    /// The colour of the ball that hit, or the Colour below.
+    #[setting(label = "Colour from", simple, random)]
+    pub source: BurstSource,
+    /// The particles' colour when the burst has its own.
+    #[setting(label = "Colour", keyframe, random)]
+    pub color: Color,
+    /// How wide the burst fans out from the direction of the bounce.
+    #[setting(label = "Spread", range(0, 360), unit = "°", keyframe, random)]
+    pub spread: f32,
+    /// How fast the particles fall; negative makes them rise.
+    #[setting(label = "Gravity", range(-2000, 2000), unit = "px/s²", keyframe, random)]
+    pub gravity: f32,
+    /// How quickly the particles slow down.
+    #[setting(label = "Drag", range(0, 10), keyframe, random)]
+    pub drag: f32,
+    /// Add: the particles glow. Cover: they paint over what is behind them.
+    #[setting(label = "Blend", random)]
+    pub blend: BurstBlend,
+    /// Harder hits let off faster particles.
+    #[setting(label = "Follow impact", random)]
+    pub follow_impact: bool,
+    /// Hits slower than this let off nothing.
+    #[setting(label = "Least speed", range(0, 2000), unit = "px/s")]
+    pub least_speed: f32,
+}
+
+impl Default for HitBurst {
+    fn default() -> Self {
+        Self {
+            preset: BurstPreset::Sparks,
+            count: 12,
+            speed: 380.0,
+            size: 2.5,
+            life: 0.6,
+            source: BurstSource::Ball,
+            color: Color::WHITE,
+            spread: 140.0,
+            gravity: 300.0,
+            drag: 2.0,
+            blend: BurstBlend::Auto,
+            follow_impact: true,
+            least_speed: 0.0,
+        }
+    }
+}
+
+impl HitBurst {
+    /// Whether the particles add their light.
+    pub fn additive(&self) -> bool {
+        match self.blend {
+            BurstBlend::Auto => self.preset.glows(),
+            BurstBlend::Add => true,
+            BurstBlend::Cover => false,
+        }
+    }
+}
+
+impl ModuleKind for HitBurstKind {
+    fn id(&self) -> &'static str {
+        "particles.burst"
+    }
+    fn name(&self) -> &'static str {
+        "Hit burst"
+    }
+    fn help(&self) -> &'static str {
+        "A puff of sparks, smoke, confetti, stars, shards or rings wherever a ball hits."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Particles
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        HitBurst::defs()
+    }
+}

@@ -12,7 +12,7 @@ pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
 
 /// The linear-light colour of each of `count` items: the gradient sampled by `row_of(i)` in
 /// 0..=1 when there is one, else the look's one colour.
-pub fn colors(look: &ClassicLook, count: usize, row_of: impl Fn(usize) -> f32) -> impl Fn(usize) -> [f32; 4] {
+pub fn colors<F: Fn(usize) -> f32>(look: &ClassicLook, count: usize, row_of: F) -> impl Fn(usize) -> [f32; 4] + use<F> {
     let plain = look.color.to_linear();
     let gradient: Vec<Color> = look.gradient.clone();
     let _ = count;

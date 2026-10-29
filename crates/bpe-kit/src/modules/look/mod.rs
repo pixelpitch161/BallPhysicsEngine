@@ -1,6 +1,7 @@
 //! The classic look: a lit sphere with a halo, and a flash where it hits.
 
 pub mod draw;
+pub mod styled;
 
 use bpe_core::{Color, ModuleKind, SettingDef, Settings, SlotId};
 

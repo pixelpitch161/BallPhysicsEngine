@@ -67,6 +67,8 @@ pub struct Studio {
     pub selected: Option<ThingId>,
     pub history: History,
     pub status: String,
+    /// What is wrong with a shader module the preview skipped, shown in the status line.
+    pub shader_problem: Option<String>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
     /// The soundtrack no longer matches the scene.
@@ -120,6 +122,7 @@ impl Studio {
             selected: None,
             history: History::default(),
             status: "Ready.".into(),
+            shader_problem: None,
             confirm: None,
             panels: Panels::default(),
             sound_dirty: true,
@@ -476,6 +479,9 @@ impl Studio {
     fn status_line(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small().color(theme::MUTED));
+            if let Some(problem) = &self.shader_problem {
+                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(theme::ERROR));
+            }
             if self.sound_dirty || self.panels.sound.busy() {
                 ui.label(RichText::new("· Updating sound…").small().color(theme::MUTED));
             }
@@ -601,6 +607,7 @@ impl eframe::App for Studio {
         if outcome.selected.is_some() {
             self.selected = outcome.selected;
         }
+        self.shader_problem = outcome.shader_problem;
         if outcome.catching_up {
             ctx.request_repaint();
         }

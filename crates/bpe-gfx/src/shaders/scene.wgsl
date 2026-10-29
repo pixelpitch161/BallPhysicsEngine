@@ -169,6 +169,8 @@ struct BallIn {
     @location(1) radius: f32,
     @location(2) glow: f32,
     @location(3) color: vec4<f32>,
+    // The thing code plus half the seed, the seed, two spare.
+    @location(4) code: vec4<f32>,
 };
 
 struct BallOut {
@@ -177,6 +179,7 @@ struct BallOut {
     @location(1) color: vec4<f32>,
     @location(2) radius_px: f32,
     @location(3) glow: f32,
+    @location(4) @interpolate(flat) code: vec4<f32>,
 };
 
 @vertex
@@ -188,6 +191,7 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     out.color = b.color;
     out.radius_px = b.radius / g.view.z;
     out.glow = b.glow;
+    out.code = b.code;
     return out;
 }
 
