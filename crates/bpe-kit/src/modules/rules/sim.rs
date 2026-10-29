@@ -4,7 +4,7 @@ use bpe_core::{ModuleGraph, Params, SlotId};
 use bpe_runtime::{ModuleSim, RuleCx, ThingState, state_mut};
 use bpe_vm::{Act, Happening, Host, Program, Vm};
 
-use crate::graphs::{WorldHost, action, compile_module, happening};
+use crate::graphs::{WorldHost, action, compile_module, happenings};
 
 pub struct RulesSim;
 
@@ -46,7 +46,7 @@ impl ModuleSim for RulesSim {
         let seed = cx.world.seed ^ cx.thing.0 as u64;
         let vm = st.vm.get_or_insert_with(|| Vm::new(seed));
         let host = WorldHost { world: cx.world, me: cx.thing };
-        let happenings: Vec<Happening> = cx.events.iter().map(happening).collect();
+        let happenings: Vec<Happening> = cx.events.iter().flat_map(|e| happenings(e, cx.world)).collect();
         let mut acts = Vec::new();
         vm.run(program, &host, cx.world.time() as f32, &happenings, &mut acts);
         for act in acts {

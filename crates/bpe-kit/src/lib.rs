@@ -38,6 +38,9 @@ pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::folder::{FolderKind, FolderSettings, FolderSim};
+pub use things::obstacle::draw::ObstacleDraw;
+pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -48,6 +51,8 @@ pub fn sims() -> Sims {
     s.add_thing(SceneSim);
     s.add_thing(ArenaSim);
     s.add_thing(BallsSim);
+    s.add_thing(FolderSim);
+    s.add_thing(ObstacleSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(RulesSim);
@@ -60,6 +65,7 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ArenaDraw);
     d.add(BallsDraw);
+    d.add(ObstacleDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
@@ -87,8 +93,8 @@ pub fn kit() -> Kit {
     Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
 }
 
-/// What the mixer needs from the root's settings.
-pub fn mix_settings(resolved: &Resolved) -> MixSettings {
+/// What the mixer needs from the root's settings, and every thing's tags.
+pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     MixSettings {
         duration: root.duration,
@@ -97,12 +103,13 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
         loudness: root.loudness,
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
+        tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
     }
 }
 
 /// The soundtrack of a finished run of `scene`.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    bpe_mix::mix_with(&mix_settings(resolved), resolved, &scene.library, log, &kit.mixes)
+    bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, &scene.library, log, &kit.mixes)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
@@ -111,6 +118,8 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
+    r.add_thing(FolderKind);
+    r.add_thing(ObstacleKind);
     r.add_module(ClassicLookKind);
     r.add_module(StyledLookKind);
     r.add_module(StreakTrailKind);

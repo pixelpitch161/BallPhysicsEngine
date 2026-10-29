@@ -84,6 +84,52 @@ mod tests {
         assert_eq!(playback.world().bodies[&ThingId(2)].radius[0], radius);
     }
 
+    /// A ball hit by another ball was hit too: the rule fires for both balls of the pair.
+    #[test]
+    fn a_ball_to_ball_hit_fires_the_rule_for_both_balls() {
+        use bpe_core::Value;
+        use bpe_runtime::{Log, Party, World};
+        use glam::Vec2;
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(2));
+            p.set("rows", Value::Int(1));
+            p.set("spacing", Value::Number(60.0));
+            p.set("velocity", Value::Vec2([0.0, 0.0]));
+        });
+        let bounce = crate::testing::module_of(&scene, &kit.registry, ThingId(2), SlotId::Bounce);
+        scene.library.modules.get_mut(&bounce).unwrap().params.set("hit_balls", Value::Bool(true));
+        scene.things.get_mut(&ThingId(2)).unwrap().transform.position = Vec2::new(0.0, 300.0);
+        let rules = scene.add_module(&kit.registry, "rules.graph", "Grow").unwrap();
+        let mut g = RulesKind.template().unwrap();
+        let simple = (recipes().into_iter().find(|r| r.name == "Grow on hit").unwrap().add)(&mut g);
+        scene.library.modules.get_mut(&rules).unwrap().graph = Some(ModuleGraph {
+            graph: g,
+            template: "rules.graph".into(),
+            custom: true,
+            simple: simple.into_iter().collect(),
+        });
+        scene.add_slot(&kit.registry, ThingId(2), SlotId::Rules).unwrap();
+        scene.link(&kit.registry, ThingId(2), SlotId::Rules, rules).unwrap();
+        let resolved = resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        {
+            let b = w.bodies.get_mut(&ThingId(2)).unwrap();
+            b.velocity[0] = Vec2::new(200.0, 0.0);
+            b.velocity[1] = Vec2::new(-200.0, 0.0);
+        }
+        let mut log = Log::default();
+        w.advance_to(0.2, &kit.sims, &mut log);
+        // What the rule asked for applies at the start of the next step.
+        w.step(&kit.sims, &mut log);
+        let pair =
+            log.events().iter().find(|e| e.b == Some(Party { thing: ThingId(2), item: 1 })).expect("the balls met");
+        assert_eq!(pair.a, Party { thing: ThingId(2), item: 0 });
+        assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Hit).count(), 1, "no wall hits yet");
+        let radius = &w.bodies[&ThingId(2)].radius;
+        assert_eq!((radius[0], radius[1]), (26.0, 26.0), "both balls grew by the recipe's 2 px");
+    }
+
     #[test]
     fn every_recipe_compiles_and_runs() {
         let all = recipes();

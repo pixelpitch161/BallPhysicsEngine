@@ -1,9 +1,10 @@
-//! Basic motion: gravity and air drag.
+//! Basic motion: gravity, air drag and wind.
 
 pub mod graph;
 pub mod sim;
 
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
+use glam::Vec2;
 
 pub struct BasicMotionKind;
 
@@ -15,11 +16,14 @@ pub struct BasicMotion {
     /// How quickly the air slows them.
     #[setting(label = "Air drag", range(0, 5), unit = "per s", simple, keyframe, random)]
     pub drag: f32,
+    /// A steady push on these, in pixels per second squared.
+    #[setting(label = "Wind", unit = "px/s²", keyframe, random, pulse)]
+    pub wind: Vec2,
 }
 
 impl Default for BasicMotion {
     fn default() -> Self {
-        Self { gravity_scale: 1.0, drag: 0.0 }
+        Self { gravity_scale: 1.0, drag: 0.0, wind: Vec2::ZERO }
     }
 }
 
@@ -31,7 +35,7 @@ impl ModuleKind for BasicMotionKind {
         "Basic"
     }
     fn help(&self) -> &'static str {
-        "Falls under gravity and is slowed by the air."
+        "Falls under gravity, is slowed by the air and pushed by the wind."
     }
     fn slot(&self) -> SlotId {
         SlotId::Motion

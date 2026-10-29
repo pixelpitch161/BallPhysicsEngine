@@ -3,9 +3,23 @@
 pub mod draw;
 pub mod styled;
 
-use bpe_core::{Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct ClassicLookKind;
+
+/// What spreads the Colours across the balls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum GradientBy {
+    /// The row they start in.
+    #[default]
+    Row,
+    /// Their order, first to last.
+    Order,
+    /// How fast each one is going right now.
+    Speed,
+    /// How often each one has hit something.
+    Hits,
+}
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ClassicLook {
@@ -21,6 +35,16 @@ pub struct ClassicLook {
     /// Spread across the balls from the first row to the last; empty uses Colour.
     #[setting(label = "Colours", random)]
     pub gradient: Vec<Color>,
+    /// What spreads the Colours across the balls: the row they start in, their order, how fast
+    /// they go, or how often they have hit.
+    #[setting(label = "Colours follow", group = "Colours")]
+    pub gradient_by: GradientBy,
+    /// The speed in px/s, or number of hits, at which the last colour is reached.
+    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random)]
+    pub gradient_full: f32,
+    /// Every hit turns the colour this far round the colour wheel.
+    #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Colours", keyframe, random)]
+    pub hue_per_hit: f32,
     /// How big the flash is.
     #[setting(label = "Flash size", range(0, 300), unit = "px", keyframe)]
     pub flash_size: f32,
@@ -36,6 +60,9 @@ impl Default for ClassicLook {
             glow: 0.12,
             flash: 0.4,
             gradient: Vec::new(),
+            gradient_by: GradientBy::Row,
+            gradient_full: 1000.0,
+            hue_per_hit: 0.0,
             flash_size: 26.0,
             flash_seconds: 0.25,
         }

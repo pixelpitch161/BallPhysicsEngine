@@ -123,9 +123,10 @@ mod tests {
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let slot = &resolved.things[&BALLS].slots[&SlotId::Sound];
         let graph = scene.library.modules[&slot.module].graph.as_ref();
-        let settings = mix_settings(&resolved);
+        let settings = mix_settings(&scene, &resolved);
         let index = |e: &Event| e.step;
-        let cx = MixCx { settings: &settings, frames: usize::MAX, hit_index: &index };
+        let any = |_: &bpe_core::Target, _: ThingId, _: ThingId| true;
+        let cx = MixCx { settings: &settings, frames: usize::MAX, hit_index: &index, matches: &any };
         let events = [hit(240, 500.0), hit(480, 300.0), hit(720, 5.0)];
         let mut notes = Vec::new();
         NoteSoundMix.notes_with(&slot.params, graph, BALLS, &events, &cx, &mut notes);

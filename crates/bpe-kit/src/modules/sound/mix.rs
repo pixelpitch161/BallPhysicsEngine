@@ -7,10 +7,10 @@ use std::f32::consts::FRAC_PI_4;
 
 use bpe_core::{ModuleGraph, Params, Settings, SlotId, ThingId};
 use bpe_mix::{Chords, MixCx, ModuleMix, Note, SAMPLE_RATE, mix64};
-use bpe_runtime::{Event, EventKind};
+use bpe_runtime::{Event, EventKind, Party};
 use bpe_vm::{Ball, Host, Program, Val, Vm};
 
-use super::NoteSound;
+use super::{NoteSound, PitchBy, PlaysWhen};
 use crate::graphs::{bind, compile_module};
 
 pub struct NoteSoundMix;
@@ -26,17 +26,38 @@ struct Played {
     brightness: f32,
 }
 
-fn native(s: &NoteSound, chords: &Chords, e: &Event, time: f64, index: u64, cx: &MixCx) -> Played {
+/// One event this sound speaks for, with what the mixer knows about it.
+struct Heard<'a> {
+    event: &'a Event,
+    time: f64,
+    /// The event's place in the whole log, for anything random.
+    index: u64,
+    /// How often the ball has hit so far, counting this one.
+    count: u32,
+}
+
+/// The native answer for one hit: whether it is loud enough, which note of the chord it plays
+/// (at random, climbing with the hit's speed or with the ball's hits) and how.
+fn native(s: &NoteSound, chords: &Chords, h: &Heard, cx: &MixCx) -> Played {
     let span = (s.loudest_hit - s.quietest_hit).max(1.0);
-    let candidates = chords.notes_at(time);
-    let key =
-        if candidates.is_empty() { 0 } else { candidates[mix64(cx.settings.seed ^ index) as usize % candidates.len()] };
+    let velocity = ((h.event.speed - s.quietest_hit) / span).clamp(0.0, 1.0);
+    let candidates = chords.notes_at(h.time);
+    let key = if candidates.is_empty() {
+        0
+    } else {
+        let pick = match s.pitch_by {
+            PitchBy::Random => mix64(cx.settings.seed ^ h.index) as usize % candidates.len(),
+            PitchBy::Speed => (velocity * (candidates.len() - 1) as f32).round() as usize,
+            PitchBy::Hits => (h.count.max(1) as usize - 1) % candidates.len(),
+        };
+        candidates[pick]
+    };
     Played {
-        play: e.speed >= s.quietest_hit && !candidates.is_empty(),
+        play: h.event.speed >= s.quietest_hit && !candidates.is_empty(),
         key,
-        velocity: ((e.speed - s.quietest_hit) / span).clamp(0.0, 1.0),
+        velocity,
         volume: s.volume,
-        pan: (e.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width,
+        pan: (h.event.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width,
         decay: s.decay,
         brightness: s.brightness,
     }
@@ -54,6 +75,79 @@ fn note(s: &NoteSound, frame: usize, p: &Played) -> Note {
         right: gain * angle.sin(),
         decay: p.decay,
         brightness: p.brightness,
+    }
+}
+
+/// Walks the events this sound speaks for, in order: the hits "Plays when" and "Only hits
+/// against" ask for, and the Note events a rule logs for the thing's own balls. Each one goes
+/// to `play` with its native answer, which says what plays, if anything; a note closer than
+/// "Shortest gap" to the last one played is dropped first.
+fn each_note(
+    s: &NoteSound,
+    thing: ThingId,
+    events: &[Event],
+    cx: &MixCx,
+    mut play: impl FnMut(&Heard, Played) -> Option<Played>,
+    out: &mut Vec<Note>,
+) {
+    let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
+    let rate = cx.settings.steps_per_second.max(1);
+    // How often each ball has hit, as far as this thing has seen.
+    let mut hits: BTreeMap<Party, u32> = BTreeMap::new();
+    let mut last_note: Option<f64> = None;
+    for e in events {
+        if !matches!(e.kind, EventKind::Hit | EventKind::Note) {
+            continue;
+        }
+        let hitting = e.a.thing == thing;
+        let other = if hitting { e.b } else { Some(e.a) };
+        let ball = if hitting { e.a } else { e.b.unwrap_or(e.a) };
+        let count = hits.entry(ball).or_insert(0);
+        if e.kind == EventKind::Hit {
+            *count += 1;
+        }
+        let count = *count;
+        if e.kind == EventKind::Hit {
+            // Two balls of this thing hitting each other: the other one has hit too.
+            if let Some(other) = other
+                && other != ball
+                && other.thing == thing
+            {
+                *hits.entry(other).or_insert(0) += 1;
+            }
+            let wanted = match s.plays_when {
+                PlaysWhen::Hitting => hitting,
+                PlaysWhen::BeingHit => !hitting,
+                PlaysWhen::Both => true,
+            };
+            if !wanted {
+                continue;
+            }
+            if let Some(other) = other
+                && !(cx.matches)(&s.sounds_for, thing, other.thing)
+            {
+                continue;
+            }
+        } else if !hitting {
+            // A rule's note is for the ball it names, whoever else hears about it.
+            continue;
+        }
+        let time = e.time(rate);
+        if let Some(last) = last_note
+            && s.min_gap > 0.0
+            && time - last < s.min_gap as f64
+        {
+            continue;
+        }
+        let frame = (time * SAMPLE_RATE as f64).round() as usize;
+        if frame >= cx.frames {
+            continue;
+        }
+        let heard = Heard { event: e, time, index: (cx.hit_index)(e), count };
+        let n = native(s, &chords, &heard, cx);
+        let Some(p) = play(&heard, n) else { continue };
+        last_note = Some(time);
+        out.push(note(s, frame, &p));
     }
 }
 
@@ -88,26 +182,9 @@ impl ModuleMix for NoteSoundMix {
         "sound.notes"
     }
 
-    fn notes(&self, params: &Params, _thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>) {
+    fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>) {
         let s = NoteSound::from_params(params);
-        let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
-        let rate = cx.settings.steps_per_second.max(1);
-        for e in events {
-            // Hits play a note, and so do the Note events a rule's "Play a note" block logs.
-            if !matches!(e.kind, EventKind::Hit | EventKind::Note) {
-                continue;
-            }
-            let time = e.time(rate);
-            let frame = (time * SAMPLE_RATE as f64).round() as usize;
-            if frame >= cx.frames {
-                continue;
-            }
-            let n = native(&s, &chords, e, time, (cx.hit_index)(e), cx);
-            if !n.play {
-                continue;
-            }
-            out.push(note(&s, frame, &n));
-        }
+        each_note(&s, thing, events, cx, |_, n| n.play.then_some(n), out);
     }
 
     fn notes_with(
@@ -122,59 +199,138 @@ impl ModuleMix for NoteSoundMix {
         let Some(program) = Self::compiled(params, graph) else { return self.notes(params, thing, events, cx, out) };
         let s = NoteSound::from_params(params);
         let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
-        let rate = cx.settings.steps_per_second.max(1);
         let half_width = cx.settings.half_width.max(1.0);
-        // How many hits each ball has had so far, counting this one.
-        let mut hits: BTreeMap<u32, u32> = BTreeMap::new();
-        for e in events {
-            if !matches!(e.kind, EventKind::Hit | EventKind::Note) {
-                continue;
-            }
-            let count = hits.entry(e.a.item).or_default();
-            if e.kind == EventKind::Hit {
-                *count += 1;
-            }
-            let time = e.time(rate);
-            let frame = (time * SAMPLE_RATE as f64).round() as usize;
-            if frame >= cx.frames {
-                continue;
-            }
-            let index = (cx.hit_index)(e);
-            let n = native(&s, &chords, e, time, index, cx);
-            let host = SoundHost { chords: &chords, seed: cx.settings.seed, time };
-            let inputs = [
-                Val::Ball(Some(Ball { thing: e.a.thing, item: e.a.item })),
-                Val::Number(e.speed),
-                Val::Number(index as f32),
-                Val::Number(time as f32),
-                Val::Number(e.point.x / half_width),
-                Val::Number(e.point.y / half_width),
-                Val::Number(*count as f32),
-            ];
-            let o = Vm::eval(&program, &host, time as f32, &inputs, index);
-            if !o.boolean(0, n.play) {
-                continue;
-            }
-            let played = Played {
-                play: true,
-                key: o.number(1, n.key as f32).round().clamp(0.0, 127.0) as u8,
-                velocity: o.number(2, n.velocity).clamp(0.0, 1.0),
-                volume: o.number(3, n.volume).clamp(-80.0, 24.0),
-                pan: o.number(4, n.pan).clamp(-1.0, 1.0),
-                decay: o.number(5, n.decay).clamp(0.01, 30.0),
-                brightness: o.number(6, n.brightness).clamp(0.0, 1.0),
-            };
-            out.push(note(&s, frame, &played));
-        }
+        each_note(
+            &s,
+            thing,
+            events,
+            cx,
+            |h, n| {
+                let e = h.event;
+                let host = SoundHost { chords: &chords, seed: cx.settings.seed, time: h.time };
+                let inputs = [
+                    Val::Ball(Some(Ball { thing: e.a.thing, item: e.a.item })),
+                    Val::Number(e.speed),
+                    Val::Number(h.index as f32),
+                    Val::Number(h.time as f32),
+                    Val::Number(e.point.x / half_width),
+                    Val::Number(e.point.y / half_width),
+                    Val::Number(h.count as f32),
+                ];
+                let o = Vm::eval(&program, &host, h.time as f32, &inputs, h.index);
+                o.boolean(0, n.play).then(|| Played {
+                    play: true,
+                    key: o.number(1, n.key as f32).round().clamp(0.0, 127.0) as u8,
+                    velocity: o.number(2, n.velocity).clamp(0.0, 1.0),
+                    volume: o.number(3, n.volume).clamp(-80.0, 24.0),
+                    pan: o.number(4, n.pan).clamp(-1.0, 1.0),
+                    decay: o.number(5, n.decay).clamp(0.01, 30.0),
+                    brightness: o.number(6, n.brightness).clamp(0.0, 1.0),
+                })
+            },
+            out,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::NoteSoundMix;
     use crate::{kit, mix_scene, new_scene};
-    use bpe_core::ThingId;
+    use bpe_core::{SlotId, Target, ThingId, Value, resolve, resolve_slot};
+    use bpe_mix::{MixCx, MixSettings, ModuleMix};
     use bpe_runtime::{Event, EventKind, Log, Party};
     use glam::Vec2;
+
+    #[test]
+    fn a_thing_being_hit_sounds_only_when_asked_and_only_for_its_targets() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let resolved = resolve(&scene, &kit.registry);
+        let mut log = Log::default();
+        log.push(hit(240, 0.0, 500.0)); // the ball (2) hits the arena (1)
+        let plain = mix_scene(&scene, &resolved, &log, &kit);
+        // The arena's inherited sound only speaks for its own hits, so a second sound that plays
+        // when it is hit adds a note.
+        let m = scene.add_module(&kit.registry, "sound.notes", "Wall sound").unwrap();
+        let wall = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        wall.set("plays_when", Value::Choice("being_hit".into()));
+        wall.set("instrument", Value::Choice("marimba".into()));
+        scene.link(&kit.registry, ThingId(1), SlotId::Sound, m).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let both = mix_scene(&scene, &resolved, &log, &kit);
+        assert!(both.samples != plain.samples, "the wall's own note is heard");
+        // Pointing the wall's sound at a tag nothing has silences it again.
+        scene.library.modules.get_mut(&m).unwrap().params.set("sounds_for", Value::Target(Target::Tag("pegs".into())));
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(mix_scene(&scene, &resolved, &log, &kit).samples == plain.samples, "no tagged thing hit it");
+        // Tagging the ball brings it back.
+        scene.things.get_mut(&ThingId(2)).unwrap().tags.insert("pegs".into());
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(mix_scene(&scene, &resolved, &log, &kit).samples == both.samples, "the tagged ball hit it");
+        // Hitting (the default) on the wall's sound stays silent: the wall hits nothing.
+        scene.library.modules.get_mut(&m).unwrap().params.remove("plays_when");
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(mix_scene(&scene, &resolved, &log, &kit).samples == plain.samples, "walls don't hit");
+        // "Both" on the ball's own sound plays the ball's hit once, as the hitter only.
+        scene.set_slot_inherit(ThingId(1), SlotId::Sound);
+        let own = resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
+        scene.library.modules.get_mut(&own).unwrap().params.set("plays_when", Value::Choice("both".into()));
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(mix_scene(&scene, &resolved, &log, &kit).samples == plain.samples, "one note, not two");
+    }
+
+    fn test_cx<'a>(settings: &'a MixSettings, log: &'a Log) -> MixCx<'a> {
+        fn index(_: &Event) -> u64 {
+            0
+        }
+        fn any(_: &Target, _: ThingId, _: ThingId) -> bool {
+            true
+        }
+        let _ = log;
+        MixCx { settings, frames: 20 * 48_000, hit_index: &index, matches: &any }
+    }
+
+    #[test]
+    fn notes_can_climb_with_hits_and_quick_repeats_merge() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let m = resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
+        scene.library.modules.get_mut(&m).unwrap().params.set("pitch_by", Value::Choice("hits".into()));
+        scene.library.modules.get_mut(&m).unwrap().params.set("low_note", Value::Int(60));
+        scene.library.modules.get_mut(&m).unwrap().params.set("high_note", Value::Int(72));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut log = Log::default();
+        for step in [240, 480, 720] {
+            log.push(hit(step, 0.0, 500.0));
+        }
+        let settings = crate::mix_settings(&scene, &resolved);
+        let cx = test_cx(&settings, &log);
+        let params = &resolved.things[&ThingId(2)].slots[&SlotId::Sound].params;
+        let mut notes = Vec::new();
+        NoteSoundMix.notes(params, ThingId(2), log.events(), &cx, &mut notes);
+        assert_eq!(notes.len(), 3);
+        let keys: Vec<u8> = notes.iter().map(|n| n.key).collect();
+        assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
+        // By speed: a soft hit plays the lowest note, a hard one the highest.
+        scene.library.modules.get_mut(&m).unwrap().params.set("pitch_by", Value::Choice("speed".into()));
+        let resolved = resolve(&scene, &kit.registry);
+        let params = &resolved.things[&ThingId(2)].slots[&SlotId::Sound].params;
+        let mut soft_hard = Log::default();
+        soft_hard.push(hit(240, 0.0, 30.0));
+        soft_hard.push(hit(480, 0.0, 5000.0));
+        let mut by_speed = Vec::new();
+        NoteSoundMix.notes(params, ThingId(2), soft_hard.events(), &cx, &mut by_speed);
+        assert!(by_speed[0].key < by_speed[1].key, "{:?}", by_speed.iter().map(|n| n.key).collect::<Vec<_>>());
+        // A shortest gap of 1.5 s drops the middle of three notes a second apart.
+        scene.library.modules.get_mut(&m).unwrap().params.set("min_gap", Value::Number(1.5));
+        let resolved = resolve(&scene, &kit.registry);
+        let params = &resolved.things[&ThingId(2)].slots[&SlotId::Sound].params;
+        let mut few = Vec::new();
+        NoteSoundMix.notes(params, ThingId(2), log.events(), &cx, &mut few);
+        assert_eq!(few.len(), 2, "1.0 s, (2.0 s dropped), 3.0 s");
+        assert_eq!((few[0].frame, few[1].frame), (48_000, 144_000));
+    }
 
     fn hit(step: u64, x: f32, speed: f32) -> Event {
         Event {

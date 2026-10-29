@@ -308,6 +308,21 @@ pub fn happening(e: &Event) -> Happening {
     Happening { kind, a: ball(e.a), b: e.b.map(ball), point: e.point, normal: e.normal, speed: e.speed }
 }
 
+/// The happenings a rules graph sees for one event: the event itself, and for a hit between two
+/// balls the same hit from the other ball's side, so "When hit" fires for the ball that was hit
+/// as well as the one the log names first.
+pub fn happenings(e: &Event, world: &World) -> Vec<Happening> {
+    let first = happening(e);
+    let mut out = vec![first.clone()];
+    if e.kind == EventKind::Hit
+        && let Some(b) = e.b
+        && world.bodies.contains_key(&b.thing)
+    {
+        out.push(Happening { a: ball(b), b: Some(ball(e.a)), normal: -e.normal, ..first });
+    }
+    out
+}
+
 /// What a rule asked for, as the runtime applies it. `point` is where the rule fired, for events.
 pub fn action(act: Act, point: Vec2) -> Action {
     match act {

@@ -9,10 +9,10 @@ pub mod chords;
 pub mod instruments;
 pub mod level;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use bpe_core::{Library, ModuleGraph, Params, Resolved, SlotId, ThingId};
+use bpe_core::{Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
 use bpe_runtime::{Event, Log};
 
 pub use chords::{Chords, pitch_classes};
@@ -82,6 +82,8 @@ pub struct MixSettings {
     pub seed: u64,
     /// Half the video's width, for panning.
     pub half_width: f32,
+    /// Every thing's tags, for sounds that only play against some things.
+    pub tags: BTreeMap<ThingId, BTreeSet<String>>,
 }
 
 /// What a Sound module can read while turning events into notes.
@@ -91,13 +93,16 @@ pub struct MixCx<'a> {
     pub frames: usize,
     /// An event's position in the log, for repeatable note picks.
     pub hit_index: &'a dyn Fn(&Event) -> u64,
+    /// Whether a thing is one a target points at, seen from another: `(target, me, other)`.
+    pub matches: &'a dyn Fn(&Target, ThingId, ThingId) -> bool,
 }
 
 /// How a Sound module kind turns events into notes.
 pub trait ModuleMix: Send + Sync + 'static {
     /// The module kind's id, as registered in `bpe_core`.
     fn kind(&self) -> &'static str;
-    /// Adds the notes for `events`, which are the ones where `thing` is the first party.
+    /// Adds the notes for `events`, which are the ones where `thing` is either party: the one
+    /// that hit (`a`) or the one that was hit (`b`).
     fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>);
     /// Like [`ModuleMix::notes`], also given the module's graph when it has one, so an edited
     /// module can run it. The default ignores the graph.
@@ -111,6 +116,24 @@ pub trait ModuleMix: Send + Sync + 'static {
         out: &mut Vec<Note>,
     ) {
         self.notes(params, thing, events, cx, out)
+    }
+}
+
+/// The target rules over a resolved scene's kinds and the settings' tags: the same rules as
+/// `Scene::target_matches`.
+pub fn target_matches(
+    resolved: &Resolved,
+    settings: &MixSettings,
+    target: &Target,
+    me: ThingId,
+    other: ThingId,
+) -> bool {
+    match target {
+        Target::Anything => true,
+        Target::Me => other == me && resolved.things.contains_key(&other),
+        Target::Thing(t) => other == *t && resolved.things.contains_key(&other),
+        Target::Tag(tag) => settings.tags.get(&other).is_some_and(|t| t.contains(tag)),
+        Target::Kind(kind) => resolved.things.get(&other).is_some_and(|r| r.kind == *kind),
     }
 }
 
@@ -154,12 +177,14 @@ pub fn mix_with(
         let within = all[start..].iter().position(|x| x == e).unwrap_or(0);
         (start + within) as u64
     };
-    let cx = MixCx { settings, frames, hit_index: &hit_index };
+    let matches = |t: &Target, me: ThingId, other: ThingId| target_matches(resolved, settings, t, me, other);
+    let cx = MixCx { settings, frames, hit_index: &hit_index, matches: &matches };
     let mut notes = Vec::new();
     for (id, r) in &resolved.things {
         let Some(slot) = r.slots.get(&SlotId::Sound) else { continue };
         let Some(m) = mixes.module(&slot.kind) else { continue };
-        let events: Vec<Event> = log.events().iter().filter(|e| e.a.thing == *id).cloned().collect();
+        let party = |e: &Event| e.a.thing == *id || e.b.is_some_and(|b| b.thing == *id);
+        let events: Vec<Event> = log.events().iter().filter(|e| party(e)).cloned().collect();
         if events.is_empty() {
             continue;
         }

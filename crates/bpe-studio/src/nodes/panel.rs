@@ -360,6 +360,7 @@ impl NodePanel {
 mod tests {
     use super::*;
     use crate::inspector::{self, Inspector};
+    use crate::selection::Selection;
     use bpe_core::{ModuleId, Resolved, Scene, SlotId, ThingId};
     use bpe_graph::Catalog;
     use bpe_kit::graphs::{compile_module, module_graph};
@@ -377,7 +378,7 @@ mod tests {
         scene: Scene,
         kit: Kit,
         resolved: Resolved,
-        selected: Option<ThingId>,
+        selection: Selection,
     }
 
     /// The inspector on the right and the node panel along the bottom, wired up as the studio
@@ -385,8 +386,12 @@ mod tests {
     fn harness(scene: Scene, selected: Option<ThingId>) -> Harness<'static, State> {
         let kit = bpe_kit::kit();
         let resolved = resolve_scene(&scene, &kit.registry);
+        let mut selection = Selection::default();
+        if let Some(id) = selected {
+            selection.set(id);
+        }
         let state =
-            State { inspector: Inspector::default(), panel: NodePanel::default(), scene, kit, resolved, selected };
+            State { inspector: Inspector::default(), panel: NodePanel::default(), scene, kit, resolved, selection };
         let mut h = Harness::builder()
             .with_size(vec2(1200.0, 1000.0))
             .with_step_dt(1.0 / 60.0)
@@ -399,7 +404,8 @@ mod tests {
                     s.inspector.nodes_open = s.panel.open;
                     egui::Panel::right("inspector").default_size(420.0).show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
-                        changed |= inspector::show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, s.selected);
+                        changed |=
+                            inspector::show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection);
                     });
                     if let Some((thing, slot)) = s.inspector.nodes_request.take() {
                         s.panel.open_at(thing, slot);

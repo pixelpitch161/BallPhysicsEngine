@@ -1,5 +1,5 @@
-//! Gravity and drag on every ball that uses the module. A module whose graph has been edited
-//! runs the graph on every ball instead.
+//! Gravity, drag and wind on every ball that uses the module. A module whose graph has been
+//! edited runs the graph on every ball instead.
 
 use bpe_core::{ModuleGraph, Params, Settings, SlotId};
 use bpe_runtime::{Bodies, ModuleSim, SimCx, ThingState, state};
@@ -42,7 +42,7 @@ impl ModuleSim for BasicMotionSim {
 
     fn forces(&self, st: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32) {
         let m = &state::<MotionState>(st).settings;
-        let pull = gravity * m.gravity_scale * dt;
+        let pull = (gravity * m.gravity_scale + m.wind) * dt;
         let keep = (1.0 - m.drag * dt).max(0.0);
         for (v, alive) in bodies.velocity.iter_mut().zip(&bodies.alive) {
             if *alive {
@@ -55,7 +55,7 @@ impl ModuleSim for BasicMotionSim {
         let st = state::<MotionState>(st);
         let Some(program) = &st.program else { return self.forces(st, bodies, gravity, dt) };
         let m = &st.settings;
-        let pull = gravity * m.gravity_scale * dt;
+        let pull = (gravity * m.gravity_scale + m.wind) * dt;
         let keep = (1.0 - m.drag * dt).max(0.0);
         let host = SeedHost(cx.seed);
         for i in 0..bodies.len() {
@@ -76,5 +76,23 @@ impl ModuleSim for BasicMotionSim {
             let out = Vm::eval(program, &host, cx.time, &inputs, salt);
             bodies.velocity[i] = if out.wired(0) { out.vector(0, v) } else { (v + pull) * keep };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bpe_core::Value;
+    use bpe_runtime::{Log, World};
+
+    use crate::testing::{BALLS, one_ball_with_motion};
+
+    #[test]
+    fn wind_pushes_balls_sideways() {
+        let (scene, resolved, kit) = one_ball_with_motion(|p| p.set("wind", Value::Vec2([400.0, 0.0])));
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let x0 = w.bodies[&BALLS].position[0].x;
+        w.advance_to(0.25, &kit.sims, &mut Log::default());
+        // 300 px/s launch plus 400 px/s² wind for a quarter second: about 75 + 12.5 px.
+        assert!((w.bodies[&BALLS].position[0].x - x0 - 87.5).abs() < 2.0, "{}", w.bodies[&BALLS].position[0].x - x0);
     }
 }

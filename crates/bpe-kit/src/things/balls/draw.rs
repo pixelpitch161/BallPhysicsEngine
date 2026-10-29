@@ -28,10 +28,12 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
 }
 
 /// The linear-light colour of each ball of the thing being drawn, from its look's colour or
-/// gradient, when it has a look, with any tint a rule gave the ball laid over it as strongly
-/// as the tint's alpha says. Trails and particles take their colours from here too.
-pub fn ball_colors(cx: &DrawCx) -> Option<impl Fn(usize) -> [f32; 4] + use<>> {
+/// gradient (by row, order, speed or hits) and its hue shift per hit, when it has a look and
+/// bodies, with any tint a rule gave the ball laid over it as strongly as the tint's alpha
+/// says. Trails and particles take their colours from here too.
+pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + 'a> {
     let look = look_of(cx)?;
+    let bodies = cx.world.bodies.get(&cx.thing.id)?;
     let settings = BallsSettings::from_params(&cx.resolved.params);
     let row_of = move |i: usize| match settings.arrangement {
         Arrangement::Block if settings.rows > 1 => {
@@ -39,13 +41,10 @@ pub fn ball_colors(cx: &DrawCx) -> Option<impl Fn(usize) -> [f32; 4] + use<>> {
         }
         _ => 0.0,
     };
-    let bodies = cx.world.bodies.get(&cx.thing.id);
-    let count = bodies.map_or(0, |b| b.len());
-    let tints: Vec<[f32; 4]> = bodies.map(|b| b.tint.clone()).unwrap_or_default();
-    let look_color = colors(&look, count, row_of);
+    let look_color = colors(look, bodies, row_of);
     Some(move |i: usize| {
         let c = look_color(i);
-        let Some(t) = tints.get(i) else { return c };
+        let Some(t) = bodies.tint.get(i) else { return c };
         [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]]
     })
 }
@@ -240,6 +239,47 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert!(frame.balls.is_empty() && frame.shapes.is_empty());
+    }
+
+    #[test]
+    fn colours_can_follow_hits_and_shift_hue_per_hit() {
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", bpe_core::Value::Int(2));
+            p.set("rows", bpe_core::Value::Int(1));
+            p.set("velocity", bpe_core::Value::Vec2([0.0, 0.0]));
+        });
+        let m =
+            bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
+        let look = scene.library.modules.get_mut(&m).unwrap();
+        look.params.set(
+            "gradient",
+            bpe_core::Value::Colors(vec![bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]),
+        );
+        look.params.set("gradient_by", bpe_core::Value::Choice("hits".into()));
+        look.params.set("gradient_full", bpe_core::Value::Number(2.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        world.bodies.get_mut(&ThingId(2)).unwrap().hits[1] = 2;
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!(frame.balls[0].color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.balls[1].color, [0.0, 0.0, 1.0, 1.0]);
+        // By order: first and last colour.
+        scene.library.modules.get_mut(&m).unwrap().params.set("gradient_by", bpe_core::Value::Choice("order".into()));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!((frame.balls[0].color, frame.balls[1].color), ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]));
+        // By speed: both still, so both red.
+        scene.library.modules.get_mut(&m).unwrap().params.set("gradient_by", bpe_core::Value::Choice("speed".into()));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!(frame.balls[1].color, [1.0, 0.0, 0.0, 1.0]);
+        // Red turned 240° (two hits of 120°) is blue; the first ball with no hits stays red.
+        scene.library.modules.get_mut(&m).unwrap().params.set("hue_per_hit", bpe_core::Value::Number(120.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        assert_eq!(frame.balls[0].color, [1.0, 0.0, 0.0, 1.0]);
+        assert!(frame.balls[1].color[2] > 0.9 && frame.balls[1].color[0] < 0.1, "{:?}", frame.balls[1].color);
     }
 
     #[test]
