@@ -5,8 +5,12 @@
 
 pub mod bodies;
 pub mod events;
+pub mod plugins;
 pub mod walls;
+pub mod world;
 
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
+pub use plugins::{Limits, ModuleSim, ModuleState, Sims, ThingSim, ThingState, state, state_mut};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
+pub use world::{World, fingerprint};
