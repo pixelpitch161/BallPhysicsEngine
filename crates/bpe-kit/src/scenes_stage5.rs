@@ -10,10 +10,13 @@ use crate::{
 
 const BALLS: ThingId = ThingId(2);
 
+/// How a stage 2 scene gets dressed up.
+type Dress = fn(&Registry, &mut Scene);
+
 /// The five stage 5 scenes, in order, each with its name and the stage 2 scene it was built on.
 pub fn stage5_with_twins(reg: &Registry) -> Vec<(String, Scene, String)> {
     let twins = stage2(reg);
-    let dress: [(&str, usize, fn(&Registry, &mut Scene)); 5] = [
+    let dress: [(&str, usize, Dress); 5] = [
         ("Lava ball", 0, lava_ball),
         ("Confetti drop", 1, confetti_drop),
         ("Spark block", 2, spark_block),
