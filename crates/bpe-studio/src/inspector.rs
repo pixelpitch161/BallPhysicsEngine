@@ -463,7 +463,11 @@ pub fn show(
                         let overridden = |key: &str| overrides.is_some_and(|o| o.get(key).is_some());
                         let inherited = |key: &str| scene.value_at(reg, &of_module(key));
                         let marks = |key: &str| mark(&of_thing(key));
-                        let locked = |key: &str| scene.is_locked(&of_thing(key));
+                        // A row shows the module's value until this thing changes it, so a lock
+                        // goes on what the row shows: the module's setting, else this change.
+                        let locked = |key: &str| {
+                            scene.is_locked(&of_thing(key)) || (!overridden(key) && scene.is_locked(&of_module(key)))
+                        };
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &overridden,
@@ -477,7 +481,18 @@ pub fn show(
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_thing(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_thing(key), source)));
-                        edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(of_thing(key), lock)));
+                        for (key, lock) in out.locks {
+                            match (lock, overridden(key)) {
+                                (true, true) => edits.push(Edit::Lock(of_thing(key), true)),
+                                (true, false) => edits.push(Edit::Lock(of_module(key), true)),
+                                (false, overridden) => {
+                                    edits.push(Edit::Lock(of_thing(key), false));
+                                    if !overridden {
+                                        edits.push(Edit::Lock(of_module(key), false));
+                                    }
+                                }
+                            }
+                        }
                     }
                     Write::Inherited { module, .. } => {
                         if change_here(ui).clicked() {
@@ -1544,5 +1559,40 @@ mod tests {
         assert_eq!(styled.kind, "look.styled");
         assert_eq!(styled.params.get("color"), Some(&colour), "the colour comes along");
         assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
+    }
+
+    #[test]
+    fn a_padlock_on_a_shared_card_holds_when_the_dice_roll() {
+        use bpe_kit::random::{Roll, Scope, roll};
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
+            panic!("the ball's look is linked");
+        };
+        // A second ball shares the look, so the first ball's look card edits its own changes.
+        let other = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
+        scene.link(&reg, other, SlotId::Look, module).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.run();
+        h.get_by_label("Lock when randomizing").click();
+        h.run();
+        assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
+        let colour = Address { owner: Owner::Module(module), slot: None, key: "color".into() };
+        let before = h.state().scene.value_at(&reg, &colour);
+        // Neither a whole-scene roll nor this card's die moves the colour this ball shows.
+        for (seed, scope) in [(7, Scope::Scene), (8, Scope::Card { thing: ThingId(2), slot: Some(SlotId::Look) })] {
+            let mut scene = h.state().scene.clone();
+            roll(&mut scene, &reg, &scope, Roll { seed, amount: 1.0 });
+            let shown = Address { owner: Owner::Thing(ThingId(2)), slot: Some(SlotId::Look), key: "color".into() };
+            assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
+        }
+        // Unlocking from the same row lets it roll again.
+        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.run();
+        h.get_by_label("Unlock").click();
+        h.run();
+        assert!(h.query_by_label("Locked when randomizing").is_none());
+        assert!(h.state().scene.locks.is_empty(), "{:?}", h.state().scene.locks);
     }
 }

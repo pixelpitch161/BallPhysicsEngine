@@ -37,7 +37,7 @@ pub struct Rolled {
 pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rolled {
     let mut rolled = Rolled::default();
     for a in addresses(scene, reg, scope) {
-        if scene.is_locked(&a) || scene.tracks.contains_key(&a) {
+        if held(scene, &a) || scene.tracks.contains_key(&a) {
             continue;
         }
         let (Some(def), Some(current)) = (scene.def_at(reg, &a), scene.value_at(reg, &a)) else { continue };
@@ -50,6 +50,21 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
         }
     }
     rolled
+}
+
+/// Whether a lock keeps the dice off `a`. A thing's slot setting it has not changed shows its
+/// module's value, so a lock on that module setting holds it too.
+fn held(scene: &Scene, a: &Address) -> bool {
+    if scene.is_locked(a) {
+        return true;
+    }
+    let (Owner::Thing(id), Some(slot)) = (a.owner, a.slot) else { return false };
+    match scene.things.get(&id).and_then(|t| t.slots.get(&slot)) {
+        Some(SlotLink::Linked { module, overrides }) if overrides.get(&a.key).is_none() => {
+            scene.is_locked(&Address { owner: Owner::Module(*module), slot: None, key: a.key.clone() })
+        }
+        _ => false,
+    }
 }
 
 /// The settings a throw over `scope` looks at, in tree order.
@@ -135,14 +150,17 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         return None;
     }
     let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return None;
+    }
     match current {
         Value::Number(x) => {
-            let (lo, hi) = def.dice_range()?;
-            Some(Value::Number(roll_number(*x, lo, hi, dice, amount)))
+            let dice_range = def.dice_range()?;
+            Some(Value::Number(roll_number(*x, dice_range, def.range, dice, amount)))
         }
         Value::Int(n) => {
-            let (lo, hi) = def.dice_range()?;
-            Some(Value::Int(roll_number(*n as f64, lo, hi, dice, amount).round() as i64))
+            let dice_range = def.dice_range()?;
+            Some(Value::Int(roll_number(*n as f64, dice_range, def.range, dice, amount).round() as i64))
         }
         Value::Bool(b) => (dice.unit() < amount * 0.5).then_some(Value::Bool(!b)),
         Value::Choice(_) => {
@@ -166,7 +184,7 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
             let t = turn(dice, amount);
             Some(Value::Colors(list.iter().map(|c| c.shift_hue(t)).collect()))
         }
-        Value::Vec2([x, y]) => Some(Value::Vec2(roll_vec2([*x, *y], def.dice_range(), dice, amount))),
+        Value::Vec2([x, y]) => Some(Value::Vec2(roll_vec2([*x, *y], def.dice_range(), def.range, dice, amount))),
         Value::Text(_) | Value::Target(_) => None,
     }
 }
@@ -181,29 +199,46 @@ fn log_scale(lo: f64, hi: f64) -> bool {
     lo > 0.0 && hi / lo >= 8.0
 }
 
-fn roll_number(current: f64, lo: f64, hi: f64, dice: &mut Rng, amount: f32) -> f64 {
-    if hi <= lo {
-        return lo;
-    }
+/// A number picked in the dice range `(lo, hi)` at amount 1; a smaller amount moves part of the
+/// way there from `current`, wherever it is, staying inside the setting's own `range`. So a
+/// little never snaps a value into the dice range first (a resting ball stays nearly at rest).
+fn roll_number(current: f64, (lo, hi): (f64, f64), range: Option<(f64, f64)>, dice: &mut Rng, amount: f32) -> f64 {
     let log = log_scale(lo, hi);
-    let to = |x: f64| if log { x.ln() } else { x };
-    let from = |x: f64| if log { x.exp() } else { x };
-    let pick = from(to(lo) + (to(hi) - to(lo)) * dice.unit() as f64).clamp(lo, hi);
-    let current = current.clamp(lo, hi);
-    // The ends are exact: no roll at 0, the pick itself at 1, else part of the way between.
-    match amount {
-        a if a <= 0.0 => current,
-        a if a >= 1.0 => pick,
-        a => from(to(current) + (to(pick) - to(current)) * a as f64).clamp(lo, hi),
+    let pick = if hi <= lo {
+        lo
+    } else if log {
+        (lo.ln() + (hi.ln() - lo.ln()) * dice.unit() as f64).exp().clamp(lo, hi)
+    } else {
+        (lo + (hi - lo) * dice.unit() as f64).clamp(lo, hi)
+    };
+    // The ends are exact: the pick itself at 1, else part of the way between.
+    if amount >= 1.0 {
+        return pick;
+    }
+    let a = amount as f64;
+    let moved = if log && current > 0.0 {
+        (current.ln() + (pick.ln() - current.ln()) * a).exp()
+    } else {
+        current + (pick - current) * a
+    };
+    match range {
+        Some((min, max)) => moved.clamp(min, max),
+        None => moved,
     }
 }
 
-fn roll_vec2(current: [f32; 2], range: Option<(f64, f64)>, dice: &mut Rng, amount: f32) -> [f32; 2] {
+fn roll_vec2(
+    current: [f32; 2],
+    dice_range: Option<(f64, f64)>,
+    range: Option<(f64, f64)>,
+    dice: &mut Rng,
+    amount: f32,
+) -> [f32; 2] {
     let speed = (current[0] * current[0] + current[1] * current[1]).sqrt();
     let angle = current[1].atan2(current[0]);
-    let (new_speed, new_angle) = match range {
-        Some((lo, hi)) => {
-            let new_speed = roll_number(speed as f64, lo, hi, dice, amount) as f32;
+    let (new_speed, new_angle) = match dice_range {
+        Some(dice_range) => {
+            let new_speed = roll_number(speed as f64, dice_range, range, dice, amount) as f32;
             let picked = dice.unit() * std::f32::consts::TAU;
             let delta =
                 (picked - angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
@@ -385,6 +420,32 @@ mod tests {
         let away = |xs: &[f64]| xs.iter().map(|x| (x - 24.0).abs()).sum::<f64>() / xs.len() as f64;
         assert!(away(&part) < away(&full) * 0.5, "part {} full {}", away(&part), away(&full));
         assert!(rolls(&radius, &Value::Number(24.0), 0.0, 10).iter().all(|v| *v == Value::Number(24.0)));
+    }
+
+    #[test]
+    fn no_amount_changes_nothing_and_a_little_stays_near_a_value_outside_the_dice_range() {
+        let reg = registry();
+        let velocity = def(&reg, "balls", "velocity");
+        let radius = def(&reg, "balls", "radius");
+        let still = Value::Vec2([0.0, 0.0]);
+        let tiny = Value::Number(3.0);
+        assert!(rolls(&velocity, &still, 0.0, 20).is_empty(), "nothing rolls at no amount");
+        assert!(rolls(&radius, &tiny, 0.0, 20).is_empty());
+        // A little moves part of the way from where the setting is, not into the dice range first.
+        for v in rolls(&velocity, &still, 0.3, 200) {
+            let Value::Vec2([x, y]) = v else { unreachable!() };
+            let speed = (x * x + y * y).sqrt();
+            assert!(speed <= 0.3 * 900.0 + 1e-3, "resting balls move at most 30% of the way: {speed}");
+        }
+        for v in rolls(&radius, &tiny, 0.3, 200) {
+            let Value::Number(r) = v else { unreachable!() };
+            assert!((3.0..=3.0 + 0.3 * (60.0 - 3.0) + 1e-9).contains(&r), "{r}");
+        }
+        // A value inside the setting's own range but outside the dice range stays in the setting's range.
+        for v in rolls(&radius, &tiny, 1.0, 50) {
+            let Value::Number(r) = v else { unreachable!() };
+            assert!((6.0..=60.0).contains(&r), "a full roll picks from the dice range: {r}");
+        }
     }
 
     #[test]

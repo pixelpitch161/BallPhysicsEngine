@@ -377,6 +377,14 @@ fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
                     )
                     .color(theme::WARNING),
                 );
+            } else if resumable && win.manifest.as_ref().is_some_and(|m| m.base != win.base) {
+                ui.label(
+                    RichText::new(
+                        "This batch was started from an earlier version of the scene, and carrying on uses that \
+                         version. Choose another folder to batch the scene as it is now.",
+                    )
+                    .color(theme::WARNING),
+                );
             } else if different {
                 if ui
                     .button("Use its settings")
@@ -640,6 +648,28 @@ mod tests {
         h.run();
         assert_eq!(h.state().spec.count, 7);
         assert!(!disabled(&h, "Carry on"), "the batch in the folder can be carried on");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn carrying_on_a_batch_of_an_earlier_scene_says_so() {
+        let kit = kit();
+        let earlier = new_scene(&kit.registry);
+        let mut now = earlier.clone();
+        now.name = "Edited since".into();
+        let dir = temp_dir("earlier");
+        let spec = BatchSpec { count: 2, keep: 1, ..BatchSpec::default() };
+        batch::open(&dir, &spec, &earlier).unwrap();
+        let mut window = BatchWindow { spec, ..BatchWindow::default() };
+        window.open_with(&now, 0.5);
+        window.folder = dir.clone();
+        window.ffmpeg = Some("ffmpeg".into());
+        let h = harness(window);
+        assert!(!disabled(&h, "Carry on"));
+        assert!(
+            h.query_by_label_contains("earlier version of the scene").is_some(),
+            "the window says what Carry on uses"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

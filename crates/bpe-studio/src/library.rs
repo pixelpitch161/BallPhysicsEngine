@@ -25,6 +25,8 @@ pub struct LibraryWindow {
     /// The presets as last read; read again when the window opens and after a save or delete.
     presets: Vec<Preset>,
     presets_read: bool,
+    /// The preset whose Delete was clicked, waiting for "Delete for good" or "Keep".
+    confirm_delete: Option<usize>,
 }
 
 impl Default for LibraryWindow {
@@ -39,6 +41,7 @@ impl Default for LibraryWindow {
             presets_dir: settings::presets_dir(),
             presets: Vec::new(),
             presets_read: false,
+            confirm_delete: None,
         }
     }
 }
@@ -54,6 +57,7 @@ impl LibraryWindow {
             return;
         }
         self.presets_read = true;
+        self.confirm_delete = None;
         self.presets = self.presets_dir.as_deref().map(presets::list_in).unwrap_or_default();
     }
 }
@@ -82,6 +86,9 @@ enum Action {
     /// A preset by its place in the list.
     AddPreset(usize),
     DeletePreset(usize),
+    /// Delete was clicked on a preset: ask before the file goes.
+    AskDeletePreset(usize),
+    KeepPreset,
 }
 
 /// Draws the window when it is open and applies what was done in it.
@@ -188,7 +195,10 @@ pub fn show(
                 out.message = Some(format!("Added {} to the scene.", scene.library.modules[&id].name));
             }
         }
+        Some(Action::AskDeletePreset(i)) => lib.confirm_delete = Some(i),
+        Some(Action::KeepPreset) => lib.confirm_delete = None,
         Some(Action::DeletePreset(i)) => {
+            lib.confirm_delete = None;
             if let Some(preset) = lib.presets.get(i) {
                 out.message = Some(match presets::delete(preset) {
                     Ok(()) => format!("Deleted the preset {}.", preset.module.name),
@@ -247,13 +257,13 @@ fn list(ui: &mut Ui, lib: &mut LibraryWindow, scene: &Scene, kit: &Kit, action: 
             );
         }
         for (i, preset) in lib.presets.iter().enumerate() {
-            preset_row(ui, kit, i, preset, action);
+            preset_row(ui, kit, i, preset, lib.confirm_delete == Some(i), action);
         }
     }
 }
 
 /// One saved preset: its name and slot, and buttons to add it to the scene or delete it.
-fn preset_row(ui: &mut Ui, kit: &Kit, index: usize, preset: &Preset, action: &mut Option<Action>) {
+fn preset_row(ui: &mut Ui, kit: &Kit, index: usize, preset: &Preset, confirming: bool, action: &mut Option<Action>) {
     let module = &preset.module;
     let known = kit.registry.module(&module.kind).is_some();
     ui.horizontal(|ui| {
@@ -264,8 +274,19 @@ fn preset_row(ui: &mut Ui, kit: &Kit, index: usize, preset: &Preset, action: &mu
                 .on_hover_text(format!("This version of Ball Studio doesn't know \"{}\"", module.kind));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // A preset file can't be undone, so Delete asks once more.
+            if confirming {
+                if ui.small_button("Keep").clicked() {
+                    *action = Some(Action::KeepPreset);
+                }
+                let delete = egui::Button::new(RichText::new("Delete for good").color(theme::ERROR)).small();
+                if ui.add(delete).on_hover_text("Delete the preset file; this can't be undone").clicked() {
+                    *action = Some(Action::DeletePreset(index));
+                }
+                return;
+            }
             if ui.small_button("Delete").on_hover_text("Delete the preset file").clicked() {
-                *action = Some(Action::DeletePreset(index));
+                *action = Some(Action::AskDeletePreset(index));
             }
             if ui
                 .add_enabled(known, egui::Button::new("Add to scene").small())
@@ -590,6 +611,36 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().any(|p| p.module.name == "Plain look"));
         assert_eq!(h.query_all_by_label("Add to scene").count(), 2, "the list is read again after saving");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deleting_a_preset_asks_first() {
+        let dir = std::env::temp_dir().join(format!("bpe-library-preset-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let module = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().clone();
+        let file = crate::presets::save_in(&dir, &module).unwrap();
+        let mut h = harness();
+        h.state_mut().lib.presets_dir = Some(dir.clone());
+        h.state_mut().lib.look_again();
+        h.run();
+        h.get_by_label("Delete").scroll_to_me();
+        h.run();
+        h.get_by_label("Delete").click();
+        h.run();
+        assert!(file.is_file(), "one click does not delete the file");
+        h.get_by_label("Keep").click();
+        h.run();
+        assert!(file.is_file());
+        assert!(h.query_by_label("Delete for good").is_none());
+        h.get_by_label("Delete").click();
+        h.run();
+        h.get_by_label("Delete for good").click();
+        h.run();
+        assert!(!file.exists(), "the second click deletes it");
+        assert!(h.query_by_label("Add to scene").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

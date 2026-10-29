@@ -58,8 +58,20 @@ fn randomize_stays_within_ranges_on_every_scene() {
                     if let (Some(x), Some((min, max))) = (number, def.range) {
                         assert!((min..=max).contains(&x), "{name}: {a:?} = {x} outside {min}..{max}");
                     }
+                    // A full roll lands in the dice range; a partial one between where the setting
+                    // was and the dice range.
                     if let (Some(x), Some((lo, hi)), true) = (number, def.dice, rolled.changed.contains(&a)) {
-                        assert!((lo..=hi).contains(&x), "{name}: {a:?} = {x} outside the dice range {lo}..{hi}");
+                        let was = match base.value_at(&reg, &a) {
+                            Some(Value::Number(x)) => x,
+                            Some(Value::Int(n)) => n as f64,
+                            _ => lo,
+                        };
+                        let (lo, hi) = if amount < 1.0 { (lo.min(was), hi.max(was)) } else { (lo, hi) };
+                        let slack = 1e-9 * hi.abs().max(1.0);
+                        assert!(
+                            (lo - slack..=hi + slack).contains(&x),
+                            "{name}: {a:?} = {x} outside {lo}..{hi} at amount {amount}"
+                        );
                     }
                     if matches!(def.ty, bpe_core::ValueType::Target | bpe_core::ValueType::Text) {
                         assert_eq!(base.value_at(&reg, &a), Some(value), "{name}: {a:?} must not roll");
