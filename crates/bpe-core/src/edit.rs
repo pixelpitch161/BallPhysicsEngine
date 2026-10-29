@@ -1,7 +1,9 @@
 //! Edits to the scene tree and the module library. Each edit either succeeds whole or changes
 //! nothing.
 
-use crate::{Attach, KindId, Module, ModuleId, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId};
+use crate::{
+    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId, Value,
+};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
@@ -261,6 +263,59 @@ impl Scene {
         Ok(())
     }
 
+    /// Gives the module a new name.
+    pub fn rename_module(&mut self, m: ModuleId, name: &str) -> Result<(), EditError> {
+        let module = self.library.modules.get_mut(&m).ok_or(EditError::MissingModule(m))?;
+        module.name = name.to_owned();
+        Ok(())
+    }
+
+    /// Adds a copy of the module, named "<name> copy", that nothing links to yet.
+    pub fn duplicate_module(&mut self, m: ModuleId) -> Result<ModuleId, EditError> {
+        let source = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
+        let id = ModuleId(self.next_module);
+        let copy = Module { id, name: format!("{} copy", source.name), ..source.clone() };
+        self.next_module += 1;
+        self.library.modules.insert(id, copy);
+        Ok(id)
+    }
+
+    /// Puts a new folder where the first of `ids` was and moves them all into it, in their old
+    /// order. The root and anything already inside another listed thing are left where they are.
+    pub fn make_folder(&mut self, reg: &Registry, ids: &[ThingId]) -> Result<ThingId, EditError> {
+        let listed: BTreeSet<ThingId> = ids.iter().copied().collect();
+        let moving: Vec<ThingId> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|id| {
+                *id != ThingId::ROOT
+                    && listed.contains(id)
+                    && !self.ancestors(*id).iter().any(|a| listed.contains(a) && *a != ThingId::ROOT)
+            })
+            .collect();
+        let Some(&first) = moving.first() else { return Err(EditError::Root) };
+        let parent = self.things[&first].parent.unwrap_or(ThingId::ROOT);
+        let folder = self.add_thing(reg, "folder", parent)?;
+        self.move_before(folder, first)?;
+        for id in moving {
+            self.set_parent(id, folder, Attach::Group)?;
+        }
+        Ok(folder)
+    }
+
+    /// Changes one setting of the module linked in `slot`, for this thing only.
+    pub fn set_override(
+        &mut self,
+        reg: &Registry,
+        id: ThingId,
+        slot: SlotId,
+        key: &str,
+        v: Value,
+    ) -> Result<(), EditError> {
+        self.set_at(reg, &Address { owner: Owner::Thing(id), slot: Some(slot), key: key.to_owned() }, v)
+    }
+
     /// Removes a module nothing links to any more.
     pub fn remove_module(&mut self, m: ModuleId) -> Result<(), EditError> {
         if !self.library.modules.contains_key(&m) {
@@ -278,7 +333,7 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Value, testkit};
+    use crate::testkit;
 
     #[test]
     fn add_thing_names_and_slots_from_the_kind() {
@@ -383,6 +438,47 @@ mod tests {
         s.remove_thing(a).unwrap();
         let mut back = crate::save::load(&crate::save::save(&s), &r).unwrap();
         assert_ne!(back.add_thing(&r, "balls", ThingId::ROOT).unwrap(), a);
+    }
+
+    #[test]
+    fn make_folder_gathers_the_selection_in_place() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let c = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let d = s.add_thing(&r, "balls", c).unwrap();
+        let f = s.make_folder(&r, &[b, c, ThingId::ROOT, d]).unwrap();
+        assert_eq!(s.things[&f].kind, "folder");
+        assert_eq!(s.order, vec![ThingId::ROOT, a, f, b, c, d]);
+        assert_eq!((s.things[&b].parent, s.things[&d].parent), (Some(f), Some(c)));
+        assert!(matches!(s.make_folder(&r, &[ThingId::ROOT]), Err(EditError::Root)));
+        assert!(matches!(s.make_folder(&r, &[]), Err(EditError::Root)));
+    }
+
+    #[test]
+    fn library_modules_can_be_renamed_and_duplicated() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let m = s.add_module(&r, "look.plain", "Neon").unwrap();
+        s.library.modules.get_mut(&m).unwrap().params.set("glow", Value::Number(1.0));
+        s.rename_module(m, "Neon glow").unwrap();
+        assert_eq!(s.library.modules[&m].name, "Neon glow");
+        let copy = s.duplicate_module(m).unwrap();
+        assert_eq!(s.library.modules[&copy].name, "Neon glow copy");
+        assert_eq!(s.library.modules[&copy].params, s.library.modules[&m].params);
+        assert_eq!(s.library.modules[&copy].id, copy);
+        assert!(s.users_of(copy).is_empty());
+        assert!(matches!(s.rename_module(ModuleId(9), "x"), Err(EditError::MissingModule(_))));
+        assert!(matches!(s.duplicate_module(ModuleId(9)), Err(EditError::MissingModule(_))));
+    }
+
+    #[test]
+    fn set_override_writes_the_things_own_change() {
+        let (r, mut s, a, _, m) = shared_look();
+        s.set_override(&r, a, SlotId::Look, "glow", Value::Number(0.4)).unwrap();
+        assert_eq!(s.linked(a, SlotId::Look).unwrap().1.get("glow"), Some(&Value::Number(0.4)));
+        assert_eq!(s.library.modules[&m].params.get("glow"), None);
     }
 
     fn shared_look() -> (Registry, Scene, ThingId, ThingId, ModuleId) {
