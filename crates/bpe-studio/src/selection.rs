@@ -63,11 +63,6 @@ impl Selection {
         self.primary == Some(id) || self.extra.contains(&id)
     }
 
-    /// Whether more than one thing is selected.
-    pub fn is_multiple(&self) -> bool {
-        !self.extra.is_empty()
-    }
-
     /// Forgets `ids`, for instance because they were deleted.
     pub fn remove(&mut self, ids: &[ThingId]) {
         if self.primary.is_some_and(|p| ids.contains(&p)) {
@@ -97,7 +92,7 @@ mod tests {
         s.set(ThingId(1));
         s.toggle(d);
         assert_eq!(s.all(&scene), vec![ThingId(1), d]);
-        assert!(s.is_multiple());
+        assert!(s.contains(d));
         s.toggle(d);
         assert_eq!(s.all(&scene), vec![ThingId(1)]);
         s.range(c, &scene.order);
