@@ -77,8 +77,8 @@ pub fn kit() -> Kit {
     Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
 }
 
-/// What the mixer needs from the root's settings.
-pub fn mix_settings(resolved: &Resolved) -> MixSettings {
+/// What the mixer needs from the root's settings, and every thing's tags.
+pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     MixSettings {
         duration: root.duration,
@@ -87,13 +87,13 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
         loudness: root.loudness,
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
+        tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
     }
 }
 
 /// The soundtrack of a finished run of `scene`.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    let _ = scene;
-    bpe_mix::mix(&mix_settings(resolved), resolved, log, &kit.mixes)
+    bpe_mix::mix(&mix_settings(scene, resolved), resolved, log, &kit.mixes)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
