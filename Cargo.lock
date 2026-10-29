@@ -251,6 +251,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-core"
+version = "0.1.0"
+dependencies = [
+ "bpe-graph",
+ "bpe-settings-derive",
+ "glam",
+ "ron",
+ "serde",
+]
+
+[[package]]
 name = "bpe-export"
 version = "0.1.0"
 dependencies = [
@@ -312,6 +323,15 @@ dependencies = [
  "ron",
  "serde",
  "usvg",
+]
+
+[[package]]
+name = "bpe-settings-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
