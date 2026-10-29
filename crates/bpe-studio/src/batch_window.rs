@@ -326,6 +326,11 @@ fn rejected_name(rejected: Rejected) -> &'static str {
     }
 }
 
+/// A warning beside the start button, wrapped so it never widens the window.
+fn warning(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).color(theme::WARNING)).wrap());
+}
+
 /// The progress bar or the start button; returns whether Start was clicked.
 fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
     let mut start = false;
@@ -373,19 +378,15 @@ fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
                 start = true;
             }
             if win.ffmpeg.is_none() {
-                ui.label(
-                    RichText::new(
-                        "Ball Studio needs ffmpeg to make videos and couldn't find it. Point to it in Export video…",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "Ball Studio needs ffmpeg to make videos and couldn't find it. Point to it in Export video…",
                 );
             } else if resumable && win.manifest.as_ref().is_some_and(|m| m.base != win.base) {
-                ui.label(
-                    RichText::new(
-                        "This batch was started from an earlier version of the scene, and carrying on uses that \
-                         version. Choose another folder to batch the scene as it is now.",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "This batch was started from an earlier version of the scene, and carrying on uses that \
+                     version. Choose another folder to batch the scene as it is now.",
                 );
             } else if different {
                 if ui
@@ -396,11 +397,9 @@ fn queue(ui: &mut Ui, ctx: &egui::Context, win: &mut BatchWindow) -> bool {
                 {
                     win.spec = manifest.spec.clone();
                 }
-                ui.label(
-                    RichText::new(
-                        "This folder holds a batch with other settings. Choose another folder, or use its settings.",
-                    )
-                    .color(theme::WARNING),
+                warning(
+                    ui,
+                    "This folder holds a batch with other settings. Choose another folder, or use its settings.",
                 );
             }
         });
@@ -471,14 +470,12 @@ fn card(ui: &mut Ui, folder: &Path, job: &batch::Job) {
             if job.status == Status::Kept
                 && let Some(file) = &job.file
             {
-                ui.horizontal(|ui| {
-                    if ui.small_button("Open").on_hover_text("Play the video").clicked() {
-                        open_file(&folder.join(file));
-                    }
-                    if ui.small_button("Show in folder").clicked() {
-                        show_in_folder(&folder.join(file));
-                    }
-                });
+                if ui.small_button("Open").on_hover_text("Play the video").clicked() {
+                    open_file(&folder.join(file));
+                }
+                if ui.small_button("Show in folder").clicked() {
+                    show_in_folder(&folder.join(file));
+                }
             }
         })
     });
@@ -632,6 +629,31 @@ mod tests {
         let h = harness(window);
         let title = h.get_by_label("Batch").rect();
         assert!(title.top() >= crate::theme::BELOW_TOOLBAR, "the window covers the toolbar: {title:?}");
+    }
+
+    #[test]
+    fn a_kept_card_and_a_long_warning_stay_inside_the_window() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let dir = temp_dir("narrow");
+        let spec = BatchSpec { count: 2, keep: 1, ..BatchSpec::default() };
+        let kept =
+            Job { seed: 1, status: Status::Kept, score: Some(0.8), file: Some("x.mp4".into()), ..Job::default() };
+        Manifest { spec, base: scene.clone(), phase: Phase::Done, jobs: vec![kept] }.save(&dir).unwrap();
+        let mut window = BatchWindow::default();
+        window.open_with(&scene, 0.5);
+        window.folder = dir.clone();
+        window.ffmpeg = Some("ffmpeg".into());
+        let h = harness(window);
+        assert!(h.query_by_label_contains("other settings").is_some(), "the folder holds a batch with other settings");
+        let width = h.get_by_label("Batch").rect().width();
+        assert!(width <= 900.0, "the warning widens the window to {width}");
+        let card = h.get_by_label("Seed 1").rect().left();
+        let buttons = h.get_all_by_label("Show in folder").map(|b| b.rect()).chain([h.get_by_label("Open").rect()]);
+        for button in buttons.filter(|b| b.left() >= card) {
+            assert!(button.right() <= card + CARD_WIDTH + 1.0, "{button:?} sticks out of the card at {card}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
