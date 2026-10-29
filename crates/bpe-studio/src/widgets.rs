@@ -283,7 +283,9 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id) -> R
             response.response.labelled_by(name)
         }
         (ValueType::Text, Value::Text(text)) if def.unit == "file" => {
-            let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name);
+            // Leave room for the browse button, or the row grows past the panel.
+            let width = (ui.available_width() - 40.0).max(80.0);
+            let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(width)).labelled_by(name);
             let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a file");
             browse.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Browse {}", def.label)));
             if browse.clicked()

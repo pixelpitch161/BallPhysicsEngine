@@ -60,8 +60,8 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     }
     if lanes.is_empty() {
         ui.add_space(6.0);
-        let hint = "Click a setting's diamond ◇ in the inspector to add a keyframe at the playhead, \
-                    or right-click it to pulse with the music. Keys appear here as lanes.";
+        let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \
+                    right-click it to pulse with the music. Keys appear here as lanes.";
         ui.label(RichText::new(hint).small().color(theme::MUTED));
     } else {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

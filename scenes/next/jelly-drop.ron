@@ -1,0 +1,147 @@
+(
+    format: 2,
+    name: "Jelly drop",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 900.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "radius": Number(480.0),
+                "thickness": Number(4.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ball",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-200.0, -380.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(30.0),
+                "velocity": Vec2((300.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Jelly",
+            kind: "soft",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -350.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(110.0),
+                "softness": Number(0.6000000238418579),
+                "velocity": Vec2((220.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Jelly look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ffb020"),
+                    "glow": Number(0.30000001192092896),
+                },
+            ),
+        },
+    ),
+    next_thing: 4,
+    next_module: 6,
+)

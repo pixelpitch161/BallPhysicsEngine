@@ -1,0 +1,228 @@
+(
+    format: 2,
+    name: "Captioned reel",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 160.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Block",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (30.0, -120.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(14),
+                "radius": Number(7.0),
+                "rows": Int(14),
+                "spacing": Number(30.0),
+                "velocity": Vec2((-420.0, 240.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Hit counter",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -780.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "appear": Choice("pop"),
+                "outline": Number(6.0),
+                "size": Number(120.0),
+                "text": Text("Hits {hits}"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Countdown",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 760.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "font": Choice("space_mono"),
+                "size": Number(150.0),
+                "text": Text("{countdown}"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "gradient": Colors([
+                        "#3e9bff",
+                        "#ff3ec8",
+                        "#ffb82e",
+                    ]),
+                },
+            ),
+        },
+    ),
+    next_thing: 5,
+    next_module: 5,
+    tracks: {
+        (
+            owner: Thing(0),
+            slot: None,
+            key: "bloom",
+        ): (
+            keys: [
+                (
+                    time: 0.0,
+                    value: Number(0.15),
+                    ease: Linear,
+                ),
+                (
+                    time: 20.0,
+                    value: Number(0.6),
+                    ease: Linear,
+                ),
+            ],
+            range: Some((0.0, 1.0)),
+        ),
+        (
+            owner: Thing(0),
+            slot: None,
+            key: "gravity",
+        ): (
+            keys: [
+                (
+                    time: 0.0,
+                    value: Vec2((0.0, 160.0)),
+                    ease: Smooth,
+                ),
+                (
+                    time: 12.0,
+                    value: Vec2((0.0, 900.0)),
+                    ease: Smooth,
+                ),
+            ],
+            range: None,
+        ),
+        (
+            owner: Module(4),
+            slot: None,
+            key: "glow",
+        ): (
+            keys: [
+                (
+                    time: 0.0,
+                    value: Number(0.1),
+                    ease: EaseIn,
+                ),
+                (
+                    time: 20.0,
+                    value: Number(1.2),
+                    ease: EaseIn,
+                ),
+            ],
+            range: Some((0.0, 2.0)),
+        ),
+    },
+    pulses: {
+        (
+            owner: Thing(3),
+            slot: None,
+            key: "size",
+        ): (
+            source: Hits,
+            amount: Number(24.0),
+            decay: 0.25,
+            range: Some((8.0, 600.0)),
+        ),
+    },
+)
