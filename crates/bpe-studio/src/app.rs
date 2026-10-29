@@ -12,6 +12,7 @@ use crate::nodes::NodePanel;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::sound_job::SoundJob;
+use crate::starters::{self, Choice, StartWindow};
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
@@ -34,6 +35,10 @@ pub enum Pending {
     Close,
     Open,
     New,
+    /// A starter scene from the Start window.
+    Starter(Box<Scene>),
+    /// A recent file from the Start window.
+    OpenPath(PathBuf),
 }
 
 /// What the panels remember between frames.
@@ -50,6 +55,7 @@ pub struct Panels {
     pub randomize: RandomizeWindow,
     pub explorer: Explorer,
     pub batch: BatchWindow,
+    pub start: StartWindow,
     /// The node panel under the preview.
     pub nodes: NodePanel,
 }
@@ -123,8 +129,14 @@ impl Studio {
         }
         studio.panels.explorer.weights = settings::load_weights();
         studio.panels.explorer.persist = true;
-        if let Some(path) = scene_path.or_else(settings::last_scene) {
-            studio.open_path(&path);
+        match scene_path {
+            Some(path) => _ = studio.open_path(&path),
+            None => {
+                if let Some(path) = settings::last_scene() {
+                    studio.open_path(&path);
+                }
+                studio.show_start();
+            }
         }
         studio
     }
@@ -414,7 +426,29 @@ impl Studio {
             }
             Pending::Open => self.open(),
             Pending::New => self.new_scene(),
+            Pending::Starter(scene) => {
+                let name = scene.name.clone();
+                self.replace_scene(*scene, None);
+                self.status = format!("Started from {name}. Save it to keep it.");
+            }
+            Pending::OpenPath(path) => _ = self.open_path(&path),
         }
+    }
+
+    /// Does what was chosen in the Start window, asking to save changes first.
+    pub fn choose_start(&mut self, choice: Choice, ctx: &egui::Context) {
+        match choice {
+            Choice::Nothing => {}
+            Choice::Blank => self.guard(Pending::New, ctx),
+            Choice::Scene(scene) => self.guard(Pending::Starter(scene), ctx),
+            Choice::Open => self.guard(Pending::Open, ctx),
+            Choice::Recent(path) => self.guard(Pending::OpenPath(path), ctx),
+        }
+    }
+
+    /// Opens the Start window with the recent files.
+    pub fn show_start(&mut self) {
+        self.panels.start.open_with(settings::recent_scenes());
     }
 
     pub fn open(&mut self) {
@@ -499,7 +533,7 @@ impl Studio {
             self.guard(Pending::Open, ctx);
         }
         if pressed(Modifiers::COMMAND, Key::N) {
-            self.guard(Pending::New, ctx);
+            self.show_start();
         }
         if typing {
             return;
@@ -527,7 +561,7 @@ impl Studio {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("New").on_hover_text("Start a new scene (Ctrl+N)").clicked() {
+            if ui.button("New").on_hover_text("Start a new scene, blank or from a starter (Ctrl+N)").clicked() {
                 self.clicked = Some(ToolbarClick::New);
             }
             if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
@@ -780,9 +814,12 @@ impl eframe::App for Studio {
         }
         let weights = self.panels.explorer.weights;
         batch_window::show(&ctx, &mut self.panels.batch, &self.kit, weights);
+        let kit = self.kit.clone();
+        let choice = starters::show(&ctx, &mut self.panels.start, &kit, frame.wgpu_render_state());
+        self.choose_start(choice, &ctx);
 
         match self.clicked.take() {
-            Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
+            Some(ToolbarClick::New) => self.show_start(),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
             Some(ToolbarClick::Save) => _ = self.save(false),
             Some(ToolbarClick::SaveAs) => _ = self.save(true),

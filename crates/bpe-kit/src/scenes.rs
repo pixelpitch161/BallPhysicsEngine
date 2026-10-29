@@ -75,6 +75,16 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes
 }
 
+/// The scenes the Start window offers, in order: a spread of what the editor can do.
+pub const STARTERS: [&str; 8] =
+    ["Reel block", "Lava ball", "Spinning hexagon", "Peg board", "Deep pool", "Fireflies", "Jelly drop", "Drum beat"];
+
+/// The [`STARTERS`], each with its name.
+pub fn starters(reg: &Registry) -> Vec<(String, Scene)> {
+    let mut all = all(reg);
+    STARTERS.iter().filter_map(|name| all.iter().position(|(n, _)| n == name).map(|i| all.swap_remove(i))).collect()
+}
+
 /// A ready-made rule's builder, by its menu name.
 fn recipe(name: &str) -> fn(&mut Graph) -> Vec<(u32, String)> {
     recipes().into_iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no recipe called {name}")).add
@@ -1022,6 +1032,21 @@ fn fireflies(reg: &Registry) -> Scene {
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
+
+    #[test]
+    fn starters_are_eight_named_scenes_from_the_collection() {
+        let reg = registry();
+        let starters = scenes::starters(&reg);
+        assert_eq!(starters.len(), 8);
+        let all: std::collections::BTreeMap<String, bpe_core::Scene> = scenes::all(&reg).into_iter().collect();
+        let mut names = std::collections::BTreeSet::new();
+        for (name, scene) in &starters {
+            assert_eq!(all.get(name), Some(scene), "{name} is one of the shipped scenes");
+            assert_eq!(&scene.name, name);
+            assert!(names.insert(name.clone()), "{name} twice");
+        }
+        assert_eq!(starters[0].0, "Reel block", "the reel the first video was made from leads");
+    }
 
     #[test]
     fn stage_scenes_resolve_and_round_trip() {

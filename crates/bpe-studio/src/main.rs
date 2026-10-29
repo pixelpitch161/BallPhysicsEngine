@@ -18,6 +18,7 @@ mod preview;
 mod selection;
 mod settings;
 mod sound_job;
+mod starters;
 mod theme;
 mod thumbs;
 mod timeline;
