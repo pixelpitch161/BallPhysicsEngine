@@ -69,6 +69,7 @@ pub struct Renderer {
     composite_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
+    trail: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     look: wgpu::RenderPipeline,
@@ -81,6 +82,7 @@ pub struct Renderer {
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    trail_buffer: GrowableBuffer,
     shape_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     look_buffer: GrowableBuffer,
@@ -98,6 +100,7 @@ impl Renderer {
                     include_str!("shaders/object.wgsl"),
                     include_str!("shaders/ball_look.wgsl"),
                     include_str!("shaders/styled.wgsl"),
+                    include_str!("shaders/trail.wgsl"),
                 ]
                 .concat()
                 .into(),
@@ -225,6 +228,7 @@ impl Renderer {
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
         let ball_attributes =
             wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
+        let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
         let look_attributes = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
             6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
@@ -267,6 +271,21 @@ impl Renderer {
             "fs_ball",
             &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
             TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
+        let trail = make(
+            "trails",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_trail",
+            "fs_trail",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TrailVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &trail_attributes,
+            })],
+            TriangleList,
             HDR_FORMAT,
             Some(premultiplied),
         );
@@ -367,6 +386,7 @@ impl Renderer {
             composite_layout,
             sampler,
             background,
+            trail,
             shape,
             ball,
             look,
@@ -378,6 +398,7 @@ impl Renderer {
             downsample,
             upsample,
             composite,
+            trail_buffer: GrowableBuffer::new("trail vertices"),
             shape_buffer: GrowableBuffer::new("shape instances"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             look_buffer: GrowableBuffer::new("styled ball instances"),
@@ -418,6 +439,7 @@ impl Renderer {
     /// Draws one frame into the output texture.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
+        self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
@@ -435,6 +457,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
+            if !frame.trails.is_empty() {
+                pass.set_pipeline(&self.trail);
+                pass.set_vertex_buffer(0, self.trail_buffer.slice());
+                pass.draw(0..frame.trails.len() as u32, 0..1);
+            }
             if !frame.shapes.is_empty() {
                 pass.set_pipeline(&self.shape);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());

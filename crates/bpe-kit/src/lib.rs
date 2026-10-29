@@ -25,6 +25,8 @@ pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
+pub use modules::trail::draw::StreakDraw;
+pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -55,6 +57,7 @@ pub fn draws() -> Draws {
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
+    d.add_module(StreakDraw);
     d
 }
 
@@ -104,6 +107,7 @@ pub fn registry() -> Registry {
     r.add_thing(BallsKind);
     r.add_module(ClassicLookKind);
     r.add_module(StyledLookKind);
+    r.add_module(StreakTrailKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);

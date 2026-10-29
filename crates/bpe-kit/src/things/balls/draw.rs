@@ -22,6 +22,21 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
     (x - x.floor()).clamp(0.0, 0.999_999)
 }
 
+/// The linear-light colour of each ball of the thing being drawn, from its look's colour or
+/// gradient, when it has a look. Trails and particles take their colours from here too.
+pub fn ball_colors(cx: &DrawCx) -> Option<impl Fn(usize) -> [f32; 4] + use<>> {
+    let look = look_of(cx)?;
+    let settings = BallsSettings::from_params(&cx.resolved.params);
+    let row_of = move |i: usize| match settings.arrangement {
+        Arrangement::Block if settings.rows > 1 => {
+            (i / settings.columns.max(1) as usize) as f32 / (settings.rows - 1) as f32
+        }
+        _ => 0.0,
+    };
+    let count = cx.world.bodies.get(&cx.thing.id).map_or(0, |b| b.len());
+    Some(colors(&look, count, row_of))
+}
+
 impl ThingDraw for BallsDraw {
     fn kind(&self) -> &'static str {
         "balls"
@@ -31,14 +46,7 @@ impl ThingDraw for BallsDraw {
         let id = cx.thing.id;
         let Some(bodies) = cx.world.bodies.get(&id) else { return };
         let Some(look) = look_of(cx) else { return };
-        let settings = BallsSettings::from_params(&cx.resolved.params);
-        let row_of = move |i: usize| match settings.arrangement {
-            Arrangement::Block if settings.rows > 1 => {
-                (i / settings.columns.max(1) as usize) as f32 / (settings.rows - 1) as f32
-            }
-            _ => 0.0,
-        };
-        let color = colors(&look, bodies.len(), row_of);
+        let Some(color) = ball_colors(cx) else { return };
         let styled = cx.resolved.slots.get(&SlotId::Look).filter(|s| s.kind == "look.styled");
         let styled = styled.map(|s| StyledLook::from_params(&s.params));
         for i in 0..bodies.len() {

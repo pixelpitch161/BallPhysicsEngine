@@ -113,3 +113,36 @@ fn a_stretched_ball_reaches_further_along_its_motion() {
     let pixels = render_sized(&frame, W, H).unwrap();
     assert!(pixel_sized(&pixels, W, H, Vec2::ZERO)[0] > 120);
 }
+
+#[test]
+fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
+    use crate::{BallInstance, push_streak};
+    const W: u32 = 270;
+    const H: u32 = 480;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let points: Vec<Vec2> = (0..=10).map(|i| Vec2::new(0.0, -40.0 * i as f32)).collect();
+    push_streak(&mut frame.trails, &points, 24.0, 1.0, [1.0, 0.0, 0.0, -1.0], 1.0);
+    frame.balls.push(BallInstance {
+        center: [0.0, 0.0],
+        radius: 60.0,
+        glow: 0.0,
+        color: [0.0, 0.0, 1.0, 1.0],
+        code: [0.0; 4],
+    });
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("streak", &pixels, W, H);
+    let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -80.0));
+    let tail = pixel_sized(&pixels, W, H, Vec2::new(0.0, -390.0));
+    let beside = pixel_sized(&pixels, W, H, Vec2::new(60.0, -200.0));
+    let ball = pixel_sized(&pixels, W, H, Vec2::ZERO);
+    assert!(head[0] > 120, "the streak is red near its head: {head:?}");
+    assert!(tail[0] < head[0] / 3, "and fades towards its tail: {tail:?} vs {head:?}");
+    assert!(beside[0] < 20, "nothing beside it: {beside:?}");
+    assert!(ball[2] > 100 && ball[0] < 80, "the ball covers the streak: {ball:?}");
+    // A covering streak hides the background instead of adding to it.
+    let mut covering = Frame { bloom: 0.0, background_top: [1.0; 4], background_bottom: [1.0; 4], ..Frame::default() };
+    push_streak(&mut covering.trails, &points, 24.0, 0.0, [0.0, 0.0, 0.0, 1.0], 1.0);
+    let pixels = render_sized(&covering, W, H).unwrap();
+    let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -20.0));
+    assert!(head[0] < 120, "a black covering streak darkens a white background: {head:?}");
+}
