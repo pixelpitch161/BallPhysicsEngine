@@ -1,7 +1,7 @@
 //! Drawing the balls and their hit flashes.
 
-use bpe_core::Settings;
-use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, ThingDraw, blend_alpha};
+use bpe_core::{Settings, ThingId};
+use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::EventKind;
 
 use super::{Arrangement, BallsSettings};
@@ -11,6 +11,13 @@ pub struct BallsDraw;
 
 /// The speed at which a flash is at full strength.
 const FULL_FLASH_SPEED: f32 = 600.0;
+
+/// A ball's own number in 0 to 1, the same every frame, for patterns and effects that vary
+/// from ball to ball.
+pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
+    let x = (thing.0 as f32 * 7919.0 + index as f32 * 104_729.0).sin() * 43_758.547;
+    (x - x.floor()).clamp(0.0, 0.999_999)
+}
 
 impl ThingDraw for BallsDraw {
     fn kind(&self) -> &'static str {
@@ -33,11 +40,13 @@ impl ThingDraw for BallsDraw {
             if !bodies.alive[i] {
                 continue;
             }
+            let seed = ball_seed(id, i);
             frame.balls.push(BallInstance {
                 center: bodies.position[i].into(),
                 radius: bodies.radius[i],
                 glow: look.glow,
                 color: blend_alpha(color(i)),
+                code: [thing_code(id) + seed * 0.5, seed, 0.0, 0.0],
             });
         }
 

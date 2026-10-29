@@ -7,7 +7,8 @@
 mod frame;
 
 pub use frame::{
-    BallInstance, DrawCx, Draws, FlashInstance, Frame, ShapeInstance, ThingDraw, blend_alpha, build_frame,
+    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, HitMark, LookInstance, ModuleDraw,
+    ShapeInstance, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, push_streak, thing_code,
 };
 pub use wgpu;
 
@@ -197,7 +198,8 @@ impl Renderer {
         };
 
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-        let ball_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
+        let ball_attributes =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,

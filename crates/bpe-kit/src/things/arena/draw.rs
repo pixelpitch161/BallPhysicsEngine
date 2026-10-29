@@ -1,6 +1,6 @@
 //! Drawing the arena's wall.
 
-use bpe_gfx::{DrawCx, Frame, ShapeInstance, ThingDraw};
+use bpe_gfx::{DrawCx, Frame, ShapeInstance, ThingDraw, thing_code};
 
 use crate::modules::look::draw::{look_of, wall_glow};
 
@@ -14,6 +14,9 @@ impl ThingDraw for ArenaDraw {
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
         let Some(look) = look_of(cx) else { return };
-        frame.shapes.push(ShapeInstance::outline(&wall.outline, look.color.to_linear(), wall_glow(&look)));
+        frame.shapes.push(
+            ShapeInstance::outline(&wall.outline, look.color.to_linear(), wall_glow(&look))
+                .code(thing_code(cx.thing.id)),
+        );
     }
 }
