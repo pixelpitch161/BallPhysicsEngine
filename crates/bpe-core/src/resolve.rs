@@ -37,6 +37,8 @@ pub enum ProblemKind {
     UnknownModuleKind(KindId),
     /// A setting points at a thing that isn't in the scene.
     MissingTarget(ThingId),
+    /// The module's graph doesn't compile; the message says why. The link is skipped.
+    BrokenGraph(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,8 +78,12 @@ enum Step<'a> {
     Pass,
 }
 
+/// Modules whose graph doesn't compile, with the compiler's message; `resolve_with` skips their
+/// links.
+pub type Broken = BTreeMap<ModuleId, String>;
+
 /// Links in slots the thing's kind doesn't offer are ignored, like `link` refuses to make them.
-fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId) -> Step<'a> {
+fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId, broken: &Broken) -> Step<'a> {
     let Some(thing) = scene.things.get(&id) else { return Step::Pass };
     if reg.thing(&thing.kind).is_none_or(|k| !k.slots().contains(&slot)) {
         return Step::Pass;
@@ -86,6 +92,7 @@ fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId) -> Step
         Some(SlotLink::Off) => Step::Off,
         Some(SlotLink::Linked { module, overrides }) => match scene.library.modules.get(module) {
             None => Step::Bad(ProblemKind::MissingModule(*module)),
+            Some(_) if broken.contains_key(module) => Step::Bad(ProblemKind::BrokenGraph(broken[module].clone())),
             Some(m) if m.slot != slot => Step::Bad(ProblemKind::WrongSlot(*module)),
             Some(m) if reg.module(&m.kind).is_none() => Step::Bad(ProblemKind::UnknownModuleKind(m.kind.clone())),
             Some(m) => Step::Use(Source { from: id, module: *module, kind: m, overrides }),
@@ -117,7 +124,7 @@ pub(crate) fn find_slot<'a>(
     problems: &mut Vec<Problem>,
 ) -> Option<Source<'a>> {
     for at in std::iter::once(id).chain(scene.ancestors(id)) {
-        match step(scene, reg, at, slot) {
+        match step(scene, reg, at, slot, &Broken::new()) {
             Step::Off => return None,
             Step::Use(source) => return Some(source),
             Step::Bad(kind) => problems.push(Problem { thing: at, slot: Some(slot), kind }),
@@ -141,6 +148,12 @@ pub fn resolve_slot(
 
 /// Works out every enabled thing's settings and lists what couldn't be used.
 pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
+    resolve_with(scene, reg, &Broken::new())
+}
+
+/// Like [`resolve`], treating the `broken` modules (whose graphs don't compile) as unusable:
+/// a link to one is reported and the slot falls back to the parent's.
+pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved {
     let mut out = Resolved::default();
     let mut left_out = BTreeSet::new();
     // For each thing and slot, the thing whose link fills it when walking up from here. Parents
@@ -163,7 +176,7 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
         let mut here = [None; 8];
         for slot in SlotId::ALL {
             let i = slot as usize;
-            here[i] = match step(scene, reg, id, slot) {
+            here[i] = match step(scene, reg, id, slot, broken) {
                 Step::Off => None,
                 Step::Use(..) => Some(id),
                 Step::Bad(kind) => {
@@ -180,7 +193,7 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
         let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new() };
         for &slot in kind.slots() {
             if let Some(from) = here[slot as usize]
-                && let Step::Use(source) = step(scene, reg, from, slot)
+                && let Step::Use(source) = step(scene, reg, from, slot, broken)
             {
                 resolved.slots.insert(slot, build(reg, source));
             }
@@ -211,6 +224,28 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
 mod tests {
     use super::*;
     use crate::{Color, testkit};
+
+    #[test]
+    fn a_broken_module_falls_back_to_the_parent() {
+        let reg = testkit::registry();
+        let mut scene = Scene::empty(&reg);
+        let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        let root_look = scene.add_module(&reg, "look.plain", "Root").unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Look, root_look).unwrap();
+        let own = scene.add_module(&reg, "look.plain", "Own").unwrap();
+        scene.link(&reg, balls, SlotId::Look, own).unwrap();
+        let broken = BTreeMap::from([(own, "A loop".to_string())]);
+        let r = resolve_with(&scene, &reg, &broken);
+        assert_eq!(r.things[&balls].slots[&SlotId::Look].module, root_look);
+        assert_eq!(r.things[&balls].slots[&SlotId::Look].from, ThingId::ROOT);
+        assert_eq!(
+            r.problems,
+            vec![Problem { thing: balls, slot: Some(SlotId::Look), kind: ProblemKind::BrokenGraph("A loop".into()) }]
+        );
+        let plain = resolve(&scene, &reg);
+        assert!(plain.problems.is_empty());
+        assert_eq!(plain.things[&balls].slots[&SlotId::Look].module, own);
+    }
 
     #[test]
     fn slot_ids_index_their_list() {
