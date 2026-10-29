@@ -20,7 +20,8 @@ pub const MAX_LIVE_PARTICLES: u32 = 200_000;
 pub struct BurstGpu {
     /// Origin, then the way the particles fly.
     pub place: [f32; 4],
-    /// Age in seconds, first particle index, particle count.
+    /// Age in seconds, first particle index, particle count, and in the first burst only the
+    /// number of bursts (the buffer bound to the shader may be longer than the list).
     pub timing: [f32; 4],
     pub color: [f32; 4],
     /// Speed, spread in radians, size, life.
@@ -55,21 +56,20 @@ pub fn pick(bursts: &[Burst], time: f32) -> Picked {
     // Newest first, so a full budget drops the oldest.
     live.sort_by(|a, b| b.time.total_cmp(&a.time));
     let mut budget = MAX_LIVE_PARTICLES;
-    let mut lists: [Vec<&Burst>; 2] = [Vec::new(), Vec::new()];
+    let mut lists: [Vec<(&Burst, u32)>; 2] = [Vec::new(), Vec::new()];
     for b in live.into_iter().take(MAX_BURSTS) {
         let count = b.count.min(budget);
         if count == 0 {
             break;
         }
         budget -= count;
-        lists[(!b.additive) as usize].push(b);
+        lists[(!b.additive) as usize].push((b, count));
     }
     let mut picked = Picked::default();
     let mut first = 0u32;
     for (group, list) in lists.into_iter().enumerate() {
         let before = first;
-        for b in list.into_iter().rev() {
-            let count = b.count.min(MAX_LIVE_PARTICLES - first);
+        for (b, count) in list.into_iter().rev() {
             picked.bursts.push(BurstGpu {
                 place: [b.origin[0], b.origin[1], b.normal[0], b.normal[1]],
                 timing: [time - b.time, first as f32, count as f32, 0.0],
@@ -86,6 +86,10 @@ pub fn pick(bursts: &[Burst], time: f32) -> Picked {
             picked.covering = first - before;
         }
     }
+    let total = picked.bursts.len() as f32;
+    if let Some(head) = picked.bursts.first_mut() {
+        head.timing[3] = total;
+    }
     picked
 }
 
@@ -95,8 +99,7 @@ pub struct Particles {
     additive: wgpu::RenderPipeline,
     covering: wgpu::RenderPipeline,
     buffer: Option<wgpu::Buffer>,
-    /// The bind group covers exactly the bursts in use, so `arrayLength` in the shader is right.
-    group: Option<(wgpu::BindGroup, u64)>,
+    group: Option<wgpu::BindGroup>,
     picked: Picked,
 }
 
@@ -180,31 +183,28 @@ impl Particles {
         }
         let bytes: &[u8] = bytemuck::cast_slice(&self.picked.bursts);
         let len = bytes.len() as u64;
+        // The buffer only grows, and the bind group is made once per buffer: the shader reads
+        // how many bursts are in use from the first one.
         if self.buffer.as_ref().is_none_or(|b| b.size() < len) {
-            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("particle bursts"),
                 size: len.next_power_of_two().max(1024),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }));
-            self.group = None;
-        }
-        let buffer = self.buffer.as_ref().unwrap();
-        queue.write_buffer(buffer, 0, bytes);
-        if self.group.as_ref().is_none_or(|(_, bound)| *bound != len) {
-            let binding = wgpu::BufferBinding { buffer, offset: 0, size: wgpu::BufferSize::new(len) };
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            });
+            self.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("particles"),
                 layout: &self.layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(binding) }],
-            });
-            self.group = Some((group, len));
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            }));
+            self.buffer = Some(buffer);
         }
+        queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
     }
 
     /// Draws the prepared bursts; the globals must be bound at group 0 already.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        let Some((group, _)) = &self.group else { return };
+        let Some(group) = &self.group else { return };
         let (additive, covering) = (self.picked.additive, self.picked.covering);
         if additive + covering == 0 {
             return;
@@ -255,6 +255,7 @@ mod tests {
         ];
         let p = pick(&bursts, 1.0);
         assert_eq!((p.additive, p.covering, p.total()), (8, 10, 18));
+        assert_eq!(p.bursts[0].timing[3], 3.0);
         let firsts: Vec<(f32, f32, f32)> =
             p.bursts.iter().map(|b| ((b.timing[0] * 10.0).round() / 10.0, b.timing[1], b.timing[2])).collect();
         assert_eq!(firsts, [(0.8, 0.0, 5.0), (0.2, 5.0, 3.0), (0.5, 8.0, 10.0)]);
@@ -278,5 +279,13 @@ mod tests {
         assert!((p.bursts.last().unwrap().timing[0] - (0.5 - 0.299)).abs() < 1e-5);
         let last = p.bursts.last().unwrap();
         assert_eq!(last.timing[1] + last.timing[2], MAX_LIVE_PARTICLES as f32);
+        // At the budget the newest bursts keep their particles whatever their blend: the newest
+        // covering burst is kept whole and the oldest glowing one is cut.
+        let mixed = vec![burst(0.3, 50_000, false), burst(0.2, 100_000, true), burst(0.1, 100_000, true)];
+        let p = pick(&mixed, 0.5);
+        assert_eq!(p.total(), MAX_LIVE_PARTICLES);
+        let counts: Vec<(f32, u32)> =
+            p.bursts.iter().map(|b| ((b.timing[0] * 10.0).round() / 10.0, b.timing[2] as u32)).collect();
+        assert_eq!(counts, [(0.4, 50_000), (0.3, 100_000), (0.2, 50_000)]);
     }
 }

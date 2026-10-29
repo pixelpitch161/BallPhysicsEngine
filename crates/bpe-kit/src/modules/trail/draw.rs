@@ -9,6 +9,10 @@ use crate::things::balls::draw::ball_colors;
 
 pub struct StreakDraw;
 
+/// The margin each streak edge keeps for anti-aliasing, in video pixels. The preview shows the
+/// video shrunk up to about four times, and the shader softens the edge over one output pixel.
+pub const AA_MARGIN: f32 = 4.0;
+
 impl ModuleDraw for StreakDraw {
     fn kind(&self) -> &'static str {
         "trail.streak"
@@ -43,7 +47,7 @@ impl ModuleDraw for StreakDraw {
                 TrailBlend::Cover if base[3] > 0.0 => [base[0], base[1], base[2], (base[3] * k).min(1.0)],
                 _ => [base[0] * k, base[1] * k, base[2] * k, -1.0],
             };
-            push_streak(&mut frame.trails, &points, trail.width * bodies.radius[i], trail.taper, color, 1.0);
+            push_streak(&mut frame.trails, &points, trail.width * bodies.radius[i], trail.taper, color, AA_MARGIN);
         }
     }
 }
@@ -72,9 +76,13 @@ mod tests {
         assert!(!frame.trails.is_empty());
         assert!(frame.trails.len() <= 30 * 6);
         assert_eq!(frame.trails.len() % 6, 0);
+        // The first vertex sits half a width plus the margin beside the ball, or beside the
+        // newest sample a sixtieth of a second behind it.
         let ball = playback.world().bodies[&ThingId(2)].position[0];
         let head = glam::Vec2::from(frame.trails[0].position);
-        assert!((head - ball).length() <= 24.0 * 0.5 + 1.0 + 1e-3, "{head} is not at the ball {ball}");
+        let speed = playback.world().bodies[&ThingId(2)].velocity[0].length();
+        let reach = 24.0 * 0.5 + super::AA_MARGIN + speed / 60.0;
+        assert!((head - ball).length() <= reach + 1e-3, "{head} is not at the ball {ball}");
         let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
         // The first vertex is at or just behind the head, where the fade has barely begun.
         let c = frame.trails[0].color;

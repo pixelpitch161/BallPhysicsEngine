@@ -15,11 +15,16 @@ const FULL_FLASH_SPEED: f32 = 600.0;
 /// How far back hits are listed for particles and shaders, in seconds.
 pub const HIT_MEMORY: f64 = 3.0;
 
-/// A ball's own number in 0 to 1, the same every frame, for patterns and effects that vary
-/// from ball to ball.
+/// A ball's own number in 0 to 1, the same every frame and on every machine, for patterns and
+/// effects that vary from ball to ball.
 pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
-    let x = (thing.0 as f32 * 7919.0 + index as f32 * 104_729.0).sin() * 43_758.547;
-    (x - x.floor()).clamp(0.0, 0.999_999)
+    let mut x = (index as u32).wrapping_mul(0x9e37_79b9) ^ thing.0.wrapping_mul(0x85eb_ca6b) ^ 0x27d4_eb2f;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2c1b_3c6d);
+    x ^= x >> 12;
+    x = x.wrapping_mul(0x8a7d_9c3b);
+    x ^= x >> 16;
+    (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
 /// The linear-light colour of each ball of the thing being drawn, from its look's colour or
@@ -78,10 +83,19 @@ impl ThingDraw for BallsDraw {
             });
         }
 
-        // Recent hits, for the flashes here and for the particle and shader modules.
+        // Recent hits, for the flashes here and for the particle and shader modules. Only the
+        // flashes' worth is scanned when nothing else wants them.
         let rate = cx.world.steps_per_second;
-        let since = ((cx.time - HIT_MEMORY) * rate as f64).floor().max(0.0) as u64;
         let flashing = look.flash > 0.0 && look.flash_seconds > 0.0;
+        let wants_hits = [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
+        let memory = if wants_hits {
+            HIT_MEMORY
+        } else if flashing {
+            look.flash_seconds as f64
+        } else {
+            return;
+        };
+        let since = ((cx.time - memory) * rate as f64).floor().max(0.0) as u64;
         for e in cx.log.since(since) {
             if e.kind != EventKind::Hit || e.a.thing != id {
                 continue;
@@ -197,7 +211,11 @@ mod tests {
 
     #[test]
     fn balls_leave_a_hit_mark_in_their_colour() {
-        let (scene, resolved, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        // Hits are listed for the modules that use them: here a scene-wide burst.
+        let m = scene.add_module(&kit.registry, "particles.burst", "Sparks").unwrap();
+        scene.link(&kit.registry, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(4.0);
         let rate = playback.world().steps_per_second;
@@ -218,6 +236,12 @@ mod tests {
         let old: Vec<_> = playback.log().events().iter().filter(|e| e.time(rate) > 7.0).collect();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         assert_eq!(frame.hits.len(), old.len());
+        // Without a module that wants them, only the flashes' quarter second is listed.
+        scene.set_slot_off(ThingId::ROOT, SlotId::Particles);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
+        let flash_worth = playback.log().events().iter().filter(|e| e.time(rate) > 10.0 - 0.25).count();
+        assert_eq!(frame.hits.len(), flash_worth);
     }
 
     #[test]

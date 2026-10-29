@@ -92,15 +92,6 @@
                 slot: Sound,
                 kind: "sound.notes",
             ),
-            4: (
-                id: 4,
-                name: "Ball look",
-                slot: Look,
-                kind: "look.classic",
-                params: {
-                    "color": Color("#ff5ca8"),
-                },
-            ),
             5: (
                 id: 5,
                 name: "Ball look",

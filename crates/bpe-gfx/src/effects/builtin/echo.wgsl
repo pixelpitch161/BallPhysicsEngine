@@ -11,6 +11,6 @@ fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
     let steps = fx.dt * 60.0;
     let zoom = pow(max(p.zoom + p.pulse * bass() * 0.03, 0.01), steps);
     let q = rotate(to_centered(uv), -radians(p.spin) * steps) / zoom;
-    let ghost = hue_shift(prev(from_centered(q)), p.hue * steps) * pow(p.fade, steps);
+    let ghost = hue_shift(prev(from_centered(q)), p.hue * steps) * pow(max(p.fade, 1e-4), steps);
     return max(sample(uv), ghost);
 }

@@ -59,6 +59,9 @@ fn style_balls(scene: &mut Scene, reg: &Registry, look: StyledLook) {
         }
     }
     own_module(scene, reg, BALLS, "look.styled", &old.name, params);
+    if scene.users_of(m).is_empty() {
+        scene.library.modules.remove(&m);
+    }
 }
 
 fn number(key: &str, x: f64) -> (String, Value) {

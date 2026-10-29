@@ -88,12 +88,21 @@ const RESERVED: &[&str] = &[
     "type", "alias", "p", "fx", "uv",
 ];
 
+/// The leading comment block of an effect: every `//` line before the first line of code.
+/// Comments inside the code are not header lines.
+pub fn header_lines(wgsl: &str) -> impl Iterator<Item = (usize, &str)> {
+    wgsl.lines()
+        .enumerate()
+        .map(|(i, l)| (i, l.trim()))
+        .take_while(|(_, l)| l.is_empty() || l.starts_with("//"))
+        .filter_map(|(i, l)| l.strip_prefix("//").map(|c| (i, c)))
+}
+
 /// Reads the header. The source must define `fn effect(`.
 pub fn parse(wgsl: &str) -> Result<Header, String> {
     let mut header = Header { name: String::new(), about: String::new(), stage: Stage::Picture, params: Vec::new() };
     let mut errors = Vec::new();
-    for (index, line) in wgsl.lines().enumerate() {
-        let Some(comment) = line.trim().strip_prefix("//") else { continue };
+    for (index, comment) in header_lines(wgsl) {
         let comment = comment.trim();
         let (keyword, rest) = match comment.split_once(|c: char| c.is_whitespace() || c == ':') {
             Some((k, r)) => (k, r.trim()),
@@ -214,6 +223,12 @@ pub fn needs_history(wgsl: &str) -> bool {
     wgsl.contains("prev(")
 }
 
+/// Whether an effect reads the object picture (which thing is where) itself. Effects on one
+/// thing always need it, for their target.
+pub fn needs_objects(wgsl: &str) -> bool {
+    ["object_at(", "object_code(", "object_seed("].iter().any(|f| wgsl.contains(f))
+}
+
 /// Every setting's default, packed the way the shader reads them.
 pub fn defaults(header: &Header) -> [f32; MAX_PARAM_FLOATS] {
     let mut out = [0.0; MAX_PARAM_FLOATS];
@@ -265,16 +280,16 @@ pub fn assemble(wgsl: &str) -> Result<String, String> {
 
 @fragment
 fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
-    let result = effect(in.uv, unpack());
     // Effects on things leave every other pixel exactly as it was.
     var base = sample(in.uv);
     if fx.apply_to > 0.5 {
         base = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0).rgb;
     }
+    var result = effect(in.uv, unpack());
+    // A NaN leaves the pixel as it was instead of spreading, and feedback can't run away.
+    result = select(result, base, result != result);
     let blended = mix(base, result, fx.blend * target_weight(in.uv));
-    // Keep feedback from running away and stop a NaN from spreading.
-    let safe = select(blended, vec3<f32>(0.0), blended != blended);
-    return vec4<f32>(clamp(safe, vec3<f32>(0.0), vec3<f32>(64.0)), 1.0);
+    return vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), 1.0);
 }
 ",
     );
@@ -354,6 +369,17 @@ mod tests {
         assert_eq!(&d[..3], &[0.5, 6.0, 1.0]);
         assert_eq!(d[3], 1.0);
         assert_eq!(d[6], 0.0);
+    }
+
+    #[test]
+    fn comments_in_the_code_are_not_header_lines() {
+        let wgsl = "// name: Rim\n// simple width = 1 [0, 2] How wide\n\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {\n    // color the rim, then\n    // name it\n    // param x\n    return sample(uv) * p.width;\n}\n";
+        let header = parse(wgsl).unwrap();
+        assert_eq!(header.name, "Rim");
+        assert_eq!(header.params.len(), 1);
+        validate(&assemble(wgsl).unwrap());
+        assert!(!needs_objects(wgsl));
+        assert!(needs_objects("fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return object_at(uv).rgb; }"));
     }
 
     #[test]

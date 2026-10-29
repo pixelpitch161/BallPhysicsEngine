@@ -13,7 +13,8 @@ struct Globals {
 struct Burst {
     // xy: where it went off, zw: the way its particles fly
     place: vec4<f32>,
-    // x: seconds since it went off, y: index of its first particle, z: particle count
+    // x: seconds since it went off, y: index of its first particle, z: particle count,
+    // w: in the first burst, how many bursts are in use
     timing: vec4<f32>,
     color: vec4<f32>,
     // speed, spread (radians), size, life
@@ -75,7 +76,7 @@ fn hash2(a: u32, b: u32) -> f32 {
 // The burst holding particle number `i`: the last one whose first particle is at or before it.
 fn find_burst(i: u32) -> u32 {
     var lo = 0u;
-    var hi = arrayLength(&bursts);
+    var hi = max(u32(bursts[0].timing.w), 1u);
     while hi - lo > 1u {
         let mid = (lo + hi) / 2u;
         if u32(bursts[mid].timing.y) <= i {

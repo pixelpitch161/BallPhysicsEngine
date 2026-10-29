@@ -121,7 +121,7 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
     const H: u32 = 480;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let points: Vec<Vec2> = (0..=10).map(|i| Vec2::new(0.0, -40.0 * i as f32)).collect();
-    push_streak(&mut frame.trails, &points, 24.0, 1.0, [1.0, 0.0, 0.0, -1.0], 1.0);
+    push_streak(&mut frame.trails, &points, 24.0, 1.0, [1.0, 0.0, 0.0, -1.0], 4.0);
     frame.balls.push(BallInstance {
         center: [0.0, 0.0],
         radius: 60.0,
@@ -138,6 +138,13 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
     assert!(head[0] > 120, "the streak is red near its head: {head:?}");
     assert!(tail[0] < head[0] / 3, "and fades towards its tail: {tail:?} vs {head:?}");
     assert!(beside[0] < 20, "nothing beside it: {beside:?}");
+    // Drawn four times smaller than the video, the edge still softens over an output pixel
+    // instead of being cut off by the quad: just outside the half width there is still light.
+    // A quarter of the way down the streak is 18 px wide (tapering from 24).
+    let edge = pixel_sized(&pixels, W, H, Vec2::new(19.5, -100.0));
+    let outside = pixel_sized(&pixels, W, H, Vec2::new(24.0, -100.0));
+    assert!(edge[0] > 30 && edge[0] < 200, "a soft edge: {edge:?}");
+    assert!(outside[0] < 20, "dark past the margin: {outside:?}");
     assert!(ball[2] > 100 && ball[0] < 80, "the ball covers the streak: {ball:?}");
     // A covering streak hides the background instead of adding to it.
     let mut covering = Frame { bloom: 0.0, background_top: [1.0; 4], background_bottom: [1.0; 4], ..Frame::default() };

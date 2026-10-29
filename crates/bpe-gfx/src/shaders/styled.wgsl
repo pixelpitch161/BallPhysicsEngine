@@ -35,6 +35,9 @@ struct LookOut {
 
 // How far past the shape's edge the halo reaches, in glow sizes.
 const HALO_REACH: f32 = 2.2;
+// How far the shapes reach from the centre, in radii: a triangle's bottom corners sit at 1.40
+// and a heart's lobes at 1.39.
+const SHAPE_REACH: f32 = 1.45;
 
 @vertex
 fn vs_look(@builtin(vertex_index) i: u32, b: LookIn) -> LookOut {
@@ -42,7 +45,7 @@ fn vs_look(@builtin(vertex_index) i: u32, b: LookIn) -> LookOut {
     let outline = b.look.x / radius;
     let margin = 2.0 * g.view.z / radius;
     // Shapes reach a little past one radius; the halo reaches further.
-    let reach = 1.35 + HALO_REACH * max(b.extent.x, 0.0) * step(1e-4, b.look.y) + outline + margin;
+    let reach = SHAPE_REACH + HALO_REACH * max(b.extent.x, 0.0) * step(1e-4, b.look.y) + outline + margin;
     let corner = quad_corner(i) * reach;
     let dir = b.stretch.xy;
     let side = vec2<f32>(-dir.y, dir.x);

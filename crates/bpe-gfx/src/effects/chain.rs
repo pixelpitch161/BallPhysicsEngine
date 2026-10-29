@@ -81,9 +81,8 @@ pub(crate) fn key_of(wgsl: &str) -> u64 {
 
 /// The `// name:` line of an effect, for messages.
 fn name_of(wgsl: &str) -> String {
-    wgsl.lines()
-        .filter_map(|l| l.trim().strip_prefix("//"))
-        .filter_map(|l| l.trim().strip_prefix("name:"))
+    super::header_lines(wgsl)
+        .filter_map(|(_, l)| l.trim().strip_prefix("name:"))
         .map(|n| n.trim().to_owned())
         .find(|n| !n.is_empty())
         .unwrap_or_else(|| "effect".to_owned())
@@ -154,9 +153,9 @@ impl Chain {
     }
 
     /// Whether this frame needs the object picture drawn: an effect on one thing, or one that
-    /// runs on the things stage (materials read what is where).
+    /// reads what is where itself (a material on the scene paints every thing).
     pub(crate) fn wants_objects(frame: &Frame) -> bool {
-        frame.effects.iter().any(|e| e.blend > 0.0 && (e.apply_to > 0.5 || e.stage == Stage::Things))
+        frame.effects.iter().any(|e| e.blend > 0.0 && (e.apply_to > 0.5 || super::needs_objects(&e.wgsl)))
     }
 
     /// Starts a frame: forgets which effects and uniforms the last one used.
@@ -674,6 +673,20 @@ pub(crate) mod tests {
                 assert_ne!(pixel(&after, A), pixel(&plain, A), "{}: its own ball didn't change", builtin.id);
             }
         }
+    }
+
+    #[test]
+    fn only_effects_that_read_the_object_picture_want_it() {
+        let hit_glow = crate::effects::Builtin::find("hit_glow").unwrap().wgsl;
+        let lava = crate::effects::Builtin::find("lava").unwrap().wgsl;
+        let mut frame = Frame::default();
+        frame.effects.push(call(hit_glow, 0.0, Stage::Things));
+        assert!(!Chain::wants_objects(&frame), "a flare over the whole picture reads no objects");
+        frame.effects.push(call(lava, 0.0, Stage::Things));
+        assert!(Chain::wants_objects(&frame), "lava on the scene paints every thing");
+        frame.effects.clear();
+        frame.effects.push(call(hit_glow, 2.0, Stage::Things));
+        assert!(Chain::wants_objects(&frame), "an effect on one thing needs its target");
     }
 
     #[test]
