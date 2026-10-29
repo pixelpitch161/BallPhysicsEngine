@@ -46,7 +46,7 @@ struct LiquidParams {
 
 /// Distance from `p` to a closed wall's inner face, positive inside. Matches `closed_distance`
 /// in sdf.wgsl.
-fn closed_distance(outline: &Outline, p: Vec2) -> f32 {
+pub(crate) fn closed_distance(outline: &Outline, p: Vec2) -> f32 {
     use std::f32::consts::{PI, TAU};
     match *outline {
         Outline::Ring { center, radius, sides, angle, thickness } => {
@@ -66,6 +66,14 @@ fn closed_distance(outline: &Outline, p: Vec2) -> f32 {
             let o = p - center;
             let q = Vec2::new(o.dot(x), o.dot(x.perp())).abs() - half;
             let outside = q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0);
+            -outside - thickness * 0.5
+        }
+        Outline::Rounded { center, half, corner, angle, thickness } => {
+            let x = Vec2::from_angle(angle);
+            let o = p - center;
+            let local = Vec2::new(o.dot(x), o.dot(x.perp()));
+            let q = local.abs() - (half - Vec2::splat(corner));
+            let outside = q.max(Vec2::ZERO).length() + q.max_element().min(0.0) - corner;
             -outside - thickness * 0.5
         }
     }

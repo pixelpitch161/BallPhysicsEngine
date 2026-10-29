@@ -1,4 +1,4 @@
-//! Closed walls (rings, polygons, boxes) and how a ball meets them.
+//! Closed walls (rings, polygons, boxes, rounded boxes) and how a ball meets them.
 //!
 //! The maths is the old editor's closed-arena collision, split in two: [`keep_inside`] moves a
 //! ball back inside and reports the contact, and the mover's Bounce module decides what the
@@ -8,7 +8,7 @@ use std::f32::consts::{PI, TAU};
 
 use glam::Vec2;
 
-/// A closed outline: a ring or regular polygon, or a box.
+/// A closed outline: a ring or regular polygon, a box, or a box with round corners.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Outline {
     Ring {
@@ -27,6 +27,22 @@ pub enum Outline {
         angle: f32,
         thickness: f32,
     },
+    /// A box whose corners are rounded with `corner`, the radius of the centre line's corner
+    /// arcs; `corner == half.min_element()` makes a capsule.
+    Rounded {
+        center: Vec2,
+        half: Vec2,
+        corner: f32,
+        angle: f32,
+        thickness: f32,
+    },
+}
+
+/// Signed distance from `local` (relative to the centre, in the box's own frame) to the centre
+/// line of a box with half size `half` and corners rounded by `corner`; negative inside.
+fn rounded_distance(local: Vec2, half: Vec2, corner: f32) -> f32 {
+    let q = local.abs() - (half - Vec2::splat(corner));
+    q.max(Vec2::ZERO).length() + q.max_element().min(0.0) - corner
 }
 
 /// A wall that balls stay inside of.
@@ -37,6 +53,8 @@ pub struct Wall {
     pub spin: f32,
     /// Fraction of its size the wall grows per second; negative while shrinking.
     pub growth: f32,
+    /// How fast the whole wall is moving, in pixels per second, when it rides something.
+    pub velocity: Vec2,
 }
 
 /// Where a ball met a wall.
@@ -76,18 +94,44 @@ impl Outline {
                 let local = d * scale;
                 center + dir(angle) * local.x + dir(angle).perp() * local.y
             }
+            Outline::Rounded { center, half, corner, angle, .. } => {
+                // Between the centre and the sharp box's edge the distance changes sign once:
+                // halve the gap until it is found.
+                let d = dir(u);
+                let mut far = (half.x / d.x.abs().max(1e-6)).min(half.y / d.y.abs().max(1e-6));
+                let mut near = 0.0;
+                for _ in 0..24 {
+                    let mid = (near + far) * 0.5;
+                    if rounded_distance(d * mid, half, corner) < 0.0 {
+                        near = mid;
+                    } else {
+                        far = mid;
+                    }
+                }
+                let local = d * (near + far) * 0.5;
+                center + dir(angle) * local.x + dir(angle).perp() * local.y
+            }
         }
     }
 
     pub fn center(&self) -> Vec2 {
         match *self {
-            Outline::Ring { center, .. } | Outline::Box { center, .. } => center,
+            Outline::Ring { center, .. } | Outline::Box { center, .. } | Outline::Rounded { center, .. } => center,
         }
     }
 
     pub fn thickness(&self) -> f32 {
         match *self {
-            Outline::Ring { thickness, .. } | Outline::Box { thickness, .. } => thickness,
+            Outline::Ring { thickness, .. } | Outline::Box { thickness, .. } | Outline::Rounded { thickness, .. } => {
+                thickness
+            }
+        }
+    }
+
+    /// Radians clockwise from +x that the outline is turned.
+    pub fn angle(&self) -> f32 {
+        match *self {
+            Outline::Ring { angle, .. } | Outline::Box { angle, .. } | Outline::Rounded { angle, .. } => angle,
         }
     }
 
@@ -106,6 +150,11 @@ impl Outline {
                 let offset = p - center;
                 offset.dot(dir(angle)).abs() < half.x && offset.dot(dir(angle).perp()).abs() < half.y
             }
+            Outline::Rounded { center, half, corner, angle, .. } => {
+                let offset = p - center;
+                let local = Vec2::new(offset.dot(dir(angle)), offset.dot(dir(angle).perp()));
+                rounded_distance(local, half, corner) < 0.0
+            }
         }
     }
 }
@@ -118,10 +167,10 @@ pub fn wall_velocity(point: Vec2, center: Vec2, spin: f32, growth: f32) -> Vec2 
 }
 
 /// The contact at `point` against a wall whose surface normal (towards the ball) is `normal`,
-/// when the ball is moving into it.
+/// when the ball is moving into it, relative to the wall's own motion.
 fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wall) -> Option<Contact> {
     let point = position + outward * radius;
-    let wall_velocity = wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
+    let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
     let speed = (velocity - wall_velocity).dot(outward);
     (speed > 0.0).then_some(Contact { point, normal: -outward, speed, wall_velocity })
 }
@@ -158,6 +207,35 @@ pub fn keep_inside(position: &mut Vec2, velocity: Vec2, radius: f32, wall: &Wall
             let (x, y) = (dir(angle), dir(angle).perp());
             let planes = [(x, half.x), (-x, half.x), (y, half.y), (-y, half.y)];
             keep_inside_planes(position, velocity, radius, center, planes.into_iter(), thickness, wall)
+        }
+        Outline::Rounded { center, half, corner, angle, thickness } => {
+            let (x, y) = (dir(angle), dir(angle).perp());
+            let offset = *position - center;
+            let mut local = Vec2::new(offset.dot(x), offset.dot(y));
+            // The ball's centre may roam a smaller rounded box: this one shrunk by the wall's
+            // half thickness and the ball's radius. An axis the ball doesn't fit across pins it
+            // on the centre line, like a box does.
+            let inner = half - Vec2::splat(thickness * 0.5 + radius);
+            let pinned = Vec2::new(if inner.x < 0.0 { 0.0 } else { 1.0 }, if inner.y < 0.0 { 0.0 } else { 1.0 });
+            local *= pinned;
+            let inner = inner.max(Vec2::ZERO);
+            let round = (corner - thickness * 0.5 - radius).clamp(0.0, inner.min_element());
+            let core = inner - Vec2::splat(round);
+            let nearest = local.clamp(-core, core);
+            let away = local - nearest;
+            let distance = away.length();
+            if distance <= round + 1e-4 {
+                // In bounds (a hair's breadth out counts, so a settled ball stays put).
+                if pinned != Vec2::ONE {
+                    *position = center + x * local.x + y * local.y;
+                }
+                return None;
+            }
+            let outward_local = away / distance;
+            let local = nearest + outward_local * round;
+            *position = center + x * local.x + y * local.y;
+            let outward = x * outward_local.x + y * outward_local.y;
+            contact(*position, velocity, radius, outward, wall)
         }
     }
 }
@@ -206,13 +284,29 @@ pub fn reflect(velocity: Vec2, contact: &Contact, bounciness: f32) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2};
 
     fn ring(radius: f32) -> Wall {
         Wall {
             outline: Outline::Ring { center: Vec2::ZERO, radius, sides: 0, angle: 0.0, thickness: 2.0 },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         }
+    }
+
+    #[test]
+    fn a_wall_that_rides_along_pushes_a_resting_ball() {
+        // The ring moves right at 50 px/s; a still ball at its left edge is run into by it.
+        let wall = Wall { velocity: Vec2::new(50.0, 0.0), ..ring(100.0) };
+        let mut p = Vec2::new(-95.0, 0.0);
+        let c = keep_inside(&mut p, Vec2::ZERO, 5.0, &wall).expect("the wall runs into the ball");
+        assert!((c.speed - 50.0).abs() < 1e-3, "{c:?}");
+        assert_eq!(c.wall_velocity, Vec2::new(50.0, 0.0));
+        assert!((c.normal - Vec2::new(1.0, 0.0)).length() < 1e-3);
+        // A still ring leaves a still ball alone.
+        let mut p = Vec2::new(-95.0, 0.0);
+        assert!(keep_inside(&mut p, Vec2::ZERO, 5.0, &ring(100.0)).is_none());
     }
 
     #[test]
@@ -240,8 +334,15 @@ mod tests {
             Outline::Ring { center: Vec2::ZERO, radius: 100.0, sides: 0, angle: 0.0, thickness: 2.0 },
             Outline::Ring { center: Vec2::ZERO, radius: 100.0, sides: 6, angle: 0.3, thickness: 2.0 },
             Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 60.0), angle: 0.2, thickness: 2.0 },
+            Outline::Rounded {
+                center: Vec2::ZERO,
+                half: Vec2::new(100.0, 60.0),
+                corner: 30.0,
+                angle: 0.2,
+                thickness: 2.0,
+            },
         ] {
-            let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+            let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
             let mut p = Vec2::new(900.0, 700.0);
             keep_inside(&mut p, Vec2::ZERO, 5.0, &wall);
             assert!(p.is_finite() && outline.inside(p), "{outline:?} left the ball at {p}");
@@ -275,6 +376,7 @@ mod tests {
             outline: Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 100.0), angle: 0.0, thickness: 2.0 },
             spin: 0.0,
             growth: 0.0,
+            velocity: Vec2::ZERO,
         };
         let mut p = Vec2::new(99.0, 99.0);
         let c = keep_inside(&mut p, Vec2::new(10.0, 40.0), 5.0, &wall).unwrap();
@@ -296,13 +398,84 @@ mod tests {
     }
 
     #[test]
+    fn a_rounded_box_keeps_balls_off_its_round_corners() {
+        let outline = Outline::Rounded {
+            center: Vec2::ZERO,
+            half: Vec2::new(100.0, 100.0),
+            corner: 40.0,
+            angle: 0.0,
+            thickness: 2.0,
+        };
+        let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
+        // In the corner, where a sharp box would allow (94, 94), the round one does not.
+        let mut p = Vec2::new(94.0, 94.0);
+        let c = keep_inside(&mut p, Vec2::new(10.0, 10.0), 5.0, &wall).unwrap();
+        let core = 100.0 - 1.0 - 5.0 - 34.0; // half - thickness/2 - radius - inner corner
+        assert!(((p - Vec2::splat(core)).length() - 34.0).abs() < 1e-3, "{p:?}");
+        assert!((c.normal + Vec2::splat(FRAC_1_SQRT_2)).length() < 1e-3, "{c:?}");
+        assert!((c.speed - 10.0 * std::f32::consts::SQRT_2).abs() < 1e-3);
+        // Along a flat side it behaves like the box.
+        let mut q = Vec2::new(0.0, 99.0);
+        keep_inside(&mut q, Vec2::ZERO, 5.0, &wall);
+        assert!((q.y - 94.0).abs() < 1e-4);
+        // Inside, nothing moves.
+        let mut still = Vec2::new(50.0, -50.0);
+        assert!(keep_inside(&mut still, Vec2::ONE, 5.0, &wall).is_none());
+        assert_eq!(still, Vec2::new(50.0, -50.0));
+        assert!(!outline.inside(Vec2::new(90.0, 90.0)) && outline.inside(Vec2::new(60.0, 60.0)));
+        let rim = outline.point(0.7);
+        assert!((100.0..130.0).contains(&rim.length()), "{rim:?}");
+        assert!(!outline.inside(rim * 1.02) && outline.inside(rim * 0.98));
+        assert!((outline.point(0.0) - Vec2::new(100.0, 0.0)).length() < 1e-3);
+        assert_eq!((outline.center(), outline.thickness(), outline.angle()), (Vec2::ZERO, 2.0, 0.0));
+        // A ball bigger than the corner sees a sharp box.
+        let mut big = Vec2::new(99.0, 99.0);
+        keep_inside(&mut big, Vec2::ZERO, 50.0, &wall);
+        assert!((big - Vec2::splat(49.0)).length() < 1e-3, "{big:?}");
+        // A capsule (corner == half) pins a ball too wide for it on that axis and bounces it off
+        // the round ends.
+        let capsule = Wall {
+            outline: Outline::Rounded {
+                center: Vec2::ZERO,
+                half: Vec2::new(10.0, 100.0),
+                corner: 10.0,
+                angle: 0.0,
+                thickness: 2.0,
+            },
+            spin: 0.0,
+            growth: 0.0,
+            velocity: Vec2::ZERO,
+        };
+        let mut wide = Vec2::new(5.0, 99.0);
+        let c = keep_inside(&mut wide, Vec2::new(0.0, 10.0), 20.0, &capsule).unwrap();
+        assert!(wide.x.abs() < 1e-3 && (wide.y - 79.0).abs() < 1e-3, "{wide:?}");
+        assert!((c.normal.y + 1.0).abs() < 1e-3, "{c:?}");
+        // Turned, the same in its own frame.
+        let turned = Wall {
+            outline: Outline::Rounded {
+                center: Vec2::ZERO,
+                half: Vec2::splat(100.0),
+                corner: 40.0,
+                angle: FRAC_PI_2,
+                thickness: 2.0,
+            },
+            spin: 0.0,
+            growth: 0.0,
+            velocity: Vec2::ZERO,
+        };
+        let mut t = Vec2::new(-94.0, 94.0);
+        keep_inside(&mut t, Vec2::new(-10.0, 10.0), 5.0, &turned).unwrap();
+        assert!(((t - Vec2::new(-core, core)).length() - 34.0).abs() < 1e-3, "{t:?}");
+    }
+
+    #[test]
     fn a_ball_that_does_not_fit_is_pinned_without_a_contact() {
         let mut p = Vec2::new(3.0, 1.0);
         assert!(keep_inside(&mut p, Vec2::new(50.0, 0.0), 20.0, &ring(10.0)).is_none());
         assert!(p.length() < 1e-3);
         // A box too low for the ball pins it on that axis only; it still bounces off the ends.
         let outline = Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 5.0), angle: 0.0, thickness: 2.0 };
-        let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+        let wall = Wall { outline, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
         let mut p = Vec2::new(99.0, 3.0);
         let c = keep_inside(&mut p, Vec2::new(50.0, 10.0), 20.0, &wall).expect("the end wall is hit");
         assert!(p.y.abs() < 1e-3 && (p.x - 79.0).abs() < 1e-3, "{p:?}");

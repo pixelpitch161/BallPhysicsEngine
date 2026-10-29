@@ -4,10 +4,12 @@ use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
+use crate::library::LibraryWindow;
 use crate::preview::Preview;
+use crate::selection::Selection;
 use crate::sound_job::SoundJob;
 use crate::tree::Tree;
-use crate::{inspector, preview, settings, theme, transport, tree};
+use crate::{inspector, library, preview, settings, theme, transport, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Playback, fingerprint};
@@ -37,6 +39,7 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub sound: SoundJob,
+    pub library: LibraryWindow,
 }
 
 enum ToolbarClick {
@@ -64,9 +67,11 @@ pub struct Studio {
     pub playing: bool,
     pub looping: bool,
     pub muted: bool,
-    pub selected: Option<ThingId>,
+    pub selection: Selection,
     pub history: History,
     pub status: String,
+    /// What is wrong with a shader module the preview skipped, shown in the status line.
+    pub shader_problem: Option<String>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
     /// The soundtrack no longer matches the scene.
@@ -117,9 +122,10 @@ impl Studio {
             playing: false,
             looping: true,
             muted: false,
-            selected: None,
+            selection: Selection::default(),
             history: History::default(),
             status: "Ready.".into(),
+            shader_problem: None,
             confirm: None,
             panels: Panels::default(),
             sound_dirty: true,
@@ -185,7 +191,7 @@ impl Studio {
         self.scene = scene;
         self.path = path;
         self.history = History::default();
-        self.selected = None;
+        self.selection.clear();
         self.time = 0.0;
         self.set_playing(false);
         self.recorded = true;
@@ -469,6 +475,14 @@ impl Studio {
                 if ui.add(export).on_hover_text("Render the scene to an mp4 with sound").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
+                let library = egui::Button::selectable(self.panels.library.open, "Library");
+                if ui
+                    .add(library)
+                    .on_hover_text("Shared modules: rename, duplicate, delete, drag onto a thing to link")
+                    .clicked()
+                {
+                    self.panels.library.open = !self.panels.library.open;
+                }
             });
         });
     }
@@ -476,6 +490,9 @@ impl Studio {
     fn status_line(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small().color(theme::MUTED));
+            if let Some(problem) = &self.shader_problem {
+                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(theme::ERROR));
+            }
             if self.sound_dirty || self.panels.sound.busy() {
                 ui.label(RichText::new("· Updating sound…").small().color(theme::MUTED));
             }
@@ -560,9 +577,12 @@ impl eframe::App for Studio {
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selected)
+                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selection)
             })
             .inner;
+        if let Some(message) = tree.message {
+            self.status = message;
+        }
         if tree.removed.is_some() {
             // Deleting is always its own undo step.
             self.recorded = true;
@@ -583,9 +603,24 @@ impl eframe::App for Studio {
                     &mut self.scene,
                     &self.kit,
                     &self.resolved,
-                    self.selected,
+                    &self.selection,
                 )
             });
+        if let Some(module) = self.panels.inspector.open_library.take() {
+            self.panels.library.open = true;
+            self.panels.library.selected = Some(module);
+        }
+        let library = library::show(&ctx, &mut self.panels.library, &mut self.scene, &self.kit, &self.resolved);
+        if let Some(ids) = library.select {
+            self.selection.clear();
+            if let Some((&first, rest)) = ids.split_first() {
+                self.selection.set(first);
+                self.selection.extra.extend(rest.iter().copied());
+            }
+        }
+        if let Some(message) = library.message {
+            self.status = message;
+        }
         let outcome = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
             .show(ui, |ui| preview::show(ui, frame, self))
@@ -598,9 +633,10 @@ impl eframe::App for Studio {
             self.set_playing(false);
             self.seek(0.0);
         }
-        if outcome.selected.is_some() {
-            self.selected = outcome.selected;
+        if let Some(id) = outcome.selected {
+            self.selection.set(id);
         }
+        self.shader_problem = outcome.shader_problem;
         if outcome.catching_up {
             ctx.request_repaint();
         }

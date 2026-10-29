@@ -60,7 +60,7 @@ fn bounds(outline: &Outline) -> Rect {
         Outline::Ring { center, radius, .. } => {
             Rect { min: center - Vec2::splat(radius), max: center + Vec2::splat(radius) }
         }
-        Outline::Box { center, half, angle, .. } => {
+        Outline::Box { center, half, angle, .. } | Outline::Rounded { center, half, angle, .. } => {
             let (c, s) = (angle.cos().abs(), angle.sin().abs());
             let extent = Vec2::new(c * half.x + s * half.y, s * half.x + c * half.y);
             Rect { min: center - extent, max: center + extent }
@@ -220,7 +220,7 @@ impl ThingSim for LiquidSim {
 mod tests {
     use super::*;
     use crate::testing::{ARENA, BALLS, run, scene_with};
-    use bpe_core::{Target, ThingId, Value};
+    use bpe_core::{SlotId, Target, ThingId, Value};
     use bpe_runtime::{EventKind, World};
     use glam::Vec2;
 
@@ -266,6 +266,28 @@ mod tests {
         assert_eq!(ps.len(), 500);
         assert!(ps.iter().all(|p| p.length() < 508.0), "all inside the ring");
         assert!(ps.iter().map(|p| p.y).fold(f32::MIN, f32::max) > 400.0, "down at the bottom");
+    }
+
+    #[test]
+    fn a_pool_fills_a_capsule_arena() {
+        // Stage 3's rounded arenas: the pool keeps inside the capsule, not inside its box.
+        let (mut scene, _, kit, me) = pool(600, |p| p.set("fill", Value::Number(0.3)));
+        let arena = &mut scene.things.get_mut(&ARENA).unwrap().params;
+        arena.set("shape", Value::Choice("capsule".into()));
+        arena.set("width", Value::Number(600.0));
+        arena.set("height", Value::Number(1400.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let w = World::build(&scene, &resolved, &kit.sims);
+        let outline = w.walls[&ARENA].outline;
+        assert!(matches!(outline, bpe_runtime::Outline::Rounded { .. }), "{outline:?}");
+        let ps = &w.bodies[&me].position;
+        assert_eq!(ps.len(), 600);
+        assert!(ps.iter().all(|&p| outline.inside(p)), "every particle starts inside the capsule");
+        let lowest = ps.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        assert!(lowest > 500.0, "down in the round end: {lowest}");
+        let (w, _) = run(&scene, &resolved, &kit, 1.0);
+        assert!(w.bodies[&me].position.iter().all(|&p| outline.inside(p)), "and stays inside after settling");
     }
 
     #[test]
@@ -323,6 +345,32 @@ mod tests {
         let ball = w_pushed.bodies[&BALLS].position[0];
         let inside = w_pushed.bodies[&me].position.iter().filter(|p| p.distance(ball) < 60.0 - 2.0).count();
         assert!(inside <= 3, "{inside} particles inside the ball");
+    }
+
+    #[test]
+    fn a_pool_never_bumps_the_balls_even_when_their_bounce_hits_balls() {
+        // Stage 3's ball-to-ball stage must leave silent particles out, or a pool would shove
+        // the ball through the pair solver instead of only being pushed by it.
+        let (mut scene, _, kit, me) = pool(400, |p| p.set("fill", Value::Number(0.5)));
+        let bounce = bpe_core::resolve_slot(&scene, &kit.registry, BALLS, SlotId::Bounce, &mut Vec::new())
+            .expect("the ball bounces")
+            .module;
+        scene.library.modules.get_mut(&bounce).unwrap().params.set("hit_balls", Value::Bool(true));
+        let ball = scene.things.get_mut(&BALLS).unwrap();
+        ball.transform.position = Vec2::new(0.0, -300.0);
+        ball.params.set("velocity", Value::Vec2([0.0, 600.0]));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let (with, log) = run(&scene, &resolved, &kit, 1.5);
+        assert!(
+            log.events().iter().all(|e| e.a.thing != me && e.b.is_none_or(|b| b.thing != me)),
+            "the pool logged a hit"
+        );
+        let mut without = scene.clone();
+        without.remove_thing(me).unwrap();
+        let resolved = bpe_core::resolve(&without, &kit.registry);
+        let (alone, _) = run(&without, &resolved, &kit, 1.5);
+        assert_eq!(with.bodies[&BALLS].position, alone.bodies[&BALLS].position, "the pool moved the ball");
     }
 
     #[test]

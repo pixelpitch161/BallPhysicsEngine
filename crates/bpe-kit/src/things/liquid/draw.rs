@@ -81,11 +81,13 @@ impl ThingDraw for LiquidDraw {
             frame.liquids.push(layer(cx, &look, points, bodies.radius.first().copied().unwrap_or(0.0)));
         } else {
             let color = ClassicLook::from_params(&look.params).color.to_linear();
+            let code = bpe_gfx::thing_code(cx.thing.id);
             frame.balls.extend(alive.map(|i| BallInstance {
                 center: bodies.position[i].into(),
                 radius: bodies.radius[i],
                 glow: 0.0,
                 color,
+                code: [code, 0.0, 0.0, 0.0],
             }));
         }
     }

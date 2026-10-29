@@ -80,7 +80,7 @@ impl ThingSim for FieldSim {
         if settings.strength == 0.0 {
             return;
         }
-        for target in world.matches(&settings.targets, me) {
+        for target in world.matching(&settings.targets, me) {
             let Some(bodies) = world.bodies.get_mut(&target) else { continue };
             for i in 0..bodies.len() {
                 if !bodies.alive[i] {
@@ -104,7 +104,7 @@ impl ThingSim for FieldSim {
         if !settings.log_events {
             return;
         }
-        let targets = world.matches(&settings.targets, me);
+        let targets = world.matching(&settings.targets, me);
         let mut events = Vec::new();
         {
             let World { bodies, states, .. } = world;

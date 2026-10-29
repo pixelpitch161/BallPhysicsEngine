@@ -69,7 +69,9 @@ impl Placement {
     fn for_outline(outline: &Outline) -> Self {
         let half = match *outline {
             Outline::Ring { radius, thickness, .. } => Vec2::splat(radius + thickness * 0.5 + MAX_DISTANCE),
-            Outline::Box { half, thickness, .. } => half + thickness * 0.5 + MAX_DISTANCE,
+            Outline::Box { half, thickness, .. } | Outline::Rounded { half, thickness, .. } => {
+                half + thickness * 0.5 + MAX_DISTANCE
+            }
         };
         let half = half.abs().max(Vec2::splat(1.0));
         let texel = (2.0 * half.max_element() / FIELD_LONG_SIDE as f32).max(1e-3);
@@ -100,6 +102,9 @@ pub fn normalized(outline: &Outline) -> Outline {
             Outline::Ring { center: Vec2::ZERO, radius, sides, angle: 0.0, thickness }
         }
         Outline::Box { half, thickness, .. } => Outline::Box { center: Vec2::ZERO, half, angle: 0.0, thickness },
+        Outline::Rounded { half, corner, thickness, .. } => {
+            Outline::Rounded { center: Vec2::ZERO, half, corner, angle: 0.0, thickness }
+        }
     }
 }
 
@@ -107,13 +112,13 @@ pub fn normalized(outline: &Outline) -> Outline {
 fn size_of(outline: &Outline) -> f32 {
     match *outline {
         Outline::Ring { radius, .. } => radius,
-        Outline::Box { half, .. } => half.x,
+        Outline::Box { half, .. } | Outline::Rounded { half, .. } => half.x,
     }
 }
 
 fn angle_of(outline: &Outline) -> f32 {
     match *outline {
-        Outline::Ring { angle, .. } | Outline::Box { angle, .. } => angle,
+        Outline::Ring { angle, .. } | Outline::Box { angle, .. } | Outline::Rounded { angle, .. } => angle,
     }
 }
 
@@ -126,6 +131,9 @@ fn closed_uniform(outline: &Outline) -> ([f32; 4], [f32; 4]) {
         }
         Outline::Box { center, half, angle, thickness } => {
             ([3.0, thickness * 0.5, center.x, center.y], [half.x, half.y, angle, 0.0])
+        }
+        Outline::Rounded { center, half, corner, angle, thickness } => {
+            ([4.0, thickness * 0.5, center.x, center.y], [half.x, half.y, angle, corner])
         }
     }
 }

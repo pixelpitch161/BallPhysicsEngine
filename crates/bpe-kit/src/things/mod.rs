@@ -4,6 +4,8 @@ pub mod arena;
 pub mod balls;
 pub mod emitter;
 pub mod field;
+pub mod folder;
 pub mod liquid;
+pub mod obstacle;
 pub mod scene;
 pub mod swarm;

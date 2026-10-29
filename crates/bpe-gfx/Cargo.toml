@@ -16,3 +16,4 @@ pollster.workspace = true
 
 [dev-dependencies]
 bpe-core = { workspace = true, features = ["testkit"] }
+naga = { version = "30", features = ["wgsl-in"] }

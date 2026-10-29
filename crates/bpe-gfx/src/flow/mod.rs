@@ -170,7 +170,7 @@ fn first_wall(world: &World) -> Option<Outline> {
 fn arena_size(wall: Option<&Outline>, video: (u32, u32)) -> f32 {
     match wall {
         Some(Outline::Ring { radius, .. }) => *radius,
-        Some(Outline::Box { half, .. }) => half.max_element(),
+        Some(Outline::Box { half, .. }) | Some(Outline::Rounded { half, .. }) => half.max_element(),
         None => video.0.max(video.1) as f32 * 0.5,
     }
 }
@@ -476,7 +476,10 @@ mod tests {
         }
         fn build(&self, thing: &bpe_core::Thing, _: &bpe_core::ResolvedThing, world: &mut World) {
             world.gravity = self.1;
-            world.walls.insert(thing.id, bpe_runtime::Wall { outline: self.0, spin: 0.0, growth: 0.0 });
+            world.walls.insert(
+                thing.id,
+                bpe_runtime::Wall { outline: self.0, spin: 0.0, growth: 0.0, velocity: glam::Vec2::ZERO },
+            );
         }
     }
 
@@ -584,6 +587,42 @@ mod tests {
     }
 
     #[test]
+    fn the_sdf_measures_a_capsule_like_the_processor() {
+        // Stage 3's rounded arenas: the baked field and the processor's distance must agree,
+        // or a GPU liquid would settle against a wall the balls do not see.
+        let Some((device, queue)) = gpu() else { return };
+        let capsule = Outline::Rounded {
+            center: Vec2::new(30.0, -20.0),
+            half: Vec2::new(200.0, 400.0),
+            corner: 200.0,
+            angle: 0.4,
+            thickness: 4.0,
+        };
+        let mut sdf = Sdf::new(&device);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        sdf.bake(&device, &queue, &mut encoder, &capsule);
+        queue.submit([encoder.finish()]);
+        let field = sdf.read_back(&device, &queue).unwrap();
+        // The field is baked unturned at the origin; compare in that frame.
+        let own = sdf::normalized(&capsule);
+        for local in [
+            Vec2::new(150.0, 0.0),
+            Vec2::new(0.0, 350.0),
+            Vec2::new(120.0, 300.0),
+            Vec2::new(-170.0, -250.0),
+            Vec2::new(190.0, 390.0),
+        ] {
+            let cpu = liquid::closed_distance(&own, local).clamp(-MAX_DISTANCE, MAX_DISTANCE);
+            let baked = field.sample(local);
+            assert!((cpu - baked).abs() < 3.0, "{local}: processor {cpu}, field {baked}");
+        }
+        // Inside the end cap the distance is to the arc, not to the box: (0, 350) is 48 in.
+        assert!((field.sample(Vec2::new(0.0, 350.0)) - 48.0).abs() < 3.0, "{}", field.sample(Vec2::new(0.0, 350.0)));
+        // The corner of the enclosing box is outside the capsule.
+        assert!(field.sample(Vec2::new(190.0, 390.0)) < 0.0);
+    }
+
+    #[test]
     fn the_driver_follows_time_and_rebuilds_on_a_new_key() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
@@ -679,7 +718,13 @@ mod tests {
         let Some((device, queue)) = gpu() else { return };
         let mut renderer = Renderer::new(&device, 90, 160);
         let mut frame = Frame::default();
-        frame.balls.push(BallInstance { center: [0.0; 2], radius: 100.0, glow: 0.5, color: [1.0, 0.5, 0.2, 1.0] });
+        frame.balls.push(BallInstance {
+            center: [0.0; 2],
+            radius: 100.0,
+            glow: 0.5,
+            color: [1.0, 0.5, 0.2, 1.0],
+            code: [0.0; 4],
+        });
         frame.bloom = 0.3;
         frame.time = 1.0;
         renderer.render(&device, &queue, &frame);

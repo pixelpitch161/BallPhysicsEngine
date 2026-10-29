@@ -1,0 +1,145 @@
+(
+    format: 2,
+    name: "Pitch climb",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ball",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -300.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(30.0),
+                "velocity": Vec2((350.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Soft bar",
+            kind: "obstacle",
+            tags: [
+                "soft",
+            ],
+            parent: Some(0),
+            transform: (
+                position: (0.0, 350.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "length": Number(500.0),
+                "path": Choice("line"),
+                "path_distance": Vec2((150.0, 0.0)),
+                "path_seconds": Number(6.0),
+                "shape": Choice("bar"),
+                "thickness": Number(12.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+                params: {
+                    "wind": Vec2((60.0, 0.0)),
+                },
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "special": Bool(true),
+                    "special_bounciness": Number(0.30000001192092896),
+                    "special_target": Target(Tag("soft")),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Choice("marimba"),
+                    "pitch_by": Choice("hits"),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+        },
+    ),
+    next_thing: 4,
+    next_module: 5,
+)

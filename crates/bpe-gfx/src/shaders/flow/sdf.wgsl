@@ -42,8 +42,16 @@ fn closed_distance(p: vec2<f32>) -> f32 {
     let a = bake.closed_b.z;
     let x = vec2<f32>(cos(a), sin(a));
     let y = vec2<f32>(-x.y, x.x);
-    let q = abs(vec2<f32>(dot(o, x), dot(o, y))) - bake.closed_b.xy;
-    let outside = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+    let local = abs(vec2<f32>(dot(o, x), dot(o, y)));
+    if kind < 3.5 {
+        let q = local - bake.closed_b.xy;
+        let outside = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+        return -outside - half;
+    }
+    // A box with round corners of radius closed_b.w: a capsule when it equals the shorter half.
+    let corner = bake.closed_b.w;
+    let q = local - (bake.closed_b.xy - vec2<f32>(corner));
+    let outside = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner;
     return -outside - half;
 }
 

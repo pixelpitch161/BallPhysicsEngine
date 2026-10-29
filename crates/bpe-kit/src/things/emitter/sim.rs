@@ -69,7 +69,7 @@ impl ThingSim for EmitterSim {
                 (steady + settings.burst).min(settings.limit)
             }
             Trigger::Hit => {
-                let listened = world.matches(&settings.listen, me);
+                let listened = world.matching(&settings.listen, me);
                 let hits = log
                     .since(world.step.saturating_sub(1))
                     .iter()
@@ -82,7 +82,7 @@ impl ThingSim for EmitterSim {
             return;
         }
         let targets: Vec<ThingId> =
-            world.matches(&settings.target, me).into_iter().filter(|t| world.bodies.contains_key(t)).collect();
+            world.matching(&settings.target, me).into_iter().filter(|t| world.bodies.contains_key(t)).collect();
         if targets.is_empty() {
             return;
         }

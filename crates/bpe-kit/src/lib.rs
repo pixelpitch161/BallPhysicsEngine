@@ -20,6 +20,7 @@ use glam::Vec2;
 pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
+pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
@@ -28,8 +29,14 @@ pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::motion_flock::{Flocking, FlockingKind};
 pub use modules::motion_liquid::sim::FlowingSim;
 pub use modules::motion_liquid::{Flowing, FlowingKind};
+pub use modules::particles::draw::BurstDraw;
+pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
+pub use modules::shader::EffectKind;
+pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
+pub use modules::trail::draw::StreakDraw;
+pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -40,10 +47,13 @@ pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
 pub use things::field::{Falloff, FieldKind, FieldKindChoice, FieldSettings, FieldShape};
+pub use things::folder::{FolderKind, FolderSettings, FolderSim};
 pub use things::liquid::draw::LiquidDraw;
 pub use things::liquid::pbf::Rect;
 pub use things::liquid::sim::{LiquidSim, LiquidState};
 pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
+pub use things::obstacle::draw::ObstacleDraw;
+pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -61,6 +71,8 @@ pub fn sims() -> Sims {
     s.add_thing(FieldSim);
     s.add_thing(LiquidSim);
     s.add_thing(SwarmSim);
+    s.add_thing(FolderSim);
+    s.add_thing(ObstacleSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(FlowingSim);
@@ -75,6 +87,12 @@ pub fn draws() -> Draws {
     d.add(BallsDraw);
     d.add(LiquidDraw);
     d.add(SwarmDraw);
+    d.add(ObstacleDraw);
+    for b in &bpe_gfx::effects::BUILTINS {
+        d.add_module(EffectDraw(b));
+    }
+    d.add_module(StreakDraw);
+    d.add_module(BurstDraw);
     d
 }
 
@@ -163,8 +181,8 @@ pub fn flow_source<'a>(
     FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
 }
 
-/// What the mixer needs from the root's settings.
-pub fn mix_settings(resolved: &Resolved) -> MixSettings {
+/// What the mixer needs from the root's settings, and every thing's tags.
+pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     MixSettings {
         duration: root.duration,
@@ -173,13 +191,13 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
         loudness: root.loudness,
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
+        tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
     }
 }
 
 /// The soundtrack of a finished run of `scene`.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    let _ = scene;
-    bpe_mix::mix(&mix_settings(resolved), resolved, log, &kit.mixes)
+    bpe_mix::mix(&mix_settings(scene, resolved), resolved, log, &kit.mixes)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
@@ -188,18 +206,26 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
+    r.add_thing(FolderKind);
+    r.add_thing(ObstacleKind);
     r.add_thing(EmitterKind);
     r.add_thing(FieldKind);
     r.add_thing(LiquidKind);
     r.add_thing(SwarmKind);
     r.add_module(ClassicLookKind);
+    r.add_module(StyledLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
+    r.add_module(StreakTrailKind);
+    r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
     r.add_module(FlowingKind);
     r.add_module(FlockingKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
+    for k in modules::shader::kinds() {
+        r.add_module(k);
+    }
     r
 }
 
@@ -244,7 +270,7 @@ mod tests {
     fn the_new_module_kinds_are_registered_on_their_slots() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.classic", "look.liquid", "look.swarm"]);
+        assert_eq!(looks, ["look.classic", "look.liquid", "look.styled", "look.swarm"]);
         let motions: Vec<&str> = reg.modules_for(SlotId::Motion).map(|m| m.id()).collect();
         assert_eq!(motions, ["motion.basic", "motion.flock", "motion.liquid"]);
         assert_eq!(reg.module("look.liquid").unwrap().name(), "Liquid surface");

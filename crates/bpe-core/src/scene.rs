@@ -92,6 +92,13 @@ pub struct Thing {
     pub slots: BTreeMap<SlotId, SlotLink>,
 }
 
+impl Thing {
+    /// Whether this thing sits on its parent instead of keeping its own place.
+    pub fn rides(&self) -> bool {
+        matches!(self.attach, Attach::Ride { .. })
+    }
+}
+
 impl Default for Thing {
     fn default() -> Self {
         Self {
@@ -174,6 +181,40 @@ impl Scene {
             at = self.things.get(&p).and_then(|t| t.parent);
         }
         out
+    }
+
+    /// Everything under `id` in tree order, not `id` itself.
+    pub fn descendants(&self, id: ThingId) -> Vec<ThingId> {
+        let Some(start) = self.order.iter().position(|&t| t == id) else { return Vec::new() };
+        let mut inside = BTreeSet::from([id]);
+        let mut out = Vec::new();
+        for &t in &self.order[start + 1..] {
+            match self.things.get(&t).and_then(|t| t.parent) {
+                Some(p) if inside.contains(&p) => {
+                    inside.insert(t);
+                    out.push(t);
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// The parent of the first listed thing that has one.
+    pub fn common_parent(&self, ids: &[ThingId]) -> Option<ThingId> {
+        ids.iter().find_map(|id| self.things.get(id).and_then(|t| t.parent))
+    }
+
+    /// Whether `other` is one of the things `target` points at, seen from `me`. A thing that is
+    /// not in the scene matches only `Anything`.
+    pub fn target_matches(&self, target: &Target, me: ThingId, other: ThingId) -> bool {
+        match target {
+            Target::Anything => true,
+            Target::Me => other == me && self.things.contains_key(&other),
+            Target::Thing(t) => other == *t && self.things.contains_key(&other),
+            Target::Tag(tag) => self.things.get(&other).is_some_and(|t| t.tags.contains(tag)),
+            Target::Kind(kind) => self.things.get(&other).is_some_and(|t| t.kind == *kind),
+        }
     }
 
     /// Puts a scene that was edited by hand back in shape, so every later step can trust it: ids
@@ -280,6 +321,41 @@ mod tests {
         assert_eq!(s.things[&ThingId::ROOT].name, "Scene defaults");
         assert_eq!(s.format, 2);
         assert_eq!(s.next_thing, 1);
+    }
+
+    #[test]
+    fn targets_match_by_thing_tag_kind_and_self() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        s.things.get_mut(&b).unwrap().tags.insert("drums".into());
+        assert!(s.target_matches(&Target::Anything, a, b));
+        assert!(s.target_matches(&Target::Me, a, a) && !s.target_matches(&Target::Me, a, b));
+        assert!(s.target_matches(&Target::Thing(b), a, b) && !s.target_matches(&Target::Thing(b), a, a));
+        let drums = Target::Tag("drums".into());
+        assert!(s.target_matches(&drums, a, b) && !s.target_matches(&drums, b, a));
+        assert!(s.target_matches(&Target::Kind("folder".into()), a, b));
+        assert!(!s.target_matches(&Target::Kind("balls".into()), a, b));
+        assert!(!s.target_matches(&Target::Thing(ThingId(99)), a, ThingId(99)));
+        assert!(s.target_matches(&Target::Anything, a, ThingId(99)));
+    }
+
+    #[test]
+    fn descendants_are_in_tree_order_without_the_root_of_the_walk() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let a = s.add_thing(&r, "balls", f).unwrap();
+        let g = s.add_thing(&r, "folder", f).unwrap();
+        let b = s.add_thing(&r, "balls", g).unwrap();
+        let c = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(s.descendants(f), vec![a, g, b]);
+        assert_eq!(s.descendants(c), Vec::<ThingId>::new());
+        assert_eq!(s.descendants(ThingId::ROOT), vec![f, a, g, b, c]);
+        assert!(!s.things[&a].rides());
+        assert_eq!(s.common_parent(&[ThingId::ROOT, a, c]), Some(f));
+        assert_eq!(s.common_parent(&[ThingId::ROOT]), None);
     }
 
     #[test]

@@ -7,6 +7,8 @@ use crate::{Kit, kit, new_scene};
 
 pub const ARENA: ThingId = ThingId(1);
 pub const BALLS: ThingId = ThingId(2);
+/// The obstacle [`scene_with_obstacle`] and [`peg_board`] add.
+pub const OBSTACLE: ThingId = ThingId(3);
 
 /// The new scene with its balls at the origin, in `arrangement`, with `f`'s changes.
 pub fn scene_with_balls(arrangement: &str, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
@@ -58,4 +60,61 @@ pub fn run(scene: &Scene, resolved: &Resolved, kit: &Kit, seconds: f64) -> (bpe_
     let mut log = bpe_runtime::Log::default();
     world.advance_to(seconds, &kit.sims, &mut log);
     (world, log)
+}
+
+/// The new scene with `f`'s changes to the shared motion module.
+pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let m = bpe_core::resolve_slot(&scene, &kit.registry, BALLS, SlotId::Motion, &mut Vec::new()).unwrap().module;
+    f(&mut scene.library.modules.get_mut(&m).unwrap().params);
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
+}
+
+/// The new scene with an obstacle at the middle, with `f`'s changes, and the ball dropped from
+/// above it with no sideways speed.
+pub fn scene_with_obstacle(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let obstacle = scene.add_thing(&kit.registry, "obstacle", ThingId::ROOT).unwrap();
+    assert_eq!(obstacle, OBSTACLE);
+    f(&mut scene.things.get_mut(&OBSTACLE).unwrap().params);
+    let ball = scene.things.get_mut(&BALLS).unwrap();
+    ball.transform.position = Vec2::new(0.0, -300.0);
+    ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
+}
+
+/// A box arena with a staggered `columns` x `rows` peg grid and a square block of
+/// `balls_per_side`² balls dropped from the top.
+pub fn peg_board(columns: u32, rows: u32, balls_per_side: u32) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let height = (rows + 6) as f32 * 90.0;
+    let arena = scene.things.get_mut(&ARENA).unwrap();
+    arena.params.set("shape", Value::Choice("box".into()));
+    arena.params.set("width", Value::Number(((columns + 1) as f32 * 90.0) as f64));
+    arena.params.set("height", Value::Number(height as f64));
+    let pegs = scene.add_thing(&kit.registry, "obstacle", ThingId::ROOT).unwrap();
+    assert_eq!(pegs, OBSTACLE);
+    let p = &mut scene.things.get_mut(&OBSTACLE).unwrap().params;
+    p.set("shape", Value::Choice("peg_grid".into()));
+    p.set("columns", Value::Int(columns as i64));
+    p.set("rows", Value::Int(rows as i64));
+    p.set("radius", Value::Number(9.0));
+    let ball = scene.things.get_mut(&BALLS).unwrap();
+    ball.transform.position = Vec2::new(0.0, -height * 0.5 + 150.0);
+    ball.params.set("arrangement", Value::Choice("block".into()));
+    ball.params.set("columns", Value::Int(balls_per_side as i64));
+    ball.params.set("rows", Value::Int(balls_per_side as i64));
+    ball.params.set("spacing", Value::Number(20.0));
+    ball.params.set("radius", Value::Number(8.0));
+    ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
 }

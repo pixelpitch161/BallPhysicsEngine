@@ -1,12 +1,12 @@
-//! The video preview, plus the handles that set a scene up by dragging in it: move a thing,
-//! aim balls by their arrow tip, and resize the arena by its edge.
+//! The video preview, plus the handles that set a scene up by dragging in it: move a thing (a
+//! rider by its offset), aim balls by their arrow tip, and resize the arena by its edge.
 
 use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::theme;
-use bpe_core::{Resolved, Scene, Settings, ThingId, Value};
+use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
 use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings, GIZMO_GRAB, Gizmo, gizmos};
-use bpe_runtime::{Outline, World};
+use bpe_runtime::{Outline, Pose, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
@@ -18,6 +18,10 @@ const EDGE_GRAB: f32 = 12.0;
 
 /// How close to an arrow tip, in screen points, counts as grabbing it.
 const TIP_GRAB: f32 = 10.0;
+
+/// How close to a thing with nothing of its own to show (a folder), in screen points, counts
+/// as grabbing it.
+const SPOT_GRAB: f32 = 12.0;
 
 pub struct Preview {
     renderer: Renderer,
@@ -73,6 +77,8 @@ pub struct Outcome {
     pub drag_started: bool,
     /// The preview was clicked while playing.
     pub clicked: bool,
+    /// What is wrong with a shader module the picture skipped, when one is.
+    pub shader_problem: Option<String>,
 }
 
 /// Converts between world pixels (origin at the video centre, y down) and screen points.
@@ -163,6 +169,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             outcome.catching_up = true;
         }
     }
+    outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -185,7 +192,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(handle) = hit_test(studio, &view, press)
     {
         let anchor = match handle {
-            Handle::Body(id) => studio.scene.things.get(&id).map_or(view.to_world(press), |t| t.transform.position),
+            Handle::Body(id) => place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.to_world(press)),
             Handle::Aim(_) | Handle::Edge(_) => view.to_world(press),
         };
         preview.drag = Some(Drag { handle, offset: view.to_world(press) - anchor });
@@ -195,7 +202,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drag = None;
     }
     if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
-        apply_drag(&mut studio.scene, drag, view.to_world(pos));
+        apply_drag(&mut studio.scene, studio.playback.world(), drag, view.to_world(pos));
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
         && let Some(handle) = hovered
@@ -207,7 +214,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if active.is_some() {
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
-    draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selected));
+    draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
     draw_hint(ui, rect, "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize");
     studio.panels.preview = Some(preview);
     outcome
@@ -224,15 +231,34 @@ fn arrow_tip(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<Vec2> {
 /// The point on `outline` in the direction of `world` from its centre.
 fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
     let offset = world - outline.center();
-    let angle = match *outline {
-        Outline::Ring { angle, .. } | Outline::Box { angle, .. } => angle,
-    };
+    let angle = outline.angle();
     let u = if offset.length_squared() > 1e-6 { offset.to_angle() - angle } else { 0.0 };
     outline.point(u)
 }
 
-/// What is under `pos`: an arrow tip first, then a ball, then a gizmo's middle, then an
-/// arena's edge.
+/// Where a thing is on screen right now: its pose in the world, or its own position.
+fn place_of(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
+    world.poses.get(&id).map(|p| p.position).or_else(|| scene.things.get(&id).map(|t| t.transform.position))
+}
+
+/// The pose a rider's offset is measured from: its parent's, or one ball of its parent's.
+fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>) -> Pose {
+    if let Some(i) = item
+        && let Some(b) = world.bodies.get(&parent)
+        && (i as usize) < b.len()
+    {
+        return Pose { position: b.position[i as usize], ..Pose::default() };
+    }
+    world
+        .poses
+        .get(&parent)
+        .copied()
+        .or_else(|| scene.things.get(&parent).map(|t| Pose::from_transform(&t.transform)))
+        .unwrap_or_default()
+}
+
+/// What is under `pos`: an arrow tip first, then a ball, then an obstacle, then a gizmo's
+/// middle, then a selected thing with nothing of its own to show, then an arena's edge.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     let p = view.to_world(pos);
@@ -260,6 +286,14 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     if let Some((_, id)) = best {
         return Some(Handle::Body(id));
     }
+    for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
+        // Each part's own circle, so the gaps of a peg grid or the inside of a ring stay free.
+        let grab = SPOT_GRAB / view.scale;
+        let on_part = solids.bounds.iter().any(|(center, bound)| (*center - p).length() <= bound + grab);
+        if on_part || (solids.pose.position - p).length() <= grab {
+            return Some(Handle::Body(*id));
+        }
+    }
     // Things with nothing of their own to click are grabbed by their gizmo's middle.
     for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
         let Some(r) = studio.resolved.things.get(id) else { continue };
@@ -273,6 +307,12 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
             }
         }
     }
+    if let Some(id) = studio.selection.primary.filter(|id| shown(id) && spot_only(world, *id))
+        && let Some(place) = place_of(&studio.scene, world, id)
+        && (view.to_screen(place) - pos).length() <= SPOT_GRAB
+    {
+        return Some(Handle::Body(id));
+    }
     for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
         let edge = outline_point_towards(&wall.outline, p);
         if (edge - p).length() * view.scale <= EDGE_GRAB {
@@ -282,20 +322,40 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     None
 }
 
-/// Moves what `drag` holds to the pointer at `world`.
-pub fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
-    let Some(thing) = scene.things.get_mut(&drag.handle.thing()) else { return };
+/// A thing with no balls, wall or solids of its own: a folder, or an empty obstacle.
+fn spot_only(world: &World, id: ThingId) -> bool {
+    !world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && !world.solids.contains_key(&id)
+}
+
+/// Moves what `drag` holds to the pointer at `pointer`, in world pixels. A rider moves by its
+/// offset from the parent it rides, so it stays a rider; its own position is left alone.
+pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2) {
+    let id = drag.handle.thing();
+    if let Handle::Body(_) = drag.handle
+        && let Some(thing) = scene.things.get(&id)
+        && let (Some(parent), Attach::Ride { turn_with_parent, item, .. }) = (thing.parent, thing.attach)
+    {
+        let anchor = parent_pose(scene, world, parent, item);
+        let mut offset = pointer - drag.offset - anchor.position;
+        if turn_with_parent {
+            offset = Vec2::from_angle(-anchor.angle).rotate(offset);
+        }
+        let thing = scene.things.get_mut(&id).expect("looked up above");
+        thing.attach = Attach::Ride { offset: offset.round(), turn_with_parent, item };
+        return;
+    }
+    let Some(thing) = scene.things.get_mut(&id) else { return };
     match drag.handle {
-        Handle::Body(_) => thing.transform.position = (world - drag.offset).round(),
+        Handle::Body(_) => thing.transform.position = (pointer - drag.offset).round(),
         Handle::Aim(_) => {
-            let velocity = ((world - thing.transform.position) / ARROW_SECONDS).round();
+            let velocity = ((pointer - thing.transform.position) / ARROW_SECONDS).round();
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
         Handle::Edge(_) => {
             let settings = ArenaSettings::from_params(&thing.params);
-            let offset = world - thing.transform.position;
+            let offset = pointer - thing.transform.position;
             match settings.shape {
-                ArenaShape::Box => {
+                ArenaShape::Box | ArenaShape::Capsule => {
                     let local = Vec2::from_angle(-thing.transform.rotation).rotate(offset);
                     thing.params.set("width", Value::Number((local.x.abs() * 2.0).round().max(20.0) as f64));
                     thing.params.set("height", Value::Number((local.y.abs() * 2.0).round().max(20.0) as f64));
@@ -339,10 +399,36 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         );
     }
 
+    // Obstacles: a ring at their place, like the balls below.
+    for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
+        let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
+        let color = if highlighted { theme::ACCENT } else { faint };
+        painter.circle_stroke(view.to_screen(solids.pose.position), 6.0, Stroke::new(1.2, color));
+    }
+    // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
+    // name, so it can still be found and dragged.
+    if let Some(id) = selected.filter(|id| shown(id) && spot_only(world, *id))
+        && let Some(thing) = studio.scene.things.get(&id)
+        && let Some(place) = place_of(&studio.scene, world, id)
+    {
+        let center = view.to_screen(place);
+        let color = if active.is_some_and(|h| h.thing() == id) { theme::ACCENT } else { Color32::WHITE };
+        let ring: Vec<Pos2> =
+            (0..=48).map(|i| center + egui::Vec2::angled(i as f32 / 48.0 * std::f32::consts::TAU) * 24.0).collect();
+        painter.add(egui::Shape::dashed_line(&ring, Stroke::new(1.2, color), 4.0, 4.0));
+        painter.text(
+            center + egui::vec2(0.0, 30.0),
+            Align2::CENTER_TOP,
+            &thing.name,
+            FontId::proportional(12.0),
+            color,
+        );
+    }
+
     for (id, thing) in studio.scene.things.iter().filter(|(id, t)| t.enabled && world.bodies.contains_key(id)) {
         let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
         let color = if highlighted { theme::ACCENT } else { faint };
-        let center = view.to_screen(thing.transform.position);
+        let center = view.to_screen(place_of(&studio.scene, world, *id).unwrap_or(thing.transform.position));
         painter.circle_stroke(center, 6.0, Stroke::new(1.2, color));
         let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id) else { continue };
         let tip = view.to_screen(tip);
@@ -467,20 +553,24 @@ mod tests {
     #[test]
     fn dragging_moves_aims_and_resizes() {
         let mut studio = Studio::headless();
+        let world = studio.playback.world().clone();
         apply_drag(
             &mut studio.scene,
+            &world,
             Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
             Vec2::new(50.0, 60.0),
         );
         assert_eq!(studio.scene.things[&ThingId(2)].transform.position, Vec2::new(50.0, 60.0));
         apply_drag(
             &mut studio.scene,
+            &world,
             Drag { handle: Handle::Aim(ThingId(2)), offset: Vec2::ZERO },
             Vec2::new(150.0, 60.0),
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([400.0, 0.0])));
         apply_drag(
             &mut studio.scene,
+            &world,
             Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
             Vec2::new(300.0, 400.0),
         );
@@ -488,11 +578,48 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_rider_moves_its_offset_and_obstacles_are_grabbable() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let peg = studio.scene.add_thing(&studio.kit.registry, "obstacle", ThingId::ROOT).unwrap();
+        studio.scene.things.get_mut(&peg).unwrap().transform.position = Vec2::new(100.0, 100.0);
+        let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: true, item: None };
+        studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
+        studio.after_edit(before);
+        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25 };
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(100.0, 100.0))), Some(Handle::Body(peg)));
+        let world = studio.playback.world().clone();
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
+            Vec2::new(30.0, -100.0),
+        );
+        let thing = &studio.scene.things[&ThingId(2)];
+        assert!(
+            matches!(thing.attach, Attach::Ride { offset, .. } if offset == Vec2::new(30.0, -100.0)),
+            "{:?}",
+            thing.attach
+        );
+        assert_eq!(thing.transform.position, Vec2::new(0.0, -200.0), "the own position is left alone");
+        // A folder has nothing to show, so only the selected one can be grabbed, at its spot.
+        let before = studio.scene.clone();
+        let folder = studio.scene.add_thing(&studio.kit.registry, "folder", ThingId::ROOT).unwrap();
+        studio.scene.things.get_mut(&folder).unwrap().transform.position = Vec2::new(-300.0, 300.0);
+        studio.after_edit(before);
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(-300.0, 300.0))), None);
+        studio.selection.set(folder);
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(-300.0, 300.0))), Some(Handle::Body(folder)));
+    }
+
+    #[test]
     fn a_box_arena_resizes_by_width_and_height() {
         let mut studio = Studio::headless();
+        let world = studio.playback.world().clone();
         studio.scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
         apply_drag(
             &mut studio.scene,
+            &world,
             Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
             Vec2::new(-300.0, 400.0),
         );
@@ -516,6 +643,7 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 80.0))), None);
         apply_drag(
             &mut studio.scene,
+            studio.playback.world(),
             Drag { handle: Handle::Body(field), offset: Vec2::ZERO },
             Vec2::new(-100.0, 50.0),
         );

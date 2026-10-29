@@ -70,6 +70,7 @@ fn the_scenes_are_lively() {
         playback.seek(SECONDS);
         let (least, kind) = match name.as_str() {
             "Reel block" => (1000, EventKind::Hit),
+            "Peg board" | "Ball pit" => (100, EventKind::Hit),
             "One ball" => (10, EventKind::Hit),
             "Fountain" => (400, EventKind::Spawn),
             "Wind tunnel" => (4, EventKind::Enter),
@@ -107,5 +108,23 @@ fn liquids_and_swarms_never_move_the_balls_log() {
             .collect();
         assert!(logs[0].0 > 0, "{scene_name}: the ball hit nothing");
         assert_eq!(logs[0], logs[1], "{scene_name}: removing {thing_name} changed the balls' log");
+    }
+}
+
+#[test]
+fn stage5_scenes_keep_their_stage2_twins_logs() {
+    let kit = kit();
+    let twins: std::collections::BTreeMap<String, Playback> = playbacks().into_iter().collect();
+    for (name, scene, twin) in scenes::stage5_with_twins(&kit.registry) {
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(SECONDS);
+        let mut expected = twins[&twin].clone();
+        expected.seek(SECONDS);
+        assert_eq!(playback.log().hash(), expected.log().hash(), "{name} drifted from {twin}");
+        assert_eq!(playback.log().len(), expected.log().len(), "{name} drifted from {twin}");
+        // The trail's history is the one thing the world keeps that its twin doesn't.
+        let has_trail = resolved.things.values().any(|t| t.slots.contains_key(&bpe_core::SlotId::Trail));
+        assert_eq!(!playback.world().history.is_empty(), has_trail, "{name}");
     }
 }
