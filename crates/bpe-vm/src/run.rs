@@ -340,7 +340,6 @@ impl Vm {
         if let Rng::Stream(cell) = &cx.rng {
             self.rng = cell.get();
         }
-        drop(cx);
         self.counters = counters.into_inner();
     }
 
@@ -376,7 +375,7 @@ impl Vm {
                     let n = (b.num("n") as u32).max(1);
                     let count = self.reached.entry(b.id).or_insert(0);
                     *count += 1;
-                    (*count - 1) % n == 0
+                    (*count - 1).is_multiple_of(n)
                 }
                 "once" => self.once.insert(b.id),
                 "cooldown" => {

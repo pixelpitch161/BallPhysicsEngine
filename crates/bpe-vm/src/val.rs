@@ -118,9 +118,9 @@ mod tests {
     #[test]
     fn values_convert_loosely_and_know_their_pin_type() {
         assert_eq!(Val::Bool(true).number(), 1.0);
-        assert_eq!(Val::Number(2.5).boolean(), true);
+        assert!(Val::Number(2.5).boolean());
         assert_eq!(Val::Vector(Vec2::new(3.0, 4.0)).number(), 5.0);
-        assert_eq!(Val::Ball(Some(Ball { thing: ThingId(2), item: 1 })).boolean(), true);
+        assert!(Val::Ball(Some(Ball { thing: ThingId(2), item: 1 })).boolean());
         assert_eq!(Val::Ball(None).number(), 0.0);
         assert_eq!(Val::Number(f32::NAN).finite(), Val::Number(0.0));
         assert_eq!(Val::Vector(Vec2::new(f32::INFINITY, 1.0)).finite(), Val::Vector(Vec2::ZERO));
