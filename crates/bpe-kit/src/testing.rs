@@ -34,6 +34,17 @@ pub fn one_ball_with_bounce(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Ki
     (scene, resolved, kit)
 }
 
+/// The new scene with `f`'s changes to the shared motion module.
+pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let m = bpe_core::resolve_slot(&scene, &kit.registry, BALLS, SlotId::Motion, &mut Vec::new()).unwrap().module;
+    f(&mut scene.library.modules.get_mut(&m).unwrap().params);
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
+}
+
 /// The new scene with an obstacle at the middle, with `f`'s changes, and the ball dropped from
 /// above it with no sideways speed.
 pub fn scene_with_obstacle(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
