@@ -1,7 +1,7 @@
 //! Drawing the balls and their hit flashes.
 
 use bpe_core::{Settings, ThingId};
-use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, ThingDraw, blend_alpha, thing_code};
+use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, HitMark, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::EventKind;
 
 use super::{Arrangement, BallsSettings};
@@ -11,6 +11,8 @@ pub struct BallsDraw;
 
 /// The speed at which a flash is at full strength.
 const FULL_FLASH_SPEED: f32 = 600.0;
+/// How far back hits are listed for particles and shaders, in seconds.
+pub const HIT_MEMORY: f64 = 3.0;
 
 /// A ball's own number in 0 to 1, the same every frame, for patterns and effects that vary
 /// from ball to ball.
@@ -50,16 +52,31 @@ impl ThingDraw for BallsDraw {
             });
         }
 
-        if look.flash <= 0.0 || look.flash_seconds <= 0.0 {
-            return;
-        }
+        // Recent hits, for the flashes here and for the particle and shader modules.
         let rate = cx.world.steps_per_second;
-        let since = ((cx.time - look.flash_seconds as f64) * rate as f64).floor().max(0.0) as u64;
+        let since = ((cx.time - HIT_MEMORY) * rate as f64).floor().max(0.0) as u64;
+        let flashing = look.flash > 0.0 && look.flash_seconds > 0.0;
         for e in cx.log.since(since) {
             if e.kind != EventKind::Hit || e.a.thing != id {
                 continue;
             }
-            let age = (cx.time - e.time(rate)) as f32 / look.flash_seconds;
+            let time = e.time(rate);
+            if time > cx.time {
+                continue;
+            }
+            frame.hits.push(HitMark {
+                thing: id,
+                other: e.b.map(|b| b.thing),
+                point: e.point.into(),
+                normal: e.normal.into(),
+                time: time as f32,
+                speed: e.speed,
+                color: color(e.a.item as usize),
+            });
+            if !flashing {
+                continue;
+            }
+            let age = (cx.time - time) as f32 / look.flash_seconds;
             if !(0.0..=1.0).contains(&age) {
                 continue;
             }
@@ -125,6 +142,31 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert!(frame.balls.is_empty() && frame.shapes.is_empty());
+    }
+
+    #[test]
+    fn balls_leave_a_hit_mark_in_their_colour() {
+        let (scene, resolved, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(4.0);
+        let rate = playback.world().steps_per_second;
+        let recent: Vec<_> = playback.log().events().iter().filter(|e| e.time(rate) > 4.0 - 3.0).collect();
+        assert!(!recent.is_empty(), "the ball hit nothing in four seconds");
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
+        assert_eq!(frame.hits.len(), recent.len());
+        let mark = frame.hits[0];
+        assert_eq!((mark.thing, mark.other), (ThingId(2), Some(ThingId(1))));
+        assert_eq!(mark.point, <[f32; 2]>::from(recent[0].point));
+        assert_eq!(mark.speed, recent[0].speed);
+        assert!((mark.time - recent[0].time(rate) as f32).abs() < 1e-6);
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        assert_eq!(mark.color, pink);
+        // A hit further back than the memory is not listed.
+        playback.seek(10.0);
+        let old: Vec<_> = playback.log().events().iter().filter(|e| e.time(rate) > 7.0).collect();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
+        assert_eq!(frame.hits.len(), old.len());
     }
 
     #[test]

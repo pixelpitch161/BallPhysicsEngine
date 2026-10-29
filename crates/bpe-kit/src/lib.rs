@@ -20,6 +20,8 @@ pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
+pub use modules::shader::EffectKind;
+pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use things::arena::draw::ArenaDraw;
@@ -49,6 +51,9 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ArenaDraw);
     d.add(BallsDraw);
+    for b in &bpe_gfx::effects::BUILTINS {
+        d.add_module(EffectDraw(b));
+    }
     d
 }
 
@@ -100,6 +105,9 @@ pub fn registry() -> Registry {
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
+    for k in modules::shader::kinds() {
+        r.add_module(k);
+    }
     r
 }
 

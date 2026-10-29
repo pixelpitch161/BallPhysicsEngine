@@ -423,13 +423,14 @@ mod tests {
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_them_inheriting() {
         let mut h = harness(Some(ThingId(2)));
-        // Every slot with a module kind is already shown, so there is nothing to add yet.
-        assert!(h.get_by_label("+ Add slot").accesskit_node().is_disabled());
+        // Shader has module kinds and isn't shown on a new ball, so there is something to add.
+        assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
         h.get_by_label("+ Add slot").click();
         h.run();
         assert!(h.query_by_label("Trail").is_none(), "no module kind fills a trail yet");
+        assert!(h.query_by_label("Shader").is_some());
         h.get_by_label("Motion").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots.get(&SlotId::Motion), Some(&SlotLink::Inherit));

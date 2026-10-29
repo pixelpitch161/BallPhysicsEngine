@@ -3,4 +3,5 @@
 pub mod bounce;
 pub mod look;
 pub mod motion;
+pub mod shader;
 pub mod sound;
