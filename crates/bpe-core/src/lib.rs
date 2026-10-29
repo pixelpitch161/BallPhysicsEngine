@@ -9,6 +9,7 @@
 extern crate self as bpe_core;
 
 pub mod color;
+pub mod edit;
 pub mod ids;
 pub mod library;
 pub mod registry;
@@ -20,6 +21,7 @@ pub mod testkit;
 pub mod value;
 
 pub use color::Color;
+pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, ModuleGraph};
 pub use registry::{ModuleKind, Registry, ThingKind};

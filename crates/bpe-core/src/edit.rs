@@ -1,0 +1,391 @@
+//! Edits to the scene tree and the module library. Each edit either succeeds whole or changes
+//! nothing.
+
+use crate::{Attach, KindId, Module, ModuleId, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId};
+use std::collections::BTreeSet;
+use std::fmt;
+use std::ops::Range;
+
+/// Why an edit was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditError {
+    UnknownKind(KindId),
+    Missing(ThingId),
+    MissingModule(ModuleId),
+    /// Scene defaults can't be removed or moved.
+    Root,
+    WouldLoop,
+    SlotNotSupported(SlotId),
+    WrongSlot,
+    NotLinked,
+    /// These things still link the module.
+    InUse(Vec<ThingId>),
+    WrongType,
+    UnknownSetting(String),
+}
+
+impl fmt::Display for EditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EditError::UnknownKind(k) => write!(f, "This version of Ball Studio doesn't know \"{k}\""),
+            EditError::Missing(_) => write!(f, "That thing isn't in the scene any more"),
+            EditError::MissingModule(_) => write!(f, "That module isn't in the library any more"),
+            EditError::Root => write!(f, "Scene defaults can't be moved or removed"),
+            EditError::WouldLoop => write!(f, "A thing can't ride on itself or on something inside it"),
+            EditError::SlotNotSupported(s) => write!(f, "This kind of thing has no {} slot", s.name()),
+            EditError::WrongSlot => write!(f, "That module is made for a different slot"),
+            EditError::NotLinked => write!(f, "This slot doesn't use a module of its own"),
+            EditError::InUse(users) => write!(f, "{} things still use this module", users.len()),
+            EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
+            EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
+
+impl Scene {
+    /// Adds a thing of `kind` as the last child of `parent`.
+    pub fn add_thing(&mut self, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
+        let k = reg.thing(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        if !self.things.contains_key(&parent) {
+            return Err(EditError::Missing(parent));
+        }
+        let id = ThingId(self.next_thing);
+        self.next_thing += 1;
+        let thing = Thing {
+            id,
+            name: self.free_name(k.name()),
+            kind: kind.into(),
+            parent: Some(parent),
+            slots: k.default_slots().iter().map(|&s| (s, SlotLink::Inherit)).collect(),
+            ..Thing::default()
+        };
+        self.things.insert(id, thing);
+        let at = self.subtree(parent).end;
+        self.order.insert(at, id);
+        Ok(id)
+    }
+
+    /// `base`, or `base` with the next number after the highest one in use ("Balls 2").
+    fn free_name(&self, base: &str) -> String {
+        let prefix = format!("{base} ");
+        let highest = self
+            .things
+            .values()
+            .filter_map(|t| if t.name == base { Some(1) } else { t.name.strip_prefix(&prefix)?.parse::<u32>().ok() })
+            .max();
+        match highest {
+            None => base.to_owned(),
+            Some(n) => format!("{base} {}", n + 1),
+        }
+    }
+
+    /// Where `id` and everything under it sit in `order`. Empty when `id` isn't there.
+    fn subtree(&self, id: ThingId) -> Range<usize> {
+        let Some(start) = self.order.iter().position(|&t| t == id) else { return 0..0 };
+        let mut inside = BTreeSet::from([id]);
+        let mut end = start + 1;
+        while let Some(t) = self.order.get(end) {
+            match self.things.get(t).and_then(|t| t.parent) {
+                Some(p) if inside.contains(&p) => {
+                    inside.insert(*t);
+                    end += 1;
+                }
+                _ => break,
+            }
+        }
+        start..end
+    }
+
+    fn check_movable(&self, id: ThingId) -> Result<(), EditError> {
+        if id == ThingId::ROOT {
+            return Err(EditError::Root);
+        }
+        if !self.things.contains_key(&id) {
+            return Err(EditError::Missing(id));
+        }
+        Ok(())
+    }
+
+    /// Moves `id` and everything under it to the end of `parent`'s children.
+    pub fn set_parent(&mut self, id: ThingId, parent: ThingId, attach: Attach) -> Result<(), EditError> {
+        self.check_movable(id)?;
+        if !self.things.contains_key(&parent) {
+            return Err(EditError::Missing(parent));
+        }
+        if parent == id || self.ancestors(parent).contains(&id) {
+            return Err(EditError::WouldLoop);
+        }
+        let block: Vec<ThingId> = self.order.drain(self.subtree(id)).collect();
+        let thing = self.things.get_mut(&id).expect("checked above");
+        thing.parent = Some(parent);
+        thing.attach = attach;
+        let at = self.subtree(parent).end;
+        self.order.splice(at..at, block);
+        Ok(())
+    }
+
+    /// Moves `id` and everything under it to just before `sibling`, which must share its parent.
+    pub fn move_before(&mut self, id: ThingId, sibling: ThingId) -> Result<(), EditError> {
+        self.check_movable(id)?;
+        let parent = self.things[&id].parent;
+        if self.things.get(&sibling).is_none_or(|s| s.parent != parent) || sibling == id {
+            return Err(EditError::Missing(sibling));
+        }
+        let block: Vec<ThingId> = self.order.drain(self.subtree(id)).collect();
+        let at = self.subtree(sibling).start;
+        self.order.splice(at..at, block);
+        Ok(())
+    }
+
+    /// Removes `id` and everything under it, returning every removed id in tree order.
+    pub fn remove_thing(&mut self, id: ThingId) -> Result<Vec<ThingId>, EditError> {
+        self.check_movable(id)?;
+        let removed: Vec<ThingId> = self.order.drain(self.subtree(id)).collect();
+        for t in &removed {
+            self.things.remove(t);
+        }
+        Ok(removed)
+    }
+
+    /// Shows `slot` on the thing, inheriting for now. A slot already shown is left as it is.
+    pub fn add_slot(&mut self, reg: &Registry, id: ThingId, slot: SlotId) -> Result<(), EditError> {
+        let thing = self.things.get_mut(&id).ok_or(EditError::Missing(id))?;
+        let kind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
+        if !kind.slots().contains(&slot) {
+            return Err(EditError::SlotNotSupported(slot));
+        }
+        thing.slots.entry(slot).or_insert(SlotLink::Inherit);
+        Ok(())
+    }
+
+    /// Adds an empty module of `kind` to the library.
+    pub fn add_module(&mut self, reg: &Registry, kind: &str, name: &str) -> Result<ModuleId, EditError> {
+        let k = reg.module(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        let id = ModuleId(self.next_module);
+        self.next_module += 1;
+        let module = Module { id, name: name.into(), slot: k.slot(), kind: kind.into(), ..Module::default() };
+        self.library.modules.insert(id, module);
+        Ok(id)
+    }
+
+    /// Fills the thing's `slot` with module `m`, with no changes of its own.
+    pub fn link(&mut self, reg: &Registry, id: ThingId, slot: SlotId, m: ModuleId) -> Result<(), EditError> {
+        let module = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
+        if module.slot != slot {
+            return Err(EditError::WrongSlot);
+        }
+        let thing = self.things.get_mut(&id).ok_or(EditError::Missing(id))?;
+        let kind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
+        if !kind.slots().contains(&slot) {
+            return Err(EditError::SlotNotSupported(slot));
+        }
+        thing.slots.insert(slot, SlotLink::Linked { module: m, overrides: Params::default() });
+        Ok(())
+    }
+
+    /// Turns the slot off, so neither this thing nor its parent fills it.
+    pub fn set_slot_off(&mut self, id: ThingId, slot: SlotId) {
+        if let Some(t) = self.things.get_mut(&id) {
+            t.slots.insert(slot, SlotLink::Off);
+        }
+    }
+
+    /// Lets the slot use whatever the parent uses.
+    pub fn set_slot_inherit(&mut self, id: ThingId, slot: SlotId) {
+        if let Some(t) = self.things.get_mut(&id) {
+            t.slots.insert(slot, SlotLink::Inherit);
+        }
+    }
+
+    /// The module linked in the slot and the thing's changes to it.
+    fn linked(&self, id: ThingId, slot: SlotId) -> Result<(ModuleId, &Params), EditError> {
+        let thing = self.things.get(&id).ok_or(EditError::Missing(id))?;
+        match thing.slots.get(&slot) {
+            Some(SlotLink::Linked { module, overrides }) => Ok((*module, overrides)),
+            _ => Err(EditError::NotLinked),
+        }
+    }
+
+    fn overrides_mut(&mut self, id: ThingId, slot: SlotId) -> &mut Params {
+        match self.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)) {
+            Some(SlotLink::Linked { overrides, .. }) => overrides,
+            _ => unreachable!("callers check the slot is linked first"),
+        }
+    }
+
+    /// Gives the thing its own copy of the linked module, with its changes baked in.
+    pub fn make_unique(&mut self, id: ThingId, slot: SlotId) -> Result<ModuleId, EditError> {
+        let (m, overrides) = self.linked(id, slot)?;
+        let source = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
+        let copy_id = ModuleId(self.next_module);
+        let copy = Module {
+            id: copy_id,
+            name: format!("{} ({})", source.name, self.things[&id].name),
+            params: source.params.merged(overrides),
+            ..source.clone()
+        };
+        self.next_module += 1;
+        self.library.modules.insert(copy_id, copy);
+        self.things
+            .get_mut(&id)
+            .expect("checked above")
+            .slots
+            .insert(slot, SlotLink::Linked { module: copy_id, overrides: Params::default() });
+        Ok(copy_id)
+    }
+
+    /// Writes the thing's changes into the shared module, so every thing using it gets them.
+    pub fn push_to_module(&mut self, id: ThingId, slot: SlotId) -> Result<(), EditError> {
+        let (m, overrides) = self.linked(id, slot)?;
+        let overrides = overrides.clone();
+        let module = self.library.modules.get_mut(&m).ok_or(EditError::MissingModule(m))?;
+        module.params = module.params.merged(&overrides);
+        *self.overrides_mut(id, slot) = Params::default();
+        Ok(())
+    }
+
+    /// Drops the thing's change to one setting, so it follows the module again.
+    pub fn reset_override(&mut self, id: ThingId, slot: SlotId, key: &str) -> Result<(), EditError> {
+        self.linked(id, slot)?;
+        self.overrides_mut(id, slot).remove(key);
+        Ok(())
+    }
+
+    /// Removes a module nothing links to any more.
+    pub fn remove_module(&mut self, m: ModuleId) -> Result<(), EditError> {
+        if !self.library.modules.contains_key(&m) {
+            return Err(EditError::MissingModule(m));
+        }
+        let users = self.users_of(m);
+        if !users.is_empty() {
+            return Err(EditError::InUse(users));
+        }
+        self.library.modules.remove(&m);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Value, testkit};
+
+    #[test]
+    fn add_thing_names_and_slots_from_the_kind() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!((s.things[&a].name.as_str(), s.things[&b].name.as_str()), ("Balls", "Balls 2"));
+        assert_eq!(
+            s.things[&a].slots.keys().copied().collect::<Vec<_>>(),
+            [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
+        );
+        assert!(matches!(s.add_thing(&r, "magnet", ThingId::ROOT), Err(EditError::UnknownKind(_))));
+    }
+
+    #[test]
+    fn riding_on_a_descendant_is_refused() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", f).unwrap();
+        assert!(matches!(s.set_parent(f, b, Attach::Group), Err(EditError::WouldLoop)));
+        assert!(matches!(s.set_parent(ThingId::ROOT, f, Attach::Group), Err(EditError::Root)));
+    }
+
+    #[test]
+    fn set_parent_moves_the_whole_subtree() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", f).unwrap();
+        let g = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        s.set_parent(f, g, Attach::Group).unwrap();
+        assert_eq!(s.order, vec![ThingId::ROOT, g, f, b]);
+    }
+
+    #[test]
+    fn move_before_reorders_siblings_with_their_children() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", f).unwrap();
+        let g = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        s.move_before(g, f).unwrap();
+        assert_eq!(s.order, vec![ThingId::ROOT, g, f, b]);
+        assert!(matches!(s.move_before(b, g), Err(EditError::Missing(_))));
+    }
+
+    #[test]
+    fn remove_thing_takes_the_subtree() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", f).unwrap();
+        let c = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(s.remove_thing(f).unwrap(), vec![f, b]);
+        assert_eq!(s.order, vec![ThingId::ROOT, c]);
+        assert!(matches!(s.remove_thing(ThingId::ROOT), Err(EditError::Root)));
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_reload() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.remove_thing(a).unwrap();
+        let mut back = crate::save::load(&crate::save::save(&s), &r).unwrap();
+        assert_ne!(back.add_thing(&r, "balls", ThingId::ROOT).unwrap(), a);
+    }
+
+    fn shared_look() -> (Registry, Scene, ThingId, ThingId, ModuleId) {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "look.plain", "Neon glow").unwrap();
+        s.link(&r, a, SlotId::Look, m).unwrap();
+        s.link(&r, b, SlotId::Look, m).unwrap();
+        (r, s, a, b, m)
+    }
+
+    fn override_glow(s: &mut Scene, id: ThingId, v: f64) {
+        if let Some(SlotLink::Linked { overrides, .. }) = s.things.get_mut(&id).unwrap().slots.get_mut(&SlotId::Look) {
+            overrides.set("glow", Value::Number(v));
+        }
+    }
+
+    #[test]
+    fn make_unique_copies_with_overrides_baked_in() {
+        let (_, mut s, a, b, m) = shared_look();
+        override_glow(&mut s, a, 0.7);
+        let copy = s.make_unique(a, SlotId::Look).unwrap();
+        assert_ne!(copy, m);
+        assert_eq!(s.library.modules[&copy].name, "Neon glow (Balls)");
+        assert_eq!(s.library.modules[&copy].params.get("glow"), Some(&Value::Number(0.7)));
+        assert_eq!(s.users_of(m), vec![b]);
+    }
+
+    #[test]
+    fn push_to_module_changes_every_user() {
+        let (_, mut s, a, _, m) = shared_look();
+        override_glow(&mut s, a, 0.7);
+        s.push_to_module(a, SlotId::Look).unwrap();
+        assert_eq!(s.library.modules[&m].params.get("glow"), Some(&Value::Number(0.7)));
+    }
+
+    #[test]
+    fn modules_in_use_cannot_be_removed() {
+        let (_, mut s, a, b, m) = shared_look();
+        assert!(matches!(s.remove_module(m), Err(EditError::InUse(u)) if u == vec![a, b]));
+    }
+
+    #[test]
+    fn linking_into_the_wrong_slot_is_refused() {
+        let (r, mut s, a, _, m) = shared_look();
+        assert!(matches!(s.link(&r, a, SlotId::Sound, m), Err(EditError::WrongSlot)));
+    }
+}
