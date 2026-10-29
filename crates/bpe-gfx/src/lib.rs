@@ -17,7 +17,7 @@ pub use wgpu;
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const BLOOM_LEVELS: usize = 6;
 
 #[repr(C)]
@@ -376,6 +376,9 @@ impl Renderer {
                 pass.set_pipeline(&self.shape);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
                 pass.draw(0..4, 0..frame.shapes.len() as u32);
+            }
+            if let Some(flow) = &self.flow {
+                flow.draw_swarms(&mut pass, &self.globals_group, frame);
             }
             if !balls.is_empty() {
                 pass.set_pipeline(&self.ball);

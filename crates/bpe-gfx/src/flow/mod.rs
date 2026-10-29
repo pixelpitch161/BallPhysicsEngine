@@ -8,6 +8,7 @@
 
 mod inputs;
 mod sdf;
+mod swarm;
 mod util;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,9 +17,10 @@ use std::time::{Duration, Instant};
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Outline, Sims, World};
 
-use crate::frame::{Frame, Points};
+use crate::frame::Frame;
 use inputs::{Inputs, step_inputs};
 use sdf::Sdf;
+use swarm::{SwarmGpu, SwarmPipelines, SwarmSim};
 
 /// Layer steps per second of video.
 pub const SIM_HZ: u32 = 120;
@@ -53,29 +55,29 @@ pub struct FlowStatus {
     pub caught_up: bool,
 }
 
-/// One GPU-stepped layer.
-pub(crate) trait Layer {
-    /// Records one step into `encoder`. `offset` binds the step's inputs in `inputs.group`.
-    fn step(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        inputs: &Inputs,
-        offset: u32,
-        sdf: &Sdf,
-        step: u64,
-    );
-    /// The buffers that carry the layer's state from one step to the next; checkpoints copy them.
-    fn state(&self) -> Vec<&wgpu::Buffer>;
+/// The pipelines the layers share.
+struct Pipelines {
+    swarm: SwarmPipelines,
 }
 
-/// A layer that does nothing, standing in until a kind of layer has its GPU code.
-struct Noop;
+/// One GPU-stepped layer.
+enum Layer {
+    Swarm(SwarmGpu),
+}
 
-impl Layer for Noop {
-    fn step(&mut self, _: &wgpu::Device, _: &mut wgpu::CommandEncoder, _: &Inputs, _: u32, _: &Sdf, _: u64) {}
+impl Layer {
+    /// Records one step into `encoder`. `offset` binds the step's inputs in `inputs.group`.
+    fn step(&self, pipelines: &Pipelines, encoder: &mut wgpu::CommandEncoder, inputs: &Inputs, offset: u32, sdf: &Sdf) {
+        match self {
+            Layer::Swarm(s) => s.step(&pipelines.swarm, encoder, inputs, offset, sdf),
+        }
+    }
+
+    /// The buffers that carry the layer's state from one step to the next; checkpoints copy them.
     fn state(&self) -> Vec<&wgpu::Buffer> {
-        Vec::new()
+        match self {
+            Layer::Swarm(s) => s.state(),
+        }
     }
 }
 
@@ -85,7 +87,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn take(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, layer: &dyn Layer) -> Self {
+    fn take(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, layer: &Layer) -> Self {
         let buffers = layer
             .state()
             .into_iter()
@@ -103,7 +105,7 @@ impl Snapshot {
         Self { buffers }
     }
 
-    fn restore(&self, encoder: &mut wgpu::CommandEncoder, layer: &dyn Layer) {
+    fn restore(&self, encoder: &mut wgpu::CommandEncoder, layer: &Layer) {
         for (copy, target) in self.buffers.iter().zip(layer.state()) {
             encoder.copy_buffer_to_buffer(copy, 0, target, 0, copy.size().min(target.size()));
         }
@@ -144,14 +146,24 @@ struct Driver {
 pub struct FlowLayers {
     inputs: Inputs,
     sdf: Sdf,
+    pipelines: Pipelines,
     driver: Option<Driver>,
-    layers: BTreeMap<ThingId, Box<dyn Layer>>,
+    layers: BTreeMap<ThingId, Layer>,
     steps_run: u64,
 }
 
 /// The wall the layers keep out of: the first closed wall in id order.
 fn first_wall(world: &World) -> Option<Outline> {
     world.walls.values().next().map(|w| w.outline)
+}
+
+/// Half the size of the area a swarm's Fill start covers: the wall's, or the frame's.
+fn arena_size(wall: Option<&Outline>, video: (u32, u32)) -> f32 {
+    match wall {
+        Some(Outline::Ring { radius, .. }) => *radius,
+        Some(Outline::Box { half, .. }) => half.max_element(),
+        None => video.0.max(video.1) as f32 * 0.5,
+    }
 }
 
 /// Keeps the log small: emitters only read back one step, so older events can go.
@@ -167,7 +179,18 @@ fn trim_log(log: &mut Log, world_step: u64) {
 
 impl FlowLayers {
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { inputs: Inputs::new(device), sdf: Sdf::new(device), driver: None, layers: BTreeMap::new(), steps_run: 0 }
+        let inputs = Inputs::new(device);
+        let sdf = Sdf::new(device);
+        let pipelines = Pipelines { swarm: SwarmPipelines::new(device, &inputs.layout, &sdf.layout) };
+        Self { inputs, sdf, pipelines, driver: None, layers: BTreeMap::new(), steps_run: 0 }
+    }
+
+    /// One swarm's GPU state, for tests.
+    #[cfg(test)]
+    pub(crate) fn swarm(&self, thing: ThingId) -> Option<&SwarmGpu> {
+        match self.layers.get(&thing)? {
+            Layer::Swarm(s) => Some(s),
+        }
     }
 
     /// The last layer step run; 0 before any, or without GPU layers.
@@ -180,36 +203,35 @@ impl FlowLayers {
         self.steps_run
     }
 
-    /// Makes the layers match the frame: starts over when `source.key` or the set of GPU
-    /// layers changed, and lets everything go when the frame has none.
+    /// Makes the layers match the frame: starts over when `source.key`, the set of GPU layers
+    /// or how one of them moves changed, takes a changed look in place, and lets everything go
+    /// when the frame has no GPU layers.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
-        let wanted: BTreeSet<ThingId> = frame
-            .swarms
-            .iter()
-            .map(|s| s.thing)
-            .chain(frame.liquids.iter().filter(|l| matches!(l.points, Points::Gpu(_))).map(|l| l.thing))
-            .collect();
+        let wanted: BTreeSet<ThingId> = frame.swarms.iter().map(|s| s.thing).collect();
         if wanted.is_empty() {
             self.driver = None;
             self.layers.clear();
             return;
         }
         let same = self.driver.as_ref().is_some_and(|d| d.key == source.key && d.video == (frame.width, frame.height))
-            && self.layers.keys().eq(wanted.iter());
+            && self.layers.keys().eq(wanted.iter())
+            && frame.swarms.iter().all(|l| match self.layers.get(&l.thing) {
+                Some(Layer::Swarm(s)) => *s.sim() == SwarmSim::of(l),
+                None => false,
+            });
         if !same {
-            self.restart(device, queue, frame, source, &wanted);
+            self.restart(device, queue, frame, source);
+            return;
+        }
+        for l in &frame.swarms {
+            if let Some(Layer::Swarm(s)) = self.layers.get_mut(&l.thing) {
+                s.set_look(queue, l);
+            }
         }
     }
 
     /// Builds the private world afresh and every layer at step 0.
-    fn restart(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        frame: &Frame,
-        source: &FlowSource,
-        wanted: &BTreeSet<ThingId>,
-    ) {
+    fn restart(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
         let world = World::build(source.scene, source.resolved, source.sims);
         let video = (frame.width, frame.height);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow start") });
@@ -218,11 +240,19 @@ impl FlowLayers {
             Some(outline) => self.sdf.bake(device, queue, &mut encoder, outline),
             None => self.sdf.clear(queue),
         }
-        self.layers = wanted.iter().map(|id| (*id, Box::new(Noop) as Box<dyn Layer>)).collect();
         let bytes = step_inputs(&world, 0.0, 0, video, &source.ball_colors, &self.sdf.frame(wall.as_ref()));
         self.inputs.write(queue, 0, &bytes);
-        let snapshots =
-            self.layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l.as_ref()))).collect();
+        let arena = arena_size(wall.as_ref(), video);
+        let (pipelines, inputs, sdf) = (&self.pipelines, &self.inputs, &self.sdf);
+        self.layers = frame
+            .swarms
+            .iter()
+            .map(|l| {
+                let swarm = SwarmGpu::new(device, queue, &mut encoder, &pipelines.swarm, inputs, sdf, l, video, arena);
+                (l.thing, Layer::Swarm(swarm))
+            })
+            .collect();
+        let snapshots = self.layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l))).collect();
         queue.submit([encoder.finish()]);
         let checkpoint = Checkpoint { step: 0, world: world.clone(), log: Log::default(), layers: snapshots };
         self.driver = Some(Driver {
@@ -234,6 +264,16 @@ impl FlowLayers {
             checkpoints: vec![checkpoint],
             interval: CHECKPOINT_STEPS,
         });
+    }
+
+    /// Draws the frame's swarms into the scene pass, after the walls and before everything
+    /// in front of them.
+    pub(crate) fn draw_swarms(&self, pass: &mut wgpu::RenderPass<'_>, globals: &wgpu::BindGroup, frame: &Frame) {
+        for l in &frame.swarms {
+            if let Some(Layer::Swarm(s)) = self.layers.get(&l.thing) {
+                s.draw(&self.pipelines.swarm, pass, globals);
+            }
+        }
     }
 
     /// Steps the layers to `time`, in batches of [`BATCH_STEPS`]. Going back restores the
@@ -279,7 +319,7 @@ impl FlowLayers {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow rewind") });
         for (id, layer) in &self.layers {
             if let Some(snapshot) = checkpoint.layers.get(id) {
-                snapshot.restore(&mut encoder, layer.as_ref());
+                snapshot.restore(&mut encoder, layer);
             }
         }
         queue.submit([encoder.finish()]);
@@ -287,7 +327,7 @@ impl FlowLayers {
 
     /// Runs up to [`BATCH_STEPS`] steps towards `target` and sends them to the GPU.
     fn run_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: u64, source: &FlowSource) {
-        let Self { inputs, sdf, driver, layers, steps_run } = self;
+        let Self { inputs, sdf, pipelines, driver, layers, steps_run } = self;
         let driver = driver.as_mut().unwrap();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow steps") });
         let mut slot = 0;
@@ -305,13 +345,12 @@ impl FlowLayers {
             let bytes =
                 step_inputs(&driver.world, time, step, driver.video, &source.ball_colors, &sdf.frame(wall.as_ref()));
             let offset = inputs.write(queue, slot, &bytes);
-            for layer in layers.values_mut() {
-                layer.step(device, &mut encoder, inputs, offset, sdf, step);
+            for layer in layers.values() {
+                layer.step(pipelines, &mut encoder, inputs, offset, sdf);
             }
             *steps_run += 1;
             if step.is_multiple_of(driver.interval) && driver.checkpoints.last().is_none_or(|c| c.step < step) {
-                let snapshots =
-                    layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l.as_ref()))).collect();
+                let snapshots = layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l))).collect();
                 driver.checkpoints.push(Checkpoint {
                     step,
                     world: driver.world.clone(),
@@ -352,6 +391,24 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Puts a round wall of `radius` around the origin, standing in for the arena.
+    struct TestRing(f32);
+    impl bpe_runtime::ThingSim for TestRing {
+        fn kind(&self) -> &'static str {
+            "balls"
+        }
+        fn build(&self, thing: &bpe_core::Thing, _: &bpe_core::ResolvedThing, world: &mut World) {
+            let outline = Outline::Ring { center: Vec2::ZERO, radius: self.0, sides: 0, angle: 0.0, thickness: 4.0 };
+            world.walls.insert(thing.id, bpe_runtime::Wall { outline, spin: 0.0, growth: 0.0 });
+        }
+    }
+
+    fn ring_sims(radius: f32) -> Sims {
+        let mut sims = Sims::default();
+        sims.add_thing(TestRing(radius));
+        sims
     }
 
     fn tiny_scene() -> (Scene, Resolved) {
@@ -531,5 +588,105 @@ mod tests {
         assert!(status.caught_up);
         assert_eq!(renderer.read_output(&device, &queue).unwrap(), plain);
         assert_eq!(renderer.flow().unwrap().steps_run(), 0);
+    }
+
+    #[test]
+    fn a_swarm_stays_inside_the_wall_and_is_deterministic() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut frame = Frame::default();
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 20_000;
+        frame.swarms.push(layer);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let run = || {
+            let mut flow = FlowLayers::new(&device);
+            flow.prepare(&device, &queue, &frame, &source);
+            assert!(flow.step_to(&device, &queue, 1.0, &source).caught_up);
+            flow.swarm(ThingId(1)).unwrap().read_points(&device, &queue)
+        };
+        let points = run();
+        assert_eq!(points.len(), 20_000);
+        let inside = points.iter().filter(|p| Vec2::new(p[0], p[1]).length() <= 402.0).count();
+        assert!(points.iter().all(|p| p.iter().all(|v| v.is_finite())));
+        assert!(inside >= 19_800, "{inside} of 20000 inside the ring");
+        let moving = points.iter().filter(|p| p[2] != 0.0 || p[3] != 0.0).count();
+        assert!(moving > 19_000, "{moving} moving");
+        assert_eq!(run(), points, "a second run is the same");
+    }
+
+    #[test]
+    fn a_swarm_draws_light() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame::default();
+        frame.time = 0.5;
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 20_000;
+        layer.look.brightness = 0.8;
+        layer.look.size = 2.0;
+        frame.swarms.push(layer);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let bright = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[0] > 60 || p[1] > 60 || p[2] > 60).count();
+        renderer.render_with_flow(&device, &queue, &frame, &source);
+        let lit = renderer.read_output(&device, &queue).unwrap();
+        assert!(bright(&lit) > 500, "{}", bright(&lit));
+        // Nothing lights up outside the ring.
+        let outside = lit.chunks(4).enumerate().filter(|(i, p)| {
+            let (x, y) = ((i % 270) as f32 * 4.0 - 540.0, (i / 270) as f32 * 4.0 - 960.0);
+            (x * x + y * y).sqrt() > 420.0 && (p[0] > 60 || p[1] > 60 || p[2] > 60)
+        });
+        assert_eq!(outside.count(), 0);
+        // Brightness 0 draws nothing, and only the look changed: the swarm kept going.
+        frame.swarms[0].look.brightness = 0.0;
+        renderer.render_with_flow(&device, &queue, &frame, &source);
+        assert_eq!(bright(&renderer.read_output(&device, &queue).unwrap()), 0);
+        assert_eq!(renderer.flow().unwrap().steps_run(), 60);
+    }
+
+    #[test]
+    fn changing_only_the_look_keeps_the_layer() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = Sims::default();
+        let mut frame = Frame::default();
+        frame.swarms.push(swarm_layer(ThingId(1)));
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 1,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 1.0, &source);
+        assert_eq!(flow.step(), 120);
+        frame.swarms[0].look.brightness = 0.9;
+        frame.swarms[0].look.colors_by = 2;
+        frame.swarms[0].look.colors = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+        flow.prepare(&device, &queue, &frame, &source);
+        assert_eq!((flow.step(), flow.steps_run()), (120, 120));
+        frame.swarms[0].motion.flow = 2.0;
+        flow.prepare(&device, &queue, &frame, &source);
+        assert_eq!(flow.step(), 0, "a motion change starts the swarm over");
     }
 }

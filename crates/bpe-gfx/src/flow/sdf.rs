@@ -239,6 +239,11 @@ impl Sdf {
         })
     }
 
+    /// The bind group the layer shaders read the field through.
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.group
+    }
+
     /// Records a bake of `outline` (moved to the origin and unturned) into `encoder`. The
     /// texture is remade when the outline needs a different size.
     pub fn bake(

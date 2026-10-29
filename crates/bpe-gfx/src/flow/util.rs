@@ -37,3 +37,41 @@ pub fn shader(device: &wgpu::Device, label: &str, sources: &[&str]) -> wgpu::Sha
         source: wgpu::ShaderSource::Wgsl(sources.concat().into()),
     })
 }
+
+pub fn storage_entry(binding: u32, visibility: wgpu::ShaderStages, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// The renderer's globals layout: one uniform buffer at binding 0. Layouts with the same
+/// entries are interchangeable, so the renderer's own globals bind group fits pipelines made
+/// with this one.
+pub fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("globals layout"),
+        entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT, false)],
+    })
+}
+
+/// Light added on top of what is there.
+pub const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// Workgroups needed to cover `count` items `size` at a time.
+pub fn groups(count: u32, size: u32) -> u32 {
+    count.div_ceil(size).max(1)
+}

@@ -8,9 +8,10 @@ use bpe_runtime::World;
 use bytemuck::{Pod, Zeroable};
 
 use super::sdf::WallFrame;
+use super::util;
 use super::{BATCH_STEPS, MAX_BALLS, SIM_HZ};
 
-/// One ball as the layers see it. Matches `struct BallIn` in the layer shaders.
+/// One ball as the layers see it. Matches `struct BallIn` in [`STEP_WGSL`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct BallIn {
@@ -21,7 +22,7 @@ pub struct BallIn {
     pub color: [f32; 4],
 }
 
-/// Header of one step's inputs. Matches the start of `struct Step` in the layer shaders.
+/// Header of one step's inputs. Matches the start of `struct Step` in [`STEP_WGSL`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct StepHeader {
@@ -39,9 +40,31 @@ pub const STEP_BYTES: u64 = (std::mem::size_of::<StepHeader>() + MAX_BALLS * std
 /// Distance between steps in the inputs buffer, as dynamic offsets need.
 pub const STEP_STRIDE: u64 = STEP_BYTES.next_multiple_of(256);
 
+/// WGSL declarations of a step's inputs, shared by the layer shaders.
+pub const STEP_WGSL: &str = "
+struct BallIn {
+    place: vec4<f32>,
+    velocity: vec4<f32>,
+    color: vec4<f32>,
+};
+struct Step {
+    // x: time, y: step length, z: step number, w: ball count
+    a: vec4<f32>,
+    // xy: gravity, zw: half the frame size
+    b: vec4<f32>,
+    // xy: the live wall's centre, zw: cos and sin of its angle
+    wall: vec4<f32>,
+    // x: the live wall's size over the baked one, y: 1 when there is a wall
+    more: vec4<f32>,
+    balls: array<BallIn, 64>,
+};
+";
+
 /// The inputs of a batch of steps, one [`STEP_STRIDE`] apart, bound with a dynamic offset.
 pub struct Inputs {
     buffer: wgpu::Buffer,
+    pub layout: wgpu::BindGroupLayout,
+    pub group: wgpu::BindGroup,
 }
 
 impl Inputs {
@@ -52,7 +75,23 @@ impl Inputs {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { buffer }
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("flow step inputs layout"),
+            entries: &[util::uniform_entry(0, wgpu::ShaderStages::COMPUTE, true)],
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("flow step inputs"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(STEP_BYTES),
+                }),
+            }],
+        });
+        Self { buffer, layout, group }
     }
 
     /// Writes one step's inputs into `slot` and returns the dynamic offset that binds them.
