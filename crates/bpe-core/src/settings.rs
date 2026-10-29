@@ -33,6 +33,9 @@ pub struct SettingDef {
     pub default: Value,
     /// Smallest and largest allowed values, for numbers.
     pub range: Option<(f64, f64)>,
+    /// The part of the range the dice roll in, when it is narrower than `range` (or when a
+    /// setting such as a speed has no range of its own).
+    pub dice: Option<(f64, f64)>,
     pub unit: &'static str,
     /// A heading the inspector groups it under.
     pub group: &'static str,
@@ -41,6 +44,11 @@ pub struct SettingDef {
 }
 
 impl SettingDef {
+    /// Where the dice roll: the dice range when one is set, else the whole range.
+    pub fn dice_range(&self) -> Option<(f64, f64)> {
+        self.dice.or(self.range)
+    }
+
     /// The value pulled into this setting's range. Values other than numbers are left as they are.
     pub fn clamp(&self, v: Value) -> Value {
         match (v, self.range) {

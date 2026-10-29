@@ -90,6 +90,31 @@ mod tests {
     use crate::{Settings, ThingKind, testkit};
 
     #[test]
+    fn random_takes_an_optional_dice_range() {
+        #[derive(Settings)]
+        struct S {
+            #[setting(label = "A", range(0.0, 100.0), random(5.0, 20.0))]
+            a: f64,
+            #[setting(label = "B", range(0.0, 1.0), random)]
+            b: f64,
+            #[setting(label = "C")]
+            c: bool,
+        }
+        impl Default for S {
+            fn default() -> Self {
+                Self { a: 10.0, b: 0.5, c: false }
+            }
+        }
+        let defs = S::defs();
+        assert_eq!(defs[0].dice, Some((5.0, 20.0)));
+        assert_eq!(defs[0].dice_range(), Some((5.0, 20.0)));
+        assert_eq!(defs[1].dice, None);
+        assert_eq!(defs[1].dice_range(), Some((0.0, 1.0)));
+        assert_eq!(defs[2].dice_range(), None);
+        assert!(defs[0].flags.random && defs[1].flags.random && !defs[2].flags.random);
+    }
+
+    #[test]
     fn testkit_plugins_pass() {
         assert_eq!(check_registry(&testkit::registry()), Vec::<String>::new());
     }

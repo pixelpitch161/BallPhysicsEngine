@@ -136,6 +136,9 @@ pub struct Scene {
     /// Settings that pulse with the music or the hits.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub pulses: BTreeMap<Address, Pulse>,
+    /// Settings the dice leave alone.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub locks: BTreeSet<Address>,
 }
 
 impl Default for Scene {
@@ -150,6 +153,7 @@ impl Default for Scene {
             next_module: 0,
             tracks: BTreeMap::new(),
             pulses: BTreeMap::new(),
+            locks: BTreeSet::new(),
         }
     }
 }
@@ -157,6 +161,16 @@ impl Default for Scene {
 impl Scene {
     /// The save format this version writes.
     pub const FORMAT: u32 = 2;
+
+    /// The dice leave this setting alone.
+    pub fn is_locked(&self, a: &Address) -> bool {
+        self.locks.contains(a)
+    }
+
+    /// Locks or unlocks a setting against the dice; true when that changed something.
+    pub fn set_locked(&mut self, a: Address, locked: bool) -> bool {
+        if locked { self.locks.insert(a) } else { self.locks.remove(&a) }
+    }
 
     /// A scene holding only Scene defaults. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
@@ -320,7 +334,25 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit;
+    use crate::{Owner, testkit};
+
+    #[test]
+    fn locks_round_trip_and_old_files_load_without_them() {
+        let mut scene = Scene::default();
+        let a = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        assert!(scene.set_locked(a.clone(), true));
+        assert!(!scene.set_locked(a.clone(), true), "locking twice changes nothing");
+        assert!(scene.is_locked(&a));
+        let text = ron::to_string(&scene).unwrap();
+        assert!(text.contains("locks"));
+        let back: Scene = ron::from_str(&text).unwrap();
+        assert!(back.is_locked(&a));
+        let old: Scene = ron::from_str(&ron::to_string(&Scene::default()).unwrap()).unwrap();
+        assert!(old.locks.is_empty());
+        assert!(!ron::to_string(&Scene::default()).unwrap().contains("locks"), "empty locks are not written");
+        assert!(scene.set_locked(a.clone(), false));
+        assert!(!scene.is_locked(&a));
+    }
 
     #[test]
     fn empty_scene_has_only_the_root() {

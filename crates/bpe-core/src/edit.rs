@@ -161,6 +161,7 @@ impl Scene {
         let gone = |a: &Address| matches!(a.owner, Owner::Thing(t) if removed.contains(&t));
         self.tracks.retain(|a, _| !gone(a));
         self.pulses.retain(|a, _| !gone(a));
+        self.locks.retain(|a| !gone(a));
         Ok(removed)
     }
 
@@ -362,6 +363,7 @@ impl Scene {
         self.library.modules.remove(&m);
         self.tracks.retain(|a, _| a.owner != Owner::Module(m));
         self.pulses.retain(|a, _| a.owner != Owner::Module(m));
+        self.locks.retain(|a| a.owner != Owner::Module(m));
         Ok(())
     }
 }
@@ -370,6 +372,23 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::testkit;
+
+    #[test]
+    fn removing_a_thing_or_module_drops_its_locks() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "look.plain", "Look").unwrap();
+        s.set_locked(Address { owner: Owner::Thing(a), slot: None, key: "radius".into() }, true);
+        s.set_locked(Address { owner: Owner::Module(m), slot: None, key: "color".into() }, true);
+        let root = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        s.set_locked(root.clone(), true);
+        assert_eq!(s.locks.len(), 3);
+        s.remove_thing(a).unwrap();
+        s.remove_module(m).unwrap();
+        assert_eq!(s.locks.len(), 1);
+        assert!(s.is_locked(&root));
+    }
 
     #[test]
     fn add_thing_names_and_slots_from_the_kind() {
