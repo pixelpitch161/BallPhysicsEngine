@@ -7,6 +7,7 @@
 //! balls and where the wall is ([`inputs`]) and reads the wall distance field ([`sdf`]).
 
 mod inputs;
+mod liquid;
 mod sdf;
 mod swarm;
 mod util;
@@ -17,8 +18,9 @@ use std::time::{Duration, Instant};
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Outline, Sims, World};
 
-use crate::frame::Frame;
+use crate::frame::{Frame, Points};
 use inputs::{Inputs, step_inputs};
+use liquid::{LiquidGpu, LiquidPipelines};
 use sdf::Sdf;
 use swarm::{SwarmGpu, SwarmPipelines, SwarmSim};
 
@@ -58,11 +60,13 @@ pub struct FlowStatus {
 /// The pipelines the layers share.
 struct Pipelines {
     swarm: SwarmPipelines,
+    liquid: LiquidPipelines,
 }
 
 /// One GPU-stepped layer.
 enum Layer {
-    Swarm(SwarmGpu),
+    Swarm(Box<SwarmGpu>),
+    Liquid(LiquidGpu),
 }
 
 impl Layer {
@@ -70,6 +74,7 @@ impl Layer {
     fn step(&self, pipelines: &Pipelines, encoder: &mut wgpu::CommandEncoder, inputs: &Inputs, offset: u32, sdf: &Sdf) {
         match self {
             Layer::Swarm(s) => s.step(&pipelines.swarm, encoder, inputs, offset, sdf),
+            Layer::Liquid(l) => l.step(&pipelines.liquid, encoder, inputs, offset, sdf),
         }
     }
 
@@ -77,6 +82,7 @@ impl Layer {
     fn state(&self) -> Vec<&wgpu::Buffer> {
         match self {
             Layer::Swarm(s) => s.state(),
+            Layer::Liquid(l) => l.state(),
         }
     }
 }
@@ -150,6 +156,8 @@ pub struct FlowLayers {
     driver: Option<Driver>,
     layers: BTreeMap<ThingId, Layer>,
     steps_run: u64,
+    /// Most bytes the checkpoints may hold together; [`CHECKPOINT_BYTES`] unless changed.
+    checkpoint_bytes: u64,
 }
 
 /// The wall the layers keep out of: the first closed wall in id order.
@@ -181,15 +189,49 @@ impl FlowLayers {
     pub fn new(device: &wgpu::Device) -> Self {
         let inputs = Inputs::new(device);
         let sdf = Sdf::new(device);
-        let pipelines = Pipelines { swarm: SwarmPipelines::new(device, &inputs.layout, &sdf.layout) };
-        Self { inputs, sdf, pipelines, driver: None, layers: BTreeMap::new(), steps_run: 0 }
+        let pipelines = Pipelines {
+            swarm: SwarmPipelines::new(device, &inputs.layout, &sdf.layout),
+            liquid: LiquidPipelines::new(device, &inputs.layout, &sdf.layout),
+        };
+        Self {
+            inputs,
+            sdf,
+            pipelines,
+            driver: None,
+            layers: BTreeMap::new(),
+            steps_run: 0,
+            checkpoint_bytes: CHECKPOINT_BYTES,
+        }
+    }
+
+    /// Changes how many bytes the checkpoints may hold together.
+    pub fn set_checkpoint_budget(&mut self, bytes: u64) {
+        self.checkpoint_bytes = bytes;
+    }
+
+    /// Checkpoints kept, the steps between them, and the bytes they hold, for tests.
+    #[cfg(test)]
+    pub(crate) fn checkpoint_stats(&self) -> (usize, u64, u64) {
+        self.driver
+            .as_ref()
+            .map_or((0, 0, 0), |d| (d.checkpoints.len(), d.interval, d.checkpoints.iter().map(Checkpoint::bytes).sum()))
     }
 
     /// One swarm's GPU state, for tests.
     #[cfg(test)]
     pub(crate) fn swarm(&self, thing: ThingId) -> Option<&SwarmGpu> {
         match self.layers.get(&thing)? {
-            Layer::Swarm(s) => Some(s),
+            Layer::Swarm(s) => Some(s.as_ref()),
+            Layer::Liquid(_) => None,
+        }
+    }
+
+    /// One liquid's GPU state, for tests.
+    #[cfg(test)]
+    pub(crate) fn liquid(&self, thing: ThingId) -> Option<&LiquidGpu> {
+        match self.layers.get(&thing)? {
+            Layer::Liquid(l) => Some(l),
+            Layer::Swarm(_) => None,
         }
     }
 
@@ -207,7 +249,12 @@ impl FlowLayers {
     /// or how one of them moves changed, takes a changed look in place, and lets everything go
     /// when the frame has no GPU layers.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
-        let wanted: BTreeSet<ThingId> = frame.swarms.iter().map(|s| s.thing).collect();
+        let gpu_liquids = frame.liquids.iter().filter_map(|l| match &l.points {
+            Points::Gpu(desc) => Some((l.thing, desc)),
+            Points::Cpu(_) => None,
+        });
+        let wanted: BTreeSet<ThingId> =
+            frame.swarms.iter().map(|s| s.thing).chain(gpu_liquids.clone().map(|(id, _)| id)).collect();
         if wanted.is_empty() {
             self.driver = None;
             self.layers.clear();
@@ -217,7 +264,11 @@ impl FlowLayers {
             && self.layers.keys().eq(wanted.iter())
             && frame.swarms.iter().all(|l| match self.layers.get(&l.thing) {
                 Some(Layer::Swarm(s)) => *s.sim() == SwarmSim::of(l),
-                None => false,
+                _ => false,
+            })
+            && gpu_liquids.clone().all(|(id, desc)| match self.layers.get(&id) {
+                Some(Layer::Liquid(l)) => l.desc() == desc,
+                _ => false,
             });
         if !same {
             self.restart(device, queue, frame, source);
@@ -244,14 +295,19 @@ impl FlowLayers {
         self.inputs.write(queue, 0, &bytes);
         let arena = arena_size(wall.as_ref(), video);
         let (pipelines, inputs, sdf) = (&self.pipelines, &self.inputs, &self.sdf);
-        self.layers = frame
-            .swarms
-            .iter()
-            .map(|l| {
-                let swarm = SwarmGpu::new(device, queue, &mut encoder, &pipelines.swarm, inputs, sdf, l, video, arena);
-                (l.thing, Layer::Swarm(swarm))
-            })
-            .collect();
+        let swarms = frame.swarms.iter().map(|l| {
+            let swarm = SwarmGpu::new(device, queue, &mut encoder, &pipelines.swarm, inputs, sdf, l, video, arena);
+            (l.thing, Layer::Swarm(Box::new(swarm)))
+        });
+        let liquids = frame.liquids.iter().filter_map(|l| match &l.points {
+            Points::Gpu(desc) => {
+                let liquid = LiquidGpu::new(device, queue, &pipelines.liquid, desc, wall.as_ref(), video);
+                Some((l.thing, Layer::Liquid(liquid)))
+            }
+            Points::Cpu(_) => None,
+        });
+        self.layers = liquids.collect();
+        self.layers.extend(swarms);
         let snapshots = self.layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l))).collect();
         queue.submit([encoder.finish()]);
         let checkpoint = Checkpoint { step: 0, world: world.clone(), log: Log::default(), layers: snapshots };
@@ -327,7 +383,7 @@ impl FlowLayers {
 
     /// Runs up to [`BATCH_STEPS`] steps towards `target` and sends them to the GPU.
     fn run_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: u64, source: &FlowSource) {
-        let Self { inputs, sdf, pipelines, driver, layers, steps_run } = self;
+        let Self { inputs, sdf, pipelines, driver, layers, steps_run, checkpoint_bytes } = self;
         let driver = driver.as_mut().unwrap();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow steps") });
         let mut slot = 0;
@@ -358,7 +414,7 @@ impl FlowLayers {
                     layers: snapshots,
                 });
                 let bytes: u64 = driver.checkpoints.iter().map(Checkpoint::bytes).sum();
-                if bytes > CHECKPOINT_BYTES && driver.checkpoints.len() > 2 {
+                if bytes > *checkpoint_bytes && driver.checkpoints.len() > 2 {
                     driver.interval *= 2;
                     let interval = driver.interval;
                     driver.checkpoints.retain(|c| c.step.is_multiple_of(interval));
@@ -378,7 +434,10 @@ mod tests {
     use super::inputs::{BallIn, STEP_BYTES, STEP_STRIDE, StepHeader, step_inputs};
     use super::sdf::{MAX_DISTANCE, Sdf, WallFrame};
     use super::*;
-    use crate::{BallInstance, Flock, Frame, Renderer, SwarmLayer, SwarmLook, SwarmStart, headless_device};
+    use crate::{
+        BallInstance, Flock, Frame, GpuLiquid, LiquidLayer, Points, Renderer, SwarmLayer, SwarmLook, SwarmStart,
+        headless_device,
+    };
     use bpe_core::{Resolved, Scene, ThingId, resolve, testkit};
     use bpe_runtime::{Bodies, Outline, Sims, World};
     use glam::Vec2;
@@ -393,22 +452,57 @@ mod tests {
         }
     }
 
-    /// Puts a round wall of `radius` around the origin, standing in for the arena.
-    struct TestRing(f32);
-    impl bpe_runtime::ThingSim for TestRing {
+    /// Puts a wall around the origin and sets the gravity, standing in for the arena.
+    struct TestArena(Outline, Vec2);
+    impl bpe_runtime::ThingSim for TestArena {
         fn kind(&self) -> &'static str {
             "balls"
         }
         fn build(&self, thing: &bpe_core::Thing, _: &bpe_core::ResolvedThing, world: &mut World) {
-            let outline = Outline::Ring { center: Vec2::ZERO, radius: self.0, sides: 0, angle: 0.0, thickness: 4.0 };
-            world.walls.insert(thing.id, bpe_runtime::Wall { outline, spin: 0.0, growth: 0.0 });
+            world.gravity = self.1;
+            world.walls.insert(thing.id, bpe_runtime::Wall { outline: self.0, spin: 0.0, growth: 0.0 });
         }
     }
 
     fn ring_sims(radius: f32) -> Sims {
+        let ring = Outline::Ring { center: Vec2::ZERO, radius, sides: 0, angle: 0.0, thickness: 4.0 };
         let mut sims = Sims::default();
-        sims.add_thing(TestRing(radius));
+        sims.add_thing(TestArena(ring, Vec2::ZERO));
         sims
+    }
+
+    /// A box wall 800 wide and 1400 tall with gravity pulling down at 900 px/s².
+    fn box_sims() -> Sims {
+        let b = Outline::Box { center: Vec2::ZERO, half: Vec2::new(400.0, 700.0), angle: 0.0, thickness: 4.0 };
+        let mut sims = Sims::default();
+        sims.add_thing(TestArena(b, Vec2::new(0.0, 900.0)));
+        sims
+    }
+
+    /// A pool filling the bottom 35% of the box.
+    fn gpu_pool(thing: ThingId, count: u32) -> LiquidLayer {
+        LiquidLayer {
+            thing,
+            points: Points::Gpu(GpuLiquid {
+                count,
+                region: [-400.0, 210.0, 400.0, 700.0],
+                pour_seconds: 0.0,
+                pour_from: [0.0, -600.0],
+                seed: 1,
+                viscosity: 0.2,
+                stiffness: 0.5,
+                ball_push: 1.0,
+                gravity_scale: 1.0,
+                bounciness: 0.0,
+            }),
+            radius: 3.0,
+            color: [0.1, 0.5, 1.0, 1.0],
+            clarity: 0.45,
+            refraction: 0.5,
+            highlight: 0.8,
+            smoothing: 6.0,
+            glow: 0.1,
+        }
     }
 
     fn tiny_scene() -> (Scene, Resolved) {
@@ -687,5 +781,95 @@ mod tests {
         frame.swarms[0].motion.flow = 2.0;
         flow.prepare(&device, &queue, &frame, &source);
         assert_eq!(flow.step(), 0, "a motion change starts the swarm over");
+    }
+
+    #[test]
+    fn a_gpu_liquid_settles_inside_its_wall() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = box_sims();
+        let mut frame = Frame::default();
+        frame.liquids.push(gpu_pool(ThingId(1), 12_000));
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 3,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        let liquid = flow.liquid(ThingId(1)).unwrap();
+        assert_eq!(liquid.count(), 12_000);
+        let start = liquid.read_state(&device, &queue);
+        assert!(start.iter().all(|p| p[1] >= 200.0 && p[0].abs() <= 400.0), "the pool starts in its region");
+        assert!(flow.step_to(&device, &queue, 1.0, &source).caught_up);
+        let state = flow.liquid(ThingId(1)).unwrap().read_state(&device, &queue);
+        assert_eq!(state.len(), 12_000);
+        assert!(state.iter().all(|p| p.iter().all(|v| v.is_finite())));
+        let inside = state.iter().filter(|p| p[0].abs() <= 399.0 && p[1].abs() <= 699.0).count();
+        assert!(inside >= 11_940, "{inside} of 12000 inside the box");
+        let fast = state.iter().filter(|p| (p[2] * p[2] + p[3] * p[3]).sqrt() > 3000.0).count();
+        assert!(fast <= 120, "{fast} particles racing");
+        // Gravity pulled the pool down: its top is lower than where the lattice began.
+        let top = state.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        assert!(top > 180.0, "{top}");
+    }
+
+    #[test]
+    fn seeking_back_restores_a_checkpoint_bit_for_bit() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = box_sims();
+        let mut frame = Frame::default();
+        frame.liquids.push(gpu_pool(ThingId(1), 4_000));
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 3,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 3.0, &source);
+        let straight = flow.liquid(ThingId(1)).unwrap().read_state(&device, &queue);
+        flow.step_to(&device, &queue, 2.5, &source);
+        assert_eq!(flow.step(), 300);
+        flow.step_to(&device, &queue, 3.0, &source);
+        let again = flow.liquid(ThingId(1)).unwrap().read_state(&device, &queue);
+        assert_eq!(again, straight);
+        assert_eq!(flow.steps_run(), 360 + 120, "back to the checkpoint at 2 s, then 60 steps twice");
+    }
+
+    #[test]
+    fn checkpoints_stay_under_the_budget() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = box_sims();
+        let mut frame = Frame::default();
+        frame.liquids.push(gpu_pool(ThingId(1), 10_000));
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 3,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut flow = FlowLayers::new(&device);
+        // 160 KB per checkpoint; the budget allows about six.
+        flow.set_checkpoint_budget(1 << 20);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 20.0, &source);
+        let (kept, interval, bytes) = flow.checkpoint_stats();
+        assert!(kept > 1, "{kept}");
+        assert!(bytes <= 1 << 20, "{bytes}");
+        assert!(interval > CHECKPOINT_STEPS, "{interval}");
+        // Every kept checkpoint sits on the interval, so seeking back still finds one.
+        flow.step_to(&device, &queue, 10.0, &source);
+        assert_eq!(flow.step(), 1200);
     }
 }
