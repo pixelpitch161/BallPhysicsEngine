@@ -252,3 +252,38 @@ fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
     return vec4<f32>(in.color.rgb * v, 0.0);
 }
+
+// ---- Soft bodies (plain triangles whose edges fade over the last pixel) ----
+
+struct SoftIn {
+    @location(0) position: vec2<f32>,
+    // How far inside the body's edge, in world units.
+    @location(1) inside: f32,
+    @location(2) pad: f32,
+    @location(3) color: vec4<f32>,
+};
+
+struct SoftOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) inside: f32,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_soft(v: SoftIn) -> SoftOut {
+    var out: SoftOut;
+    out.pos = to_clip(v.position);
+    out.inside = v.inside;
+    out.color = v.color;
+    return out;
+}
+
+@fragment
+fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
+    let cover = clamp(in.inside / g.view.z + 0.5, 0.0, 1.0);
+    let a = abs(in.color.a) * cover;
+    if a <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
+}

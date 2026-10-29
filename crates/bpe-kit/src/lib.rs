@@ -84,10 +84,11 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
     }
 }
 
-/// The soundtrack of a finished run of `scene`.
+/// The soundtrack of a finished run of `scene`, its keyframed sound settings followed.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    let _ = scene;
-    bpe_mix::mix(&mix_settings(resolved), resolved, log, &kit.mixes)
+    let animation = bpe_core::Animation::new(scene, resolved);
+    let animation = (!animation.is_empty()).then_some(&animation);
+    bpe_mix::mix_with(&mix_settings(resolved), resolved, log, &kit.mixes, animation, &|t| t)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.

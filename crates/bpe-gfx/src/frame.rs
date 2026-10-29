@@ -2,9 +2,38 @@
 
 use std::collections::BTreeMap;
 
-use bpe_core::{Resolved, ResolvedThing, Scene, Thing};
-use bpe_runtime::{Log, Outline, World};
+use bpe_core::{Animation, Inputs, Resolved, ResolvedThing, Scene, Thing};
+use bpe_runtime::{EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
+
+/// Hits older than this no longer count towards [`hit_strength`].
+const HIT_WINDOW: f64 = 0.3;
+/// A hit's strength fades by e every this many seconds.
+const HIT_FADE: f32 = 0.1;
+/// A hit at this speed (px/s) counts as a full one.
+const FULL_HIT: f32 = 600.0;
+
+/// How hard things are hitting at `time`, 0 to 1, for pulses that follow hits: every hit in the
+/// last 0.3 s counts `min(speed / 600, 1)`, fading with age, and the sum is clamped.
+pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
+    let rate = steps_per_second.max(1);
+    let events = log.events();
+    let first_step = ((time - HIT_WINDOW) * rate as f64).ceil().max(0.0) as u64;
+    let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
+    let start = events.partition_point(|e| e.step < first_step);
+    let mut sum = 0.0f32;
+    for e in &events[start..] {
+        if e.step > last_step {
+            break;
+        }
+        if e.kind != EventKind::Hit {
+            continue;
+        }
+        let age = (time - e.time(rate)).max(0.0) as f32;
+        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
+    }
+    if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
+}
 
 /// A ball: a lit sphere with a halo.
 #[repr(C)]
@@ -63,6 +92,36 @@ pub struct FlashInstance {
     pub color: [f32; 4],
 }
 
+/// One corner of a soft body's triangles: jelly, rope and cloth are drawn as triangle lists
+/// whose edges fade over the last pixel.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SoftVertex {
+    pub position: [f32; 2],
+    /// How far inside the shape's edge this corner is, in world units; the fragment fades to
+    /// nothing at 0.
+    pub inside: f32,
+    pub _pad: f32,
+    /// Linear light. A negative alpha is additive (see [`blend_alpha`]).
+    pub color: [f32; 4],
+}
+
+/// One glyph of text, drawn from the signed-distance atlas.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct GlyphInstance {
+    /// World rectangle: left, top, right, bottom.
+    pub rect: [f32; 4],
+    /// Atlas rectangle in texture coordinates: left, top, right, bottom.
+    pub uv: [f32; 4],
+    /// Linear light fill. A negative alpha is additive.
+    pub color: [f32; 4],
+    pub outline_color: [f32; 4],
+    /// Outline width in world units, glow strength, world units per distance unit (how far one
+    /// full step of the atlas value is in the world), unused.
+    pub params: [f32; 4],
+}
+
 /// A colour with alpha 0 but some light is an additive colour (the colour picker's "Additive"
 /// blending) and gets an alpha of -1. The shaders read a negative alpha as "add this much light
 /// and cover nothing", so it can still fade like any other alpha.
@@ -85,6 +144,10 @@ pub struct Frame {
     pub shapes: Vec<ShapeInstance>,
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
+    /// Triangles, three vertices each, drawn between the walls and the balls.
+    pub soft: Vec<SoftVertex>,
+    /// Text, drawn last.
+    pub glyphs: Vec<GlyphInstance>,
 }
 
 impl Default for Frame {
@@ -100,6 +163,8 @@ impl Default for Frame {
             shapes: Vec::new(),
             balls: Vec::new(),
             flashes: Vec::new(),
+            soft: Vec::new(),
+            glyphs: Vec::new(),
         }
     }
 }
@@ -110,6 +175,8 @@ impl Frame {
         self.shapes.clear();
         self.balls.clear();
         self.flashes.clear();
+        self.soft.clear();
+        self.glyphs.clear();
     }
 }
 
@@ -117,6 +184,8 @@ impl Frame {
 pub struct DrawCx<'a> {
     pub thing: &'a Thing,
     pub resolved: &'a ResolvedThing,
+    /// The whole resolved scene as it is at this moment, keyframes and pulses applied.
+    pub scene: &'a Resolved,
     pub world: &'a World,
     pub log: &'a Log,
     /// Seconds into the clip being drawn.
@@ -148,8 +217,9 @@ impl Draws {
     }
 }
 
-/// Fills `frame` for `time`: the lists are emptied, then every resolved thing in id order
-/// whose kind has a drawing part draws.
+/// Fills `frame` for `time`: the lists are emptied, the scene's keyframes and pulses are
+/// applied to a copy of the resolved scene for this moment, then every resolved thing in id
+/// order whose kind has a drawing part draws.
 pub fn build_frame(
     scene: &Scene,
     resolved: &Resolved,
@@ -160,18 +230,30 @@ pub fn build_frame(
     frame: &mut Frame,
 ) {
     frame.clear();
+    let animation = Animation::new(scene, resolved);
+    let animated;
+    let resolved = if animation.is_empty() {
+        resolved
+    } else {
+        let mut copy = resolved.clone();
+        let inputs =
+            Inputs { pulse: world.pulse_inputs.as_deref(), hits: hit_strength(log, time, world.steps_per_second) };
+        animation.apply(&mut copy, time, &inputs);
+        animated = copy;
+        &animated
+    };
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        d.draw(&DrawCx { thing, resolved: r, world, log, time }, frame);
+        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time }, frame);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Value, resolve, testkit};
-    use bpe_runtime::{Log, Sims, World};
+    use bpe_core::{Address, Ease, Owner, Value, resolve, testkit};
+    use bpe_runtime::{Event, Log, Party, Sims, World};
 
     struct FakeScene;
     impl ThingDraw for FakeScene {
@@ -224,6 +306,66 @@ mod tests {
         assert_eq!(frame.flashes.len(), 1);
         assert!(frame.shapes.is_empty());
         assert!(draws.thing("folder").is_none());
+    }
+
+    #[test]
+    fn a_keyed_setting_changes_the_frame_at_its_time() {
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let balls = testkit::push(&mut scene, "balls", bpe_core::ThingId::ROOT);
+        let size = Address { owner: Owner::Thing(balls), slot: None, key: "radius".into() };
+        let first = scene.set_key(&reg, &size, 0.0, Value::Number(2.0)).unwrap();
+        scene.set_key(&reg, &size, 2.0, Value::Number(10.0)).unwrap();
+        scene.set_ease(&size, first, Ease::Linear);
+        let resolved = resolve(&scene, &reg);
+        let world = World::build(&scene, &resolved, &Sims::default());
+        let mut draws = Draws::default();
+        draws.add(FakeBalls);
+        let mut frame = Frame::default();
+        let radius_at = |time: f64, frame: &mut Frame| {
+            build_frame(&scene, &resolved, &world, &Log::default(), time, &draws, frame);
+            frame.balls[0].radius
+        };
+        assert_eq!(radius_at(0.0, &mut frame), 2.0);
+        assert!((radius_at(1.0, &mut frame) - 6.0).abs() < 1e-5);
+        assert_eq!(radius_at(5.0, &mut frame), 10.0);
+        assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
+    }
+
+    #[test]
+    fn hit_strength_decays_and_saturates() {
+        let hit = |step: u64, speed: f32| Event {
+            step,
+            kind: EventKind::Hit,
+            a: Party { thing: bpe_core::ThingId(2), item: 0 },
+            b: None,
+            point: glam::Vec2::ZERO,
+            normal: glam::Vec2::X,
+            speed,
+        };
+        let mut log = Log::default();
+        log.push(hit(240, 600.0));
+        assert_eq!(hit_strength(&log, 0.5, 240), 0.0, "a hit in the future does not count");
+        assert!((hit_strength(&log, 1.0, 240) - 1.0).abs() < 1e-6);
+        assert!((hit_strength(&log, 1.1, 240) - (-1.0f32).exp()).abs() < 1e-4);
+        assert_eq!(hit_strength(&log, 1.5, 240), 0.0, "hits older than 0.3 s are gone");
+        let mut many = Log::default();
+        for _ in 0..3 {
+            many.push(hit(240, 300.0));
+        }
+        assert_eq!(hit_strength(&many, 1.0, 240), 1.0, "three half hits saturate");
+        assert!(hit_strength(&Log::default(), 1.0, 240) == 0.0);
+    }
+
+    #[test]
+    fn soft_and_glyph_lists_are_cleared() {
+        let mut frame = Frame::default();
+        frame.soft.push(SoftVertex::default());
+        frame.glyphs.push(GlyphInstance::default());
+        frame.clear();
+        assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
+        assert_eq!(std::mem::size_of::<SoftVertex>(), 32);
+        assert_eq!(std::mem::size_of::<GlyphInstance>(), 80);
     }
 
     #[test]

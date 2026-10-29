@@ -26,7 +26,7 @@ impl ModuleMix for NoteSoundMix {
                 continue;
             }
             let time = e.time(rate);
-            let frame = (time * SAMPLE_RATE as f64).round() as usize;
+            let frame = ((cx.video_time)(time) * SAMPLE_RATE as f64).round() as usize;
             if frame >= cx.frames {
                 continue;
             }

@@ -495,6 +495,9 @@ struct Target {
     thing: ThingId,
     slot: Option<SlotId>,
     key: String,
+    /// The setting's value before any animation, so a pulse adds to the same base every time
+    /// `apply` runs on the same resolved scene.
+    base: Value,
     track: Option<Track>,
     pulse: Option<Pulse>,
 }
@@ -522,11 +525,18 @@ impl Animation {
                 continue;
             }
             for (thing, slot) in lands_on(scene, resolved, a) {
+                let Some(r) = resolved.things.get(&thing) else { continue };
+                let params = match slot {
+                    None => Some(&r.params),
+                    Some(slot) => r.slots.get(&slot).map(|s| &s.params),
+                };
+                let Some(base) = params.and_then(|p| p.get(&a.key)).cloned() else { continue };
                 targets.push(Target {
                     address: (*a).clone(),
                     thing,
                     slot,
                     key: a.key.clone(),
+                    base,
                     track: track.clone(),
                     pulse: pulse.clone(),
                 });
@@ -558,8 +568,9 @@ impl Animation {
         self.targets.retain(|t| keep(t.thing, t.slot, &t.key));
     }
 
-    /// Writes every animated setting's value at `time` into `resolved`: the keyed value, with
-    /// the pulse added on top.
+    /// Writes every animated setting's value at `time` into `resolved`: the keyed value (or the
+    /// value the scene had when the animation was made), with the pulse added on top. Applying
+    /// to the same resolved scene again and again gives the same values as applying once.
     pub fn apply(&self, resolved: &mut Resolved, time: f64, inputs: &Inputs) {
         for t in &self.targets {
             let Some(thing) = resolved.things.get_mut(&t.thing) else { continue };
@@ -570,8 +581,7 @@ impl Animation {
                     None => continue,
                 },
             };
-            let Some(current) = params.get(&t.key).cloned() else { continue };
-            let mut value = t.track.as_ref().and_then(|track| track.value_at(time)).unwrap_or(current);
+            let mut value = t.track.as_ref().and_then(|track| track.value_at(time)).unwrap_or_else(|| t.base.clone());
             if let Some(pulse) = &t.pulse {
                 value = pulsed(&value, pulse, pulse_strength(pulse, time, inputs));
             }
@@ -807,6 +817,12 @@ mod tests {
         };
         assert_eq!(at(0.5), 1.8, "before the first beat the pulse is silent");
         assert_eq!(at(1.0), 2.0, "on the beat it is clamped to the range");
+        // Applying to the same copy twice does not add the pulse twice.
+        let mut twice = resolved.clone();
+        let on_beat = Inputs { pulse: Some(&inputs), hits: 0.0 };
+        anim.apply(&mut twice, 1.5, &on_beat);
+        anim.apply(&mut twice, 1.5, &on_beat);
+        assert_eq!(twice.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(at(1.5))));
         let later = at(1.5);
         assert!(later > 1.8 && later < 2.0, "{later}");
         assert!((later - (1.8 + 0.5 * (-2.0f64).exp())).abs() < 1e-5, "{later}");
