@@ -10,7 +10,7 @@ use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
-use bpe_kit::{Kit, SceneSettings, TimeWarp};
+use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
@@ -84,6 +84,11 @@ pub struct Studio {
     pub audio_error: Option<String>,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
+    /// The scene's song is decoding on a thread of its own; the run and the mix are rebuilt
+    /// when it lands.
+    pub song_loading: bool,
+    /// The song setting as last seen, so a re-picked file that failed before is tried again.
+    last_song: String,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     recorded: bool,
     closing: bool,
@@ -135,6 +140,8 @@ impl Studio {
             audio: None,
             audio_error: None,
             resume_after_scrub: false,
+            song_loading: false,
+            last_song: String::new(),
             recorded: false,
             closing: false,
             last_tick: None,
@@ -185,6 +192,7 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     fn scene_changed(&mut self) {
         self.resolved = resolve(&self.scene, &self.kit.registry);
+        self.start_song();
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         if fingerprint != self.fingerprint {
             self.fingerprint = fingerprint;
@@ -204,9 +212,40 @@ impl Studio {
         self.set_playing(false);
         self.recorded = true;
         self.resolved = resolve(&self.scene, &self.kit.registry);
+        self.start_song();
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.sound_dirty = true;
+    }
+
+    /// Starts decoding the scene's song on a thread of its own before the run is built, so the
+    /// window never waits for it. Until it lands the run and the mix have no song; `poll_song`
+    /// rebuilds them when it does. A file that failed before is tried again when re-picked.
+    fn start_song(&mut self) {
+        let song = self.settings().song;
+        if song != self.last_song {
+            if matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Unreadable)) {
+                bpe_kit::forget_song(&song);
+            }
+            self.last_song = song.clone();
+        }
+        self.song_loading = matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Loading));
+    }
+
+    /// Call every frame: when a song has finished loading, the run and the mix are built again
+    /// with it.
+    fn poll_song(&mut self, ctx: &egui::Context) {
+        if !self.song_loading {
+            return;
+        }
+        match bpe_kit::load_song_in_background(&self.settings().song) {
+            Some(SongState::Loading) => ctx.request_repaint_after(Duration::from_millis(100)),
+            _ => {
+                self.song_loading = false;
+                self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+                self.panels.sound.remix();
+            }
+        }
     }
 
     pub fn new_scene(&mut self) {
@@ -504,9 +543,15 @@ impl Studio {
                 ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
             let song = self.settings().song;
-            if !song.trim().is_empty() && bpe_kit::load_song(&song).is_none() {
-                let text = format!("The song {song} couldn't be opened; the video has no song.");
-                ui.label(RichText::new(text).small().color(theme::WARNING));
+            match bpe_kit::load_song_in_background(&song) {
+                Some(SongState::Loading) => {
+                    ui.label(RichText::new("· Loading the song…").small().color(theme::MUTED));
+                }
+                Some(SongState::Unreadable) => {
+                    let text = format!("The song {song} couldn't be opened; the video has no song.");
+                    ui.label(RichText::new(text).small().color(theme::WARNING));
+                }
+                _ => {}
             }
         });
     }
@@ -557,6 +602,7 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        self.poll_song(&ctx);
         self.update_sound(&ctx);
         let before = self.scene.clone();
         self.recorded = false;
@@ -611,6 +657,10 @@ impl eframe::App for Studio {
                     time,
                 )
             });
+        if std::mem::take(&mut self.panels.inspector.keyed_edit) {
+            // A key landed at the playhead; a drag while playing would otherwise key every frame.
+            self.set_playing(false);
+        }
         let outcome = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
             .show(ui, |ui| preview::show(ui, frame, self))

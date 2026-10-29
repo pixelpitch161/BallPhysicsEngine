@@ -393,8 +393,12 @@ pub struct DrawCx<'a> {
     pub scene: &'a Resolved,
     pub world: &'a World,
     pub log: &'a Log,
-    /// Seconds into the clip being drawn.
+    /// The moment of the run being drawn, in seconds: the clock of the world, the log and the
+    /// keyframes.
     pub time: f64,
+    /// Seconds into the video for this frame. The same as `time` unless the clip is beat-synced,
+    /// when the run is warped onto the video; clocks, show windows and beats follow this one.
+    pub video_time: f64,
 }
 
 /// How a thing kind draws itself.
@@ -456,6 +460,22 @@ pub fn build_frame(
     draws: &Draws,
     frame: &mut Frame,
 ) {
+    build_frame_at(scene, resolved, world, log, time, time, draws, frame);
+}
+
+/// [`build_frame`] for a beat-synced clip, where the moment of the run shown (`time`) and the
+/// moment of the video (`video_time`) differ: keys follow the run, beats and clocks the video.
+#[allow(clippy::too_many_arguments)]
+pub fn build_frame_at(
+    scene: &Scene,
+    resolved: &Resolved,
+    world: &World,
+    log: &Log,
+    time: f64,
+    video_time: f64,
+    draws: &Draws,
+    frame: &mut Frame,
+) {
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
@@ -463,8 +483,11 @@ pub fn build_frame(
         resolved
     } else {
         let mut copy = resolved.clone();
-        let inputs =
-            Inputs { pulse: world.pulse_inputs.as_deref(), hits: hit_strength(log, time, world.steps_per_second) };
+        let inputs = Inputs {
+            pulse: world.pulse_inputs.as_deref(),
+            hits: hit_strength(log, time, world.steps_per_second),
+            video_time: (video_time != time).then_some(video_time),
+        };
         animation.apply(&mut copy, time, &inputs);
         animated = copy;
         &animated
@@ -472,14 +495,14 @@ pub fn build_frame(
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time }, frame);
+        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, frame);
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         for slot in SlotId::ALL {
             let Some(s) = r.slots.get(&slot) else { continue };
             let Some(d) = draws.module(&s.kind) else { continue };
-            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time }, slot, frame);
+            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, slot, frame);
         }
     }
 }
@@ -565,6 +588,46 @@ mod tests {
         assert!((radius_at(1.0, &mut frame) - 6.0).abs() < 1e-5);
         assert_eq!(radius_at(5.0, &mut frame), 10.0);
         assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
+    }
+
+    #[test]
+    fn a_beat_synced_frame_hands_draws_both_clocks_and_pulses_on_the_video_beat() {
+        struct Clock;
+        impl ThingDraw for Clock {
+            fn kind(&self) -> &'static str {
+                "scene"
+            }
+            fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
+                frame.time = cx.time as f32;
+                frame.exposure = cx.video_time as f32;
+                frame.bloom = match cx.resolved.slots[&SlotId::Look].params.get("glow") {
+                    Some(Value::Number(g)) => *g as f32,
+                    _ => -1.0,
+                };
+            }
+        }
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Look, look).unwrap();
+        let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
+        scene.set_pulse(&reg, &glow, bpe_core::PulseSource::Beat, Value::Number(1.0), 0.5).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let mut world = World::build(&scene, &resolved, &Sims::default());
+        world.pulse_inputs = Some(std::sync::Arc::new(bpe_core::PulseInputs { beats: vec![2.0], bands: None }));
+        let mut draws = Draws::default();
+        draws.add(Clock);
+        let mut frame = Frame::default();
+        let base = match resolved.things[&ThingId::ROOT].slots[&SlotId::Look].params.get("glow") {
+            Some(Value::Number(g)) => *g as f32,
+            _ => panic!("no glow"),
+        };
+        build_frame_at(&scene, &resolved, &world, &Log::default(), 1.0, 2.0, &draws, &mut frame);
+        assert_eq!((frame.time, frame.exposure), (1.0, 2.0));
+        assert!((frame.bloom - (base + 1.0)).abs() < 1e-5, "the beat is now on the video's clock: {}", frame.bloom);
+        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &draws, &mut frame);
+        assert_eq!((frame.time, frame.exposure), (1.0, 1.0));
+        assert!((frame.bloom - base).abs() < 1e-5, "on the run's clock the beat is still to come");
     }
 
     #[test]

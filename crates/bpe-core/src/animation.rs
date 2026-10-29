@@ -342,26 +342,32 @@ pub struct Inputs<'a> {
     pub pulse: Option<&'a PulseInputs>,
     /// How hard things are hitting right now, 0 to 1. The runtime always passes 0.
     pub hits: f32,
+    /// The video's clock at this moment, when it differs from the run's (beat sync warps the run
+    /// onto the video). Beats and the song's bands are on the video's clock, so Beat and band
+    /// pulses follow this when it is given; keys always follow the run's time.
+    pub video_time: Option<f64>,
 }
 
 impl Inputs<'_> {
-    pub const NONE: Inputs<'static> = Inputs { pulse: None, hits: 0.0 };
+    pub const NONE: Inputs<'static> = Inputs { pulse: None, hits: 0.0, video_time: None };
 }
 
 /// How strongly `pulse` pushes at `time`, 0 to 1.
 pub fn pulse_strength(pulse: &Pulse, time: f64, inputs: &Inputs) -> f32 {
+    // Beats and bands are on the video's clock.
+    let clock = inputs.video_time.unwrap_or(time);
     let s = match pulse.source {
         PulseSource::Hits => inputs.hits,
         PulseSource::Beat => {
             let beats = inputs.pulse.map(|p| p.beats.as_slice()).unwrap_or(&[]);
-            match beats.partition_point(|&b| b <= time).checked_sub(1) {
-                Some(i) => (-((time - beats[i]) / pulse.decay.max(0.01) as f64)).exp() as f32,
+            match beats.partition_point(|&b| b <= clock).checked_sub(1) {
+                Some(i) => (-((clock - beats[i]) / pulse.decay.max(0.01) as f64)).exp() as f32,
                 None => 0.0,
             }
         }
         band => {
             let bands = inputs.pulse.and_then(|p| p.bands.as_ref());
-            let at = bands.map(|b| b.at(time)).unwrap_or([0.0; 4]);
+            let at = bands.map(|b| b.at(clock)).unwrap_or([0.0; 4]);
             match band {
                 PulseSource::Bass => at[0],
                 PulseSource::Mid => at[1],
@@ -809,7 +815,7 @@ mod tests {
         let inputs = PulseInputs { beats: vec![1.0, 2.0], bands: None };
         let at = |time: f64| {
             let mut r = resolved.clone();
-            anim.apply(&mut r, time, &Inputs { pulse: Some(&inputs), hits: 0.0 });
+            anim.apply(&mut r, time, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None });
             match r.things[&a].slots[&SlotId::Look].params.get("glow") {
                 Some(Value::Number(x)) => *x,
                 other => panic!("{other:?}"),
@@ -819,7 +825,7 @@ mod tests {
         assert_eq!(at(1.0), 2.0, "on the beat it is clamped to the range");
         // Applying to the same copy twice does not add the pulse twice.
         let mut twice = resolved.clone();
-        let on_beat = Inputs { pulse: Some(&inputs), hits: 0.0 };
+        let on_beat = Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None };
         anim.apply(&mut twice, 1.5, &on_beat);
         anim.apply(&mut twice, 1.5, &on_beat);
         assert_eq!(twice.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(at(1.5))));
@@ -832,7 +838,7 @@ mod tests {
         let mut r = resolved.clone();
         anim.apply(&mut r, 1.0, &Inputs::NONE);
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(1.8)));
-        anim.apply(&mut r, 1.0, &Inputs { pulse: None, hits: 1.0 });
+        anim.apply(&mut r, 1.0, &Inputs { pulse: None, hits: 1.0, video_time: None });
         match r.things[&a].slots[&SlotId::Look].params.get("glow") {
             Some(Value::Number(x)) => assert!((x - 1.9).abs() < 1e-9, "{x}"),
             other => panic!("{other:?}"),
@@ -843,8 +849,44 @@ mod tests {
         let bands =
             Bands { rate: 2.0, bass: vec![0.0, 1.0], mid: vec![0.0; 2], treble: vec![0.0; 2], level: vec![0.0; 2] };
         let inputs = PulseInputs { beats: vec![], bands: Some(bands) };
-        assert!((pulse_strength(&pulse, 0.25, &Inputs { pulse: Some(&inputs), hits: 0.0 }) - 0.5).abs() < 1e-6);
-        assert_eq!(pulse_strength(&pulse, 5.0, &Inputs { pulse: Some(&inputs), hits: 0.0 }), 0.0);
+        assert!(
+            (pulse_strength(&pulse, 0.25, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None }) - 0.5).abs()
+                < 1e-6
+        );
+        assert_eq!(pulse_strength(&pulse, 5.0, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None }), 0.0);
+    }
+
+    #[test]
+    fn beat_pulses_follow_the_video_clock_when_given() {
+        let pulse = Pulse { source: PulseSource::Beat, amount: key(1.0), decay: 0.5, range: None };
+        let inputs = PulseInputs { beats: vec![2.0], bands: None };
+        let at = |time: f64, video_time: Option<f64>| {
+            pulse_strength(&pulse, time, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time })
+        };
+        assert_eq!(at(1.0, None), 0.0, "on the run's clock the beat is still to come");
+        assert!((at(1.0, Some(2.0)) - 1.0).abs() < 1e-6, "but the video is on it");
+        assert_eq!(at(3.0, Some(1.0)), 0.0);
+        assert!((at(3.0, None) - (-2.0f32).exp()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn removing_a_thing_or_module_drops_its_tracks_and_pulses() {
+        let (reg, mut scene, shared, a, b) = scene();
+        let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
+        scene.set_key(&reg, &size, 0.5, key(3.0)).unwrap();
+        scene.set_key(&reg, &glow_of(shared), 1.0, key(1.0)).unwrap();
+        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Level, key(0.3), 0.5).unwrap();
+        let own_glow = Address { owner: Owner::Thing(a), slot: Some(SlotId::Look), key: "glow".into() };
+        scene.set_pulse(&reg, &own_glow, PulseSource::Beat, key(0.3), 0.5).unwrap();
+        scene.remove_thing(a).unwrap();
+        assert!(!scene.tracks.contains_key(&size), "the thing's own key went with it");
+        assert!(!scene.pulses.contains_key(&own_glow), "and its override's pulse");
+        assert!(scene.tracks.contains_key(&glow_of(shared)), "the shared module's track stays");
+        assert!(scene.pulses.contains_key(&glow_of(shared)));
+        // Once nothing uses the module, removing it takes its track and pulse too.
+        scene.things.get_mut(&b).unwrap().slots.insert(SlotId::Look, SlotLink::Inherit);
+        scene.remove_module(shared).unwrap();
+        assert!(scene.tracks.is_empty() && scene.pulses.is_empty(), "{:?} {:?}", scene.tracks, scene.pulses);
     }
 
     #[test]

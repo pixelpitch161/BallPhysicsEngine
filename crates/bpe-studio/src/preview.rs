@@ -4,7 +4,7 @@
 use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::theme;
 use bpe_core::{Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame_at, wgpu};
 use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
 use bpe_runtime::{Outline, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
@@ -139,6 +139,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
     // While catching up, the picture shows the moment the simulation has got to.
     let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.sim_time() };
+    let shown_video = if outcome.catching_up { studio.warp.video_time(shown_time) } else { studio.time };
     let drawn = Drawn {
         scene: studio.scene.clone(),
         time: shown_time,
@@ -146,12 +147,13 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         size: (width, height),
     };
     if preview.drawn.as_ref() != Some(&drawn) {
-        build_frame(
+        build_frame_at(
             &studio.scene,
             &studio.resolved,
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
+            shown_video,
             &studio.kit.draws,
             &mut preview.frame,
         );

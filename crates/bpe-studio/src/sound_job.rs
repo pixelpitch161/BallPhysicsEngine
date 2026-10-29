@@ -65,6 +65,12 @@ impl SoundJob {
         }
     }
 
+    /// Schedules a mix although the scene reads the same: something it depends on, like a song
+    /// that finished loading, has changed.
+    pub fn remix(&mut self) {
+        self.dirty_since = Some(Instant::now());
+    }
+
     /// The soundtrack doesn't match the scene yet.
     pub fn busy(&self) -> bool {
         self.dirty_since.is_some() || self.running

@@ -120,7 +120,7 @@ impl World {
         animated.animation.apply(
             &mut animated.resolved,
             time,
-            &Inputs { pulse: self.pulse_inputs.as_deref(), hits: 0.0 },
+            &Inputs { pulse: self.pulse_inputs.as_deref(), hits: 0.0, video_time: None },
         );
         let mut done = BTreeSet::new();
         for (thing, slot, _) in animated.animation.destinations() {

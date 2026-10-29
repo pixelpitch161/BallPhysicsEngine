@@ -34,7 +34,9 @@ pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
-pub use music::{Song, TimeWarp, beats_for, load_song, wants_beats, warp_for};
+pub use music::{
+    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
+};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};

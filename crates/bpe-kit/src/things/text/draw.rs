@@ -35,7 +35,8 @@ impl ThingDraw for TextDraw {
         } else {
             f64::INFINITY
         };
-        let time = cx.time;
+        // Clocks, counters and show windows are the video's; the run's log is read at its own time.
+        let time = cx.video_time;
         if time < from || time > to {
             return;
         }
@@ -62,10 +63,10 @@ impl ThingDraw for TextDraw {
             }
         }
         if s.jump > 0.0 {
-            scale += s.jump * 0.35 * hit_strength(cx.log, time, cx.world.steps_per_second);
+            scale += s.jump * 0.35 * hit_strength(cx.log, cx.time, cx.world.steps_per_second);
         }
         let rate = cx.world.steps_per_second.max(1);
-        let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
+        let last_step = (cx.time * rate as f64 + 1e-6).floor().max(0.0) as u64;
         let hits = cx.log.events()[..cx.log.events().partition_point(|e| e.step <= last_step)]
             .iter()
             .filter(|e| e.kind == EventKind::Hit)
@@ -97,10 +98,15 @@ impl ThingDraw for TextDraw {
 mod tests {
     use crate::{kit, new_scene};
     use bpe_core::{Params, ThingId, Value, resolve};
-    use bpe_gfx::{Frame, build_frame};
+    use bpe_gfx::{Frame, build_frame_at};
     use bpe_runtime::{Log, World};
 
     fn glyphs_at(time: f64, f: impl FnOnce(&mut Params)) -> usize {
+        glyphs_at_both(time, time, f)
+    }
+
+    /// The glyphs drawn at a moment `time` of the run shown at `video_time` of the video.
+    fn glyphs_at_both(time: f64, video_time: f64, f: impl FnOnce(&mut Params)) -> usize {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
         let text = scene.add_thing(&kit.registry, "text", ThingId::ROOT).unwrap();
@@ -109,8 +115,18 @@ mod tests {
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
-        build_frame(&scene, &resolved, &world, &Log::default(), time, &kit.draws, &mut frame);
+        build_frame_at(&scene, &resolved, &world, &Log::default(), time, video_time, &kit.draws, &mut frame);
         frame.glyphs.len()
+    }
+
+    #[test]
+    fn a_caption_shows_by_the_video_clock_under_beat_sync() {
+        let window = |p: &mut Params| p.set("show_from", Value::Number(1.5));
+        assert_eq!(glyphs_at_both(1.0, 1.0, window), 0, "not yet on either clock");
+        assert_eq!(glyphs_at_both(1.0, 2.0, window), 5, "the video has reached the window");
+        assert_eq!(glyphs_at_both(2.0, 1.0, window), 0, "the run has, but the video hasn't");
+        let clock = |p: &mut Params| p.set("text", Value::Text("{seconds}".into()));
+        assert_eq!(glyphs_at_both(3.0, 12.0, clock), 2, "1 2: the video's seconds, not the run's");
     }
 
     #[test]

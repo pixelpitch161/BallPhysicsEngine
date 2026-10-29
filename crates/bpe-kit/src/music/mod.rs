@@ -6,7 +6,8 @@ pub mod song_mix;
 pub mod warp;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_music::AudioFeatures;
@@ -27,27 +28,77 @@ pub struct Song {
     pub features: AudioFeatures,
 }
 
-static SONGS: Mutex<BTreeMap<String, Option<Arc<Song>>>> = Mutex::new(BTreeMap::new());
+/// One path's place in the cache: decoded once, by whoever asks first. The map's lock is only
+/// held to find the entry, never while decoding.
+#[derive(Default)]
+struct Entry {
+    song: OnceLock<Option<Arc<Song>>>,
+    /// A thread of its own is decoding it (see [`load_song_in_background`]).
+    background: AtomicBool,
+}
 
-/// The song at `path`, decoded and analysed once per path; `None` for an empty path or a file
-/// that can't be read (which is remembered too, so a missing file is not retried every step).
+static SONGS: Mutex<BTreeMap<String, Arc<Entry>>> = Mutex::new(BTreeMap::new());
+
+fn entry(path: &str) -> Arc<Entry> {
+    SONGS.lock().unwrap_or_else(|e| e.into_inner()).entry(path.to_owned()).or_default().clone()
+}
+
+fn decode(path: &str) -> Option<Arc<Song>> {
+    bpe_music::decode(path).ok().map(|pcm| {
+        let features = bpe_music::analyze_decoded(path, &pcm);
+        Arc::new(Song { duration: pcm.duration(), samples: pcm.samples, features })
+    })
+}
+
+/// The song at `path`, decoded and analysed once per path; `None` for an empty path, for a file
+/// that can't be read (which is remembered too, so a missing file is not retried every step),
+/// and for a song still loading in the background, which is not waited for.
 pub fn load_song(path: &str) -> Option<Arc<Song>> {
     if path.trim().is_empty() {
         return None;
     }
-    let mut songs = SONGS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(song) = songs.get(path) {
+    let e = entry(path);
+    if let Some(song) = e.song.get() {
         return song.clone();
     }
-    let song = bpe_music::decode(path).ok().map(|pcm| {
-        let features = bpe_music::analyze_decoded(path, &pcm);
-        Arc::new(Song { duration: pcm.duration(), samples: pcm.samples, features })
-    });
-    songs.insert(path.to_owned(), song.clone());
-    song
+    if e.background.load(Ordering::Acquire) {
+        return None;
+    }
+    e.song.get_or_init(|| decode(path)).clone()
 }
 
-/// Forgets a loaded song, so a changed file is read again.
+/// Where a song's loading stands.
+#[derive(Clone, Debug)]
+pub enum SongState {
+    /// A thread is decoding it; [`load_song`] says there is no song until it lands.
+    Loading,
+    Ready(Arc<Song>),
+    /// The file couldn't be read.
+    Unreadable,
+}
+
+/// Starts decoding the song on a thread of its own, unless it is loaded or loading already, and
+/// says how far it is. The editor asks this before building a run, so the window never waits
+/// for a song, and rebuilds once it is `Ready`. `None` for an empty path.
+pub fn load_song_in_background(path: &str) -> Option<SongState> {
+    if path.trim().is_empty() {
+        return None;
+    }
+    let e = entry(path);
+    if let Some(song) = e.song.get() {
+        return Some(song.clone().map_or(SongState::Unreadable, SongState::Ready));
+    }
+    if !e.background.swap(true, Ordering::AcqRel) {
+        let path = path.to_owned();
+        let e = e.clone();
+        std::thread::spawn(move || {
+            e.song.get_or_init(|| decode(&path));
+        });
+    }
+    Some(SongState::Loading)
+}
+
+/// Forgets a loaded (or unreadable) song, so a changed or fixed file is read again.
 pub fn forget_song(path: &str) {
     SONGS.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
 }
@@ -121,6 +172,34 @@ mod tests {
         assert!(load_song("").is_none());
         assert!(load_song("/nowhere/at/all.mp3").is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_background_load_never_blocks_and_lands_for_everyone() {
+        let path = temp_wav("background", 2.0, 44_100);
+        let path = path.to_str().unwrap();
+        assert!(matches!(load_song_in_background(path), Some(SongState::Loading)));
+        // Meanwhile a plain load doesn't wait: it has no song, or the finished one.
+        let early = load_song(path);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let song = loop {
+            match load_song_in_background(path) {
+                Some(SongState::Ready(song)) => break song,
+                Some(SongState::Loading) => assert!(std::time::Instant::now() < deadline, "still loading"),
+                other => panic!("{other:?}"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(early.is_none_or(|s| Arc::ptr_eq(&s, &song)));
+        assert!(Arc::ptr_eq(&load_song(path).unwrap(), &song), "now everyone gets it");
+        assert!(
+            matches!(load_song_in_background("/nowhere/else.mp3"), Some(SongState::Loading)),
+            "a missing file loads (and fails) in the background too"
+        );
+        assert!(load_song_in_background("").is_none());
+        forget_song(path);
+        assert!(matches!(load_song_in_background(path), Some(SongState::Loading)), "forgotten, so loaded again");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(path).parent().unwrap());
     }
 
     #[test]

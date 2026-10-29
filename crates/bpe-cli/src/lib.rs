@@ -7,7 +7,7 @@
 
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings, resolve};
-use bpe_gfx::{Frame, Readback, Renderer, build_frame, wgpu};
+use bpe_gfx::{Frame, Readback, Renderer, build_frame_at, wgpu};
 use bpe_kit::{Kit, SceneSettings, mix_scene};
 use bpe_runtime::{Log, World};
 use std::collections::BTreeMap;
@@ -314,9 +314,10 @@ fn export_with(
     let mut frame = Frame::default();
     let mut failed = None;
     for index in 0..total {
-        let time = warp.sim_time(index as f64 / fps as f64);
+        let video_time = index as f64 / fps as f64;
+        let time = warp.sim_time(video_time);
         world.advance_to(time, &kit.sims, &mut log);
-        build_frame(scene, &resolved, &world, &log, time, &kit.draws, &mut frame);
+        build_frame_at(scene, &resolved, &world, &log, time, video_time, &kit.draws, &mut frame);
         renderer.render(device, queue, &frame);
         let ready = match readback.push(device, queue, &renderer) {
             Ok(ready) => ready,

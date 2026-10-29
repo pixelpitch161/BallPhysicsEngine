@@ -63,7 +63,10 @@ impl ModuleMix for DrumSoundMix {
                 }
                 _ => continue,
             };
-            let frame = ((cx.video_time)(e.time(rate)) * SAMPLE_RATE as f64).round() as usize;
+            // Beats are on the video's clock already (the grid is the song's), so only hits, which
+            // are moments of the run, go through the warp.
+            let at = if e.kind == EventKind::Beat { e.time(rate) } else { (cx.video_time)(e.time(rate)) };
+            let frame = (at * SAMPLE_RATE as f64).round() as usize;
             if frame >= cx.frames {
                 continue;
             }
@@ -124,6 +127,19 @@ mod tests {
         // Auto beats alternate a kick on the one with hi-hats.
         assert_eq!((auto_beat(0), auto_beat(1), auto_beat(4)), (36, 42, 36));
         assert_eq!((auto_hit(0.0), auto_hit(0.5), auto_hit(1.0)), (42, 38, 36));
+    }
+
+    #[test]
+    fn beat_drums_stay_on_the_beat_while_hits_go_through_the_warp() {
+        let kit = kit();
+        let (_scene, resolved) = drum_scene("kick");
+        let mut log = Log::default();
+        log.push(event(EventKind::Hit, ThingId(2), 0, 240, 500.0));
+        log.push(event(EventKind::Beat, ThingId::ROOT, 0, 720, 0.0));
+        let stretched = |t: f64| t * 2.0;
+        let notes = bpe_mix::notes_with(&mix_settings(&resolved), &resolved, &log, &kit.mixes, None, &stretched);
+        let frames: Vec<usize> = notes.iter().map(|n| n.frame).collect();
+        assert_eq!(frames, [144_000, 96_000], "the beat at 3 s stays there; the hit at 1 s plays at 2 s");
     }
 
     #[test]

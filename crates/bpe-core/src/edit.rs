@@ -1,7 +1,9 @@
 //! Edits to the scene tree and the module library. Each edit either succeeds whole or changes
 //! nothing.
 
-use crate::{Attach, KindId, Module, ModuleId, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId};
+use crate::{
+    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId,
+};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
@@ -154,6 +156,10 @@ impl Scene {
         for t in &removed {
             self.things.remove(t);
         }
+        // Their keys and pulses go with them (a saved file would otherwise keep them forever).
+        let gone = |a: &Address| matches!(a.owner, Owner::Thing(t) if removed.contains(&t));
+        self.tracks.retain(|a, _| !gone(a));
+        self.pulses.retain(|a, _| !gone(a));
         Ok(removed)
     }
 
@@ -271,6 +277,8 @@ impl Scene {
             return Err(EditError::InUse(users));
         }
         self.library.modules.remove(&m);
+        self.tracks.retain(|a, _| a.owner != Owner::Module(m));
+        self.pulses.retain(|a, _| a.owner != Owner::Module(m));
         Ok(())
     }
 }

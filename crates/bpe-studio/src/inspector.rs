@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Inspector {
     /// The depth each card is open at: the kind's settings (`None`) and each slot.
     pub depth: BTreeMap<(ThingId, Option<SlotId>), Depth>,
+    /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
+    /// pauses so a drag doesn't leave a key on every frame.
+    pub keyed_edit: bool,
 }
 
 /// A change the panel asks for, applied once the drawing is done.
@@ -285,6 +288,7 @@ pub fn show(
             Edit::Transform(t) => set_thing(scene, id, |thing| thing.transform = t),
             Edit::Set(address, value) => {
                 if scene.keyed(&address) {
+                    inspector.keyed_edit = true;
                     scene.set_key(reg, &address, time, value).is_ok()
                 } else {
                     scene.set_at(reg, &address, value).is_ok()
@@ -356,14 +360,8 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
     let quarter = def.range.map_or(1.0, |(min, max)| (max - min) / 4.0);
     match (&def.ty, &def.default) {
         (ValueType::Int, _) => Value::Int(quarter.round().max(1.0) as i64),
-        (ValueType::Vec2, Value::Vec2(v)) => {
-            let length = (v[0] * v[0] + v[1] * v[1]).sqrt();
-            if length > 0.0 {
-                Value::Vec2([v[0] / length * length / 4.0, v[1] / length * length / 4.0])
-            } else {
-                Value::Vec2([0.0, 100.0])
-            }
-        }
+        (ValueType::Vec2, Value::Vec2(v)) if v != &[0.0, 0.0] => Value::Vec2([v[0] / 4.0, v[1] / 4.0]),
+        (ValueType::Vec2, _) => Value::Vec2([0.0, 100.0]),
         (ValueType::Color, _) => Value::Color(Color::WHITE),
         _ => Value::Number(quarter),
     }
@@ -536,6 +534,7 @@ mod tests {
         assert_eq!(keys.len(), 2, "{keys:?}");
         assert_eq!(keys[1].time, 3.0);
         assert!(matches!(keys[1].value, Value::Number(r) if r > 100.0), "{:?}", keys[1].value);
+        assert!(s.inspector.keyed_edit, "the studio pauses on this, so the drag keys one moment");
     }
 
     #[test]

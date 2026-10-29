@@ -13,8 +13,8 @@ pub mod text;
 
 pub use frame::{
     BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, GlyphInstance, HitMark, LookInstance,
-    ModuleDraw, ShapeInstance, SoftVertex, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, hit_strength,
-    push_streak, thing_code,
+    ModuleDraw, ShapeInstance, SoftVertex, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at,
+    hit_strength, push_streak, thing_code,
 };
 pub use text::Atlas;
 pub use wgpu;
