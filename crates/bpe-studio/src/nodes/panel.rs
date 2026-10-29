@@ -62,7 +62,7 @@ fn full_params(kind: &dyn ModuleKind, m: &Module) -> Params {
 }
 
 /// Writes the graph's setting blocks back into the module's settings, where they differ.
-fn sync_params(graph: &Graph, m: &mut Module, kind: &dyn ModuleKind) {
+pub fn sync_params(graph: &Graph, m: &mut Module, kind: &dyn ModuleKind) {
     if bind(graph, &full_params(kind, m)) != *graph {
         m.params.apply(&settings_from_graph(graph, kind.settings()));
     }

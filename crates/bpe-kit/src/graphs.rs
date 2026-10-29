@@ -19,7 +19,7 @@ pub fn role_of(slot: SlotId) -> Option<Role> {
 }
 
 /// The name of the setting block's value parameter.
-fn value_param(kind: &str) -> &'static str {
+pub fn value_param(kind: &str) -> &'static str {
     match kind {
         "setting.color" => "color",
         "setting.bool" => "on",

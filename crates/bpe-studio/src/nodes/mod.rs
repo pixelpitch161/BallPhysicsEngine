@@ -1,5 +1,6 @@
 //! The node editor: a canvas of blocks and wires for the Nodes depth of a module.
 
+pub mod cards;
 mod draw;
 pub mod editor;
 mod palette;

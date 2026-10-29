@@ -1,11 +1,14 @@
 //! The inspector: the selected thing's header, its kind's settings and one card per slot.
 
+use crate::nodes::cards;
 use crate::theme;
 use crate::widgets::settings_grid;
 use bpe_core::{
-    Address, Depth, ModuleId, ModuleKind, Owner, Resolved, Scene, SlotId, SlotLink, ThingId, Transform, Value,
+    Address, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Resolved, Scene, SettingDef, SlotId, SlotLink, ThingId,
+    Transform, Value,
 };
 use bpe_kit::Kit;
+use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,11 +49,17 @@ enum Edit {
     Transform(Transform),
     Set(Address, Value),
     Link(SlotId, ModuleId),
-    NewModule { slot: SlotId, kind: &'static str, copy_from: Option<ModuleId> },
+    NewModule {
+        slot: SlotId,
+        kind: &'static str,
+        copy_from: Option<ModuleId>,
+    },
     Inherit(SlotId),
     Off(SlotId),
     AddSlot(SlotId),
     Revert(ModuleId),
+    /// A card edited the module's graph.
+    Graph(ModuleId, ModuleGraph),
 }
 
 /// Draws the inspector for `selected` and applies its edits. True when the scene changed.
@@ -248,32 +257,62 @@ pub fn show(
                     && let Some(m) = scene.library.modules.get(&module)
                     && let Some(mkind) = reg.module(&m.kind)
                 {
-                    if m.graph.as_ref().is_some_and(|g| g.custom) && slot != SlotId::Rules && mkind.template().is_some()
-                    {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
-                                "This module runs its graph instead of these settings. Open Nodes to see it.",
-                            );
-                            if ui
-                                .small_button("Revert to template")
-                                .on_hover_text("Throw the graph edits away and go back to these settings")
-                                .clicked()
-                            {
-                                edits.push(Edit::Revert(module));
-                            }
-                        });
-                    }
                     let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
                     let get = |key: &str| {
                         let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
                         scene.value_at(reg, &a).expect("a module's settings all resolve")
                     };
+                    let custom = m.graph.as_ref().is_some_and(|g| g.custom);
                     ui.add_space(4.0);
-                    for (key, value) in settings_grid(ui, ("slot", id, slot), mkind.settings(), depth, get) {
-                        edits.push(Edit::Set(
-                            Address { owner: Owner::Module(module), slot: None, key: key.into() },
-                            value,
-                        ));
+                    if slot == SlotId::Rules {
+                        // Rules are their graph: sentences on the card, blocks in the panel.
+                        if let Some(mut g) = m.graph.clone().or_else(|| module_graph(mkind, m)) {
+                            let out = cards::rules_card(ui, ("rules", id, slot), &mut g, scene, depth);
+                            if out.changed {
+                                g.custom = true;
+                                edits.push(Edit::Graph(module, g));
+                            }
+                            if out.open_nodes {
+                                inspector.nodes_request = Some((id, slot));
+                            }
+                        }
+                    } else if custom
+                        && let Some(role) = bpe_kit::role_of(slot)
+                        && let Some(mut g) = m.graph.clone()
+                    {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
+                                "This module runs its graph. These are the graph's own settings; open Nodes to see it.",
+                            );
+                            if ui
+                                .small_button("Revert to template")
+                                .on_hover_text("Throw the graph edits away and go back to the module's settings")
+                                .clicked()
+                            {
+                                edits.push(Edit::Revert(module));
+                            }
+                        });
+                        let catalog = bpe_vm::catalog(role);
+                        if cards::graph_settings(ui, ("graph", id, slot), &mut g, catalog, depth, scene) {
+                            edits.push(Edit::Graph(module, g));
+                        }
+                        // Settings the graph doesn't bind, such as the instrument, stay native.
+                        let bound = mkind.template().map(|t| bound_keys(&t)).unwrap_or_default();
+                        let defs: Vec<SettingDef> =
+                            mkind.settings().iter().filter(|d| !bound.contains(d.key)).cloned().collect();
+                        for (key, value) in settings_grid(ui, ("slot", id, slot), &defs, depth, get) {
+                            edits.push(Edit::Set(
+                                Address { owner: Owner::Module(module), slot: None, key: key.into() },
+                                value,
+                            ));
+                        }
+                    } else {
+                        for (key, value) in settings_grid(ui, ("slot", id, slot), mkind.settings(), depth, get) {
+                            edits.push(Edit::Set(
+                                Address { owner: Owner::Module(module), slot: None, key: key.into() },
+                                value,
+                            ));
+                        }
                     }
                 }
             });
@@ -334,6 +373,18 @@ pub fn show(
                 true
             }
             Edit::AddSlot(slot) => scene.add_slot(reg, id, slot).is_ok(),
+            Edit::Graph(module, g) => match scene.library.modules.get_mut(&module) {
+                Some(m) => {
+                    m.graph = Some(g);
+                    if let Some(kind) = reg.module(&m.kind)
+                        && let Some(graph) = m.graph.as_ref().map(|g| g.graph.clone())
+                    {
+                        crate::nodes::panel::sync_params(&graph, m, kind);
+                    }
+                    true
+                }
+                None => false,
+            },
             Edit::Revert(module) => match scene.library.modules.get_mut(&module) {
                 Some(m) => match reg.module(&m.kind) {
                     Some(kind) => {
@@ -382,9 +433,14 @@ fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Resolved, SlotId, SlotLink, Value, resolve};
+    use bpe_core::{ModuleId, Resolved, SlotId, SlotLink, Value};
+    use bpe_kit::graphs::module_graph;
+    use bpe_kit::resolve_scene;
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
 
     struct State {
         inspector: Inspector,
@@ -395,9 +451,12 @@ mod tests {
     }
 
     fn harness(selected: Option<ThingId>) -> Harness<'static, State> {
+        harness_of(bpe_kit::new_scene(&bpe_kit::registry()), selected)
+    }
+
+    fn harness_of(scene: Scene, selected: Option<ThingId>) -> Harness<'static, State> {
         let kit = bpe_kit::kit();
-        let scene = bpe_kit::new_scene(&kit.registry);
-        let resolved = resolve(&scene, &kit.registry);
+        let resolved = resolve_scene(&scene, &kit.registry);
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selected };
         let mut h = Harness::builder()
             .with_size(egui::vec2(420.0, 1600.0))
@@ -408,7 +467,7 @@ mod tests {
             .build_ui_state(
                 |ui, s: &mut State| {
                     if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, s.selected) {
-                        s.resolved = resolve(&s.scene, &s.kit.registry);
+                        s.resolved = resolve_scene(&s.scene, &s.kit.registry);
                     }
                 },
                 state,
@@ -550,5 +609,73 @@ mod tests {
         h.get_by_label("Motion").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots.get(&SlotId::Motion), Some(&SlotLink::Inherit));
+    }
+
+    /// Stores the module's template as its own graph, so it runs through the compiled path.
+    fn make_custom(scene: &mut Scene, module: ModuleId) {
+        let reg = bpe_kit::registry();
+        let m = &scene.library.modules[&module];
+        let mut g = module_graph(reg.module(&m.kind).unwrap(), m).expect("a template");
+        g.custom = true;
+        scene.library.modules.get_mut(&module).unwrap().graph = Some(g);
+    }
+
+    #[test]
+    fn a_rules_card_lists_sentences_and_adds_a_recipe() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        scene.add_slot(&reg, ThingId(2), SlotId::Rules).unwrap();
+        let rules = scene.add_module(&reg, "rules.graph", "Ball rules").unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Rules, rules).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("No rules yet.");
+        h.get_by_label("Add rule").click();
+        h.run();
+        h.get_by_label("Grow on hit").click();
+        h.run();
+        assert!(h.query_by_label("No rules yet.").is_none());
+        h.get_by_label_contains("When hit → Grow");
+        // The recipe's number is right there on the Simple card.
+        let by = h.get_by_role_and_label(Role::Slider, "By (px)");
+        assert_eq!(by.accesskit_node().numeric_value(), Some(2.0));
+        let s = h.state();
+        let g = s.scene.library.modules[&rules].graph.as_ref().expect("the recipe is stored");
+        assert!(g.custom);
+        assert_eq!(g.graph.nodes.len(), 2);
+        assert_eq!(bpe_vm::sentences(&g.graph).len(), 1);
+    }
+
+    #[test]
+    fn a_custom_module_shows_its_setting_blocks_as_sliders() {
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        make_custom(&mut scene, ModuleId(2));
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Edited as nodes");
+        let before = {
+            let s = h.state();
+            bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims)
+        };
+        let rect = slider_rect(&h, "Bounciness");
+        drag_slider(&mut h, rect, 0.95);
+        let s = h.state();
+        let g = s.scene.library.modules[&ModuleId(2)].graph.as_ref().unwrap();
+        let block =
+            g.graph.nodes.iter().find(|n| n.params.get("key") == Some(&bpe_graph::Param::Text("bounciness".into())));
+        let value = block.and_then(|n| n.params.get("value")).and_then(bpe_graph::Param::number).unwrap();
+        assert!(value > 1.0, "the setting block holds the slider's value: {value}");
+        // The module's own setting follows, so the card and the graph agree.
+        let v = s.scene.library.modules[&ModuleId(2)].params.get("bounciness").cloned();
+        assert!(matches!(v, Some(Value::Number(b)) if (b - value as f64).abs() < 1e-5), "{v:?}");
+        assert_ne!(bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims), before, "the physics changed");
+    }
+
+    #[test]
+    fn a_custom_sound_module_keeps_its_instrument_picker() {
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        make_custom(&mut scene, ModuleId(3));
+        let h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Instrument");
+        // Bound settings come from the graph: the volume is a slider, not shown twice.
+        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
     }
 }
