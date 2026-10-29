@@ -209,8 +209,13 @@ fn block(
 /// Blocks every role has: constants, maths, vectors, colours and settings.
 fn values() -> Vec<NodeSpec> {
     vec![
-        block("number", "Number", VALUES, "A fixed number.", &[], &[("value", Number)])
-            .param(number("value", "Value", 0.0, -10000.0, 10000.0)),
+        block("number", "Number", VALUES, "A fixed number.", &[], &[("value", Number)]).param(number(
+            "value",
+            "Value",
+            0.0,
+            -1_000_000.0,
+            1_000_000.0,
+        )),
         block("vector", "Vector", VALUES, "A fixed position, direction or speed.", &[], &[("xy", Vector)])
             .param(vector("xy", "X and Y", [0.0, 0.0])),
         block("color", "Colour", VALUES, "A fixed colour.", &[], &[("colour", Color)]).param(color(
@@ -446,9 +451,9 @@ fn values() -> Vec<NodeSpec> {
         )
         .param(text("key", "Key", ""))
         .param(text("label", "Label", "Setting"))
-        .param(number("value", "Value", 0.0, -10000.0, 10000.0))
-        .param(number("min", "Min", 0.0, -10000.0, 10000.0))
-        .param(number("max", "Max", 1.0, -10000.0, 10000.0)),
+        .param(number("value", "Value", 0.0, -1_000_000.0, 1_000_000.0))
+        .param(number("min", "Min", 0.0, -1_000_000.0, 1_000_000.0))
+        .param(number("max", "Max", 1.0, -1_000_000.0, 1_000_000.0)),
         block(
             "setting.color",
             "Colour setting",
@@ -718,6 +723,18 @@ mod tests {
                 for p in &spec.params {
                     assert!(!p.label.is_empty(), "{}.{} has no label", spec.kind, p.name);
                 }
+            }
+        }
+    }
+
+    /// A setting block must hold a bounce's 20 000 top speed without clamping it.
+    #[test]
+    fn value_blocks_reach_past_a_bounce_top_speed() {
+        for role in [Role::Rules, Role::Bounce, Role::Motion, Role::Sound] {
+            let c = catalog(role);
+            for (kind, name) in [("number", "value"), ("setting", "value"), ("setting", "min"), ("setting", "max")] {
+                let range = c.spec(kind).unwrap().param_spec(name).unwrap().range;
+                assert!(range.0 <= -20000.0 && range.1 >= 20000.0, "{kind}.{name} spans {range:?}");
             }
         }
     }

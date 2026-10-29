@@ -508,11 +508,38 @@ mod tests {
         );
     }
 
+    /// A rule's Set carries a number; the setting keeps its own type.
+    #[test]
+    fn a_rule_can_set_a_bool_setting() {
+        let (scene, resolved, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        let ball = crate::testing::BALLS;
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = bpe_runtime::Log::default();
+        let set = |key: &str, value: f64| bpe_runtime::Action::Set {
+            thing: ball,
+            slot: SlotId::Bounce,
+            key: key.into(),
+            value: Value::Number(value),
+        };
+        let takes_over = |w: &World| w.slot_params(ball, SlotId::Bounce).and_then(|p| p.get("takes_over")).cloned();
+        w.apply(vec![set("takes_over", 1.0)], &kit.sims, &mut log);
+        assert_eq!(takes_over(&w), Some(Value::Bool(true)));
+        w.apply(vec![set("takes_over", 0.0)], &kit.sims, &mut log);
+        assert_eq!(takes_over(&w), Some(Value::Bool(false)));
+    }
+
     #[test]
     fn every_template_matches_its_native_path() {
         use crate::testing::{log_hash_and_samples, with_custom_template};
         let kit = kit();
-        for (name, scene) in crate::scenes::stage2(&kit.registry) {
+        let reg = &kit.registry;
+        // Stage 2's scenes force every template; stage 4's add rules that spawn and tint balls
+        // around whatever modules are not already custom.
+        let scenes = crate::scenes::stage2(reg)
+            .into_iter()
+            .map(|s| (3, s))
+            .chain(crate::scenes::stage4(reg).into_iter().map(|s| (1, s)));
+        for (at_least, (name, scene)) in scenes {
             let native = log_hash_and_samples(&scene, &kit);
             let mut forced = scene.clone();
             let mut count = 0;
@@ -527,7 +554,7 @@ mod tests {
                     count += 1;
                 }
             }
-            assert!(count >= 3, "{name}: only {count} modules have a template");
+            assert!(count >= at_least, "{name}: only {count} modules have a template");
             let forced = log_hash_and_samples(&forced, &kit);
             assert_eq!((forced.0, forced.1), (native.0, native.1), "{name}: the event log changed");
             assert_eq!(forced.2, native.2, "{name}: the soundtrack changed");

@@ -33,10 +33,10 @@ pub struct NodesSwitch {
 /// Why a slot's Nodes switch is off.
 fn no_nodes_yet(slot: SlotId) -> &'static str {
     match slot {
-        SlotId::Look => "Look graphs come with the Visuals stage",
-        SlotId::Trail => "Trail graphs come with the Visuals stage",
-        SlotId::Particles => "Particle graphs come with the Visuals stage",
-        SlotId::Shader => "Shader graphs come with the Visuals stage",
+        SlotId::Look => "Look graphs can't be edited as nodes yet",
+        SlotId::Trail => "Trail graphs can't be edited as nodes yet",
+        SlotId::Particles => "Particle graphs can't be edited as nodes yet",
+        SlotId::Shader => "Shader graphs can't be edited as nodes yet",
         _ => "Pick a module first",
     }
 }
@@ -441,6 +441,13 @@ mod tests {
         Harness,
         kittest::{NodeT, Queryable},
     };
+
+    #[test]
+    fn the_switch_says_why_a_slot_has_no_nodes() {
+        assert_eq!(no_nodes_yet(SlotId::Look), "Look graphs can't be edited as nodes yet");
+        assert_eq!(no_nodes_yet(SlotId::Shader), "Shader graphs can't be edited as nodes yet");
+        assert_eq!(no_nodes_yet(SlotId::Motion), "Pick a module first");
+    }
 
     struct State {
         inspector: Inspector,

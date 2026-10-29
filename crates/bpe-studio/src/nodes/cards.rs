@@ -171,11 +171,13 @@ fn chain_shown(graph: &ModuleGraph, catalog: &dyn Catalog, chain: &[u32], depth:
 
 /// Takes a rule out: its chain, and every block that fed nothing but that chain.
 fn remove_chain(graph: &mut Graph, chain: &[u32]) -> BTreeSet<u32> {
-    let mut doomed: BTreeSet<u32> = chain.iter().copied().collect();
+    // Blocks another rule still reaches stay, however this one got to them.
+    let kept: BTreeSet<u32> = sentences(graph).into_iter().filter(|s| s.first() != chain.first()).flatten().collect();
+    let mut doomed: BTreeSet<u32> = chain.iter().filter(|id| !kept.contains(id)).copied().collect();
     loop {
         let mut grew = false;
         for n in &graph.nodes {
-            if doomed.contains(&n.id) {
+            if doomed.contains(&n.id) || kept.contains(&n.id) {
                 continue;
             }
             let mut others = graph
@@ -295,5 +297,23 @@ mod tests {
         assert!(gone.contains(&when) && gone.contains(&grow) && gone.contains(&only));
         assert!(!gone.contains(&shared), "a block another rule still uses stays");
         assert_eq!(sentences(&g.graph), vec![vec![other_when, other_do]]);
+    }
+
+    #[test]
+    fn removing_a_rule_keeps_a_block_another_rule_reaches() {
+        let c = catalog(Role::Rules);
+        let mut g = rules_graph();
+        let grow = recipes().into_iter().find(|r| r.name == "Grow on hit").unwrap();
+        g.simple.extend((grow.add)(&mut g.graph));
+        let first = sentences(&g.graph)[0].clone();
+        let (when, grow) = (first[0], first[1]);
+        // A second trigger into the same Grow.
+        let other_when = g.graph.add(c.spec("when.start").unwrap(), [0.0, 600.0]);
+        assert!(g.graph.connect(Link { from: (other_when, 0), to: (grow, 0) }, c));
+        assert_eq!(sentences(&g.graph), vec![vec![when, grow], vec![other_when, grow]]);
+        let gone = remove_chain(&mut g.graph, &first);
+        assert!(gone.contains(&when));
+        assert!(!gone.contains(&grow), "the other rule still reaches the Grow");
+        assert_eq!(sentences(&g.graph), vec![vec![other_when, grow]]);
     }
 }

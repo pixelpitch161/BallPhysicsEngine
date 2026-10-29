@@ -181,9 +181,15 @@ impl World {
     /// without that slot, or a setting the module doesn't have, is left alone.
     pub(crate) fn set_slot_param(&mut self, thing: ThingId, slot: SlotId, key: &str, value: Value, sims: &Sims) {
         let Some(s) = self.modules.get_mut(&thing).and_then(|m| m.get_mut(&slot)) else { return };
-        if s.params.get(key).is_none() {
-            return;
-        }
+        // A rule sends a number; the setting keeps its own type.
+        let value = match (s.params.get(key), value) {
+            (None, _) => return,
+            (Some(Value::Bool(_)), Value::Number(x)) => Value::Bool(x != 0.0),
+            (Some(Value::Int(_)), Value::Number(x)) => Value::Int(x.round() as i64),
+            (Some(old), new) if std::mem::discriminant(old) == std::mem::discriminant(&new) => new,
+            // A number can't stand in for a colour, a choice or a target.
+            _ => return,
+        };
         let Some(sim) = sims.module(&s.kind) else { return };
         s.params.set(key, value);
         s.state = sim.prepare_graph(&s.params, s.graph.as_ref());
@@ -390,9 +396,8 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 // runs, so both change the physics.
                 if let Some(g) = scene.library.modules.get(&s.module).and_then(|m| m.graph.as_ref())
                     && (g.custom || slot == SlotId::Rules)
-                    && let Ok(text) = ron::to_string(g)
                 {
-                    h.bytes(text.as_bytes());
+                    h.graph(g);
                 }
             }
         }
@@ -407,6 +412,35 @@ impl Hasher {
         for &b in bytes {
             self.0 ^= b as u64;
             self.0 = self.0.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    /// What a graph does: its blocks by id with their kind, switch and settings, and its
+    /// wires. Where the blocks sit, the notes, the name and what the cards show are the
+    /// editor's, so moving a block does not rebuild the world.
+    fn graph(&mut self, g: &bpe_core::ModuleGraph) {
+        let g = &g.graph;
+        self.bytes(&[g.enabled as u8]);
+        let mut nodes: Vec<_> = g.nodes.iter().collect();
+        nodes.sort_by_key(|n| n.id);
+        for n in nodes {
+            self.bytes(&n.id.to_le_bytes());
+            self.bytes(n.kind.as_bytes());
+            self.bytes(&[n.enabled as u8]);
+            for (key, param) in &n.params {
+                self.bytes(key.as_bytes());
+                if let Ok(text) = ron::to_string(param) {
+                    self.bytes(text.as_bytes());
+                }
+            }
+        }
+        let mut links: Vec<_> = g.links.iter().collect();
+        links.sort();
+        for l in links {
+            self.bytes(&l.from.0.to_le_bytes());
+            self.bytes(&[l.from.1]);
+            self.bytes(&l.to.0.to_le_bytes());
+            self.bytes(&[l.to.1]);
         }
     }
 
@@ -703,6 +737,45 @@ mod tests {
             simple: Default::default(),
         });
         assert_ne!(fingerprint(&scene, &resolved, &sims), tagged, "a rules graph always counts");
+    }
+
+    #[test]
+    fn moving_a_block_keeps_the_fingerprint() {
+        use bpe_graph::{Link, Node, Note, Param};
+        let (mut scene, resolved, sims) = dots_with_rules(1, false);
+        let rules = resolved.things[&DOTS].slots[&SlotId::Rules].module;
+        let node = |id: u32, kind: &str, by: Option<f32>| Node {
+            id,
+            kind: kind.into(),
+            pos: [0.0, 0.0],
+            params: by.map(|b| ("by".to_owned(), Param::Number(b))).into_iter().collect(),
+            enabled: true,
+            exposed: Default::default(),
+        };
+        let mut g = bpe_graph::Graph::new("r");
+        g.nodes.push(node(1, "when.hit", None));
+        g.nodes.push(node(2, "do.grow", Some(2.0)));
+        g.links.push(Link { from: (1, 0), to: (2, 0) });
+        scene.library.modules.get_mut(&rules).unwrap().graph =
+            Some(ModuleGraph { graph: g, template: "rules".into(), custom: true, simple: Default::default() });
+        let before = fingerprint(&scene, &resolved, &sims);
+        // Layout, notes, the name, the block order and what the cards show are editor-only.
+        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
+        mg.graph.node_mut(2).unwrap().pos = [500.0, 100.0];
+        mg.graph.name = "moved".into();
+        mg.graph.notes.push(Note { pos: [0.0; 2], size: [0.0; 2], text: "hi".into(), color: [1.0; 4] });
+        mg.graph.nodes.swap(0, 1);
+        mg.graph.node_mut(2).unwrap().exposed.insert("by".into());
+        mg.simple.insert((2, "by".into()));
+        assert_eq!(fingerprint(&scene, &resolved, &sims), before);
+        // What the blocks do is not.
+        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
+        mg.graph.node_mut(2).unwrap().params.insert("by".into(), Param::Number(3.0));
+        let changed = fingerprint(&scene, &resolved, &sims);
+        assert_ne!(changed, before);
+        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
+        mg.graph.node_mut(2).unwrap().enabled = false;
+        assert_ne!(fingerprint(&scene, &resolved, &sims), changed);
     }
 
     #[test]

@@ -20,7 +20,7 @@ impl ThingSim for SceneSim {
     }
 
     fn affects_physics(&self, key: &str) -> bool {
-        matches!(key, "gravity" | "steps_per_second" | "duration")
+        matches!(key, "gravity" | "steps_per_second" | "duration" | "seed")
     }
 }
 
@@ -37,5 +37,17 @@ mod tests {
         scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("seed", Value::Int(77));
         let resolved = resolve(&scene, &kit.registry);
         assert_eq!(World::build(&scene, &resolved, &kit.sims).seed, 77);
+    }
+
+    /// Random blocks and chance rules read the seed, so a new seed is a new clip.
+    #[test]
+    fn changing_the_seed_rebuilds_the_world() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let resolved = resolve(&scene, &kit.registry);
+        let before = bpe_runtime::fingerprint(&scene, &resolved, &kit.sims);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("seed", Value::Int(77));
+        let resolved = resolve(&scene, &kit.registry);
+        assert_ne!(bpe_runtime::fingerprint(&scene, &resolved, &kit.sims), before);
     }
 }

@@ -175,6 +175,10 @@ struct Cx<'a> {
     firing: Firing,
     counters: &'a RefCell<BTreeMap<u32, f32>>,
     rng: Rng,
+    /// Block outputs already read in this evaluation, so a value several blocks share is
+    /// worked out once however many paths lead to it. Cleared whenever what a block could
+    /// read changes: a new firing, a counter.
+    cache: RefCell<BTreeMap<(usize, u8), Val>>,
 }
 
 /// The state a rules graph keeps while the clip runs.
@@ -227,6 +231,7 @@ impl Vm {
             firing: Firing::default(),
             counters: &counters,
             rng: Rng::Salted(splitmix(host.seed() ^ salt)),
+            cache: RefCell::new(BTreeMap::new()),
         };
         let block = &program.blocks[out];
         Outputs(
@@ -268,6 +273,7 @@ impl Vm {
             firing: Firing::default(),
             counters: &counters,
             rng: Rng::Stream(Cell::new(self.rng)),
+            cache: RefCell::new(BTreeMap::new()),
         };
         let budget = acts.len() + ACTION_BUDGET;
         let mut walk = Walk { acts, budget };
@@ -345,6 +351,7 @@ impl Vm {
 
     /// A When block fires: everything on its `then` pin runs.
     fn fire(&mut self, cx: &Cx, trigger: usize, walk: &mut Walk) {
+        cx.cache.borrow_mut().clear();
         self.last.insert(cx.program.blocks[trigger].id, cx.time);
         self.follow(cx, trigger, 0, walk, 0);
     }
@@ -463,6 +470,7 @@ impl Vm {
                 "counter" => {
                     let add = cx.num(block, 1, 0);
                     *cx.counters.borrow_mut().entry(b.num("id") as u32).or_insert(0.0) += add;
+                    cx.cache.borrow_mut().clear();
                 }
                 _ => {}
             }
@@ -534,7 +542,7 @@ impl Cx<'_> {
             return self.value(*from, *from_pin, depth + 1);
         }
         let ty = b.input_types.get(pin).copied().unwrap_or(PinType::Number);
-        if ty == PinType::Ball && b.kind.starts_with("do.") || b.kind == "if.is" {
+        if ty == PinType::Ball && (b.kind.starts_with("do.") || b.kind == "if.is") {
             // The ball a rule is about, unless another is wired in.
             return Val::Ball(self.firing.ball);
         }
@@ -556,6 +564,13 @@ impl Cx<'_> {
         if depth > MAX_DEPTH {
             return Val::zero(ty);
         }
+        // Random and pick blocks give a new value every time they are read; a counter can
+        // change under the chain that reads it; a When block's pins are the firing's.
+        let remembered = !matches!(b.kind.as_str(), "random" | "ball.pick" | "counter") && !b.kind.starts_with("when.");
+        if remembered && let Some(v) = self.cache.borrow().get(&(block, pin)) {
+            return *v;
+        }
+        let key = (block, pin);
         let pin = pin as usize;
         let v = match b.kind.as_str() {
             "number" => Val::Number(b.num("value")),
@@ -714,14 +729,18 @@ impl Cx<'_> {
             k if k.ends_with(".in") => self.inputs.get(pin).copied().unwrap_or(Val::zero(ty)),
             _ => Val::zero(ty),
         };
-        v.finite()
+        let v = v.finite();
+        if remembered {
+            self.cache.borrow_mut().insert(key, v);
+        }
+        v
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NoHost, Role, catalog};
+    use crate::{Host, NoHost, Role, catalog};
     use bpe_core::ThingId;
     use bpe_graph::{Catalog, Graph, Link, Param};
     use glam::Vec2;
@@ -744,11 +763,14 @@ mod tests {
         assert!(g.connect(Link { from, to }, catalog(Role::Bounce)), "wire {from:?} -> {to:?}");
     }
 
-    fn inputs() -> [Val; 8] {
+    /// The Bounce role's nine input pins: ball, velocity, normal, wall velocity, speed, radius,
+    /// hits, hit, time.
+    fn inputs() -> [Val; 9] {
         [
             Val::Ball(Some(Ball { thing: ThingId(2), item: 0 })),
             Val::Vector(Vec2::new(10.0, -4.0)),
             Val::Vector(Vec2::Y),
+            Val::Vector(Vec2::ZERO),
             Val::Number(5.0),
             Val::Number(24.0),
             Val::Number(0.0),
@@ -773,6 +795,35 @@ mod tests {
         assert_eq!(out.number(1, 24.0), 24.0);
         assert_eq!(out.0[1], None);
         assert!(!out.boolean(2, false));
+    }
+
+    /// Counts how often a graph reads gravity.
+    struct Counting(std::cell::Cell<u32>);
+    impl Host for Counting {
+        fn gravity(&self) -> Vec2 {
+            self.0.set(self.0.get() + 1);
+            Vec2::Y
+        }
+    }
+
+    #[test]
+    fn a_fan_in_chain_is_evaluated_once_per_block() {
+        // Each block adds the previous one to itself: 2^n, reachable through 2^n paths.
+        let p = bounce_graph(|g, _, o| {
+            let c = catalog(Role::Bounce);
+            let mut prev = g.add(c.spec("gravity").unwrap(), [0.0, 0.0]);
+            for _ in 0..12 {
+                let m = g.add(c.spec("vec.math").unwrap(), [0.0, 0.0]);
+                wire(g, (prev, 0), (m, 0));
+                wire(g, (prev, 0), (m, 1));
+                prev = m;
+            }
+            wire(g, (prev, 0), (o, 0));
+        });
+        let host = Counting(std::cell::Cell::new(0));
+        let out = Vm::eval(&p, &host, 0.0, &inputs(), 0);
+        assert_eq!(out.vector(0, Vec2::ZERO), Vec2::new(0.0, 4096.0));
+        assert_eq!(host.0.get(), 1, "gravity was read once, not once per path");
     }
 
     #[test]

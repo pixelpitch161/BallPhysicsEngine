@@ -103,7 +103,18 @@ impl Shown {
     fn load(module: ModuleId, slot: SlotId, m: &Module, kind: &dyn ModuleKind) -> Option<Self> {
         let params = full_params(kind, m);
         let graph = match &m.graph {
-            Some(g) => bind(&g.graph, &params),
+            Some(g) if g.custom || slot == SlotId::Rules => bind(&g.graph, &params),
+            // An unedited copy only remembers where the blocks were: the kind's template is
+            // what runs, so a template that changes in a later version reaches every module.
+            Some(g) => {
+                let mut fresh = module_graph(kind, m)?.graph;
+                for n in &mut fresh.nodes {
+                    if let Some(old) = g.graph.node(n.id) {
+                        n.pos = old.pos;
+                    }
+                }
+                fresh
+            }
             None => module_graph(kind, m)?.graph,
         };
         let (status, node_errors) = check(slot, &graph);
@@ -152,13 +163,20 @@ impl Flashes {
         world: Option<&World>,
         thing: ThingId,
         slot: SlotId,
+        resolved: &Resolved,
         graph: &Graph,
         errors: &BTreeMap<u32, String>,
     ) -> Self {
         let mut out = Flashes { errors: errors.clone(), ..Default::default() };
         let Some(world) = world else { return out };
         out.now = world.time() as f32;
-        let Some((kind, st)) = world.module_state(thing, slot) else { return out };
+        // Rules run on the thing that links them, so a thing that inherits them watches the
+        // owner's.
+        let owner = match slot {
+            SlotId::Rules => resolved.things.get(&thing).and_then(|t| t.slots.get(&slot)).map_or(thing, |s| s.from),
+            _ => thing,
+        };
+        let Some((kind, st)) = world.module_state(owner, slot) else { return out };
         if kind != "rules.graph" {
             return out;
         }
@@ -316,7 +334,7 @@ impl NodePanel {
                         }
                     });
                 });
-                let live = Flashes::gather(world, thing, slot, &shown.graph, &shown.node_errors);
+                let live = Flashes::gather(world, thing, slot, resolved, &shown.graph, &shown.node_errors);
                 let outcome = editor.show(ui, &mut shown.graph, bpe_vm::catalog(role), Some(&live), scene);
                 if outcome.changed || outcome.simple_toggled.is_some() {
                     changed = true;
@@ -509,5 +527,51 @@ mod tests {
         h.run();
         assert_eq!(h.state().panel.open, None);
         assert!(h.state().inspector.nodes_request.is_none());
+    }
+
+    /// Rules linked on the scene run on the scene; a ball that inherits them still sees its
+    /// blocks glow.
+    #[test]
+    fn flashes_follow_the_rules_owner() {
+        let kit = bpe_kit::kit();
+        let mut scene = new_scene();
+        let m = scene.add_module(&kit.registry, "rules.graph", "Grow").unwrap();
+        let mut graph = kit.registry.module("rules.graph").unwrap().template().unwrap();
+        let grow = bpe_kit::recipes().into_iter().find(|r| r.name == "Grow on hit").unwrap();
+        let simple = (grow.add)(&mut graph).into_iter().collect();
+        scene.library.modules.get_mut(&m).unwrap().graph =
+            Some(bpe_core::ModuleGraph { graph: graph.clone(), template: "rules.graph".into(), custom: true, simple });
+        scene.link(&kit.registry, ThingId::ROOT, SlotId::Rules, m).unwrap();
+        let resolved = resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        assert_eq!(resolved.things[&ThingId(2)].slots[&SlotId::Rules].from, ThingId::ROOT);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        world.advance_to(5.0, &kit.sims, &mut bpe_runtime::Log::default());
+        let live = Flashes::gather(Some(&world), ThingId(2), SlotId::Rules, &resolved, &graph, &BTreeMap::new());
+        let when = graph.nodes.iter().find(|n| n.kind == "when.hit").unwrap().id;
+        assert!(live.fired.contains_key(&when), "the ball's hits fired the scene's rule");
+    }
+
+    /// A stored, unedited graph is only a layout: the kind's template is what runs and what
+    /// is shown, so a template that changes in a later version reaches every module.
+    #[test]
+    fn a_viewed_template_is_rebuilt_from_the_kind_and_keeps_its_layout() {
+        let kit = bpe_kit::kit();
+        let scene = new_scene();
+        let m = &scene.library.modules[&DEFAULT_BOUNCE];
+        let kind = kit.registry.module(&m.kind).unwrap();
+        let fresh = module_graph(kind, m).unwrap();
+        let first = fresh.graph.nodes[0].id;
+        let last = fresh.graph.nodes.last().unwrap().id;
+        let mut stale = fresh.clone();
+        stale.graph.node_mut(first).unwrap().pos = [-999.0, 42.0];
+        stale.graph.remove(&std::collections::BTreeSet::from([last]));
+        let mut module = m.clone();
+        module.graph = Some(stale);
+        let shown = Shown::load(DEFAULT_BOUNCE, SlotId::Bounce, &module, kind).unwrap();
+        assert_eq!(shown.graph.nodes.len(), fresh.graph.nodes.len(), "the kind's template wins over a stale copy");
+        assert!(shown.graph.node(last).is_some());
+        assert_eq!(shown.graph.node(first).unwrap().pos, [-999.0, 42.0], "the layout is kept");
+        assert!(shown.status.is_ok());
     }
 }
