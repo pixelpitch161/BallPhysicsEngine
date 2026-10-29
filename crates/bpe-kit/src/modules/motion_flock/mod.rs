@@ -8,7 +8,7 @@ pub struct FlockingKind;
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct Flocking {
     /// The fastest a point may go.
-    #[setting(label = "Top speed", range(20, 2000), unit = "px/s", simple, keyframe, random)]
+    #[setting(label = "Top speed", range(20, 2000), unit = "px/s", simple, keyframe, random(100, 900))]
     pub top_speed: f32,
     /// How strongly the points ride the swirling air.
     #[setting(label = "Flow", range(0, 3), simple, keyframe, random, pulse)]
@@ -26,16 +26,16 @@ pub struct Flocking {
     #[setting(label = "Gravity", range(-5, 5), simple, keyframe, random, pulse)]
     pub gravity_scale: f32,
     /// How quickly the air slows them.
-    #[setting(label = "Air drag", range(0, 5), unit = "per s", keyframe, random)]
+    #[setting(label = "Air drag", range(0, 5), unit = "per s", keyframe, random(0, 1.5))]
     pub drag: f32,
     /// How big the swirls in the air are.
-    #[setting(label = "Swirl size", range(20, 1000), unit = "px", keyframe, random)]
+    #[setting(label = "Swirl size", range(20, 1000), unit = "px", keyframe, random(100, 600))]
     pub swirl_size: f32,
     /// How quickly the swirls change.
     #[setting(label = "Swirl speed", range(0, 1), keyframe, random)]
     pub swirl_speed: f32,
     /// How far away a ball still attracts.
-    #[setting(label = "Reach", range(10, 2000), unit = "px", keyframe, random)]
+    #[setting(label = "Reach", range(10, 2000), unit = "px", keyframe, random(50, 500))]
     pub reach: f32,
     /// How hard the points steer away from the walls.
     #[setting(label = "Avoid walls", range(0, 3), keyframe, random)]

@@ -35,16 +35,16 @@ pub struct ObstacleSettings {
     #[setting(label = "Shape", simple, random)]
     pub shape: ObstacleShape,
     /// Peg, grid peg, polygon or ring: from the middle to the edge.
-    #[setting(label = "Size", range(2, 800), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Size", range(2, 800), unit = "px", simple, keyframe, random(10, 200))]
     pub radius: f32,
     /// Bar only.
-    #[setting(label = "Length", range(10, 4000), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Length", range(10, 4000), unit = "px", simple, keyframe, random(40, 600))]
     pub length: f32,
     /// Bar, polygon and ring: how thick the wall is.
     #[setting(label = "Thickness", range(1, 200), unit = "px", simple, keyframe)]
     pub thickness: f32,
     /// How fast it turns, clockwise.
-    #[setting(label = "Spin", range(-720, 720), unit = "deg/s", simple, keyframe, random)]
+    #[setting(label = "Spin", range(-720, 720), unit = "deg/s", simple, keyframe, random(-240, 240))]
     pub spin: f32,
     /// Stays still, slides along a straight line and back, or goes round a circle.
     #[setting(label = "Moves along", simple)]

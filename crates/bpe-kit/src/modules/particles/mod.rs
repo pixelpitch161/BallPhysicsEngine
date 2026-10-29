@@ -63,13 +63,13 @@ pub struct HitBurst {
     #[setting(label = "Preset", simple, random)]
     pub preset: BurstPreset,
     /// How many particles each hit lets off.
-    #[setting(label = "Count", range(1, 200), simple, keyframe, random)]
+    #[setting(label = "Count", range(1, 200), simple, keyframe, random(5, 80))]
     pub count: i32,
     /// How fast the particles fly.
-    #[setting(label = "Speed", range(0, 2000), unit = "px/s", simple, keyframe, random, pulse)]
+    #[setting(label = "Speed", range(0, 2000), unit = "px/s", simple, keyframe, random(100, 900), pulse)]
     pub speed: f32,
     /// How big each particle is; for rings, how big the ring grows.
-    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random(2, 20))]
     pub size: f32,
     /// How long the particles last.
     #[setting(label = "Life", range(0.05, 3), unit = "s", simple, keyframe, random)]
@@ -84,10 +84,10 @@ pub struct HitBurst {
     #[setting(label = "Spread", range(0, 360), unit = "°", keyframe, random)]
     pub spread: f32,
     /// How fast the particles fall; negative makes them rise.
-    #[setting(label = "Gravity", range(-2000, 2000), unit = "px/s²", keyframe, random)]
+    #[setting(label = "Gravity", range(-2000, 2000), unit = "px/s²", keyframe, random(-800, 800))]
     pub gravity: f32,
     /// How quickly the particles slow down.
-    #[setting(label = "Drag", range(0, 10), keyframe, random)]
+    #[setting(label = "Drag", range(0, 10), keyframe, random(0, 4))]
     pub drag: f32,
     /// Add: the particles glow. Cover: they paint over what is behind them.
     #[setting(label = "Blend", random)]

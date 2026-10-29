@@ -44,7 +44,7 @@ pub struct SoftSettings {
     #[setting(label = "Shape", simple, random)]
     pub shape: SoftShape,
     /// A jelly ball's radius, a rope's length, or a cloth's width.
-    #[setting(label = "Size", range(20, 1500), unit = "px", simple, random)]
+    #[setting(label = "Size", range(20, 1500), unit = "px", simple, random(60, 400))]
     pub size: f32,
     /// How easily it squashes, swings and bends.
     #[setting(label = "Softness", range(0, 1), simple, random)]

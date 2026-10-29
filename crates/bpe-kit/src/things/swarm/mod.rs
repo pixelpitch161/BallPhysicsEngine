@@ -22,7 +22,7 @@ pub enum SwarmStart {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SwarmSettings {
     /// How many points of light.
-    #[setting(label = "Points", range(100, 1000000), simple, random)]
+    #[setting(label = "Points", range(100, 1000000), simple, random(500, 50000))]
     pub count: u32,
     /// Where the points begin.
     #[setting(label = "Start as", simple)]

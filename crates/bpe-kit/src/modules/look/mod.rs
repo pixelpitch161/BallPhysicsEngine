@@ -40,7 +40,7 @@ pub struct ClassicLook {
     #[setting(label = "Colours follow", group = "Colours")]
     pub gradient_by: GradientBy,
     /// The speed in px/s, or number of hits, at which the last colour is reached.
-    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random)]
+    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random(1, 200))]
     pub gradient_full: f32,
     /// Every hit turns the colour this far round the colour wheel.
     #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Colours", keyframe, random)]

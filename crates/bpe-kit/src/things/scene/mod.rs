@@ -28,7 +28,7 @@ pub struct SceneSettings {
     #[setting(label = "Length", range(1, 600), unit = "s", simple)]
     pub duration: f32,
     /// How hard everything is pulled, and which way. Down is positive y.
-    #[setting(label = "Gravity", unit = "px/s²", simple, keyframe, random)]
+    #[setting(label = "Gravity", unit = "px/s²", simple, keyframe)]
     pub gravity: Vec2,
     /// The colour at the top of the background.
     #[setting(label = "Background top", simple, keyframe, random)]

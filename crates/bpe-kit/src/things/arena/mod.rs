@@ -25,13 +25,13 @@ pub struct ArenaSettings {
     #[setting(label = "Shape", simple, random)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
-    #[setting(label = "Radius", range(20, 2000), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Radius", range(20, 2000), unit = "px", simple, keyframe, random(150, 500))]
     pub radius: f32,
     /// How thick the wall is drawn.
     #[setting(label = "Thickness", range(0, 40), unit = "px", simple, keyframe)]
     pub thickness: f32,
     /// How fast the arena turns, clockwise.
-    #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe, random)]
+    #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe, random(-120, 120))]
     pub spin: f32,
     /// Box only.
     #[setting(label = "Width", range(20, 4000), unit = "px")]
@@ -40,7 +40,7 @@ pub struct ArenaSettings {
     #[setting(label = "Height", range(20, 4000), unit = "px")]
     pub height: f32,
     /// Box only: how round the corners are.
-    #[setting(label = "Corner radius", range(0, 1000), unit = "px", keyframe, random)]
+    #[setting(label = "Corner radius", range(0, 1000), unit = "px", keyframe, random(0, 200))]
     pub corner: f32,
     /// Polygon only.
     #[setting(label = "Sides", range(3, 12), random)]
