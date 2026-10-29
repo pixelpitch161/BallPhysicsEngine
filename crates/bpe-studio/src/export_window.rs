@@ -357,7 +357,7 @@ pub fn minutes(seconds: f32) -> String {
 }
 
 /// The user's Videos folder, or their home folder if there is none.
-fn videos_dir() -> PathBuf {
+pub(crate) fn videos_dir() -> PathBuf {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
     match home {
         Some(home) if home.join("Videos").is_dir() => home.join("Videos"),
@@ -374,7 +374,7 @@ pub fn safe_file_name(name: &str) -> String {
     if cleaned.is_empty() { "ball-video".into() } else { cleaned.into() }
 }
 
-fn open_file(path: &Path) {
+pub(crate) fn open_file(path: &Path) {
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(path).spawn();
     #[cfg(target_os = "macos")]
@@ -383,7 +383,7 @@ fn open_file(path: &Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
-fn show_in_folder(path: &Path) {
+pub(crate) fn show_in_folder(path: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

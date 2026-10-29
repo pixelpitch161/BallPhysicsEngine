@@ -22,10 +22,10 @@ pub struct EmitterSettings {
     #[setting(label = "Target", simple)]
     pub target: Target,
     /// How many items a second.
-    #[setting(label = "Rate", range(0, 2000), unit = "per s", simple, keyframe, random)]
+    #[setting(label = "Rate", range(0, 2000), unit = "per s", simple, keyframe, random(5, 200))]
     pub rate: f32,
     /// How fast each item leaves.
-    #[setting(label = "Speed", range(0, 3000), unit = "px/s", simple, keyframe, random)]
+    #[setting(label = "Speed", range(0, 3000), unit = "px/s", simple, keyframe, random(100, 1200))]
     pub speed: f32,
     /// Which way, in degrees clockwise from the right. -90 is straight up.
     #[setting(label = "Direction", range(-360, 360), unit = "°", simple, keyframe, random)]

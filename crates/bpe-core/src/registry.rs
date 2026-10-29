@@ -1,6 +1,6 @@
 //! The plugin registry: every kind of thing and module the editor knows about.
 
-use crate::{SettingDef, SlotId};
+use crate::{Params, SettingDef, SlotId};
 use std::collections::BTreeMap;
 
 /// A kind of thing that can sit in the scene tree, such as balls, a folder or an arena.
@@ -94,6 +94,22 @@ impl Registry {
     /// The module kinds that fill `slot`, in id order.
     pub fn modules_for(&self, slot: SlotId) -> impl Iterator<Item = &dyn ModuleKind> {
         self.modules().filter(move |m| m.slot() == slot)
+    }
+
+    /// The values of `params` that module kind `to` also has, with the same type: what a module
+    /// keeps when it becomes another kind, such as a look's colour and glow. An unknown kind
+    /// keeps nothing.
+    pub fn carry_over(&self, params: &Params, to: &str) -> Params {
+        let Some(kind) = self.module(to) else {
+            return Params::default();
+        };
+        let mut kept = Params::default();
+        for def in kind.settings() {
+            if let Some(value) = params.get(def.key).filter(|v| def.ty.accepts(v)) {
+                kept.set(def.key, value.clone());
+            }
+        }
+        kept
     }
 }
 

@@ -40,7 +40,7 @@ pub struct ClassicLook {
     #[setting(label = "Colours follow", group = "Colours")]
     pub gradient_by: GradientBy,
     /// The speed in px/s, or number of hits, at which the last colour is reached.
-    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random)]
+    #[setting(label = "Colours end at", range(1, 20000), group = "Colours", random(1, 200))]
     pub gradient_full: f32,
     /// Every hit turns the colour this far round the colour wheel.
     #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Colours", keyframe, random)]
@@ -84,5 +84,36 @@ impl ModuleKind for ClassicLookKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         ClassicLook::defs()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::registry;
+    use bpe_core::{Color, Params, Value};
+
+    #[test]
+    fn switching_look_kind_keeps_the_shared_colour_and_glow() {
+        let reg = registry();
+        let colour = Value::Color(Color { r: 12, g: 200, b: 90, a: 255 });
+        let mut classic = Params::default();
+        classic.set("color", colour.clone());
+        classic.set("glow", Value::Number(0.7));
+        classic.set("flash", Value::Number(0.4));
+        let styled = reg.carry_over(&classic, "look.styled");
+        assert_eq!(styled.get("color"), Some(&colour));
+        assert_eq!(styled.get("glow"), Some(&Value::Number(0.7)));
+        assert_eq!(styled.get("flash"), Some(&Value::Number(0.4)));
+
+        let mut star = styled.clone();
+        star.set("shape", Value::Choice("star".into()));
+        let back = reg.carry_over(&star, "look.classic");
+        assert_eq!(back.get("color"), Some(&colour));
+        assert_eq!(back.get("shape"), None, "the classic look has no shapes");
+
+        let mut wrong = Params::default();
+        wrong.set("glow", Value::Text("bright".into()));
+        assert_eq!(reg.carry_over(&wrong, "look.styled").get("glow"), None, "a value of the wrong type stays behind");
+        assert!(reg.carry_over(&classic, "no.such.kind").0.is_empty());
     }
 }

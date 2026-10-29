@@ -21,7 +21,7 @@ pub enum LiquidStart {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LiquidSettings {
     /// How many particles. Above the limit it runs on the graphics card.
-    #[setting(label = "Particles", range(10, 400000), simple, random)]
+    #[setting(label = "Particles", range(10, 400000), simple, random(500, 20000))]
     pub count: u32,
     /// A pool at the bottom of the arena, or a block around the thing.
     #[setting(label = "Start as", simple)]

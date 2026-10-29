@@ -54,6 +54,8 @@ pub struct GridCx<'a> {
     pub overridden: &'a dyn Fn(&str) -> bool,
     pub inherited: &'a dyn Fn(&str) -> Option<Value>,
     pub marks: &'a dyn Fn(&str) -> Option<KeyMark>,
+    /// Whether the setting is locked against the dice.
+    pub locked: &'a dyn Fn(&str) -> bool,
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -67,6 +69,8 @@ pub struct GridOutcome {
     pub toggled_key: Vec<&'static str>,
     /// Pulse choices from the diamond's menu: a source, or `None` to stop pulsing.
     pub pulse: Vec<(&'static str, Option<PulseSource>)>,
+    /// Settings locked (true) or unlocked against the dice from the row's menu.
+    pub locks: Vec<(&'static str, bool)>,
 }
 
 /// `electric_piano` to "Electric piano".
@@ -133,7 +137,13 @@ pub fn settings_grid(
     get: impl Fn(&str) -> Value,
 ) -> Vec<(&'static str, Value)> {
     let choices = TargetChoices::default();
-    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None };
+    let cx = GridCx {
+        choices: &choices,
+        overridden: &|_| false,
+        inherited: &|_| None,
+        marks: &|_| None,
+        locked: &|_| false,
+    };
     settings_grid_marked(ui, id, defs, depth, get, &cx).changes
 }
 
@@ -171,12 +181,14 @@ pub fn settings_grid_marked(
                     let mut value = get(def.key);
                     let overridden = (cx.overridden)(def.key);
                     let inherited = (cx.inherited)(def.key);
-                    let row = setting(ui, def, &mut value, inherited.as_ref(), overridden, cx.choices);
+                    let locked = (cx.locked)(def.key);
+                    let row = setting(ui, def, &mut value, inherited.as_ref(), overridden, locked, cx.choices);
                     match row {
                         RowAction::Nothing => {}
                         RowAction::Changed => out.changes.push((def.key, value)),
                         RowAction::Reset => out.resets.push(def.key),
                         RowAction::Push => out.pushes.push(def.key),
+                        RowAction::Lock(lock) => out.locks.push((def.key, lock)),
                     }
                 }
             }
@@ -195,6 +207,8 @@ pub enum RowAction {
     Reset,
     /// Write this thing's own change into the module.
     Push,
+    /// Lock (true) or unlock the setting against the dice.
+    Lock(bool),
 }
 
 /// The diamond column's cell for a row without a diamond.
@@ -271,14 +285,16 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
 }
 
 /// One grid row for `def`: the label (help on hover; a double-click or Alt+click puts the value
-/// back to `inherited`, or the setting's default), a dot when the setting is `overridden`, and
-/// the widget for its type.
+/// back to `inherited`, or the setting's default), a dot when the setting is `overridden`, a
+/// padlock when it is `locked` against the dice, and the widget for its type. The label's menu
+/// offers the lock on any setting the dice may pick.
 pub fn setting(
     ui: &mut Ui,
     def: &SettingDef,
     value: &mut Value,
     inherited: Option<&Value>,
     overridden: bool,
+    locked: bool,
     choices: &TargetChoices,
 ) -> RowAction {
     let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
@@ -292,19 +308,42 @@ pub fn setting(
                 response.on_hover_text("Changed here: this thing's own value, not the module's.");
             }
             let name = label(ui, def.label, def.help);
-            if overridden {
+            if locked {
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
+                paint_padlock(ui.painter(), rect, theme::MUTED);
+                response.on_hover_text("Locked: the dice leave this setting alone.");
+            }
+            if overridden || def.flags.random {
                 name.context_menu(|ui| {
-                    if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
-                        action = RowAction::Reset;
-                        ui.close();
+                    if overridden {
+                        if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
+                            action = RowAction::Reset;
+                            ui.close();
+                        }
+                        if ui
+                            .button("Push to module")
+                            .on_hover_text("Give every thing using the module this value")
+                            .clicked()
+                        {
+                            action = RowAction::Push;
+                            ui.close();
+                        }
                     }
-                    if ui
-                        .button("Push to module")
-                        .on_hover_text("Give every thing using the module this value")
-                        .clicked()
-                    {
-                        action = RowAction::Push;
-                        ui.close();
+                    if def.flags.random {
+                        if locked {
+                            if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
+                                action = RowAction::Lock(false);
+                                ui.close();
+                            }
+                        } else if ui
+                            .button("Lock when randomizing")
+                            .on_hover_text("Keep this setting as it is when the dice roll")
+                            .clicked()
+                        {
+                            action = RowAction::Lock(true);
+                            ui.close();
+                        }
                     }
                 });
             }
@@ -327,6 +366,20 @@ pub fn setting(
         action = RowAction::Changed;
     }
     action
+}
+
+/// A small padlock: a body with a shackle over it.
+pub fn paint_padlock(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+    let c = rect.center();
+    let body = egui::Rect::from_center_size(Pos2::new(c.x, c.y + 2.0), Vec2::new(8.0, 6.0));
+    painter.rect_filled(body, 1.5, color);
+    let shackle: Vec<Pos2> = (0..=8)
+        .map(|i| {
+            let t = std::f32::consts::PI * (1.0 - i as f32 / 8.0);
+            Pos2::new(c.x + 2.5 * t.cos(), c.y - 1.0 - 3.0 * t.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(shackle, Stroke::new(1.5, color)));
 }
 
 /// The label cell, clickable for the reset shortcut.
@@ -596,7 +649,13 @@ mod tests {
                     })
                 };
                 let choices = TargetChoices::default();
-                let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+                let cx = GridCx {
+                    choices: &choices,
+                    overridden: &|_| false,
+                    inherited: &|_| None,
+                    marks: &marks,
+                    locked: &|_| false,
+                };
                 let got = settings_grid_marked(
                     ui,
                     "g",

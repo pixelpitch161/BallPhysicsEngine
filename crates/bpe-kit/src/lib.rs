@@ -5,8 +5,10 @@ pub mod gizmo;
 pub mod graphs;
 pub mod modules;
 pub mod music;
+pub mod random;
 pub mod rng;
 pub mod scenes;
+pub mod score;
 #[cfg(test)]
 pub mod testing;
 pub mod things;
@@ -296,6 +298,44 @@ mod tests {
     use super::*;
     use bpe_core::{Color, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn dice_ranges_are_sensible() {
+        let reg = registry();
+        let def = |kind: &str, key: &str| {
+            let defs = reg.thing(kind).map(|k| k.settings()).or_else(|| reg.module(kind).map(|k| k.settings()));
+            defs.unwrap_or_else(|| panic!("no kind {kind}")).iter().find(|d| d.key == key).unwrap().clone()
+        };
+        assert_eq!(def("balls", "radius").dice_range(), Some((6.0, 60.0)));
+        assert_eq!(def("balls", "count").dice_range(), Some((3.0, 200.0)));
+        assert_eq!(def("balls", "columns").dice_range(), Some((1.0, 30.0)));
+        assert_eq!(def("balls", "rows").dice_range(), Some((1.0, 30.0)));
+        assert_eq!(def("balls", "spacing").dice_range(), Some((8.0, 60.0)));
+        assert_eq!(def("balls", "ring_radius").dice_range(), Some((60.0, 400.0)));
+        assert_eq!(def("balls", "velocity").dice_range(), Some((100.0, 900.0)));
+        assert_eq!(def("arena", "radius").dice_range(), Some((150.0, 500.0)));
+        assert_eq!(def("obstacle", "radius").dice_range(), Some((10.0, 200.0)));
+        assert_eq!(def("liquid", "count").dice_range(), Some((500.0, 20000.0)));
+        assert_eq!(def("swarm", "count").dice_range(), Some((500.0, 50000.0)));
+        assert_eq!(def("soft", "size").dice_range(), Some((60.0, 400.0)));
+        for key in ["duration", "fps", "width", "height", "steps_per_second", "song", "bpm", "gravity"] {
+            assert!(!def("scene", key).flags.random, "{key} must not roll");
+        }
+        assert!(!def("bounce.basic", "pops_after").flags.random, "popping changes what the scene is");
+        let all = reg.things().flat_map(|k| k.settings()).chain(reg.modules().flat_map(|k| k.settings()));
+        for d in all {
+            if let (Some((lo, hi)), Some((min, max))) = (d.dice, d.range) {
+                assert!(
+                    lo >= min && hi <= max && lo < hi,
+                    "{}: the dice range {lo}..{hi} sits inside {min}..{max}",
+                    d.key
+                );
+            }
+            if d.flags.random && matches!(d.ty, bpe_core::ValueType::Number | bpe_core::ValueType::Int) {
+                assert!(d.dice_range().is_some(), "{}: a rolling number needs a range", d.key);
+            }
+        }
+    }
 
     #[test]
     fn every_kit_plugin_passes_the_contract() {

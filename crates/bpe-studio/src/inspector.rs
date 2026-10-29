@@ -2,6 +2,7 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
+use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
@@ -81,6 +82,10 @@ enum Edit {
     AddSlot(SlotId),
     /// Throw a module's graph edits away and go back to its settings.
     Revert(ModuleId),
+    /// Lock (true) or unlock a setting against the dice.
+    Lock(Address, bool),
+    /// Roll the dice on one card: the kind's own settings (`None`) or one slot.
+    RollCard(Option<SlotId>),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
 }
@@ -191,6 +196,10 @@ pub fn show(
                 ui.label(RichText::new(format!("{} settings", kind.name())).strong());
                 ui.add_space(8.0);
                 depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple), None);
+                ui.add_space(8.0);
+                if dice_button(ui, "Randomize these settings").clicked() {
+                    edits.push(Edit::RollCard(None));
+                }
             });
             let depth = inspector.depth.get(&(id, None)).copied().unwrap_or(Depth::Simple);
             let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
@@ -202,11 +211,19 @@ pub fn show(
                 let physics = sim.is_some_and(|s| s.affects_physics(key));
                 mark_for(scene, def, &own(key), time, physics)
             };
-            let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+            let locked = |key: &str| scene.is_locked(&own(key));
+            let cx = GridCx {
+                choices: &choices,
+                overridden: &|_| false,
+                inherited: &|_| None,
+                marks: &marks,
+                locked: &locked,
+            };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), depth, get, &cx);
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
+            edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(own(key), lock)));
         });
 
         // ---------- one card per slot ----------
@@ -252,14 +269,12 @@ pub fn show(
                         }
                         ui.separator();
                         // One kind: a plain button. Several: a submenu naming each kind. A new
-                        // module copies the shown one's settings when it is of the same kind.
+                        // module copies the shown one's settings, all of them when it is of the
+                        // same kind, else the ones both kinds have (a look's colour and glow).
                         let kinds: Vec<&dyn ModuleKind> = reg.modules_for(slot).collect();
-                        let shown_kind =
-                            shown_module.and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.as_str());
-                        let copy_for = |kind: &str| shown_module.filter(|_| shown_kind == Some(kind));
                         if let [only] = kinds[..] {
                             if ui.button(format!("New {} module…", slot.name())).clicked() {
-                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: copy_for(only.id()) });
+                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
                                 ui.close();
                             }
                         } else if !kinds.is_empty() {
@@ -267,11 +282,7 @@ pub fn show(
                                 ui.set_min_width(180.0);
                                 for kind in &kinds {
                                     if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
-                                        edits.push(Edit::NewModule {
-                                            slot,
-                                            kind: kind.id(),
-                                            copy_from: copy_for(kind.id()),
-                                        });
+                                        edits.push(Edit::NewModule { slot, kind: kind.id(), copy_from: shown_module });
                                         ui.close();
                                     }
                                 }
@@ -331,6 +342,14 @@ pub fn show(
                     };
                     if depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple), Some(nodes)) {
                         inspector.nodes_request = Some((id, slot));
+                    }
+                    let editable =
+                        matches!(write_target(scene, resolved, id, slot), Some(Write::Module(_) | Write::Override(..)));
+                    if editable && slot != SlotId::Rules {
+                        ui.add_space(8.0);
+                        if dice_button(ui, "Randomize these settings").clicked() {
+                            edits.push(Edit::RollCard(Some(slot)));
+                        }
                     }
                 });
                 let problems: Vec<String> = resolved
@@ -421,12 +440,19 @@ pub fn show(
                             scene.value_at_time(reg, &of_module(key), time).expect("a module's settings all resolve")
                         };
                         let marks = |key: &str| mark(&of_module(key));
-                        let cx =
-                            GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+                        let locked = |key: &str| scene.is_locked(&of_module(key));
+                        let cx = GridCx {
+                            choices: &choices,
+                            overridden: &|_| false,
+                            inherited: &|_| None,
+                            marks: &marks,
+                            locked: &locked,
+                        };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
+                        edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(of_module(key), lock)));
                     }
                     Write::Override(..) => {
                         let get = |key: &str| {
@@ -437,14 +463,36 @@ pub fn show(
                         let overridden = |key: &str| overrides.is_some_and(|o| o.get(key).is_some());
                         let inherited = |key: &str| scene.value_at(reg, &of_module(key));
                         let marks = |key: &str| mark(&of_thing(key));
-                        let cx =
-                            GridCx { choices: &choices, overridden: &overridden, inherited: &inherited, marks: &marks };
+                        // A row shows the module's value until this thing changes it, so a lock
+                        // goes on what the row shows: the module's setting, else this change.
+                        let locked = |key: &str| {
+                            scene.is_locked(&of_thing(key)) || (!overridden(key) && scene.is_locked(&of_module(key)))
+                        };
+                        let cx = GridCx {
+                            choices: &choices,
+                            overridden: &overridden,
+                            inherited: &inherited,
+                            marks: &marks,
+                            locked: &locked,
+                        };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_thing(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_thing(key), source)));
+                        for (key, lock) in out.locks {
+                            match (lock, overridden(key)) {
+                                (true, true) => edits.push(Edit::Lock(of_thing(key), true)),
+                                (true, false) => edits.push(Edit::Lock(of_module(key), true)),
+                                (false, overridden) => {
+                                    edits.push(Edit::Lock(of_thing(key), false));
+                                    if !overridden {
+                                        edits.push(Edit::Lock(of_module(key), false));
+                                    }
+                                }
+                            }
+                        }
                     }
                     Write::Inherited { module, .. } => {
                         if change_here(ui).clicked() {
@@ -550,11 +598,11 @@ pub fn show(
                 let name = format!("{} {}", thing.name, slot.name());
                 match scene.add_module(reg, kind, &name) {
                     Ok(module) => {
-                        // The current module's settings carry over when the new one is the same kind.
+                        // The current module's settings carry over: all of them to the same kind,
+                        // the ones both kinds have to another.
                         if let Some(params) = copy_from
                             .and_then(|c| scene.library.modules.get(&c))
-                            .filter(|m| m.kind == kind)
-                            .map(|m| m.params.clone())
+                            .map(|m| if m.kind == kind { m.params.clone() } else { reg.carry_over(&m.params, kind) })
                             && let Some(m) = scene.library.modules.get_mut(&module)
                         {
                             m.params = params;
@@ -608,6 +656,12 @@ pub fn show(
                 },
                 None => false,
             },
+            Edit::Lock(address, lock) => scene.set_locked(address, lock),
+            Edit::RollCard(slot) => {
+                use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
+                let scope = Scope::Card { thing: id, slot };
+                !roll(scene, reg, &scope, Roll { seed: fresh_seed(), amount: 1.0 }).changed.is_empty()
+            }
         };
         changed |= ok;
     }
@@ -922,6 +976,52 @@ mod tests {
     }
 
     #[test]
+    fn a_setting_can_be_locked_from_its_menu_and_shows_a_padlock() {
+        let mut h = harness(Some(ThingId(2)));
+        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
+        assert!(h.query_by_label("Locked when randomizing").is_none());
+        h.get_by_role_and_label(Role::Label, "Size").click_secondary();
+        h.run();
+        h.get_by_label("Lock when randomizing").click();
+        h.run();
+        assert!(h.state().scene.is_locked(&size));
+        assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
+        h.get_by_role_and_label(Role::Label, "Size").click_secondary();
+        h.run();
+        assert!(h.query_by_label("Lock when randomizing").is_none());
+        h.get_by_label("Unlock").click();
+        h.run();
+        assert!(!h.state().scene.is_locked(&size));
+        assert!(h.query_by_label("Locked when randomizing").is_none());
+        // A module card's row locks the module's setting, since the ball is its only user.
+        h.get_by_role_and_label(Role::Label, "Glow").click_secondary();
+        h.run();
+        h.get_by_label("Lock when randomizing").click();
+        h.run();
+        let (module, _) = ball_look(h.state());
+        let glow = Address { owner: Owner::Module(module), slot: None, key: "glow".into() };
+        assert!(h.state().scene.is_locked(&glow));
+    }
+
+    #[test]
+    fn the_card_die_rolls_only_that_card() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        let look_before = h.state().scene.library.modules[&module].params.clone();
+        assert_eq!(h.state().scene.things[&ThingId(2)].params.get("radius"), None, "the size starts at its default");
+        // The ball has a die on its own settings and on its look; its inherited cards have none.
+        assert_eq!(h.get_all_by_label("Randomize these settings").count(), 2);
+        h.get_all_by_label("Randomize these settings").next().expect("the kind's own die").click();
+        h.run();
+        let s = h.state();
+        assert!(s.scene.things[&ThingId(2)].params.get("radius").is_some(), "the size rolled");
+        assert_eq!(s.scene.library.modules[&module].params, look_before, "the look card was not rolled");
+        h.get_all_by_label("Randomize these settings").nth(1).expect("the look card's die").click();
+        h.run();
+        assert_ne!(h.state().scene.library.modules[&module].params, look_before, "the look module rolled");
+    }
+
+    #[test]
     fn more_shows_more_rows_than_simple() {
         let mut h = harness(Some(ThingId(2)));
         let simple = h.get_all_by_role(Role::Slider).count();
@@ -1046,8 +1146,9 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
         assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
         assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
-        // The ball's Look has two kinds: the submenu names them, and a different kind starts
-        // from its own defaults rather than copying the classic look's settings.
+        // The ball's Look has two kinds: the submenu names them, and a different kind keeps only
+        // the settings both kinds share, such as the colour.
+        let classic = s.scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().params.clone();
         h.get_by_label("Ball look").click();
         h.run();
         h.get_by_label("New Look module").click();
@@ -1058,7 +1159,8 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
         let m = &s.scene.library.modules[module];
         assert_eq!(m.kind, "look.styled");
-        assert!(m.params.get("color").is_none(), "{:?}", m.params);
+        assert_eq!(m.params.get("color"), classic.get("color"), "{:?}", m.params);
+        assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.styled"));
     }
 
     #[test]
@@ -1408,5 +1510,89 @@ mod tests {
         h.get_by_label("Instrument");
         // Bound settings come from the graph: the volume is a slider, not shown twice.
         assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
+    }
+
+    #[test]
+    fn target_settings_offer_the_scene_things_and_tags() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        scene.things.get_mut(&ThingId(2)).unwrap().tags.insert("bouncers".into());
+        let emitter = scene.add_thing(&reg, "emitter", ThingId::ROOT).unwrap();
+        let mut h = harness_of(scene, Some(emitter));
+        h.get_by_role_and_label(Role::Button, "Target").click();
+        h.run();
+        h.get_by_label("Thing").hover();
+        h.run();
+        assert!(h.query_by_label("Ball").is_some(), "the ball is offered by name");
+        h.get_by_label("Tag").hover();
+        h.run();
+        h.get_by_label("bouncers").click();
+        h.run();
+        let target = h.state().scene.things[&emitter].params.get("target").cloned();
+        assert_eq!(target, Some(Value::Target(bpe_core::Target::Tag("bouncers".into()))));
+    }
+
+    #[test]
+    fn a_new_look_of_another_kind_keeps_the_colour_and_glow() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
+            panic!("the ball's look is linked");
+        };
+        let colour = Value::Color(bpe_core::Color { r: 12, g: 200, b: 90, a: 255 });
+        let set = |scene: &mut Scene, key: &str, v: Value| {
+            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
+            scene.set_at(&reg, &a, v).unwrap();
+        };
+        set(&mut scene, "color", colour.clone());
+        set(&mut scene, "glow", Value::Number(0.7));
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("New Look module").hover();
+        h.run();
+        h.get_by_label("Styled").click();
+        h.run();
+        let (new, _) = ball_look(h.state());
+        assert_ne!(new, module);
+        let styled = &h.state().scene.library.modules[&new];
+        assert_eq!(styled.kind, "look.styled");
+        assert_eq!(styled.params.get("color"), Some(&colour), "the colour comes along");
+        assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
+    }
+
+    #[test]
+    fn a_padlock_on_a_shared_card_holds_when_the_dice_roll() {
+        use bpe_kit::random::{Roll, Scope, roll};
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
+            panic!("the ball's look is linked");
+        };
+        // A second ball shares the look, so the first ball's look card edits its own changes.
+        let other = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
+        scene.link(&reg, other, SlotId::Look, module).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.run();
+        h.get_by_label("Lock when randomizing").click();
+        h.run();
+        assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
+        let colour = Address { owner: Owner::Module(module), slot: None, key: "color".into() };
+        let before = h.state().scene.value_at(&reg, &colour);
+        // Neither a whole-scene roll nor this card's die moves the colour this ball shows.
+        for (seed, scope) in [(7, Scope::Scene), (8, Scope::Card { thing: ThingId(2), slot: Some(SlotId::Look) })] {
+            let mut scene = h.state().scene.clone();
+            roll(&mut scene, &reg, &scope, Roll { seed, amount: 1.0 });
+            let shown = Address { owner: Owner::Thing(ThingId(2)), slot: Some(SlotId::Look), key: "color".into() };
+            assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
+        }
+        // Unlocking from the same row lets it roll again.
+        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.run();
+        h.get_by_label("Unlock").click();
+        h.run();
+        assert!(h.query_by_label("Locked when randomizing").is_none());
+        assert!(h.state().scene.locks.is_empty(), "{:?}", h.state().scene.locks);
     }
 }

@@ -31,7 +31,7 @@ pub struct BasicBounce {
     #[setting(label = "Takes over")]
     pub takes_over: bool,
     /// The ball disappears after this many hits. 0 never pops it.
-    #[setting(label = "Pops after", range(0, 1000), unit = "hits", random)]
+    #[setting(label = "Pops after", range(0, 1000), unit = "hits")]
     pub pops_after: u32,
     /// Only balls on these things are bumped into; both sides have to agree.
     #[setting(label = "Which balls", group = "Other balls")]

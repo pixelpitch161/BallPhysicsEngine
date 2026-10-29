@@ -28,10 +28,21 @@ struct FieldAttrs {
     unit: Option<LitStr>,
     group: Option<LitStr>,
     range: Option<(Expr, Expr)>,
+    dice: Option<(Expr, Expr)>,
     simple: bool,
     keyframe: bool,
     random: bool,
     pulse: bool,
+}
+
+/// The `(min, max)` after an option such as `range`.
+fn pair(meta: &syn::meta::ParseNestedMeta) -> syn::Result<(Expr, Expr)> {
+    let content;
+    syn::parenthesized!(content in meta.input);
+    let min: Expr = content.parse()?;
+    content.parse::<syn::Token![,]>()?;
+    let max: Expr = content.parse()?;
+    Ok((min, max))
 }
 
 fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
@@ -46,18 +57,17 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
             } else if p.is_ident("group") {
                 a.group = Some(meta.value()?.parse()?);
             } else if p.is_ident("range") {
-                let content;
-                syn::parenthesized!(content in meta.input);
-                let min: Expr = content.parse()?;
-                content.parse::<syn::Token![,]>()?;
-                let max: Expr = content.parse()?;
-                a.range = Some((min, max));
+                a.range = Some(pair(&meta)?);
             } else if p.is_ident("simple") {
                 a.simple = true;
             } else if p.is_ident("keyframe") {
                 a.keyframe = true;
             } else if p.is_ident("random") {
+                // `random` on its own rolls over the whole range; `random(min, max)` narrows it.
                 a.random = true;
+                if meta.input.peek(syn::token::Paren) {
+                    a.dice = Some(pair(&meta)?);
+                }
             } else if p.is_ident("pulse") {
                 a.pulse = true;
             } else {
@@ -104,10 +114,11 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         let unit = a.unit.map(|s| s.value()).unwrap_or_default();
         let group = a.group.map(|s| s.value()).unwrap_or_default();
         let help = help(field);
-        let range = match a.range {
+        let span = |r: Option<(Expr, Expr)>| match r {
             Some((min, max)) => quote!(::std::option::Option::Some(((#min) as f64, (#max) as f64))),
             None => quote!(::std::option::Option::None),
         };
+        let (range, dice) = (span(a.range), span(a.dice));
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
         let (keyframe, random, pulse) = (a.keyframe, a.random, a.pulse);
         defs.push(quote! {
@@ -118,6 +129,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 ty: <#ty as ::bpe_core::SettingValue>::value_type(),
                 default: ::bpe_core::SettingValue::to_value(&d.#ident),
                 range: #range,
+                dice: #dice,
                 unit: #unit,
                 group: #group,
                 depth: #depth,

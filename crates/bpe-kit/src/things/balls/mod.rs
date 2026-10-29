@@ -22,25 +22,25 @@ pub struct BallsSettings {
     #[setting(label = "Arrangement", simple, random)]
     pub arrangement: Arrangement,
     /// How big each ball is.
-    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random(6, 60))]
     pub radius: f32,
     /// How fast, and which way, the balls start moving.
-    #[setting(label = "Launch speed", unit = "px/s", simple, random)]
+    #[setting(label = "Launch speed", unit = "px/s", simple, random(100, 900))]
     pub velocity: Vec2,
     /// Block only.
-    #[setting(label = "Columns", range(1, 200), simple)]
+    #[setting(label = "Columns", range(1, 200), simple, random(1, 30))]
     pub columns: u32,
     /// Block only.
-    #[setting(label = "Rows", range(1, 200), simple)]
+    #[setting(label = "Rows", range(1, 200), simple, random(1, 30))]
     pub rows: u32,
     /// Block only: from one ball's middle to the next.
-    #[setting(label = "Spacing", range(1, 400), unit = "px", simple)]
+    #[setting(label = "Spacing", range(1, 400), unit = "px", simple, random(8, 60))]
     pub spacing: f32,
     /// Ring only.
-    #[setting(label = "Count", range(1, 2000))]
+    #[setting(label = "Count", range(1, 2000), random(3, 200))]
     pub count: u32,
     /// Ring only.
-    #[setting(label = "Ring radius", range(1, 2000), unit = "px")]
+    #[setting(label = "Ring radius", range(1, 2000), unit = "px", random(60, 400))]
     pub ring_radius: f32,
 }
 

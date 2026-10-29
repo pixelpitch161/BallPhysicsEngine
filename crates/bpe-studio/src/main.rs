@@ -5,16 +5,22 @@
 
 mod app;
 mod audio_out;
+mod batch_window;
+mod dice;
+mod explorer;
 mod export_window;
 mod history;
 mod inspector;
 mod library;
 mod nodes;
+mod presets;
 mod preview;
 mod selection;
 mod settings;
 mod sound_job;
+mod starters;
 mod theme;
+mod thumbs;
 mod timeline;
 mod transport;
 mod tree;

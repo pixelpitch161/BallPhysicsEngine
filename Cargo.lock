@@ -260,6 +260,8 @@ dependencies = [
  "bpe-kit",
  "bpe-mix",
  "bpe-runtime",
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -327,6 +329,8 @@ dependencies = [
  "glam",
  "hound",
  "png",
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -432,6 +436,7 @@ dependencies = [
  "egui_kittest",
  "glam",
  "rfd",
+ "ron",
 ]
 
 [[package]]

@@ -45,10 +45,10 @@ pub struct FieldSettings {
     #[setting(label = "Kind", simple, random)]
     pub kind: FieldKindChoice,
     /// How hard it pushes, as an acceleration.
-    #[setting(label = "Strength", range(0, 5000), unit = "px/s²", simple, keyframe, random, pulse)]
+    #[setting(label = "Strength", range(0, 5000), unit = "px/s²", simple, keyframe, random(200, 2500), pulse)]
     pub strength: f32,
     /// How far from its middle a round field reaches.
-    #[setting(label = "Radius", range(10, 3000), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Radius", range(10, 3000), unit = "px", simple, keyframe, random(100, 800))]
     pub radius: f32,
     /// Round, a box, or the whole scene.
     #[setting(label = "Shape", simple)]

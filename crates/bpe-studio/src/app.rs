@@ -1,6 +1,9 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::audio_out::AudioOut;
+use crate::batch_window::{self, BatchWindow};
+use crate::dice::RandomizeWindow;
+use crate::explorer::{self, Explorer};
 use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
@@ -9,10 +12,12 @@ use crate::nodes::NodePanel;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::sound_job::SoundJob;
+use crate::starters::{self, Choice, StartWindow};
 use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{inspector, library, preview, settings, theme, timeline, tree};
+use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
+use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
 use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
@@ -30,6 +35,10 @@ pub enum Pending {
     Close,
     Open,
     New,
+    /// A starter scene from the Start window.
+    Starter(Box<Scene>),
+    /// A recent file from the Start window.
+    OpenPath(PathBuf),
 }
 
 /// What the panels remember between frames.
@@ -43,6 +52,10 @@ pub struct Panels {
     pub sound: SoundJob,
     pub timeline: Timeline,
     pub library: LibraryWindow,
+    pub randomize: RandomizeWindow,
+    pub explorer: Explorer,
+    pub batch: BatchWindow,
+    pub start: StartWindow,
     /// The node panel under the preview.
     pub nodes: NodePanel,
 }
@@ -55,6 +68,10 @@ enum ToolbarClick {
     Undo,
     Redo,
     Export,
+    Randomize,
+    Dice,
+    Explore,
+    Batch,
 }
 
 pub struct Studio {
@@ -96,7 +113,7 @@ pub struct Studio {
     /// The song setting as last seen, so a re-picked file that failed before is tried again.
     last_song: String,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
-    recorded: bool,
+    pub recorded: bool,
     closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
@@ -110,8 +127,16 @@ impl Studio {
             Ok(audio) => studio.audio = Some(audio),
             Err(error) => studio.audio_error = Some(format!("No sound: {error:#}")),
         }
-        if let Some(path) = scene_path.or_else(settings::last_scene) {
-            studio.open_path(&path);
+        studio.panels.explorer.weights = settings::load_weights();
+        studio.panels.explorer.persist = true;
+        match scene_path {
+            Some(path) => _ = studio.open_path(&path),
+            None => {
+                if let Some(path) = settings::last_scene() {
+                    studio.open_path(&path);
+                }
+                studio.show_start();
+            }
         }
         studio
     }
@@ -259,6 +284,22 @@ impl Studio {
         self.status = "Started a new scene.".into();
     }
 
+    /// Rolls the dice on `scope` from the scene as it is: one undo step back to `before` (the
+    /// scene as the user last saw it, which may differ from what the roll starts from), and a
+    /// word in the status line. Returns how many settings changed.
+    pub fn roll_recording(&mut self, before: Scene, scope: Scope, seed: u32, amount: f32) -> usize {
+        let rolled = roll(&mut self.scene, &self.kit.registry, &scope, Roll { seed, amount });
+        let changed = rolled.changed.len();
+        self.after_separate_edit(before);
+        self.recorded = true;
+        self.status = match changed {
+            0 => "The dice found nothing to change (everything locked, keyed or never random).".to_owned(),
+            1 => format!("Rolled 1 setting (seed {seed})."),
+            n => format!("Rolled {n} settings (seed {seed})."),
+        };
+        changed
+    }
+
     pub fn undo(&mut self) -> bool {
         if !self.history.undo(&mut self.scene) {
             return false;
@@ -385,7 +426,29 @@ impl Studio {
             }
             Pending::Open => self.open(),
             Pending::New => self.new_scene(),
+            Pending::Starter(scene) => {
+                let name = scene.name.clone();
+                self.replace_scene(*scene, None);
+                self.status = format!("Started from {name}. Save it to keep it.");
+            }
+            Pending::OpenPath(path) => _ = self.open_path(&path),
         }
+    }
+
+    /// Does what was chosen in the Start window, asking to save changes first.
+    pub fn choose_start(&mut self, choice: Choice, ctx: &egui::Context) {
+        match choice {
+            Choice::Nothing => {}
+            Choice::Blank => self.guard(Pending::New, ctx),
+            Choice::Scene(scene) => self.guard(Pending::Starter(scene), ctx),
+            Choice::Open => self.guard(Pending::Open, ctx),
+            Choice::Recent(path) => self.guard(Pending::OpenPath(path), ctx),
+        }
+    }
+
+    /// Opens the Start window with the recent files.
+    pub fn show_start(&mut self) {
+        self.panels.start.open_with(settings::recent_scenes());
     }
 
     pub fn open(&mut self) {
@@ -470,7 +533,7 @@ impl Studio {
             self.guard(Pending::Open, ctx);
         }
         if pressed(Modifiers::COMMAND, Key::N) {
-            self.guard(Pending::New, ctx);
+            self.show_start();
         }
         if typing {
             return;
@@ -498,7 +561,7 @@ impl Studio {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("New").on_hover_text("Start a new scene (Ctrl+N)").clicked() {
+            if ui.button("New").on_hover_text("Start a new scene, blank or from a starter (Ctrl+N)").clicked() {
                 self.clicked = Some(ToolbarClick::New);
             }
             if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
@@ -518,6 +581,23 @@ impl Studio {
             let redo = egui::Button::new("Redo");
             if ui.add_enabled(self.history.can_redo(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
                 self.clicked = Some(ToolbarClick::Redo);
+            }
+            ui.separator();
+            if dice::dice_button(ui, "Roll the dice").on_hover_text("Roll the dice on the whole scene").clicked() {
+                self.clicked = Some(ToolbarClick::Dice);
+            }
+            if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
+                self.clicked = Some(ToolbarClick::Randomize);
+            }
+            if ui
+                .button("Explore…")
+                .on_hover_text("See nine variations of this scene side by side and pick one")
+                .clicked()
+            {
+                self.clicked = Some(ToolbarClick::Explore);
+            }
+            if ui.button("Batch…").on_hover_text("Render many seeds of this scene and keep the best").clicked() {
+                self.clicked = Some(ToolbarClick::Batch);
             }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
@@ -612,6 +692,7 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
+        self.panels.batch.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -726,15 +807,35 @@ impl eframe::App for Studio {
         let base_dir = self.base_dir();
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
+        dice::show(&ctx, self);
+        if let explorer::Outcome::Batch { base, amount } = explorer::show(&ctx, self, frame.wgpu_render_state()) {
+            self.panels.explorer.close();
+            self.panels.batch.open_with(&base, amount);
+        }
+        let weights = self.panels.explorer.weights;
+        batch_window::show(&ctx, &mut self.panels.batch, &self.kit, weights);
+        let kit = self.kit.clone();
+        let choice = starters::show(&ctx, &mut self.panels.start, &kit, frame.wgpu_render_state());
+        self.choose_start(choice, &ctx);
 
         match self.clicked.take() {
-            Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
+            Some(ToolbarClick::New) => self.show_start(),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
             Some(ToolbarClick::Save) => _ = self.save(false),
             Some(ToolbarClick::SaveAs) => _ = self.save(true),
             Some(ToolbarClick::Undo) => _ = self.undo(),
             Some(ToolbarClick::Redo) => _ = self.redo(),
             Some(ToolbarClick::Export) => self.panels.export.open = true,
+            Some(ToolbarClick::Randomize) => self.panels.randomize.open = true,
+            Some(ToolbarClick::Dice) => {
+                let amount = self.panels.randomize.amount;
+                dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
+            }
+            Some(ToolbarClick::Explore) => self.panels.explorer.open_from(&self.scene, &self.kit),
+            Some(ToolbarClick::Batch) => {
+                let amount = self.panels.batch.spec.amount;
+                self.panels.batch.open_with(&self.scene, amount);
+            }
             None => {}
         }
         self.confirm_dialog(&ctx);

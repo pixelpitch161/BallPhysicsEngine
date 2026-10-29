@@ -67,7 +67,7 @@ pub struct TextSettings {
     #[setting(label = "Font", simple, random)]
     pub font: Font,
     /// The height of a capital letter.
-    #[setting(label = "Size", range(8, 600), unit = "px", simple, keyframe, random, pulse)]
+    #[setting(label = "Size", range(8, 600), unit = "px", simple, keyframe, random(24, 200), pulse)]
     pub size: f32,
     /// When it first shows.
     #[setting(label = "Shows from", range(0, 600), unit = "s", simple)]

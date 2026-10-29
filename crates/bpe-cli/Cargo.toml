@@ -16,3 +16,5 @@ bpe-gfx.workspace = true
 bpe-mix.workspace = true
 bpe-kit.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+ron.workspace = true
