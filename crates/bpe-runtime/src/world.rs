@@ -10,7 +10,7 @@ use bpe_core::{Attach, ModuleGraph, Params, Resolved, Scene, SlotId, Target, Thi
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
-use crate::plugins::{Limits, RuleCx, Sims, ThingState};
+use crate::plugins::{Limits, RuleCx, SimCx, Sims, ThingState};
 use crate::{Action, Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
@@ -276,7 +276,7 @@ impl World {
     }
 
     fn substep(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, steps_per_second, gravity, bodies, walls, modules, .. } = self;
+        let World { step, steps_per_second, gravity, bodies, walls, modules, seed, .. } = self;
         let step = *step;
         let gravity = *gravity;
         let time = step as f32 / *steps_per_second as f32;
@@ -286,7 +286,7 @@ impl World {
             if let Some(s) = modules.get(id).and_then(|m| m.get(&SlotId::Motion))
                 && let Some(sim) = sims.module(&s.kind)
             {
-                sim.forces_at(s.state.as_ref(), bodies, gravity, dt, time);
+                sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &SimCx { thing: *id, time, seed: *seed });
             }
             for i in 0..bodies.len() {
                 if bodies.alive[i] {
@@ -315,7 +315,10 @@ impl World {
                         })
                         .or_else(|| mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, &s.state))));
                     match decider {
-                        Some((sim, state)) => sim.respond(state.as_ref(), &contact, bodies, i, limits),
+                        Some((sim, state)) => {
+                            let cx = SimCx { thing: *mover, time, seed: *seed };
+                            sim.respond_at(state.as_ref(), &contact, bodies, i, limits, &cx)
+                        }
                         None => bodies.velocity[i] = reflect(velocity, &contact, 1.0),
                     }
                     if contact.speed >= limits.resting {

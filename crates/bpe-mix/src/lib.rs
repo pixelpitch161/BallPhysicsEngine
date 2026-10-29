@@ -12,7 +12,7 @@ pub mod level;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use bpe_core::{Params, Resolved, SlotId, ThingId};
+use bpe_core::{Library, ModuleGraph, Params, Resolved, SlotId, ThingId};
 use bpe_runtime::{Event, Log};
 
 pub use chords::{Chords, pitch_classes};
@@ -99,6 +99,19 @@ pub trait ModuleMix: Send + Sync + 'static {
     fn kind(&self) -> &'static str;
     /// Adds the notes for `events`, which are the ones where `thing` is the first party.
     fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>);
+    /// Like [`ModuleMix::notes`], also given the module's graph when it has one, so an edited
+    /// module can run it. The default ignores the graph.
+    fn notes_with(
+        &self,
+        params: &Params,
+        _graph: Option<&ModuleGraph>,
+        thing: ThingId,
+        events: &[Event],
+        cx: &MixCx,
+        out: &mut Vec<Note>,
+    ) {
+        self.notes(params, thing, events, cx, out)
+    }
 }
 
 /// Every registered sound part, by kind id.
@@ -122,6 +135,17 @@ impl Mixes {
 /// The soundtrack of a run: every thing's Sound module turns its events into notes, in thing
 /// order; the notes are rendered once each, added up, levelled and limited.
 pub fn mix(settings: &MixSettings, resolved: &Resolved, log: &Log, mixes: &Mixes) -> Soundtrack {
+    mix_with(settings, resolved, &Library::default(), log, mixes)
+}
+
+/// Like [`mix`], with the scene's library so modules whose graphs have been edited can run them.
+pub fn mix_with(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
     let frames = track.frames();
     let hit_index = |e: &Event| -> u64 {
@@ -139,7 +163,8 @@ pub fn mix(settings: &MixSettings, resolved: &Resolved, log: &Log, mixes: &Mixes
         if events.is_empty() {
             continue;
         }
-        m.notes(&slot.params, *id, &events, &cx, &mut notes);
+        let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
+        m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes);
     }
     notes.retain(|n| n.frame < frames);
     if notes.is_empty() {

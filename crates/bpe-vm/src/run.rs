@@ -656,8 +656,11 @@ impl Cx<'_> {
             "reflect" => {
                 let (v, n) = (self.vec(block, 0, depth), self.vec(block, 1, depth));
                 let keep = self.num(block, 2, depth);
-                let into = (-v.dot(n)).max(0.0);
-                Val::Vector(v + n * into * (1.0 + keep))
+                // The same sums as the runtime's `reflect`, so the bounce template matches it.
+                let surface = self.vec(block, 3, depth);
+                let relative = v - surface;
+                let into = (-relative.dot(n)).max(0.0);
+                Val::Vector(relative + n * into * (1.0 + keep) + surface)
             }
             "color.mix" => {
                 let (a, c) = (self.input(block, 0, depth).color(), self.input(block, 1, depth).color());

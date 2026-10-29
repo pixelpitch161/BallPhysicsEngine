@@ -58,6 +58,17 @@ pub struct Limits {
     pub resting: f32,
 }
 
+/// What a module's step knows about the world around it, for graphs that ask.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SimCx {
+    /// The thing whose module is running.
+    pub thing: ThingId,
+    /// Seconds since the start.
+    pub time: f32,
+    /// The scene's seed, so random blocks follow the seed explorer.
+    pub seed: u64,
+}
+
 /// How a thing kind takes part in the simulation.
 pub trait ThingSim: Send + Sync + 'static {
     /// The thing kind's id, as registered in `bpe_core`.
@@ -97,9 +108,9 @@ pub trait ModuleSim: Send + Sync + 'static {
     }
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
-    /// Like [`ModuleSim::forces`], also given the time since the start, for forces that change
-    /// over time. The default calls `forces`.
-    fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _time: f32) {
+    /// Like [`ModuleSim::forces`], also told which thing, what time it is and the scene's seed,
+    /// for forces that change over time or use random numbers. The default calls `forces`.
+    fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _cx: &SimCx) {
         self.forces(state, bodies, gravity, dt)
     }
     /// Runs a Rules module on the step's events and queues actions. The default does nothing.
@@ -107,6 +118,19 @@ pub trait ModuleSim: Send + Sync + 'static {
     /// Answers a contact for one item. The default bounce keeps all the speed.
     fn respond(&self, _state: &dyn ThingState, contact: &Contact, bodies: &mut Bodies, item: usize, _limits: &Limits) {
         bodies.velocity[item] = reflect(bodies.velocity[item], contact, 1.0);
+    }
+    /// Like [`ModuleSim::respond`], also told which thing moved, what time it is and the scene's
+    /// seed. The default calls `respond`.
+    fn respond_at(
+        &self,
+        state: &dyn ThingState,
+        contact: &Contact,
+        bodies: &mut Bodies,
+        item: usize,
+        limits: &Limits,
+        _cx: &SimCx,
+    ) {
+        self.respond(state, contact, bodies, item, limits)
     }
     /// Whether this module, on the thing that was hit, decides the bounce instead of the mover's.
     fn takes_over(&self, _state: &dyn ThingState) -> bool {

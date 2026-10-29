@@ -17,11 +17,11 @@ use bpe_runtime::{Log, Sims};
 use glam::Vec2;
 
 pub use graphs::{graph_problems, resolve_scene, role_of};
-pub use modules::bounce::sim::BasicBounceSim;
+pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
-pub use modules::motion::sim::BasicMotionSim;
+pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::particles::draw::BurstDraw;
 pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
@@ -102,8 +102,7 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
 
 /// The soundtrack of a finished run of `scene`.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    let _ = scene;
-    bpe_mix::mix(&mix_settings(resolved), resolved, log, &kit.mixes)
+    bpe_mix::mix_with(&mix_settings(resolved), resolved, &scene.library, log, &kit.mixes)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.

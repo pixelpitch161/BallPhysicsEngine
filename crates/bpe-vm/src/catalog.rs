@@ -24,6 +24,7 @@ const BOUNCE_IN: &[(&str, PinType)] = &[
     ("ball", Ball),
     ("velocity", Vector),
     ("normal", Vector),
+    ("wall velocity", Vector),
     ("speed", Number),
     ("radius", Number),
     ("hits", Number),
@@ -405,13 +406,14 @@ fn values() -> Vec<NodeSpec> {
             "reflect",
             "Bounce off",
             VALUES,
-            "A velocity bounced off a surface, keeping some of its speed into it.",
-            &[("v", Vector), ("normal", Vector), ("keep", Number)],
+            "A velocity bounced off a surface, keeping some of its speed into it. A moving surface pushes too.",
+            &[("v", Vector), ("normal", Vector), ("keep", Number), ("surface", Vector)],
             &[("result", Vector)],
         )
         .param(vector("v", "Velocity", [0.0, 0.0]))
         .param(vector("normal", "Normal", [0.0, -1.0]))
-        .param(number("keep", "Keep", 1.0, 0.0, 1.5)),
+        .param(number("keep", "Keep", 1.0, 0.0, 1.5))
+        .param(vector("surface", "Surface velocity", [0.0, 0.0])),
         block(
             "color.mix",
             "Mix colours",
@@ -705,7 +707,7 @@ mod tests {
         assert!(catalog(Role::Motion).spec("ball").is_none());
         assert_eq!(Role::of_slot(SlotId::Look), None);
         assert_eq!(Role::of_slot(SlotId::Rules), Some(Role::Rules));
-        assert_eq!(Role::Bounce.inputs().len(), 8);
+        assert_eq!(Role::Bounce.inputs().len(), 9);
         assert_eq!(Role::Sound.outputs()[0], ("play", PinType::Bool));
         assert_eq!(Role::Rules.inputs(), &[]);
         assert!(is_setting("setting.color") && !is_setting("number"));

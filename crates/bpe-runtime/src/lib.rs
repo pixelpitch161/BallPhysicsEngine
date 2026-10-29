@@ -19,6 +19,6 @@ pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
 pub use history::History;
 pub use playback::Playback;
-pub use plugins::{Limits, ModuleSim, ModuleState, RuleCx, Sims, ThingSim, ThingState, state, state_mut};
+pub use plugins::{Limits, ModuleSim, ModuleState, RuleCx, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
 pub use world::{World, fingerprint};

@@ -1,5 +1,6 @@
 //! Notes: every hit plays a note of the current chord on an instrument.
 
+pub mod graph;
 pub mod mix;
 
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
@@ -69,5 +70,8 @@ impl ModuleKind for NoteSoundKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         NoteSound::defs()
+    }
+    fn template(&self) -> Option<bpe_graph::Graph> {
+        Some(graph::template())
     }
 }

@@ -8,7 +8,7 @@ use bpe_core::{
     Broken, Color, Depth, Module, ModuleGraph, ModuleId, ModuleKind, Params, Registry, Resolved, Scene, SettingDef,
     SlotId, Target, ThingId, Value, ValueType, resolve_with,
 };
-use bpe_graph::{Graph, Param};
+use bpe_graph::{Graph, Link, Param};
 use bpe_runtime::{Action, Event, EventKind, Party, World};
 use bpe_vm::{Act, Ball, BallInfo, Happening, Host, Program, Role, Trigger, is_setting};
 use glam::Vec2;
@@ -48,6 +48,71 @@ fn to_value(p: &Param, ty: &ValueType) -> Option<Value> {
         (Param::Bool(b), ValueType::Bool) => Some(Value::Bool(*b)),
         (Param::Color(c), ValueType::Color) => Some(Value::Color(Color::from_linear(*c))),
         _ => None,
+    }
+}
+
+/// Builds a template graph block by block. Wires are checked against the role's catalog, so a
+/// template that doesn't fit its blocks fails loudly where it is written.
+pub(crate) struct Builder {
+    g: Graph,
+    role: Role,
+}
+
+impl Builder {
+    pub fn new(name: &str, role: Role) -> Self {
+        Builder { g: Graph::new(name), role }
+    }
+
+    pub fn add(&mut self, kind: &str, pos: [f32; 2]) -> u32 {
+        use bpe_graph::Catalog;
+        let spec =
+            bpe_vm::catalog(self.role).spec(kind).unwrap_or_else(|| panic!("no {kind} block for {:?}", self.role));
+        self.g.add(spec, pos)
+    }
+
+    pub fn set(&mut self, node: u32, name: &str, p: Param) {
+        self.g.node_mut(node).expect("a block the builder added").params.insert(name.into(), p);
+    }
+
+    /// A setting block for one of the module's native settings, with its label, range and default.
+    pub fn setting(&mut self, def: &SettingDef, pos: [f32; 2]) -> u32 {
+        let kind = match def.ty {
+            ValueType::Bool => "setting.bool",
+            ValueType::Color => "setting.color",
+            _ => "setting",
+        };
+        let id = self.add(kind, pos);
+        self.set(id, "key", Param::Text(def.key.into()));
+        self.set(id, "label", Param::Text(def.label.into()));
+        if let Some(v) = to_param(&def.default) {
+            self.set(id, value_param(kind), v);
+        }
+        if let Some((min, max)) = def.range
+            && kind == "setting"
+        {
+            self.set(id, "min", Param::Number(min as f32));
+            self.set(id, "max", Param::Number(max as f32));
+        }
+        id
+    }
+
+    pub fn wire(&mut self, from: (u32, u8), to: (u32, u8)) {
+        let ok = self.g.connect(Link { from, to }, bpe_vm::catalog(self.role));
+        assert!(ok, "{:?}: {from:?} can't wire into {to:?}", self.role);
+    }
+
+    pub fn finish(self) -> Graph {
+        self.g
+    }
+}
+
+/// A host that knows only the scene's seed, for bounce and motion graphs: they see the world
+/// through their input pins.
+pub struct SeedHost(pub u64);
+
+impl Host for SeedHost {
+    fn seed(&self) -> u64 {
+        self.0
     }
 }
 
@@ -441,5 +506,31 @@ mod tests {
                 point: Vec2::new(5.0, 6.0)
             }
         );
+    }
+
+    #[test]
+    fn every_template_matches_its_native_path() {
+        use crate::testing::{log_hash_and_samples, with_custom_template};
+        let kit = kit();
+        for (name, scene) in crate::scenes::stage2(&kit.registry) {
+            let native = log_hash_and_samples(&scene, &kit);
+            let mut forced = scene.clone();
+            let mut count = 0;
+            for id in forced.library.modules.keys().copied().collect::<Vec<_>>() {
+                let m = &forced.library.modules[&id];
+                if m.graph.as_ref().is_some_and(|g| g.custom) {
+                    continue;
+                }
+                let kind = kit.registry.module(&m.kind).unwrap();
+                if kind.template().is_some() && role_of(m.slot).is_some() {
+                    with_custom_template(&mut forced, id, &kit.registry);
+                    count += 1;
+                }
+            }
+            assert!(count >= 3, "{name}: only {count} modules have a template");
+            let forced = log_hash_and_samples(&forced, &kit);
+            assert_eq!((forced.0, forced.1), (native.0, native.1), "{name}: the event log changed");
+            assert_eq!(forced.2, native.2, "{name}: the soundtrack changed");
+        }
     }
 }
