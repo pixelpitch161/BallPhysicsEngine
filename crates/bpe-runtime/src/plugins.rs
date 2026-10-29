@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use bpe_core::{Params, ResolvedThing, Thing, ThingId};
 use glam::Vec2;
 
-use crate::{Bodies, Contact, World, reflect};
+use crate::{Bodies, Contact, Log, World, reflect};
 
 /// Anything a plugin keeps per thing or per module while the world runs. Implemented for every
 /// `Clone + Send + Sync + 'static` type.
@@ -64,8 +64,17 @@ pub trait ThingSim: Send + Sync + 'static {
     fn kind(&self) -> &'static str;
     /// Puts the thing into the world: its bodies, its wall, its state.
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
+    /// The Spawn stage, first in every step: emitters add bodies (to any thing) and log
+    /// `Spawn` events for them.
+    fn spawn(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// Runs once a step before the physics: scripted motion such as a wall's spin.
     fn scripted(&self, _thing: ThingId, _world: &mut World) {}
+    /// The Forces stage of every substep, before the Motion modules: fields push bodies.
+    fn forces(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
+    /// After Integrate and before Collide in every substep: a liquid relaxes its particles.
+    fn settle(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
+    /// The Events stage, last in every step: zone entries and leaves and the like.
+    fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {

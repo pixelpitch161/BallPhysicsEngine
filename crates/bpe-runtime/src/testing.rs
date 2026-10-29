@@ -12,6 +12,7 @@ use crate::{Bodies, Contact, Limits, Outline, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
+pub const EMITTER: ThingId = ThingId(3);
 
 #[derive(Settings)]
 struct RootSettings {
@@ -58,6 +59,7 @@ struct NoSettings {}
 struct RootKind;
 struct WallKind;
 struct DotsKind;
+struct EmitterKind;
 struct StickyKind;
 struct BouncyKind;
 
@@ -91,6 +93,7 @@ macro_rules! thing_kind {
 thing_kind!(RootKind, "scene", RootSettings);
 thing_kind!(WallKind, "wall", WallSettings);
 thing_kind!(DotsKind, "dots", DotsSettings);
+thing_kind!(EmitterKind, "emitter", NoSettings);
 
 macro_rules! bounce_kind {
     ($t:ty, $id:literal) => {
@@ -160,6 +163,53 @@ impl ThingSim for TestDots {
     }
     fn affects_physics(&self, key: &str) -> bool {
         key != "tint"
+    }
+}
+
+/// Exercises every hook: adds a dot each step, pushes the dots sideways, checks that settling
+/// runs after the move, and ticks at the end of the step.
+pub struct TestEmitter;
+impl ThingSim for TestEmitter {
+    fn kind(&self) -> &'static str {
+        "emitter"
+    }
+    fn build(&self, thing: &Thing, _resolved: &ResolvedThing, world: &mut World) {
+        world.states.insert(thing.id, Box::new(0u32));
+    }
+    fn spawn(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
+        let step = world.step;
+        let row = world.bodies.get_mut(&DOTS).unwrap().push(Vec2::ZERO, Vec2::ZERO, 5.0);
+        log.push(crate::Event {
+            step,
+            kind: crate::EventKind::Spawn,
+            a: crate::Party { thing: DOTS, item: row },
+            b: Some(crate::Party { thing, item: 0 }),
+            point: Vec2::ZERO,
+            normal: Vec2::ZERO,
+            speed: 0.0,
+        });
+    }
+    fn forces(&self, _thing: ThingId, world: &mut World, dt: f32) {
+        for v in &mut world.bodies.get_mut(&DOTS).unwrap().velocity {
+            *v += Vec2::X * 1000.0 * dt;
+        }
+    }
+    fn settle(&self, thing: ThingId, world: &mut World, _dt: f32) {
+        let moved = world.bodies[&DOTS].position[0] != world.bodies[&DOTS].previous[0];
+        if moved {
+            *crate::state_mut::<u32>(world.states.get_mut(&thing).unwrap().as_mut()) += 1;
+        }
+    }
+    fn after_step(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
+        log.push(crate::Event {
+            step: world.step,
+            kind: crate::EventKind::Custom("tick".into()),
+            a: crate::Party { thing, item: 0 },
+            b: None,
+            point: Vec2::ZERO,
+            normal: Vec2::ZERO,
+            speed: 0.0,
+        });
     }
 }
 
@@ -234,6 +284,7 @@ pub fn reg() -> Registry {
     r.add_thing(RootKind);
     r.add_thing(WallKind);
     r.add_thing(DotsKind);
+    r.add_thing(EmitterKind);
     r.add_module(GravityKind);
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
@@ -245,6 +296,7 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_thing(TestRoot);
     s.add_thing(TestWall);
     s.add_thing(TestDots);
+    s.add_thing(TestEmitter);
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
@@ -276,4 +328,15 @@ pub fn dots_in_sticky_ring(takes_over: bool) -> (Scene, Resolved, Sims) {
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(takes_over))
+}
+
+/// One dot in the ring plus an emitter that exercises every hook.
+pub fn dots_with_emitter() -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    let reg = reg();
+    let emitter = scene.add_thing(&reg, "emitter", ThingId::ROOT).unwrap();
+    assert_eq!(emitter, EMITTER);
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
 }
