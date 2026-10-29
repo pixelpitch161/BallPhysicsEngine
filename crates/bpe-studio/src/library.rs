@@ -281,7 +281,7 @@ fn details(
     ui.horizontal(|ui| {
         ui.label(RichText::new("Settings").strong());
         ui.add_space(8.0);
-        crate::inspector::depth_switch(ui, lib.depth.entry(id).or_insert(Depth::Simple));
+        crate::inspector::depth_switch(ui, lib.depth.entry(id).or_insert(Depth::Simple), None);
     });
     let depth = lib.depth.get(&id).copied().unwrap_or(Depth::Simple);
     let choices = TargetChoices::from_scene(scene, reg);

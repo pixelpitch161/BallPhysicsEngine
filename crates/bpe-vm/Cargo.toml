@@ -1,0 +1,11 @@
+[package]
+name = "bpe-vm"
+description = "The graph VM: compiles module and rule graphs for the CPU and runs them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-core.workspace = true
+bpe-graph.workspace = true
+glam.workspace = true

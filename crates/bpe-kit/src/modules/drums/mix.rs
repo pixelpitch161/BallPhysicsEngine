@@ -118,7 +118,15 @@ mod tests {
         log.push(event(EventKind::Hit, ThingId(2), 0, 240, 60.0));
         log.push(event(EventKind::Hit, ThingId(2), 0, 480, 900.0));
         log.push(event(EventKind::Beat, ThingId::ROOT, 1, 720, 0.0));
-        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(
+            &mix_settings(&scene, &resolved),
+            &resolved,
+            &scene.library,
+            &log,
+            &kit.mixes,
+            None,
+            &|t| t,
+        );
         let keys: Vec<(usize, u8)> = notes.iter().map(|n| (n.frame, n.key)).collect();
         assert_eq!(keys, [(200, 36), (144_000, 36), (48_000, 42), (96_000, 36)], "root's beats first, then the ball");
         assert!(notes.iter().all(|n| n.instrument == Instrument::Drums));
@@ -137,8 +145,15 @@ mod tests {
         log.push(event(EventKind::Hit, ThingId(2), 0, 240, 500.0));
         log.push(event(EventKind::Beat, ThingId::ROOT, 0, 720, 0.0));
         let stretched = |t: f64| t * 2.0;
-        let notes =
-            bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &stretched);
+        let notes = bpe_mix::notes_with(
+            &mix_settings(&scene, &resolved),
+            &resolved,
+            &scene.library,
+            &log,
+            &kit.mixes,
+            None,
+            &stretched,
+        );
         let frames: Vec<usize> = notes.iter().map(|n| n.frame).collect();
         assert_eq!(frames, [144_000, 96_000], "the beat at 3 s stays there; the hit at 1 s plays at 2 s");
     }
@@ -153,12 +168,28 @@ mod tests {
         let mut log = Log::default();
         log.push(event(EventKind::Beat, ThingId::ROOT, 0, 1, 0.0));
         log.push(event(EventKind::Hit, ThingId(2), 0, 240, 500.0));
-        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(
+            &mix_settings(&scene, &resolved),
+            &resolved,
+            &scene.library,
+            &log,
+            &kit.mixes,
+            None,
+            &|t| t,
+        );
         assert!(notes.is_empty());
         // A named piece plays that drum for every hit.
         scene.library.modules.get_mut(&drums).unwrap().params.set("piece", Value::Choice("clap".into()));
         let resolved = resolve(&scene, &kit.registry);
-        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(
+            &mix_settings(&scene, &resolved),
+            &resolved,
+            &scene.library,
+            &log,
+            &kit.mixes,
+            None,
+            &|t| t,
+        );
         assert_eq!(notes.iter().map(|n| n.key).collect::<Vec<_>>(), [39]);
     }
 }

@@ -6,19 +6,22 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Color, Ease, ModuleId, Owner, Params, PulseSource, Registry, Scene, Settings, SlotId, Target,
-    ThingId, Value,
+    Address, Attach, Color, Ease, ModuleGraph, ModuleId, ModuleKind, Owner, Params, PulseSource, Registry, Scene,
+    Settings, SlotId, Target, ThingId, Value,
 };
+use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
+use bpe_vm::{Role, catalog};
 use glam::Vec2;
 
+use crate::graphs::module_graph;
 use crate::modules::look::GradientBy;
 use crate::modules::sound::{PitchBy, PlaysWhen};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
     ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
-    LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, SceneSettings,
-    SoftSettings, SoftShape, SwarmColors, SwarmLook, SwarmSettings, TextSettings, new_scene,
+    LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind,
+    SceneSettings, SoftSettings, SoftShape, SwarmColors, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -44,6 +47,11 @@ pub fn stage3(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[peg_board, spinning_bars, ball_pit, riders, pitch_climb])
 }
 
+/// The five stage 4 scenes: rules on things, and modules whose graphs have been edited.
+pub fn stage4(reg: &Registry) -> Vec<(String, Scene)> {
+    build_all(reg, &[grow_on_hit, split_on_hit, colour_by_speed, bouncy_when_slow, wind_and_melody])
+}
+
 /// The five stage 6 scenes: an emitter, fields, a liquid on the processor, one on the graphics
 /// card, and a swarm.
 pub fn stage6(reg: &Registry) -> Vec<(String, Scene)> {
@@ -60,10 +68,29 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
 pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     let mut scenes = stage2(reg);
     scenes.extend(stage3(reg));
+    scenes.extend(stage4(reg));
     scenes.extend(stage5(reg));
     scenes.extend(stage6(reg));
     scenes.extend(stage7(reg));
     scenes
+}
+
+/// A ready-made rule's builder, by its menu name.
+fn recipe(name: &str) -> fn(&mut Graph) -> Vec<(u32, String)> {
+    recipes().into_iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no recipe called {name}")).add
+}
+
+/// The block of `kind` in a graph that has exactly one.
+fn block(g: &Graph, kind: &str) -> u32 {
+    g.nodes.iter().find(|n| n.kind == kind).unwrap_or_else(|| panic!("no {kind} block")).id
+}
+
+fn set(g: &mut Graph, node: u32, name: &str, p: Param) {
+    g.node_mut(node).expect("a block of the graph").params.insert(name.into(), p);
+}
+
+fn wire(g: &mut Graph, role: Role, from: (u32, u8), to: (u32, u8)) {
+    assert!(g.connect(Link { from, to }, catalog(role)), "{from:?} can't wire into {to:?}");
 }
 
 /// A new scene with a name, and handles on its things and shared modules.
@@ -199,6 +226,30 @@ impl<'a> Builder<'a> {
 
     fn turn(&mut self, id: ThingId, degrees: f32) {
         self.scene.things.get_mut(&id).expect("thing").transform.rotation = degrees.to_radians();
+    }
+
+    /// A Rules module on `thing`, with `build` adding its rules and naming the settings to show
+    /// at Simple depth.
+    fn rules(&mut self, thing: ThingId, name: &str, build: impl FnOnce(&mut Graph) -> Vec<(u32, String)>) {
+        let m = self.scene.add_module(self.reg, "rules.graph", name).expect("rules are registered");
+        let mut graph = RulesKind.template().expect("rules have a template");
+        let simple = build(&mut graph).into_iter().collect();
+        self.scene.library.modules.get_mut(&m).expect("module").graph =
+            Some(ModuleGraph { graph, template: "rules.graph".into(), custom: true, simple });
+        self.scene.link(self.reg, thing, SlotId::Rules, m).expect("the thing has a Rules slot");
+    }
+
+    /// Edits the root's shared module for `slot` as nodes, starting from its template with the
+    /// module's settings in.
+    fn custom(&mut self, slot: SlotId, edit: impl FnOnce(&mut Graph)) {
+        let reg = self.reg;
+        let m = self.module_of(ThingId::ROOT, slot);
+        let module = self.scene.library.modules.get_mut(&m).expect("module");
+        let kind = reg.module(&module.kind).expect("a registered kind");
+        let mut g = module_graph(kind, module).expect("the kind has a template");
+        edit(&mut g.graph);
+        g.custom = true;
+        module.graph = Some(g);
     }
 }
 
@@ -676,6 +727,162 @@ fn pitch_climb(reg: &Registry) -> Scene {
     b.scene
 }
 
+/// Three balls that grow a little on every hit, counting their hits.
+fn grow_on_hit(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Grow on hit");
+    b.balls("Trio", Vec2::ZERO, |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 3;
+        s.ring_radius = 160.0;
+        s.radius = 18.0;
+        s.velocity = Vec2::new(420.0, -260.0);
+    });
+    b.rules(BALLS, "Grow", |g| {
+        let mut simple = recipe("Grow on hit")(g);
+        let grow = block(g, "do.grow");
+        set(g, grow, "by", Param::Number(1.0));
+        simple.extend(recipe("Count hits")(g));
+        simple
+    });
+    b.scene
+}
+
+/// One ball that splits in two on every hit, until there are 64.
+fn split_on_hit(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Split on hit");
+    b.balls("Ball", Vec2::new(0.0, -200.0), |s| {
+        s.radius = 40.0;
+        s.velocity = Vec2::new(500.0, -200.0);
+    });
+    b.bounce(|s| s.bounciness = 1.02);
+    b.rules(BALLS, "Split", |g| recipe("Split on hit")(g));
+    b.scene
+}
+
+/// A block of balls, each tinted by how hard it last hit: blue for soft, red for hard.
+fn colour_by_speed(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Colour by speed");
+    b.scene_settings(|s| s.gravity = Vec2::new(0.0, 700.0));
+    b.balls("Block", Vec2::new(0.0, -300.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 4;
+        s.rows = 4;
+        s.spacing = 70.0;
+        s.radius = 22.0;
+        s.velocity = Vec2::new(260.0, 0.0);
+    });
+    b.bounce(|s| s.bounciness = 0.95);
+    b.rules(BALLS, "Colour by speed", |g| {
+        let c = catalog(Role::Rules);
+        let hit = g.add(c.spec("when.hit").unwrap(), [40.0, 40.0]);
+        let part = g.add(c.spec("math").unwrap(), [260.0, 200.0]);
+        set(g, part, "op", Param::Choice("divide".into()));
+        set(g, part, "b", Param::Number(1500.0));
+        wire(g, Role::Rules, (hit, 3), (part, 0));
+        let hue = g.add(c.spec("clamp").unwrap(), [480.0, 200.0]);
+        set(g, hue, "min", Param::Number(0.0));
+        set(g, hue, "max", Param::Number(1.0));
+        wire(g, Role::Rules, (part, 0), (hue, 0));
+        let colour = g.add(c.spec("color.hsv").unwrap(), [700.0, 200.0]);
+        wire(g, Role::Rules, (hue, 0), (colour, 0));
+        let tint = g.add(c.spec("do.color").unwrap(), [920.0, 40.0]);
+        wire(g, Role::Rules, (hit, 0), (tint, 0));
+        wire(g, Role::Rules, (colour, 0), (tint, 2));
+        vec![(tint, "amount".into())]
+    });
+    b.scene
+}
+
+/// A bounce graph that keeps more speed on slow hits than on fast ones, so the ball settles
+/// into a steady bounce instead of dying or running away.
+fn bouncy_when_slow(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Bouncy when slow");
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1400.0;
+    });
+    b.balls("Ball", Vec2::new(-200.0, -300.0), |s| {
+        s.radius = 36.0;
+        s.velocity = Vec2::new(350.0, 0.0);
+    });
+    b.custom(SlotId::Bounce, |g| {
+        let c = catalog(Role::Bounce);
+        let input = block(g, "bounce.in");
+        let reflect = block(g, "reflect");
+        g.links.retain(|l| l.to != (reflect, 2));
+        let slow = g.add(c.spec("compare").unwrap(), [40.0, 640.0]);
+        set(g, slow, "op", Param::Choice("less".into()));
+        set(g, slow, "b", Param::Number(300.0));
+        wire(g, Role::Bounce, (input, 4), (slow, 0));
+        let keep = g.add(c.spec("choose").unwrap(), [300.0, 640.0]);
+        set(g, keep, "then", Param::Number(1.15));
+        set(g, keep, "else", Param::Number(0.9));
+        wire(g, Role::Bounce, (slow, 0), (keep, 0));
+        wire(g, Role::Bounce, (keep, 0), (reflect, 2));
+    });
+    b.scene
+}
+
+/// A motion graph with a wind that swings left and right, and a sound graph that walks up a
+/// scale with each ball's hits.
+fn wind_and_melody(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Wind and melody");
+    b.scene_settings(|s| s.gravity = Vec2::new(0.0, 350.0));
+    b.balls("Ring", Vec2::ZERO, |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 6;
+        s.ring_radius = 220.0;
+        s.radius = 16.0;
+        s.velocity = Vec2::new(0.0, -200.0);
+    });
+    b.sound(|s| s.instrument = Instrument::Marimba);
+    b.custom(SlotId::Motion, |g| {
+        let c = catalog(Role::Motion);
+        let input = block(g, "motion.in");
+        let output = block(g, "motion.out");
+        let from = g.links.iter().find(|l| l.to == (output, 0)).expect("the template wires the velocity").from;
+        g.links.retain(|l| l.to != (output, 0));
+        let faster = g.add(c.spec("math").unwrap(), [40.0, 800.0]);
+        set(g, faster, "op", Param::Choice("multiply".into()));
+        set(g, faster, "b", Param::Number(2.0));
+        wire(g, Role::Motion, (input, 5), (faster, 0));
+        let swing = g.add(c.spec("fn").unwrap(), [300.0, 800.0]);
+        set(g, swing, "f", Param::Choice("sin".into()));
+        wire(g, Role::Motion, (faster, 0), (swing, 0));
+        let strength = g.add(c.spec("math").unwrap(), [560.0, 800.0]);
+        set(g, strength, "op", Param::Choice("multiply".into()));
+        set(g, strength, "b", Param::Number(400.0));
+        wire(g, Role::Motion, (swing, 0), (strength, 0));
+        let wind = g.add(c.spec("vec.make").unwrap(), [820.0, 800.0]);
+        wire(g, Role::Motion, (strength, 0), (wind, 0));
+        let over_dt = g.add(c.spec("vec.scale").unwrap(), [1080.0, 800.0]);
+        wire(g, Role::Motion, (wind, 0), (over_dt, 0));
+        wire(g, Role::Motion, (input, 4), (over_dt, 1));
+        let blown = g.add(c.spec("vec.math").unwrap(), [1340.0, 500.0]);
+        set(g, blown, "op", Param::Choice("add".into()));
+        wire(g, Role::Motion, from, (blown, 0));
+        wire(g, Role::Motion, (over_dt, 0), (blown, 1));
+        wire(g, Role::Motion, (blown, 0), (output, 0));
+    });
+    b.custom(SlotId::Sound, |g| {
+        let c = catalog(Role::Sound);
+        let input = block(g, "sound.in");
+        let output = block(g, "sound.out");
+        g.links.retain(|l| l.to != (output, 1));
+        let step = g.add(c.spec("math").unwrap(), [820.0, 360.0]);
+        set(g, step, "op", Param::Choice("modulo".into()));
+        set(g, step, "b", Param::Number(12.0));
+        wire(g, Role::Sound, (input, 6), (step, 0));
+        let key = g.add(c.spec("math").unwrap(), [1080.0, 360.0]);
+        set(g, key, "op", Param::Choice("add".into()));
+        set(g, key, "a", Param::Number(48.0));
+        wire(g, Role::Sound, (step, 0), (key, 1));
+        wire(g, Role::Sound, (key, 0), (output, 1));
+    });
+    b.scene
+}
+
 /// Drops shot up from a spout, falling back through each other inside a ring.
 fn fountain(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Fountain");
@@ -820,10 +1027,11 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 25);
+        assert_eq!(scenes.len(), 30);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
+            scenes::stage4(&reg),
             scenes::stage5(&reg),
             scenes::stage6(&reg),
             scenes::stage7(&reg),
@@ -836,12 +1044,16 @@ mod tests {
         assert_eq!(names, in_order);
         assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
         assert_eq!(names[5..10], ["Peg board", "Spinning bars", "Ball pit", "Riders", "Pitch climb"]);
-        assert_eq!(names[10..15], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
-        assert_eq!(names[15..20], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
-        assert_eq!(names[20..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        assert_eq!(
+            names[10..15],
+            ["Grow on hit", "Split on hit", "Colour by speed", "Bouncy when slow", "Wind and melody"]
+        );
+        assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
+        assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
+        assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
-            assert!(bpe_core::resolve(scene, &reg).problems.is_empty(), "{name}");
+            assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
             let text = bpe_core::save(scene);
             assert_eq!(&bpe_core::load(&text, &reg).unwrap(), scene, "{name}");
             if std::env::var_os("BPE_BLESS").is_some() {

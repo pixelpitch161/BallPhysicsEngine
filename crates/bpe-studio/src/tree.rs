@@ -859,6 +859,9 @@ pub fn problem_words(p: &Problem) -> String {
         ProblemKind::WrongSlot(m) => format!("{slot} links a module made for another slot (id {})", m.0),
         ProblemKind::UnknownModuleKind(k) => format!("{slot} links a module whose kind \"{k}\" isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
+        ProblemKind::BrokenGraph(msg) => {
+            format!("The {slot} graph doesn't compile, so the parent's module is used: {msg}")
+        }
     }
 }
 

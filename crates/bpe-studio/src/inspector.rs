@@ -2,14 +2,16 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
+use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene, SettingDef,
-    SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
+    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
+use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +24,29 @@ pub struct Inspector {
     pub keyed_edit: bool,
     /// Set when "Open in Library" was clicked; the app opens the Library window on it.
     pub open_library: Option<ModuleId>,
+    /// A card's Nodes switch was pressed: the node panel should open on this slot.
+    pub nodes_request: Option<(ThingId, SlotId)>,
+    /// What the node panel shows, so that card's switch shows Nodes as chosen.
+    pub nodes_open: Option<(ThingId, SlotId)>,
+}
+
+/// The Nodes end of a card's depth switch.
+pub struct NodesSwitch {
+    pub enabled: bool,
+    pub open: bool,
+    /// Why it can't be pressed, when it can't.
+    pub hover: &'static str,
+}
+
+/// Why a slot's Nodes switch is off.
+fn no_nodes_yet(slot: SlotId) -> &'static str {
+    match slot {
+        SlotId::Look => "Look graphs can't be edited as nodes yet",
+        SlotId::Trail => "Trail graphs can't be edited as nodes yet",
+        SlotId::Particles => "Particle graphs can't be edited as nodes yet",
+        SlotId::Shader => "Shader graphs can't be edited as nodes yet",
+        _ => "Pick a module first",
+    }
 }
 
 /// A change the panel asks for, applied once the drawing is done.
@@ -54,6 +79,10 @@ enum Edit {
     Inherit(SlotId),
     Off(SlotId),
     AddSlot(SlotId),
+    /// Throw a module's graph edits away and go back to its settings.
+    Revert(ModuleId),
+    /// A card edited the module's graph.
+    Graph(ModuleId, ModuleGraph),
 }
 
 /// Where an edit to a slot's settings goes for one thing.
@@ -161,7 +190,7 @@ pub fn show(
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("{} settings", kind.name())).strong());
                 ui.add_space(8.0);
-                depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple));
+                depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple), None);
             });
             let depth = inspector.depth.get(&(id, None)).copied().unwrap_or(Depth::Simple);
             let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
@@ -295,7 +324,14 @@ pub fn show(
                     .response
                     .on_hover_text("Which module fills this slot");
                     ui.add_space(8.0);
-                    depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple));
+                    let nodes = NodesSwitch {
+                        enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
+                        open: inspector.nodes_open == Some((id, slot)),
+                        hover: no_nodes_yet(slot),
+                    };
+                    if depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple), Some(nodes)) {
+                        inspector.nodes_request = Some((id, slot));
+                    }
                 });
                 let problems: Vec<String> = resolved
                     .problems
@@ -314,6 +350,7 @@ pub fn show(
                 };
                 let Some(mkind) = reg.module(&m.kind) else { return };
                 let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
+                let inherited = matches!(write, Write::Inherited { .. });
                 let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
                 let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
                 let of_thing = |key: &str| Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
@@ -322,6 +359,62 @@ pub fn show(
                     mark_for(scene, def, a, time, physics)
                 };
                 ui.add_space(4.0);
+                if slot == SlotId::Rules {
+                    // Rules are their graph: sentences on the card, blocks in the panel. The
+                    // graph is the module's, so an inherited card only reads it.
+                    let Some(mut g) = m.graph.clone().or_else(|| module_graph(mkind, m)) else { return };
+                    if inherited && change_here(ui).clicked() {
+                        edits.push(Edit::Link(slot, module));
+                    }
+                    let out = ui.add_enabled_ui(!inherited, |ui| {
+                        cards::rules_card(ui, ("rules", id, slot), &mut g, scene, depth)
+                    });
+                    if out.inner.changed && !inherited {
+                        g.custom = true;
+                        edits.push(Edit::Graph(module, g));
+                    }
+                    if out.inner.open_nodes {
+                        inspector.nodes_request = Some((id, slot));
+                    }
+                    return;
+                }
+                // A module edited as nodes shows its graph's setting blocks; the settings the
+                // graph doesn't bind, such as the instrument, stay native.
+                let custom = match (m.graph.as_ref().filter(|g| g.custom), bpe_kit::role_of(slot)) {
+                    (Some(g), Some(role)) => Some((g.clone(), role)),
+                    _ => None,
+                };
+                let bound = match custom {
+                    Some(_) => mkind.template().map(|t| bound_keys(&t)).unwrap_or_default(),
+                    None => Default::default(),
+                };
+                let unbound: Vec<SettingDef> =
+                    mkind.settings().iter().filter(|d| !bound.contains(d.key)).cloned().collect();
+                let defs: &[SettingDef] = if custom.is_some() { &unbound } else { mkind.settings() };
+                if let Some((mut g, role)) = custom {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
+                            "This module runs its graph. These are the graph's own settings; open Nodes to see it.",
+                        );
+                        if !inherited
+                            && ui
+                                .small_button("Revert to template")
+                                .on_hover_text("Throw the graph edits away and go back to the module's settings")
+                                .clicked()
+                        {
+                            edits.push(Edit::Revert(module));
+                        }
+                    });
+                    let catalog = bpe_vm::catalog(role);
+                    let changed = ui
+                        .add_enabled_ui(!inherited, |ui| {
+                            cards::graph_settings(ui, ("graph", id, slot), &mut g, catalog, depth, scene)
+                        })
+                        .inner;
+                    if changed && !inherited {
+                        edits.push(Edit::Graph(module, g));
+                    }
+                }
                 match write {
                     Write::Module(_) => {
                         let get = |key: &str| {
@@ -330,7 +423,7 @@ pub fn show(
                         let marks = |key: &str| mark(&of_module(key));
                         let cx =
                             GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
@@ -346,7 +439,7 @@ pub fn show(
                         let marks = |key: &str| mark(&of_thing(key));
                         let cx =
                             GridCx { choices: &choices, overridden: &overridden, inherited: &inherited, marks: &marks };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
@@ -354,11 +447,7 @@ pub fn show(
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_thing(key), source)));
                     }
                     Write::Inherited { module, .. } => {
-                        if ui
-                            .button("Change here")
-                            .on_hover_text("Link the module to this thing, so changes here are its own")
-                            .clicked()
-                        {
+                        if change_here(ui).clicked() {
                             edits.push(Edit::Link(slot, module));
                         }
                         let get = |key: &str| {
@@ -368,7 +457,7 @@ pub fn show(
                             })
                         };
                         ui.add_enabled_ui(false, |ui| {
-                            settings_grid(ui, ("slot", id, slot), mkind.settings(), depth, get);
+                            settings_grid(ui, ("slot", id, slot), defs, depth, get);
                         });
                     }
                 }
@@ -497,6 +586,28 @@ pub fn show(
                 true
             }
             Edit::AddSlot(slot) => scene.add_slot(reg, id, slot).is_ok(),
+            Edit::Graph(module, g) => match scene.library.modules.get_mut(&module) {
+                Some(m) => {
+                    m.graph = Some(g);
+                    if let Some(kind) = reg.module(&m.kind)
+                        && let Some(graph) = m.graph.as_ref().map(|g| g.graph.clone())
+                    {
+                        crate::nodes::panel::sync_params(&graph, m, kind);
+                    }
+                    true
+                }
+                None => false,
+            },
+            Edit::Revert(module) => match scene.library.modules.get_mut(&module) {
+                Some(m) => match reg.module(&m.kind) {
+                    Some(kind) => {
+                        crate::nodes::panel::revert_to_template(m, kind);
+                        true
+                    }
+                    None => false,
+                },
+                None => false,
+            },
         };
         changed |= ok;
     }
@@ -692,12 +803,21 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
     }
 }
 
-/// Simple | More | Nodes, the last one waiting for a later stage.
-pub(crate) fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
+/// Simple | More | Nodes. The Nodes end opens the node panel rather than changing the card,
+/// so it is a request; true when it was pressed. A card without graphs has no Nodes end.
+pub(crate) fn depth_switch(ui: &mut Ui, depth: &mut Depth, nodes: Option<NodesSwitch>) -> bool {
     ui.selectable_value(depth, Depth::Simple, "Simple");
     ui.selectable_value(depth, Depth::More, "More");
-    ui.add_enabled(false, egui::Button::selectable(false, "Nodes"))
-        .on_disabled_hover_text("Nodes come in a later stage");
+    let Some(nodes) = nodes else { return false };
+    ui.add_enabled(nodes.enabled, egui::Button::selectable(nodes.open, "Nodes"))
+        .on_hover_text("Edit this module as blocks and wires, in the panel under the preview")
+        .on_disabled_hover_text(nodes.hover)
+        .clicked()
+}
+
+/// The button an inherited card offers to link the module to the thing itself.
+fn change_here(ui: &mut Ui) -> egui::Response {
+    ui.button("Change here").on_hover_text("Link the module to this thing, so changes here are its own")
 }
 
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
@@ -711,6 +831,8 @@ fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 mod tests {
     use super::*;
     use bpe_core::{Resolved, Settings, SlotId, SlotLink, Value, resolve};
+    use bpe_kit::graphs::module_graph;
+    use bpe_kit::resolve_scene;
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
         Harness,
@@ -727,10 +849,20 @@ mod tests {
         time: f64,
     }
 
+    #[test]
+    fn the_switch_says_why_a_slot_has_no_nodes() {
+        assert_eq!(no_nodes_yet(SlotId::Look), "Look graphs can't be edited as nodes yet");
+        assert_eq!(no_nodes_yet(SlotId::Shader), "Shader graphs can't be edited as nodes yet");
+        assert_eq!(no_nodes_yet(SlotId::Motion), "Pick a module first");
+    }
+
     fn harness(selected: Option<ThingId>) -> Harness<'static, State> {
+        harness_of(bpe_kit::new_scene(&bpe_kit::registry()), selected)
+    }
+
+    fn harness_of(scene: Scene, selected: Option<ThingId>) -> Harness<'static, State> {
         let kit = bpe_kit::kit();
-        let scene = bpe_kit::new_scene(&kit.registry);
-        let resolved = resolve(&scene, &kit.registry);
+        let resolved = resolve_scene(&scene, &kit.registry);
         let mut selection = Selection::default();
         if let Some(id) = selected {
             selection.set(id);
@@ -745,7 +877,7 @@ mod tests {
             .build_ui_state(
                 |ui, s: &mut State| {
                     if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, s.time) {
-                        s.resolved = resolve(&s.scene, &s.kit.registry);
+                        s.resolved = resolve_scene(&s.scene, &s.kit.registry);
                     }
                 },
                 state,
@@ -932,8 +1064,12 @@ mod tests {
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_them_inheriting() {
         let mut h = harness(Some(ThingId(2)));
-        // Shader has module kinds and isn't shown on a new ball, so there is something to add.
+        // Trail, Shader and Rules have module kinds and aren't shown on a new ball, so there is
+        // something to add.
         assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        assert!(h.query_by_label("Rules").is_some());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
         h.get_by_label("+ Add slot").click();
@@ -1198,5 +1334,79 @@ mod tests {
         let s = h.state();
         let m = s.scene.library.modules.values().find(|m| m.name == "Own bounce").unwrap();
         assert_eq!(m.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
+    }
+
+    /// Stores the module's template as its own graph, so it runs through the compiled path.
+    fn make_custom(scene: &mut Scene, module: ModuleId) {
+        let reg = bpe_kit::registry();
+        let m = &scene.library.modules[&module];
+        let mut g = module_graph(reg.module(&m.kind).unwrap(), m).expect("a template");
+        g.custom = true;
+        scene.library.modules.get_mut(&module).unwrap().graph = Some(g);
+    }
+
+    #[test]
+    fn a_rules_card_lists_sentences_and_adds_a_recipe() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        scene.add_slot(&reg, ThingId(2), SlotId::Rules).unwrap();
+        let rules = scene.add_module(&reg, "rules.graph", "Ball rules").unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Rules, rules).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("No rules yet.");
+        h.get_by_label("Add rule").click();
+        h.run();
+        h.get_by_label("Grow on hit").click();
+        h.run();
+        assert!(h.query_by_label("No rules yet.").is_none());
+        h.get_by_label_contains("When hit › Grow");
+        // The recipe's number is right there on the Simple card.
+        let by = h.get_by_role_and_label(Role::Slider, "By (px)");
+        assert_eq!(by.accesskit_node().numeric_value(), Some(2.0));
+        let s = h.state();
+        let g = s.scene.library.modules[&rules].graph.as_ref().expect("the recipe is stored");
+        assert!(g.custom);
+        assert_eq!(g.graph.nodes.len(), 2);
+        assert_eq!(bpe_vm::sentences(&g.graph).len(), 1);
+    }
+
+    #[test]
+    fn a_custom_module_shows_its_setting_blocks_as_sliders() {
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        make_custom(&mut scene, ModuleId(2));
+        // The ball inherits the bounce from the scene, so its card shows the blocks read-only
+        // until "Change here", like any inherited card.
+        let h = harness_of(scene.clone(), Some(ThingId(2)));
+        h.get_by_label("Edited as nodes");
+        assert!(h.get_by_role_and_label(Role::Slider, "Bounciness").accesskit_node().is_disabled());
+        // The scene links the module: its card edits the graph.
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        h.get_by_label("Edited as nodes");
+        let before = {
+            let s = h.state();
+            bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims)
+        };
+        let rect = slider_rect(&h, "Bounciness");
+        drag_slider(&mut h, rect, 0.95);
+        let s = h.state();
+        let g = s.scene.library.modules[&ModuleId(2)].graph.as_ref().unwrap();
+        let block =
+            g.graph.nodes.iter().find(|n| n.params.get("key") == Some(&bpe_graph::Param::Text("bounciness".into())));
+        let value = block.and_then(|n| n.params.get("value")).and_then(bpe_graph::Param::number).unwrap();
+        assert!(value > 1.0, "the setting block holds the slider's value: {value}");
+        // The module's own setting follows, so the card and the graph agree.
+        let v = s.scene.library.modules[&ModuleId(2)].params.get("bounciness").cloned();
+        assert!(matches!(v, Some(Value::Number(b)) if (b - value as f64).abs() < 1e-5), "{v:?}");
+        assert_ne!(bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims), before, "the physics changed");
+    }
+
+    #[test]
+    fn a_custom_sound_module_keeps_its_instrument_picker() {
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        make_custom(&mut scene, ModuleId(3));
+        let h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Instrument");
+        // Bound settings come from the graph: the volume is a slider, not shown twice.
+        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
     }
 }

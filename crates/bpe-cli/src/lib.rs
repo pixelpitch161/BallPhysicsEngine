@@ -6,7 +6,7 @@
 //! time: a slow machine just takes longer, and the result is identical.
 
 use anyhow::{Context, bail};
-use bpe_core::{Scene, Settings, resolve};
+use bpe_core::{Scene, Settings};
 use bpe_gfx::{Frame, Readback, Renderer, build_frame_at, wgpu};
 use bpe_kit::{Kit, SceneSettings, flow_source, mix_scene};
 use bpe_runtime::{Log, World};
@@ -205,7 +205,7 @@ pub fn resolve_encoder(choice: Encoder, ffmpeg: &Path) -> Encoder {
 
 /// The root settings that size and time the video.
 fn video_of(scene: &Scene, kit: &Kit) -> anyhow::Result<(bpe_core::Resolved, SceneSettings)> {
-    let resolved = resolve(scene, &kit.registry);
+    let resolved = bpe_kit::resolve_scene(scene, &kit.registry);
     let settings = {
         let root = resolved.things.get(&bpe_core::ThingId::ROOT).context("the scene has no root")?;
         SceneSettings::from_params(&root.params)

@@ -12,7 +12,7 @@ pub mod level;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use bpe_core::{Animation, Inputs, Params, Resolved, SlotId, Target, ThingId};
+use bpe_core::{Animation, Inputs, Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
 use bpe_runtime::{Event, Log};
 
 pub use chords::{Chords, pitch_classes};
@@ -109,6 +109,19 @@ pub trait ModuleMix: Send + Sync + 'static {
     /// Adds the notes for `events`, which are the ones where `thing` is either party: the one
     /// that hit (`a`) or the one that was hit (`b`).
     fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>);
+    /// Like [`ModuleMix::notes`], also given the module's graph when it has one, so an edited
+    /// module can run it. The default ignores the graph.
+    fn notes_with(
+        &self,
+        params: &Params,
+        _graph: Option<&ModuleGraph>,
+        thing: ThingId,
+        events: &[Event],
+        cx: &MixCx,
+        out: &mut Vec<Note>,
+    ) {
+        self.notes(params, thing, events, cx, out)
+    }
 }
 
 /// The target rules over a resolved scene's kinds and the settings' tags: the same rules as
@@ -150,7 +163,7 @@ impl Mixes {
 /// The soundtrack of a run: every thing's Sound module turns its events into notes, in thing
 /// order; the notes are rendered once each, added up, levelled and limited.
 pub fn mix(settings: &MixSettings, resolved: &Resolved, log: &Log, mixes: &Mixes) -> Soundtrack {
-    mix_with(settings, resolved, log, mixes, None, &|t| t)
+    mix_with(settings, resolved, &Library::default(), log, mixes, None, &|t| t)
 }
 
 /// Keyframed sound settings are read this often: a window of one twentieth of a second.
@@ -158,10 +171,12 @@ const WINDOWS_PER_SECOND: u32 = 20;
 
 /// Every note of a run, in thing order. With an `animation`, a thing whose Sound settings are
 /// keyframed gets its events in windows of a twentieth of a second, each window's settings
-/// taken at the window's start. `video_time` maps a moment of the run to the video.
+/// taken at the window's start. `video_time` maps a moment of the run to the video. The
+/// scene's `library` lets a module whose graph has been edited run it.
 pub fn notes_with(
     settings: &MixSettings,
     resolved: &Resolved,
+    library: &Library,
     log: &Log,
     mixes: &Mixes,
     animation: Option<&Animation>,
@@ -192,8 +207,9 @@ pub fn notes_with(
         if events.is_empty() {
             continue;
         }
+        let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
         match animation.filter(|_| animated.contains(id)) {
-            None => m.notes(&slot.params, *id, &events, &cx, &mut notes),
+            None => m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes),
             Some(animation) => {
                 let mut copy = resolved.clone();
                 let mut start = 0;
@@ -202,7 +218,7 @@ pub fn notes_with(
                     let end = start + events[start..].partition_point(|e| e.step < first + window);
                     animation.apply(&mut copy, first as f64 / rate as f64, &Inputs::NONE);
                     let params = copy.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound)).map(|s| &s.params);
-                    m.notes(params.unwrap_or(&slot.params), *id, &events[start..end], &cx, &mut notes);
+                    m.notes_with(params.unwrap_or(&slot.params), graph, *id, &events[start..end], &cx, &mut notes);
                     start = end;
                 }
             }
@@ -212,17 +228,19 @@ pub fn notes_with(
     notes
 }
 
-/// [`mix`], with keyframed Sound settings and the video's time warp. See [`notes_with`].
+/// [`mix`], with the scene's library, keyframed Sound settings and the video's time warp.
+/// See [`notes_with`].
 pub fn mix_with(
     settings: &MixSettings,
     resolved: &Resolved,
+    library: &Library,
     log: &Log,
     mixes: &Mixes,
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
 ) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
-    let notes = notes_with(settings, resolved, log, mixes, animation, video_time);
+    let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
     if notes.is_empty() {
         return track;
     }
@@ -324,15 +342,15 @@ mod tests {
         log.push(hit(240));
         log.push(hit(720));
         let animation = Animation::new(&scene, &resolved);
-        let notes = notes_with(&settings(), &resolved, &log, &mixes, Some(&animation), &|t| t);
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].frame, notes[1].frame), (48_000, 144_000));
         assert!((notes[0].left - 10f32.powf(-10.0 / 20.0)).abs() < 1e-3, "{}", notes[0].left);
         assert!((notes[1].left - 10f32.powf(-30.0 / 20.0)).abs() < 1e-3, "{}", notes[1].left);
         // Without the animation both play at the setting's own value.
-        let plain = notes_with(&settings(), &resolved, &log, &mixes, None, &|t| t);
+        let plain = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t);
         assert_eq!((plain[0].left, plain[1].left), (1.0, 1.0));
-        let track = mix_with(&settings(), &resolved, &log, &mixes, Some(&animation), &|t| t);
+        let track = mix_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
         assert_eq!(track.frames(), 5 * 48_000);
         assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
     }
@@ -345,9 +363,9 @@ mod tests {
         mixes.add(TestPluck);
         let mut log = Log::default();
         log.push(hit(240));
-        let notes = notes_with(&settings(), &resolved, &log, &mixes, None, &|t| t + 1.0);
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t + 1.0);
         assert_eq!(notes[0].frame, 96_000);
         // A note warped past the end is dropped.
-        assert!(notes_with(&settings(), &resolved, &log, &mixes, None, &|t| t + 10.0).is_empty());
+        assert!(notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t + 10.0).is_empty());
     }
 }

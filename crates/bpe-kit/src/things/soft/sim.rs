@@ -7,7 +7,8 @@ use glam::Vec2;
 use super::solver::SoftWorld;
 use super::{SoftSettings, build};
 use crate::modules::bounce::BasicBounce;
-use crate::modules::motion::BasicMotion;
+use crate::modules::bounce::sim::BounceState;
+use crate::modules::motion::sim::MotionState;
 
 pub struct SoftSim;
 
@@ -50,8 +51,8 @@ fn harder(hardest: &mut Option<Impact>, impact: Impact) {
 
 /// The Motion module's gravity scale and drag, when it is the basic one.
 fn motion_of(world: &World, thing: ThingId) -> (f32, f32) {
-    match world.module_state(thing, SlotId::Motion).and_then(|(_, st)| st.as_any().downcast_ref::<BasicMotion>()) {
-        Some(m) => (m.gravity_scale, m.drag),
+    match world.module_state(thing, SlotId::Motion).and_then(|(_, st)| st.as_any().downcast_ref::<MotionState>()) {
+        Some(m) => (m.settings.gravity_scale, m.settings.drag),
         None => (1.0, 0.0),
     }
 }
@@ -59,8 +60,10 @@ fn motion_of(world: &World, thing: ThingId) -> (f32, f32) {
 /// How bouncy the points are against walls: the Bounce module's bounciness, scaled so the
 /// default gives [`SOFT_RESTITUTION`].
 fn restitution_of(world: &World, thing: ThingId) -> f32 {
-    match world.module_state(thing, SlotId::Bounce).and_then(|(_, st)| st.as_any().downcast_ref::<BasicBounce>()) {
-        Some(b) => (SOFT_RESTITUTION * b.bounciness / BasicBounce::default().bounciness.max(1e-3)).clamp(0.0, 0.9),
+    match world.module_state(thing, SlotId::Bounce).and_then(|(_, st)| st.as_any().downcast_ref::<BounceState>()) {
+        Some(b) => {
+            (SOFT_RESTITUTION * b.settings.bounciness / BasicBounce::default().bounciness.max(1e-3)).clamp(0.0, 0.9)
+        }
         None => SOFT_RESTITUTION,
     }
 }
@@ -201,6 +204,23 @@ mod tests {
         assert!(hits.iter().all(|e| e.kind == EventKind::Hit && e.b == Some(Party { thing: ARENA, item: 0 })));
         let squash = st.world.squash();
         assert!(squash > 0.6 && squash < 1.4, "{squash}");
+    }
+
+    /// The jelly's Motion module is the scene's basic one: its gravity scale reaches the points.
+    #[test]
+    fn a_soft_body_reads_its_motion_modules_gravity_scale() {
+        let (mut scene, soft) = scene_with_soft(Vec2::new(0.0, -300.0), |_| {});
+        scene.things.get_mut(&BALLS).unwrap().enabled = false;
+        let kit = kit();
+        let motion = crate::testing::module_of(&scene, &kit.registry, soft, SlotId::Motion);
+        scene.library.modules.get_mut(&motion).unwrap().params.set("gravity_scale", Value::Number(0.0));
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        w.advance_to(2.0, &kit.sims, &mut log);
+        let middle = soft_of(&w, soft).world.middle();
+        assert!((middle.y + 300.0).abs() < 20.0, "weightless, it stays where it was dropped: {middle:?}");
     }
 
     #[test]

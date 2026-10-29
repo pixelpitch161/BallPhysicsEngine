@@ -10,6 +10,7 @@ pub mod motion;
 pub mod motion_flock;
 pub mod motion_liquid;
 pub mod particles;
+pub mod rules;
 pub mod shader;
 pub mod sound;
 pub mod trail;

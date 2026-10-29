@@ -1,24 +1,39 @@
-//! Answering a contact: keep some speed, gain some, grow a little, and bump into other balls.
+//! Answering a contact: keep some speed, gain some, grow a little, rub some off with friction,
+//! and bump into other balls. A module whose graph has been edited runs the graph instead, with
+//! the native answer standing in for any output it leaves unwired.
 
-use bpe_core::{Params, Settings, Target};
-use bpe_runtime::{Bodies, Contact, Limits, ModuleSim, PairRule, ThingState, reflect, state};
+use bpe_core::{ModuleGraph, Params, Settings, SlotId, Target};
+use bpe_runtime::{Bodies, Contact, Limits, ModuleSim, PairRule, SimCx, ThingState, reflect, state};
+use bpe_vm::{Ball, NoHost, Program, Role, Val, Vm};
+use glam::Vec2;
 
 use super::BasicBounce;
+use crate::graphs::{SeedHost, bind, compile_module};
 
 pub struct BasicBounceSim;
 
-/// The bounce itself: reflect with `bounciness`, then on a real hit gain speed and grow by
-/// `grow`, and never go faster than the top speed.
-fn answer(
+/// What a bounce module keeps while the world runs.
+#[derive(Clone, Debug)]
+pub struct BounceState {
+    pub settings: BasicBounce,
+    /// The compiled graph, only for an edited module whose graph compiles.
+    pub program: Option<Program>,
+}
+
+/// The native answer: the velocity after the bounce and the radius after it. Reflect with the
+/// bounciness (the special one against a special target), rub sideways speed off with friction,
+/// then on a real hit gain speed and grow, and never go faster than the top speed.
+fn native(
     b: &BasicBounce,
     contact: &Contact,
-    bodies: &mut Bodies,
-    item: usize,
+    velocity: Vec2,
+    radius: f32,
+    hit: bool,
     limits: &Limits,
-    bounciness: f32,
-    grow: f32,
-) {
-    let mut v = reflect(bodies.velocity[item], contact, bounciness);
+    special: bool,
+) -> (Vec2, f32) {
+    let (bounciness, grow) = if special { (b.special_bounciness, b.special_grow) } else { (b.bounciness, b.grow) };
+    let mut v = reflect(velocity, contact, bounciness);
     // Friction rubs sideways speed off, up to what the push off the wall allows.
     if b.friction > 0.0 {
         let relative = v - contact.wall_velocity;
@@ -29,18 +44,19 @@ fn answer(
             v -= sideways * (speed.min(most) / speed);
         }
     }
+    let mut r = radius;
     // Resting touches push the ball out but are not hits: no gain, no growth.
-    if contact.speed >= limits.resting {
+    if hit {
         v *= b.speed_gain;
         let max = b.max_size.max(0.5);
-        bodies.radius[item] = (bodies.radius[item] + grow).clamp(0.5, max);
+        r = (radius + grow).clamp(0.5, max);
     }
     let top = b.top_speed.min(limits.ceiling);
     let speed = v.length();
     if speed > top {
         v *= top / speed;
     }
-    bodies.velocity[item] = v;
+    (v, r)
 }
 
 impl ModuleSim for BasicBounceSim {
@@ -49,12 +65,26 @@ impl ModuleSim for BasicBounceSim {
     }
 
     fn prepare(&self, params: &Params) -> Box<dyn ThingState> {
-        Box::new(BasicBounce::from_params(params))
+        Box::new(BounceState { settings: BasicBounce::from_params(params), program: None })
+    }
+
+    fn prepare_graph(&self, params: &Params, graph: Option<&ModuleGraph>) -> Box<dyn ThingState> {
+        let mut st = BounceState { settings: BasicBounce::from_params(params), program: None };
+        if let Some(g) = graph
+            && g.custom
+            && let Ok(p) = compile_module(SlotId::Bounce, &bind(&g.graph, params))
+            && !p.is_empty()
+        {
+            // "Takes over" is decided once, before anything moves.
+            let zeros: Vec<Val> = Role::Bounce.inputs().iter().map(|(_, ty)| Val::zero(*ty)).collect();
+            st.settings.takes_over = Vm::eval(&p, &NoHost, 0.0, &zeros, 0).boolean(2, st.settings.takes_over);
+            st.program = Some(p);
+        }
+        Box::new(st)
     }
 
     fn respond(&self, st: &dyn ThingState, contact: &Contact, bodies: &mut Bodies, item: usize, limits: &Limits) {
-        let b = state::<BasicBounce>(st);
-        answer(b, contact, bodies, item, limits, b.bounciness, b.grow);
+        self.respond_against(st, contact, bodies, item, limits, false);
     }
 
     fn respond_against(
@@ -66,34 +96,81 @@ impl ModuleSim for BasicBounceSim {
         limits: &Limits,
         special: bool,
     ) {
-        let b = state::<BasicBounce>(st);
-        if special {
-            answer(b, contact, bodies, item, limits, b.special_bounciness, b.special_grow);
+        let b = &state::<BounceState>(st).settings;
+        let hit = contact.speed >= limits.resting;
+        let (v, r) = native(b, contact, bodies.velocity[item], bodies.radius[item], hit, limits, special);
+        bodies.velocity[item] = v;
+        bodies.radius[item] = r;
+    }
+
+    /// An edited graph answers every hit, special or not: what it does against a special target
+    /// is up to its blocks.
+    #[allow(clippy::too_many_arguments)]
+    fn respond_at(
+        &self,
+        st: &dyn ThingState,
+        contact: &Contact,
+        bodies: &mut Bodies,
+        item: usize,
+        limits: &Limits,
+        special: bool,
+        cx: &SimCx,
+    ) {
+        let st = state::<BounceState>(st);
+        let Some(program) = &st.program else {
+            return self.respond_against(st, contact, bodies, item, limits, special);
+        };
+        let velocity = bodies.velocity[item];
+        let radius = bodies.radius[item];
+        let hits = bodies.hits[item];
+        let hit = contact.speed >= limits.resting;
+        let inputs = [
+            Val::Ball(Some(Ball { thing: cx.thing, item: item as u32 })),
+            Val::Vector(velocity),
+            Val::Vector(contact.normal),
+            Val::Vector(contact.wall_velocity),
+            Val::Number(contact.speed),
+            Val::Number(radius),
+            Val::Number(hits as f32),
+            Val::Bool(hit),
+            Val::Number(cx.time),
+        ];
+        let salt = (item as u64) << 32 | hits as u64;
+        let out = Vm::eval(program, &SeedHost(cx.seed), cx.time, &inputs, salt);
+        let (native_v, native_r) = native(&st.settings, contact, velocity, radius, hit, limits, special);
+        bodies.velocity[item] = if out.wired(0) {
+            let mut v = out.vector(0, native_v);
+            let speed = v.length();
+            if speed > limits.ceiling {
+                v *= limits.ceiling / speed;
+            }
+            v
         } else {
-            answer(b, contact, bodies, item, limits, b.bounciness, b.grow);
-        }
+            native_v
+        };
+        bodies.radius[item] = if out.wired(1) { out.number(1, radius).clamp(0.5, 400.0) } else { native_r };
     }
 
     fn takes_over(&self, st: &dyn ThingState) -> bool {
-        state::<BasicBounce>(st).takes_over
+        state::<BounceState>(st).settings.takes_over
     }
 
     fn bounciness(&self, st: &dyn ThingState) -> f32 {
-        state::<BasicBounce>(st).bounciness
+        state::<BounceState>(st).settings.bounciness
     }
 
     fn pairs(&self, st: &dyn ThingState) -> Option<PairRule> {
-        let b = state::<BasicBounce>(st);
+        let b = &state::<BounceState>(st).settings;
         b.hit_balls.then(|| PairRule { target: b.balls_to_hit.clone(), friction: b.friction })
     }
 
     fn special_target(&self, st: &dyn ThingState) -> Option<Target> {
-        let b = state::<BasicBounce>(st);
+        let b = &state::<BounceState>(st).settings;
         b.special.then(|| b.special_target.clone())
     }
 
     fn respond_pair(&self, st: &dyn ThingState, bodies: &mut Bodies, item: usize, _speed: f32, limits: &Limits) {
-        let b = state::<BasicBounce>(st);
+        let b = &state::<BounceState>(st).settings;
         let mut v = bodies.velocity[item] * b.speed_gain;
         let max = b.max_size.max(0.5);
         bodies.radius[item] = (bodies.radius[item] + b.grow).clamp(0.5, max);
@@ -106,7 +183,7 @@ impl ModuleSim for BasicBounceSim {
     }
 
     fn effects(&self, st: &dyn ThingState, bodies: &mut Bodies, item: usize, _speed: f32, _limits: &Limits) -> bool {
-        let b = state::<BasicBounce>(st);
+        let b = &state::<BounceState>(st).settings;
         b.pops_after > 0 && bodies.hits[item] >= b.pops_after
     }
 }

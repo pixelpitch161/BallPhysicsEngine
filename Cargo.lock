@@ -316,12 +316,14 @@ version = "0.1.0"
 dependencies = [
  "bpe-core",
  "bpe-gfx",
+ "bpe-graph",
  "bpe-mix",
  "bpe-music",
  "bpe-render",
  "bpe-runtime",
  "bpe-scene",
  "bpe-sim",
+ "bpe-vm",
  "glam",
  "hound",
  "png",
@@ -372,8 +374,10 @@ name = "bpe-runtime"
 version = "0.1.0"
 dependencies = [
  "bpe-core",
+ "bpe-graph",
  "bpe-settings-derive",
  "glam",
+ "ron",
 ]
 
 [[package]]
@@ -417,15 +421,26 @@ dependencies = [
  "bpe-cli",
  "bpe-core",
  "bpe-gfx",
+ "bpe-graph",
  "bpe-kit",
  "bpe-mix",
  "bpe-runtime",
+ "bpe-vm",
  "cpal",
  "eframe",
  "egui-wgpu",
  "egui_kittest",
  "glam",
  "rfd",
+]
+
+[[package]]
+name = "bpe-vm"
+version = "0.1.0"
+dependencies = [
+ "bpe-core",
+ "bpe-graph",
+ "glam",
 ]
 
 [[package]]

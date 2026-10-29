@@ -1,5 +1,6 @@
 //! Basic motion: gravity, air drag and wind.
 
+pub mod graph;
 pub mod sim;
 
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
@@ -41,5 +42,8 @@ impl ModuleKind for BasicMotionKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         BasicMotion::defs()
+    }
+    fn template(&self) -> Option<bpe_graph::Graph> {
+        Some(graph::template())
     }
 }

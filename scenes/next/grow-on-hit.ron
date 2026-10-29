@@ -1,0 +1,189 @@
+(
+    format: 2,
+    name: "Grow on hit",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Trio",
+            kind: "balls",
+            parent: Some(0),
+            params: {
+                "arrangement": Choice("ring"),
+                "count": Int(3),
+                "radius": Number(18.0),
+                "ring_radius": Number(160.0),
+                "velocity": Vec2((420.0, -260.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+                Rules: Linked(
+                    module: 5,
+                ),
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Grow",
+                slot: Rules,
+                kind: "rules.graph",
+                graph: Some((
+                    graph: (
+                        name: "Rules",
+                        nodes: [
+                            (
+                                id: 1,
+                                kind: "when.hit",
+                                pos: (40.0, 40.0),
+                                params: {
+                                    "what": Text("anything"),
+                                    "who": Text("me"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 2,
+                                kind: "do.grow",
+                                pos: (260.0, 40.0),
+                                params: {
+                                    "by": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 3,
+                                kind: "when.hit",
+                                pos: (40.0, 280.0),
+                                params: {
+                                    "what": Text("anything"),
+                                    "who": Text("me"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 4,
+                                kind: "do.counter",
+                                pos: (260.0, 280.0),
+                                params: {
+                                    "add": Number(1.0),
+                                    "id": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                        ],
+                        links: [
+                            (
+                                from: (1, 0),
+                                to: (2, 0),
+                            ),
+                            (
+                                from: (3, 0),
+                                to: (4, 0),
+                            ),
+                        ],
+                        notes: [
+                            (
+                                pos: (40.0, 40.0),
+                                size: (0.0, 0.0),
+                                text: "Add a rule with the Add rule menu, or drop a When block here.",
+                                color: (0.9, 0.8, 0.3, 1.0),
+                            ),
+                        ],
+                        enabled: true,
+                    ),
+                    template: "rules.graph",
+                    custom: true,
+                    simple: [
+                        (2, "by"),
+                        (4, "add"),
+                    ],
+                )),
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 6,
+)

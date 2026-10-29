@@ -7,7 +7,7 @@ use bpe_gfx::{BallInstance, DrawCx, Frame, GpuLiquid, LiquidLayer, Points, Thing
 use bpe_runtime::state;
 
 use super::sim::LiquidState;
-use crate::modules::bounce::BasicBounce;
+use crate::modules::bounce::sim::BounceState;
 use crate::modules::look::ClassicLook;
 use crate::modules::look_liquid::LiquidLook;
 use crate::modules::motion_liquid::Flowing;
@@ -54,7 +54,7 @@ impl ThingDraw for LiquidDraw {
                 _ => Flowing::default(),
             };
             let bounciness = match cx.world.module_state(cx.thing.id, SlotId::Bounce) {
-                Some(("bounce.basic", b)) => state::<BasicBounce>(b).bounciness,
+                Some(("bounce.basic", b)) => state::<BounceState>(b).settings.bounciness,
                 _ => 0.0,
             };
             let gpu = GpuLiquid {

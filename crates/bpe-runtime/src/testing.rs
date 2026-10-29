@@ -7,8 +7,8 @@ use bpe_core::{
 };
 use glam::Vec2;
 
-use crate::plugins::{ModuleSim, PairRule, Sims, ThingSim, ThingState};
-use crate::{Bodies, Contact, Limits, Outline, Pose, Solid, Solids, Wall, World};
+use crate::plugins::{ModuleSim, PairRule, RuleCx, Sims, ThingSim, ThingState};
+use crate::{Action, Bodies, Contact, EventKind, Limits, Outline, Pose, Solid, Solids, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
@@ -84,6 +84,17 @@ struct BumpySettings {
 impl Default for BumpySettings {
     fn default() -> Self {
         Self { bounciness: 1.0, target: Target::Anything, pops_after: 0 }
+    }
+}
+
+#[derive(Settings)]
+struct GravitySettings {
+    #[setting(label = "Scale", range(0, 10))]
+    scale: f32,
+}
+impl Default for GravitySettings {
+    fn default() -> Self {
+        Self { scale: 1.0 }
     }
 }
 
@@ -356,21 +367,58 @@ impl ThingSim for TestPeg {
     }
 }
 
-/// Gravity for everything, so balls fall.
+/// Gravity for everything, so balls fall. Its state is the scale, an `f32`.
 struct TestGravity;
 impl ModuleSim for TestGravity {
     fn kind(&self) -> &'static str {
         "motion.gravity"
     }
+    fn prepare(&self, params: &Params) -> Box<dyn ThingState> {
+        Box::new(GravitySettings::from_params(params).scale)
+    }
+    fn forces(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32) {
+        let scale = *crate::state::<f32>(state);
+        for (v, alive) in bodies.velocity.iter_mut().zip(&bodies.alive) {
+            if *alive {
+                *v += gravity * scale * dt;
+            }
+        }
+    }
+}
+
+/// Grows a ball by one pixel on every hit of a thing in the module's scope.
+pub struct GrowOnHit;
+impl ModuleSim for GrowOnHit {
+    fn kind(&self) -> &'static str {
+        "rules.test"
+    }
     fn prepare(&self, _params: &Params) -> Box<dyn ThingState> {
         Box::new(())
     }
-    fn forces(&self, _state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32) {
-        for (v, alive) in bodies.velocity.iter_mut().zip(&bodies.alive) {
-            if *alive {
-                *v += gravity * dt;
+    fn rules(&self, _state: &mut dyn ThingState, cx: &mut RuleCx) {
+        for e in cx.events {
+            if e.kind == EventKind::Hit && cx.world.in_scope(cx.thing, e.a.thing) {
+                cx.actions.push(Action::Grow { ball: e.a, by: 1.0 });
             }
         }
+    }
+}
+struct RulesTestKind;
+impl ModuleKind for RulesTestKind {
+    fn id(&self) -> &'static str {
+        "rules.test"
+    }
+    fn name(&self) -> &'static str {
+        "Grow on hit"
+    }
+    fn help(&self) -> &'static str {
+        ""
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Rules
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        NoSettings::defs()
     }
 }
 struct GravityKind;
@@ -388,7 +436,7 @@ impl ModuleKind for GravityKind {
         SlotId::Motion
     }
     fn settings(&self) -> &'static [SettingDef] {
-        NoSettings::defs()
+        GravitySettings::defs()
     }
 }
 
@@ -456,6 +504,7 @@ pub fn reg() -> Registry {
     r.add_module(BouncyKind);
     r.add_module(BumpyKind);
     r.add_module(TrailKind);
+    r.add_module(RulesTestKind);
     r
 }
 
@@ -471,6 +520,7 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
     s.add_module(Bumpy);
+    s.add_module(GrowOnHit);
     s
 }
 
@@ -486,6 +536,19 @@ pub fn dots_in_ring(count: u32) -> (Scene, Resolved, Sims) {
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(true))
+}
+
+/// The dots in a ring with a grow-on-hit Rules module, linked on the root (and inherited by
+/// the wall and the dots) or on the dots alone.
+pub fn dots_with_rules(count: u32, owner_is_root: bool) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(count);
+    let reg = reg();
+    let rules = scene.add_module(&reg, "rules.test", "Grow").unwrap();
+    let owner = if owner_is_root { ThingId::ROOT } else { DOTS };
+    scene.link(&reg, owner, SlotId::Rules, rules).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
 }
 
 /// One dot riding on a ring that turns clockwise at 1 rad/s.

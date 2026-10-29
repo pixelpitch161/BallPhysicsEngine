@@ -9,6 +9,7 @@ mod export_window;
 mod history;
 mod inspector;
 mod library;
+mod nodes;
 mod preview;
 mod selection;
 mod settings;

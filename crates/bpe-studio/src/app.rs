@@ -5,14 +5,15 @@ use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::library::LibraryWindow;
+use crate::nodes::NodePanel;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::sound_job::SoundJob;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, library, preview, settings, theme, timeline, tree};
-use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
-use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp};
+use bpe_core::{Resolved, Scene, Settings, ThingId};
+use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
@@ -42,6 +43,8 @@ pub struct Panels {
     pub sound: SoundJob,
     pub timeline: Timeline,
     pub library: LibraryWindow,
+    /// The node panel under the preview.
+    pub nodes: NodePanel,
 }
 
 enum ToolbarClick {
@@ -117,7 +120,7 @@ impl Studio {
     pub fn headless() -> Self {
         let kit = Arc::new(bpe_kit::kit());
         let scene = bpe_kit::new_scene(&kit.registry);
-        let resolved = resolve(&scene, &kit.registry);
+        let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
         Self {
@@ -194,7 +197,7 @@ impl Studio {
     /// Re-resolves after any change. The playback starts over only when the physics changed:
     /// a new colour keeps the balls where they are.
     fn scene_changed(&mut self) {
-        self.resolved = resolve(&self.scene, &self.kit.registry);
+        self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.start_song();
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         if fingerprint != self.fingerprint {
@@ -214,7 +217,7 @@ impl Studio {
         self.time = 0.0;
         self.set_playing(false);
         self.recorded = true;
-        self.resolved = resolve(&self.scene, &self.kit.registry);
+        self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.start_song();
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
@@ -454,6 +457,8 @@ impl Studio {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.text_edit_focused();
+        // A node canvas under the pointer uses Space, Delete and the arrows itself.
+        let canvas_keys = crate::nodes::take_wants_keyboard(ctx);
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
             self.save(true);
@@ -475,6 +480,9 @@ impl Studio {
         }
         if pressed(Modifiers::COMMAND, Key::Z) {
             self.undo();
+        }
+        if canvas_keys {
+            return;
         }
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
@@ -632,6 +640,8 @@ impl eframe::App for Studio {
             .min_size(110.0)
             .max_size(520.0)
             .show(ui, |ui| timeline::show(ui, self));
+        // Declared after the timeline so it sits above it, right under the preview.
+        self.panels.nodes.show(ui, &mut self.scene, &self.kit, &self.resolved, Some(self.playback.world()));
         let tree = egui::Panel::left("tree")
             .default_size(260.0)
             .min_size(180.0)
@@ -660,6 +670,7 @@ impl eframe::App for Studio {
             .show(ui, |ui| {
                 // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
                 ui.set_min_width(ui.available_width());
+                self.panels.inspector.nodes_open = self.panels.nodes.open;
                 let time = self.sim_time();
                 inspector::show(
                     ui,
@@ -671,6 +682,9 @@ impl eframe::App for Studio {
                     time,
                 )
             });
+        if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
+            self.panels.nodes.open_at(thing, slot);
+        }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);

@@ -6,7 +6,7 @@ use glam::Vec2;
 
 use super::pbf::{Pbf, Rect, Scratch, lattice, spacing_for};
 use super::{LiquidSettings, LiquidStart};
-use crate::modules::bounce::BasicBounce;
+use crate::modules::bounce::sim::BounceState;
 use crate::modules::motion_liquid::Flowing;
 use crate::rng::Rng;
 
@@ -196,7 +196,7 @@ impl ThingSim for LiquidSim {
             _ => Flowing::default(),
         };
         let bounciness = match world.module_state(me, SlotId::Bounce) {
-            Some(("bounce.basic", st)) => state::<BasicBounce>(st).bounciness,
+            Some(("bounce.basic", st)) => state::<BounceState>(st).settings.bounciness,
             _ => 0.0,
         };
         let pushers: Vec<(Vec2, f32)> = world

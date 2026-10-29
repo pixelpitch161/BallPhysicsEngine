@@ -2,6 +2,7 @@
 //! its settings, its simulation, its drawing and its sound side by side.
 
 pub mod gizmo;
+pub mod graphs;
 pub mod modules;
 pub mod music;
 pub mod rng;
@@ -19,7 +20,8 @@ use bpe_runtime::{Log, Sims};
 use glam::Vec2;
 
 pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
-pub use modules::bounce::sim::BasicBounceSim;
+pub use graphs::{graph_problems, resolve_scene, role_of};
+pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::drums::mix::DrumSoundMix;
 pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
@@ -29,13 +31,14 @@ pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
-pub use modules::motion::sim::BasicMotionSim;
+pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::motion_flock::{Flocking, FlockingKind};
 pub use modules::motion_liquid::sim::FlowingSim;
 pub use modules::motion_liquid::{Flowing, FlowingKind};
 pub use modules::particles::draw::BurstDraw;
 pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
+pub use modules::rules::{Recipe, RulesKind, RulesSim, RulesState, recipes};
 pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
@@ -86,6 +89,7 @@ pub fn sims() -> Sims {
     s.add_thing(ObstacleSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
+    s.add_module(RulesSim);
     s.add_module(FlowingSim);
     s
 }
@@ -216,9 +220,10 @@ pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> So
     let animation = bpe_core::Animation::new(scene, resolved);
     let animation = (!animation.is_empty()).then_some(&animation);
     let warp = warp_for(scene, resolved, log);
-    let mut track = bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, log, &kit.mixes, animation, &|t| {
-        warp.video_time(t)
-    });
+    let mut track =
+        bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, &scene.library, log, &kit.mixes, animation, &|t| {
+            warp.video_time(t)
+        });
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
@@ -256,6 +261,7 @@ pub fn registry() -> Registry {
     for k in modules::shader::kinds() {
         r.add_module(k);
     }
+    r.add_module(RulesKind);
     r
 }
 

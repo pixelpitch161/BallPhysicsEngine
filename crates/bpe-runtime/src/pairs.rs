@@ -9,6 +9,7 @@ use bpe_core::{SlotId, Target, ThingId};
 use glam::Vec2;
 
 use crate::plugins::{Limits, ModuleSim, PairRule, Sims, ThingState};
+use crate::world::Prepared;
 use crate::{Bodies, Event, EventKind, Log, Party};
 
 /// Points sorted into square cells, so each one only meets its neighbours.
@@ -141,9 +142,6 @@ struct Hold {
     push_impulse: f32,
 }
 
-/// A thing's prepared modules: per slot, the module kind and its state.
-pub(crate) type Prepared = BTreeMap<SlotId, (String, Box<dyn ThingState>)>;
-
 /// One ball that can bump into others.
 struct Ball {
     thing: ThingId,
@@ -220,11 +218,11 @@ pub(crate) fn collide_pairs(
         if b.silent {
             continue;
         }
-        let Some((kind, state)) = modules.get(thing).and_then(|m| m.get(&SlotId::Bounce)) else { continue };
-        let Some(sim) = sims.module(kind) else { continue };
-        let Some(rule) = sim.pairs(state.as_ref()) else { continue };
-        let bounciness = sim.bounciness(state.as_ref());
-        rules.push((*thing, sim, state.as_ref(), rule, bounciness));
+        let Some(s) = modules.get(thing).and_then(|m| m.get(&SlotId::Bounce)) else { continue };
+        let Some(sim) = sims.module(&s.kind) else { continue };
+        let Some(rule) = sim.pairs(s.state.as_ref()) else { continue };
+        let bounciness = sim.bounciness(s.state.as_ref());
+        rules.push((*thing, sim, s.state.as_ref(), rule, bounciness));
         let rule = rules.len() - 1;
         for i in 0..b.len() {
             if b.alive[i] {

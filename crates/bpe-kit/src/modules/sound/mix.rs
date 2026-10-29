@@ -1,40 +1,113 @@
-//! Turning hits into notes of the current chord.
+//! Turning hits into notes of the current chord. A module whose graph has been edited asks the
+//! graph about every hit instead, with the native answer standing in for any output it leaves
+//! unwired.
 
 use std::collections::BTreeMap;
 use std::f32::consts::FRAC_PI_4;
 
-use bpe_core::{Params, Settings, ThingId};
+use bpe_core::{ModuleGraph, Params, Settings, SlotId, ThingId};
 use bpe_mix::{Chords, MixCx, ModuleMix, Note, SAMPLE_RATE, mix64};
 use bpe_runtime::{Event, EventKind, Party};
+use bpe_vm::{Ball, Host, Program, Val, Vm};
 
 use super::{NoteSound, PitchBy, PlaysWhen};
+use crate::graphs::{bind, compile_module};
 
 pub struct NoteSoundMix;
 
-impl ModuleMix for NoteSoundMix {
-    fn kind(&self) -> &'static str {
-        "sound.notes"
-    }
+/// What one hit plays: the native answer, and what the compiled path starts from.
+struct Played {
+    play: bool,
+    key: u8,
+    velocity: f32,
+    volume: f32,
+    pan: f32,
+    decay: f32,
+    brightness: f32,
+}
 
-    fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>) {
-        let s = NoteSound::from_params(params);
-        let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
-        let rate = cx.settings.steps_per_second.max(1);
-        let gain_db = 10f32.powf(s.volume / 20.0);
-        let span = (s.loudest_hit - s.quietest_hit).max(1.0);
-        // How often each ball has hit, as far as this thing has seen.
-        let mut hits: BTreeMap<Party, u32> = BTreeMap::new();
-        let mut last_note: Option<f64> = None;
-        for e in events {
-            if e.kind != EventKind::Hit {
-                continue;
-            }
-            let hitting = e.a.thing == thing;
-            let other = if hitting { e.b } else { Some(e.a) };
-            let ball = if hitting { e.a } else { e.b.unwrap_or(e.a) };
-            let count = hits.entry(ball).or_insert(0);
+/// One event this sound speaks for, with what the mixer knows about it.
+struct Heard<'a> {
+    event: &'a Event,
+    time: f64,
+    /// The event's place in the whole log, for anything random.
+    index: u64,
+    /// How often the ball has hit so far, counting this one.
+    count: u32,
+}
+
+/// The native answer for one hit: whether it is loud enough, which note of the chord it plays
+/// (at random, climbing with the hit's speed or with the ball's hits) and how.
+fn native(s: &NoteSound, chords: &Chords, h: &Heard, cx: &MixCx) -> Played {
+    let span = (s.loudest_hit - s.quietest_hit).max(1.0);
+    let velocity = ((h.event.speed - s.quietest_hit) / span).clamp(0.0, 1.0);
+    let candidates = chords.notes_at(h.time);
+    let key = if candidates.is_empty() {
+        0
+    } else {
+        let pick = match s.pitch_by {
+            PitchBy::Random => mix64(cx.settings.seed ^ h.index) as usize % candidates.len(),
+            PitchBy::Speed => (velocity * (candidates.len() - 1) as f32).round() as usize,
+            PitchBy::Hits => (h.count.max(1) as usize - 1) % candidates.len(),
+        };
+        candidates[pick]
+    };
+    Played {
+        play: h.event.speed >= s.quietest_hit && !candidates.is_empty(),
+        key,
+        velocity,
+        volume: s.volume,
+        pan: (h.event.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width,
+        decay: s.decay,
+        brightness: s.brightness,
+    }
+}
+
+fn note(s: &NoteSound, frame: usize, p: &Played) -> Note {
+    let gain = p.velocity * p.velocity.sqrt() * 10f32.powf(p.volume / 20.0);
+    let angle = (p.pan + 1.0) * FRAC_PI_4;
+    Note {
+        frame,
+        instrument: s.instrument,
+        key: p.key,
+        velocity: p.velocity,
+        left: gain * angle.cos(),
+        right: gain * angle.sin(),
+        decay: p.decay,
+        brightness: p.brightness,
+    }
+}
+
+/// Walks the events this sound speaks for, in order: the hits "Plays when" and "Only hits
+/// against" ask for, and the Note events a rule logs for the thing's own balls. Each one goes
+/// to `play` with its native answer, which says what plays, if anything; a note closer than
+/// "Shortest gap" to the last one played is dropped first.
+fn each_note(
+    s: &NoteSound,
+    thing: ThingId,
+    events: &[Event],
+    cx: &MixCx,
+    mut play: impl FnMut(&Heard, Played) -> Option<Played>,
+    out: &mut Vec<Note>,
+) {
+    let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
+    let rate = cx.settings.steps_per_second.max(1);
+    // How often each ball has hit, as far as this thing has seen.
+    let mut hits: BTreeMap<Party, u32> = BTreeMap::new();
+    let mut last_note: Option<f64> = None;
+    for e in events {
+        if !matches!(e.kind, EventKind::Hit | EventKind::Note) {
+            continue;
+        }
+        let hitting = e.a.thing == thing;
+        let other = if hitting { e.b } else { Some(e.a) };
+        let ball = if hitting { e.a } else { e.b.unwrap_or(e.a) };
+        let count = hits.entry(ball).or_insert(0);
+        if e.kind == EventKind::Hit {
             *count += 1;
-            let count = *count;
+        }
+        let count = *count;
+        if e.kind == EventKind::Hit {
             // Two balls of this thing hitting each other: the other one has hit too.
             if let Some(other) = other
                 && other != ball
@@ -47,7 +120,7 @@ impl ModuleMix for NoteSoundMix {
                 PlaysWhen::BeingHit => !hitting,
                 PlaysWhen::Both => true,
             };
-            if !wanted || e.speed < s.quietest_hit {
+            if !wanted {
                 continue;
             }
             if let Some(other) = other
@@ -55,42 +128,108 @@ impl ModuleMix for NoteSoundMix {
             {
                 continue;
             }
-            let time = e.time(rate);
-            if let Some(last) = last_note
-                && s.min_gap > 0.0
-                && time - last < s.min_gap as f64
-            {
-                continue;
-            }
-            let frame = ((cx.video_time)(time) * SAMPLE_RATE as f64).round() as usize;
-            if frame >= cx.frames {
-                continue;
-            }
-            let candidates = chords.notes_at(time);
-            if candidates.is_empty() {
-                continue;
-            }
-            let velocity = ((e.speed - s.quietest_hit) / span).clamp(0.0, 1.0);
-            let pick = match s.pitch_by {
-                PitchBy::Random => mix64(cx.settings.seed ^ (cx.hit_index)(e)) as usize % candidates.len(),
-                PitchBy::Speed => (velocity * (candidates.len() - 1) as f32).round() as usize,
-                PitchBy::Hits => (count as usize - 1) % candidates.len(),
-            };
-            last_note = Some(time);
-            let gain = velocity * velocity.sqrt() * gain_db;
-            let pan = (e.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width;
-            let angle = (pan + 1.0) * FRAC_PI_4;
-            out.push(Note {
-                frame,
-                instrument: s.instrument,
-                key: candidates[pick],
-                velocity,
-                left: gain * angle.cos(),
-                right: gain * angle.sin(),
-                decay: s.decay,
-                brightness: s.brightness,
-            });
+        } else if !hitting {
+            // A rule's note is for the ball it names, whoever else hears about it.
+            continue;
         }
+        let time = e.time(rate);
+        if let Some(last) = last_note
+            && s.min_gap > 0.0
+            && time - last < s.min_gap as f64
+        {
+            continue;
+        }
+        let frame = ((cx.video_time)(time) * SAMPLE_RATE as f64).round() as usize;
+        if frame >= cx.frames {
+            continue;
+        }
+        let heard = Heard { event: e, time, index: (cx.hit_index)(e), count };
+        let n = native(s, &chords, &heard, cx);
+        let Some(p) = play(&heard, n) else { continue };
+        last_note = Some(time);
+        out.push(note(s, frame, &p));
+    }
+}
+
+/// A sound graph's view of the chords, for one hit.
+struct SoundHost<'a> {
+    chords: &'a Chords,
+    seed: u64,
+    /// The hit's time, kept exact so the chord is the one the native path hears.
+    time: f64,
+}
+
+impl Host for SoundHost<'_> {
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    fn chord_note(&self, _time: f32, index: u64) -> Option<f32> {
+        let candidates = self.chords.notes_at(self.time);
+        (!candidates.is_empty()).then(|| candidates[mix64(self.seed ^ index) as usize % candidates.len()] as f32)
+    }
+}
+
+impl NoteSoundMix {
+    fn compiled(params: &Params, graph: Option<&ModuleGraph>) -> Option<Program> {
+        let g = graph.filter(|g| g.custom)?;
+        compile_module(SlotId::Sound, &bind(&g.graph, params)).ok().filter(|p| !p.is_empty())
+    }
+}
+
+impl ModuleMix for NoteSoundMix {
+    fn kind(&self) -> &'static str {
+        "sound.notes"
+    }
+
+    fn notes(&self, params: &Params, thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>) {
+        let s = NoteSound::from_params(params);
+        each_note(&s, thing, events, cx, |_, n| n.play.then_some(n), out);
+    }
+
+    fn notes_with(
+        &self,
+        params: &Params,
+        graph: Option<&ModuleGraph>,
+        thing: ThingId,
+        events: &[Event],
+        cx: &MixCx,
+        out: &mut Vec<Note>,
+    ) {
+        let Some(program) = Self::compiled(params, graph) else { return self.notes(params, thing, events, cx, out) };
+        let s = NoteSound::from_params(params);
+        let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
+        let half_width = cx.settings.half_width.max(1.0);
+        each_note(
+            &s,
+            thing,
+            events,
+            cx,
+            |h, n| {
+                let e = h.event;
+                let host = SoundHost { chords: &chords, seed: cx.settings.seed, time: h.time };
+                let inputs = [
+                    Val::Ball(Some(Ball { thing: e.a.thing, item: e.a.item })),
+                    Val::Number(e.speed),
+                    Val::Number(h.index as f32),
+                    Val::Number(h.time as f32),
+                    Val::Number(e.point.x / half_width),
+                    Val::Number(e.point.y / half_width),
+                    Val::Number(h.count as f32),
+                ];
+                let o = Vm::eval(&program, &host, h.time as f32, &inputs, h.index);
+                o.boolean(0, n.play).then(|| Played {
+                    play: true,
+                    key: o.number(1, n.key as f32).round().clamp(0.0, 127.0) as u8,
+                    velocity: o.number(2, n.velocity).clamp(0.0, 1.0),
+                    volume: o.number(3, n.volume).clamp(-80.0, 24.0),
+                    pan: o.number(4, n.pan).clamp(-1.0, 1.0),
+                    decay: o.number(5, n.decay).clamp(0.01, 30.0),
+                    brightness: o.number(6, n.brightness).clamp(0.0, 1.0),
+                })
+            },
+            out,
+        );
     }
 }
 
@@ -228,6 +367,20 @@ mod tests {
         assert!(track.samples.iter().all(|s| s.abs() <= 0.9));
         assert!(mix_scene(&scene, &resolved, &Log::default(), &kit).samples.iter().all(|&s| s == 0.0));
         assert_eq!(mix_scene(&scene, &resolved, &log, &kit).samples, track.samples);
+    }
+
+    #[test]
+    fn a_note_action_plays_a_note() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut log = Log::default();
+        log.push(Event { kind: EventKind::Note, b: None, ..hit(240, 0.0, 600.0) });
+        let track = mix_scene(&scene, &resolved, &log, &kit);
+        assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
+        log.push(Event { kind: EventKind::Spawn, b: None, ..hit(480, 0.0, 600.0) });
+        let with_spawn = mix_scene(&scene, &resolved, &log, &kit);
+        assert_eq!(with_spawn.samples, track.samples, "only hits and notes make a sound");
     }
 
     #[test]

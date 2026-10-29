@@ -10,6 +10,8 @@ bpe-core.workspace = true
 bpe-mix.workspace = true
 bpe-runtime.workspace = true
 bpe-gfx.workspace = true
+bpe-graph.workspace = true
+bpe-vm.workspace = true
 bpe-music = { workspace = true, features = ["decode"] }
 glam.workspace = true
 

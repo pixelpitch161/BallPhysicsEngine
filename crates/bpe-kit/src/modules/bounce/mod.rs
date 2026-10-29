@@ -1,5 +1,6 @@
 //! Basic bounce: how much speed a hit keeps, and what else a hit does to the ball.
 
+pub mod graph;
 pub mod sim;
 
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId, Target};
@@ -88,5 +89,8 @@ impl ModuleKind for BasicBounceKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         BasicBounce::defs()
+    }
+    fn template(&self) -> Option<bpe_graph::Graph> {
+        Some(graph::template())
     }
 }
