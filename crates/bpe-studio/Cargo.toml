@@ -13,6 +13,7 @@ path = "src/main.rs"
 bpe-core.workspace = true
 bpe-runtime.workspace = true
 bpe-gfx.workspace = true
+ron.workspace = true
 bpe-mix.workspace = true
 bpe-kit.workspace = true
 bpe-graph.workspace = true

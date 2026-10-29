@@ -2,6 +2,7 @@
 
 use crate::audio_out::AudioOut;
 use crate::dice::RandomizeWindow;
+use crate::explorer::{self, Explorer};
 use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
@@ -46,6 +47,7 @@ pub struct Panels {
     pub timeline: Timeline,
     pub library: LibraryWindow,
     pub randomize: RandomizeWindow,
+    pub explorer: Explorer,
     /// The node panel under the preview.
     pub nodes: NodePanel,
 }
@@ -60,6 +62,7 @@ enum ToolbarClick {
     Export,
     Randomize,
     Dice,
+    Explore,
 }
 
 pub struct Studio {
@@ -115,6 +118,8 @@ impl Studio {
             Ok(audio) => studio.audio = Some(audio),
             Err(error) => studio.audio_error = Some(format!("No sound: {error:#}")),
         }
+        studio.panels.explorer.weights = settings::load_weights();
+        studio.panels.explorer.persist = true;
         if let Some(path) = scene_path.or_else(settings::last_scene) {
             studio.open_path(&path);
         }
@@ -547,6 +552,13 @@ impl Studio {
             if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
                 self.clicked = Some(ToolbarClick::Randomize);
             }
+            if ui
+                .button("Explore…")
+                .on_hover_text("See nine variations of this scene side by side and pick one")
+                .clicked()
+            {
+                self.clicked = Some(ToolbarClick::Explore);
+            }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
@@ -755,6 +767,9 @@ impl eframe::App for Studio {
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
         dice::show(&ctx, self);
+        if let explorer::Outcome::Batch { base, amount } = explorer::show(&ctx, self, frame.wgpu_render_state()) {
+            self.status = format!("A batch of {} at {:.0}% comes with the batch window.", base.name, amount * 100.0);
+        }
 
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
@@ -769,6 +784,7 @@ impl eframe::App for Studio {
                 let amount = self.panels.randomize.amount;
                 dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
             }
+            Some(ToolbarClick::Explore) => self.panels.explorer.open_from(&self.scene, &self.kit),
             None => {}
         }
         self.confirm_dialog(&ctx);

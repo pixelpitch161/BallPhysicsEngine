@@ -6,6 +6,7 @@
 mod app;
 mod audio_out;
 mod dice;
+mod explorer;
 mod export_window;
 mod history;
 mod inspector;
