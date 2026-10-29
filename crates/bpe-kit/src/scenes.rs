@@ -19,8 +19,9 @@ use crate::modules::look::GradientBy;
 use crate::modules::sound::{PitchBy, PlaysWhen};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
-    ClassicLook, DrumSound, Font, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
-    RulesKind, SceneSettings, SoftSettings, SoftShape, TextSettings, new_scene, recipes,
+    ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
+    LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind,
+    SceneSettings, SoftSettings, SoftShape, SwarmColors, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -51,6 +52,12 @@ pub fn stage4(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[grow_on_hit, split_on_hit, colour_by_speed, bouncy_when_slow, wind_and_melody])
 }
 
+/// The five stage 6 scenes: an emitter, fields, a liquid on the processor, one on the graphics
+/// card, and a swarm.
+pub fn stage6(reg: &Registry) -> Vec<(String, Scene)> {
+    build_all(reg, &[fountain, wind_tunnel, small_pool, deep_pool, fireflies])
+}
+
 /// The five stage 7 scenes: soft bodies, captions, keyframes, a drum machine, a melody and beat
 /// sync.
 pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
@@ -63,6 +70,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.extend(stage3(reg));
     scenes.extend(stage4(reg));
     scenes.extend(stage5(reg));
+    scenes.extend(stage6(reg));
     scenes.extend(stage7(reg));
     scenes
 }
@@ -173,9 +181,10 @@ impl<'a> Builder<'a> {
         m
     }
 
-    /// A new thing of `kind` under `parent`, named and placed, with its settings.
+    /// A new thing of `kind` under `parent`, named and placed, with its settings, and the starter
+    /// modules the kit gives that kind (a liquid's surface look, a swarm's flocking).
     fn add(&mut self, kind: &str, parent: ThingId, name: &str, position: Vec2, params: Params) -> ThingId {
-        let id = self.scene.add_thing(self.reg, kind, parent).expect("kit kinds are registered");
+        let id = crate::add_thing(&mut self.scene, self.reg, kind, parent).expect("kit kinds are registered");
         let thing = self.scene.things.get_mut(&id).expect("just added");
         thing.name = name.into();
         thing.transform.position = position;
@@ -874,6 +883,142 @@ fn wind_and_melody(reg: &Registry) -> Scene {
     b.scene
 }
 
+/// Drops shot up from a spout, falling back through each other inside a ring.
+fn fountain(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Fountain");
+    b.arena(|a| a.radius = 500.0);
+    b.balls("Drops", Vec2::new(0.0, 380.0), |s| {
+        s.radius = 9.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.bounce(|s| s.bounciness = 0.9);
+    b.ball_look(|l| {
+        l.gradient = vec![Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)];
+    });
+    let spout = EmitterSettings {
+        target: Target::Thing(BALLS),
+        rate: 25.0,
+        speed: 900.0,
+        spread: 30.0,
+        limit: 400,
+        ..EmitterSettings::default()
+    };
+    b.add("emitter", ThingId::ROOT, "Spout", Vec2::new(0.0, 380.0), spout.to_params());
+    b.scene
+}
+
+/// Light feathers blown across a tall box while heavy stones fall through a whirl that
+/// catches everything.
+fn wind_tunnel(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Wind tunnel");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 300.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.balls("Feathers", Vec2::new(-220.0, -520.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 6;
+        s.rows = 6;
+        s.spacing = 22.0;
+        s.radius = 6.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.tag(BALLS, "light");
+    let stones = BallsSettings {
+        arrangement: Arrangement::Block,
+        columns: 3,
+        rows: 3,
+        spacing: 60.0,
+        radius: 16.0,
+        velocity: Vec2::ZERO,
+        ..BallsSettings::default()
+    };
+    let stones = b.add("balls", ThingId::ROOT, "Stones", Vec2::new(220.0, -520.0), stones.to_params());
+    b.tag(stones, "heavy");
+    let breeze = FieldSettings {
+        kind: FieldKindChoice::Wind,
+        direction: 0.0,
+        strength: 900.0,
+        shape: FieldShape::Everywhere,
+        targets: Target::Tag("light".into()),
+        ..FieldSettings::default()
+    };
+    b.add("field", ThingId::ROOT, "Breeze", Vec2::ZERO, breeze.to_params());
+    let whirl = FieldSettings {
+        kind: FieldKindChoice::Vortex,
+        radius: 350.0,
+        strength: 1200.0,
+        targets: Target::Anything,
+        ..FieldSettings::default()
+    };
+    b.add("field", ThingId::ROOT, "Whirl", Vec2::new(0.0, 200.0), whirl.to_params());
+    b.scene
+}
+
+/// A ball dropped into a small pool that runs on the processor.
+fn small_pool(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Small pool");
+    b.scene_settings(|s| s.gravity = Vec2::new(0.0, 900.0));
+    b.arena(|a| a.radius = 480.0);
+    b.balls("Ball", Vec2::new(0.0, -500.0), |s| {
+        s.radius = 40.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.bounce(|s| s.bounciness = 0.6);
+    let pool = LiquidSettings { count: 1500, fill: 0.4, ..LiquidSettings::default() };
+    b.add("liquid", ThingId::ROOT, "Pool", Vec2::ZERO, pool.to_params());
+    b.scene
+}
+
+/// A block of balls dropped into a deep pool of twelve thousand particles on the graphics card.
+fn deep_pool(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Deep pool");
+    b.scene_settings(|s| s.gravity = Vec2::new(0.0, 900.0));
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.balls("Block", Vec2::new(0.0, -400.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 3;
+        s.rows = 2;
+        s.spacing = 90.0;
+        s.radius = 30.0;
+        s.velocity = Vec2::ZERO;
+    });
+    let deep = LiquidSettings { count: 12_000, ..LiquidSettings::default() };
+    b.add("liquid", ThingId::ROOT, "Deep", Vec2::ZERO, deep.to_params());
+    b.scene
+}
+
+/// Twenty thousand points of light drawn to one ball bouncing round a ring.
+fn fireflies(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Fireflies");
+    b.arena(|a| a.radius = 500.0);
+    b.balls("Ball", Vec2::ZERO, |s| {
+        s.radius = 30.0;
+        s.velocity = Vec2::new(400.0, -300.0);
+    });
+    let swarm = SwarmSettings { count: 20_000, ..SwarmSettings::default() };
+    let swarm = b.add("swarm", ThingId::ROOT, "Fireflies", Vec2::ZERO, swarm.to_params());
+    let look = SwarmLook {
+        colors_by: SwarmColors::Gradient,
+        colors: vec![Color::rgb(0xff, 0xe0, 0x66), Color::rgb(0x8a, 0xff, 0x80), Color::rgb(0x40, 0xc8, 0xff)],
+        ..SwarmLook::default()
+    };
+    let m = b.module_of(swarm, SlotId::Look);
+    b.set_params(m, look.to_params());
+    let m = b.module_of(swarm, SlotId::Motion);
+    b.set_params(m, Flocking { attraction: 1.2, ..Flocking::default() }.to_params());
+    b.scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
@@ -882,11 +1027,13 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
+        assert_eq!(scenes.len(), 30);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
             scenes::stage4(&reg),
             scenes::stage5(&reg),
+            scenes::stage6(&reg),
             scenes::stage7(&reg),
         ]
         .concat()
@@ -901,10 +1048,9 @@ mod tests {
             names[10..15],
             ["Grow on hit", "Split on hit", "Colour by speed", "Bouncy when slow", "Wind and melody"]
         );
-        assert_eq!(
-            names[names.len() - 5..],
-            ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]
-        );
+        assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
+        assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
+        assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");

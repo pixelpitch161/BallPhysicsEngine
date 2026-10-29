@@ -1,0 +1,136 @@
+(
+    format: 2,
+    name: "Fountain",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "radius": Number(500.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Drops",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 380.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(9.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Spout",
+            kind: "emitter",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 380.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "limit": Int(400),
+                "rate": Number(25.0),
+                "speed": Number(900.0),
+                "spread": Number(30.0),
+                "target": Target(Thing(2)),
+            },
+            slots: {},
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.8999999761581421),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "gradient": Colors([
+                        "#3ed8ff",
+                        "#8a4dff",
+                        "#ff5ca8",
+                    ]),
+                },
+            ),
+        },
+    ),
+    next_thing: 4,
+    next_module: 5,
+)

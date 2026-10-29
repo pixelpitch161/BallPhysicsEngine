@@ -163,6 +163,48 @@ mod tests {
         assert_eq!(w.gravity.y, 2000.0, "the beat set the gravity");
     }
 
+    /// Stage 6's fields log a ball entering their zone, so "When entering" fires.
+    #[test]
+    fn a_ball_entering_a_field_fires_a_when_entering_rule() {
+        use bpe_core::Value;
+        use bpe_graph::{Catalog, Link, Param};
+        use bpe_runtime::{Log, World};
+        use bpe_vm::{Role, catalog};
+        use glam::Vec2;
+        let (mut scene, _, kit, zone) = crate::testing::scene_with("field", "Zone", Vec2::ZERO, |p| {
+            p.set("strength", Value::Number(0.0));
+            p.set("radius", Value::Number(100.0));
+        });
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let ball = scene.things.get_mut(&ThingId(2)).unwrap();
+        ball.transform.position = Vec2::new(-400.0, 0.0);
+        ball.params.set("velocity", Value::Vec2([400.0, 0.0]));
+        let rules = scene.add_module(&kit.registry, "rules.graph", "Heavy inside").unwrap();
+        let mut g = RulesKind.template().unwrap();
+        let c = catalog(Role::Rules);
+        let enter = g.add(c.spec("when.enter").unwrap(), [40.0, 40.0]);
+        let heavy = g.add(c.spec("do.gravity").unwrap(), [260.0, 40.0]);
+        g.node_mut(heavy).unwrap().params.insert("gravity".into(), Param::Vector([0.0, 2000.0]));
+        assert!(g.connect(Link { from: (enter, 0), to: (heavy, 0) }, c));
+        scene.library.modules.get_mut(&rules).unwrap().graph =
+            Some(ModuleGraph { graph: g, template: "rules.graph".into(), custom: true, simple: Default::default() });
+        scene.add_slot(&kit.registry, ThingId(2), SlotId::Rules).unwrap();
+        scene.link(&kit.registry, ThingId(2), SlotId::Rules, rules).unwrap();
+        let resolved = resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        // The ball reaches the zone's edge at 0.75 s; the rule's action applies a step later.
+        w.advance_to(0.5, &kit.sims, &mut log);
+        assert_eq!(w.gravity, Vec2::ZERO, "nothing entered yet");
+        w.advance_to(1.0, &kit.sims, &mut log);
+        w.step(&kit.sims, &mut log);
+        let entered = log.events().iter().filter(|e| e.kind == EventKind::Enter).count();
+        assert_eq!(entered, 1, "{:?}", log.events());
+        assert_eq!(log.events().iter().find(|e| e.kind == EventKind::Enter).unwrap().b.unwrap().thing, zone);
+        assert_eq!(w.gravity.y, 2000.0, "entering the zone set the gravity");
+    }
+
     #[test]
     fn every_recipe_compiles_and_runs() {
         let all = recipes();

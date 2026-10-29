@@ -5,16 +5,19 @@
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
 pub mod effects;
+pub mod flow;
 mod frame;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
 pub mod text;
 
+use flow::surface::THICKNESS_FORMAT;
+pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, GlyphInstance, HitMark, LookInstance,
-    ModuleDraw, ShapeInstance, SoftVertex, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at,
-    hit_strength, push_streak, thing_code,
+    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, HitMark,
+    LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart,
+    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, thing_code,
 };
 pub use text::Atlas;
 pub use wgpu;
@@ -54,6 +57,13 @@ struct Targets {
     height: u32,
     hdr_texture: wgpu::Texture,
     hdr: wgpu::TextureView,
+    /// A copy of the HDR image from before the liquids, which they bend and tint.
+    behind: wgpu::Texture,
+    behind_view: wgpu::TextureView,
+    /// Half-size liquid thickness pictures: the splat target and the blur's scratch.
+    thickness: wgpu::TextureView,
+    blur: wgpu::TextureView,
+    thickness_size: (u32, u32),
     /// The object picture, made the first time an effect needs it.
     object: Option<(wgpu::Texture, wgpu::TextureView)>,
     bloom: Vec<wgpu::TextureView>,
@@ -105,6 +115,9 @@ pub struct Renderer {
     glyph_buffer: GrowableBuffer,
     atlas: Option<AtlasTexture>,
     targets: Targets,
+    surface: flow::surface::Surface,
+    /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
+    flow: Option<FlowLayers>,
 }
 
 impl Renderer {
@@ -472,6 +485,8 @@ impl Renderer {
             glyph_buffer: GrowableBuffer::new("glyph instances"),
             atlas: None,
             targets,
+            surface: flow::surface::Surface::new(device),
+            flow: None,
         }
     }
 
@@ -534,12 +549,35 @@ impl Renderer {
         frame.width as f32 / self.targets.width.max(1) as f32
     }
 
+    /// Like [`Renderer::render`], and first steps the frame's GPU liquids and swarms to
+    /// `frame.time`.
+    pub fn render_with_flow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        source: &FlowSource,
+    ) -> FlowStatus {
+        let flow = self.flow.get_or_insert_with(|| FlowLayers::new(device));
+        flow.prepare(device, queue, frame, source);
+        let status = flow.step_to(device, queue, frame.time as f64, source);
+        self.render(device, queue, frame);
+        status
+    }
+
+    /// The GPU-stepped layers, once a frame has been drawn with [`Renderer::render_with_flow`].
+    pub fn flow(&self) -> Option<&FlowLayers> {
+        self.flow.as_ref()
+    }
+
     /// Why shader effects in the last frame could not be built, one line each: "{name}: {why}".
     pub fn shader_problems(&self) -> Vec<String> {
         self.chain.problems().map(str::to_owned).collect()
     }
 
-    /// Draws one frame into the output texture.
+    /// Draws one frame into the output texture. GPU liquids and swarms are stepped by
+    /// [`Renderer::render_with_flow`]; here they are only drawn. Liquids are shaded between
+    /// the walls and the balls, over a copy of what is behind them.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
@@ -582,6 +620,30 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.soft_buffer.slice());
                 pass.draw(0..soft_vertices as u32, 0..1);
             }
+            if let Some(flow) = &self.flow {
+                flow.draw_swarms(&mut pass, &self.globals_group, frame);
+            }
+        }
+        if !frame.liquids.is_empty() {
+            encoder.copy_texture_to_texture(
+                self.targets.hdr_texture.as_image_copy(),
+                self.targets.behind.as_image_copy(),
+                wgpu::Extent3d { width: self.targets.width, height: self.targets.height, depth_or_array_layers: 1 },
+            );
+            for (slot, layer) in frame.liquids.iter().enumerate() {
+                let points = match &layer.points {
+                    Points::Cpu(points) => Some(flow::surface::PointsBinding::Cpu(points)),
+                    Points::Gpu(_) => self.flow.as_ref().and_then(|f| f.gpu_points(layer.thing)),
+                };
+                if let Some(points) = points {
+                    let world = (frame.width, frame.height);
+                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, layer, points);
+                }
+            }
+        }
+        {
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &self.globals_group, &[]);
             if !frame.balls.is_empty() {
                 pass.set_pipeline(&self.ball);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
@@ -751,10 +813,25 @@ impl Targets {
             })
         };
         let render_and_sample = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        // Effects read the HDR picture while they draw their result beside it, then copy it back.
+        // Effects read the HDR picture while they draw their result beside it, then copy it back;
+        // the liquids copy it too, to bend and tint what is behind them.
         let copyable = render_and_sample | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
         let hdr_texture = texture("hdr", width, height, HDR_FORMAT, copyable);
         let hdr = hdr_texture.create_view(&Default::default());
+        let behind = texture(
+            "behind",
+            width,
+            height,
+            HDR_FORMAT,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        let behind_view = behind.create_view(&Default::default());
+        let thickness_size = ((width / 2).max(1), (height / 2).max(1));
+        let thickness =
+            texture("liquid thickness", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+                .create_view(&Default::default());
+        let blur = texture("liquid blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+            .create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -791,6 +868,11 @@ impl Targets {
             height,
             hdr_texture,
             hdr,
+            behind,
+            behind_view,
+            thickness,
+            blur,
+            thickness_size,
             object: None,
             bloom,
             output,
@@ -983,4 +1065,120 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
         adapter.request_device(&wgpu::DeviceDescriptor { label: Some("bpe headless"), ..Default::default() }),
     )?;
     Ok((device, queue))
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use bpe_core::ThingId;
+    use bpe_runtime::Outline;
+
+    const W: u32 = 270;
+    const H: u32 = 480;
+
+    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+        match headless_device() {
+            Ok(pair) => Some(pair),
+            Err(_) => {
+                eprintln!("no GPU adapter available, skipping");
+                None
+            }
+        }
+    }
+
+    /// A 200×200 block of particles around `center`, as a liquid thing's draw part sends them.
+    fn block(center: [f32; 2], clarity: f32, refraction: f32) -> LiquidLayer {
+        let mut points = Vec::new();
+        let spacing = 200.0 / 22.0;
+        for row in 0..22 {
+            for col in 0..22 {
+                let shift = if row % 2 == 1 { spacing * 0.5 } else { 0.0 };
+                points.push([
+                    center[0] - 100.0 + spacing * 0.5 + col as f32 * spacing + shift,
+                    center[1] - 100.0 + spacing * 0.5 + row as f32 * spacing * 0.866,
+                ]);
+            }
+        }
+        LiquidLayer {
+            thing: ThingId(1),
+            points: Points::Cpu(points),
+            radius: spacing * 0.5,
+            color: [0.1, 0.3, 1.0, 1.0],
+            clarity,
+            refraction,
+            highlight: 0.8,
+            smoothing: 6.0,
+            glow: 0.0,
+        }
+    }
+
+    fn pixel(pixels: &[u8], x: f32, y: f32) -> [u8; 4] {
+        let (px, py) = (((x + 540.0) / 4.0) as usize, ((y + 960.0) / 4.0) as usize);
+        let i = (py * W as usize + px) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+
+    fn render(renderer: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) -> Vec<u8> {
+        renderer.render(device, queue, frame);
+        renderer.read_output(device, queue).unwrap()
+    }
+
+    #[test]
+    fn cpu_points_draw_a_coloured_surface() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.5));
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let blue = pixels.chunks(4).filter(|p| p[2] > 100 && p[2] as i32 > p[0] as i32 + 40).count();
+        assert!(blue > 1200, "{blue} blue pixels for a 50×50 block");
+        let far = pixels.chunks(4).enumerate().filter(|(i, p)| {
+            let (x, y) = ((i % W as usize) as f32 * 4.0 - 540.0, (i / W as usize) as f32 * 4.0 - 960.0);
+            (x.abs() > 160.0 || (y - 300.0).abs() > 160.0) && (p[0] > 40 || p[1] > 40 || p[2] > 40)
+        });
+        assert_eq!(far.count(), 0, "nothing lights up far from the block");
+        // The body is one smooth sheet: the centre pixel and its neighbour agree.
+        let a = pixel(&pixels, 0.0, 300.0);
+        let b = pixel(&pixels, 8.0, 300.0);
+        assert!(a[2] > 120 && (a[2] as i32 - b[2] as i32).abs() < 20, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn the_surface_sits_behind_the_balls_and_in_front_of_the_wall() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let ring =
+            Outline::Ring { center: glam::Vec2::new(0.0, 300.0), radius: 60.0, sides: 0, angle: 0.0, thickness: 12.0 };
+        let mut frame = Frame::default();
+        frame.shapes.push(ShapeInstance::outline(&ring, [1.0, 1.0, 1.0, 1.0], 0.0));
+        let plain = render(&mut renderer, &device, &queue, &frame);
+        let wall_before = pixel(&plain, 60.0, 300.0);
+        assert!(wall_before[0] > 150, "{wall_before:?}: the wall is white");
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.0));
+        frame.balls.push(BallInstance {
+            center: [0.0, 300.0],
+            radius: 30.0,
+            glow: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            code: [0.0; 4],
+        });
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let ball = pixel(&pixels, 0.0, 300.0);
+        assert!(ball[0] > 180 && ball[1] > 180, "{ball:?}: the ball stays white over the liquid");
+        let wall = pixel(&pixels, 60.0, 300.0);
+        assert!(wall[0] < wall_before[0] - 40 && wall[2] > wall[0], "{wall:?}: the wall under the liquid is tinted");
+    }
+
+    #[test]
+    fn clarity_one_is_see_through() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        frame.liquids.push(block([0.0, 300.0], 0.0, 0.0));
+        let opaque = pixel(&render(&mut renderer, &device, &queue, &frame), 0.0, 300.0);
+        frame.liquids[0].clarity = 1.0;
+        let clear = pixel(&render(&mut renderer, &device, &queue, &frame), 0.0, 300.0);
+        assert!(opaque[2] > 150, "{opaque:?}");
+        assert!(clear[2] < opaque[2] / 2, "{clear:?} over black shows mostly the black behind");
+    }
 }

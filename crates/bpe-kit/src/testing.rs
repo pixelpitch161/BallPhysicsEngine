@@ -34,6 +34,34 @@ pub fn one_ball_with_bounce(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Ki
     (scene, resolved, kit)
 }
 
+/// The new scene plus one more thing of `kind` at `position`, with `f`'s changes to its
+/// settings. The ball is left where the new scene puts it. Problems are not checked, so tests
+/// can point targets at missing things.
+pub fn scene_with(
+    kind: &str,
+    name: &str,
+    position: Vec2,
+    f: impl FnOnce(&mut Params),
+) -> (Scene, Resolved, Kit, ThingId) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let id = scene.add_thing(&kit.registry, kind, ThingId::ROOT).expect("kit kind");
+    let thing = scene.things.get_mut(&id).unwrap();
+    thing.name = name.into();
+    thing.transform.position = position;
+    f(&mut thing.params);
+    let resolved = resolve(&scene, &kit.registry);
+    (scene, resolved, kit, id)
+}
+
+/// Runs `scene` for `seconds` and gives back the world and its log.
+pub fn run(scene: &Scene, resolved: &Resolved, kit: &Kit, seconds: f64) -> (bpe_runtime::World, bpe_runtime::Log) {
+    let mut world = bpe_runtime::World::build(scene, resolved, &kit.sims);
+    let mut log = bpe_runtime::Log::default();
+    world.advance_to(seconds, &kit.sims, &mut log);
+    (world, log)
+}
+
 /// The new scene with `f`'s changes to the shared motion module.
 pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
     let kit = kit();

@@ -19,6 +19,9 @@ pub struct Bodies {
     /// A colour laid over the look's, linear RGBA; the alpha is how strongly. Zero alpha means
     /// the ball shows its look's colour.
     pub tint: Vec<[f32; 4]>,
+    /// Silent bodies (liquid particles) log no hits, count none, and never add substeps: their
+    /// own solver keeps them inside the walls.
+    pub silent: bool,
 }
 
 impl Bodies {
