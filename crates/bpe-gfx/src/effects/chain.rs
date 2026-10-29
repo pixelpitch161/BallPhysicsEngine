@@ -620,6 +620,63 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_builtin_effect_changes_the_picture() {
+        use super::super::{BUILTINS, defaults};
+        let Ok((device, queue)) = headless_device() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        // Bigger balls, a blue one on the right, and a hit at the left one a tenth of a second ago.
+        let mut base = two_balls_frame();
+        for b in &mut base.balls {
+            b.radius = 100.0;
+        }
+        base.balls[1].color = [0.25, 0.25, 1.0, 1.0];
+        base.hits.push(HitMark {
+            thing: ThingId(2),
+            other: Some(ThingId(1)),
+            point: A.into(),
+            normal: [0.0, -1.0],
+            time: 1.9,
+            speed: 600.0,
+            color: [1.0, 0.25, 0.25, 1.0],
+        });
+        let second = 2.0 + 1.0 / 60.0;
+        let render_at = |renderer: &mut Renderer, frame: &mut Frame, t: f32| {
+            frame.time = t;
+            renderer.render(&device, &queue, frame);
+            renderer.read_output(&device, &queue).unwrap()
+        };
+        let plain = render_at(&mut renderer, &mut base.clone(), second);
+        for builtin in &BUILTINS {
+            let header = builtin.header();
+            let material = header.stage == Stage::Things;
+            let mut frame = base.clone();
+            let mut params = defaults(header);
+            if builtin.id == "echo" {
+                // Still balls echo onto themselves; a zoom makes the ghosts show.
+                params[1] = 1.05;
+            }
+            frame.effects.push(EffectCall {
+                key: 1,
+                wgsl: builtin.wgsl.into(),
+                params,
+                blend: 1.0,
+                apply_to: if material { thing_code(ThingId(2)) } else { 0.0 },
+                stage: header.stage,
+            });
+            // Twice, so feedback effects have a previous frame to show.
+            render_at(&mut renderer, &mut frame, 2.0);
+            let after = render_at(&mut renderer, &mut frame, second);
+            assert!(renderer.shader_problems().is_empty(), "{}: {:?}", builtin.id, renderer.shader_problems());
+            let changed = plain.chunks(4).zip(after.chunks(4)).filter(|(a, b)| a[..3] != b[..3]).count();
+            assert!(changed * 500 > plain.len() / 4, "{}: only {changed} pixels changed", builtin.id);
+            if material {
+                assert_eq!(pixel(&after, B), pixel(&plain, B), "{}: the other ball changed", builtin.id);
+                assert_ne!(pixel(&after, A), pixel(&plain, A), "{}: its own ball didn't change", builtin.id);
+            }
+        }
+    }
+
+    #[test]
     fn things_stage_effects_run_before_flashes() {
         let flash = FlashInstance { center: [0.0, 0.0], size: 300.0, color: [3.0, 3.0, 3.0, 1.0] };
         let mut things = two_balls_frame();

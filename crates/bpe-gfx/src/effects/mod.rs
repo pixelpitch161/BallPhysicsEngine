@@ -290,9 +290,31 @@ pub struct Builtin {
     header: OnceLock<Header>,
 }
 
+/// The effects that come with the program: ten over the picture, then three materials.
+pub static BUILTINS: [Builtin; 13] = [
+    Builtin::new("color_cycle", include_str!("builtin/color_cycle.wgsl")),
+    Builtin::new("color_split", include_str!("builtin/color_split.wgsl")),
+    Builtin::new("echo", include_str!("builtin/echo.wgsl")),
+    Builtin::new("film", include_str!("builtin/film.wgsl")),
+    Builtin::new("glitch", include_str!("builtin/glitch.wgsl")),
+    Builtin::new("kaleidoscope", include_str!("builtin/kaleidoscope.wgsl")),
+    Builtin::new("liquid", include_str!("builtin/liquid.wgsl")),
+    Builtin::new("mirror", include_str!("builtin/mirror.wgsl")),
+    Builtin::new("pixels", include_str!("builtin/pixels.wgsl")),
+    Builtin::new("shockwave", include_str!("builtin/shockwave.wgsl")),
+    Builtin::new("lava", include_str!("builtin/lava.wgsl")),
+    Builtin::new("rainbow_flow", include_str!("builtin/rainbow_flow.wgsl")),
+    Builtin::new("hit_glow", include_str!("builtin/hit_glow.wgsl")),
+];
+
 impl Builtin {
     const fn new(id: &'static str, wgsl: &'static str) -> Self {
         Self { id, wgsl, header: OnceLock::new() }
+    }
+
+    /// The built-in effect with this id.
+    pub fn find(id: &str) -> Option<&'static Builtin> {
+        BUILTINS.iter().find(|b| b.id == id)
     }
 
     /// Its header, read once. Built-ins are checked by tests, so a bad one is a bug.
@@ -357,6 +379,23 @@ mod tests {
         assert!(full.contains("p.tint = vec3<f32>(fx.params[0][3], fx.params[1][0], fx.params[1][1]);"));
         validate(&full);
         assert!(!needs_history(SAMPLE) && needs_history("fn effect() { let a = prev(uv); }"));
+    }
+
+    #[test]
+    fn every_builtin_parses_assembles_and_validates() {
+        for b in &BUILTINS {
+            let h = b.header();
+            assert!(!h.name.is_empty() && !h.about.is_empty(), "{}", b.id);
+            assert!(h.params.iter().filter(|p| p.simple).count() <= 5, "{}: too many simple params", b.id);
+            let full = assemble(b.wgsl).unwrap_or_else(|e| panic!("{}: {e}", b.id));
+            validate(&full);
+        }
+        let things: Vec<&str> = BUILTINS.iter().filter(|b| b.header().stage == Stage::Things).map(|b| b.id).collect();
+        assert_eq!(things, ["lava", "rainbow_flow", "hit_glow"]);
+        assert_eq!(Builtin::find("echo").map(|b| b.id), Some("echo"));
+        assert!(Builtin::find("nope").is_none());
+        assert!(needs_history(Builtin::find("echo").unwrap().wgsl));
+        assert_eq!(Builtin::find("lava").unwrap().header().floats(), 12);
     }
 
     #[test]
