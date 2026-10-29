@@ -490,6 +490,8 @@ impl Scene {
 /// One place an animated setting lands in a resolved scene.
 #[derive(Clone, Debug)]
 struct Target {
+    /// The setting this came from.
+    address: Address,
     thing: ThingId,
     slot: Option<SlotId>,
     key: String,
@@ -520,7 +522,14 @@ impl Animation {
                 continue;
             }
             for (thing, slot) in lands_on(scene, resolved, a) {
-                targets.push(Target { thing, slot, key: a.key.clone(), track: track.clone(), pulse: pulse.clone() });
+                targets.push(Target {
+                    address: (*a).clone(),
+                    thing,
+                    slot,
+                    key: a.key.clone(),
+                    track: track.clone(),
+                    pulse: pulse.clone(),
+                });
             }
         }
         Animation { targets }
@@ -537,6 +546,11 @@ impl Animation {
         out.sort();
         out.dedup();
         out
+    }
+
+    /// The addresses whose tracks or pulses land somewhere, each once.
+    pub fn addresses(&self) -> BTreeSet<&Address> {
+        self.targets.iter().map(|t| &t.address).collect()
     }
 
     /// Keeps only the targets `keep` says yes to.
