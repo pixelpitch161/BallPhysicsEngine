@@ -64,6 +64,11 @@ pub trait ThingSim: Send + Sync + 'static {
     fn kind(&self) -> &'static str;
     /// Puts the thing into the world: its bodies, its wall, its state.
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
+    /// Whether `build` reads the walls other things put into the world. Such things are built
+    /// after everything else, whatever their place in the tree.
+    fn needs_walls(&self) -> bool {
+        false
+    }
     /// The Spawn stage, first in every step: emitters add bodies (to any thing) and log
     /// `Spawn` events for them.
     fn spawn(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}

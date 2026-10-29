@@ -110,6 +110,23 @@ mod tests {
     }
 
     #[test]
+    fn a_flocking_change_does_not_change_the_physics_fingerprint() {
+        // Flocking has no part in the processor's physics (only the graphics card reads it), so
+        // editing it must not restart the playback.
+        let kit = crate::kit();
+        let mut scene = crate::new_scene(&kit.registry);
+        let me = crate::add_thing(&mut scene, &kit.registry, "swarm", bpe_core::ThingId::ROOT).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let before = fingerprint(&scene, &resolved, &kit.sims);
+        let flock = bpe_core::resolve_slot(&scene, &kit.registry, me, bpe_core::SlotId::Motion, &mut Vec::new())
+            .expect("a new swarm flocks")
+            .module;
+        scene.library.modules.get_mut(&flock).unwrap().params.set("flow", Value::Number(3.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert_eq!(fingerprint(&scene, &resolved, &kit.sims), before, "flocking never touches the physics");
+    }
+
+    #[test]
     fn a_setting_change_shows_without_rebuilding_the_world() {
         // Swarm settings never touch the physics, so the editor keeps its world; the picture
         // must still follow the inspector.

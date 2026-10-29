@@ -118,6 +118,10 @@ impl ThingSim for LiquidSim {
         "liquid"
     }
 
+    fn needs_walls(&self) -> bool {
+        true
+    }
+
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let settings = LiquidSettings::from_params(&resolved.params);
         let position = thing.transform.position;
@@ -246,6 +250,22 @@ mod tests {
         assert!(!st.gpu);
         assert!((bodies.radius[0] - st.spacing * 0.5).abs() < 1e-5);
         assert!(st.spacing > 5.0 && st.spacing < 40.0, "{}", st.spacing);
+    }
+
+    #[test]
+    fn a_pool_fills_an_arena_added_after_it() {
+        // The arena comes after the pool in the tree, so it is built after it; the pool must
+        // still find its wall.
+        let (mut scene, _, kit, me) = pool(500, |p| p.set("fill", Value::Number(0.3)));
+        scene.remove_thing(ARENA).unwrap();
+        let later = scene.add_thing(&kit.registry, "arena", ThingId::ROOT).unwrap();
+        assert!(later > me);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let w = World::build(&scene, &resolved, &kit.sims);
+        let ps = &w.bodies[&me].position;
+        assert_eq!(ps.len(), 500);
+        assert!(ps.iter().all(|p| p.length() < 508.0), "all inside the ring");
+        assert!(ps.iter().map(|p| p.y).fold(f32::MIN, f32::max) > 400.0, "down at the bottom");
     }
 
     #[test]

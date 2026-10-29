@@ -175,6 +175,24 @@ impl Grid {
             }
         }
     }
+
+    /// Every entry in the cells that cover the rectangle from `min` to `max`, in cell order,
+    /// each once.
+    fn covering(&self, min: Vec2, max: Vec2, mut f: impl FnMut(u32)) {
+        if self.columns == 0 {
+            return;
+        }
+        let (x0, y0) = self.coords(min);
+        let (x1, y1) = self.coords(max);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let c = y * self.columns + x;
+                for &i in &self.entries[self.starts[c] as usize..self.starts[c + 1] as usize] {
+                    f(i);
+                }
+            }
+        }
+    }
 }
 
 /// Scratch space the solver reuses between substeps.
@@ -334,28 +352,15 @@ impl Pbf {
                 for &(center, radius) in pushers {
                     let limit = radius + self.radius;
                     let (grid, positions) = (&s.grid, &mut bodies.position);
-                    // Every cell the ball can touch.
-                    let corners = [
-                        center - Vec2::splat(limit),
-                        center + Vec2::new(limit, -limit),
-                        center + Vec2::new(-limit, limit),
-                        center + Vec2::splat(limit),
-                    ];
-                    let mut seen = Vec::new();
-                    for corner in corners {
-                        grid.around(corner, |j| seen.push(j));
-                    }
-                    grid.around(center, |j| seen.push(j));
-                    seen.sort_unstable();
-                    seen.dedup();
-                    for j in seen {
+                    // Every cell the ball can touch, however big it is.
+                    grid.covering(center - Vec2::splat(limit), center + Vec2::splat(limit), |j| {
                         let j = j as usize;
                         let offset = positions[j] - center;
                         let distance = offset.length();
                         if distance < limit && distance > 1e-6 {
                             positions[j] += offset / distance * ((limit - distance) * push);
                         }
-                    }
+                    });
                 }
             }
 
@@ -455,6 +460,25 @@ mod tests {
         assert_eq!(bodies.len(), 100);
         assert!(bodies.position.iter().all(|p| p.is_finite()));
         assert!(bodies.velocity.iter().all(|v| v.length() > 0.0 && v.is_finite()), "velocities follow the moves");
+    }
+
+    #[test]
+    fn a_big_ball_pushes_every_particle_out_of_itself() {
+        // A ball much wider than a grid cell: every particle inside it is shoved out, not only
+        // those under its centre and corners.
+        let spacing = 10.0;
+        let pbf = Pbf::new(spacing, 0.5, 0.2);
+        let mut bodies = bpe_runtime::Bodies::default();
+        for p in lattice(&Rect { min: Vec2::ZERO, max: Vec2::new(200.0, 200.0) }, spacing, |_| true, 10_000) {
+            bodies.push(p, Vec2::ZERO, spacing * 0.5);
+        }
+        let (center, radius) = (Vec2::new(100.0, 100.0), 60.0);
+        let mut scratch = Scratch::default();
+        let walls = std::collections::BTreeMap::new();
+        pbf.relax(&mut bodies, 1.0 / 240.0, &walls, &[(center, radius)], 1.0, 0.0, &mut scratch);
+        let limit = radius + pbf.radius;
+        let inside = bodies.position.iter().filter(|p| p.distance(center) < limit - 0.01).count();
+        assert_eq!(inside, 0, "{inside} particles are still inside the ball");
     }
 
     #[test]

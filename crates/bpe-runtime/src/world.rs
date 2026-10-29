@@ -63,24 +63,31 @@ impl World {
             tags: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
-        for (id, r) in &resolved.things {
-            let Some(thing) = scene.things.get(id) else { continue };
-            let Some(sim) = sims.thing(&r.kind) else { continue };
-            sim.build(thing, r, &mut world);
-            world.kinds.insert(*id, r.kind.clone());
-            if !thing.tags.is_empty() {
-                world.tags.insert(*id, thing.tags.clone());
-            }
-            let mut prepared = Prepared::new();
-            for slot in SIM_SLOTS {
-                if let Some(s) = r.slots.get(&slot)
-                    && let Some(msim) = sims.module(&s.kind)
-                {
-                    prepared.insert(slot, (s.kind.clone(), msim.prepare(&s.params)));
+        // Things that need the walls (a liquid finding its pool) are built in a second pass, so
+        // an arena added after them in the tree is there all the same.
+        for needs_walls in [false, true] {
+            for (id, r) in &resolved.things {
+                let Some(thing) = scene.things.get(id) else { continue };
+                let Some(sim) = sims.thing(&r.kind) else { continue };
+                if sim.needs_walls() != needs_walls {
+                    continue;
                 }
-            }
-            if !prepared.is_empty() {
-                world.modules.insert(*id, prepared);
+                sim.build(thing, r, &mut world);
+                world.kinds.insert(*id, r.kind.clone());
+                if !thing.tags.is_empty() {
+                    world.tags.insert(*id, thing.tags.clone());
+                }
+                let mut prepared = Prepared::new();
+                for slot in SIM_SLOTS {
+                    if let Some(s) = r.slots.get(&slot)
+                        && let Some(msim) = sims.module(&s.kind)
+                    {
+                        prepared.insert(slot, (s.kind.clone(), msim.prepare(&s.params)));
+                    }
+                }
+                if !prepared.is_empty() {
+                    world.modules.insert(*id, prepared);
+                }
             }
         }
         world
@@ -313,8 +320,11 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 }
             }
         }
+        // Only modules the processor simulates count; a swarm's Flocking is the graphics card's.
         for slot in SIM_SLOTS {
-            if let Some(s) = r.slots.get(&slot) {
+            if let Some(s) = r.slots.get(&slot)
+                && sims.module(&s.kind).is_some()
+            {
                 h.bytes(&[slot as u8]);
                 h.bytes(s.kind.as_bytes());
                 for (key, value) in s.params.iter() {
