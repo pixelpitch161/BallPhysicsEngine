@@ -116,11 +116,11 @@ impl ThingSim for FieldSim {
                 }
                 let inside = st.inside.entry(target).or_default();
                 inside.resize(bodies.len(), false);
-                for i in 0..bodies.len() {
+                for (i, was) in inside.iter_mut().enumerate() {
                     let p = bodies.position[i];
                     let now = bodies.alive[i] && weight(&settings, center, rotation, p) > 0.0;
-                    if now != inside[i] {
-                        inside[i] = now;
+                    if now != *was {
+                        *was = now;
                         events.push(Event {
                             step,
                             kind: if now { EventKind::Enter } else { EventKind::Leave },
