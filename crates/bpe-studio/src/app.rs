@@ -1,6 +1,7 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::audio_out::AudioOut;
+use crate::dice::RandomizeWindow;
 use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
@@ -11,8 +12,9 @@ use crate::selection::Selection;
 use crate::sound_job::SoundJob;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{inspector, library, preview, settings, theme, timeline, tree};
+use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
+use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
 use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
@@ -43,6 +45,7 @@ pub struct Panels {
     pub sound: SoundJob,
     pub timeline: Timeline,
     pub library: LibraryWindow,
+    pub randomize: RandomizeWindow,
     /// The node panel under the preview.
     pub nodes: NodePanel,
 }
@@ -55,6 +58,8 @@ enum ToolbarClick {
     Undo,
     Redo,
     Export,
+    Randomize,
+    Dice,
 }
 
 pub struct Studio {
@@ -96,7 +101,7 @@ pub struct Studio {
     /// The song setting as last seen, so a re-picked file that failed before is tried again.
     last_song: String,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
-    recorded: bool,
+    pub recorded: bool,
     closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
@@ -257,6 +262,22 @@ impl Studio {
     pub fn new_scene(&mut self) {
         self.replace_scene(bpe_kit::new_scene(&self.kit.registry), None);
         self.status = "Started a new scene.".into();
+    }
+
+    /// Rolls the dice on `scope` from the scene as it is: one undo step back to `before` (the
+    /// scene as the user last saw it, which may differ from what the roll starts from), and a
+    /// word in the status line. Returns how many settings changed.
+    pub fn roll_recording(&mut self, before: Scene, scope: Scope, seed: u32, amount: f32) -> usize {
+        let rolled = roll(&mut self.scene, &self.kit.registry, &scope, Roll { seed, amount });
+        let changed = rolled.changed.len();
+        self.after_separate_edit(before);
+        self.recorded = true;
+        self.status = match changed {
+            0 => "The dice found nothing to change (everything locked, keyed or never random).".to_owned(),
+            1 => format!("Rolled 1 setting (seed {seed})."),
+            n => format!("Rolled {n} settings (seed {seed})."),
+        };
+        changed
     }
 
     pub fn undo(&mut self) -> bool {
@@ -520,6 +541,13 @@ impl Studio {
                 self.clicked = Some(ToolbarClick::Redo);
             }
             ui.separator();
+            if dice::dice_button(ui, "Roll the dice").on_hover_text("Roll the dice on the whole scene").clicked() {
+                self.clicked = Some(ToolbarClick::Dice);
+            }
+            if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
+                self.clicked = Some(ToolbarClick::Randomize);
+            }
+            ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
             let saved_label = match (&self.path, self.unsaved()) {
@@ -726,6 +754,7 @@ impl eframe::App for Studio {
         let base_dir = self.base_dir();
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
+        dice::show(&ctx, self);
 
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
@@ -735,6 +764,11 @@ impl eframe::App for Studio {
             Some(ToolbarClick::Undo) => _ = self.undo(),
             Some(ToolbarClick::Redo) => _ = self.redo(),
             Some(ToolbarClick::Export) => self.panels.export.open = true,
+            Some(ToolbarClick::Randomize) => self.panels.randomize.open = true,
+            Some(ToolbarClick::Dice) => {
+                let amount = self.panels.randomize.amount;
+                dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
+            }
             None => {}
         }
         self.confirm_dialog(&ctx);

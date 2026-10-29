@@ -39,6 +39,7 @@ enum Action {
     Delete(ModuleId),
     SelectUsers(ModuleId),
     Set(ModuleId, &'static str, bpe_core::Value),
+    Lock(ModuleId, &'static str, bool),
 }
 
 /// Draws the window when it is open and applies what was done in it.
@@ -119,6 +120,10 @@ pub fn show(
                 Ok(()) => out.edited = true,
                 Err(e) => out.message = Some(e.to_string()),
             }
+        }
+        Some(Action::Lock(m, key, lock)) => {
+            let a = Address { owner: Owner::Module(m), slot: None, key: key.into() };
+            out.edited |= scene.set_locked(a, lock);
         }
     }
     out
@@ -289,8 +294,13 @@ fn details(
         let a = Address { owner: Owner::Module(id), slot: None, key: key.into() };
         scene.value_at(reg, &a).expect("a module's settings all resolve")
     };
-    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None };
+    let locked = |key: &str| scene.is_locked(&Address { owner: Owner::Module(id), slot: None, key: key.into() });
+    let cx =
+        GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None, locked: &locked };
     let out = settings_grid_marked(ui, ("library", id), kind.settings(), depth, get, &cx);
+    if let Some((key, lock)) = out.locks.into_iter().next() {
+        *action = Some(Action::Lock(id, key, lock));
+    }
     if let Some((key, value)) = out.changes.into_iter().next() {
         *action = Some(Action::Set(id, key, value));
     }
