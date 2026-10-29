@@ -1,9 +1,73 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, Depth, PulseSource, SettingDef, Value, ValueType};
+use bpe_core::{Color, Depth, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
 use eframe::egui::{
-    self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, color_picker::Alpha,
+    self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
+
+use crate::theme;
+
+/// What a Target setting can point at: the scene's things, tags and kinds, by name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TargetChoices {
+    /// In tree order.
+    pub things: Vec<(ThingId, String)>,
+    /// Every tag any thing has, sorted.
+    pub tags: Vec<String>,
+    /// Thing kinds as (id, name), in registry order, without the scene itself.
+    pub kinds: Vec<(String, String)>,
+}
+
+impl TargetChoices {
+    pub fn from_scene(scene: &Scene, reg: &Registry) -> TargetChoices {
+        let things = scene.order.iter().filter_map(|id| scene.things.get(id).map(|t| (*id, t.name.clone()))).collect();
+        let tags: std::collections::BTreeSet<String> =
+            scene.things.values().flat_map(|t| t.tags.iter().cloned()).collect();
+        let kinds =
+            reg.things().filter(|k| k.id() != "scene").map(|k| (k.id().to_owned(), k.name().to_owned())).collect();
+        TargetChoices { things, tags: tags.into_iter().collect(), kinds }
+    }
+}
+
+/// A target in plain words: "Anything", "Itself", "Thing: Ball", "Tag: walls", "Kind: Arena".
+pub fn target_words(t: &Target, choices: &TargetChoices) -> String {
+    match t {
+        Target::Anything => "Anything".to_owned(),
+        Target::Me => "Itself".to_owned(),
+        Target::Thing(id) => match choices.things.iter().find(|(t, _)| t == id) {
+            Some((_, name)) => format!("Thing: {name}"),
+            None => format!("Thing: missing (id {})", id.0),
+        },
+        Target::Tag(tag) => format!("Tag: {tag}"),
+        Target::Kind(kind) => {
+            let name = choices.kinds.iter().find(|(id, _)| id == kind).map(|(_, n)| n.as_str()).unwrap_or(kind);
+            format!("Kind: {name}")
+        }
+    }
+}
+
+/// What a settings grid needs to know beyond the values: what targets can point at, which
+/// settings this thing changed for itself and what they would be without that change, and
+/// what each setting's keyframe diamond shows (none for a row without a diamond).
+pub struct GridCx<'a> {
+    pub choices: &'a TargetChoices,
+    pub overridden: &'a dyn Fn(&str) -> bool,
+    pub inherited: &'a dyn Fn(&str) -> Option<Value>,
+    pub marks: &'a dyn Fn(&str) -> Option<KeyMark>,
+}
+
+/// What the user did in a marked grid: values changed, overrides reset to the module, overrides
+/// pushed into the module, keyframe diamonds clicked and pulses picked.
+#[derive(Default)]
+pub struct GridOutcome {
+    pub changes: Vec<(&'static str, Value)>,
+    pub resets: Vec<&'static str>,
+    pub pushes: Vec<&'static str>,
+    /// The settings whose diamond was clicked: add a key at the playhead, or remove the one there.
+    pub toggled_key: Vec<&'static str>,
+    /// Pulse choices from the diamond's menu: a source, or `None` to stop pulsing.
+    pub pulse: Vec<(&'static str, Option<PulseSource>)>,
+}
 
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
@@ -55,57 +119,82 @@ pub struct KeyMark {
     pub physics: bool,
 }
 
-/// What the user did in a settings grid, for the caller to write to the scene.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct GridChanges {
-    /// (key, new value) for the rows that were edited.
-    pub set: Vec<(&'static str, Value)>,
-    /// The settings whose diamond was clicked: add a key at the playhead, or remove the one there.
-    pub toggled_key: Vec<&'static str>,
-    /// Pulse choices from the diamond's menu: a source, or `None` to stop pulsing.
-    pub pulse: Vec<(&'static str, Option<PulseSource>)>,
-}
-
 /// The width of the diamond cell at the left of every row.
 pub const DIAMOND_CELL: f32 = 16.0;
 
-/// A settings grid at `depth`: a keyframe diamond (when `marks` says the setting can have
-/// one), the label and the widget per row. `get` supplies each setting's value as it stands.
+/// A settings grid at `depth` with no marks and nothing for targets to point at. `get` supplies
+/// each setting's value as it stands; the rows the user changed come back as (key, new value)
+/// for the caller to write through `set_at`.
 pub fn settings_grid(
     ui: &mut Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
     depth: Depth,
     get: impl Fn(&str) -> Value,
-    marks: &dyn Fn(&str) -> Option<KeyMark>,
-) -> GridChanges {
-    let mut changes = GridChanges::default();
+) -> Vec<(&'static str, Value)> {
+    let choices = TargetChoices::default();
+    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None };
+    settings_grid_marked(ui, id, defs, depth, get, &cx).changes
+}
+
+/// A settings grid at `depth` with a keyframe diamond before each setting that can have one
+/// (click: a key at the playhead; right-click: pulses), and a dot before the settings this thing
+/// changed for itself. Such a row's double-click or Alt+click goes back to the module's value,
+/// and its right-click menu offers to reset or push the change.
+pub fn settings_grid_marked(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    defs: &[SettingDef],
+    depth: Depth,
+    get: impl Fn(&str) -> Value,
+    cx: &GridCx,
+) -> GridOutcome {
+    let mut out = GridOutcome::default();
     egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
         for row in rows_at(defs, depth) {
             match row {
                 Row::Group(group) => {
                     empty_cell(ui);
-                    ui.label(RichText::new(group).strong().color(crate::theme::MUTED));
+                    // A grid can't take spacing, so the heading carries its own air above.
+                    ui.add(egui::Label::new(RichText::new(format!("\n{group}")).strong().color(theme::MUTED)));
                     ui.end_row();
                 }
                 Row::Setting(def) => {
-                    match marks(def.key) {
+                    match (cx.marks)(def.key) {
                         Some(mark) => match diamond(ui, def.label, mark) {
                             DiamondClick::None => {}
-                            DiamondClick::Toggle => changes.toggled_key.push(def.key),
-                            DiamondClick::Pulse(source) => changes.pulse.push((def.key, source)),
+                            DiamondClick::Toggle => out.toggled_key.push(def.key),
+                            DiamondClick::Pulse(source) => out.pulse.push((def.key, source)),
                         },
                         None => empty_cell(ui),
                     }
                     let mut value = get(def.key);
-                    if setting(ui, def, &mut value, None) {
-                        changes.set.push((def.key, value));
+                    let overridden = (cx.overridden)(def.key);
+                    let inherited = (cx.inherited)(def.key);
+                    let row = setting(ui, def, &mut value, inherited.as_ref(), overridden, cx.choices);
+                    match row {
+                        RowAction::Nothing => {}
+                        RowAction::Changed => out.changes.push((def.key, value)),
+                        RowAction::Reset => out.resets.push(def.key),
+                        RowAction::Push => out.pushes.push(def.key),
                     }
                 }
             }
         }
     });
-    changes
+    out
+}
+
+/// What one grid row asks for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowAction {
+    Nothing,
+    /// `value` holds the new value.
+    Changed,
+    /// Drop this thing's own change, so the module's value shows again.
+    Reset,
+    /// Write this thing's own change into the module.
+    Push,
 }
 
 /// The diamond column's cell for a row without a diamond.
@@ -126,8 +215,8 @@ fn diamond(ui: &mut Ui, label: &str, mark: KeyMark) -> DiamondClick {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(DIAMOND_CELL, DIAMOND_CELL), Sense::click());
     let name = format!("Keyframe {label}");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-    let accent = crate::theme::ACCENT_TEXT;
-    let color = if mark.keyed || response.hovered() { accent } else { crate::theme::MUTED };
+    let accent = theme::ACCENT_TEXT;
+    let color = if mark.keyed || response.hovered() { accent } else { theme::MUTED };
     paint_diamond(ui.painter(), rect.center(), 5.0, mark.on_key, color);
     if mark.pulsed {
         let painter = ui.painter();
@@ -135,7 +224,7 @@ fn diamond(ui: &mut Ui, label: &str, mark: KeyMark) -> DiamondClick {
         let y = rect.center().y;
         let points: Vec<Pos2> =
             (0..=6).map(|i| Pos2::new(x0 + i as f32 * 0.8, y + ((i as f32) * 1.6).sin() * 3.0)).collect();
-        painter.add(egui::Shape::line(points, Stroke::new(1.0, crate::theme::WARNING)));
+        painter.add(egui::Shape::line(points, Stroke::new(1.0, theme::WARNING)));
     }
     let hint = match (mark.can_key, mark.on_key, mark.can_pulse) {
         (false, _, _) => "Right-click to pulse with the music. This setting can't have keyframes.",
@@ -182,15 +271,50 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
 }
 
 /// One grid row for `def`: the label (help on hover; a double-click or Alt+click puts the value
-/// back to `inherited`, or the setting's default) and the widget for its type. True when
-/// `value` changed.
-pub fn setting(ui: &mut Ui, def: &SettingDef, value: &mut Value, inherited: Option<&Value>) -> bool {
+/// back to `inherited`, or the setting's default), a dot when the setting is `overridden`, and
+/// the widget for its type.
+pub fn setting(
+    ui: &mut Ui,
+    def: &SettingDef,
+    value: &mut Value,
+    inherited: Option<&Value>,
+    overridden: bool,
+    choices: &TargetChoices,
+) -> RowAction {
     let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
-    let name = label(ui, def.label, def.help);
+    let mut action = RowAction::Nothing;
+    let name = ui
+        .horizontal(|ui| {
+            if overridden {
+                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
+                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
+                response.on_hover_text("Changed here: this thing's own value, not the module's.");
+            }
+            let name = label(ui, def.label, def.help);
+            if overridden {
+                name.context_menu(|ui| {
+                    if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
+                        action = RowAction::Reset;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Push to module")
+                        .on_hover_text("Give every thing using the module this value")
+                        .clicked()
+                    {
+                        action = RowAction::Push;
+                        ui.close();
+                    }
+                });
+            }
+            name
+        })
+        .inner;
     let mut changed = false;
     let response = ui
         .horizontal(|ui| {
-            let r = widget(ui, def, value, name.id);
+            let r = widget(ui, def, value, name.id, choices);
             changed |= r.changed();
             r
         })
@@ -199,7 +323,10 @@ pub fn setting(ui: &mut Ui, def: &SettingDef, value: &mut Value, inherited: Opti
         changed = true;
     }
     ui.end_row();
-    changed
+    if action == RowAction::Nothing && changed {
+        action = RowAction::Changed;
+    }
+    action
 }
 
 /// The label cell, clickable for the reset shortcut.
@@ -237,7 +364,7 @@ fn suffix(unit: &str) -> String {
 
 /// The widget for `def`'s type, editing `value` in place. Every control is labelled by the
 /// row's name, for screen readers and tests.
-fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id) -> Response {
+fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choices: &TargetChoices) -> Response {
     let unit = suffix(def.unit);
     match (&def.ty, value) {
         (ValueType::Number, Value::Number(x)) => match def.range {
@@ -299,9 +426,62 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id) -> R
         (ValueType::Text, Value::Text(text)) => {
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
-        (ValueType::Target, _) => ui.label(RichText::new("Targets come in a later stage").weak()),
-        _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(crate::theme::WARNING)),
+        (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
+        _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(theme::WARNING)),
     }
+}
+
+/// A menu naming the target, with Anything, Itself and the scene's things, tags and kinds to
+/// pick from. Marked changed when something is picked.
+fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices) -> Response {
+    let mut picked: Option<Target> = None;
+    let menu = ui.menu_button(target_words(t, choices), |ui| {
+        ui.set_min_width(160.0);
+        if ui.selectable_label(*t == Target::Anything, "Anything").clicked() {
+            picked = Some(Target::Anything);
+            ui.close();
+        }
+        if ui.selectable_label(*t == Target::Me, "Itself").on_hover_text("The thing this setting belongs to").clicked()
+        {
+            picked = Some(Target::Me);
+            ui.close();
+        }
+        ui.menu_button("Thing", |ui| {
+            for (id, name) in &choices.things {
+                if ui.selectable_label(*t == Target::Thing(*id), name).clicked() {
+                    picked = Some(Target::Thing(*id));
+                    ui.close();
+                }
+            }
+        });
+        if choices.tags.is_empty() {
+            ui.add_enabled(false, egui::Button::new("Tag"))
+                .on_disabled_hover_text("No tags yet. Give things tags in their header.");
+        } else {
+            ui.menu_button("Tag", |ui| {
+                for tag in &choices.tags {
+                    if ui.selectable_label(matches!(t, Target::Tag(x) if x == tag), tag).clicked() {
+                        picked = Some(Target::Tag(tag.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.menu_button("Kind", |ui| {
+            for (id, name) in &choices.kinds {
+                if ui.selectable_label(matches!(t, Target::Kind(x) if x == id), name).clicked() {
+                    picked = Some(Target::Kind(id.clone()));
+                    ui.close();
+                }
+            }
+        });
+    });
+    let mut response = menu.response.on_hover_text("What this points at");
+    if let Some(p) = picked {
+        *t = p;
+        response.mark_changed();
+    }
+    response
 }
 
 /// egui keeps an additive colour as premultiplied with no alpha. Built unmultiplied, no alpha
@@ -371,6 +551,24 @@ mod tests {
     use bpe_core::Settings;
 
     #[test]
+    fn target_words_name_things_tags_and_kinds() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        scene.things.get_mut(&ThingId(1)).unwrap().tags.insert("walls".into());
+        let c = TargetChoices::from_scene(&scene, &kit.registry);
+        assert_eq!(target_words(&Target::Anything, &c), "Anything");
+        assert_eq!(target_words(&Target::Me, &c), "Itself");
+        assert_eq!(target_words(&Target::Thing(ThingId(2)), &c), "Thing: Ball");
+        assert_eq!(target_words(&Target::Thing(ThingId(9)), &c), "Thing: missing (id 9)");
+        assert_eq!(target_words(&Target::Tag("walls".into()), &c), "Tag: walls");
+        assert_eq!(target_words(&Target::Kind("arena".into()), &c), "Kind: Arena");
+        assert_eq!(target_words(&Target::Kind("blob".into()), &c), "Kind: blob");
+        assert_eq!(c.tags, vec!["walls".to_owned()]);
+        assert!(c.kinds.iter().all(|(id, _)| id != "scene"));
+        assert_eq!(c.things[0], (ThingId::ROOT, "Scene defaults".to_owned()));
+    }
+
+    #[test]
     fn names_are_made_readable() {
         assert_eq!(pretty("electric_piano"), "Electric piano");
         assert_eq!(pretty("box"), "Box");
@@ -386,7 +584,7 @@ mod tests {
         };
         let defs = bpe_kit::BallsSettings::defs();
         let mut h = Harness::builder().with_size(egui::vec2(420.0, 600.0)).allow_missing_glyphs().build_ui_state(
-            |ui, out: &mut GridChanges| {
+            |ui, out: &mut GridOutcome| {
                 let marks = |key: &str| {
                     (key == "radius").then_some(KeyMark {
                         can_key: true,
@@ -397,19 +595,21 @@ mod tests {
                         physics: true,
                     })
                 };
-                let changes = settings_grid(
+                let choices = TargetChoices::default();
+                let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+                let got = settings_grid_marked(
                     ui,
                     "g",
                     defs,
                     Depth::Simple,
                     |k| defs.iter().find(|d| d.key == k).unwrap().default.clone(),
-                    &marks,
+                    &cx,
                 );
-                out.set.extend(changes.set);
-                out.toggled_key.extend(changes.toggled_key);
-                out.pulse.extend(changes.pulse);
+                out.changes.extend(got.changes);
+                out.toggled_key.extend(got.toggled_key);
+                out.pulse.extend(got.pulse);
             },
-            GridChanges::default(),
+            GridOutcome::default(),
         );
         h.run();
         let diamonds = h

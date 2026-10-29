@@ -1,12 +1,13 @@
 //! Drawing soft bodies: a jelly ball filled and rimmed, a rope as rounded links, cloth as
 //! shaded triangles.
 
+use bpe_core::Color;
 use bpe_gfx::{DrawCx, Frame, ShapeInstance, SoftVertex, ThingDraw, blend_alpha};
 use glam::Vec2;
 
 use super::sim::SoftState;
 use super::{SoftShape, SoftWorld};
-use crate::modules::look::draw::{colors, look_of};
+use crate::modules::look::draw::look_of;
 
 pub struct SoftDraw;
 
@@ -30,7 +31,12 @@ impl ThingDraw for SoftDraw {
         let Some(st) = cx.world.states.get(&cx.thing.id) else { return };
         let Some(st) = st.as_any().downcast_ref::<SoftState>() else { return };
         let Some(look) = look_of(cx) else { return };
-        let color = blend_alpha(colors(&look, 1, |_| 0.0)(0));
+        // One colour for the whole body: the look's, or the start of its gradient.
+        let color = blend_alpha(if look.gradient.is_empty() {
+            look.color.to_linear()
+        } else {
+            Color::sample_gradient(&look.gradient, 0.0)
+        });
         let w = &st.world;
         match w.shape {
             SoftShape::Jelly => jelly(w, color, look.glow, frame),

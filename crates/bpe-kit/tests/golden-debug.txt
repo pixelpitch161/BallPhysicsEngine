@@ -4,8 +4,18 @@ Reel block	10157	5630aed078884cf3
 Box drop	2570	8b4dc4984f22bf66
 Spinning hexagon	491	46053bac9be2f409
 Shrinking ring	70	46f766d1e8a24787
+Peg board	1485	1122101fc8b62cf9
+Spinning bars	458	bf976af350ca6e3f
+Ball pit	2161	e2021554c8412964
+Riders	98	39d0d0b2d83979b2
+Pitch climb	32	c42fe5e3c67ee62d
 Lava ball	15	60c6f21eab43aed2
 Confetti drop	10157	5630aed078884cf3
 Spark block	2570	8b4dc4984f22bf66
 Kaleido hexagon	491	46053bac9be2f409
 Neon ring	70	46f766d1e8a24787
+Jelly drop	83	78f937772976f709
+Rope bridge	204	0c6b7b2d9118c611
+Cloth hammock	147	398b0413a444fd8f
+Captioned reel	3005	46d9717c68fd16c0
+Drum beat	65	250299a39f93d9cf

@@ -1,0 +1,173 @@
+(
+    format: 2,
+    name: "Peg board",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 900.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "corner": Number(60.0),
+                "shape": Choice("box"),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Drops",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -650.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(8),
+                "radius": Number(8.0),
+                "rows": Int(6),
+                "spacing": Number(30.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Linked(
+                    module: 6,
+                ),
+                Sound: Off,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Pegs",
+            kind: "obstacle",
+            tags: [
+                "pegs",
+            ],
+            parent: Some(0),
+            transform: (
+                position: (0.0, 100.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(9.0),
+                "shape": Choice("peg_grid"),
+                "spacing": Number(100.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Linked(
+                    module: 5,
+                ),
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "gradient": Colors([
+                        "#ffd14a",
+                        "#ff5ca8",
+                        "#6a8dff",
+                    ]),
+                    "gradient_by": Choice("hits"),
+                    "gradient_full": Number(10.0),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Peg sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Choice("marimba"),
+                    "pitch_by": Choice("speed"),
+                    "plays_when": Choice("being_hit"),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Bumpy",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.6000000238418579),
+                    "hit_balls": Bool(true),
+                },
+            ),
+        },
+    ),
+    next_thing: 4,
+    next_module: 7,
+)

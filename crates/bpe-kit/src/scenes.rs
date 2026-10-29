@@ -1,35 +1,30 @@
-//! The scenes the stages ship with: the new-scene default and others that exercise every
+//! The scenes the stages ship with: the new-scene default and the ones that exercise every
 //! setting. They double as the determinism test scenes.
 
 #[path = "scenes_stage5.rs"]
 mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
-use bpe_core::{Address, Color, Ease, ModuleId, Owner, PulseSource, Registry, Scene, Settings, SlotId, ThingId, Value};
+use bpe_core::{
+    Address, Attach, Color, Ease, ModuleId, Owner, Params, PulseSource, Registry, Scene, Settings, SlotId, Target,
+    ThingId, Value,
+};
 use bpe_mix::Instrument;
 use glam::Vec2;
 
+use crate::modules::look::GradientBy;
+use crate::modules::sound::{PitchBy, PlaysWhen};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
-    ClassicLook, DrumSound, Font, MelodySound, NoteSound, Piece, Pinned, SceneSettings, SoftSettings, SoftShape,
-    TextSettings, new_scene,
+    ClassicLook, DrumSound, Font, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
+    SceneSettings, SoftSettings, SoftShape, TextSettings, new_scene,
 };
 
 const ARENA: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
 
-/// Every shipped scene: stage 2's, then stage 5's, then stage 7's.
-pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
-    let mut scenes = stage2(reg);
-    scenes.extend(stage5(reg));
-    scenes.extend(stage7(reg));
-    scenes
-}
-
-/// The five stage 7 scenes, in order, each with its name: soft bodies, captions, keyframes,
-/// a drum machine, a melody and beat sync.
-pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
-    [jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat]
+fn build_all(reg: &Registry, builders: &[fn(&Registry) -> Scene]) -> Vec<(String, Scene)> {
+    builders
         .iter()
         .map(|build| {
             let scene = build(reg);
@@ -40,13 +35,27 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
 
 /// The five stage 2 scenes, in order, each with its name.
 pub fn stage2(reg: &Registry) -> Vec<(String, Scene)> {
-    [one_ball, reel_block, box_drop, spinning_hexagon, shrinking_ring]
-        .iter()
-        .map(|build| {
-            let scene = build(reg);
-            (scene.name.clone(), scene)
-        })
-        .collect()
+    build_all(reg, &[one_ball, reel_block, box_drop, spinning_hexagon, shrinking_ring])
+}
+
+/// The five stage 3 scenes: obstacles, folders, riders, rounded arenas and balls hitting balls.
+pub fn stage3(reg: &Registry) -> Vec<(String, Scene)> {
+    build_all(reg, &[peg_board, spinning_bars, ball_pit, riders, pitch_climb])
+}
+
+/// The five stage 7 scenes: soft bodies, captions, keyframes, a drum machine, a melody and beat
+/// sync.
+pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
+    build_all(reg, &[jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat])
+}
+
+/// Every shipped scene, stage by stage.
+pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
+    let mut scenes = stage2(reg);
+    scenes.extend(stage3(reg));
+    scenes.extend(stage5(reg));
+    scenes.extend(stage7(reg));
+    scenes
 }
 
 /// A new scene with a name, and handles on its things and shared modules.
@@ -137,9 +146,9 @@ impl<'a> Builder<'a> {
         m
     }
 
-    /// A new thing of `kind` under the root, placed and set up.
-    fn thing(&mut self, kind: &str, name: &str, position: Vec2, params: bpe_core::Params) -> ThingId {
-        let id = self.scene.add_thing(self.reg, kind, ThingId::ROOT).expect("kit kinds are registered");
+    /// A new thing of `kind` under `parent`, named and placed, with its settings.
+    fn add(&mut self, kind: &str, parent: ThingId, name: &str, position: Vec2, params: Params) -> ThingId {
+        let id = self.scene.add_thing(self.reg, kind, parent).expect("kit kinds are registered");
         let thing = self.scene.things.get_mut(&id).expect("just added");
         thing.name = name.into();
         thing.transform.position = position;
@@ -150,13 +159,13 @@ impl<'a> Builder<'a> {
     fn soft(&mut self, name: &str, position: Vec2, f: impl FnOnce(&mut SoftSettings)) -> ThingId {
         let mut s = SoftSettings::default();
         f(&mut s);
-        self.thing("soft", name, position, s.to_params())
+        self.add("soft", ThingId::ROOT, name, position, s.to_params())
     }
 
     fn text(&mut self, name: &str, position: Vec2, f: impl FnOnce(&mut TextSettings)) -> ThingId {
         let mut s = TextSettings::default();
         f(&mut s);
-        self.thing("text", name, position, s.to_params())
+        self.add("text", ThingId::ROOT, name, position, s.to_params())
     }
 
     /// Keys on one setting: (time, value, ease into the next).
@@ -170,6 +179,18 @@ impl<'a> Builder<'a> {
     fn pulse(&mut self, a: Address, source: PulseSource, amount: Value, decay: f32) {
         self.scene.set_pulse(self.reg, &a, source, amount, decay).expect("the setting pulses");
     }
+    /// Makes `id` ride on `parent`.
+    fn ride(&mut self, id: ThingId, parent: ThingId, offset: Vec2, turn_with_parent: bool) {
+        self.scene.set_parent(id, parent, Attach::Ride { offset, turn_with_parent, item: None }).expect("no loops");
+    }
+
+    fn tag(&mut self, id: ThingId, tag: &str) {
+        self.scene.things.get_mut(&id).expect("thing").tags.insert(tag.into());
+    }
+
+    fn turn(&mut self, id: ThingId, degrees: f32) {
+        self.scene.things.get_mut(&id).expect("thing").transform.rotation = degrees.to_radians();
+    }
 }
 
 fn own(thing: ThingId, key: &str) -> Address {
@@ -178,6 +199,12 @@ fn own(thing: ThingId, key: &str) -> Address {
 
 fn of_module(m: ModuleId, key: &str) -> Address {
     Address { owner: Owner::Module(m), slot: None, key: key.into() }
+}
+
+fn obstacle(f: impl FnOnce(&mut ObstacleSettings)) -> Params {
+    let mut s = ObstacleSettings::default();
+    f(&mut s);
+    s.to_params()
 }
 
 /// The new-scene default: a circle arena and one ball.
@@ -459,6 +486,187 @@ fn drum_beat(reg: &Registry) -> Scene {
     b.scene
 }
 
+/// A Plinko board: a staggered grid of pegs that sound when hit, and a shower of balls that
+/// bump into each other on the way down.
+fn peg_board(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Peg board");
+    b.scene_settings(|s| s.gravity = Vec2::new(0.0, 900.0));
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+        a.corner = 60.0;
+    });
+    let pegs = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Pegs",
+        Vec2::new(0.0, 100.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::PegGrid;
+            o.columns = 7;
+            o.rows = 9;
+            o.spacing = 100.0;
+            o.radius = 9.0;
+        }),
+    );
+    b.tag(pegs, "pegs");
+    let peg_sound = NoteSound {
+        instrument: Instrument::Marimba,
+        plays_when: PlaysWhen::BeingHit,
+        pitch_by: PitchBy::Speed,
+        ..NoteSound::default()
+    };
+    b.own_module(pegs, "sound.notes", "Peg sound", peg_sound.to_params());
+    b.balls("Drops", Vec2::new(0.0, -650.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 8;
+        s.rows = 6;
+        s.spacing = 30.0;
+        s.radius = 8.0;
+        s.velocity = Vec2::ZERO;
+    });
+    let bumpy = BasicBounce { hit_balls: true, bounciness: 0.6, ..BasicBounce::default() };
+    b.own_module(BALLS, "bounce.basic", "Bumpy", bumpy.to_params());
+    // Only the pegs make a sound.
+    b.scene.set_slot_off(BALLS, SlotId::Sound);
+    b.ball_look(|l| {
+        l.gradient = vec![Color::rgb(0xff, 0xd1, 0x4a), Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0x6a, 0x8d, 0xff)];
+        l.gradient_by = GradientBy::Hits;
+        l.gradient_full = 10.0;
+    });
+    b.scene
+}
+
+/// Three bars in a folder, turning together, with a ring of balls speeding up around them.
+fn spinning_bars(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Spinning bars");
+    b.arena(|a| a.radius = 500.0);
+    let bars = b.add("folder", ThingId::ROOT, "Bars", Vec2::ZERO, Params::default());
+    for (i, degrees) in [0.0f32, 60.0, 120.0].into_iter().enumerate() {
+        let bar = b.add(
+            "obstacle",
+            bars,
+            &format!("Bar {}", i + 1),
+            Vec2::ZERO,
+            obstacle(|o| {
+                o.shape = ObstacleShape::Bar;
+                o.length = 600.0;
+                o.thickness = 10.0;
+                o.spin = 40.0;
+            }),
+        );
+        b.ride(bar, bars, Vec2::ZERO, true);
+        b.turn(bar, degrees);
+    }
+    b.balls("Ring", Vec2::ZERO, |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 18;
+        s.radius = 12.0;
+        s.ring_radius = 380.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.bounce(|s| s.speed_gain = 1.01);
+    let bar_look = ClassicLook { color: Color::rgb(0x7f, 0xe8, 0xff), glow: 0.3, ..ClassicLook::default() };
+    b.own_module(bars, "look.classic", "Bar look", bar_look.to_params());
+    b.scene
+}
+
+/// A capsule full of balls that pile up on each other, coloured by how often they have hit.
+fn ball_pit(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Ball pit");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 1200.0);
+        s.duration = 15.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Capsule;
+        a.width = 700.0;
+        a.height = 1400.0;
+    });
+    b.balls("Pit", Vec2::new(0.0, -300.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 10;
+        s.rows = 14;
+        s.spacing = 48.0;
+        s.radius = 20.0;
+        s.velocity = Vec2::new(120.0, 0.0);
+    });
+    b.bounce(|s| {
+        s.hit_balls = true;
+        s.bounciness = 0.5;
+        s.friction = 0.3;
+    });
+    b.ball_look(|l| {
+        l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)];
+        l.gradient_by = GradientBy::Hits;
+        l.gradient_full = 12.0;
+    });
+    b.sound(|s| s.min_gap = 0.03);
+    b.scene
+}
+
+/// Balls and a peg riding a turning hexagon; the balls change hue with every hit and pop after
+/// forty.
+fn riders(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Riders");
+    b.arena(|a| {
+        a.shape = ArenaShape::Polygon;
+        a.sides = 6;
+        a.radius = 450.0;
+        a.spin = 30.0;
+    });
+    b.balls("Rim riders", Vec2::ZERO, |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 6;
+        s.radius = 14.0;
+        s.ring_radius = 60.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.ride(BALLS, ARENA, Vec2::new(0.0, -330.0), true);
+    let peg = b.add("obstacle", ARENA, "Peg", Vec2::ZERO, obstacle(|o| o.radius = 24.0));
+    b.ride(peg, ARENA, Vec2::new(0.0, 200.0), true);
+    b.bounce(|s| s.pops_after = 40);
+    b.ball_look(|l| l.hue_per_hit = 12.0);
+    b.scene
+}
+
+/// One ball blown sideways, playing a climbing note on every hit and barely bouncing off the
+/// soft bar.
+fn pitch_climb(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Pitch climb");
+    b.balls("Ball", Vec2::new(0.0, -300.0), |s| {
+        s.radius = 30.0;
+        s.velocity = Vec2::new(350.0, 0.0);
+    });
+    let bar = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Soft bar",
+        Vec2::new(0.0, 350.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::Bar;
+            o.length = 500.0;
+            o.thickness = 12.0;
+            o.path = MovePath::Line;
+            o.path_distance = Vec2::new(150.0, 0.0);
+            o.path_seconds = 6.0;
+        }),
+    );
+    b.tag(bar, "soft");
+    b.bounce(|s| {
+        s.special = true;
+        s.special_target = Target::Tag("soft".into());
+        s.special_bounciness = 0.3;
+    });
+    b.sound(|s| {
+        s.pitch_by = PitchBy::Hits;
+        s.instrument = Instrument::Marimba;
+    });
+    b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
+    b.scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
@@ -467,16 +675,18 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        let in_order: Vec<String> = [scenes::stage2(&reg), scenes::stage5(&reg), scenes::stage7(&reg)]
-            .concat()
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
+        let in_order: Vec<String> =
+            [scenes::stage2(&reg), scenes::stage3(&reg), scenes::stage5(&reg), scenes::stage7(&reg)]
+                .concat()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
         let names: Vec<&str> = scenes.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, in_order);
-        assert_eq!(&names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
+        assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
+        assert_eq!(names[5..10], ["Peg board", "Spinning bars", "Ball pit", "Riders", "Pitch climb"]);
         assert_eq!(
-            &names[names.len() - 5..],
+            names[names.len() - 5..],
             ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]
         );
         for (name, scene) in &scenes {

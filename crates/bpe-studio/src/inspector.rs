@@ -1,10 +1,13 @@
-//! The inspector: the selected thing's header, its kind's settings and one card per slot.
+//! The inspector: the selected thing's header, how it hangs in the tree, its kind's settings and
+//! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
+//! is read-only until the thing takes its own link.
 
+use crate::selection::Selection;
 use crate::theme;
-use crate::widgets::{KeyMark, settings_grid};
+use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
 use bpe_core::{
-    Address, Color, Depth, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SlotId,
-    SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene, SettingDef,
+    SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
@@ -17,6 +20,8 @@ pub struct Inspector {
     /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
     /// pauses so a drag doesn't leave a key on every frame.
     pub keyed_edit: bool,
+    /// Set when "Open in Library" was clicked; the app opens the Library window on it.
+    pub open_library: Option<ModuleId>,
 }
 
 /// A change the panel asks for, applied once the drawing is done.
@@ -25,7 +30,14 @@ enum Edit {
     Tags(BTreeSet<String>),
     Enabled(bool),
     Transform(Transform),
-    Set(Address, Value),
+    Parent(ThingId),
+    Attach(Attach),
+    /// One of the kind's own settings, for every selected thing of the kind.
+    SetKind(&'static str, Value),
+    /// One of a slot's settings, for every selected thing whose slot holds the same module kind.
+    SetSlot(SlotId, &'static str, Value),
+    ResetOverride(SlotId, &'static str),
+    PushOverride(SlotId, &'static str),
     /// Add a key at the playhead, or remove the one there.
     ToggleKey(Address),
     /// Pulse with a source, or stop pulsing.
@@ -36,25 +48,59 @@ enum Edit {
         kind: &'static str,
         copy_from: Option<ModuleId>,
     },
+    MakeUnique(SlotId),
+    PushAll(SlotId),
+    ResetAll(SlotId),
     Inherit(SlotId),
     Off(SlotId),
     AddSlot(SlotId),
 }
 
-/// Draws the inspector for `selected` and applies its edits. Values are shown as they are at
-/// `time` (the playhead), and an edit to a keyed setting writes a key there. True when the
-/// scene changed.
+/// Where an edit to a slot's settings goes for one thing.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Write {
+    /// The thing is the module's only user with no changes of its own: edit the module.
+    Module(ModuleId),
+    /// The module is shared, or the thing already has changes: edit this thing's overrides.
+    Override(ThingId, SlotId),
+    /// The slot comes from a thing above: read-only until the thing links the module itself.
+    Inherited { from: ThingId, module: ModuleId },
+}
+
+/// The write policy: where this thing's edits to `slot` land, or `None` when the slot is off or
+/// nothing fills it.
+pub(crate) fn write_target(scene: &Scene, resolved: &Resolved, id: ThingId, slot: SlotId) -> Option<Write> {
+    let thing = scene.things.get(&id)?;
+    match thing.slots.get(&slot)? {
+        SlotLink::Off => None,
+        SlotLink::Linked { module, overrides } => {
+            if overrides.is_empty() && scene.users_of(*module).len() <= 1 {
+                Some(Write::Module(*module))
+            } else {
+                Some(Write::Override(id, slot))
+            }
+        }
+        SlotLink::Inherit => {
+            let r = resolved.things.get(&id)?.slots.get(&slot)?;
+            Some(Write::Inherited { from: r.from, module: r.module })
+        }
+    }
+}
+
+/// Draws the inspector for the selection's primary thing and applies its edits, to every
+/// selected thing where that makes sense. Values are shown as they are at `time` (the
+/// playhead), and an edit to a keyed setting writes a key there. True when the scene changed.
 pub fn show(
     ui: &mut Ui,
     inspector: &mut Inspector,
     scene: &mut Scene,
     kit: &Kit,
     resolved: &Resolved,
-    selected: Option<ThingId>,
+    selection: &Selection,
     time: f64,
 ) -> bool {
     let reg = &kit.registry;
-    let Some((id, thing)) = selected.and_then(|id| scene.things.get(&id).map(|t| (id, t.clone()))) else {
+    let Some((id, thing)) = selection.primary.and_then(|id| scene.things.get(&id).map(|t| (id, t.clone()))) else {
         ui.add_space(8.0);
         ui.label(RichText::new("Select something in the tree to see its settings.").color(theme::MUTED));
         return false;
@@ -63,9 +109,15 @@ pub fn show(
         ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", thing.kind)).color(theme::WARNING));
         return false;
     };
+    let selected = selection.all(scene);
+    let choices = TargetChoices::from_scene(scene, reg);
     let mut edits = Vec::new();
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        if selected.len() > 1 {
+            ui.label(RichText::new(format!("Editing {} things", selected.len())).color(theme::MUTED).small())
+                .on_hover_text("Settings changed here apply to every selected thing that has them.");
+        }
         // ---------- header ----------
         egui::Grid::new(("header", id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
             let name_label = ui.label("Name");
@@ -79,27 +131,7 @@ pub fn show(
             ui.label(RichText::new(kind.name()).color(theme::MUTED)).on_hover_text(kind.help());
             ui.end_row();
             if id != ThingId::ROOT {
-                let mut t = thing.transform;
-                let position = ui.label("Position").on_hover_text("Where it sits, in video pixels from the centre");
-                let moved = ui
-                    .horizontal(|ui| {
-                        let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
-                        let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
-                        x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
-                    })
-                    .inner;
-                ui.end_row();
-                let rotation = ui.label("Rotation").on_hover_text("How far it is turned, clockwise");
-                let mut degrees = t.rotation.to_degrees();
-                let turned =
-                    ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
-                if turned {
-                    t.rotation = degrees.to_radians();
-                }
-                ui.end_row();
-                if moved || turned {
-                    edits.push(Edit::Transform(t));
-                }
+                tree_rows(ui, scene, &thing, &mut edits);
                 let shown = ui.label("Shown").on_hover_text("A hidden thing is left out of the video and the physics");
                 let mut enabled = thing.enabled;
                 if ui.checkbox(&mut enabled, "").labelled_by(shown.id).changed() {
@@ -141,10 +173,11 @@ pub fn show(
                 let physics = sim.is_some_and(|s| s.affects_physics(key));
                 mark_for(scene, def, &own(key), time, physics)
             };
-            let changes = settings_grid(ui, ("kind", id), kind.settings(), depth, get, &marks);
-            edits.extend(changes.set.into_iter().map(|(key, value)| Edit::Set(own(key), value)));
-            edits.extend(changes.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
-            edits.extend(changes.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
+            let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+            let out = settings_grid_marked(ui, ("kind", id), kind.settings(), depth, get, &cx);
+            edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
+            edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
+            edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
         });
 
         // ---------- one card per slot ----------
@@ -172,6 +205,10 @@ pub fn show(
                     SlotLink::Linked { module, .. } => Some(*module),
                     SlotLink::Inherit => rslot.map(|r| r.module),
                     SlotLink::Off => None,
+                };
+                let overrides = match link {
+                    SlotLink::Linked { overrides, .. } => Some(overrides),
+                    _ => None,
                 };
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(slot.name()).strong());
@@ -211,6 +248,41 @@ pub fn show(
                                 }
                             });
                         }
+                        if let SlotLink::Linked { .. } = link {
+                            if ui
+                                .button("Make unique")
+                                .on_hover_text("This thing gets its own copy of the module, with its changes baked in")
+                                .clicked()
+                            {
+                                edits.push(Edit::MakeUnique(slot));
+                                ui.close();
+                            }
+                            if overrides.is_some_and(|o| !o.is_empty()) {
+                                if ui
+                                    .button("Push all to module")
+                                    .on_hover_text("Every thing using the module gets this thing's changes")
+                                    .clicked()
+                                {
+                                    edits.push(Edit::PushAll(slot));
+                                    ui.close();
+                                }
+                                if ui
+                                    .button("Reset all")
+                                    .on_hover_text("Drop this thing's changes and follow the module")
+                                    .clicked()
+                                {
+                                    edits.push(Edit::ResetAll(slot));
+                                    ui.close();
+                                }
+                            }
+                        }
+                        if let Some(m) = shown_module
+                            && ui.button("Open in Library").clicked()
+                        {
+                            inspector.open_library = Some(m);
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.selectable_label(matches!(link, SlotLink::Inherit), "Inherit").clicked() {
                             edits.push(Edit::Inherit(slot));
                             ui.close();
@@ -234,25 +306,71 @@ pub fn show(
                 if !problems.is_empty() {
                     ui.label(RichText::new(problems.join("\n")).small().color(theme::ERROR));
                 }
-                if let Some(module) = shown_module
-                    && let Some(m) = scene.library.modules.get(&module)
-                    && let Some(mkind) = reg.module(&m.kind)
-                {
-                    let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
-                    let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
-                    let get = |key: &str| {
-                        scene.value_at_time(reg, &of_module(key), time).expect("a module's settings all resolve")
-                    };
-                    let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
-                    let marks = |key: &str| {
-                        let def = mkind.settings().iter().find(|d| d.key == key)?;
-                        mark_for(scene, def, &of_module(key), time, physics)
-                    };
-                    ui.add_space(4.0);
-                    let changes = settings_grid(ui, ("slot", id, slot), mkind.settings(), depth, get, &marks);
-                    edits.extend(changes.set.into_iter().map(|(key, value)| Edit::Set(of_module(key), value)));
-                    edits.extend(changes.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
-                    edits.extend(changes.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
+                let Some(module) = shown_module else { return };
+                let (Some(m), Some(write)) =
+                    (scene.library.modules.get(&module), write_target(scene, resolved, id, slot))
+                else {
+                    return;
+                };
+                let Some(mkind) = reg.module(&m.kind) else { return };
+                let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
+                let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
+                let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
+                let of_thing = |key: &str| Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
+                let mark = |a: &Address| {
+                    let def = mkind.settings().iter().find(|d| d.key == a.key)?;
+                    mark_for(scene, def, a, time, physics)
+                };
+                ui.add_space(4.0);
+                match write {
+                    Write::Module(_) => {
+                        let get = |key: &str| {
+                            scene.value_at_time(reg, &of_module(key), time).expect("a module's settings all resolve")
+                        };
+                        let marks = |key: &str| mark(&of_module(key));
+                        let cx =
+                            GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+                        let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
+                        edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
+                        edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
+                        edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
+                    }
+                    Write::Override(..) => {
+                        let get = |key: &str| {
+                            scene
+                                .value_at_time(reg, &of_thing(key), time)
+                                .expect("a linked slot's settings all resolve")
+                        };
+                        let overridden = |key: &str| overrides.is_some_and(|o| o.get(key).is_some());
+                        let inherited = |key: &str| scene.value_at(reg, &of_module(key));
+                        let marks = |key: &str| mark(&of_thing(key));
+                        let cx =
+                            GridCx { choices: &choices, overridden: &overridden, inherited: &inherited, marks: &marks };
+                        let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
+                        edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
+                        edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
+                        edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
+                        edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_thing(key))));
+                        edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_thing(key), source)));
+                    }
+                    Write::Inherited { module, .. } => {
+                        if ui
+                            .button("Change here")
+                            .on_hover_text("Link the module to this thing, so changes here are its own")
+                            .clicked()
+                        {
+                            edits.push(Edit::Link(slot, module));
+                        }
+                        let get = |key: &str| {
+                            rslot.and_then(|r| r.params.get(key).cloned()).unwrap_or_else(|| {
+                                let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
+                                scene.value_at(reg, &a).expect("a module's settings all resolve")
+                            })
+                        };
+                        ui.add_enabled_ui(false, |ui| {
+                            settings_grid(ui, ("slot", id, slot), mkind.settings(), depth, get);
+                        });
+                    }
                 }
             });
         }
@@ -286,12 +404,50 @@ pub fn show(
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Transform(t) => set_thing(scene, id, |thing| thing.transform = t),
-            Edit::Set(address, value) => {
-                if scene.keyed(&address) {
-                    inspector.keyed_edit = true;
-                    scene.set_key(reg, &address, time, value).is_ok()
-                } else {
-                    scene.set_at(reg, &address, value).is_ok()
+            Edit::Parent(parent) => {
+                let attach = scene.things.get(&id).map(|t| t.attach).unwrap_or_default();
+                crate::tree::apply_drop(scene, id, parent, crate::tree::Drop::Into(attach)).is_ok()
+            }
+            Edit::Attach(attach) => crate::tree::reattach(scene, id, attach).is_ok(),
+            Edit::SetKind(key, value) => {
+                let mut any = false;
+                let same_kind: Vec<ThingId> = selected
+                    .iter()
+                    .copied()
+                    .filter(|t| scene.things.get(t).is_some_and(|t| t.kind == thing.kind))
+                    .collect();
+                for t in &same_kind {
+                    let a = Address { owner: Owner::Thing(*t), slot: None, key: key.into() };
+                    any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
+                }
+                any
+            }
+            Edit::SetSlot(slot, key, value) => {
+                let mkind = resolved.things.get(&id).and_then(|r| r.slots.get(&slot)).map(|r| r.kind.clone());
+                let mut any = false;
+                for t in &selected {
+                    let same =
+                        resolved.things.get(t).and_then(|r| r.slots.get(&slot)).map(|r| &r.kind) == mkind.as_ref();
+                    if !same {
+                        continue;
+                    }
+                    any |=
+                        write_slot(scene, resolved, reg, *t, slot, key, value.clone(), time, &mut inspector.keyed_edit);
+                }
+                any
+            }
+            Edit::ResetOverride(slot, key) => scene.reset_override(id, slot, key).is_ok(),
+            Edit::PushOverride(slot, key) => {
+                let value = match scene.things.get(&id).and_then(|t| t.slots.get(&slot)) {
+                    Some(SlotLink::Linked { module, overrides }) => overrides.get(key).cloned().map(|v| (*module, v)),
+                    _ => None,
+                };
+                match value {
+                    Some((module, v)) => {
+                        let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
+                        scene.set_at(reg, &a, v).is_ok() && scene.reset_override(id, slot, key).is_ok()
+                    }
+                    None => false,
                 }
             }
             Edit::ToggleKey(address) => toggle_key(scene, reg, &address, time),
@@ -316,6 +472,19 @@ pub fn show(
                     Err(_) => false,
                 }
             }
+            Edit::MakeUnique(slot) => scene.make_unique(id, slot).is_ok(),
+            Edit::PushAll(slot) => scene.push_to_module(id, slot).is_ok(),
+            Edit::ResetAll(slot) => {
+                let keys: Vec<String> = match scene.things.get(&id).and_then(|t| t.slots.get(&slot)) {
+                    Some(SlotLink::Linked { overrides, .. }) => overrides.iter().map(|(k, _)| k.clone()).collect(),
+                    _ => Vec::new(),
+                };
+                let mut any = false;
+                for key in keys {
+                    any |= scene.reset_override(id, slot, &key).is_ok();
+                }
+                any
+            }
             Edit::Inherit(slot) => {
                 scene.set_slot_inherit(id, slot);
                 true
@@ -329,6 +498,149 @@ pub fn show(
         changed |= ok;
     }
     changed
+}
+
+/// Writes one slot setting for one thing, where its write policy says: the module, the thing's
+/// own override, or, for an inherited slot, a fresh link to the module and then an override.
+#[allow(clippy::too_many_arguments)]
+fn write_slot(
+    scene: &mut Scene,
+    resolved: &Resolved,
+    reg: &bpe_core::Registry,
+    id: ThingId,
+    slot: SlotId,
+    key: &str,
+    value: Value,
+    time: f64,
+    keyed: &mut bool,
+) -> bool {
+    match write_target(scene, resolved, id, slot) {
+        Some(Write::Module(module)) => {
+            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
+            set_or_key(scene, reg, &a, value, time, keyed)
+        }
+        Some(Write::Override(..)) => {
+            let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
+            set_or_key(scene, reg, &a, value, time, keyed)
+        }
+        Some(Write::Inherited { module, .. }) => {
+            if scene.link(reg, id, slot, module).is_err() {
+                return false;
+            }
+            let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
+            set_or_key(scene, reg, &a, value, time, keyed)
+        }
+        None => false,
+    }
+}
+
+/// Writes `value` to `a`: as a key at `time` when the setting has keys (and notes so in
+/// `keyed`), else as its plain value.
+fn set_or_key(
+    scene: &mut Scene,
+    reg: &bpe_core::Registry,
+    a: &Address,
+    value: Value,
+    time: f64,
+    keyed: &mut bool,
+) -> bool {
+    if scene.keyed(a) {
+        *keyed = true;
+        scene.set_key(reg, a, time, value).is_ok()
+    } else {
+        scene.set_at(reg, a, value).is_ok()
+    }
+}
+
+/// The header rows about the thing's place in the tree: its parent, how it hangs off it, and
+/// where it sits, as a position of its own or an offset along for the ride.
+fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Vec<Edit>) {
+    let id = thing.id;
+    let parent = thing.parent.unwrap_or(ThingId::ROOT);
+    let parent_name = scene.things.get(&parent).map(|t| t.name.clone()).unwrap_or_default();
+    ui.label("Parent").on_hover_text("The thing this one sits under in the tree");
+    let under = scene.descendants(id);
+    ui.menu_button(parent_name, |ui| {
+        for other in scene.order.iter().filter(|o| **o != id && !under.contains(o)) {
+            let Some(name) = scene.things.get(other).map(|t| t.name.as_str()) else { continue };
+            if ui.selectable_label(*other == parent, name).clicked() {
+                edits.push(Edit::Parent(*other));
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Move it under another thing");
+    ui.end_row();
+
+    let rides = thing.rides();
+    ui.label("Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");
+    ui.horizontal(|ui| {
+        if ui.selectable_label(!rides, "Grouped").clicked() && rides {
+            edits.push(Edit::Attach(Attach::Group));
+        }
+        let ride = ui.add_enabled(parent != ThingId::ROOT, egui::Button::selectable(rides, "Rides on it"));
+        if ride.on_disabled_hover_text("Scene defaults don't move, so there is nothing to ride").clicked() && !rides {
+            edits.push(Edit::Attach(Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None }));
+        }
+    });
+    ui.end_row();
+
+    let mut t = thing.transform;
+    match thing.attach {
+        Attach::Ride { offset, turn_with_parent, item } => {
+            let mut o = offset;
+            let label = ui.label("Offset").on_hover_text("Where it sits from its parent, in video pixels");
+            let moved = ui
+                .horizontal(|ui| {
+                    let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
+                    let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
+                    x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
+                })
+                .inner;
+            ui.end_row();
+            let label = ui.label("Turns with it").on_hover_text("Swing around as the parent turns");
+            let mut turns = turn_with_parent;
+            let turned = ui.checkbox(&mut turns, "").labelled_by(label.id).changed();
+            ui.end_row();
+            let mut picked = item;
+            let mut item_changed = false;
+            if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
+                let label = ui.label("Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
+                let mut n: i64 = item.map_or(-1, |i| i as i64);
+                if ui.add(DragValue::new(&mut n).range(-1..=9999)).labelled_by(label.id).changed() {
+                    picked = (n >= 0).then_some(n as u32);
+                    item_changed = true;
+                }
+                ui.end_row();
+            }
+            if moved || turned || item_changed {
+                edits.push(Edit::Attach(Attach::Ride { offset: o, turn_with_parent: turns, item: picked }));
+            }
+        }
+        Attach::Group => {
+            let position = ui.label("Position").on_hover_text("Where it sits, in video pixels from the centre");
+            let moved = ui
+                .horizontal(|ui| {
+                    let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
+                    let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
+                    x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
+                })
+                .inner;
+            ui.end_row();
+            if moved {
+                edits.push(Edit::Transform(t));
+            }
+        }
+    }
+    let rotation = ui.label("Rotation").on_hover_text("How far it is turned, clockwise");
+    let mut degrees = t.rotation.to_degrees();
+    let turned = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
+    if turned {
+        t.rotation = degrees.to_radians();
+        edits.push(Edit::Transform(t));
+    }
+    ui.end_row();
 }
 
 /// What a setting's diamond shows, or `None` for a setting that can't be keyed or pulsed.
@@ -378,7 +690,7 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
 }
 
 /// Simple | More | Nodes, the last one waiting for a later stage.
-fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
+pub(crate) fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
     ui.selectable_value(depth, Depth::Simple, "Simple");
     ui.selectable_value(depth, Depth::More, "More");
     ui.add_enabled(false, egui::Button::selectable(false, "Nodes"))
@@ -401,13 +713,14 @@ mod tests {
         Harness,
         kittest::{NodeT, Queryable},
     };
+    use glam::Vec2;
 
     struct State {
         inspector: Inspector,
         scene: Scene,
         kit: Kit,
         resolved: Resolved,
-        selected: Option<ThingId>,
+        selection: Selection,
         time: f64,
     }
 
@@ -415,7 +728,11 @@ mod tests {
         let kit = bpe_kit::kit();
         let scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let state = State { inspector: Inspector::default(), scene, kit, resolved, selected, time: 0.0 };
+        let mut selection = Selection::default();
+        if let Some(id) = selected {
+            selection.set(id);
+        }
+        let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
             .with_size(egui::vec2(420.0, 1600.0))
             .with_step_dt(1.0 / 60.0)
@@ -424,7 +741,7 @@ mod tests {
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
-                    if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, s.selected, s.time) {
+                    if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, s.time) {
                         s.resolved = resolve(&s.scene, &s.kit.registry);
                     }
                 },
@@ -460,6 +777,13 @@ mod tests {
             modifiers: Modifiers::NONE,
         });
         h.run();
+    }
+
+    fn ball_look(s: &State) -> (ModuleId, bpe_core::Params) {
+        match &s.scene.things[&ThingId(2)].slots[&SlotId::Look] {
+            SlotLink::Linked { module, overrides } => (*module, overrides.clone()),
+            other => panic!("the ball's look is linked: {other:?}"),
+        }
     }
 
     #[test]
@@ -502,7 +826,7 @@ mod tests {
         h.get_by_label("Keyframe Size").click_secondary();
         h.run();
         assert!(h.query_by_label("Pulse with beat").is_none());
-        h.state_mut().selected = Some(ThingId::ROOT);
+        h.state_mut().selection.set(ThingId::ROOT);
         h.run();
         h.get_by_label("Keyframe Bloom").click_secondary();
         h.run();
@@ -616,5 +940,232 @@ mod tests {
         h.get_by_label("Motion").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots.get(&SlotId::Motion), Some(&SlotLink::Inherit));
+    }
+
+    #[test]
+    fn the_write_policy_picks_module_override_or_inherited() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = resolve(&scene, &kit.registry);
+        let look = match &scene.things[&ThingId(2)].slots[&SlotId::Look] {
+            SlotLink::Linked { module, .. } => *module,
+            _ => unreachable!(),
+        };
+        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Look), Some(Write::Module(look)));
+        assert_eq!(
+            write_target(&scene, &resolved, ThingId(2), SlotId::Motion),
+            Some(Write::Inherited { from: ThingId::ROOT, module: ModuleId(1) })
+        );
+        scene.link(&kit.registry, ThingId(1), SlotId::Look, look).unwrap();
+        assert_eq!(
+            write_target(&scene, &resolved, ThingId(2), SlotId::Look),
+            Some(Write::Override(ThingId(2), SlotId::Look))
+        );
+        // Alone again but with a change of its own, the thing keeps editing its overrides.
+        scene.set_slot_inherit(ThingId(1), SlotId::Look);
+        scene.set_override(&kit.registry, ThingId(2), SlotId::Look, "glow", Value::Number(1.5)).unwrap();
+        assert_eq!(
+            write_target(&scene, &resolved, ThingId(2), SlotId::Look),
+            Some(Write::Override(ThingId(2), SlotId::Look))
+        );
+        scene.set_slot_off(ThingId(2), SlotId::Look);
+        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Look), None);
+        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Trail), None);
+    }
+
+    #[test]
+    fn a_sole_user_edits_its_module_and_a_shared_module_gets_an_override() {
+        let mut h = harness(Some(ThingId(2)));
+        // "Ball look" is the ball's alone: the Glow slider writes into the module.
+        let rect = slider_rect(&h, "Glow");
+        drag_slider(&mut h, rect, 0.9);
+        {
+            let s = h.state();
+            let (module, overrides) = ball_look(s);
+            assert!(overrides.is_empty());
+            let glow = s.scene.library.modules[&module].params.get("glow").cloned();
+            assert!(matches!(glow, Some(Value::Number(g)) if g > 1.0), "{glow:?}");
+        }
+        assert!(h.query_by_label("Changed here").is_none());
+        // Share it with the arena: now the ball's edits are its own, with a dot.
+        {
+            let s = h.state_mut();
+            let (module, _) = ball_look(s);
+            s.scene.link(&s.kit.registry, ThingId(1), SlotId::Look, module).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        assert!(h.query_by_label_contains("shared ×2").is_some());
+        let rect = slider_rect(&h, "Glow");
+        drag_slider(&mut h, rect, 0.1);
+        {
+            let s = h.state();
+            let (_, overrides) = ball_look(s);
+            assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g < 0.5), "{overrides:?}");
+        }
+        assert!(h.query_by_label("Changed here").is_some());
+        // Reset all in the picker drops the change again.
+        h.get_by_label_contains("shared ×2").click();
+        h.run();
+        h.get_by_label("Reset all").click();
+        h.run();
+        assert!(ball_look(h.state()).1.is_empty());
+        assert!(h.query_by_label("Changed here").is_none());
+    }
+
+    #[test]
+    fn push_all_writes_the_overrides_into_the_module() {
+        let mut h = harness(Some(ThingId(2)));
+        {
+            let s = h.state_mut();
+            let (module, _) = ball_look(s);
+            s.scene.link(&s.kit.registry, ThingId(1), SlotId::Look, module).unwrap();
+            s.scene.set_override(&s.kit.registry, ThingId(2), SlotId::Look, "glow", Value::Number(1.7)).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        h.get_by_label_contains("shared ×2").click();
+        h.run();
+        h.get_by_label("Push all to module").click();
+        h.run();
+        let s = h.state();
+        let (module, overrides) = ball_look(s);
+        assert!(overrides.is_empty());
+        assert_eq!(s.scene.library.modules[&module].params.get("glow"), Some(&Value::Number(1.7)));
+    }
+
+    #[test]
+    fn an_inherited_card_is_read_only_until_changed_here() {
+        let mut h = harness(Some(ThingId(2)));
+        // Motion is inherited from Scene defaults.
+        assert!(h.get_by_role_and_label(Role::Slider, "Air drag").accesskit_node().is_disabled());
+        // The first inherited card is Motion.
+        h.get_all_by_label("Change here").next().expect("a Change here button").click();
+        h.run();
+        let s = h.state();
+        assert!(matches!(s.scene.things[&ThingId(2)].slots[&SlotId::Motion], SlotLink::Linked { .. }));
+        assert_eq!(s.scene.users_of(bpe_core::ModuleId(1)), vec![ThingId::ROOT, ThingId(2)]);
+        assert!(!h.get_by_role_and_label(Role::Slider, "Air drag").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn make_unique_is_in_the_picker() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("Make unique").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules.len(), 6);
+        assert!(s.scene.library.modules.values().any(|m| m.name == "Ball look (Ball)"));
+    }
+
+    #[test]
+    fn open_in_library_asks_the_app_to_open_the_module() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("Open in Library").click();
+        h.run();
+        assert_eq!(h.state().inspector.open_library, Some(ball_look(h.state()).0));
+    }
+
+    #[test]
+    fn a_mixed_selection_only_edits_things_that_have_the_setting() {
+        let mut h = harness(Some(ThingId(2)));
+        {
+            let s = h.state_mut();
+            let c = s.scene.add_thing(&s.kit.registry, "balls", ThingId::ROOT).unwrap();
+            s.selection.extra.extend([ThingId(1), c]);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        assert!(h.query_by_label("Editing 3 things").is_some());
+        let rect = slider_rect(&h, "Size");
+        drag_slider(&mut h, rect, 0.9);
+        let s = h.state();
+        let big = |id| matches!(s.scene.things[&id].params.get("radius"), Some(Value::Number(r)) if *r > 100.0);
+        assert!(big(ThingId(2)) && big(ThingId(3)));
+        assert!(s.scene.things[&ThingId(1)].params.get("radius").is_none(), "the arena's Radius is another setting");
+    }
+
+    #[test]
+    fn a_slot_edit_reaches_every_selected_thing_through_its_own_policy() {
+        let mut h = harness(Some(ThingId(2)));
+        {
+            let s = h.state_mut();
+            // The arena inherits its look from the scene; the ball has its own module.
+            s.selection.extra.insert(ThingId(1));
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        let rect = slider_rect(&h, "Glow");
+        drag_slider(&mut h, rect, 0.9);
+        let s = h.state();
+        let (module, overrides) = ball_look(s);
+        assert!(overrides.is_empty(), "the ball is its module's only user");
+        assert!(matches!(s.scene.library.modules[&module].params.get("glow"), Some(Value::Number(g)) if *g > 1.0));
+        // The arena took its own link to the scene's look and changed glow on top of it.
+        let SlotLink::Linked { module: arena_module, overrides } = &s.scene.things[&ThingId(1)].slots[&SlotId::Look]
+        else {
+            panic!("the arena links the look it inherited")
+        };
+        assert_eq!(*arena_module, ModuleId(0));
+        assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g > 1.0), "{overrides:?}");
+        assert!(
+            s.scene.library.modules[&ModuleId(0)].params.get("glow").is_none(),
+            "the scene's own look is untouched"
+        );
+    }
+
+    #[test]
+    fn the_parent_and_attach_rows_reparent_and_ride() {
+        let mut h = harness(Some(ThingId(2)));
+        // The Parent picker shows the current parent.
+        h.get_by_label("Scene defaults").click();
+        h.run();
+        h.get_by_label("Arena").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].parent, Some(ThingId(1)));
+        h.get_by_label("Rides on it").click();
+        h.run();
+        let s = h.state();
+        assert!(
+            matches!(s.scene.things[&ThingId(2)].attach, Attach::Ride { offset, turn_with_parent: true, .. } if offset == Vec2::new(0.0, -200.0)),
+            "{:?}",
+            s.scene.things[&ThingId(2)].attach
+        );
+        assert!(h.query_all_by_label("Offset").next().is_some() && h.query_all_by_label("Position").next().is_none());
+        assert!(h.query_all_by_label("Item").next().is_none(), "an arena has no balls to ride");
+        h.get_by_label("Grouped").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.things[&ThingId(2)].attach, Attach::Group);
+        assert_eq!(s.scene.things[&ThingId(2)].transform.position, Vec2::new(0.0, -200.0));
+    }
+
+    #[test]
+    fn a_target_setting_has_a_picker() {
+        let mut h = harness(Some(ThingId(2)));
+        // The bounce card's "Which balls" target is a More setting.
+        {
+            let s = h.state_mut();
+            s.inspector.depth.insert((ThingId(2), Some(SlotId::Bounce)), Depth::More);
+            // Give the ball its own bounce so the card is editable.
+            let m = s.scene.add_module(&s.kit.registry, "bounce.basic", "Own bounce").unwrap();
+            s.scene.link(&s.kit.registry, ThingId(2), SlotId::Bounce, m).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        // The picker is a button named by its row, reading "Anything" until something is picked.
+        h.get_by_role_and_label(Role::Button, "Which balls").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Kind").click();
+        h.run();
+        h.get_by_label("Arena").click();
+        h.run();
+        let s = h.state();
+        let m = s.scene.library.modules.values().find(|m| m.name == "Own bounce").unwrap();
+        assert_eq!(m.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
     }
 }

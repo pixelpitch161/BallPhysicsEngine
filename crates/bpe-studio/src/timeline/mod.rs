@@ -49,7 +49,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     ui.add_space(4.0);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
     let ruler = Ruler { track, duration: studio.duration().max(0.001) };
-    let lanes = lanes_for(&studio.scene, &studio.kit, &studio.resolved, studio.selected);
+    let lanes = lanes_for(&studio.scene, &studio.kit, &studio.resolved, studio.selection.primary);
     let mut timeline = std::mem::take(&mut studio.panels.timeline);
     // A selection that points at a key that is gone is no selection.
     if let Some((a, i)) = &timeline.selected
@@ -305,7 +305,7 @@ mod tests {
         let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
         studio.scene.set_key(reg, &size_address(), 2.0, Value::Number(60.0)).unwrap();
         studio.scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
-        studio.selected = Some(ThingId(2));
+        studio.selection.set(ThingId(2));
         let mut h = Harness::builder()
             .with_size(egui::vec2(1000.0, 300.0))
             .with_step_dt(1.0 / 60.0)

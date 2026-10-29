@@ -61,6 +61,34 @@ fn exports_a_short_clip_with_sound() {
 }
 
 #[test]
+fn exports_a_stage3_scene_with_an_obstacle() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let (name, scene) = bpe_kit::scenes::stage3(&kit.registry).swap_remove(0);
+    assert_eq!(name, "Peg board");
+    let dir = temp_dir("pegs");
+    let mut options = ExportOptions::new(dir.join("peg-board.mp4"));
+    options.max_frames = Some(30);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "csv"])
+        .arg(dir.join("peg-board.mp4"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    assert!(text.lines().any(|l| l.contains("video")) && text.lines().any(|l| l.contains("audio")), "{text}");
+    let duration: f64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("format,"))
+        .and_then(|d| d.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no duration in {text}"));
+    assert!((duration - 0.5).abs() < 0.1, "{duration}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn export_without_ffmpeg_fails_clearly_and_leaves_no_file() {
     let Some((device, queue)) = ready() else { return };
     let kit = kit();

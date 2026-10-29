@@ -53,7 +53,7 @@ const GLOW_REACH: f32 = 36.0;
 struct ShapeIn {
     // Centre xy, angle.
     @location(0) a: vec4<f32>,
-    // Ring: radius, sides. Box: half size. Capsule: both ends.
+    // Ring: radius, sides. Box: half size, corner radius. Capsule: half length.
     @location(1) b: vec4<f32>,
     // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
     @location(2) c: vec4<f32>,
@@ -78,9 +78,8 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
         reach += GLOW_REACH;
     }
     var extent = s.b.x;
-    if s.c.x > 1.5 {
-        extent = length(s.b.zw - s.b.xy) * 0.5;
-    } else if s.c.x > 0.5 {
+    if s.c.x > 0.5 {
+        // A box's half size, or a capsule's half length (its b.y is 0).
         extent = length(s.b.xy);
     }
     let world = s.a.xy + corner * (extent + reach);
@@ -140,14 +139,18 @@ fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32) -> f32 {
 
 // Distance from a pixel to a wall's centre line, or to a capsule's spine.
 fn shape_distance(in: ShapeOut) -> f32 {
-    if in.c.x > 1.5 {
-        return segment_distance(in.world, in.b.xy, in.b.zw);
-    }
     if in.c.x < 0.5 {
         return ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z);
     }
-    let q = abs(rotate(in.world - in.a.xy, -in.a.z)) - in.b.xy;
-    return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
+    let local = rotate(in.world - in.a.xy, -in.a.z);
+    if in.c.x < 1.5 {
+        // A box, its corners rounded by b.z.
+        let corner = in.b.z;
+        let q = abs(local) - (in.b.xy - vec2<f32>(corner));
+        return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner);
+    }
+    // A capsule: the segment along x from -b.x to b.x.
+    return segment_distance(local, vec2<f32>(-in.b.x, 0.0), vec2<f32>(in.b.x, 0.0));
 }
 
 @fragment

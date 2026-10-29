@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn hits_walk_through_the_tune_and_loop() {
         let kit = kit();
-        let (_scene, resolved) = melody_scene("twinkle");
+        let (scene, resolved) = melody_scene("twinkle");
         let tune = load_tune("builtin:twinkle").unwrap();
         let steps = tune.steps(None, 0);
         assert!(steps.len() > 4);
@@ -108,7 +108,7 @@ mod tests {
         for k in 0..=steps.len() {
             log.push(hit(24 * (k as u64 + 1), 400.0));
         }
-        let notes = bpe_mix::notes_with(&mix_settings(&resolved), &resolved, &log, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &|t| t);
         let keys_at = |frame: usize| -> Vec<u8> { notes.iter().filter(|n| n.frame == frame).map(|n| n.key).collect() };
         assert_eq!(keys_at(4_800), steps[0].keys);
         assert_eq!(keys_at(9_600), steps[1].keys);
@@ -120,7 +120,7 @@ mod tests {
         quiet.push(hit(240, 400.0));
         quiet.push(hit(480, 5.0));
         quiet.push(hit(720, 400.0));
-        let notes = bpe_mix::notes_with(&mix_settings(&resolved), &resolved, &quiet, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &quiet, &kit.mixes, None, &|t| t);
         assert_eq!(notes.iter().filter(|n| n.frame == 96_000).count(), 0);
         let third: Vec<u8> = notes.iter().filter(|n| n.frame == 144_000).map(|n| n.key).collect();
         assert_eq!(third, steps[2].keys);
@@ -129,10 +129,10 @@ mod tests {
     #[test]
     fn a_missing_file_plays_nothing() {
         let kit = kit();
-        let (_scene, resolved) = melody_scene("/nowhere/tune.mid");
+        let (scene, resolved) = melody_scene("/nowhere/tune.mid");
         let mut log = Log::default();
         log.push(hit(240, 400.0));
-        let notes = bpe_mix::notes_with(&mix_settings(&resolved), &resolved, &log, &kit.mixes, None, &|t| t);
+        let notes = bpe_mix::notes_with(&mix_settings(&scene, &resolved), &resolved, &log, &kit.mixes, None, &|t| t);
         assert!(notes.is_empty());
         assert!(load_tune("").is_none());
         assert!(load_tune("builtin:nothing-here").is_none());

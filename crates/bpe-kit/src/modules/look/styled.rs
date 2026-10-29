@@ -8,6 +8,8 @@ use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_gfx::{LookInstance, blend_alpha};
 use glam::Vec2;
 
+use super::GradientBy;
+
 pub struct StyledLookKind;
 
 /// The outline a ball is drawn with. Physics still treats every ball as a circle.
@@ -128,6 +130,16 @@ pub struct StyledLook {
     /// Spread across the balls from the first row to the last; empty uses Colour.
     #[setting(label = "Colours", group = "Light", random)]
     pub gradient: Vec<Color>,
+    /// What spreads the Colours across the balls: the row they start in, their order, how fast
+    /// they go, or how often they have hit.
+    #[setting(label = "Colours follow", group = "Light")]
+    pub gradient_by: GradientBy,
+    /// The speed in px/s, or number of hits, at which the last colour is reached.
+    #[setting(label = "Colours end at", range(1, 20000), group = "Light", random)]
+    pub gradient_full: f32,
+    /// Every hit turns the colour this far round the colour wheel.
+    #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Light", keyframe, random)]
+    pub hue_per_hit: f32,
     /// How much fast balls stretch along their path and thin out across it.
     #[setting(label = "Stretch", range(0, 1), group = "Motion", keyframe, random)]
     pub stretch: f32,
@@ -161,6 +173,9 @@ impl Default for StyledLook {
             opacity: 1.0,
             rainbow: 0.0,
             gradient: Vec::new(),
+            gradient_by: GradientBy::Row,
+            gradient_full: 1000.0,
+            hue_per_hit: 0.0,
             stretch: 0.0,
             flash: 0.4,
             flash_size: 26.0,
