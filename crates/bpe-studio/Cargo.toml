@@ -1,0 +1,26 @@
+[package]
+name = "bpe-studio"
+description = "The modular Ball Studio editor: design a scene from shared modules, watch it with sound, export it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ball-studio-next"
+path = "src/main.rs"
+
+[dependencies]
+bpe-core.workspace = true
+bpe-runtime.workspace = true
+bpe-gfx.workspace = true
+bpe-mix.workspace = true
+bpe-kit.workspace = true
+bpe-cli.workspace = true
+eframe.workspace = true
+egui-wgpu.workspace = true
+cpal.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+egui_kittest = "0.37"

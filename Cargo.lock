@@ -402,6 +402,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-studio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bpe-cli",
+ "bpe-core",
+ "bpe-gfx",
+ "bpe-kit",
+ "bpe-mix",
+ "bpe-runtime",
+ "cpal",
+ "eframe",
+ "egui-wgpu",
+ "egui_kittest",
+ "rfd",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
