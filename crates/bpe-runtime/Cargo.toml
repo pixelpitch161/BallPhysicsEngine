@@ -1,0 +1,10 @@
+[package]
+name = "bpe-runtime"
+description = "The modular Ball Studio's engine: world, step loop, collision and the event log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-core.workspace = true
+glam.workspace = true
