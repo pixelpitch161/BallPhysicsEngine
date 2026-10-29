@@ -1,16 +1,18 @@
 //! The world: every thing's simulation state, stepped at a fixed rate.
 //!
 //! Each step runs the spec's stages in order: Spawn, Scripted, Forces, Integrate, Collide,
-//! Respond, Events, Rules. Everything iterates in `ThingId` order, so two runs of the same scene
-//! give the same log.
+//! Respond, Events, Rules. Things are built and scripted in tree order (parents first, so riders
+//! find their parent's pose) and collide in `ThingId` order, so two runs of the same scene give
+//! the same log.
 
 use std::collections::BTreeMap;
 
-use bpe_core::{Attach, Resolved, Scene, SlotId, ThingId, Value};
+use bpe_core::{Attach, Resolved, Scene, SlotId, ThingId, Transform, Value};
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
 use crate::plugins::{Limits, Sims, ThingState};
+use crate::pose::Pose;
 use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
@@ -38,14 +40,21 @@ pub struct World {
     pub walls: BTreeMap<ThingId, Wall>,
     /// Whatever a thing's sim keeps between steps.
     pub states: BTreeMap<ThingId, Box<dyn ThingState>>,
+    /// Where every placed thing is right now. Sims write it in `build` and `scripted`; riders
+    /// read their parent's through [`World::anchor`].
+    pub poses: BTreeMap<ThingId, Pose>,
     /// The kind of every thing that has a sim, in id order.
     kinds: BTreeMap<ThingId, String>,
+    /// The built things in tree order: parents before children.
+    order: Vec<ThingId>,
+    /// Every built thing's parent, how it hangs off it and its own transform.
+    attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce only).
     modules: BTreeMap<ThingId, Prepared>,
 }
 
 impl World {
-    /// Builds the world: every resolved thing in id order through its sim, then the Motion and
+    /// Builds the world: every resolved thing in tree order through its sim, then the Motion and
     /// Bounce modules it uses. Things and modules without a sim are left out.
     pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
         let mut world = World {
@@ -55,14 +64,22 @@ impl World {
             bodies: BTreeMap::new(),
             walls: BTreeMap::new(),
             states: BTreeMap::new(),
+            poses: BTreeMap::new(),
             kinds: BTreeMap::new(),
+            order: Vec::new(),
+            attach: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
-        for (id, r) in &resolved.things {
+        for id in &scene.order {
+            let Some(r) = resolved.things.get(id) else { continue };
             let Some(thing) = scene.things.get(id) else { continue };
+            if let Some(parent) = thing.parent {
+                world.attach.insert(*id, (parent, thing.attach, thing.transform));
+            }
             let Some(sim) = sims.thing(&r.kind) else { continue };
             sim.build(thing, r, &mut world);
             world.kinds.insert(*id, r.kind.clone());
+            world.order.push(*id);
             let mut prepared = Prepared::new();
             for slot in SIM_SLOTS {
                 if let Some(s) = r.slots.get(&slot)
@@ -76,6 +93,31 @@ impl World {
             }
         }
         world
+    }
+
+    /// Where a thing sits this step: on its parent when it rides one, else where its own
+    /// transform puts it. A rider whose parent has no pose (or no such ball) uses its own
+    /// transform too. A thing the world doesn't know is at the origin.
+    pub fn anchor(&self, thing: ThingId) -> Pose {
+        let Some((parent, attach, transform)) = self.attach.get(&thing) else { return Pose::default() };
+        let own = Pose::from_transform(transform);
+        let Attach::Ride { offset, turn_with_parent, item } = *attach else { return own };
+        let parent_pose = match item {
+            Some(i) => self.bodies.get(parent).filter(|b| (i as usize) < b.len()).map(|b| Pose {
+                position: b.position[i as usize],
+                velocity: b.velocity[i as usize],
+                ..Pose::default()
+            }),
+            None => self.poses.get(parent).copied(),
+        };
+        match parent_pose {
+            Some(p) => {
+                let mut pose = p.local(offset, turn_with_parent);
+                pose.angle += transform.rotation;
+                pose
+            }
+            None => own,
+        }
     }
 
     /// Seconds since the start.
@@ -138,10 +180,11 @@ impl World {
         let substeps = ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS);
         let sub_dt = dt / substeps as f32;
 
-        // Scripted: walls spin and shrink, things follow their scripts.
-        let kinds: Vec<(ThingId, String)> = self.kinds.iter().map(|(id, k)| (*id, k.clone())).collect();
-        for (id, kind) in &kinds {
-            if let Some(sim) = sims.thing(kind) {
+        // Scripted: walls spin and shrink, things follow their scripts. Parents go first, so
+        // riders see where their parent moved to.
+        let order = self.order.clone();
+        for id in &order {
+            if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.scripted(*id, self);
             }
         }
@@ -308,8 +351,8 @@ impl Hasher {
 mod tests {
     use super::*;
     use crate::plugins::Sims;
-    use crate::testing::{DOTS, TestDots, WALL, dots_in_ring, dots_in_sticky_ring, reg};
-    use bpe_core::{SlotId, ThingId, Value, resolve};
+    use crate::testing::{DOTS, TestDots, TestRoot, WALL, dots_in_ring, dots_in_sticky_ring, reg, ring_with_rider};
+    use bpe_core::{Attach, SlotId, ThingId, Value, resolve};
 
     #[test]
     fn two_runs_give_the_same_log_and_a_ball_bounces() {
@@ -404,6 +447,50 @@ mod tests {
         scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 1.0]));
         let resolved = resolve(&scene, &reg());
         assert_ne!(fingerprint(&scene, &resolved, &sims), moved);
+    }
+
+    #[test]
+    fn a_rider_starts_at_its_parents_pose_with_its_speed() {
+        let (scene, resolved, sims) = ring_with_rider(Vec2::new(50.0, 0.0), true);
+        let w = World::build(&scene, &resolved, &sims);
+        assert_eq!(w.bodies[&DOTS].position[0], Vec2::new(50.0, 0.0));
+        // The rim at (50, 0) of a ring turning clockwise at 1 rad/s moves down the screen at
+        // 50 px/s, on top of the dots' own launch speed of (300, -200).
+        let v = w.bodies[&DOTS].velocity[0];
+        assert!((v.y - (-200.0 + 50.0)).abs() < 1e-3 && (v.x - 300.0).abs() < 1e-3, "{v:?}");
+        assert_eq!(w.poses[&WALL].spin, 1.0);
+        assert_eq!(w.anchor(DOTS).angle, 0.0);
+    }
+
+    #[test]
+    fn a_rider_without_a_parent_pose_uses_its_own_transform() {
+        let (mut scene, _, _) = ring_with_rider(Vec2::new(50.0, 0.0), true);
+        scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(7.0, 8.0);
+        let resolved = resolve(&scene, &reg());
+        // Without a wall sim the parent builds nothing and has no pose.
+        let mut thin = Sims::default();
+        thin.add_thing(TestRoot);
+        thin.add_thing(TestDots);
+        let w = World::build(&scene, &resolved, &thin);
+        assert_eq!(w.bodies[&DOTS].position[0], Vec2::new(7.0, 8.0));
+        assert_eq!(w.anchor(ThingId(99)), Pose::default());
+        assert_eq!(w.anchor(ThingId::ROOT), Pose::default());
+    }
+
+    #[test]
+    fn build_and_scripted_follow_tree_order_not_id_order() {
+        // A parent added after its child in id order must still be placed first.
+        let (mut scene, _, sims) = ring_with_rider(Vec2::new(50.0, 0.0), false);
+        let reg = reg();
+        let late = scene.add_thing(&reg, "wall", ThingId::ROOT).unwrap();
+        scene.things.get_mut(&late).unwrap().transform.position = Vec2::new(300.0, 0.0);
+        scene.set_parent(DOTS, late, Attach::Ride { offset: Vec2::ZERO, turn_with_parent: false, item: None }).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let mut w = World::build(&scene, &resolved, &sims);
+        assert_eq!(w.bodies[&DOTS].position[0], Vec2::new(300.0, 0.0));
+        assert_eq!(w.order, vec![ThingId::ROOT, WALL, late, DOTS]);
+        w.step(&sims, &mut Log::default());
+        assert_eq!(w.poses[&late].position, Vec2::new(300.0, 0.0));
     }
 
     #[test]

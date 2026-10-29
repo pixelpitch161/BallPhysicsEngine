@@ -7,6 +7,7 @@ pub mod bodies;
 pub mod events;
 pub mod playback;
 pub mod plugins;
+pub mod pose;
 #[cfg(test)]
 pub mod testing;
 pub mod walls;
@@ -16,5 +17,6 @@ pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, Sims, ThingSim, ThingState, state, state_mut};
+pub use pose::Pose;
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
 pub use world::{World, fingerprint};

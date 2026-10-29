@@ -2,13 +2,13 @@
 //! root that sets gravity.
 
 use bpe_core::{
-    ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Thing, ThingId,
+    Attach, ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Thing, ThingId,
     ThingKind, Value, resolve,
 };
 use glam::Vec2;
 
 use crate::plugins::{ModuleSim, Sims, ThingSim, ThingState};
-use crate::{Bodies, Contact, Limits, Outline, Wall, World};
+use crate::{Bodies, Contact, Limits, Outline, Pose, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
@@ -30,10 +30,12 @@ impl Default for RootSettings {
 struct WallSettings {
     #[setting(label = "Radius", range(1, 10000))]
     radius: f32,
+    #[setting(label = "Spin", range(-100, 100))]
+    spin: f32,
 }
 impl Default for WallSettings {
     fn default() -> Self {
-        Self { radius: 100.0 }
+        Self { radius: 100.0, spin: 0.0 }
     }
 }
 
@@ -138,9 +140,27 @@ impl ThingSim for TestWall {
     }
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let s = WallSettings::from_params(&resolved.params);
+        let base = world.anchor(thing.id);
         let outline =
-            Outline::Ring { center: thing.transform.position, radius: s.radius, sides: 0, angle: 0.0, thickness: 2.0 };
-        world.walls.insert(thing.id, Wall { outline, spin: 0.0, growth: 0.0 });
+            Outline::Ring { center: base.position, radius: s.radius, sides: 0, angle: base.angle, thickness: 2.0 };
+        world.walls.insert(thing.id, Wall { outline, spin: s.spin, growth: 0.0 });
+        world.poses.insert(thing.id, Pose { spin: s.spin, ..base });
+        world.states.insert(thing.id, Box::new(s.spin));
+    }
+
+    fn scripted(&self, thing: ThingId, world: &mut World) {
+        let dt = world.dt();
+        let spin = world.states.get(&thing).map_or(0.0, |s| *crate::state::<f32>(s.as_ref()));
+        let base = world.anchor(thing);
+        if let Some(pose) = world.poses.get_mut(&thing) {
+            pose.angle += spin * dt;
+            pose.position = base.position;
+            pose.velocity = base.velocity;
+        }
+        if let Some(Wall { outline: Outline::Ring { center, angle, .. }, .. }) = world.walls.get_mut(&thing) {
+            *angle += spin * dt;
+            *center = base.position;
+        }
     }
 }
 
@@ -151,10 +171,11 @@ impl ThingSim for TestDots {
     }
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let s = DotsSettings::from_params(&resolved.params);
+        let at = world.anchor(thing.id);
         let mut bodies = Bodies::default();
         for i in 0..s.count {
             let offset = Vec2::new(i as f32 * 0.5, 0.0);
-            bodies.push(thing.transform.position + offset, s.velocity, 5.0);
+            bodies.push(at.position + offset, s.velocity + at.velocity, 5.0);
         }
         world.bodies.insert(thing.id, bodies);
     }
@@ -263,6 +284,16 @@ pub fn dots_in_ring(count: u32) -> (Scene, Resolved, Sims) {
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(true))
+}
+
+/// One dot riding on a ring that turns clockwise at 1 rad/s.
+pub fn ring_with_rider(offset: Vec2, turn: bool) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    scene.things.get_mut(&WALL).unwrap().params.set("spin", Value::Number(1.0));
+    scene.set_parent(DOTS, WALL, Attach::Ride { offset, turn_with_parent: turn, item: None }).unwrap();
+    let resolved = resolve(&scene, &reg());
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
 }
 
 /// The dots carry a bouncy module; the wall a sticky one that may or may not take over.
