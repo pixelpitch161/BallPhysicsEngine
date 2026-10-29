@@ -2,4 +2,6 @@
 
 pub mod arena;
 pub mod balls;
+pub mod folder;
+pub mod obstacle;
 pub mod scene;

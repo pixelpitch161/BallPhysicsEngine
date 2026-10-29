@@ -28,6 +28,9 @@ pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::folder::{FolderKind, FolderSettings, FolderSim};
+pub use things::obstacle::draw::ObstacleDraw;
+pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -38,6 +41,8 @@ pub fn sims() -> Sims {
     s.add_thing(SceneSim);
     s.add_thing(ArenaSim);
     s.add_thing(BallsSim);
+    s.add_thing(FolderSim);
+    s.add_thing(ObstacleSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s
@@ -49,6 +54,7 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ArenaDraw);
     d.add(BallsDraw);
+    d.add(ObstacleDraw);
     d
 }
 
@@ -96,6 +102,8 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
+    r.add_thing(FolderKind);
+    r.add_thing(ObstacleKind);
     r.add_module(ClassicLookKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
