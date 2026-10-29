@@ -1,6 +1,10 @@
 //! The scenes this stage ships with: the new-scene default and four more that exercise every
 //! setting. They double as the determinism test scenes.
 
+#[path = "scenes_stage5.rs"]
+mod stage5;
+pub use stage5::{stage5, stage5_with_twins};
+
 use bpe_core::{Color, ModuleId, Registry, Scene, Settings, SlotId, ThingId};
 use bpe_mix::Instrument;
 use glam::Vec2;

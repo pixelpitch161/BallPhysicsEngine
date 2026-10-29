@@ -15,6 +15,7 @@ fn playbacks() -> Vec<(String, Playback)> {
     let kit = kit();
     scenes::stage2(&kit.registry)
         .into_iter()
+        .chain(scenes::stage5(&kit.registry))
         .map(|(name, scene)| {
             let resolved = bpe_core::resolve(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{name}: {:?}", resolved.problems);
@@ -78,5 +79,23 @@ fn the_scenes_are_lively() {
         for bodies in playback.world().bodies.values() {
             assert!(bodies.position.iter().all(|p| p.is_finite()), "{name}: a ball went non-finite");
         }
+    }
+}
+
+#[test]
+fn stage5_scenes_keep_their_stage2_twins_logs() {
+    let kit = kit();
+    let twins: std::collections::BTreeMap<String, Playback> = playbacks().into_iter().collect();
+    for (name, scene, twin) in scenes::stage5_with_twins(&kit.registry) {
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(SECONDS);
+        let mut expected = twins[&twin].clone();
+        expected.seek(SECONDS);
+        assert_eq!(playback.log().hash(), expected.log().hash(), "{name} drifted from {twin}");
+        assert_eq!(playback.log().len(), expected.log().len(), "{name} drifted from {twin}");
+        // The trail's history is the one thing the world keeps that its twin doesn't.
+        let has_trail = resolved.things.values().any(|t| t.slots.get(&bpe_core::SlotId::Trail).is_some());
+        assert_eq!(!playback.world().history.is_empty(), has_trail, "{name}");
     }
 }

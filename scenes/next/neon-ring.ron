@@ -1,0 +1,186 @@
+(
+    format: 2,
+    name: "Neon ring",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Linked(
+                    module: 7,
+                ),
+                Rules: Inherit,
+                Shader: Linked(
+                    module: 9,
+                ),
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "min_size": Number(200.0),
+                "radius": Number(500.0),
+                "shrink": Number(0.029999999329447746),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Linked(
+                    module: 5,
+                ),
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ball",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -200.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(30.0),
+                "velocity": Vec2((600.0, -300.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 6,
+                ),
+                Trail: Linked(
+                    module: 8,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "grow": Number(1.5),
+                    "max_size": Number(90.0),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Choice("marimba"),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Lively wall",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(1.0499999523162842),
+                    "takes_over": Bool(true),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.styled",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "glow": Number(1.2000000476837158),
+                    "glow_size": Number(1.600000023841858),
+                    "outline": Number(4.0),
+                    "outline_color": Color("#40ffff"),
+                    "stretch": Number(0.6000000238418579),
+                },
+            ),
+            7: (
+                id: 7,
+                name: "Rings",
+                slot: Particles,
+                kind: "particles.burst",
+                params: {
+                    "count": Int(1),
+                    "drag": Number(0.0),
+                    "follow_impact": Bool(false),
+                    "gravity": Number(0.0),
+                    "life": Number(0.5),
+                    "preset": Choice("rings"),
+                    "size": Number(90.0),
+                },
+            ),
+            8: (
+                id: 8,
+                name: "Neon streak",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "width": Number(1.0),
+                },
+            ),
+            9: (
+                id: 9,
+                name: "Echo",
+                slot: Shader,
+                kind: "shader.echo",
+                params: {
+                    "fade": Number(0.85),
+                    "hue": Number(0.01),
+                    "zoom": Number(1.03),
+                },
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 10,
+)
