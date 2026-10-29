@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 bpe-core.workspace = true
 glam.workspace = true
+ron.workspace = true
 
 [dev-dependencies]
 bpe-settings-derive.workspace = true
+bpe-graph.workspace = true

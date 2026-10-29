@@ -4,10 +4,10 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use bpe_core::{Params, ResolvedThing, Thing, ThingId};
+use bpe_core::{ModuleGraph, Params, ResolvedThing, Thing, ThingId};
 use glam::Vec2;
 
-use crate::{Bodies, Contact, World, reflect};
+use crate::{Action, Bodies, Contact, Event, World, reflect};
 
 /// Anything a plugin keeps per thing or per module while the world runs. Implemented for every
 /// `Clone + Send + Sync + 'static` type.
@@ -73,14 +73,37 @@ pub trait ThingSim: Send + Sync + 'static {
     }
 }
 
-/// How a Motion or Bounce module moves and bounces the things that use it.
+/// What a Rules module sees when it runs at the end of a step.
+pub struct RuleCx<'a> {
+    /// The thing whose link supplies the module: "me" for its rules.
+    pub thing: ThingId,
+    pub world: &'a World,
+    /// This step's events.
+    pub events: &'a [Event],
+    /// Where the module queues what it wants done; applied at the start of the next step.
+    pub actions: &'a mut Vec<Action>,
+}
+
+/// How a Motion, Bounce or Rules module moves, bounces and directs the things that use it.
 pub trait ModuleSim: Send + Sync + 'static {
     /// The module kind's id, as registered in `bpe_core`.
     fn kind(&self) -> &'static str;
     /// Reads the settings once, into whatever the module wants to keep.
     fn prepare(&self, params: &Params) -> Box<dyn ThingState>;
+    /// Like [`ModuleSim::prepare`], also given the module's graph when it has one, so a custom
+    /// module can compile it. The default ignores the graph.
+    fn prepare_graph(&self, params: &Params, _graph: Option<&ModuleGraph>) -> Box<dyn ThingState> {
+        self.prepare(params)
+    }
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
+    /// Like [`ModuleSim::forces`], also given the time since the start, for forces that change
+    /// over time. The default calls `forces`.
+    fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _time: f32) {
+        self.forces(state, bodies, gravity, dt)
+    }
+    /// Runs a Rules module on the step's events and queues actions. The default does nothing.
+    fn rules(&self, _state: &mut dyn ThingState, _cx: &mut RuleCx) {}
     /// Answers a contact for one item. The default bounce keeps all the speed.
     fn respond(&self, _state: &dyn ThingState, contact: &Contact, bodies: &mut Bodies, item: usize, _limits: &Limits) {
         bodies.velocity[item] = reflect(bodies.velocity[item], contact, 1.0);
