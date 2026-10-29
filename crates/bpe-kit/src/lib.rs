@@ -36,6 +36,8 @@ pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
+pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
+pub use things::field::{Falloff, FieldKind, FieldKindChoice, FieldSettings, FieldShape};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -47,6 +49,7 @@ pub fn sims() -> Sims {
     s.add_thing(ArenaSim);
     s.add_thing(BallsSim);
     s.add_thing(EmitterSim);
+    s.add_thing(FieldSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(FlowingSim);
@@ -107,6 +110,7 @@ pub fn registry() -> Registry {
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
     r.add_thing(EmitterKind);
+    r.add_thing(FieldKind);
     r.add_module(ClassicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
