@@ -5,6 +5,8 @@
 //! ffmpeg, which encodes H.264 video and AAC audio into one mp4. Export does not run in real
 //! time: a slow machine just takes longer, and the result is identical.
 
+pub mod batch;
+
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
 use bpe_gfx::{Frame, Readback, Renderer, build_frame_at, wgpu};
