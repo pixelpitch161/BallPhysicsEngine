@@ -8,6 +8,7 @@ pub mod music;
 pub mod random;
 pub mod rng;
 pub mod scenes;
+pub mod score;
 #[cfg(test)]
 pub mod testing;
 pub mod things;
