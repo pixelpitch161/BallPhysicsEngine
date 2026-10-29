@@ -771,7 +771,10 @@ fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, name: egui::Id, fewest: usiz
                     change = Some(ListChange::Set(i));
                 }
                 if removable {
-                    response.context_menu(|ui| {
+                    // The colour picker's popup already has the button's default popup id, so a
+                    // plain context menu would share it: its close-on-click would shut the picker
+                    // as it opens, and a right-click would open the picker instead.
+                    egui::Popup::context_menu(&response).id(response.id.with("remove colour")).show(|ui| {
                         if ui.button("Remove colour").clicked() {
                             remove = Some(i);
                             ui.close();
@@ -822,6 +825,50 @@ mod tests {
         assert_eq!(pretty("electric_piano"), "Electric piano");
         assert_eq!(pretty("box"), "Box");
         assert_eq!(pretty(""), "");
+    }
+
+    #[test]
+    fn every_colour_in_a_list_opens_its_picker_on_a_click() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let three = vec![Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)];
+        for i in 0..3 {
+            let mut h = Harness::builder().with_size(egui::vec2(600.0, 600.0)).allow_missing_glyphs().build_ui_state(
+                |ui, colors: &mut Vec<Color>| {
+                    let name = ui.label("Colours").id;
+                    color_list(ui, colors, name, 1);
+                },
+                three.clone(),
+            );
+            h.run();
+            assert!(h.query_by_label_contains("Additive").is_none());
+            let swatches: Vec<_> =
+                h.query_all_by_label("Colours").filter(|n| n.accesskit_node().role() != Role::Label).collect();
+            assert_eq!(swatches.len(), 3);
+            swatches[i].click();
+            h.run();
+            assert!(h.query_by_label_contains("Additive").is_some(), "colour {i} opens no picker");
+        }
+        // A right-click offers to remove the colour instead of opening the picker.
+        let mut h = Harness::builder().with_size(egui::vec2(600.0, 600.0)).allow_missing_glyphs().build_ui_state(
+            |ui, colors: &mut Vec<Color>| {
+                let name = ui.label("Colours").id;
+                color_list(ui, colors, name, 1);
+            },
+            three,
+        );
+        h.run();
+        let second =
+            h.query_all_by_label("Colours").filter(|n| n.accesskit_node().role() != Role::Label).nth(1).unwrap();
+        second.click_secondary();
+        h.run();
+        assert!(h.query_by_label_contains("Additive").is_none());
+        h.get_by_label("Remove colour").click();
+        h.run();
+        assert_eq!(h.state().len(), 2);
     }
 
     #[test]
