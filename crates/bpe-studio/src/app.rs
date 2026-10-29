@@ -1,6 +1,7 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::audio_out::AudioOut;
+use crate::batch_window::{self, BatchWindow};
 use crate::dice::RandomizeWindow;
 use crate::explorer::{self, Explorer};
 use crate::export_window::ExportWindow;
@@ -48,6 +49,7 @@ pub struct Panels {
     pub library: LibraryWindow,
     pub randomize: RandomizeWindow,
     pub explorer: Explorer,
+    pub batch: BatchWindow,
     /// The node panel under the preview.
     pub nodes: NodePanel,
 }
@@ -63,6 +65,7 @@ enum ToolbarClick {
     Randomize,
     Dice,
     Explore,
+    Batch,
 }
 
 pub struct Studio {
@@ -559,6 +562,9 @@ impl Studio {
             {
                 self.clicked = Some(ToolbarClick::Explore);
             }
+            if ui.button("Batch…").on_hover_text("Render many seeds of this scene and keep the best").clicked() {
+                self.clicked = Some(ToolbarClick::Batch);
+            }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
@@ -652,6 +658,7 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
+        self.panels.batch.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -768,8 +775,11 @@ impl eframe::App for Studio {
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
         dice::show(&ctx, self);
         if let explorer::Outcome::Batch { base, amount } = explorer::show(&ctx, self, frame.wgpu_render_state()) {
-            self.status = format!("A batch of {} at {:.0}% comes with the batch window.", base.name, amount * 100.0);
+            self.panels.explorer.close();
+            self.panels.batch.open_with(&base, amount);
         }
+        let weights = self.panels.explorer.weights;
+        batch_window::show(&ctx, &mut self.panels.batch, &self.kit, weights);
 
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
@@ -785,6 +795,10 @@ impl eframe::App for Studio {
                 dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
             }
             Some(ToolbarClick::Explore) => self.panels.explorer.open_from(&self.scene, &self.kit),
+            Some(ToolbarClick::Batch) => {
+                let amount = self.panels.batch.spec.amount;
+                self.panels.batch.open_with(&self.scene, amount);
+            }
             None => {}
         }
         self.confirm_dialog(&ctx);
