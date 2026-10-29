@@ -220,14 +220,38 @@ fn row(
             response.on_hover_text(problems.join("\n"));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let eye = if thing.enabled { "◉" } else { "○" };
             let help = if thing.enabled { "Shown. Click to hide it." } else { "Hidden. Click to show it." };
-            let button = egui::Button::new(RichText::new(eye).color(ink)).frame(false);
-            if ui.add(button).on_hover_text(help).clicked() {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
+            paint_eye(ui.painter(), rect, thing.enabled, ink);
+            if response.on_hover_text(help).clicked() {
                 *action = Some(Action::Toggle(id));
             }
         });
     });
+}
+
+/// An open eye for a shown thing, a struck-through one for a hidden thing.
+fn paint_eye(painter: &egui::Painter, rect: Rect, open: bool, ink: Color32) {
+    let c = rect.center();
+    let stroke = Stroke::new(1.3, ink);
+    let (w, h) = (rect.width() * 0.42, rect.height() * 0.28);
+    // The lids: two arcs meeting at the corners of the eye.
+    let mut top = Vec::new();
+    let mut bottom = Vec::new();
+    for i in 0..=12 {
+        let t = i as f32 / 12.0;
+        let x = c.x - w + 2.0 * w * t;
+        let bulge = (std::f32::consts::PI * t).sin() * h;
+        top.push(egui::pos2(x, c.y - bulge));
+        bottom.push(egui::pos2(x, c.y + bulge));
+    }
+    painter.add(egui::Shape::line(top, stroke));
+    painter.add(egui::Shape::line(bottom, stroke));
+    if open {
+        painter.circle_filled(c, h * 0.55, ink);
+    } else {
+        painter.line_segment([egui::pos2(c.x - w, c.y + h + 2.0), egui::pos2(c.x + w, c.y - h - 2.0)], stroke);
+    }
 }
 
 /// A ring for an arena, a disc for balls, a square for the scene, a diamond for anything else.

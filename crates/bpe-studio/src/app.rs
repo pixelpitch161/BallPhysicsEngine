@@ -1,8 +1,9 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::history::{History, UNDO_MERGE};
+use crate::inspector::Inspector;
 use crate::tree::Tree;
-use crate::{settings, theme, tree};
+use crate::{inspector, settings, theme, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Playback, fingerprint};
@@ -23,6 +24,7 @@ pub enum Pending {
 #[derive(Default)]
 pub struct Panels {
     pub tree: Tree,
+    pub inspector: Inspector,
     pub export_open: bool,
 }
 
@@ -494,6 +496,7 @@ impl eframe::App for Studio {
             .resizable(true)
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selected)
             })
             .inner;
@@ -508,7 +511,18 @@ impl eframe::App for Studio {
             .max_size(640.0)
             .resizable(true)
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
-            .show(ui, |ui| Self::placeholder(ui, "Inspector"));
+            .show(ui, |ui| {
+                // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
+                ui.set_min_width(ui.available_width());
+                inspector::show(
+                    ui,
+                    &mut self.panels.inspector,
+                    &mut self.scene,
+                    &self.kit,
+                    &self.resolved,
+                    self.selected,
+                )
+            });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
             .show(ui, |ui| Self::placeholder(ui, "Preview"));
