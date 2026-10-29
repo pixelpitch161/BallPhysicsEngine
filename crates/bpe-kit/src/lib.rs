@@ -2,6 +2,7 @@
 //! its settings, its simulation, its drawing and its sound side by side.
 
 pub mod modules;
+pub mod music;
 pub mod scenes;
 #[cfg(test)]
 pub mod testing;
@@ -22,6 +23,7 @@ pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
+pub use music::{Song, TimeWarp, beats_for, load_song, wants_beats, warp_for};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -29,8 +31,8 @@ pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::scene::draw::SceneDraw;
-pub use things::scene::sim::SceneSim;
-pub use things::scene::{SceneKind, SceneSettings};
+pub use things::scene::sim::{SceneSim, SceneState};
+pub use things::scene::{BeatSync, SceneKind, SceneSettings};
 pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
 pub use things::text::{Align, Appear, Font, TextDraw, TextKind, TextSettings};
 
@@ -89,11 +91,19 @@ pub fn mix_settings(resolved: &Resolved) -> MixSettings {
     }
 }
 
-/// The soundtrack of a finished run of `scene`, its keyframed sound settings followed.
+/// The soundtrack of a finished run of `scene`: its keyframed sound settings followed, its
+/// notes placed through the beat sync's time warp, and its song mixed in underneath.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
     let animation = bpe_core::Animation::new(scene, resolved);
     let animation = (!animation.is_empty()).then_some(&animation);
-    bpe_mix::mix_with(&mix_settings(resolved), resolved, log, &kit.mixes, animation, &|t| t)
+    let warp = warp_for(scene, resolved, log);
+    let mut track =
+        bpe_mix::mix_with(&mix_settings(resolved), resolved, log, &kit.mixes, animation, &|t| warp.video_time(t));
+    let root = music::root_settings(resolved);
+    if let Some(song) = load_song(&root.song) {
+        music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
+    }
+    track
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.

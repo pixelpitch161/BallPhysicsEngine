@@ -257,7 +257,7 @@ mod tests {
         assert!(more.iter().filter(|r| matches!(r, Row::Setting(_))).count() == defs.len());
         let headings: Vec<&str> =
             more.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Sound", "Video"]);
+        assert_eq!(headings, ["Sound", "Video", "Song", "Beat"]);
         assert!(!simple.iter().any(|r| matches!(r, Row::Group(_))));
     }
 }
