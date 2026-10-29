@@ -13,6 +13,7 @@ bytemuck.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 pollster.workspace = true
+fontdue = "0.9"
 
 [dev-dependencies]
 bpe-core = { workspace = true, features = ["testkit"] }

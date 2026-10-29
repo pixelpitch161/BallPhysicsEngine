@@ -289,7 +289,7 @@ fn details(
         let a = Address { owner: Owner::Module(id), slot: None, key: key.into() };
         scene.value_at(reg, &a).expect("a module's settings all resolve")
     };
-    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None };
+    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None };
     let out = settings_grid_marked(ui, ("library", id), kind.settings(), depth, get, &cx);
     if let Some((key, value)) = out.changes.into_iter().next() {
         *action = Some(Action::Set(id, key, value));

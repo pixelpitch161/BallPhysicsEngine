@@ -15,7 +15,6 @@ fn playbacks() -> Vec<(String, Playback)> {
     let kit = kit();
     scenes::all(&kit.registry)
         .into_iter()
-        .chain(scenes::stage5(&kit.registry))
         .map(|(name, scene)| {
             let resolved = bpe_core::resolve(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{name}: {:?}", resolved.problems);

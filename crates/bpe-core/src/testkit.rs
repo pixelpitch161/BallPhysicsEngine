@@ -59,7 +59,7 @@ impl Default for PlainLook {
 
 #[derive(Settings)]
 pub struct Pluck {
-    #[setting(label = "Volume", range(-40, 6), unit = "dB", simple)]
+    #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
     /// Which hits make the sound.
     #[setting(label = "Plays when hitting")]

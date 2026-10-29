@@ -79,6 +79,7 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
     }
     var extent = s.b.x;
     if s.c.x > 0.5 {
+        // A box's half size, or a capsule's half length (its b.y is 0).
         extent = length(s.b.xy);
     }
     let world = s.a.xy + corner * (extent + reach);
@@ -136,7 +137,7 @@ fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32) -> f32 {
     return segment_distance(p, a, b);
 }
 
-// Distance from a pixel to a wall's centre line.
+// Distance from a pixel to a wall's centre line, or to a capsule's spine.
 fn shape_distance(in: ShapeOut) -> f32 {
     if in.c.x < 0.5 {
         return ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z);
@@ -262,4 +263,39 @@ fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
     let r2 = dot(in.local, in.local);
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
     return vec4<f32>(in.color.rgb * v, 0.0);
+}
+
+// ---- Soft bodies (plain triangles whose edges fade over the last pixel) ----
+
+struct SoftIn {
+    @location(0) position: vec2<f32>,
+    // How far inside the body's edge, in world units.
+    @location(1) inside: f32,
+    @location(2) pad: f32,
+    @location(3) color: vec4<f32>,
+};
+
+struct SoftOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) inside: f32,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_soft(v: SoftIn) -> SoftOut {
+    var out: SoftOut;
+    out.pos = to_clip(v.position);
+    out.inside = v.inside;
+    out.color = v.color;
+    return out;
+}
+
+@fragment
+fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
+    let cover = clamp(in.inside / g.view.z + 0.5, 0.0, 1.0);
+    let a = abs(in.color.a) * cover;
+    if a <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
 }

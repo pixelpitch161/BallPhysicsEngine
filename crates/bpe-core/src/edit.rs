@@ -157,6 +157,10 @@ impl Scene {
         for t in &removed {
             self.things.remove(t);
         }
+        // Their keys and pulses go with them (a saved file would otherwise keep them forever).
+        let gone = |a: &Address| matches!(a.owner, Owner::Thing(t) if removed.contains(&t));
+        self.tracks.retain(|a, _| !gone(a));
+        self.pulses.retain(|a, _| !gone(a));
         Ok(removed)
     }
 
@@ -356,6 +360,8 @@ impl Scene {
             return Err(EditError::InUse(users));
         }
         self.library.modules.remove(&m);
+        self.tracks.retain(|a, _| a.owner != Owner::Module(m));
+        self.pulses.retain(|a, _| a.owner != Owner::Module(m));
         Ok(())
     }
 }

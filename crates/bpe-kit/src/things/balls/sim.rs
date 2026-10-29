@@ -2,8 +2,8 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use bpe_core::{ResolvedThing, Settings, SlotId, Thing};
-use bpe_runtime::{Bodies, ThingSim, World};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
+use bpe_runtime::{Bodies, ThingSim, World, state_mut};
 use glam::Vec2;
 
 use super::{Arrangement, BallsSettings};
@@ -69,14 +69,26 @@ impl ThingSim for BallsSim {
             world.keep_history(thing.id);
         }
     }
+
+    /// A keyframe moved the size: every ball takes it. Placement and launch speed only matter
+    /// at the start, so they stay.
+    fn settings_changed(&self, thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
+        let settings = BallsSettings::from_params(&resolved.params);
+        if let Some(bodies) = world.bodies.get_mut(&thing) {
+            bodies.radius.iter_mut().for_each(|r| *r = settings.radius);
+        }
+        if let Some(st) = world.states.get_mut(&thing) {
+            state_mut::<BallsState>(st.as_mut()).settings = settings;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::testing::{ARENA, BALLS, scene_with_balls};
     use crate::{kit, new_scene};
-    use bpe_core::{Attach, Value, resolve};
-    use bpe_runtime::World;
+    use bpe_core::{Address, Attach, Owner, Value, resolve};
+    use bpe_runtime::{Log, World};
     use glam::Vec2;
     use std::f32::consts::FRAC_PI_2;
 
@@ -122,6 +134,22 @@ mod tests {
         assert_eq!(w.bodies[&BALLS].position, vec![Vec2::ZERO]);
         assert_eq!(w.bodies[&BALLS].velocity, vec![Vec2::new(5.0, 6.0)]);
         assert_eq!(w.bodies[&BALLS].radius, vec![24.0]);
+    }
+
+    #[test]
+    fn a_size_key_resizes_the_balls() {
+        let (mut scene, _, kit) = scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(2));
+            p.set("rows", Value::Int(1));
+        });
+        let size = Address { owner: Owner::Thing(BALLS), slot: None, key: "radius".into() };
+        scene.set_key(&kit.registry, &size, 0.0, Value::Number(24.0)).unwrap();
+        scene.set_key(&kit.registry, &size, 1.0, Value::Number(48.0)).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        assert_eq!(w.bodies[&BALLS].radius, vec![24.0, 24.0]);
+        w.advance_to(1.5, &kit.sims, &mut Log::default());
+        assert_eq!(w.bodies[&BALLS].radius, vec![48.0, 48.0]);
     }
 
     #[test]

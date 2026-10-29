@@ -1,0 +1,152 @@
+(
+    format: 2,
+    name: "Cloth hammock",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 700.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "height": Number(1800.0),
+                "shape": Choice("box"),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Balls",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -800.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("ring"),
+                "count": Int(5),
+                "radius": Number(26.0),
+                "ring_radius": Number(80.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Cloth",
+            kind: "soft",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -350.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "detail": Int(26),
+                "height": Number(500.0),
+                "pinned": Choice("top_corners"),
+                "shape": Choice("cloth"),
+                "size": Number(700.0),
+                "softness": Number(0.44999998807907104),
+            },
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Cloth look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#3e9bff"),
+                },
+            ),
+        },
+    ),
+    next_thing: 4,
+    next_module: 6,
+)

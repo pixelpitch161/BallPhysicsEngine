@@ -18,9 +18,9 @@ pub const DOTS2: ThingId = ThingId(3);
 
 #[derive(Settings)]
 struct RootSettings {
-    #[setting(label = "Gravity")]
+    #[setting(label = "Gravity", keyframe)]
     gravity: Vec2,
-    #[setting(label = "Tint", range(0, 10))]
+    #[setting(label = "Tint", range(0, 10), keyframe)]
     tint: f32,
 }
 impl Default for RootSettings {
@@ -89,6 +89,7 @@ impl Default for BumpySettings {
 struct RootKind;
 struct WallKind;
 struct DotsKind;
+struct CounterKind;
 struct PegKind;
 struct StickyKind;
 struct BouncyKind;
@@ -141,6 +142,7 @@ macro_rules! thing_kind {
 thing_kind!(RootKind, "scene", RootSettings);
 thing_kind!(WallKind, "wall", WallSettings);
 thing_kind!(DotsKind, "dots", DotsSettings);
+thing_kind!(CounterKind, "counter", NoSettings);
 thing_kind!(PegKind, "peg", PegSettings);
 
 macro_rules! bounce_kind {
@@ -199,6 +201,29 @@ impl ThingSim for TestRoot {
     }
     fn affects_physics(&self, key: &str) -> bool {
         key != "tint"
+    }
+    fn settings_changed(&self, _thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
+        world.gravity = RootSettings::from_params(&resolved.params).gravity;
+    }
+}
+
+/// Logs one custom event after every step.
+pub struct TestCounter;
+impl ThingSim for TestCounter {
+    fn kind(&self) -> &'static str {
+        "counter"
+    }
+    fn build(&self, _thing: &Thing, _resolved: &ResolvedThing, _world: &mut World) {}
+    fn after_step(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
+        log.push(crate::Event {
+            step: world.step,
+            kind: crate::EventKind::Custom("tick".into()),
+            a: crate::Party { thing, item: 0 },
+            b: None,
+            point: Vec2::ZERO,
+            normal: Vec2::ZERO,
+            speed: 0.0,
+        });
     }
 }
 
@@ -373,6 +398,7 @@ pub fn reg() -> Registry {
     r.add_thing(RootKind);
     r.add_thing(WallKind);
     r.add_thing(DotsKind);
+    r.add_thing(CounterKind);
     r.add_thing(PegKind);
     r.add_module(GravityKind);
     r.add_module(StickyKind);
@@ -387,6 +413,7 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_thing(TestRoot);
     s.add_thing(TestWall);
     s.add_thing(TestDots);
+    s.add_thing(TestCounter);
     s.add_thing(TestPeg);
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
