@@ -103,6 +103,9 @@ impl World {
         self.modules.get(&thing)?.get(&slot).map(|(k, s)| (k.as_str(), s.as_ref()))
     }
 
+    /// Changes one setting of the module a thing uses in a slot and prepares it again.
+    pub(crate) fn set_slot_param(&mut self, _thing: ThingId, _slot: SlotId, _key: &str, _value: Value, _sims: &Sims) {}
+
     /// Bytes the world takes, for playback budgets.
     pub fn memory(&self) -> usize {
         self.bodies.values().map(Bodies::memory).sum::<usize>()

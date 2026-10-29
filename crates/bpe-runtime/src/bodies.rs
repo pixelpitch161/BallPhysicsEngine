@@ -13,6 +13,9 @@ pub struct Bodies {
     pub alive: Vec<bool>,
     /// How many times the ball has hit something.
     pub hits: Vec<u32>,
+    /// A colour laid over the look's, linear RGBA; the alpha is how strongly. Zero alpha means
+    /// the ball shows its look's colour.
+    pub tint: Vec<[f32; 4]>,
 }
 
 impl Bodies {
@@ -25,6 +28,7 @@ impl Bodies {
         self.previous.push(position);
         self.alive.push(true);
         self.hits.push(0);
+        self.tint.push([0.0; 4]);
         row
     }
 
@@ -46,6 +50,7 @@ impl Bodies {
             + self.radius.capacity() * std::mem::size_of::<f32>()
             + self.alive.capacity()
             + self.hits.capacity() * std::mem::size_of::<u32>()
+            + self.tint.capacity() * std::mem::size_of::<[f32; 4]>()
     }
 }
 
@@ -64,8 +69,9 @@ mod tests {
         assert_eq!(bodies.radius[0], 5.0);
         assert!(bodies.alive[1]);
         assert_eq!(bodies.hits[1], 0);
+        assert_eq!(bodies.tint[1], [0.0; 4]);
         bodies.alive[1] = false;
         assert_eq!(bodies.alive_count(), 1);
-        assert!(bodies.memory() >= 2 * (4 * 8 + 4 + 1 + 4));
+        assert!(bodies.memory() >= 2 * (4 * 8 + 4 + 1 + 4 + 16));
     }
 }

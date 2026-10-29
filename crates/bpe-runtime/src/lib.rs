@@ -3,6 +3,7 @@
 //! A [`World`] is built from a resolved scene by plugins, stepped at a fixed rate, and writes
 //! everything that happens to a [`Log`] that sound, drawing and rules read.
 
+pub mod actions;
 pub mod bodies;
 pub mod events;
 pub mod history;
@@ -13,6 +14,7 @@ pub mod testing;
 pub mod walls;
 pub mod world;
 
+pub use actions::{Action, MAX_BALLS, SPLIT_SPREAD_DEGREES};
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
 pub use history::History;
