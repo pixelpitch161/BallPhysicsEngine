@@ -229,8 +229,13 @@ pub(crate) fn collide_pairs(
         for side in [a, b] {
             let (_, sim, state, _, _) = &rules[side.rule];
             let body = bodies.get_mut(&side.thing).expect("gathered");
-            if body.alive[side.item as usize] && sim.effects(*state, body, side.item as usize, hit.speed, limits) {
-                pop(body, side.item as usize, side.thing, step, log);
+            let item = side.item as usize;
+            if !body.alive[item] {
+                continue;
+            }
+            sim.respond_pair(*state, body, item, hit.speed, limits);
+            if sim.effects(*state, body, item, hit.speed, limits) {
+                pop(body, item, side.thing, step, log);
             }
         }
     }

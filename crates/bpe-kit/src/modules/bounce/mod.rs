@@ -2,7 +2,7 @@
 
 pub mod sim;
 
-use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{ModuleKind, SettingDef, Settings, SlotId, Target};
 
 pub struct BasicBounceKind;
 
@@ -20,17 +20,56 @@ pub struct BasicBounce {
     /// How much bigger the ball gets on every hit. Negative shrinks it.
     #[setting(label = "Grow per hit", range(-20, 20), unit = "px", simple, keyframe, random)]
     pub grow: f32,
+    /// These balls bump into other balls instead of passing through them.
+    #[setting(label = "Hits other balls", simple)]
+    pub hit_balls: bool,
     /// The ball never grows past this.
     #[setting(label = "Biggest size", range(0.5, 400), unit = "px")]
     pub max_size: f32,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
     #[setting(label = "Takes over")]
     pub takes_over: bool,
+    /// The ball disappears after this many hits. 0 never pops it.
+    #[setting(label = "Pops after", range(0, 1000), unit = "hits", random)]
+    pub pops_after: u32,
+    /// Only balls on these things are bumped into; both sides have to agree.
+    #[setting(label = "Which balls", group = "Other balls")]
+    pub balls_to_hit: Target,
+    /// How much sideways speed rubs off when balls touch each other.
+    #[setting(label = "Friction", range(0, 1), group = "Other balls", keyframe, random)]
+    pub friction: f32,
+    /// Use the settings below when hitting the things picked here.
+    #[setting(label = "Different against some things", group = "Against some things")]
+    pub special: bool,
+    /// The things the different bounce applies to.
+    #[setting(label = "Those things", group = "Against some things")]
+    pub special_target: Target,
+    /// How much speed the ball keeps against those things.
+    #[setting(label = "Bounciness against them", range(0, 1.5), group = "Against some things", keyframe, random)]
+    pub special_bounciness: f32,
+    /// How much the ball grows on each hit against those things.
+    #[setting(label = "Grow against them", range(-20, 20), unit = "px", group = "Against some things", keyframe, random)]
+    pub special_grow: f32,
 }
 
 impl Default for BasicBounce {
     fn default() -> Self {
-        Self { bounciness: 1.0, speed_gain: 1.0, top_speed: 3000.0, grow: 0.0, max_size: 60.0, takes_over: false }
+        Self {
+            bounciness: 1.0,
+            speed_gain: 1.0,
+            top_speed: 3000.0,
+            grow: 0.0,
+            hit_balls: false,
+            max_size: 60.0,
+            takes_over: false,
+            pops_after: 0,
+            balls_to_hit: Target::Anything,
+            friction: 0.0,
+            special: false,
+            special_target: Target::Anything,
+            special_bounciness: 1.0,
+            special_grow: 0.0,
+        }
     }
 }
 
@@ -42,7 +81,7 @@ impl ModuleKind for BasicBounceKind {
         "Basic"
     }
     fn help(&self) -> &'static str {
-        "How much speed a hit keeps, and how the ball grows with each one."
+        "How much speed a hit keeps, how the ball grows with each one, and whether it hits other balls."
     }
     fn slot(&self) -> SlotId {
         SlotId::Bounce

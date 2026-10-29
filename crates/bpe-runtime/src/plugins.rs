@@ -123,8 +123,12 @@ pub trait ModuleSim: Send + Sync + 'static {
     ) {
         self.respond(state, contact, bodies, item, limits);
     }
-    /// What a real hit at `speed` does to the ball itself afterwards: growing, counting down to
-    /// popping. Returns `true` when the ball should be removed.
+    /// Finishes a hit against another ball, after the two have swapped momentum: speed gain,
+    /// growing, anything `respond` does beyond the bounce itself.
+    fn respond_pair(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _item: usize, _speed: f32, _limits: &Limits) {
+    }
+    /// What a real hit at `speed` does to the ball itself afterwards, against anything: counting
+    /// down to popping. Returns `true` when the ball should be removed.
     fn effects(
         &self,
         _state: &dyn ThingState,
