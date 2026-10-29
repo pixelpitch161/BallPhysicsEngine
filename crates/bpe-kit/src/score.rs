@@ -25,6 +25,9 @@ pub const SAMPLE_EVERY: f64 = 0.1;
 pub const ON_BEAT: f64 = 0.05;
 /// Lowest and highest a weight can be nudged to by thumbs up and down.
 const WEIGHT_RANGE: (f32, f32) = (0.05, 3.0);
+/// A moment counts as fully seen when this many of its balls, or all of them if there are fewer,
+/// are inside the picture.
+const ENOUGH_TO_SEE: u32 = 8;
 
 /// The six parts of a score, each 0 to 1. The same shape holds the weights.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -175,7 +178,18 @@ pub fn score(sampled: &Sampled, weights: &Parts) -> Score {
         variety: variety(&activity, sampled),
         sound: sound(&activity, sampled),
     };
-    Score { total: parts.total(weights), parts }
+    // Hits that sound good are worth nothing when the balls making them are out of the picture,
+    // so the whole score shrinks with how much of the run you can't see.
+    Score { total: parts.total(weights) * seen(sampled).powi(2), parts }
+}
+
+/// How much of the run you can see, 0 to 1: the share of moments with enough balls in the picture.
+fn seen(s: &Sampled) -> f32 {
+    let moments = s.frames.iter().filter(|f| f.count > 0);
+    let (sum, n) = moments.fold((0.0, 0u32), |(sum, n), f| {
+        (sum + (f.on_screen as f32 / f.count.min(ENOUGH_TO_SEE) as f32).min(1.0), n + 1)
+    });
+    if n > 0 { sum / n as f32 } else { 1.0 }
 }
 
 /// Nudges the weights after a thumbs up (`like`) or down on a run with these parts, by one step
@@ -482,6 +496,26 @@ mod tests {
             .map(|i| Sample { time: i as f64 * 0.1, count: 10, on_screen: 10, fastest: 400.0, average: 250.0 })
             .collect();
         Sampled { duration: 10.0, hits, frames, beats, quietest: 20.0, loudest: 600.0 }
+    }
+
+    #[test]
+    fn balls_out_of_the_picture_sink_the_whole_score() {
+        // A spinning tall box carries its balls out of the 9:16 frame: all of them gone for four
+        // seconds, and a third of them gone for the rest. The hits still sound good, but nobody
+        // keeps a clip they can't see.
+        let hits: Vec<(f64, f32)> = (0..40).map(|i| (i as f64 * 0.25 + 0.05, 150.0 + (i % 5) as f32 * 80.0)).collect();
+        let seen = hand_sampled(hits.clone(), vec![]);
+        let mut lost = hand_sampled(hits, vec![]);
+        for (i, f) in lost.frames.iter_mut().enumerate() {
+            f.on_screen = if (30..70).contains(&i) { 0 } else { 7 };
+        }
+        let (seen, lost) = (score(&seen, &Parts::WEIGHTS), score(&lost, &Parts::WEIGHTS));
+        assert!(lost.total < seen.total * 0.6, "{lost:?} vs {seen:?}");
+        // A ball slipping out for a moment costs little.
+        let mut blip =
+            hand_sampled((0..40).map(|i| (i as f64 * 0.25 + 0.05, 150.0 + (i % 5) as f32 * 80.0)).collect(), vec![]);
+        blip.frames[50].on_screen = 9;
+        assert!(score(&blip, &Parts::WEIGHTS).total > seen.total * 0.97);
     }
 
     #[test]
