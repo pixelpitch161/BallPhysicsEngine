@@ -16,7 +16,7 @@ fn every_stage_scene_draws_a_picture() {
     let kit = kit();
     let mut renderer = Renderer::new(&device, W, H);
     let mut bright = std::collections::BTreeMap::new();
-    for (name, scene) in scenes::all(&kit.registry).into_iter().chain(scenes::stage5(&kit.registry)) {
+    for (name, scene) in scenes::all(&kit.registry) {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(2.0);

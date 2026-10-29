@@ -1,6 +1,7 @@
 //! The instruments a sound module can pick from, all synthesised so the program stays small.
 //! Every note is a mono wave at [`SAMPLE_RATE`](crate::SAMPLE_RATE) that starts at its onset.
 
+pub mod drums;
 pub mod dsp;
 pub mod synth;
 
@@ -28,6 +29,8 @@ pub enum Instrument {
     Supersaw,
     Pad,
     SynthBass,
+    /// A drum kit: the key picks the piece (General MIDI drum map).
+    Drums,
 }
 
 impl Instrument {
@@ -44,6 +47,7 @@ impl Instrument {
         Instrument::Supersaw,
         Instrument::Pad,
         Instrument::SynthBass,
+        Instrument::Drums,
     ];
 
     /// The name shown in the editor.
@@ -61,6 +65,7 @@ impl Instrument {
             Instrument::Supersaw => "Supersaw lead",
             Instrument::Pad => "Pad",
             Instrument::SynthBass => "Synth bass",
+            Instrument::Drums => "Drums",
         }
     }
 
@@ -82,6 +87,7 @@ impl Instrument {
             Instrument::Supersaw => synth::supersaw(key, v),
             Instrument::Pad => synth::pad(key, v),
             Instrument::SynthBass => synth::synth_bass(key, v),
+            Instrument::Drums => drums::render(key, v),
         };
         let mut wave = dsp::trim(wave);
         dsp::normalize(&mut wave, self.level() * (0.55 + 0.45 * v));
@@ -192,9 +198,10 @@ mod tests {
 
     #[test]
     fn instrument_names_are_snake_case_and_round_trip() {
-        assert_eq!(Instrument::NAMES.len(), 12);
+        assert_eq!(Instrument::NAMES.len(), 13);
         assert_eq!(Instrument::Pluck.name(), "pluck");
         assert_eq!(Instrument::from_name("electric_piano"), Some(Instrument::ElectricPiano));
+        assert_eq!(Instrument::from_name("drums"), Some(Instrument::Drums));
         assert_eq!(Instrument::from_name("drum_kit"), None);
     }
 }

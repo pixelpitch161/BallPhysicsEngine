@@ -90,7 +90,7 @@ mod tests {
     use bpe_core::{SlotId, ThingId};
     use bpe_graph::{Catalog, Link, Param};
     use bpe_mix::{MixCx, ModuleMix};
-    use bpe_runtime::{Event, EventKind, Party};
+    use bpe_runtime::{Event, EventKind, Log, Party};
     use bpe_vm::{Role, catalog};
     use glam::Vec2;
 
@@ -126,7 +126,16 @@ mod tests {
         let settings = mix_settings(&scene, &resolved);
         let index = |e: &Event| e.step;
         let any = |_: &bpe_core::Target, _: ThingId, _: ThingId| true;
-        let cx = MixCx { settings: &settings, frames: usize::MAX, hit_index: &index, matches: &any };
+        let same = |t: f64| t;
+        let log = Log::default();
+        let cx = MixCx {
+            settings: &settings,
+            log: &log,
+            frames: usize::MAX,
+            hit_index: &index,
+            video_time: &same,
+            matches: &any,
+        };
         let events = [hit(240, 500.0), hit(480, 300.0), hit(720, 5.0)];
         let mut notes = Vec::new();
         NoteSoundMix.notes_with(&slot.params, graph, BALLS, &events, &cx, &mut notes);

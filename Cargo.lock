@@ -295,6 +295,7 @@ dependencies = [
  "bpe-core",
  "bpe-runtime",
  "bytemuck",
+ "fontdue",
  "glam",
  "naga",
  "pollster 1.0.1",
@@ -317,12 +318,14 @@ dependencies = [
  "bpe-gfx",
  "bpe-graph",
  "bpe-mix",
+ "bpe-music",
  "bpe-render",
  "bpe-runtime",
  "bpe-scene",
  "bpe-sim",
  "bpe-vm",
  "glam",
+ "hound",
  "png",
 ]
 
@@ -333,6 +336,7 @@ dependencies = [
  "anyhow",
  "bpe-core",
  "bpe-runtime",
+ "glam",
  "hound",
 ]
 

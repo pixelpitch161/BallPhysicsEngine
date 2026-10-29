@@ -5,3 +5,5 @@ pub mod balls;
 pub mod folder;
 pub mod obstacle;
 pub mod scene;
+pub mod soft;
+pub mod text;

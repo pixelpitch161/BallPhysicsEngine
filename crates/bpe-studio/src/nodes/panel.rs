@@ -405,7 +405,7 @@ mod tests {
                     egui::Panel::right("inspector").default_size(420.0).show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         changed |=
-                            inspector::show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection);
+                            inspector::show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, 0.0);
                     });
                     if let Some((thing, slot)) = s.inspector.nodes_request.take() {
                         s.panel.open_at(thing, slot);

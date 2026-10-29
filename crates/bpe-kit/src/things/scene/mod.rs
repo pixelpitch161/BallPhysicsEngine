@@ -4,10 +4,23 @@
 pub mod draw;
 pub mod sim;
 
-use bpe_core::{Color, SettingDef, Settings, SlotId, ThingKind};
+pub use sim::{SceneSim, SceneState};
+
+use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
+
+/// How hits and the beat are brought together.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BeatSync {
+    /// The video runs at its own pace.
+    #[default]
+    Off,
+    /// The video's clock is gently stretched between hits so they land on beats; the physics
+    /// is left alone.
+    Warp,
+}
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SceneSettings {
@@ -50,6 +63,29 @@ pub struct SceneSettings {
     /// Which of the chord's notes each hit picks. Change it for a different tune.
     #[setting(label = "Seed", range(0, 1000000), group = "Sound", random)]
     pub seed: u32,
+    /// A song file (mp3, wav, ogg or flac) played under the sounds, whose beats the scene can
+    /// follow.
+    #[setting(label = "Song", unit = "file", group = "Song")]
+    pub song: String,
+    /// How far into the song the video starts. Negative starts the song late.
+    #[setting(label = "Song starts at", range(-60, 60), unit = "s", group = "Song")]
+    pub song_offset: f32,
+    #[setting(label = "Song volume", range(-40, 6), unit = "dB", group = "Song")]
+    pub song_volume: f32,
+    /// How much the song dips while the hit sounds play.
+    #[setting(label = "Ducks under hits", range(0, 1), group = "Song")]
+    pub ducking: f32,
+    /// A steady beat; 0 follows the song's beats, or 120 without a song.
+    #[setting(label = "Tempo", range(0, 300), unit = "bpm", group = "Beat")]
+    pub bpm: f32,
+    #[setting(label = "Beat sync", group = "Beat")]
+    pub beat_sync: BeatSync,
+    /// Hits may land on halves or quarters of a beat too.
+    #[setting(label = "Beats split into", range(1, 4), group = "Beat")]
+    pub subdivisions: u32,
+    /// How much faster or slower than real time the video may run between hits.
+    #[setting(label = "Stretch", range(0, 0.9), group = "Beat")]
+    pub warp_strength: f32,
 }
 
 impl Default for SceneSettings {
@@ -68,6 +104,14 @@ impl Default for SceneSettings {
             exposure: 1.0,
             loudness: -14.0,
             seed: 1,
+            song: String::new(),
+            song_offset: 0.0,
+            song_volume: -6.0,
+            ducking: 0.35,
+            bpm: 0.0,
+            beat_sync: BeatSync::Off,
+            subdivisions: 1,
+            warp_strength: 0.5,
         }
     }
 }

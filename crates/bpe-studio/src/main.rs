@@ -15,6 +15,7 @@ mod selection;
 mod settings;
 mod sound_job;
 mod theme;
+mod timeline;
 mod transport;
 mod tree;
 mod widgets;

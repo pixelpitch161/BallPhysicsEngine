@@ -6,8 +6,12 @@
 //! the same log. Rules queue actions; the next step's Spawn stage applies them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use bpe_core::{Attach, ModuleGraph, Params, Resolved, Scene, SlotId, Target, ThingId, Transform, Value};
+use bpe_core::{
+    Animation, Attach, Inputs, ModuleGraph, Params, PulseInputs, Resolved, Scene, SlotId, Target, ThingId, Transform,
+    Value,
+};
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
@@ -78,6 +82,31 @@ pub struct World {
     /// Per thing that links a Rules module, the things whose Rules slot comes from it: what
     /// "me" means to that module.
     scope: BTreeMap<ThingId, BTreeSet<ThingId>>,
+    /// What pulses follow: the beat grid and the song's bands. The scene's sim sets it.
+    pub pulse_inputs: Option<Arc<PulseInputs>>,
+    /// The keyframes and pulses that move physics settings, with the resolved scene they are
+    /// written into step by step. `None` when nothing physical is animated.
+    animated: Option<Animated>,
+}
+
+/// See [`World::animated`].
+#[derive(Clone)]
+struct Animated {
+    animation: Animation,
+    resolved: Resolved,
+}
+
+/// The scene's tracks and pulses that change how it simulates: those on Motion and Bounce
+/// modules, and those on a thing's own settings that its sim says affect the physics. `None`
+/// when there are none.
+pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Option<Animation> {
+    let mut animation = Animation::new(scene, resolved);
+    animation.retain(|thing, slot, key| match slot {
+        Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
+        Some(_) => false,
+        None => resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)).is_some_and(|s| s.affects_physics(key)),
+    });
+    (!animation.is_empty()).then_some(animation)
 }
 
 impl World {
@@ -104,6 +133,8 @@ impl World {
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
             scope: BTreeMap::new(),
+            pulse_inputs: None,
+            animated: None,
         };
         for id in &scene.order {
             let Some(r) = resolved.things.get(id) else { continue };
@@ -140,7 +171,48 @@ impl World {
                 world.modules.insert(*id, prepared);
             }
         }
+        world.animated = physics_animation(scene, resolved, sims)
+            .map(|animation| Animated { animation, resolved: resolved.clone() });
         world
+    }
+
+    /// Writes this step's keyframed and pulsed physics settings and hands them to the sims:
+    /// Motion and Bounce modules are prepared again, things hear `settings_changed`. Pulses
+    /// follow the beat and the song only; hits never move the physics.
+    fn animate(&mut self, sims: &Sims) {
+        let Some(mut animated) = self.animated.take() else { return };
+        let time = self.time();
+        animated.animation.apply(
+            &mut animated.resolved,
+            time,
+            &Inputs { pulse: self.pulse_inputs.as_deref(), hits: 0.0, video_time: None },
+        );
+        let mut done = BTreeSet::new();
+        for (thing, slot, _) in animated.animation.destinations() {
+            if !done.insert((thing, slot)) {
+                continue;
+            }
+            let Some(r) = animated.resolved.things.get(&thing) else { continue };
+            match slot {
+                Some(slot) => {
+                    if let Some(s) = r.slots.get(&slot)
+                        && let Some(msim) = sims.module(&s.kind)
+                    {
+                        // The module keeps its graph; only its settings moved.
+                        let prepared = self.modules.entry(thing).or_default();
+                        let graph = prepared.get(&slot).and_then(|p| p.graph.clone());
+                        let state = msim.prepare_graph(&s.params, graph.as_ref());
+                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), graph, state });
+                    }
+                }
+                None => {
+                    if let Some(sim) = sims.thing(&r.kind) {
+                        sim.settings_changed(thing, r, self);
+                    }
+                }
+            }
+        }
+        self.animated = Some(animated);
     }
 
     /// Where a thing sits this step: on its parent when it rides one, else where its own
@@ -272,6 +344,7 @@ impl World {
     /// One step: every stage, in order.
     pub fn step(&mut self, sims: &Sims, log: &mut Log) {
         self.step += 1;
+        self.animate(sims);
         let limits = self.limits();
         let dt = self.dt();
 
@@ -313,6 +386,12 @@ impl World {
             self.substep(sims, sub_dt, &limits, log);
         }
 
+        // Events: things log what happened to them this step, in tree order.
+        for id in &order {
+            if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
+                sim.after_step(*id, self, log);
+            }
+        }
         for (id, history) in &mut self.history {
             if let Some(bodies) = self.bodies.get(id) {
                 history.record(self.step, &bodies.position);
@@ -583,6 +662,18 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
             }
         }
     }
+    // Keyframes and pulses on physics settings: moving a key changes the run.
+    if let Some(animation) = physics_animation(scene, resolved, sims) {
+        for a in animation.addresses() {
+            h.bytes(format!("{a:?}").as_bytes());
+            if let Some(track) = scene.tracks.get(a) {
+                h.bytes(format!("{track:?}").as_bytes());
+            }
+            if let Some(pulse) = scene.pulses.get(a) {
+                h.bytes(format!("{pulse:?}").as_bytes());
+            }
+        }
+    }
     h.0
 }
 
@@ -673,7 +764,11 @@ mod tests {
         DOTS, DOTS2, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring, dots_pair,
         dots_pair_popping, dots_pile, dots_with_rules, reg, ring_with_rider,
     };
-    use bpe_core::{Attach, ModuleGraph, SlotId, Target, ThingId, Value, resolve};
+    use bpe_core::{Address, Attach, Ease, ModuleGraph, Owner, SlotId, Target, ThingId, Value, resolve};
+
+    fn root_setting(key: &str) -> Address {
+        Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: key.into() }
+    }
 
     #[test]
     fn two_runs_give_the_same_log_and_a_ball_bounces() {
@@ -768,6 +863,60 @@ mod tests {
         scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 1.0]));
         let resolved = resolve(&scene, &reg());
         assert_ne!(fingerprint(&scene, &resolved, &sims), moved);
+    }
+
+    #[test]
+    fn a_gravity_track_changes_the_world_at_its_time() {
+        let (mut scene, resolved, sims) = dots_in_ring(1);
+        let reg = reg();
+        let before = fingerprint(&scene, &resolved, &sims);
+        let gravity = root_setting("gravity");
+        let first = scene.set_key(&reg, &gravity, 0.0, Value::Vec2([0.0, 500.0])).unwrap();
+        scene.set_key(&reg, &gravity, 1.0, Value::Vec2([0.0, -500.0])).unwrap();
+        assert!(scene.set_ease(&gravity, first, Ease::Hold));
+        let resolved = resolve(&scene, &reg);
+        assert_ne!(fingerprint(&scene, &resolved, &sims), before, "a physics key changes the run");
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(0.5, &sims, &mut log);
+        assert_eq!(w.gravity, Vec2::new(0.0, 500.0));
+        w.advance_to(1.5, &sims, &mut log);
+        assert_eq!(w.gravity, Vec2::new(0.0, -500.0));
+        // The resolved scene the world was built from is untouched.
+        assert_eq!(resolved.things[&ThingId::ROOT].params.get("gravity"), Some(&Value::Vec2([0.0, 500.0])));
+    }
+
+    #[test]
+    fn a_look_track_leaves_the_fingerprint_alone() {
+        let (mut scene, resolved, sims) = dots_in_ring(1);
+        let reg = reg();
+        let before = fingerprint(&scene, &resolved, &sims);
+        let tint = root_setting("tint");
+        scene.set_key(&reg, &tint, 0.0, Value::Number(1.0)).unwrap();
+        scene.set_key(&reg, &tint, 2.0, Value::Number(9.0)).unwrap();
+        let resolved = resolve(&scene, &reg);
+        assert_eq!(fingerprint(&scene, &resolved, &sims), before);
+        assert!(physics_animation(&scene, &resolved, &sims).is_none());
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.advance_to(1.0, &sims, &mut Log::default());
+        assert_eq!(w.gravity, Vec2::new(0.0, 500.0));
+    }
+
+    #[test]
+    fn after_step_runs_once_per_step_with_the_log() {
+        let (mut scene, _, sims) = dots_in_ring(1);
+        let reg = reg();
+        let counter = scene.add_thing(&reg, "counter", ThingId::ROOT).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &sims, &mut log);
+        let counts: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Custom("tick".into())).collect();
+        assert_eq!(counts.len(), 240);
+        assert_eq!(counts.first().unwrap().step, 1);
+        assert_eq!(counts.last().unwrap().step, 240);
+        assert!(counts.iter().all(|e| e.a == Party { thing: counter, item: 0 }));
+        assert!(log.events().windows(2).all(|p| p[0].step <= p[1].step), "after_step events keep the log sorted");
     }
 
     #[test]

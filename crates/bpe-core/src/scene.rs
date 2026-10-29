@@ -1,6 +1,6 @@
 //! The scene: a tree of things, and the library of modules they link to.
 
-use crate::{KindId, Library, ModuleId, Params, Registry, SlotId, ThingId};
+use crate::{Address, KindId, Library, ModuleId, Params, Pulse, Registry, SlotId, ThingId, Track};
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,6 +130,12 @@ pub struct Scene {
     pub next_thing: u32,
     /// The id the next added module gets.
     pub next_module: u32,
+    /// Keyframes, by the setting they move.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracks: BTreeMap<Address, Track>,
+    /// Settings that pulse with the music or the hits.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pulses: BTreeMap<Address, Pulse>,
 }
 
 impl Default for Scene {
@@ -142,6 +148,8 @@ impl Default for Scene {
             library: Library::default(),
             next_thing: 1,
             next_module: 0,
+            tracks: BTreeMap::new(),
+            pulses: BTreeMap::new(),
         }
     }
 }

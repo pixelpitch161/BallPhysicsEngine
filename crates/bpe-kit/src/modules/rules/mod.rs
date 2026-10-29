@@ -130,6 +130,39 @@ mod tests {
         assert_eq!((radius[0], radius[1]), (26.0, 26.0), "both balls grew by the recipe's 2 px");
     }
 
+    /// Stage 7 logs a Beat on every beat of the music, so "On the beat" fires.
+    #[test]
+    fn a_beat_fires_an_on_the_beat_rule() {
+        use bpe_core::Value;
+        use bpe_graph::{Catalog, Link, Param};
+        use bpe_runtime::{Log, World};
+        use bpe_vm::{Role, catalog};
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("bpm", Value::Number(120.0));
+        let rules = scene.add_module(&kit.registry, "rules.graph", "Heavy beat").unwrap();
+        let mut g = RulesKind.template().unwrap();
+        let c = catalog(Role::Rules);
+        let beat = g.add(c.spec("when.beat").unwrap(), [40.0, 40.0]);
+        let heavy = g.add(c.spec("do.gravity").unwrap(), [260.0, 40.0]);
+        g.node_mut(heavy).unwrap().params.insert("gravity".into(), Param::Vector([0.0, 2000.0]));
+        assert!(g.connect(Link { from: (beat, 0), to: (heavy, 0) }, c));
+        scene.library.modules.get_mut(&rules).unwrap().graph =
+            Some(ModuleGraph { graph: g, template: "rules.graph".into(), custom: true, simple: Default::default() });
+        scene.add_slot(&kit.registry, ThingId(2), SlotId::Rules).unwrap();
+        scene.link(&kit.registry, ThingId(2), SlotId::Rules, rules).unwrap();
+        let resolved = resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        assert_ne!(w.gravity.y, 2000.0);
+        let mut log = Log::default();
+        // The first step logs the beat at 0 s; the rule's action applies at the next step.
+        w.step(&kit.sims, &mut log);
+        assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Beat).count(), 1);
+        w.step(&kit.sims, &mut log);
+        assert_eq!(w.gravity.y, 2000.0, "the beat set the gravity");
+    }
+
     #[test]
     fn every_recipe_compiles_and_runs() {
         let all = recipes();

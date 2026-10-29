@@ -12,7 +12,7 @@ pub mod level;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use bpe_core::{Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
+use bpe_core::{Animation, Inputs, Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
 use bpe_runtime::{Event, Log};
 
 pub use chords::{Chords, pitch_classes};
@@ -89,10 +89,15 @@ pub struct MixSettings {
 /// What a Sound module can read while turning events into notes.
 pub struct MixCx<'a> {
     pub settings: &'a MixSettings,
+    /// The whole run, for modules that count a thing's hits.
+    pub log: &'a Log,
     /// How many frames the track has.
     pub frames: usize,
     /// An event's position in the log, for repeatable note picks.
     pub hit_index: &'a dyn Fn(&Event) -> u64,
+    /// Where a moment of the run lands in the video, in seconds: the beat sync's warp, or the
+    /// same time when there is none. Notes are placed at the video time.
+    pub video_time: &'a dyn Fn(f64) -> f64,
     /// Whether a thing is one a target points at, seen from another: `(target, me, other)`.
     pub matches: &'a dyn Fn(&Target, ThingId, ThingId) -> bool,
 }
@@ -158,19 +163,26 @@ impl Mixes {
 /// The soundtrack of a run: every thing's Sound module turns its events into notes, in thing
 /// order; the notes are rendered once each, added up, levelled and limited.
 pub fn mix(settings: &MixSettings, resolved: &Resolved, log: &Log, mixes: &Mixes) -> Soundtrack {
-    mix_with(settings, resolved, &Library::default(), log, mixes)
+    mix_with(settings, resolved, &Library::default(), log, mixes, None, &|t| t)
 }
 
-/// Like [`mix`], with the scene's library so modules whose graphs have been edited can run them.
-pub fn mix_with(
+/// Keyframed sound settings are read this often: a window of one twentieth of a second.
+const WINDOWS_PER_SECOND: u32 = 20;
+
+/// Every note of a run, in thing order. With an `animation`, a thing whose Sound settings are
+/// keyframed gets its events in windows of a twentieth of a second, each window's settings
+/// taken at the window's start. `video_time` maps a moment of the run to the video. The
+/// scene's `library` lets a module whose graph has been edited run it.
+pub fn notes_with(
     settings: &MixSettings,
     resolved: &Resolved,
     library: &Library,
     log: &Log,
     mixes: &Mixes,
-) -> Soundtrack {
-    let mut track = Soundtrack::silent(settings.duration);
-    let frames = track.frames();
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+) -> Vec<Note> {
+    let frames = Soundtrack::silent(settings.duration).frames();
     let hit_index = |e: &Event| -> u64 {
         let all = log.events();
         let start = all.partition_point(|x| x.step < e.step);
@@ -178,7 +190,14 @@ pub fn mix_with(
         (start + within) as u64
     };
     let matches = |t: &Target, me: ThingId, other: ThingId| target_matches(resolved, settings, t, me, other);
-    let cx = MixCx { settings, frames, hit_index: &hit_index, matches: &matches };
+    let cx = MixCx { settings, log, frames, hit_index: &hit_index, video_time, matches: &matches };
+    let rate = settings.steps_per_second.max(1);
+    let window = (rate / WINDOWS_PER_SECOND).max(1) as u64;
+    let animated: std::collections::BTreeSet<ThingId> = animation
+        .map(|a| {
+            a.destinations().into_iter().filter(|(_, slot, _)| *slot == Some(SlotId::Sound)).map(|d| d.0).collect()
+        })
+        .unwrap_or_default();
     let mut notes = Vec::new();
     for (id, r) in &resolved.things {
         let Some(slot) = r.slots.get(&SlotId::Sound) else { continue };
@@ -189,9 +208,39 @@ pub fn mix_with(
             continue;
         }
         let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
-        m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes);
+        match animation.filter(|_| animated.contains(id)) {
+            None => m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes),
+            Some(animation) => {
+                let mut copy = resolved.clone();
+                let mut start = 0;
+                while start < events.len() {
+                    let first = events[start].step / window * window;
+                    let end = start + events[start..].partition_point(|e| e.step < first + window);
+                    animation.apply(&mut copy, first as f64 / rate as f64, &Inputs::NONE);
+                    let params = copy.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound)).map(|s| &s.params);
+                    m.notes_with(params.unwrap_or(&slot.params), graph, *id, &events[start..end], &cx, &mut notes);
+                    start = end;
+                }
+            }
+        }
     }
     notes.retain(|n| n.frame < frames);
+    notes
+}
+
+/// [`mix`], with the scene's library, keyframed Sound settings and the video's time warp.
+/// See [`notes_with`].
+pub fn mix_with(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+) -> Soundtrack {
+    let mut track = Soundtrack::silent(settings.duration);
+    let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
     if notes.is_empty() {
         return track;
     }
@@ -208,4 +257,115 @@ pub fn mix_with(
     normalize_loudness(&mut track.samples, settings.loudness);
     limit_peaks(&mut track.samples);
     track
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bpe_core::{Address, Ease, Owner, Scene, Value, resolve, testkit};
+    use bpe_runtime::{EventKind, Party};
+
+    /// Plays middle C on every event, as loud as its "volume" setting says.
+    struct TestPluck;
+    impl ModuleMix for TestPluck {
+        fn kind(&self) -> &'static str {
+            "sound.pluck"
+        }
+        fn notes(&self, params: &Params, _thing: ThingId, events: &[Event], cx: &MixCx, out: &mut Vec<Note>) {
+            let volume = match params.get("volume") {
+                Some(Value::Number(v)) => *v as f32,
+                _ => 0.0,
+            };
+            let gain = 10f32.powf(volume / 20.0);
+            for e in events {
+                let time = (cx.video_time)(e.time(cx.settings.steps_per_second));
+                let frame = (time * SAMPLE_RATE as f64).round() as usize;
+                out.push(Note {
+                    frame,
+                    instrument: Instrument::Pluck,
+                    key: 60,
+                    velocity: 1.0,
+                    left: gain,
+                    right: gain,
+                    decay: 0.3,
+                    brightness: 0.5,
+                });
+            }
+        }
+    }
+
+    fn hit(step: u64) -> Event {
+        Event {
+            step,
+            kind: EventKind::Hit,
+            a: Party { thing: ThingId(1), item: 0 },
+            b: None,
+            point: glam::Vec2::ZERO,
+            normal: glam::Vec2::X,
+            speed: 400.0,
+        }
+    }
+
+    fn settings() -> MixSettings {
+        MixSettings {
+            duration: 5.0,
+            steps_per_second: 240,
+            chords: String::new(),
+            loudness: -14.0,
+            seed: 1,
+            half_width: 540.0,
+            tags: Default::default(),
+        }
+    }
+
+    /// A scene whose one ball plucks through the root's shared sound module.
+    fn plucking_scene() -> (bpe_core::Registry, Scene, Address) {
+        let reg = testkit::registry();
+        let mut scene = Scene::empty(&reg);
+        let pluck = scene.add_module(&reg, "sound.pluck", "Pluck").unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Sound, pluck).unwrap();
+        let ball = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        assert_eq!(ball, ThingId(1));
+        (reg, scene, Address { owner: Owner::Module(pluck), slot: None, key: "volume".into() })
+    }
+
+    #[test]
+    fn a_keyed_volume_plays_the_later_hit_quieter() {
+        let (reg, mut scene, volume) = plucking_scene();
+        let first = scene.set_key(&reg, &volume, 0.0, Value::Number(0.0)).unwrap();
+        scene.set_key(&reg, &volume, 4.0, Value::Number(-40.0)).unwrap();
+        scene.set_ease(&volume, first, Ease::Linear);
+        let resolved = resolve(&scene, &reg);
+        let mut mixes = Mixes::default();
+        mixes.add(TestPluck);
+        let mut log = Log::default();
+        log.push(hit(240));
+        log.push(hit(720));
+        let animation = Animation::new(&scene, &resolved);
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
+        assert_eq!(notes.len(), 2);
+        assert_eq!((notes[0].frame, notes[1].frame), (48_000, 144_000));
+        assert!((notes[0].left - 10f32.powf(-10.0 / 20.0)).abs() < 1e-3, "{}", notes[0].left);
+        assert!((notes[1].left - 10f32.powf(-30.0 / 20.0)).abs() < 1e-3, "{}", notes[1].left);
+        // Without the animation both play at the setting's own value.
+        let plain = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t);
+        assert_eq!((plain[0].left, plain[1].left), (1.0, 1.0));
+        let track = mix_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
+        assert_eq!(track.frames(), 5 * 48_000);
+        assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
+    }
+
+    #[test]
+    fn video_time_moves_a_note() {
+        let (reg, scene, _) = plucking_scene();
+        let resolved = resolve(&scene, &reg);
+        let mut mixes = Mixes::default();
+        mixes.add(TestPluck);
+        let mut log = Log::default();
+        log.push(hit(240));
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t + 1.0);
+        assert_eq!(notes[0].frame, 96_000);
+        // A note warped past the end is dropped.
+        assert!(notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t + 10.0).is_empty());
+    }
 }

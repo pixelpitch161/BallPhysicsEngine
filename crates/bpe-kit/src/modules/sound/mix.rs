@@ -139,7 +139,7 @@ fn each_note(
         {
             continue;
         }
-        let frame = (time * SAMPLE_RATE as f64).round() as usize;
+        let frame = ((cx.video_time)(time) * SAMPLE_RATE as f64).round() as usize;
         if frame >= cx.frames {
             continue;
         }
@@ -287,8 +287,10 @@ mod tests {
         fn any(_: &Target, _: ThingId, _: ThingId) -> bool {
             true
         }
-        let _ = log;
-        MixCx { settings, frames: 20 * 48_000, hit_index: &index, matches: &any }
+        fn same(t: f64) -> f64 {
+            t
+        }
+        MixCx { settings, log, frames: 20 * 48_000, hit_index: &index, video_time: &same, matches: &any }
     }
 
     #[test]

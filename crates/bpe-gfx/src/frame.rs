@@ -3,10 +3,39 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use bpe_core::{Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{Log, Outline, World};
+use bpe_core::{Animation, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
+use bpe_runtime::{EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
+
+/// Hits older than this no longer count towards [`hit_strength`].
+const HIT_WINDOW: f64 = 0.3;
+/// A hit's strength fades by e every this many seconds.
+const HIT_FADE: f32 = 0.1;
+/// A hit at this speed (px/s) counts as a full one.
+const FULL_HIT: f32 = 600.0;
+
+/// How hard things are hitting at `time`, 0 to 1, for pulses that follow hits: every hit in the
+/// last 0.3 s counts `min(speed / 600, 1)`, fading with age, and the sum is clamped.
+pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
+    let rate = steps_per_second.max(1);
+    let events = log.events();
+    let first_step = ((time - HIT_WINDOW) * rate as f64).ceil().max(0.0) as u64;
+    let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
+    let start = events.partition_point(|e| e.step < first_step);
+    let mut sum = 0.0f32;
+    for e in &events[start..] {
+        if e.step > last_step {
+            break;
+        }
+        if e.kind != EventKind::Hit {
+            continue;
+        }
+        let age = (time - e.time(rate)).max(0.0) as f32;
+        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
+    }
+    if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
+}
 
 /// A ball: a lit sphere with a halo.
 #[repr(C)]
@@ -46,7 +75,7 @@ pub struct LookInstance {
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
-/// 0 ring or polygon, 1 box.
+/// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct ShapeInstance {
@@ -128,6 +157,36 @@ pub struct FlashInstance {
     pub center: [f32; 2],
     pub size: f32,
     pub color: [f32; 4],
+}
+
+/// One corner of a soft body's triangles: jelly, rope and cloth are drawn as triangle lists
+/// whose edges fade over the last pixel.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SoftVertex {
+    pub position: [f32; 2],
+    /// How far inside the shape's edge this corner is, in world units; the fragment fades to
+    /// nothing at 0.
+    pub inside: f32,
+    pub _pad: f32,
+    /// Linear light. A negative alpha is additive (see [`blend_alpha`]).
+    pub color: [f32; 4],
+}
+
+/// One glyph of text, drawn from the signed-distance atlas.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct GlyphInstance {
+    /// World rectangle: left, top, right, bottom.
+    pub rect: [f32; 4],
+    /// Atlas rectangle in texture coordinates: left, top, right, bottom.
+    pub uv: [f32; 4],
+    /// Linear light fill. A negative alpha is additive.
+    pub color: [f32; 4],
+    pub outline_color: [f32; 4],
+    /// Outline width in world units, glow strength, world units per distance unit (how far one
+    /// full step of the atlas value is in the world), unused.
+    pub params: [f32; 4],
 }
 
 /// One corner of a trail strip.
@@ -291,6 +350,10 @@ pub struct Frame {
     pub shapes: Vec<ShapeInstance>,
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
+    /// Triangles, three vertices each, drawn between the walls and the balls.
+    pub soft: Vec<SoftVertex>,
+    /// Text, drawn last.
+    pub glyphs: Vec<GlyphInstance>,
     pub looks: Vec<LookInstance>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
@@ -312,6 +375,8 @@ impl Default for Frame {
             shapes: Vec::new(),
             balls: Vec::new(),
             flashes: Vec::new(),
+            soft: Vec::new(),
+            glyphs: Vec::new(),
             looks: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
@@ -327,6 +392,8 @@ impl Frame {
         self.shapes.clear();
         self.balls.clear();
         self.flashes.clear();
+        self.soft.clear();
+        self.glyphs.clear();
         self.looks.clear();
         self.trails.clear();
         self.bursts.clear();
@@ -339,10 +406,16 @@ impl Frame {
 pub struct DrawCx<'a> {
     pub thing: &'a Thing,
     pub resolved: &'a ResolvedThing,
+    /// The whole resolved scene as it is at this moment, keyframes and pulses applied.
+    pub scene: &'a Resolved,
     pub world: &'a World,
     pub log: &'a Log,
-    /// Seconds into the clip being drawn.
+    /// The moment of the run being drawn, in seconds: the clock of the world, the log and the
+    /// keyframes.
     pub time: f64,
+    /// Seconds into the video for this frame. The same as `time` unless the clip is beat-synced,
+    /// when the run is warped onto the video; clocks, show windows and beats follow this one.
+    pub video_time: f64,
 }
 
 /// How a thing kind draws itself.
@@ -391,9 +464,10 @@ impl Draws {
     }
 }
 
-/// Fills `frame` for `time`: the lists are emptied, then every resolved thing in id order
-/// whose kind has a drawing part draws, then every module with a drawing part draws for each
-/// thing (in id order) and slot (in slot order) it fills.
+/// Fills `frame` for `time`: the lists are emptied, the scene's keyframes and pulses are
+/// applied to a copy of the resolved scene for this moment, then every resolved thing in id
+/// order whose kind has a drawing part draws, then every module with a drawing part draws for
+/// each thing (in id order) and slot (in slot order) it fills.
 pub fn build_frame(
     scene: &Scene,
     resolved: &Resolved,
@@ -403,18 +477,49 @@ pub fn build_frame(
     draws: &Draws,
     frame: &mut Frame,
 ) {
+    build_frame_at(scene, resolved, world, log, time, time, draws, frame);
+}
+
+/// [`build_frame`] for a beat-synced clip, where the moment of the run shown (`time`) and the
+/// moment of the video (`video_time`) differ: keys follow the run, beats and clocks the video.
+#[allow(clippy::too_many_arguments)]
+pub fn build_frame_at(
+    scene: &Scene,
+    resolved: &Resolved,
+    world: &World,
+    log: &Log,
+    time: f64,
+    video_time: f64,
+    draws: &Draws,
+    frame: &mut Frame,
+) {
     frame.clear();
+    let animation = Animation::new(scene, resolved);
+    let animated;
+    let resolved = if animation.is_empty() {
+        resolved
+    } else {
+        let mut copy = resolved.clone();
+        let inputs = Inputs {
+            pulse: world.pulse_inputs.as_deref(),
+            hits: hit_strength(log, time, world.steps_per_second),
+            video_time: (video_time != time).then_some(video_time),
+        };
+        animation.apply(&mut copy, time, &inputs);
+        animated = copy;
+        &animated
+    };
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        d.draw(&DrawCx { thing, resolved: r, world, log, time }, frame);
+        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, frame);
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         for slot in SlotId::ALL {
             let Some(s) = r.slots.get(&slot) else { continue };
             let Some(d) = draws.module(&s.kind) else { continue };
-            d.draw(&DrawCx { thing, resolved: r, world, log, time }, slot, frame);
+            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, slot, frame);
         }
     }
 }
@@ -422,8 +527,8 @@ pub fn build_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Value, resolve, testkit};
-    use bpe_runtime::{Log, Sims, World};
+    use bpe_core::{Address, Ease, Owner, Value, resolve, testkit};
+    use bpe_runtime::{Event, Log, Party, Sims, World};
 
     struct FakeScene;
     impl ThingDraw for FakeScene {
@@ -476,6 +581,106 @@ mod tests {
         assert_eq!(frame.flashes.len(), 1);
         assert!(frame.shapes.is_empty());
         assert!(draws.thing("folder").is_none());
+    }
+
+    #[test]
+    fn a_keyed_setting_changes_the_frame_at_its_time() {
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let balls = testkit::push(&mut scene, "balls", bpe_core::ThingId::ROOT);
+        let size = Address { owner: Owner::Thing(balls), slot: None, key: "radius".into() };
+        let first = scene.set_key(&reg, &size, 0.0, Value::Number(2.0)).unwrap();
+        scene.set_key(&reg, &size, 2.0, Value::Number(10.0)).unwrap();
+        scene.set_ease(&size, first, Ease::Linear);
+        let resolved = resolve(&scene, &reg);
+        let world = World::build(&scene, &resolved, &Sims::default());
+        let mut draws = Draws::default();
+        draws.add(FakeBalls);
+        let mut frame = Frame::default();
+        let radius_at = |time: f64, frame: &mut Frame| {
+            build_frame(&scene, &resolved, &world, &Log::default(), time, &draws, frame);
+            frame.balls[0].radius
+        };
+        assert_eq!(radius_at(0.0, &mut frame), 2.0);
+        assert!((radius_at(1.0, &mut frame) - 6.0).abs() < 1e-5);
+        assert_eq!(radius_at(5.0, &mut frame), 10.0);
+        assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
+    }
+
+    #[test]
+    fn a_beat_synced_frame_hands_draws_both_clocks_and_pulses_on_the_video_beat() {
+        struct Clock;
+        impl ThingDraw for Clock {
+            fn kind(&self) -> &'static str {
+                "scene"
+            }
+            fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
+                frame.time = cx.time as f32;
+                frame.exposure = cx.video_time as f32;
+                frame.bloom = match cx.resolved.slots[&SlotId::Look].params.get("glow") {
+                    Some(Value::Number(g)) => *g as f32,
+                    _ => -1.0,
+                };
+            }
+        }
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Look, look).unwrap();
+        let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
+        scene.set_pulse(&reg, &glow, bpe_core::PulseSource::Beat, Value::Number(1.0), 0.5).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let mut world = World::build(&scene, &resolved, &Sims::default());
+        world.pulse_inputs = Some(std::sync::Arc::new(bpe_core::PulseInputs { beats: vec![2.0], bands: None }));
+        let mut draws = Draws::default();
+        draws.add(Clock);
+        let mut frame = Frame::default();
+        let base = match resolved.things[&ThingId::ROOT].slots[&SlotId::Look].params.get("glow") {
+            Some(Value::Number(g)) => *g as f32,
+            _ => panic!("no glow"),
+        };
+        build_frame_at(&scene, &resolved, &world, &Log::default(), 1.0, 2.0, &draws, &mut frame);
+        assert_eq!((frame.time, frame.exposure), (1.0, 2.0));
+        assert!((frame.bloom - (base + 1.0)).abs() < 1e-5, "the beat is now on the video's clock: {}", frame.bloom);
+        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &draws, &mut frame);
+        assert_eq!((frame.time, frame.exposure), (1.0, 1.0));
+        assert!((frame.bloom - base).abs() < 1e-5, "on the run's clock the beat is still to come");
+    }
+
+    #[test]
+    fn hit_strength_decays_and_saturates() {
+        let hit = |step: u64, speed: f32| Event {
+            step,
+            kind: EventKind::Hit,
+            a: Party { thing: bpe_core::ThingId(2), item: 0 },
+            b: None,
+            point: glam::Vec2::ZERO,
+            normal: glam::Vec2::X,
+            speed,
+        };
+        let mut log = Log::default();
+        log.push(hit(240, 600.0));
+        assert_eq!(hit_strength(&log, 0.5, 240), 0.0, "a hit in the future does not count");
+        assert!((hit_strength(&log, 1.0, 240) - 1.0).abs() < 1e-6);
+        assert!((hit_strength(&log, 1.1, 240) - (-1.0f32).exp()).abs() < 1e-4);
+        assert_eq!(hit_strength(&log, 1.5, 240), 0.0, "hits older than 0.3 s are gone");
+        let mut many = Log::default();
+        for _ in 0..3 {
+            many.push(hit(240, 300.0));
+        }
+        assert_eq!(hit_strength(&many, 1.0, 240), 1.0, "three half hits saturate");
+        assert!(hit_strength(&Log::default(), 1.0, 240) == 0.0);
+    }
+
+    #[test]
+    fn soft_and_glyph_lists_are_cleared() {
+        let mut frame = Frame::default();
+        frame.soft.push(SoftVertex::default());
+        frame.glyphs.push(GlyphInstance::default());
+        frame.clear();
+        assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
+        assert_eq!(std::mem::size_of::<SoftVertex>(), 32);
+        assert_eq!(std::mem::size_of::<GlyphInstance>(), 80);
     }
 
     #[test]

@@ -9,10 +9,11 @@ use crate::nodes::NodePanel;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::sound_job::SoundJob;
+use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{inspector, library, preview, settings, theme, transport, tree};
+use crate::{inspector, library, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
-use bpe_kit::{Kit, SceneSettings, resolve_scene};
+use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub sound: SoundJob,
+    pub timeline: Timeline,
     pub library: LibraryWindow,
     /// The node panel under the preview.
     pub nodes: NodePanel,
@@ -65,8 +67,11 @@ pub struct Studio {
     pub playback: Playback,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
-    /// The playhead, in seconds.
+    /// The playhead, in video seconds.
     pub time: f64,
+    /// The beat sync's time warp from the last mix: which moment of the run each video time
+    /// shows. The identity without beat sync.
+    pub warp: TimeWarp,
     pub playing: bool,
     pub looping: bool,
     pub muted: bool,
@@ -85,6 +90,11 @@ pub struct Studio {
     pub audio_error: Option<String>,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
+    /// The scene's song is decoding on a thread of its own; the run and the mix are rebuilt
+    /// when it lands.
+    pub song_loading: bool,
+    /// The song setting as last seen, so a re-picked file that failed before is tried again.
+    last_song: String,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     recorded: bool,
     closing: bool,
@@ -122,6 +132,7 @@ impl Studio {
             fingerprint,
             kit,
             time: 0.0,
+            warp: TimeWarp::identity(),
             playing: false,
             looping: true,
             muted: false,
@@ -135,6 +146,8 @@ impl Studio {
             audio: None,
             audio_error: None,
             resume_after_scrub: false,
+            song_loading: false,
+            last_song: String::new(),
             recorded: false,
             closing: false,
             last_tick: None,
@@ -151,6 +164,11 @@ impl Studio {
 
     pub fn duration(&self) -> f64 {
         self.settings().duration.max(0.0) as f64
+    }
+
+    /// The moment of the run the playhead shows, through the beat sync's time warp.
+    pub fn sim_time(&self) -> f64 {
+        self.warp.sim_time(self.time)
     }
 
     pub fn unsaved(&self) -> bool {
@@ -180,6 +198,7 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
+        self.start_song();
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         if fingerprint != self.fingerprint {
             self.fingerprint = fingerprint;
@@ -199,9 +218,40 @@ impl Studio {
         self.set_playing(false);
         self.recorded = true;
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
+        self.start_song();
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.sound_dirty = true;
+    }
+
+    /// Starts decoding the scene's song on a thread of its own before the run is built, so the
+    /// window never waits for it. Until it lands the run and the mix have no song; `poll_song`
+    /// rebuilds them when it does. A file that failed before is tried again when re-picked.
+    fn start_song(&mut self) {
+        let song = self.settings().song;
+        if song != self.last_song {
+            if matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Unreadable)) {
+                bpe_kit::forget_song(&song);
+            }
+            self.last_song = song.clone();
+        }
+        self.song_loading = matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Loading));
+    }
+
+    /// Call every frame: when a song has finished loading, the run and the mix are built again
+    /// with it.
+    fn poll_song(&mut self, ctx: &egui::Context) {
+        if !self.song_loading {
+            return;
+        }
+        match bpe_kit::load_song_in_background(&self.settings().song) {
+            Some(SongState::Loading) => ctx.request_repaint_after(Duration::from_millis(100)),
+            _ => {
+                self.song_loading = false;
+                self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+                self.panels.sound.remix();
+            }
+        }
     }
 
     pub fn new_scene(&mut self) {
@@ -235,7 +285,7 @@ impl Studio {
     /// the rest a budget per frame.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek_within(self.time, Some(CATCH_UP_BUDGET));
+        self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(audio) = &self.audio
         {
@@ -301,12 +351,13 @@ impl Studio {
         if std::mem::take(&mut self.sound_dirty) {
             self.panels.sound.mark(&self.scene, &self.resolved, &self.kit.sims);
         }
-        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit)
-            && let Some(audio) = &self.audio
-        {
-            audio.set_track(mixed.track);
-            if self.playing {
-                audio.play_from(self.time);
+        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit) {
+            self.warp = mixed.warp;
+            if let Some(audio) = &self.audio {
+                audio.set_track(mixed.track);
+                if self.playing {
+                    audio.play_from(self.time);
+                }
             }
         }
     }
@@ -510,6 +561,17 @@ impl Studio {
             if let Some(error) = &self.audio_error {
                 ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
+            let song = self.settings().song;
+            match bpe_kit::load_song_in_background(&song) {
+                Some(SongState::Loading) => {
+                    ui.label(RichText::new("· Loading the song…").small().color(theme::MUTED));
+                }
+                Some(SongState::Unreadable) => {
+                    let text = format!("The song {song} couldn't be opened; the video has no song.");
+                    ui.label(RichText::new(text).small().color(theme::WARNING));
+                }
+                _ => {}
+            }
         });
     }
 
@@ -559,6 +621,7 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        self.poll_song(&ctx);
         self.update_sound(&ctx);
         let before = self.scene.clone();
         self.recorded = false;
@@ -570,14 +633,14 @@ impl eframe::App for Studio {
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_line(ui));
-        egui::Panel::bottom("transport")
+        egui::Panel::bottom("timeline")
             .frame(bar_frame())
             .resizable(true)
-            .default_size(110.0)
-            .min_size(80.0)
-            .max_size(320.0)
-            .show(ui, |ui| transport::show(ui, self));
-        // Declared after the transport so it sits above it, right under the preview.
+            .default_size(190.0)
+            .min_size(110.0)
+            .max_size(520.0)
+            .show(ui, |ui| timeline::show(ui, self));
+        // Declared after the timeline so it sits above it, right under the preview.
         self.panels.nodes.show(ui, &mut self.scene, &self.kit, &self.resolved, Some(self.playback.world()));
         let tree = egui::Panel::left("tree")
             .default_size(260.0)
@@ -608,6 +671,7 @@ impl eframe::App for Studio {
                 // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
                 ui.set_min_width(ui.available_width());
                 self.panels.inspector.nodes_open = self.panels.nodes.open;
+                let time = self.sim_time();
                 inspector::show(
                     ui,
                     &mut self.panels.inspector,
@@ -615,10 +679,15 @@ impl eframe::App for Studio {
                     &self.kit,
                     &self.resolved,
                     &self.selection,
+                    time,
                 )
             });
         if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
             self.panels.nodes.open_at(thing, slot);
+        }
+        if std::mem::take(&mut self.panels.inspector.keyed_edit) {
+            // A key landed at the playhead; a drag while playing would otherwise key every frame.
+            self.set_playing(false);
         }
         if let Some(module) = self.panels.inspector.open_library.take() {
             self.panels.library.open = true;
@@ -756,6 +825,17 @@ mod tests {
         assert_eq!(studio.scene.name, "New scene");
         assert!(!studio.unsaved());
         assert!(studio.history.undo.is_empty());
+    }
+
+    #[test]
+    fn seeking_goes_through_the_warp() {
+        let mut studio = Studio::headless();
+        let beats: Vec<f64> = (0..40).map(|k| k as f64 * 0.5).collect();
+        studio.warp = TimeWarp::fit(&[1.1], &beats, 0.5, 20.0);
+        studio.seek(1.0);
+        assert_eq!(studio.time, 1.0, "the playhead stays in video time");
+        assert!((studio.sim_time() - 1.1).abs() < 1e-6);
+        assert!((studio.playback.time() - 1.1).abs() < 1.0 / 240.0 + 1e-9, "{}", studio.playback.time());
     }
 
     #[test]

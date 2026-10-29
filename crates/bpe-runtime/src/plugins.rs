@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use bpe_core::{ModuleGraph, Params, ResolvedThing, Target, Thing, ThingId};
 use glam::Vec2;
 
-use crate::{Action, Bodies, Contact, Event, World, reflect};
+use crate::{Action, Bodies, Contact, Event, Log, World, reflect};
 
 /// Anything a plugin keeps per thing or per module while the world runs. Implemented for every
 /// `Clone + Send + Sync + 'static` type.
@@ -86,6 +86,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
     /// Runs once a step before the physics: scripted motion such as a wall's spin.
     fn scripted(&self, _thing: ThingId, _world: &mut World) {}
+    /// Runs once a step after the physics, with the log, so a thing can log what happened to
+    /// it: a soft body's impacts, the scene's beats.
+    fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
+    /// A keyframe or pulse moved one of the thing's settings while the world runs: re-read
+    /// whatever can change without rebuilding. `resolved` holds the settings as they are now.
+    fn settings_changed(&self, _thing: ThingId, _resolved: &ResolvedThing, _world: &mut World) {}
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {
