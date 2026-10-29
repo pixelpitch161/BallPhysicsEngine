@@ -44,12 +44,24 @@ pub struct SettingDef {
     pub group: &'static str,
     pub depth: Depth,
     pub flags: Flags,
+    /// When the setting does anything, so the inspector can leave it out otherwise: empty for
+    /// always, else terms joined by " and " and " or " (and binds tighter). A term is `key`
+    /// (that setting is on: true, not zero, not empty), `!key`, `key=a|b` or `key!=a|b`
+    /// (a choice's name, or `true`/`false`). The key `thing` is the kind of thing the setting
+    /// belongs to, such as `thing=balls|soft`; where no thing is known (the Library) it holds.
+    pub when: &'static str,
 }
 
 impl SettingDef {
     /// Where the dice roll: the dice range when one is set, else the whole range.
     pub fn dice_range(&self) -> Option<(f64, f64)> {
         self.dice.or(self.range)
+    }
+
+    /// Whether the setting does anything for a thing of `kind` (`None`: any kind) whose
+    /// other settings read as `get` says. See `when`.
+    pub fn applies(&self, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
+        applies(self.when, kind, get)
     }
 
     /// The value pulled into this setting's range. Values other than numbers are left as they are.
@@ -229,5 +241,89 @@ impl<T: Choice> SettingValue for T {
     }
     fn from_value(v: &Value) -> Option<Self> {
         if let Value::Choice(n) = v { T::from_name(n) } else { None }
+    }
+}
+
+/// Whether a `when` condition (see `SettingDef::when`) holds.
+pub fn applies(when: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
+    let when = when.trim();
+    when.is_empty() || when.split(" or ").any(|all| all.split(" and ").all(|term| term_holds(term.trim(), kind, get)))
+}
+
+fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
+    let (key, names, wanted) = if let Some((key, names)) = term.split_once("!=") {
+        (key, Some(names), false)
+    } else if let Some((key, names)) = term.split_once('=') {
+        (key, Some(names), true)
+    } else if let Some(key) = term.strip_prefix('!') {
+        (key, None, false)
+    } else {
+        (term, None, true)
+    };
+    let key = key.trim();
+    let Some(names) = names else {
+        return get(key).is_some_and(|v| is_on(&v)) == wanted;
+    };
+    let names = names.split('|').map(str::trim);
+    if key == "thing" {
+        return kind.is_none_or(|k| names.clone().any(|n| n == k) == wanted);
+    }
+    let Some(value) = get(key) else { return true };
+    let name = match &value {
+        Value::Choice(c) => c.clone(),
+        Value::Bool(b) => b.to_string(),
+        _ => return true,
+    };
+    names.into_iter().any(|n| n == name) == wanted
+}
+
+/// A setting counts as on when it is true, not zero, or not empty.
+fn is_on(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Number(x) => *x != 0.0,
+        Value::Int(x) => *x != 0,
+        Value::Text(t) => !t.trim().is_empty(),
+        Value::Colors(c) => !c.is_empty(),
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::applies;
+    use crate::{Color, Value};
+
+    fn get(key: &str) -> Option<Value> {
+        match key {
+            "shape" => Some(Value::Choice("box".into())),
+            "on" => Some(Value::Bool(true)),
+            "off" => Some(Value::Bool(false)),
+            "zero" => Some(Value::Number(0.0)),
+            "none" => Some(Value::Colors(Vec::new())),
+            "two" => Some(Value::Colors(vec![Color::WHITE, Color::WHITE])),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn conditions_read_choices_switches_and_the_kind() {
+        let holds = |when: &str, kind: Option<&str>| applies(when, kind, &get);
+        assert!(holds("", Some("balls")));
+        assert!(holds("shape=box", None));
+        assert!(holds("shape=circle|box", None));
+        assert!(!holds("shape=circle", None));
+        assert!(holds("shape!=circle", None));
+        assert!(!holds("shape!=box|circle", None));
+        assert!(holds("on", None) && !holds("off", None) && holds("!off", None));
+        assert!(!holds("zero", None) && !holds("none", None) && holds("two", None));
+        assert!(holds("on=true", None) && holds("off=false", None));
+        assert!(holds("thing=balls|soft", Some("soft")) && !holds("thing=balls", Some("arena")));
+        assert!(holds("thing=balls", None), "the Library shows every kind's settings");
+        assert!(holds("thing!=arena", Some("balls")) && !holds("thing!=arena", Some("arena")));
+        assert!(holds("thing=balls or on", Some("arena")));
+        assert!(!holds("thing=balls or off", Some("arena")));
+        assert!(!holds("thing=balls and off", Some("balls")));
+        assert!(holds("thing=arena and on or off", Some("arena")));
     }
 }

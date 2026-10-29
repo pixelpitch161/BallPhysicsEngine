@@ -27,13 +27,13 @@ pub struct LiquidSettings {
     #[setting(label = "Start as", simple)]
     pub start: LiquidStart,
     /// For a pool: how much of the arena's height is liquid.
-    #[setting(label = "Fill", range(0.05, 1), simple, random)]
+    #[setting(label = "Fill", when = "start=pool", range(0.05, 1), simple, random)]
     pub fill: f32,
     /// A block's width.
-    #[setting(label = "Width", range(10, 2000), unit = "px")]
+    #[setting(label = "Width", when = "start=block", range(10, 2000), unit = "px")]
     pub width: f32,
     /// A block's height.
-    #[setting(label = "Height", range(10, 3000), unit = "px")]
+    #[setting(label = "Height", when = "start=block", range(10, 3000), unit = "px")]
     pub height: f32,
     /// Pour the liquid in from the thing's position over this long. 0 puts it all there at once.
     #[setting(label = "Pour over", range(0, 60), unit = "s")]

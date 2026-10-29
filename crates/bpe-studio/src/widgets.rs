@@ -1,6 +1,6 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, Depth, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
+use bpe_core::{Color, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
@@ -56,6 +56,8 @@ pub struct GridCx<'a> {
     pub marks: &'a dyn Fn(&str) -> Option<KeyMark>,
     /// Whether the setting is locked against the dice.
     pub locked: &'a dyn Fn(&str) -> bool,
+    /// Whether the setting does anything here; rows that don't are left out.
+    pub applies: &'a dyn Fn(&SettingDef) -> bool,
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -71,7 +73,31 @@ pub struct GridOutcome {
     pub pulse: Vec<(&'static str, Option<PulseSource>)>,
     /// Settings locked (true) or unlocked against the dice from the row's menu.
     pub locks: Vec<(&'static str, bool)>,
+    /// The colour list was changed: what it holds now and what was done to it.
+    pub colours: Option<ColoursEdit>,
 }
+
+/// An edit to the one colour list a look shows for its Colour and Colours settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColoursEdit {
+    /// The whole list after the edit; one colour means a plain Colour.
+    pub list: Vec<Color>,
+    pub change: ListChange,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListChange {
+    /// Colour `i` changed.
+    Set(usize),
+    /// A colour was added at the end.
+    Add,
+    /// Colour `i` was taken out.
+    Remove(usize),
+}
+
+/// The look keys shown together as one colour list.
+pub const COLOUR: &str = "color";
+pub const COLOURS: &str = "gradient";
 
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
@@ -80,28 +106,39 @@ pub fn pretty(name: &str) -> String {
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-/// One row of a settings grid: a setting, or a heading over the group that follows.
+/// One row of a settings grid: a setting, a heading over the group that follows, or a look's
+/// Colour and Colours shown as one list of colours.
 pub enum Row<'a> {
     Group(&'a str),
     Setting(&'a SettingDef),
+    Colours { colour: &'a SettingDef, colours: &'a SettingDef },
 }
 
-/// The rows a settings grid shows at `depth`: the simple settings alone, or every setting with
-/// the grouped ones under their headings (ungrouped first, then groups in the order they appear).
-pub fn rows_at(defs: &[SettingDef], depth: Depth) -> Vec<Row<'_>> {
-    if depth == Depth::Simple {
-        return defs.iter().filter(|d| d.depth == Depth::Simple).map(Row::Setting).collect();
-    }
-    let mut rows: Vec<Row<'_>> = defs.iter().filter(|d| d.group.is_empty()).map(Row::Setting).collect();
+/// The rows a settings grid shows: every setting that `applies`, ungrouped first, then the
+/// groups in the order they appear, each under its heading. A look's Colour and Colours become
+/// one Colours row where Colour was.
+pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
+    let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
+    let find = |key: &str, ty: ValueType| shown.iter().copied().find(|d| d.key == key && d.ty == ty);
+    let merged = find(COLOUR, ValueType::Color).zip(find(COLOURS, ValueType::Colors));
+    let row = |d: &'a SettingDef| match merged {
+        Some((colour, colours)) if d.key == COLOUR => Some(Row::Colours { colour, colours }),
+        Some(_) if d.key == COLOURS => None,
+        _ => Some(Row::Setting(d)),
+    };
+    let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).filter_map(|d| row(d)).collect();
     let mut groups: Vec<&str> = Vec::new();
-    for d in defs {
+    for d in &shown {
         if !d.group.is_empty() && !groups.contains(&d.group) {
             groups.push(d.group);
         }
     }
     for group in groups {
-        rows.push(Row::Group(group));
-        rows.extend(defs.iter().filter(|d| d.group == group).map(Row::Setting));
+        let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).filter_map(|d| row(d)).collect();
+        if !members.is_empty() {
+            rows.push(Row::Group(group));
+            rows.extend(members);
+        }
     }
     rows
 }
@@ -126,14 +163,14 @@ pub struct KeyMark {
 /// The width of the diamond cell at the left of every row.
 pub const DIAMOND_CELL: f32 = 16.0;
 
-/// A settings grid at `depth` with no marks and nothing for targets to point at. `get` supplies
-/// each setting's value as it stands; the rows the user changed come back as (key, new value)
-/// for the caller to write through `set_at`.
+/// A settings grid of the settings that `applies`, with no marks and nothing for targets to
+/// point at. `get` supplies each setting's value as it stands; the rows the user changed come
+/// back as (key, new value) for the caller to write through `set_at`.
 pub fn settings_grid(
     ui: &mut Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
-    depth: Depth,
+    applies: &dyn Fn(&SettingDef) -> bool,
     get: impl Fn(&str) -> Value,
 ) -> Vec<(&'static str, Value)> {
     let choices = TargetChoices::default();
@@ -143,11 +180,12 @@ pub fn settings_grid(
         inherited: &|_| None,
         marks: &|_| None,
         locked: &|_| false,
+        applies,
     };
-    settings_grid_marked(ui, id, defs, depth, get, &cx).changes
+    settings_grid_marked(ui, id, defs, get, &cx).changes
 }
 
-/// A settings grid at `depth` with a keyframe diamond before each setting that can have one
+/// A settings grid of the settings that apply, with a keyframe diamond before each setting that can have one
 /// (click: a key at the playhead; right-click: pulses), and a dot before the settings this thing
 /// changed for itself. Such a row's double-click or Alt+click goes back to the module's value,
 /// and its right-click menu offers to reset or push the change.
@@ -155,13 +193,12 @@ pub fn settings_grid_marked(
     ui: &mut Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
-    depth: Depth,
     get: impl Fn(&str) -> Value,
     cx: &GridCx,
 ) -> GridOutcome {
     let mut out = GridOutcome::default();
     egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
-        for row in rows_at(defs, depth) {
+        for row in rows_for(defs, cx.applies) {
             match row {
                 Row::Group(group) => {
                     empty_cell(ui);
@@ -191,10 +228,105 @@ pub fn settings_grid_marked(
                         RowAction::Lock(lock) => out.locks.push((def.key, lock)),
                     }
                 }
+                Row::Colours { colour, colours } => colours_row(ui, colour, colours, &get, cx, &mut out),
             }
         }
     });
     out
+}
+
+/// A look's Colour and Colours as one row: a list of colours, where one colour is the plain
+/// Colour and two or more spread across the balls. The diamond keys the whole list (or the one
+/// colour), so every colour can change over time.
+fn colours_row(
+    ui: &mut Ui,
+    colour: &SettingDef,
+    colours: &SettingDef,
+    get: &dyn Fn(&str) -> Value,
+    cx: &GridCx,
+    out: &mut GridOutcome,
+) {
+    let list = match get(COLOURS) {
+        Value::Colors(list) if !list.is_empty() => list,
+        _ => match get(COLOUR) {
+            Value::Color(c) => vec![c],
+            _ => vec![Color::WHITE],
+        },
+    };
+    // One colour lives in Colour, several in Colours: the diamond, dot and lock follow it.
+    let key = if list.len() > 1 { colours.key } else { colour.key };
+    match (cx.marks)(key) {
+        Some(mark) => match diamond(ui, "Colours", mark) {
+            DiamondClick::None => {}
+            DiamondClick::Toggle => out.toggled_key.push(key),
+            DiamondClick::Pulse(source) => out.pulse.push((key, source)),
+        },
+        None => empty_cell(ui),
+    }
+    let overridden = (cx.overridden)(COLOUR) || (cx.overridden)(COLOURS);
+    let locked = (cx.locked)(key);
+    let help = "One colour for every ball, or several spread across them. Add colours with +, \
+                right-click one to remove it. The diamond keyframes them all at the playhead.";
+    let mut action = RowAction::Nothing;
+    let name = ui
+        .horizontal(|ui| {
+            if overridden {
+                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
+                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
+                response.on_hover_text("Changed here: this thing's own value, not the module's.");
+            }
+            let name = label(ui, "Colours", help);
+            if locked {
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
+                paint_padlock(ui.painter(), rect, theme::MUTED);
+                response.on_hover_text("Locked: the dice leave this setting alone.");
+            }
+            name.context_menu(|ui| {
+                if overridden {
+                    if ui.button("Reset to module").on_hover_text("Follow the module's colours again").clicked() {
+                        action = RowAction::Reset;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Push to module")
+                        .on_hover_text("Give every thing using the module these colours")
+                        .clicked()
+                    {
+                        action = RowAction::Push;
+                        ui.close();
+                    }
+                }
+                if locked {
+                    if ui.button("Unlock").on_hover_text("Let the dice pick the colours again").clicked() {
+                        action = RowAction::Lock(false);
+                        ui.close();
+                    }
+                } else if ui
+                    .button("Lock when randomizing")
+                    .on_hover_text("Keep the colours when the dice roll")
+                    .clicked()
+                {
+                    action = RowAction::Lock(true);
+                    ui.close();
+                }
+            });
+            name
+        })
+        .inner;
+    let mut edited = list.clone();
+    let (_, change) = ui.horizontal(|ui| color_list(ui, &mut edited, name.id, 1)).inner;
+    ui.end_row();
+    match action {
+        RowAction::Reset => out.resets.extend([COLOUR, COLOURS]),
+        RowAction::Push => out.pushes.extend([COLOUR, COLOURS]),
+        RowAction::Lock(lock) => out.locks.extend([(COLOUR, lock), (COLOURS, lock)]),
+        RowAction::Nothing | RowAction::Changed => {}
+    }
+    if let Some(change) = change {
+        out.colours = Some(ColoursEdit { list: edited, change });
+    }
 }
 
 /// What one grid row asks for.
@@ -417,38 +549,99 @@ fn suffix(unit: &str) -> String {
 
 /// The widget for `def`'s type, editing `value` in place. Every control is labelled by the
 /// row's name, for screen readers and tests.
+/// How a number moves under the mouse: the step it snaps to, how many decimals it shows, and
+/// how far a drag on its number box goes per pixel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumberFeel {
+    pub step: f64,
+    pub decimals: usize,
+    pub drag_speed: f64,
+}
+
+/// The feel of a number spanning `span`: the step is the power of ten nearest a two-hundredth of
+/// the span, so every slider moves in round, even steps (0 to 1 by 0.001, 0 to 40 by 0.1, 0 to
+/// 2000 by 1), and a drag on the number box crosses the span in about 400 pixels (Shift is
+/// ten times finer).
+pub fn number_feel(span: f64, integer: bool) -> NumberFeel {
+    let span = if span.is_finite() && span > 0.0 { span } else { 1.0 };
+    let power = (span / 200.0).log10().floor();
+    let mut step = 10f64.powf(power).max(1e-4);
+    if integer {
+        step = step.max(1.0).round();
+    }
+    let decimals = if integer { 0 } else { (-power).max(0.0) as usize };
+    let drag_speed = (span / 400.0).max(step / 4.0);
+    NumberFeel { step, decimals, drag_speed }
+}
+
+/// The feel of a setting's number: from its range, else where the dice roll it, else from its
+/// unit (pixels move by whole pixels, other things by hundredths).
+pub fn setting_feel(def: &SettingDef) -> NumberFeel {
+    let integer = def.ty == ValueType::Int;
+    match def.range.or(def.dice) {
+        Some((min, max)) => number_feel(max - min, integer),
+        None if def.unit.starts_with("px") => number_feel(400.0, integer),
+        None => number_feel(2.0, integer),
+    }
+}
+
+/// A slider for a number setting: as wide as the row allows, moving in the setting's even steps,
+/// with its number box beside it.
+fn number_slider<N: egui::emath::Numeric>(
+    ui: &mut Ui,
+    x: &mut N,
+    (min, max): (f64, f64),
+    feel: NumberFeel,
+    unit: String,
+) -> Response {
+    // Leave room for the number box, so the slider's length is used for precision.
+    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).clamp(100.0, 320.0);
+    let mut slider = Slider::new(x, N::from_f64(min)..=N::from_f64(max))
+        .suffix(unit)
+        .smart_aim(false)
+        .step_by(feel.step)
+        .fixed_decimals(feel.decimals)
+        .drag_value_speed(feel.drag_speed)
+        // Only edits snap and clamp: a stored value is shown as it is, never rewritten by drawing it.
+        .clamping(egui::SliderClamping::Edits);
+    // A range spanning more than a thousandfold is easier to use on a log scale.
+    if min > 0.0 && max / min > 1000.0 {
+        slider = slider.logarithmic(true);
+    }
+    ui.add(slider)
+}
+
 fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choices: &TargetChoices) -> Response {
     let unit = suffix(def.unit);
+    let feel = setting_feel(def);
     match (&def.ty, value) {
         (ValueType::Number, Value::Number(x)) => match def.range {
-            Some((min, max)) => {
-                let mut slider = Slider::new(x, min..=max).suffix(unit);
-                // A range spanning more than a thousandfold is easier to use on a log scale.
-                if min > 0.0 && max / min > 1000.0 {
-                    slider = slider.logarithmic(true);
-                }
-                ui.add(slider).labelled_by(name)
-            }
-            None => ui.add(DragValue::new(x).speed(0.01).suffix(unit)).labelled_by(name),
+            Some(range) => number_slider(ui, x, range, feel, unit).labelled_by(name),
+            None => ui
+                .add(DragValue::new(x).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit))
+                .labelled_by(name),
         },
         (ValueType::Int, Value::Int(x)) => match def.range {
-            Some((min, max)) => {
-                let mut slider = Slider::new(x, (min as i64)..=(max as i64)).suffix(unit).integer();
-                if min > 0.0 && max / min > 1000.0 {
-                    slider = slider.logarithmic(true);
-                }
-                ui.add(slider).labelled_by(name)
-            }
-            None => ui.add(DragValue::new(x).suffix(unit)).labelled_by(name),
+            Some(range) => number_slider(ui, x, range, feel, unit).labelled_by(name),
+            None => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
         },
         (ValueType::Bool, Value::Bool(b)) => ui.checkbox(b, "").labelled_by(name),
         (ValueType::Vec2, Value::Vec2(v)) => {
-            let x = ui.add(DragValue::new(&mut v[0]).speed(1.0).prefix("x ").suffix(unit.clone())).labelled_by(name);
-            let y = ui.add(DragValue::new(&mut v[1]).speed(1.0).prefix("y ").suffix(unit)).labelled_by(name);
+            let (speed, decimals) = (feel.drag_speed, feel.decimals);
+            let x = DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
+            let x = ui.add(x).labelled_by(name);
+            let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
+            let y = ui.add(y).labelled_by(name);
             x | y
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
-        (ValueType::Colors, Value::Colors(colors)) => color_list(ui, colors, name),
+        (ValueType::Colors, Value::Colors(colors)) => {
+            let (mut response, change) = color_list(ui, colors, name, 0);
+            if change.is_some() {
+                response.mark_changed();
+            }
+            response
+        }
         (ValueType::Choice(names), Value::Choice(current)) => {
             let mut response = egui::ComboBox::from_id_salt(def.key).selected_text(pretty(current)).show_ui(ui, |ui| {
                 let mut picked = false;
@@ -563,39 +756,42 @@ fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
     response
 }
 
-/// A row of colour buttons with an add button. Right-click a colour to remove it.
-fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, name: egui::Id) -> Response {
-    let mut changed = false;
-    let mut response = ui
-        .horizontal_wrapped(|ui| {
-            let mut remove = None;
-            for (i, c) in colors.iter_mut().enumerate() {
-                ui.push_id(i, |ui| {
-                    let response =
-                        color_button(ui, c).labelled_by(name).on_hover_text("Click to change. Right-click to remove.");
-                    changed |= response.changed();
+/// A row of colour buttons with an add button. Right-click a colour to remove it, as long as
+/// more than `fewest` stay. What was done comes back, if anything.
+fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, name: egui::Id, fewest: usize) -> (Response, Option<ListChange>) {
+    let mut change = None;
+    let response = ui.horizontal_wrapped(|ui| {
+        let mut remove = None;
+        let removable = colors.len() > fewest;
+        for (i, c) in colors.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                let hint = if removable { "Click to change. Right-click to remove." } else { "Click to change." };
+                let response = color_button(ui, c).labelled_by(name).on_hover_text(hint);
+                if response.changed() {
+                    change = Some(ListChange::Set(i));
+                }
+                if removable {
                     response.context_menu(|ui| {
                         if ui.button("Remove colour").clicked() {
                             remove = Some(i);
                             ui.close();
                         }
                     });
-                });
-            }
-            if let Some(i) = remove {
-                colors.remove(i);
-                changed = true;
-            }
-            if ui.button("+").on_hover_text("Add a colour. Right-click a colour to remove it.").clicked() {
-                colors.push(colors.last().copied().unwrap_or(Color::WHITE));
-                changed = true;
-            }
-        })
-        .response;
-    if changed {
-        response.mark_changed();
-    }
-    response
+                }
+            });
+        }
+        if let Some(i) = remove {
+            colors.remove(i);
+            change = Some(ListChange::Remove(i));
+        }
+        let add = ui.button("+").on_hover_text("Add a colour. Right-click a colour to remove it.");
+        add.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add a colour"));
+        if add.clicked() {
+            colors.push(colors.last().copied().unwrap_or(Color::WHITE));
+            change = Some(ListChange::Add);
+        }
+    });
+    (response.response, change)
 }
 
 #[cfg(test)]
@@ -655,12 +851,12 @@ mod tests {
                     inherited: &|_| None,
                     marks: &marks,
                     locked: &|_| false,
+                    applies: &|_| true,
                 };
                 let got = settings_grid_marked(
                     ui,
                     "g",
                     defs,
-                    Depth::Simple,
                     |k| defs.iter().find(|d| d.key == k).unwrap().default.clone(),
                     &cx,
                 );
@@ -693,15 +889,43 @@ mod tests {
     }
 
     #[test]
-    fn simple_depth_shows_only_simple_rows_and_more_groups_the_rest() {
+    fn every_setting_that_applies_shows_with_groups_under_headings() {
         let defs = bpe_kit::SceneSettings::defs();
-        let simple = rows_at(defs, Depth::Simple);
-        let more = rows_at(defs, Depth::More);
-        assert!(simple.iter().all(|r| matches!(r, Row::Setting(d) if d.depth == Depth::Simple)));
-        assert!(more.iter().filter(|r| matches!(r, Row::Setting(_))).count() == defs.len());
+        let all = rows_for(defs, &|_| true);
+        assert_eq!(all.iter().filter(|r| matches!(r, Row::Setting(_))).count(), defs.len());
         let headings: Vec<&str> =
-            more.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
+            all.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
         assert_eq!(headings, ["Sound", "Video", "Song", "Beat"]);
-        assert!(!simple.iter().any(|r| matches!(r, Row::Group(_))));
+        // A group whose settings all drop out loses its heading too.
+        let no_song = rows_for(defs, &|d| d.group != "Song");
+        assert!(!no_song.iter().any(|r| matches!(r, Row::Group("Song"))));
+    }
+
+    #[test]
+    fn a_looks_colour_and_colours_become_one_row() {
+        let defs = bpe_kit::modules::look::ClassicLook::defs();
+        let rows = rows_for(defs, &|_| true);
+        assert!(matches!(rows[0], Row::Colours { colour, colours } if colour.key == COLOUR && colours.key == COLOURS));
+        assert!(!rows.iter().any(|r| matches!(r, Row::Setting(d) if d.key == COLOUR || d.key == COLOURS)));
+        // Where the list doesn't apply, Colour is a plain colour again.
+        let plain = rows_for(defs, &|d| d.key != COLOURS);
+        assert!(matches!(plain[0], Row::Setting(d) if d.key == COLOUR));
+    }
+
+    #[test]
+    fn numbers_move_in_even_steps_for_their_span() {
+        let feel = |span: f64| number_feel(span, false);
+        assert_eq!(feel(1.0).step, 0.001);
+        assert_eq!(feel(1.0).decimals, 3);
+        assert_eq!(feel(1.5).step, 0.001);
+        assert_eq!(feel(40.0).step, 0.1);
+        assert_eq!(feel(40.0).decimals, 1);
+        assert_eq!(feel(720.0).step, 1.0);
+        assert_eq!(feel(1980.0).step, 1.0);
+        assert_eq!(feel(1980.0).decimals, 0);
+        assert_eq!(number_feel(126.0, true).step, 1.0);
+        assert!((feel(2000.0).drag_speed - 5.0).abs() < 1e-9, "a drag crosses the span in 400 pixels");
+        let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
+        assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its dice range");
     }
 }

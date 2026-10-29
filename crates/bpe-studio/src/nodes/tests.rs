@@ -306,7 +306,7 @@ fn fit_shows_every_block() {
 }
 
 #[test]
-fn a_setting_can_be_shown_on_the_card_and_at_simple() {
+fn a_setting_can_be_shown_on_the_card() {
     let mut harness = harness(graph());
     // Widgets on the canvas report their rects in canvas units.
     let label = harness.get_by_role_and_label(egui::accesskit::Role::Label, "By (px)").rect().center();
@@ -315,10 +315,9 @@ fn a_setting_can_be_shown_on_the_card_and_at_simple() {
     harness.get_by_label("Show on the card").click();
     harness.run();
     assert!(harness.state().graph.node(2).unwrap().exposed.contains("by"));
+    // Every setting on the card shows in the inspector, so there is no Simple view to pick.
     click_with(&mut harness, label, PointerButton::Secondary);
-    harness.get_by_label("Show at Simple").click();
-    harness.run();
-    assert_eq!(harness.state().outcome.simple_toggled, Some((2, "by".to_owned())));
+    assert!(harness.query_by_label("Show at Simple").is_none());
 }
 
 #[test]

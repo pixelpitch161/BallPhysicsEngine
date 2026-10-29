@@ -48,7 +48,15 @@ pub struct FieldSettings {
     #[setting(label = "Strength", range(0, 5000), unit = "px/s²", simple, keyframe, random(200, 2500), pulse)]
     pub strength: f32,
     /// How far from its middle a round field reaches.
-    #[setting(label = "Radius", range(10, 3000), unit = "px", simple, keyframe, random(100, 800))]
+    #[setting(
+        label = "Radius",
+        when = "shape=circle",
+        range(10, 3000),
+        unit = "px",
+        simple,
+        keyframe,
+        random(100, 800)
+    )]
     pub radius: f32,
     /// Round, a box, or the whole scene.
     #[setting(label = "Shape", simple)]
@@ -57,19 +65,19 @@ pub struct FieldSettings {
     #[setting(label = "Pushes", simple)]
     pub targets: Target,
     /// Which way the wind blows, in degrees clockwise from the right.
-    #[setting(label = "Direction", range(-360, 360), unit = "°", simple, keyframe, random)]
+    #[setting(label = "Direction", when = "kind=wind", range(-360, 360), unit = "°", simple, keyframe, random)]
     pub direction: f32,
     /// A box field's width.
-    #[setting(label = "Width", range(10, 4000), unit = "px", keyframe)]
+    #[setting(label = "Width", when = "shape=box", range(10, 4000), unit = "px", keyframe)]
     pub width: f32,
     /// A box field's height.
-    #[setting(label = "Height", range(10, 4000), unit = "px", keyframe)]
+    #[setting(label = "Height", when = "shape=box", range(10, 4000), unit = "px", keyframe)]
     pub height: f32,
     /// How the push fades towards the edge.
-    #[setting(label = "Falloff")]
+    #[setting(label = "Falloff", when = "shape!=everywhere")]
     pub falloff: Falloff,
     /// For a vortex: how much of the strength also pulls towards the middle. Negative flings out.
-    #[setting(label = "Pull", range(-1, 1), keyframe)]
+    #[setting(label = "Pull", when = "kind=vortex", range(-1, 1), keyframe)]
     pub pull: f32,
     /// Log an event when something enters or leaves the field.
     #[setting(label = "Log enter and leave")]

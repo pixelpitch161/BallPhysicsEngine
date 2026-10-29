@@ -79,13 +79,13 @@ pub struct TextSettings {
     #[setting(label = "Appears", simple, random)]
     pub appear: Appear,
     /// How long coming and going take.
-    #[setting(label = "Appear time", range(0.05, 3), unit = "s")]
+    #[setting(label = "Appear time", when = "appear!=none", range(0.05, 3), unit = "s")]
     pub appear_seconds: f32,
     #[setting(label = "Align")]
     pub align: Align,
     #[setting(label = "Outline", range(0, 20), unit = "px", keyframe)]
     pub outline: f32,
-    #[setting(label = "Outline colour", keyframe)]
+    #[setting(label = "Outline colour", when = "outline", keyframe)]
     pub outline_color: Color,
     /// The text shrinks to fit this much of the video's width; 0 lets it be any width.
     #[setting(label = "Fits in", range(0, 1))]

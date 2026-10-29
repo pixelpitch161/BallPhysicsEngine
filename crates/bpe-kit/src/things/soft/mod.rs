@@ -56,19 +56,19 @@ pub struct SoftSettings {
     #[setting(label = "Pinned", simple)]
     pub pinned: Pinned,
     /// Cloth only.
-    #[setting(label = "Height", range(20, 1500), unit = "px")]
+    #[setting(label = "Height", when = "shape=cloth", range(20, 1500), unit = "px")]
     pub height: f32,
     /// Cloth only: rows of points from top to bottom.
-    #[setting(label = "Rows", range(2, 120))]
+    #[setting(label = "Rows", when = "shape=cloth", range(2, 120))]
     pub rows: u32,
     /// Rope only: how thick it is drawn and collides.
-    #[setting(label = "Thickness", range(1, 60), unit = "px")]
+    #[setting(label = "Thickness", when = "shape=rope", range(1, 60), unit = "px")]
     pub thickness: f32,
     /// Rope only: how much longer than the gap between its ends it is.
-    #[setting(label = "Slack", range(1, 3))]
+    #[setting(label = "Slack", when = "shape=rope", range(1, 3))]
     pub slack: f32,
     /// Jelly only: how fast, and which way, it starts moving.
-    #[setting(label = "Launch speed", unit = "px/s")]
+    #[setting(label = "Launch speed", when = "shape=jelly", unit = "px/s")]
     pub velocity: Vec2,
     /// More passes make it stiffer and steadier, for more work.
     #[setting(label = "Solver passes", range(1, 64))]

@@ -6,7 +6,9 @@ use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
-use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
+use crate::widgets::{
+    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, TargetChoices, settings_grid, settings_grid_marked,
+};
 use bpe_core::{
     Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
     SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
@@ -14,12 +16,12 @@ use bpe_core::{
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub struct Inspector {
-    /// The depth each card is open at: the kind's settings (`None`) and each slot.
-    pub depth: BTreeMap<(ThingId, Option<SlotId>), Depth>,
+    /// The cards folded shut, by thing: its kind's settings (`None`) and each slot.
+    pub collapsed: BTreeSet<(ThingId, Option<SlotId>)>,
     /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
     /// pauses so a drag doesn't leave a key on every frame.
     pub keyed_edit: bool,
@@ -31,7 +33,7 @@ pub struct Inspector {
     pub nodes_open: Option<(ThingId, SlotId)>,
 }
 
-/// The Nodes end of a card's depth switch.
+/// A card's Nodes button.
 pub struct NodesSwitch {
     pub enabled: bool,
     pub open: bool,
@@ -88,6 +90,12 @@ enum Edit {
     RollCard(Option<SlotId>),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
+    /// The look's colour list changed: its Colour and Colours settings, at these addresses.
+    Colours {
+        colour: Address,
+        colours: Address,
+        edit: ColoursEdit,
+    },
 }
 
 /// Where an edit to a slot's settings goes for one thing.
@@ -192,19 +200,25 @@ pub fn show(
 
         // ---------- the kind's own settings ----------
         card(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(format!("{} settings", kind.name())).strong());
-                ui.add_space(8.0);
-                depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple), None);
-                ui.add_space(8.0);
-                if dice_button(ui, "Randomize these settings").clicked() {
-                    edits.push(Edit::RollCard(None));
-                }
-            });
-            let depth = inspector.depth.get(&(id, None)).copied().unwrap_or(Depth::Simple);
+            let title = format!("{} settings", kind.name());
+            let open = ui
+                .horizontal_wrapped(|ui| {
+                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, None), &title);
+                    ui.label(RichText::new(&title).strong());
+                    ui.add_space(8.0);
+                    if dice_button(ui, "Randomize these settings").clicked() {
+                        edits.push(Edit::RollCard(None));
+                    }
+                    open
+                })
+                .inner;
+            if !open {
+                return;
+            }
             let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
             let get =
                 |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
+            let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
             let sim = kit.sims.thing(&thing.kind);
             let marks = |key: &str| {
                 let def = kind.settings().iter().find(|d| d.key == key)?;
@@ -218,8 +232,9 @@ pub fn show(
                 inherited: &|_| None,
                 marks: &marks,
                 locked: &locked,
+                applies: &applies,
             };
-            let out = settings_grid_marked(ui, ("kind", id), kind.settings(), depth, get, &cx);
+            let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -256,102 +271,114 @@ pub fn show(
                     SlotLink::Linked { overrides, .. } => Some(overrides),
                     _ => None,
                 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(slot.name()).strong());
-                    // The picker: a button that reads the slot's state and drops down the choices.
-                    ui.menu_button(state, |ui| {
-                        for m in scene.library.modules.values().filter(|m| m.slot == slot) {
-                            let current = matches!(link, SlotLink::Linked { module, .. } if *module == m.id);
-                            if ui.selectable_label(current, &m.name).clicked() {
-                                edits.push(Edit::Link(slot, m.id));
-                                ui.close();
+                let open = ui
+                    .horizontal_wrapped(|ui| {
+                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot)), slot.name());
+                        ui.label(RichText::new(slot.name()).strong());
+                        // The picker: a button that reads the slot's state and drops down the choices.
+                        ui.menu_button(state, |ui| {
+                            for m in scene.library.modules.values().filter(|m| m.slot == slot) {
+                                let current = matches!(link, SlotLink::Linked { module, .. } if *module == m.id);
+                                if ui.selectable_label(current, &m.name).clicked() {
+                                    edits.push(Edit::Link(slot, m.id));
+                                    ui.close();
+                                }
                             }
-                        }
-                        ui.separator();
-                        // One kind: a plain button. Several: a submenu naming each kind. A new
-                        // module copies the shown one's settings, all of them when it is of the
-                        // same kind, else the ones both kinds have (a look's colour and glow).
-                        let kinds: Vec<&dyn ModuleKind> = reg.modules_for(slot).collect();
-                        if let [only] = kinds[..] {
-                            if ui.button(format!("New {} module…", slot.name())).clicked() {
-                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
-                                ui.close();
+                            ui.separator();
+                            // One kind: a plain button. Several: a submenu naming each kind. A new
+                            // module copies the shown one's settings, all of them when it is of the
+                            // same kind, else the ones both kinds have (a look's colour and glow).
+                            let kinds: Vec<&dyn ModuleKind> = reg.modules_for(slot).collect();
+                            if let [only] = kinds[..] {
+                                if ui.button(format!("New {} module…", slot.name())).clicked() {
+                                    edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
+                                    ui.close();
+                                }
+                            } else if !kinds.is_empty() {
+                                ui.menu_button(format!("New {} module", slot.name()), |ui| {
+                                    ui.set_min_width(180.0);
+                                    for kind in &kinds {
+                                        if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
+                                            edits.push(Edit::NewModule {
+                                                slot,
+                                                kind: kind.id(),
+                                                copy_from: shown_module,
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                });
                             }
-                        } else if !kinds.is_empty() {
-                            ui.menu_button(format!("New {} module", slot.name()), |ui| {
-                                ui.set_min_width(180.0);
-                                for kind in &kinds {
-                                    if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
-                                        edits.push(Edit::NewModule { slot, kind: kind.id(), copy_from: shown_module });
+                            if let SlotLink::Linked { .. } = link {
+                                if ui
+                                    .button("Make unique")
+                                    .on_hover_text(
+                                        "This thing gets its own copy of the module, with its changes baked in",
+                                    )
+                                    .clicked()
+                                {
+                                    edits.push(Edit::MakeUnique(slot));
+                                    ui.close();
+                                }
+                                if overrides.is_some_and(|o| !o.is_empty()) {
+                                    if ui
+                                        .button("Push all to module")
+                                        .on_hover_text("Every thing using the module gets this thing's changes")
+                                        .clicked()
+                                    {
+                                        edits.push(Edit::PushAll(slot));
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .button("Reset all")
+                                        .on_hover_text("Drop this thing's changes and follow the module")
+                                        .clicked()
+                                    {
+                                        edits.push(Edit::ResetAll(slot));
                                         ui.close();
                                     }
                                 }
-                            });
-                        }
-                        if let SlotLink::Linked { .. } = link {
-                            if ui
-                                .button("Make unique")
-                                .on_hover_text("This thing gets its own copy of the module, with its changes baked in")
-                                .clicked()
+                            }
+                            if let Some(m) = shown_module
+                                && ui.button("Open in Library").clicked()
                             {
-                                edits.push(Edit::MakeUnique(slot));
+                                inspector.open_library = Some(m);
                                 ui.close();
                             }
-                            if overrides.is_some_and(|o| !o.is_empty()) {
-                                if ui
-                                    .button("Push all to module")
-                                    .on_hover_text("Every thing using the module gets this thing's changes")
-                                    .clicked()
-                                {
-                                    edits.push(Edit::PushAll(slot));
-                                    ui.close();
-                                }
-                                if ui
-                                    .button("Reset all")
-                                    .on_hover_text("Drop this thing's changes and follow the module")
-                                    .clicked()
-                                {
-                                    edits.push(Edit::ResetAll(slot));
-                                    ui.close();
-                                }
+                            ui.separator();
+                            if ui.selectable_label(matches!(link, SlotLink::Inherit), "Inherit").clicked() {
+                                edits.push(Edit::Inherit(slot));
+                                ui.close();
+                            }
+                            if ui.selectable_label(matches!(link, SlotLink::Off), "Off").clicked() {
+                                edits.push(Edit::Off(slot));
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text("Which module fills this slot");
+                        ui.add_space(8.0);
+                        let nodes = NodesSwitch {
+                            enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
+                            open: inspector.nodes_open == Some((id, slot)),
+                            hover: no_nodes_yet(slot),
+                        };
+                        if nodes_button(ui, nodes) {
+                            inspector.nodes_request = Some((id, slot));
+                        }
+                        let editable = matches!(
+                            write_target(scene, resolved, id, slot),
+                            Some(Write::Module(_) | Write::Override(..))
+                        );
+                        if editable && slot != SlotId::Rules {
+                            ui.add_space(8.0);
+                            if dice_button(ui, "Randomize these settings").clicked() {
+                                edits.push(Edit::RollCard(Some(slot)));
                             }
                         }
-                        if let Some(m) = shown_module
-                            && ui.button("Open in Library").clicked()
-                        {
-                            inspector.open_library = Some(m);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.selectable_label(matches!(link, SlotLink::Inherit), "Inherit").clicked() {
-                            edits.push(Edit::Inherit(slot));
-                            ui.close();
-                        }
-                        if ui.selectable_label(matches!(link, SlotLink::Off), "Off").clicked() {
-                            edits.push(Edit::Off(slot));
-                            ui.close();
-                        }
+                        open
                     })
-                    .response
-                    .on_hover_text("Which module fills this slot");
-                    ui.add_space(8.0);
-                    let nodes = NodesSwitch {
-                        enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
-                        open: inspector.nodes_open == Some((id, slot)),
-                        hover: no_nodes_yet(slot),
-                    };
-                    if depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple), Some(nodes)) {
-                        inspector.nodes_request = Some((id, slot));
-                    }
-                    let editable =
-                        matches!(write_target(scene, resolved, id, slot), Some(Write::Module(_) | Write::Override(..)));
-                    if editable && slot != SlotId::Rules {
-                        ui.add_space(8.0);
-                        if dice_button(ui, "Randomize these settings").clicked() {
-                            edits.push(Edit::RollCard(Some(slot)));
-                        }
-                    }
-                });
+                    .inner;
                 let problems: Vec<String> = resolved
                     .problems
                     .iter()
@@ -361,6 +388,9 @@ pub fn show(
                 if !problems.is_empty() {
                     ui.label(RichText::new(problems.join("\n")).small().color(theme::ERROR));
                 }
+                if !open {
+                    return;
+                }
                 let Some(module) = shown_module else { return };
                 let (Some(m), Some(write)) =
                     (scene.library.modules.get(&module), write_target(scene, resolved, id, slot))
@@ -368,7 +398,8 @@ pub fn show(
                     return;
                 };
                 let Some(mkind) = reg.module(&m.kind) else { return };
-                let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
+                // Every setting shows; the depth only matters to graph cards.
+                let depth = Depth::More;
                 let inherited = matches!(write, Write::Inherited { .. });
                 let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
                 let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
@@ -441,14 +472,21 @@ pub fn show(
                         };
                         let marks = |key: &str| mark(&of_module(key));
                         let locked = |key: &str| scene.is_locked(&of_module(key));
+                        let applies = |d: &SettingDef| {
+                            d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_module(k), time))
+                        };
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &|_| false,
                             inherited: &|_| None,
                             marks: &marks,
                             locked: &locked,
+                            applies: &applies,
                         };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        if let Some(edit) = out.colours {
+                            edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
+                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
@@ -468,14 +506,21 @@ pub fn show(
                         let locked = |key: &str| {
                             scene.is_locked(&of_thing(key)) || (!overridden(key) && scene.is_locked(&of_module(key)))
                         };
+                        let applies = |d: &SettingDef| {
+                            d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_thing(k), time))
+                        };
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &overridden,
                             inherited: &inherited,
                             marks: &marks,
                             locked: &locked,
+                            applies: &applies,
                         };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, depth, get, &cx);
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        if let Some(edit) = out.colours {
+                            edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
+                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
@@ -504,8 +549,9 @@ pub fn show(
                                 scene.value_at(reg, &a).expect("a module's settings all resolve")
                             })
                         };
+                        let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| Some(get(k)));
                         ui.add_enabled_ui(false, |ui| {
-                            settings_grid(ui, ("slot", id, slot), defs, depth, get);
+                            settings_grid(ui, ("slot", id, slot), defs, &applies, get);
                         });
                     }
                 }
@@ -657,6 +703,9 @@ pub fn show(
                 None => false,
             },
             Edit::Lock(address, lock) => scene.set_locked(address, lock),
+            Edit::Colours { colour, colours, edit } => {
+                edit_colours(scene, reg, &colour, &colours, edit, time, &mut inspector.keyed_edit)
+            }
             Edit::RollCard(slot) => {
                 use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
                 let scope = Scope::Card { thing: id, slot };
@@ -857,16 +906,104 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
     }
 }
 
-/// Simple | More | Nodes. The Nodes end opens the node panel rather than changing the card,
-/// so it is a request; true when it was pressed. A card without graphs has no Nodes end.
-pub(crate) fn depth_switch(ui: &mut Ui, depth: &mut Depth, nodes: Option<NodesSwitch>) -> bool {
-    ui.selectable_value(depth, Depth::Simple, "Simple");
-    ui.selectable_value(depth, Depth::More, "More");
-    let Some(nodes) = nodes else { return false };
+/// The Nodes button: it opens the node panel on the card's module; true when it was pressed.
+pub(crate) fn nodes_button(ui: &mut Ui, nodes: NodesSwitch) -> bool {
     ui.add_enabled(nodes.enabled, egui::Button::selectable(nodes.open, "Nodes"))
         .on_hover_text("Edit this module as blocks and wires, in the panel under the preview")
         .on_disabled_hover_text(nodes.hover)
         .clicked()
+}
+
+/// The arrow at the left of a card's title that folds the card's settings away and back. True
+/// while the card is open.
+pub(crate) fn fold_arrow<K: Ord + Copy>(ui: &mut Ui, collapsed: &mut BTreeSet<K>, key: K, title: &str) -> bool {
+    let open = !collapsed.contains(&key);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let name = if open { format!("Hide {title}") } else { format!("Show {title}") };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+    let response = response.on_hover_text(if open { "Hide these settings" } else { "Show these settings" });
+    // The collapsing header's own triangle, pointing down when open.
+    let mut icon = response.clone();
+    icon.rect = rect;
+    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &icon);
+    if response.clicked() {
+        if open {
+            collapsed.insert(key);
+        } else {
+            collapsed.remove(&key);
+        }
+        return !open;
+    }
+    open
+}
+
+/// Writes a change to a look's colour list. One colour lives in Colour, several in Colours; when
+/// the list grows from one or shrinks to one, the keys move across too, and when it gains or
+/// loses a colour every key gains or loses it, so the keys stay in step with the list. Changing
+/// a colour keys the whole list at the playhead once it has keys.
+fn edit_colours(
+    scene: &mut Scene,
+    reg: &bpe_core::Registry,
+    colour: &Address,
+    colours: &Address,
+    edit: ColoursEdit,
+    time: f64,
+    keyed: &mut bool,
+) -> bool {
+    let ColoursEdit { list, change } = edit;
+    let Some(&first) = list.first() else { return false };
+    let was_many = matches!(scene.value_at_time(reg, colours, time), Some(Value::Colors(l)) if !l.is_empty());
+    let reshape = |l: &mut Vec<Color>| match change {
+        ListChange::Add => l.push(*list.last().expect("the list has a colour")),
+        ListChange::Remove(i) if i < l.len() => _ = l.remove(i),
+        _ => {}
+    };
+    match (was_many, list.len() > 1) {
+        (false, false) => set_or_key(scene, reg, colour, Value::Color(first), time, keyed),
+        (false, true) => {
+            // From one colour to several: Colour's keys become the list's, first colour first.
+            if let Some(mut track) = scene.tracks.remove(colour) {
+                for key in &mut track.keys {
+                    if let Value::Color(c) = key.value {
+                        let mut l = vec![c];
+                        l.extend_from_slice(&list[1..]);
+                        key.value = Value::Colors(l);
+                    }
+                }
+                track.range = None;
+                scene.tracks.insert(colours.clone(), track);
+            }
+            scene.set_at(reg, colours, Value::Colors(list)).is_ok()
+        }
+        (true, false) => {
+            // Down to one colour: the list's keys become Colour's, keeping what is left.
+            if let Some(mut track) = scene.tracks.remove(colours) {
+                for key in &mut track.keys {
+                    if let Value::Colors(l) = &key.value {
+                        let mut l = l.clone();
+                        reshape(&mut l);
+                        key.value = Value::Color(l.first().copied().unwrap_or(first));
+                    }
+                }
+                scene.tracks.insert(colour.clone(), track);
+            }
+            let one = scene.set_at(reg, colour, Value::Color(first)).is_ok();
+            one && scene.set_at(reg, colours, Value::Colors(Vec::new())).is_ok()
+        }
+        (true, true) => {
+            if let ListChange::Set(_) = change {
+                return set_or_key(scene, reg, colours, Value::Colors(list), time, keyed);
+            }
+            if let Some(track) = scene.tracks.get_mut(colours) {
+                for key in &mut track.keys {
+                    if let Value::Colors(l) = &mut key.value {
+                        reshape(l);
+                    }
+                }
+            }
+            scene.set_at(reg, colours, Value::Colors(list)).is_ok()
+        }
+    }
 }
 
 /// The button an inherited card offers to link the module to the thing itself.
@@ -923,7 +1060,7 @@ mod tests {
         }
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 1600.0))
+            .with_size(egui::vec2(420.0, 2600.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
@@ -976,6 +1113,55 @@ mod tests {
     }
 
     #[test]
+    fn a_balls_colour_and_colours_are_one_list() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        assert!(h.query_by_label("Colour").is_none(), "no separate Colour row");
+        assert_eq!(h.get_all_by_label("Colours").count(), 1);
+        h.get_by_label("Add a colour").click();
+        h.run();
+        let m = &h.state().scene.library.modules[&module];
+        assert!(matches!(m.params.get("gradient"), Some(Value::Colors(l)) if l.len() == 2), "{:?}", m.params);
+    }
+
+    #[test]
+    fn colour_keys_follow_the_list_as_it_grows_and_shrinks() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
+            panic!("the ball's look is linked")
+        };
+        let at = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
+        let (red, blue, green) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Color::rgb(0, 255, 0));
+        scene.set_key(reg, &at(COLOUR), 0.0, Value::Color(red)).unwrap();
+        scene.set_key(reg, &at(COLOUR), 2.0, Value::Color(blue)).unwrap();
+        let mut keyed = false;
+        // A second colour: Colour's keys move to the list, each gaining the new colour.
+        let grow = ColoursEdit { list: vec![red, green], change: ListChange::Add };
+        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), grow, 0.0, &mut keyed));
+        assert!(!scene.keyed(&at(COLOUR)));
+        let keys: Vec<Value> = scene.tracks[&at(COLOURS)].keys.iter().map(|k| k.value.clone()).collect();
+        assert_eq!(keys, [Value::Colors(vec![red, green]), Value::Colors(vec![blue, green])]);
+        // Halfway between keys each colour is halfway too.
+        let Some(Value::Colors(mid)) = scene.value_at_time(reg, &at(COLOURS), 1.0) else { panic!() };
+        assert_eq!(mid[1], green);
+        assert_ne!(mid[0], red);
+        // Changing the second colour at 2 s keys the whole list there.
+        let set = ColoursEdit { list: vec![blue, red], change: ListChange::Set(1) };
+        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), set, 2.0, &mut keyed));
+        assert!(keyed);
+        assert_eq!(scene.tracks[&at(COLOURS)].keys[1].value, Value::Colors(vec![blue, red]));
+        // Back to one colour: the keys return to Colour, keeping the first colour left.
+        let shrink = ColoursEdit { list: vec![red], change: ListChange::Remove(0) };
+        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), shrink, 0.0, &mut keyed));
+        assert!(!scene.keyed(&at(COLOURS)));
+        let keys: Vec<Value> = scene.tracks[&at(COLOUR)].keys.iter().map(|k| k.value.clone()).collect();
+        assert_eq!(keys, [Value::Color(green), Value::Color(red)]);
+        assert_eq!(scene.value_at(reg, &at(COLOURS)), Some(Value::Colors(Vec::new())));
+    }
+
+    #[test]
     fn a_setting_can_be_locked_from_its_menu_and_shows_a_padlock() {
         let mut h = harness(Some(ThingId(2)));
         let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
@@ -1022,15 +1208,34 @@ mod tests {
     }
 
     #[test]
-    fn more_shows_more_rows_than_simple() {
+    fn every_setting_that_applies_shows_and_a_card_folds_away() {
         let mut h = harness(Some(ThingId(2)));
-        let simple = h.get_all_by_role(Role::Slider).count();
-        assert!(simple > 0);
-        // Every card has its own switch; the first belongs to the kind's settings.
-        h.get_all_by_label("More").next().expect("a More switch").click();
+        // A single ball: its own Launch speed shows, the block's rows and columns don't.
+        assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
+        assert!(h.query_by_role_and_label(Role::Label, "Columns").is_none(), "a single ball has no columns");
+        assert!(h.query_by_role_and_label(Role::Label, "Friction").is_some(), "settings once under More show too");
+        let before = h.get_all_by_role(Role::Slider).count();
+        h.get_by_label("Hide Balls settings").click();
         h.run();
-        assert!(h.get_all_by_role(Role::Slider).count() > simple);
-        assert_eq!(h.state().inspector.depth.get(&(ThingId(2), None)), Some(&Depth::More));
+        assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_none());
+        assert!(h.get_all_by_role(Role::Slider).count() < before);
+        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None)));
+        h.get_by_label("Show Balls settings").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
+    }
+
+    #[test]
+    fn an_arena_shows_only_what_does_something_for_it() {
+        let h = harness(Some(ThingId(1)));
+        // The arena's bounce only matters when it takes over; ball-only settings never show.
+        assert!(h.query_by_role_and_label(Role::Label, "Takes over").is_some());
+        for ball_only in ["Bounciness", "Grow per hit", "Hits other balls", "Pops after", "Flash", "Colours follow"] {
+            assert!(h.query_by_role_and_label(Role::Label, ball_only).is_none(), "{ball_only} shows on the arena");
+        }
+        // A circle has a radius but no width or corners.
+        assert!(h.query_by_role_and_label(Role::Label, "Radius").is_some());
+        assert!(h.query_by_role_and_label(Role::Label, "Corner radius").is_none());
     }
 
     #[test]
@@ -1416,13 +1621,14 @@ mod tests {
     #[test]
     fn a_target_setting_has_a_picker() {
         let mut h = harness(Some(ThingId(2)));
-        // The bounce card's "Which balls" target is a More setting.
+        // The bounce card's "Which balls" target shows once the balls hit each other.
         {
             let s = h.state_mut();
-            s.inspector.depth.insert((ThingId(2), Some(SlotId::Bounce)), Depth::More);
             // Give the ball its own bounce so the card is editable.
             let m = s.scene.add_module(&s.kit.registry, "bounce.basic", "Own bounce").unwrap();
             s.scene.link(&s.kit.registry, ThingId(2), SlotId::Bounce, m).unwrap();
+            let hits = Address { owner: Owner::Module(m), slot: None, key: "hit_balls".into() };
+            s.scene.set_at(&s.kit.registry, &hits, Value::Bool(true)).unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
         h.run();
@@ -1462,8 +1668,11 @@ mod tests {
         h.run();
         assert!(h.query_by_label("No rules yet.").is_none());
         h.get_by_label_contains("When hit › Grow");
-        // The recipe's number is right there on the Simple card.
-        let by = h.get_by_role_and_label(Role::Slider, "By (px)");
+        // The recipe's number is right there on the card, named with its block.
+        let by = h
+            .get_all_by_role(Role::Slider)
+            .find(|n| n.accesskit_node().label().is_some_and(|l| l.ends_with("By (px)")))
+            .expect("the recipe's slider");
         assert_eq!(by.accesskit_node().numeric_value(), Some(2.0));
         let s = h.state();
         let g = s.scene.library.modules[&rules].graph.as_ref().expect("the recipe is stored");
@@ -1573,7 +1782,7 @@ mod tests {
         let other = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
         scene.link(&reg, other, SlotId::Look, module).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.get_by_role_and_label(Role::Label, "Colours").click_secondary();
         h.run();
         h.get_by_label("Lock when randomizing").click();
         h.run();
@@ -1588,7 +1797,7 @@ mod tests {
             assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
         }
         // Unlocking from the same row lets it roll again.
-        h.get_by_role_and_label(Role::Label, "Colour").click_secondary();
+        h.get_by_role_and_label(Role::Label, "Colours").click_secondary();
         h.run();
         h.get_by_label("Unlock").click();
         h.run();

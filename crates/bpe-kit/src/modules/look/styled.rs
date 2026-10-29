@@ -86,71 +86,98 @@ pub struct StyledLook {
     #[setting(label = "Colour", simple, keyframe, random)]
     pub color: Color,
     /// The outline the ball is drawn with; it still bounces as a circle.
-    #[setting(label = "Shape", simple, random)]
+    #[setting(label = "Shape", when = "thing=balls", simple, random)]
     pub shape: BallShape,
     /// How the ball is coloured in: one colour, lit like a sphere, or a pattern of two colours.
-    #[setting(label = "Fill", simple, random)]
+    #[setting(label = "Fill", when = "thing=balls", simple, random)]
     pub fill: BallFill,
     /// The pattern's other colour.
-    #[setting(label = "Colour 2", simple, keyframe, random)]
+    #[setting(label = "Colour 2", when = "thing=balls and fill!=solid|shiny", simple, keyframe, random)]
     pub color2: Color,
     /// How wide the outline just inside the edge is; 0 means none.
-    #[setting(label = "Outline", range(0, 24), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Outline", when = "thing=balls", range(0, 24), unit = "px", simple, keyframe, random)]
     pub outline: f32,
     /// How brightly the halo shines.
-    #[setting(label = "Glow", range(0, 2), simple, keyframe, random, pulse)]
+    #[setting(label = "Glow", when = "thing!=liquid", range(0, 2), simple, keyframe, random, pulse)]
     pub glow: f32,
     /// The outline's colour.
-    #[setting(label = "Outline colour", group = "Shape", keyframe, random)]
+    #[setting(label = "Outline colour", when = "thing=balls and outline", group = "Shape", keyframe, random)]
     pub outline_color: Color,
     /// How rounded the shape's corners are; circles ignore it.
-    #[setting(label = "Roundness", range(0, 1), group = "Shape", keyframe, random)]
+    #[setting(
+        label = "Roundness",
+        when = "thing=balls and shape!=circle",
+        range(0, 1),
+        group = "Shape",
+        keyframe,
+        random
+    )]
     pub roundness: f32,
     /// How many stripes, rings, dots or slices fit across the ball.
-    #[setting(label = "Pattern size", range(0.5, 24), group = "Shape", keyframe, random)]
+    #[setting(
+        label = "Pattern size",
+        when = "thing=balls and fill=stripes|rings|dots|checker|slices|swirl",
+        range(0.5, 24),
+        group = "Shape",
+        keyframe,
+        random
+    )]
     pub pattern_size: f32,
     /// The shape's and pattern's starting angle.
-    #[setting(label = "Turn", range(-180, 180), unit = "°", group = "Shape", keyframe, random)]
+    #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Shape", keyframe, random)]
     pub turn: f32,
     /// How fast the shape and pattern turn.
-    #[setting(label = "Spin", range(-720, 720), unit = "°/s", group = "Shape", keyframe, random)]
+    #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Shape", keyframe, random)]
     pub spin: f32,
     /// Turns the shape to point the way the ball is going.
-    #[setting(label = "Face motion", group = "Shape", random)]
+    #[setting(label = "Face motion", when = "thing=balls", group = "Shape", random)]
     pub face_motion: bool,
     /// How far the halo reaches, in ball radii.
-    #[setting(label = "Glow size", range(0.05, 4), group = "Light", keyframe, random)]
+    #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe, random)]
     pub glow_size: f32,
     /// 0 is invisible, 1 is solid.
-    #[setting(label = "Opacity", range(0, 1), group = "Light", keyframe, pulse)]
+    #[setting(label = "Opacity", when = "thing=balls", range(0, 1), group = "Light", keyframe, pulse)]
     pub opacity: f32,
     /// Full turns around the colour wheel per second, so the ball cycles through the rainbow.
-    #[setting(label = "Rainbow", range(-2, 2), unit = "turns/s", group = "Light", keyframe, random)]
+    #[setting(label = "Rainbow", when = "thing=balls", range(-2, 2), unit = "turns/s", group = "Light", keyframe, random)]
     pub rainbow: f32,
     /// Spread across the balls from the first row to the last; empty uses Colour.
-    #[setting(label = "Colours", group = "Light", random)]
+    #[setting(label = "Colours", when = "thing=balls", group = "Light", keyframe, random)]
     pub gradient: Vec<Color>,
     /// What spreads the Colours across the balls: the row they start in, their order, how fast
     /// they go, or how often they have hit.
-    #[setting(label = "Colours follow", group = "Light")]
+    #[setting(label = "Colours follow", when = "thing=balls and gradient", group = "Light")]
     pub gradient_by: GradientBy,
     /// The speed in px/s, or number of hits, at which the last colour is reached.
-    #[setting(label = "Colours end at", range(1, 20000), group = "Light", random)]
+    #[setting(
+        label = "Colours end at",
+        when = "thing=balls and gradient and gradient_by=speed|hits",
+        range(1, 20000),
+        group = "Light",
+        random
+    )]
     pub gradient_full: f32,
     /// Every hit turns the colour this far round the colour wheel.
-    #[setting(label = "Hue shift per hit", range(-180, 180), unit = "deg", group = "Light", keyframe, random)]
+    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Light", keyframe, random)]
     pub hue_per_hit: f32,
     /// How much fast balls stretch along their path and thin out across it.
-    #[setting(label = "Stretch", range(0, 1), group = "Motion", keyframe, random)]
+    #[setting(label = "Stretch", when = "thing=balls", range(0, 1), group = "Motion", keyframe, random)]
     pub stretch: f32,
     /// How bright the flash on each hit is.
-    #[setting(label = "Flash", range(0, 3), group = "Flash", keyframe, random)]
+    #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Flash", keyframe, random)]
     pub flash: f32,
     /// How big the flash is.
-    #[setting(label = "Flash size", range(0, 300), unit = "px", group = "Flash", keyframe)]
+    #[setting(
+        label = "Flash size",
+        when = "thing=balls and flash",
+        range(0, 300),
+        unit = "px",
+        group = "Flash",
+        keyframe
+    )]
     pub flash_size: f32,
     /// How long the flash lasts.
-    #[setting(label = "Flash time", range(0.02, 2), unit = "s", group = "Flash")]
+    #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s", group = "Flash")]
     pub flash_seconds: f32,
 }
 
