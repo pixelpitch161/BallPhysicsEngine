@@ -35,7 +35,7 @@ impl History {
     /// Records `positions` when `step` is a sampling step. A ball that is new since the last
     /// sample starts with its current position in every slot.
     pub fn record(&mut self, step: u64, positions: &[Vec2]) {
-        if step % self.every != 0 {
+        if !step.is_multiple_of(self.every) {
             return;
         }
         let balls = self.rings.len() / SAMPLES;
