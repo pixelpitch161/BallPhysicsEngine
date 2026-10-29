@@ -1,8 +1,9 @@
 //! Running a compiled program: values pulled through wires, triggers pushed along them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
+use bpe_core::{SlotId, ThingId};
 use bpe_graph::{Param, PinType};
 use glam::Vec2;
 
@@ -11,6 +12,83 @@ use crate::{Ball, Host, Program, Val};
 
 /// How many wires a value may be pulled through before it reads as nothing.
 pub const MAX_DEPTH: usize = 64;
+/// The most actions one program may queue in one run.
+pub const ACTION_BUDGET: usize = 256;
+
+/// What happened, as a rules graph sees it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Trigger {
+    Hit,
+    Spawn,
+    Remove,
+    Enter,
+    Leave,
+    Beat,
+    Note,
+    Custom(String),
+}
+
+/// One event, as a rules graph sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Happening {
+    pub kind: Trigger,
+    pub a: Ball,
+    pub b: Option<Ball>,
+    pub point: Vec2,
+    pub normal: Vec2,
+    pub speed: f32,
+}
+
+/// What a rule asks the world to do.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Act {
+    Grow {
+        ball: Ball,
+        by: f32,
+    },
+    Speed {
+        ball: Ball,
+        factor: f32,
+    },
+    Kick {
+        ball: Ball,
+        velocity: Vec2,
+    },
+    /// Alpha is how strongly the tint applies.
+    Tint {
+        ball: Ball,
+        color: [f32; 4],
+    },
+    Remove {
+        ball: Ball,
+    },
+    Split {
+        ball: Ball,
+        pieces: u32,
+    },
+    Spawn {
+        thing: ThingId,
+        position: Vec2,
+        velocity: Vec2,
+        radius: f32,
+        color: [f32; 4],
+    },
+    Gravity(Vec2),
+    Set {
+        thing: ThingId,
+        slot: SlotId,
+        key: String,
+        value: f32,
+    },
+    Fire {
+        name: String,
+        ball: Ball,
+    },
+    Note {
+        ball: Ball,
+        loudness: f32,
+    },
+}
 
 /// What an output block collected: one entry per input pin, `None` where nothing is wired.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -95,7 +173,7 @@ struct Cx<'a> {
     time: f32,
     inputs: &'a [Val],
     firing: Firing,
-    counters: &'a BTreeMap<u32, f32>,
+    counters: &'a RefCell<BTreeMap<u32, f32>>,
     rng: Rng,
 }
 
@@ -108,8 +186,10 @@ pub struct Vm {
     /// Blocks that have fired once (for Only once) and when every block last fired.
     once: BTreeSet<u32>,
     last: BTreeMap<u32, f32>,
-    /// How many times each Every nth block was reached.
+    /// How many times each Every nth block was reached, and when each cooldown last let a
+    /// chain through.
     reached: BTreeMap<u32, u32>,
+    passed: BTreeMap<u32, f32>,
     /// Per timer, how many times it has fired.
     ticks: BTreeMap<u32, u32>,
     /// Per counter trigger, whether its counter is at or above the mark.
@@ -126,6 +206,7 @@ impl Vm {
             once: BTreeSet::new(),
             last: BTreeMap::new(),
             reached: BTreeMap::new(),
+            passed: BTreeMap::new(),
             ticks: BTreeMap::new(),
             above: BTreeSet::new(),
             counters: BTreeMap::new(),
@@ -137,7 +218,7 @@ impl Vm {
     /// evaluate from a shared, read-only state.
     pub fn eval(program: &Program, host: &dyn Host, time: f32, inputs: &[Val], salt: u64) -> Outputs {
         let Some(out) = program.output else { return Outputs::default() };
-        let counters = BTreeMap::new();
+        let counters = RefCell::new(BTreeMap::new());
         let cx = Cx {
             program,
             host,
@@ -163,6 +244,245 @@ impl Vm {
     /// When a block last fired, for the editor's live view.
     pub fn fired_at(&self, node: u32) -> Option<f32> {
         self.last.get(&node).copied()
+    }
+
+    /// Runs a Rules program for one step: the start (once), every happening, then the timers
+    /// and counters. Actions go to `acts`, at most [`ACTION_BUDGET`] per run.
+    pub fn run(
+        &mut self,
+        program: &Program,
+        host: &dyn Host,
+        time: f32,
+        happenings: &[Happening],
+        acts: &mut Vec<Act>,
+    ) {
+        if program.triggers.is_empty() {
+            return;
+        }
+        let counters = RefCell::new(std::mem::take(&mut self.counters));
+        let mut cx = Cx {
+            program,
+            host,
+            time,
+            inputs: &[],
+            firing: Firing::default(),
+            counters: &counters,
+            rng: Rng::Stream(Cell::new(self.rng)),
+        };
+        let budget = acts.len() + ACTION_BUDGET;
+        let mut walk = Walk { acts, budget };
+        if !self.started {
+            self.started = true;
+            for &t in &program.triggers {
+                if program.blocks[t].kind == "when.start" {
+                    cx.firing = Firing::default();
+                    self.fire(&cx, t, &mut walk);
+                }
+            }
+        }
+        for h in happenings {
+            for &t in &program.triggers {
+                let b = &program.blocks[t];
+                let who = || host.matches(h.a, &target_from_text(b.text("who")));
+                let what = || match h.b {
+                    Some(other) => host.matches(other, &target_from_text(b.text("what"))),
+                    None => matches!(target_from_text(b.text("what")), bpe_core::Target::Anything),
+                };
+                let fires = match (b.kind.as_str(), &h.kind) {
+                    ("when.hit", Trigger::Hit) => who() && what(),
+                    ("when.spawn", Trigger::Spawn) => who(),
+                    ("when.remove", Trigger::Remove) => who(),
+                    ("when.enter", Trigger::Enter) => who() && what(),
+                    ("when.leave", Trigger::Leave) => who() && what(),
+                    ("when.beat", Trigger::Beat) => true,
+                    ("when.event", Trigger::Custom(name)) => name == b.text("name") && who(),
+                    _ => false,
+                };
+                if fires {
+                    cx.firing = Firing { ball: Some(h.a), other: h.b, speed: h.speed, point: h.point };
+                    self.fire(&cx, t, &mut walk);
+                }
+            }
+        }
+        cx.firing = Firing::default();
+        for &t in &program.triggers {
+            let b = &program.blocks[t];
+            match b.kind.as_str() {
+                "when.timer" => {
+                    let every = b.num("every").max(0.01);
+                    let first = b.num("first").max(0.0);
+                    let ticks = self.ticks.get(&b.id).copied().unwrap_or(0);
+                    if time >= first + ticks as f32 * every {
+                        // Several due ticks fire once, then wait for the next one.
+                        let due = ((time - first) / every).floor() as u32 + 1;
+                        self.ticks.insert(b.id, due.max(ticks + 1));
+                        self.fire(&cx, t, &mut walk);
+                    }
+                }
+                "when.at" => {
+                    if time >= b.num("time") && self.once.insert(b.id) {
+                        self.fire(&cx, t, &mut walk);
+                    }
+                }
+                "when.counter" => {
+                    let value = counters.borrow().get(&(b.num("id") as u32)).copied().unwrap_or(0.0);
+                    if value >= b.num("reaches") {
+                        if self.above.insert(b.id) {
+                            self.fire(&cx, t, &mut walk);
+                        }
+                    } else {
+                        self.above.remove(&b.id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Rng::Stream(cell) = &cx.rng {
+            self.rng = cell.get();
+        }
+        drop(cx);
+        self.counters = counters.into_inner();
+    }
+
+    /// A When block fires: everything on its `then` pin runs.
+    fn fire(&mut self, cx: &Cx, trigger: usize, walk: &mut Walk) {
+        self.last.insert(cx.program.blocks[trigger].id, cx.time);
+        self.follow(cx, trigger, 0, walk, 0);
+    }
+
+    /// Runs every block wired to an output pin.
+    fn follow(&mut self, cx: &Cx, block: usize, pin: usize, walk: &mut Walk, depth: usize) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let next: Vec<usize> = cx.program.blocks[block].then.get(pin).cloned().unwrap_or_default();
+        for b in next {
+            self.reach(cx, b, walk, depth + 1);
+        }
+    }
+
+    /// A block is reached by a trigger: a condition passes or fails, an action is queued.
+    fn reach(&mut self, cx: &Cx, block: usize, walk: &mut Walk, depth: usize) {
+        if walk.acts.len() >= walk.budget {
+            return;
+        }
+        let b = &cx.program.blocks[block];
+        self.last.insert(b.id, cx.time);
+        let kind = b.kind.as_str();
+        if let Some(cond) = kind.strip_prefix("if.") {
+            let pass = match cond {
+                "chance" => cx.rng.next(b.id) * 100.0 < cx.num(block, 1, 0),
+                "every" => {
+                    let n = (b.num("n") as u32).max(1);
+                    let count = self.reached.entry(b.id).or_insert(0);
+                    *count += 1;
+                    (*count - 1) % n == 0
+                }
+                "once" => self.once.insert(b.id),
+                "cooldown" => {
+                    let seconds = cx.num(block, 1, 0);
+                    let ok = self.passed.get(&b.id).is_none_or(|last| cx.time - last >= seconds);
+                    if ok {
+                        self.passed.insert(b.id, cx.time);
+                    }
+                    ok
+                }
+                "compare" => compare(b.text("op"), cx.num(block, 1, 0), cx.num(block, 2, 0)),
+                "is" => cx
+                    .input(block, 1, 0)
+                    .ball()
+                    .is_some_and(|ball| cx.host.matches(ball, &target_from_text(b.text("target")))),
+                _ => false,
+            };
+            self.follow(cx, block, if pass { 0 } else { 1 }, walk, depth);
+            return;
+        }
+        if let Some(action) = kind.strip_prefix("do.") {
+            let ball = || cx.input(block, 1, 0).ball();
+            match action {
+                "grow" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Grow { ball, by: cx.num(block, 2, 0) });
+                    }
+                }
+                "speed" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Speed { ball, factor: cx.num(block, 2, 0) });
+                    }
+                }
+                "kick" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Kick { ball, velocity: cx.vec(block, 2, 0) });
+                    }
+                }
+                "color" => {
+                    if let Some(ball) = ball() {
+                        let mut color = cx.input(block, 2, 0).color();
+                        color[3] = cx.num(block, 3, 0).clamp(0.0, 1.0);
+                        walk.push(Act::Tint { ball, color });
+                    }
+                }
+                "remove" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Remove { ball });
+                    }
+                }
+                "split" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Split { ball, pieces: (cx.num(block, 2, 0).round() as u32).clamp(2, 8) });
+                    }
+                }
+                "spawn" => {
+                    if let Some(&thing) = cx.host.things_of(&target_from_text(b.text("into"))).first() {
+                        walk.push(Act::Spawn {
+                            thing,
+                            position: cx.vec(block, 1, 0),
+                            velocity: cx.vec(block, 2, 0),
+                            radius: cx.num(block, 3, 0),
+                            color: cx.input(block, 4, 0).color(),
+                        });
+                    }
+                }
+                "gravity" => walk.push(Act::Gravity(cx.vec(block, 1, 0))),
+                "set" => {
+                    let slot = if b.text("slot") == "Motion" { SlotId::Motion } else { SlotId::Bounce };
+                    let value = cx.num(block, 1, 0);
+                    for thing in cx.host.things_of(&target_from_text(b.text("target"))) {
+                        walk.push(Act::Set { thing, slot, key: b.text("key").to_owned(), value });
+                    }
+                }
+                "event" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Fire { name: b.text("name").to_owned(), ball });
+                    }
+                }
+                "note" => {
+                    if let Some(ball) = ball() {
+                        walk.push(Act::Note { ball, loudness: cx.num(block, 2, 0) });
+                    }
+                }
+                "counter" => {
+                    let add = cx.num(block, 1, 0);
+                    *cx.counters.borrow_mut().entry(b.num("id") as u32).or_insert(0.0) += add;
+                }
+                _ => {}
+            }
+            self.follow(cx, block, 0, walk, depth);
+        }
+    }
+}
+
+/// The actions queued so far in one run.
+struct Walk<'a> {
+    acts: &'a mut Vec<Act>,
+    budget: usize,
+}
+
+impl Walk<'_> {
+    fn push(&mut self, act: Act) {
+        if self.acts.len() < self.budget {
+            self.acts.push(act);
+        }
     }
 }
 
@@ -374,7 +694,7 @@ impl Cx<'_> {
                 Val::Ball(balls.get(pick.min(balls.len().saturating_sub(1))).copied())
             }
             "count" => Val::Number(self.host.balls(&target_from_text(b.text("target"))).len() as f32),
-            "counter" => Val::Number(self.counters.get(&(b.num("id") as u32)).copied().unwrap_or(0.0)),
+            "counter" => Val::Number(self.counters.borrow().get(&(b.num("id") as u32)).copied().unwrap_or(0.0)),
             "sound.chord" => {
                 let note = self.host.chord_note(self.time, self.num(block, 0, depth).max(0.0) as u64);
                 match pin {
@@ -597,5 +917,260 @@ mod tests {
         });
         let out = Vm::eval(&p, &NoHost, 0.0, &inputs(), 0);
         assert!(out.number(1, -1.0) < 71.0);
+    }
+}
+
+#[cfg(test)]
+mod rules_tests {
+    use super::*;
+    use crate::{Role, catalog};
+    use bpe_core::{Target, ThingId};
+    use bpe_graph::{Catalog, Graph, Link, Param};
+    use glam::Vec2;
+
+    const B21: Ball = Ball { thing: ThingId(2), item: 1 };
+
+    /// Thing 2 is me and has two balls.
+    struct TwoBalls;
+    impl Host for TwoBalls {
+        fn ball(&self, ball: Ball) -> Option<crate::BallInfo> {
+            (ball.thing == ThingId(2) && ball.item < 2).then_some(crate::BallInfo {
+                position: Vec2::ZERO,
+                velocity: Vec2::new(100.0, 0.0),
+                radius: 24.0,
+                hits: 1,
+            })
+        }
+        fn matches(&self, ball: Ball, target: &Target) -> bool {
+            match target {
+                Target::Me => ball.thing == ThingId(2),
+                Target::Thing(id) => ball.thing == *id,
+                Target::Anything => true,
+                _ => false,
+            }
+        }
+        fn balls(&self, target: &Target) -> Vec<Ball> {
+            match target {
+                Target::Me | Target::Anything => vec![Ball { thing: ThingId(2), item: 0 }, B21],
+                _ => vec![],
+            }
+        }
+        fn things_of(&self, target: &Target) -> Vec<ThingId> {
+            match target {
+                Target::Me | Target::Anything => vec![ThingId(2)],
+                _ => vec![],
+            }
+        }
+    }
+
+    fn hit(a: Ball) -> Happening {
+        Happening {
+            kind: Trigger::Hit,
+            a,
+            b: Some(Ball { thing: ThingId(1), item: 0 }),
+            point: Vec2::new(1.0, 2.0),
+            normal: Vec2::Y,
+            speed: 300.0,
+        }
+    }
+
+    /// A rules graph: `build` returns the chain's blocks in order and the program wires each to the next.
+    fn chain(kinds: &[&str], set: impl Fn(&mut Graph, &[u32])) -> (Program, Vec<u32>) {
+        let c = catalog(Role::Rules);
+        let mut g = Graph::new("r");
+        let ids: Vec<u32> = kinds.iter().map(|k| g.add(c.spec(k).unwrap(), [0.0, 0.0])).collect();
+        for w in ids.windows(2) {
+            assert!(g.connect(Link { from: (w[0], 0), to: (w[1], 0) }, c));
+        }
+        set(&mut g, &ids);
+        (crate::compile(&g, Role::Rules).unwrap(), ids)
+    }
+
+    fn param(g: &mut Graph, node: u32, name: &str, p: Param) {
+        g.node_mut(node).unwrap().params.insert(name.into(), p);
+    }
+
+    #[test]
+    fn a_hit_grows_the_ball_and_plays_a_note() {
+        let (p, ids) = chain(&["when.hit", "do.grow", "do.note"], |g, ids| param(g, ids[1], "by", Param::Number(3.0)));
+        let mut vm = Vm::new(1);
+        let mut acts = Vec::new();
+        vm.run(&p, &TwoBalls, 0.5, &[hit(B21)], &mut acts);
+        assert_eq!(acts, vec![Act::Grow { ball: B21, by: 3.0 }, Act::Note { ball: B21, loudness: 600.0 }]);
+        assert_eq!(vm.fired_at(ids[0]), Some(0.5));
+        assert_eq!(vm.fired_at(ids[2]), Some(0.5));
+    }
+
+    #[test]
+    fn hits_by_other_things_do_not_fire_a_me_rule() {
+        let (p, _) = chain(&["when.hit", "do.grow"], |_, _| {});
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(Ball { thing: ThingId(3), item: 0 })], &mut acts);
+        assert!(acts.is_empty());
+        // "what" narrows the other side.
+        let (p, _) = chain(&["when.hit", "do.grow"], |g, ids| param(g, ids[0], "what", Param::Text("thing:9".into())));
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(B21)], &mut acts);
+        assert!(acts.is_empty());
+    }
+
+    #[test]
+    fn timers_fire_on_schedule_and_skip_ahead() {
+        let c = catalog(Role::Rules);
+        let mut g = Graph::new("r");
+        let timer = g.add(c.spec("when.timer").unwrap(), [0.0, 0.0]);
+        let count0 = g.add(c.spec("do.counter").unwrap(), [0.0, 0.0]);
+        let start = g.add(c.spec("when.start").unwrap(), [0.0, 0.0]);
+        let count1 = g.add(c.spec("do.counter").unwrap(), [0.0, 0.0]);
+        param(&mut g, count1, "id", Param::Number(1.0));
+        g.connect(Link { from: (timer, 0), to: (count0, 0) }, c);
+        g.connect(Link { from: (start, 0), to: (count1, 0) }, c);
+        let p = crate::compile(&g, Role::Rules).unwrap();
+        let mut vm = Vm::new(1);
+        let mut acts = Vec::new();
+        vm.run(&p, &TwoBalls, 0.5, &[], &mut acts);
+        assert_eq!((vm.counter(0), vm.counter(1)), (0.0, 1.0));
+        vm.run(&p, &TwoBalls, 1.0, &[], &mut acts);
+        assert_eq!((vm.counter(0), vm.counter(1)), (1.0, 1.0));
+        vm.run(&p, &TwoBalls, 3.7, &[], &mut acts);
+        assert_eq!(vm.counter(0), 2.0, "several due ticks fire once");
+        vm.run(&p, &TwoBalls, 4.0, &[], &mut acts);
+        assert_eq!(vm.counter(0), 3.0);
+        assert!(acts.is_empty());
+    }
+
+    #[test]
+    fn chance_once_every_and_cooldown_gate_a_chain() {
+        let grows = |acts: &[Act]| acts.iter().filter(|a| matches!(a, Act::Grow { .. })).count();
+        let (p, _) = chain(&["when.hit", "if.once", "do.grow"], |_, _| {});
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(B21), hit(B21)], &mut acts);
+        assert_eq!(grows(&acts), 1);
+
+        let (p, _) = chain(&["when.hit", "if.every", "do.grow"], |_, _| {});
+        acts.clear();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(B21), hit(B21), hit(B21), hit(B21)], &mut acts);
+        assert_eq!(grows(&acts), 2);
+
+        let (p, _) = chain(&["when.hit", "if.cooldown", "do.grow"], |_, _| {});
+        acts.clear();
+        let mut vm = Vm::new(1);
+        vm.run(&p, &TwoBalls, 0.0, &[hit(B21)], &mut acts);
+        vm.run(&p, &TwoBalls, 0.5, &[hit(B21)], &mut acts);
+        assert_eq!(grows(&acts), 1);
+        vm.run(&p, &TwoBalls, 1.5, &[hit(B21)], &mut acts);
+        assert_eq!(grows(&acts), 2);
+
+        for (percent, expect) in [(100.0, 10), (0.0, 0)] {
+            let (p, _) = chain(&["when.hit", "if.chance", "do.grow"], |g, ids| {
+                param(g, ids[1], "percent", Param::Number(percent))
+            });
+            acts.clear();
+            Vm::new(1).run(&p, &TwoBalls, 0.0, &vec![hit(B21); 10], &mut acts);
+            assert_eq!(grows(&acts), expect);
+        }
+        // The else pin fires when the condition fails.
+        let c = catalog(Role::Rules);
+        let mut g = Graph::new("r");
+        let h = g.add(c.spec("when.hit").unwrap(), [0.0, 0.0]);
+        let once = g.add(c.spec("if.once").unwrap(), [0.0, 0.0]);
+        let shrink = g.add(c.spec("do.grow").unwrap(), [0.0, 0.0]);
+        param(&mut g, shrink, "by", Param::Number(-1.0));
+        g.connect(Link { from: (h, 0), to: (once, 0) }, c);
+        g.connect(Link { from: (once, 1), to: (shrink, 0) }, c);
+        let p = crate::compile(&g, Role::Rules).unwrap();
+        acts.clear();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(B21), hit(B21), hit(B21)], &mut acts);
+        assert_eq!(acts, vec![Act::Grow { ball: B21, by: -1.0 }; 2]);
+    }
+
+    #[test]
+    fn counters_add_compare_and_fire_once_on_reaching() {
+        let c = catalog(Role::Rules);
+        let mut g = Graph::new("r");
+        let h = g.add(c.spec("when.hit").unwrap(), [0.0, 0.0]);
+        let add = g.add(c.spec("do.counter").unwrap(), [0.0, 0.0]);
+        param(&mut g, add, "id", Param::Number(1.0));
+        let reach = g.add(c.spec("when.counter").unwrap(), [0.0, 0.0]);
+        param(&mut g, reach, "id", Param::Number(1.0));
+        param(&mut g, reach, "reaches", Param::Number(3.0));
+        let remove = g.add(c.spec("do.remove").unwrap(), [0.0, 0.0]);
+        let pick = g.add(c.spec("ball.pick").unwrap(), [0.0, 0.0]);
+        g.connect(Link { from: (h, 0), to: (add, 0) }, c);
+        g.connect(Link { from: (reach, 0), to: (remove, 0) }, c);
+        g.connect(Link { from: (pick, 0), to: (remove, 1) }, c);
+        let p = crate::compile(&g, Role::Rules).unwrap();
+        let mut vm = Vm::new(1);
+        let mut acts = Vec::new();
+        for i in 0..5 {
+            vm.run(&p, &TwoBalls, i as f32, &[hit(B21)], &mut acts);
+        }
+        assert_eq!(vm.counter(1), 5.0);
+        let removes: Vec<&Act> = acts.iter().filter(|a| matches!(a, Act::Remove { .. })).collect();
+        assert_eq!(removes.len(), 1);
+        assert_eq!(vm.fired_at(reach), Some(2.0));
+    }
+
+    #[test]
+    fn a_run_stops_at_the_action_budget() {
+        let (p, _) = chain(&["when.hit", "do.grow"], |_, _| {});
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &vec![hit(B21); 300], &mut acts);
+        assert_eq!(acts.len(), ACTION_BUDGET);
+    }
+
+    #[test]
+    fn spawn_set_and_event_actions_name_their_things() {
+        let (p, _) = chain(
+            &[
+                "when.start",
+                "do.spawn",
+                "do.set",
+                "do.event",
+                "do.gravity",
+                "do.split",
+                "do.color",
+                "do.kick",
+                "do.speed",
+            ],
+            |g, ids| {
+                param(g, ids[2], "slot", Param::Choice("Motion".into()));
+                param(g, ids[2], "key", Param::Text("drag".into()));
+                param(g, ids[2], "value", Param::Number(0.5));
+                param(g, ids[3], "name", Param::Text("boom".into()));
+            },
+        );
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[], &mut acts);
+        assert_eq!(
+            acts[0],
+            Act::Spawn { thing: ThingId(2), position: Vec2::ZERO, velocity: Vec2::ZERO, radius: 24.0, color: [0.0; 4] }
+        );
+        assert_eq!(
+            acts[1],
+            Act::Set { thing: ThingId(2), slot: bpe_core::SlotId::Motion, key: "drag".into(), value: 0.5 }
+        );
+        // Without a ball the ball actions do nothing, but gravity still applies.
+        assert_eq!(acts[2], Act::Gravity(Vec2::new(0.0, 900.0)));
+        assert_eq!(acts.len(), 3);
+        let (p, _) = chain(&["when.hit", "do.event", "do.split", "do.color", "do.kick", "do.speed"], |g, ids| {
+            param(g, ids[1], "name", Param::Text("boom".into()))
+        });
+        acts.clear();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[hit(B21)], &mut acts);
+        assert_eq!(acts[0], Act::Fire { name: "boom".into(), ball: B21 });
+        assert_eq!(acts[1], Act::Split { ball: B21, pieces: 2 });
+        assert_eq!(acts[2], Act::Tint { ball: B21, color: [1.0, 0.3, 0.6, 1.0] });
+        assert_eq!(acts[3], Act::Kick { ball: B21, velocity: Vec2::new(0.0, -500.0) });
+        assert_eq!(acts[4], Act::Speed { ball: B21, factor: 1.1 });
+    }
+
+    #[test]
+    fn custom_events_wake_the_rules_that_wait_for_them() {
+        let (p, _) = chain(&["when.event", "do.grow"], |g, ids| param(g, ids[0], "name", Param::Text("boom".into())));
+        let mut acts = Vec::new();
+        let boom = Happening { kind: Trigger::Custom("boom".into()), ..hit(B21) };
+        let other = Happening { kind: Trigger::Custom("bang".into()), ..hit(B21) };
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[other, boom], &mut acts);
+        assert_eq!(acts, vec![Act::Grow { ball: B21, by: 2.0 }]);
     }
 }
