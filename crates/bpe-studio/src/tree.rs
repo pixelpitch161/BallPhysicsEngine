@@ -248,22 +248,23 @@ pub fn show(
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
         },
-        Some(Action::Link(id, m)) => {
-            let Some(slot) = scene.library.modules.get(&m).map(|m| m.slot) else {
-                out.message = Some(refusal(&EditError::MissingModule(m)));
-                return out;
-            };
-            match scene.link(reg, id, slot, m) {
-                Ok(()) => out.edited = true,
-                Err(EditError::SlotNotSupported(slot)) => {
-                    let name = scene.things.get(&id).map(|t| t.name.as_str()).unwrap_or("That thing");
-                    out.message = Some(format!("{name} has no {} slot.", slot.name()));
-                }
-                Err(e) => out.message = Some(refusal(&e)),
-            }
-        }
+        Some(Action::Link(id, m)) => match link_dropped(scene, reg, id, m) {
+            Ok(()) => out.edited = true,
+            Err(e) => out.message = Some(refusal(&e)),
+        },
     }
     out
+}
+
+/// Links a module dropped onto a thing into the slot the module is made for.
+pub(crate) fn link_dropped(
+    scene: &mut Scene,
+    reg: &Registry,
+    onto: ThingId,
+    module: ModuleId,
+) -> Result<(), EditError> {
+    let slot = scene.library.modules.get(&module).ok_or(EditError::MissingModule(module))?.slot;
+    scene.link(reg, onto, slot, module)
 }
 
 /// Where in a row a drop lands: the top quarter puts the thing before the row, the bottom
@@ -1069,6 +1070,22 @@ mod tests {
         let thing = &h.state().scene.things[&ThingId(2)];
         assert_eq!(thing.parent, Some(ThingId(1)));
         assert!(matches!(thing.attach, Attach::Ride { .. }), "{:?}", thing.attach);
+    }
+
+    #[test]
+    fn dropping_a_module_on_a_thing_without_the_slot_is_refused() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let f = scene.add_thing(&kit.registry, "arena", ThingId::ROOT).unwrap();
+        let motion = scene.library.modules.values().find(|m| m.name == "Default motion").unwrap().id;
+        let err = link_dropped(&mut scene, &kit.registry, f, motion).unwrap_err();
+        assert_eq!(err.to_string(), "This kind of thing has no Motion slot");
+        let look = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().id;
+        link_dropped(&mut scene, &kit.registry, f, look).unwrap();
+        assert!(
+            matches!(scene.things[&f].slots[&SlotId::Look], bpe_core::SlotLink::Linked { module, .. } if module == look)
+        );
+        assert!(matches!(link_dropped(&mut scene, &kit.registry, f, ModuleId(99)), Err(EditError::MissingModule(_))));
     }
 
     #[test]

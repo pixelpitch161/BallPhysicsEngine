@@ -8,6 +8,7 @@ mod audio_out;
 mod export_window;
 mod history;
 mod inspector;
+mod library;
 mod preview;
 mod selection;
 mod settings;

@@ -576,7 +576,7 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
 }
 
 /// Simple | More | Nodes, the last one waiting for a later stage.
-fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
+pub(crate) fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
     ui.selectable_value(depth, Depth::Simple, "Simple");
     ui.selectable_value(depth, Depth::More, "More");
     ui.add_enabled(false, egui::Button::selectable(false, "Nodes"))

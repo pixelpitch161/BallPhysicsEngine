@@ -4,11 +4,12 @@ use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
+use crate::library::LibraryWindow;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::sound_job::SoundJob;
 use crate::tree::Tree;
-use crate::{inspector, preview, settings, theme, transport, tree};
+use crate::{inspector, library, preview, settings, theme, transport, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Playback, fingerprint};
@@ -38,6 +39,7 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub sound: SoundJob,
+    pub library: LibraryWindow,
 }
 
 enum ToolbarClick {
@@ -470,6 +472,14 @@ impl Studio {
                 if ui.add(export).on_hover_text("Render the scene to an mp4 with sound").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
+                let library = egui::Button::selectable(self.panels.library.open, "Library");
+                if ui
+                    .add(library)
+                    .on_hover_text("Shared modules: rename, duplicate, delete, drag onto a thing to link")
+                    .clicked()
+                {
+                    self.panels.library.open = !self.panels.library.open;
+                }
             });
         });
     }
@@ -590,6 +600,21 @@ impl eframe::App for Studio {
                     &self.selection,
                 )
             });
+        if let Some(module) = self.panels.inspector.open_library.take() {
+            self.panels.library.open = true;
+            self.panels.library.selected = Some(module);
+        }
+        let library = library::show(&ctx, &mut self.panels.library, &mut self.scene, &self.kit, &self.resolved);
+        if let Some(ids) = library.select {
+            self.selection.clear();
+            if let Some((&first, rest)) = ids.split_first() {
+                self.selection.set(first);
+                self.selection.extra.extend(rest.iter().copied());
+            }
+        }
+        if let Some(message) = library.message {
+            self.status = message;
+        }
         let outcome = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
             .show(ui, |ui| preview::show(ui, frame, self))
