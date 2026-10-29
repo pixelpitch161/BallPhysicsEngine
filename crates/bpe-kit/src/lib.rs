@@ -34,6 +34,8 @@ pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
+pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
@@ -44,6 +46,7 @@ pub fn sims() -> Sims {
     s.add_thing(SceneSim);
     s.add_thing(ArenaSim);
     s.add_thing(BallsSim);
+    s.add_thing(EmitterSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(FlowingSim);
@@ -103,6 +106,7 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
+    r.add_thing(EmitterKind);
     r.add_module(ClassicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
