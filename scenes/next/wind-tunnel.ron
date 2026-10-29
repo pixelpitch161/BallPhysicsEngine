@@ -1,0 +1,177 @@
+(
+    format: 2,
+    name: "Wind tunnel",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 300.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "shape": Choice("box"),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Feathers",
+            kind: "balls",
+            tags: [
+                "light",
+            ],
+            parent: Some(0),
+            transform: (
+                position: (-220.0, -520.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(6),
+                "radius": Number(6.0),
+                "rows": Int(6),
+                "spacing": Number(22.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Stones",
+            kind: "balls",
+            tags: [
+                "heavy",
+            ],
+            parent: Some(0),
+            transform: (
+                position: (220.0, -520.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(3),
+                "radius": Number(16.0),
+                "rows": Int(3),
+                "spacing": Number(60.0),
+                "velocity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Inherit,
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Breeze",
+            kind: "field",
+            parent: Some(0),
+            params: {
+                "shape": Choice("everywhere"),
+                "strength": Number(900.0),
+                "targets": Target(Tag("light")),
+            },
+            slots: {},
+        ),
+        5: (
+            id: 5,
+            name: "Whirl",
+            kind: "field",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 200.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "kind": Choice("vortex"),
+                "radius": Number(350.0),
+                "strength": Number(1200.0),
+            },
+            slots: {},
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+        },
+    ),
+    next_thing: 6,
+    next_module: 5,
+)

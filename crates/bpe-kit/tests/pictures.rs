@@ -1,7 +1,7 @@
 //! Picture tests: every stage scene draws something on the software GPU.
 
 use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
-use bpe_kit::{kit, scenes};
+use bpe_kit::{flow_source, kit, scenes};
 use bpe_runtime::Playback;
 
 const W: u32 = 270;
@@ -16,14 +16,16 @@ fn every_stage_scene_draws_a_picture() {
     let kit = kit();
     let mut renderer = Renderer::new(&device, W, H);
     let mut bright = std::collections::BTreeMap::new();
-    for (name, scene) in scenes::stage2(&kit.registry) {
+    for (name, scene) in scenes::all(&kit.registry) {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(2.0);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 2.0, &kit.draws, &mut frame);
         assert_eq!(renderer.pixel_size(&frame), 1080.0 / W as f32);
-        renderer.render(&device, &queue, &frame);
+        // Liquids and swarms on the graphics card are stepped to the frame's time first.
+        let source = flow_source(&scene, &resolved, &kit.sims, None);
+        assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up, "{name}");
         let pixels = renderer.read_output(&device, &queue).unwrap();
         assert_eq!(pixels.len(), (W * H * 4) as usize, "{name}");
         let count = pixels.chunks(4).filter(|p| p[0] > 100 || p[1] > 100 || p[2] > 100).count();
