@@ -20,6 +20,8 @@ pub struct Block {
     pub inputs: Vec<Option<(usize, u8)>>,
     /// Per output pin, the blocks its trigger wires lead to, in node id order.
     pub then: Vec<Vec<usize>>,
+    /// Per input pin, its name: an unwired pin reads the setting of the same name.
+    pub input_names: Vec<String>,
     /// Per input pin, its type.
     pub input_types: Vec<PinType>,
     /// Per output pin, its type.
@@ -128,6 +130,7 @@ pub fn compile(graph: &Graph, role: Role) -> Result<Program, Vec<Diagnostic>> {
             params,
             inputs: vec![None; spec.inputs.len()],
             then: vec![Vec::new(); spec.outputs.len()],
+            input_names: spec.inputs.iter().map(|p| p.name.clone()).collect(),
             input_types: spec.inputs.iter().map(|p| p.ty).collect(),
             output_types: spec.outputs.iter().map(|p| p.ty).collect(),
         });

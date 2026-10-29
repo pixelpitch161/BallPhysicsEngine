@@ -6,11 +6,15 @@
 //! decides. Values are pulled through the wires; triggers are pushed along them.
 
 pub mod catalog;
+pub mod host;
 pub mod program;
+pub mod run;
 pub mod target;
 pub mod val;
 
 pub use catalog::{Role, SETTING_KINDS, catalog, is_setting};
+pub use host::{Host, NoHost};
 pub use program::{Block, Program, compile};
+pub use run::{MAX_DEPTH, Outputs, Vm};
 pub use target::{target_from_text, target_to_text};
 pub use val::{Ball, BallInfo, Val};
