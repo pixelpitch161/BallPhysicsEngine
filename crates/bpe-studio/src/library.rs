@@ -2,14 +2,16 @@
 //! onto a thing in the tree.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
+use crate::presets::{self, Preset};
+use crate::settings;
 use crate::theme;
 use crate::widgets::{GridCx, TargetChoices, settings_grid_marked};
 use bpe_core::{Address, Depth, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Key, RichText, Sense, Ui};
 
-#[derive(Default)]
 pub struct LibraryWindow {
     pub open: bool,
     pub selected: Option<ModuleId>,
@@ -18,6 +20,42 @@ pub struct LibraryWindow {
     renaming: Option<ModuleId>,
     rename_text: String,
     focus_rename: bool,
+    /// Where "My presets" are kept; `None` shows none.
+    pub presets_dir: Option<PathBuf>,
+    /// The presets as last read; read again when the window opens and after a save or delete.
+    presets: Vec<Preset>,
+    presets_read: bool,
+}
+
+impl Default for LibraryWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            selected: None,
+            depth: BTreeMap::new(),
+            renaming: None,
+            rename_text: String::new(),
+            focus_rename: false,
+            presets_dir: settings::presets_dir(),
+            presets: Vec::new(),
+            presets_read: false,
+        }
+    }
+}
+
+impl LibraryWindow {
+    /// Reads the presets folder again at the next frame.
+    pub fn look_again(&mut self) {
+        self.presets_read = false;
+    }
+
+    fn read_presets(&mut self) {
+        if self.presets_read {
+            return;
+        }
+        self.presets_read = true;
+        self.presets = self.presets_dir.as_deref().map(presets::list_in).unwrap_or_default();
+    }
 }
 
 #[derive(Default)]
@@ -40,6 +78,10 @@ enum Action {
     SelectUsers(ModuleId),
     Set(ModuleId, &'static str, bpe_core::Value),
     Lock(ModuleId, &'static str, bool),
+    SavePreset(ModuleId),
+    /// A preset by its place in the list.
+    AddPreset(usize),
+    DeletePreset(usize),
 }
 
 /// Draws the window when it is open and applies what was done in it.
@@ -52,8 +94,10 @@ pub fn show(
 ) -> LibraryOutcome {
     let mut out = LibraryOutcome::default();
     if !lib.open {
+        lib.presets_read = false;
         return out;
     }
+    lib.read_presets();
     let reg = &kit.registry;
     let mut action: Option<Action> = None;
     let mut open = lib.open;
@@ -125,6 +169,34 @@ pub fn show(
             let a = Address { owner: Owner::Module(m), slot: None, key: key.into() };
             out.edited |= scene.set_locked(a, lock);
         }
+        Some(Action::SavePreset(m)) => {
+            out.message = Some(match (lib.presets_dir.as_deref(), scene.library.modules.get(&m)) {
+                (Some(dir), Some(module)) => match presets::save_in(dir, module) {
+                    Ok(_) => format!("Saved the preset {}.", module.name),
+                    Err(e) => format!("Couldn't save the preset: {e:#}"),
+                },
+                (None, _) => "There is no settings folder to keep presets in.".to_owned(),
+                (_, None) => EditError::MissingModule(m).to_string(),
+            });
+            lib.look_again();
+        }
+        Some(Action::AddPreset(i)) => {
+            if let Some(preset) = lib.presets.get(i) {
+                let id = presets::add_to_scene(scene, &preset.module);
+                lib.selected = Some(id);
+                out.edited = true;
+                out.message = Some(format!("Added {} to the scene.", scene.library.modules[&id].name));
+            }
+        }
+        Some(Action::DeletePreset(i)) => {
+            if let Some(preset) = lib.presets.get(i) {
+                out.message = Some(match presets::delete(preset) {
+                    Ok(()) => format!("Deleted the preset {}.", preset.module.name),
+                    Err(e) => format!("Couldn't delete the preset: {e}"),
+                });
+                lib.look_again();
+            }
+        }
     }
     out
 }
@@ -163,6 +235,47 @@ fn list(ui: &mut Ui, lib: &mut LibraryWindow, scene: &Scene, kit: &Kit, action: 
             module_row(ui, lib, scene, kit, m, action);
         }
     }
+    if lib.presets_dir.is_some() {
+        ui.add_space(10.0);
+        ui.label(RichText::new("My presets").strong().color(theme::MUTED))
+            .on_hover_text("Modules you saved with \"Save as preset\", kept in your settings folder for every scene");
+        if lib.presets.is_empty() {
+            ui.label(
+                RichText::new("None yet. Right-click a module above to save it as a preset.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+        }
+        for (i, preset) in lib.presets.iter().enumerate() {
+            preset_row(ui, kit, i, preset, action);
+        }
+    }
+}
+
+/// One saved preset: its name and slot, and buttons to add it to the scene or delete it.
+fn preset_row(ui: &mut Ui, kit: &Kit, index: usize, preset: &Preset, action: &mut Option<Action>) {
+    let module = &preset.module;
+    let known = kit.registry.module(&module.kind).is_some();
+    ui.horizontal(|ui| {
+        ui.label(&module.name).on_hover_text(preset.path.display().to_string());
+        ui.label(RichText::new(module.slot.name()).small().color(theme::MUTED));
+        if !known {
+            ui.label(RichText::new("missing kind").small().color(theme::ERROR))
+                .on_hover_text(format!("This version of Ball Studio doesn't know \"{}\"", module.kind));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Delete").on_hover_text("Delete the preset file").clicked() {
+                *action = Some(Action::DeletePreset(index));
+            }
+            if ui
+                .add_enabled(known, egui::Button::new("Add to scene").small())
+                .on_hover_text("A copy of this preset in the scene's Library")
+                .clicked()
+            {
+                *action = Some(Action::AddPreset(index));
+            }
+        });
+    });
 }
 
 /// One module in the list: its draggable name, how many things use it, and a note when its
@@ -213,6 +326,10 @@ fn module_row(
             }
             if ui.button("Duplicate").clicked() {
                 *action = Some(Action::Duplicate(id));
+                ui.close();
+            }
+            if lib.presets_dir.is_some() && ui.button("Save as preset").clicked() {
+                *action = Some(Action::SavePreset(id));
                 ui.close();
             }
             if ui.add_enabled(users == 0, egui::Button::new("Delete")).clicked() {
@@ -272,6 +389,14 @@ fn details(
         if ui.button("Duplicate").on_hover_text("A copy with the same settings").clicked() {
             *action = Some(Action::Duplicate(id));
         }
+        if lib.presets_dir.is_some()
+            && ui
+                .button("Save as preset")
+                .on_hover_text("Keep these settings under My presets, for every scene")
+                .clicked()
+        {
+            *action = Some(Action::SavePreset(id));
+        }
         let refused = EditError::InUse(users.clone()).to_string();
         if ui
             .add_enabled(users.is_empty(), egui::Button::new("Delete"))
@@ -327,7 +452,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let lib = LibraryWindow { open: true, ..LibraryWindow::default() };
+        let lib = LibraryWindow { open: true, presets_dir: None, ..LibraryWindow::default() };
         let state = State { lib, scene, kit, resolved, selected: None };
         let mut h = Harness::builder()
             .with_size(egui::vec2(640.0, 760.0))
@@ -430,5 +555,41 @@ mod tests {
         let ctx = egui::Context::default();
         let out = show(&ctx, &mut lib, &mut scene, &kit, &resolved);
         assert!(!out.edited && out.select.is_none());
+    }
+
+    #[test]
+    fn the_library_shows_my_presets_and_adds_one_to_the_scene() {
+        let dir = std::env::temp_dir().join(format!("bpe-library-presets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let id = scene.library.modules.values().find(|m| m.name == "Ball look").expect("the ball look").id;
+        scene.rename_module(id, "Neon").unwrap();
+        crate::presets::save_in(&dir, &scene.library.modules[&id]).unwrap();
+        let mut h = harness();
+        h.state_mut().lib.presets_dir = Some(dir.clone());
+        h.state_mut().lib.look_again();
+        h.run();
+        assert!(h.query_by_label("My presets").is_some());
+        assert!(h.query_by_label("Neon").is_some());
+        let before = h.state().scene.library.modules.len();
+        // The presets sit under every slot, so the list scrolls down to them.
+        h.get_by_label("Add to scene").scroll_to_me();
+        h.run();
+        h.get_by_label("Add to scene").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules.len(), before + 1);
+        let added = s.scene.library.modules.values().find(|m| m.name == "Neon").expect("added from the preset");
+        assert_eq!(s.lib.selected, Some(added.id));
+        h.get_by_label_contains("Plain look").click();
+        h.run();
+        h.get_by_label("Save as preset").click();
+        h.run();
+        let listed = crate::presets::list_in(&dir);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|p| p.module.name == "Plain look"));
+        assert_eq!(h.query_all_by_label("Add to scene").count(), 2, "the list is read again after saving");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -36,6 +36,11 @@ pub fn remember_scene(path: &std::path::Path) {
     }
 }
 
+/// Where "My presets" live.
+pub fn presets_dir() -> Option<PathBuf> {
+    settings_dir().map(|d| d.join("presets"))
+}
+
 fn weights_file() -> Option<PathBuf> {
     settings_dir().map(|d| d.join("score-weights.ron"))
 }

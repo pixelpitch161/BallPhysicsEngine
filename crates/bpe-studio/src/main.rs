@@ -13,6 +13,7 @@ mod history;
 mod inspector;
 mod library;
 mod nodes;
+mod presets;
 mod preview;
 mod selection;
 mod settings;
