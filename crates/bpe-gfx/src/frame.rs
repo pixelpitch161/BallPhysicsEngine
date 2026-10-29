@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use bpe_core::{Resolved, ResolvedThing, Scene, Thing};
+use bpe_core::{Resolved, ResolvedThing, Scene, Thing, ThingId};
 use bpe_runtime::{Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 
@@ -63,6 +63,125 @@ pub struct FlashInstance {
     pub color: [f32; 4],
 }
 
+/// A liquid thing's particles, drawn as one surface. A CPU liquid sends its points every frame;
+/// a GPU liquid describes itself and the renderer steps it (see [`crate::flow`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiquidLayer {
+    pub thing: ThingId,
+    pub points: Points,
+    /// Particle radius in world pixels.
+    pub radius: f32,
+    /// Linear light.
+    pub color: [f32; 4],
+    /// How much of what is behind shows through, 0 to 1.
+    pub clarity: f32,
+    /// How much the surface bends what is behind it.
+    pub refraction: f32,
+    /// Strength of the shine along the surface.
+    pub highlight: f32,
+    /// How smooth the surface is, in particle radii.
+    pub smoothing: f32,
+    /// Light the liquid gives off.
+    pub glow: f32,
+}
+
+/// Where a liquid's particles come from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Points {
+    /// Positions simulated on the CPU, one per particle.
+    Cpu(Vec<[f32; 2]>),
+    /// A liquid the renderer simulates itself.
+    Gpu(GpuLiquid),
+}
+
+/// What a GPU liquid needs to start and step itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GpuLiquid {
+    pub count: u32,
+    /// The block the particles start in: min x, min y, max x, max y.
+    pub region: [f32; 4],
+    /// Seconds the pour takes; 0 starts with every particle in place.
+    pub pour_seconds: f32,
+    pub pour_from: [f32; 2],
+    pub seed: u32,
+    pub viscosity: f32,
+    pub stiffness: f32,
+    /// How hard balls push the liquid aside.
+    pub ball_push: f32,
+    pub gravity_scale: f32,
+    pub bounciness: f32,
+}
+
+/// A swarm thing: thousands of glowing points that flock, stepped and drawn by the GPU.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwarmLayer {
+    pub thing: ThingId,
+    pub count: u32,
+    pub start: SwarmStart,
+    pub center: [f32; 2],
+    pub seed: u32,
+    /// Seconds over which the points are released; 0 releases them all at once.
+    pub release_seconds: f32,
+    pub look: SwarmLook,
+    pub motion: Flock,
+}
+
+/// Where a swarm's points begin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwarmStart {
+    /// Spread over the whole arena.
+    Fill,
+    /// Packed around the swarm's centre.
+    Centre,
+    /// On a ring around the centre.
+    Ring,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwarmLook {
+    /// Point size in world pixels.
+    pub size: f32,
+    pub brightness: f32,
+    /// 0 colours by speed, 1 by the nearest ball, 2 along the gradient.
+    pub colors_by: u32,
+    /// Linear light, the stops of the gradient or the speed ramp.
+    pub colors: Vec<[f32; 4]>,
+}
+
+/// How a swarm moves. Each field matches a setting of the Flocking module.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flock {
+    pub top_speed: f32,
+    pub drag: f32,
+    pub flow: f32,
+    pub swirl_size: f32,
+    pub swirl_speed: f32,
+    pub flock: f32,
+    pub separation: f32,
+    pub attraction: f32,
+    pub reach: f32,
+    pub avoid_walls: f32,
+    pub gravity_scale: f32,
+}
+
+impl Default for Flock {
+    fn default() -> Self {
+        Self {
+            top_speed: 260.0,
+            drag: 0.6,
+            flow: 1.0,
+            swirl_size: 180.0,
+            swirl_speed: 0.05,
+            flock: 0.4,
+            separation: 0.3,
+            attraction: 0.6,
+            reach: 220.0,
+            avoid_walls: 1.0,
+            gravity_scale: 0.0,
+        }
+    }
+}
+
 /// A colour with alpha 0 but some light is an additive colour (the colour picker's "Additive"
 /// blending) and gets an alpha of -1. The shaders read a negative alpha as "add this much light
 /// and cover nothing", so it can still fade like any other alpha.
@@ -85,6 +204,8 @@ pub struct Frame {
     pub shapes: Vec<ShapeInstance>,
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
+    pub liquids: Vec<LiquidLayer>,
+    pub swarms: Vec<SwarmLayer>,
 }
 
 impl Default for Frame {
@@ -100,6 +221,8 @@ impl Default for Frame {
             shapes: Vec::new(),
             balls: Vec::new(),
             flashes: Vec::new(),
+            liquids: Vec::new(),
+            swarms: Vec::new(),
         }
     }
 }
@@ -110,6 +233,8 @@ impl Frame {
         self.shapes.clear();
         self.balls.clear();
         self.flashes.clear();
+        self.liquids.clear();
+        self.swarms.clear();
     }
 }
 
@@ -240,5 +365,42 @@ mod tests {
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use bpe_core::ThingId;
+
+    #[test]
+    fn clearing_a_frame_empties_its_flow_layers_too() {
+        let mut frame = Frame::default();
+        frame.liquids.push(LiquidLayer {
+            thing: ThingId(1),
+            points: Points::Cpu(vec![[0.0, 0.0]]),
+            radius: 3.0,
+            color: [0.0, 0.5, 1.0, 1.0],
+            clarity: 0.45,
+            refraction: 0.5,
+            highlight: 0.8,
+            smoothing: 6.0,
+            glow: 0.1,
+        });
+        frame.swarms.push(SwarmLayer {
+            thing: ThingId(2),
+            count: 10,
+            start: SwarmStart::Ring,
+            center: [0.0; 2],
+            seed: 1,
+            release_seconds: 0.0,
+            look: SwarmLook { size: 1.0, brightness: 0.2, colors_by: 2, colors: vec![[1.0; 4]] },
+            motion: Flock::default(),
+        });
+        let copy = frame.clone();
+        assert_eq!(copy, frame);
+        frame.clear();
+        assert!(frame.liquids.is_empty() && frame.swarms.is_empty());
+        assert_eq!(frame, Frame::default());
     }
 }

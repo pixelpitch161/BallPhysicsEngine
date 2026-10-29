@@ -4,10 +4,13 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
+pub mod flow;
 mod frame;
 
+pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BallInstance, DrawCx, Draws, FlashInstance, Frame, ShapeInstance, ThingDraw, blend_alpha, build_frame,
+    BallInstance, DrawCx, Draws, FlashInstance, Flock, Frame, GpuLiquid, LiquidLayer, Points, ShapeInstance,
+    SwarmLayer, SwarmLook, SwarmStart, ThingDraw, blend_alpha, build_frame,
 };
 pub use wgpu;
 
@@ -69,6 +72,8 @@ pub struct Renderer {
     ball_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     targets: Targets,
+    /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
+    flow: Option<FlowLayers>,
 }
 
 impl Renderer {
@@ -302,6 +307,7 @@ impl Renderer {
             ball_buffer: GrowableBuffer::new("ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             targets,
+            flow: None,
         }
     }
 
@@ -329,11 +335,34 @@ impl Renderer {
         frame.width as f32 / self.targets.width.max(1) as f32
     }
 
-    /// Draws one frame into the output texture.
+    /// Like [`Renderer::render`], and first steps the frame's GPU liquids and swarms to
+    /// `frame.time`.
+    pub fn render_with_flow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        source: &FlowSource,
+    ) -> FlowStatus {
+        let flow = self.flow.get_or_insert_with(|| FlowLayers::new(device));
+        flow.prepare(device, queue, frame, source);
+        let status = flow.step_to(device, queue, frame.time as f64, source);
+        self.render(device, queue, frame);
+        status
+    }
+
+    /// The GPU-stepped layers, once a frame has been drawn with [`Renderer::render_with_flow`].
+    pub fn flow(&self) -> Option<&FlowLayers> {
+        self.flow.as_ref()
+    }
+
+    /// Draws one frame into the output texture. GPU liquids and swarms are left to
+    /// [`Renderer::render_with_flow`]; a CPU liquid's points are drawn here as plain dots.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
-        self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
+        let balls = with_liquid_dots(frame);
+        self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&balls));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
@@ -348,10 +377,10 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
                 pass.draw(0..4, 0..frame.shapes.len() as u32);
             }
-            if !frame.balls.is_empty() {
+            if !balls.is_empty() {
                 pass.set_pipeline(&self.ball);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
-                pass.draw(0..4, 0..frame.balls.len() as u32);
+                pass.draw(0..4, 0..balls.len() as u32);
             }
             if !frame.flashes.is_empty() {
                 pass.set_pipeline(&self.flash);
@@ -493,6 +522,25 @@ impl Targets {
         });
         Self { width, height, hdr, bloom, output, output_view, down_sources, up_sources, composite }
     }
+}
+
+/// The frame's balls, followed by a dot for every point of its CPU liquids.
+fn with_liquid_dots(frame: &Frame) -> std::borrow::Cow<'_, [BallInstance]> {
+    if !frame.liquids.iter().any(|l| matches!(l.points, Points::Cpu(_))) {
+        return std::borrow::Cow::Borrowed(&frame.balls);
+    }
+    let mut balls = frame.balls.clone();
+    for liquid in &frame.liquids {
+        if let Points::Cpu(points) = &liquid.points {
+            balls.extend(points.iter().map(|&center| BallInstance {
+                center,
+                radius: liquid.radius,
+                glow: liquid.glow,
+                color: liquid.color,
+            }));
+        }
+    }
+    std::borrow::Cow::Owned(balls)
 }
 
 fn begin_pass<'a>(
@@ -658,4 +706,38 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
         adapter.request_device(&wgpu::DeviceDescriptor { label: Some("bpe headless"), ..Default::default() }),
     )?;
     Ok((device, queue))
+}
+
+#[cfg(test)]
+mod liquid_dot_tests {
+    use super::*;
+    use bpe_core::ThingId;
+
+    #[test]
+    fn cpu_liquid_points_are_drawn_as_dots() {
+        let Ok((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available, skipping");
+            return;
+        };
+        let mut renderer = Renderer::new(&device, 90, 160);
+        let mut frame = Frame::default();
+        renderer.render(&device, &queue, &frame);
+        let dark = renderer.read_output(&device, &queue).unwrap();
+        frame.liquids.push(LiquidLayer {
+            thing: ThingId(1),
+            points: Points::Cpu(vec![[0.0, 0.0], [100.0, 100.0]]),
+            radius: 80.0,
+            color: [0.2, 0.5, 1.0, 1.0],
+            clarity: 0.45,
+            refraction: 0.5,
+            highlight: 0.8,
+            smoothing: 6.0,
+            glow: 0.0,
+        });
+        renderer.render(&device, &queue, &frame);
+        let lit = renderer.read_output(&device, &queue).unwrap();
+        let bright = |p: &[u8]| p.chunks(4).filter(|c| c[2] > 100).count();
+        assert_eq!(bright(&dark), 0);
+        assert!(bright(&lit) > 100, "{}", bright(&lit));
+    }
 }
