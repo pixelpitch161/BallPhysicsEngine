@@ -35,12 +35,14 @@ pub fn param_control(ui: &mut Ui, spec: &ParamSpec, param: &mut Param, scene: &S
             let (lo, hi) = spec.range;
             if hi > lo && (hi - lo) < 20_000.0 {
                 ui.spacing_mut().slider_width = 70.0;
-                ui.add(egui::Slider::new(v, lo..=hi).show_value(true).clamping(egui::SliderClamping::Always))
+                // A template may hold a value past the slider's end; only the user's own edits
+                // are clamped, so drawing a block never changes it.
+                ui.add(egui::Slider::new(v, lo..=hi).show_value(true).clamping(egui::SliderClamping::Edits))
                     .labelled_by(label);
             } else {
                 let mut drag = egui::DragValue::new(v).speed(((hi - lo) / 300.0).max(0.001));
                 if hi > lo {
-                    drag = drag.range(lo..=hi);
+                    drag = drag.range(lo..=hi).clamp_existing_to_range(false);
                 }
                 ui.add(drag).labelled_by(label);
             }

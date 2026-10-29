@@ -13,6 +13,29 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Inspector {
     /// The depth each card is open at: the kind's settings (`None`) and each slot.
     pub depth: BTreeMap<(ThingId, Option<SlotId>), Depth>,
+    /// A card's Nodes switch was pressed: the node panel should open on this slot.
+    pub nodes_request: Option<(ThingId, SlotId)>,
+    /// What the node panel shows, so that card's switch shows Nodes as chosen.
+    pub nodes_open: Option<(ThingId, SlotId)>,
+}
+
+/// The Nodes end of a card's depth switch.
+pub struct NodesSwitch {
+    pub enabled: bool,
+    pub open: bool,
+    /// Why it can't be pressed, when it can't.
+    pub hover: &'static str,
+}
+
+/// Why a slot's Nodes switch is off.
+fn no_nodes_yet(slot: SlotId) -> &'static str {
+    match slot {
+        SlotId::Look => "Look graphs come with the Visuals stage",
+        SlotId::Trail => "Trail graphs come with the Visuals stage",
+        SlotId::Particles => "Particle graphs come with the Visuals stage",
+        SlotId::Shader => "Shader graphs come with the Visuals stage",
+        _ => "Pick a module first",
+    }
 }
 
 /// A change the panel asks for, applied once the drawing is done.
@@ -27,6 +50,7 @@ enum Edit {
     Inherit(SlotId),
     Off(SlotId),
     AddSlot(SlotId),
+    Revert(ModuleId),
 }
 
 /// Draws the inspector for `selected` and applies its edits. True when the scene changed.
@@ -114,7 +138,7 @@ pub fn show(
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("{} settings", kind.name())).strong());
                 ui.add_space(8.0);
-                depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple));
+                depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple), None);
             });
             let depth = inspector.depth.get(&(id, None)).copied().unwrap_or(Depth::Simple);
             let get = |key: &str| {
@@ -202,7 +226,14 @@ pub fn show(
                     .response
                     .on_hover_text("Which module fills this slot");
                     ui.add_space(8.0);
-                    depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple));
+                    let nodes = NodesSwitch {
+                        enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
+                        open: inspector.nodes_open == Some((id, slot)),
+                        hover: no_nodes_yet(slot),
+                    };
+                    if depth_switch(ui, inspector.depth.entry((id, Some(slot))).or_insert(Depth::Simple), Some(nodes)) {
+                        inspector.nodes_request = Some((id, slot));
+                    }
                 });
                 let problems: Vec<String> = resolved
                     .problems
@@ -217,6 +248,21 @@ pub fn show(
                     && let Some(m) = scene.library.modules.get(&module)
                     && let Some(mkind) = reg.module(&m.kind)
                 {
+                    if m.graph.as_ref().is_some_and(|g| g.custom) && slot != SlotId::Rules && mkind.template().is_some()
+                    {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
+                                "This module runs its graph instead of these settings. Open Nodes to see it.",
+                            );
+                            if ui
+                                .small_button("Revert to template")
+                                .on_hover_text("Throw the graph edits away and go back to these settings")
+                                .clicked()
+                            {
+                                edits.push(Edit::Revert(module));
+                            }
+                        });
+                    }
                     let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
                     let get = |key: &str| {
                         let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
@@ -288,6 +334,16 @@ pub fn show(
                 true
             }
             Edit::AddSlot(slot) => scene.add_slot(reg, id, slot).is_ok(),
+            Edit::Revert(module) => match scene.library.modules.get_mut(&module) {
+                Some(m) => match reg.module(&m.kind) {
+                    Some(kind) => {
+                        crate::nodes::panel::revert_to_template(m, kind);
+                        true
+                    }
+                    None => false,
+                },
+                None => false,
+            },
         };
         changed |= ok;
     }
@@ -304,12 +360,16 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
     }
 }
 
-/// Simple | More | Nodes, the last one waiting for a later stage.
-fn depth_switch(ui: &mut Ui, depth: &mut Depth) {
+/// Simple | More | Nodes. The Nodes end opens the node panel rather than changing the card,
+/// so it is a request; true when it was pressed. A card without graphs has no Nodes end.
+fn depth_switch(ui: &mut Ui, depth: &mut Depth, nodes: Option<NodesSwitch>) -> bool {
     ui.selectable_value(depth, Depth::Simple, "Simple");
     ui.selectable_value(depth, Depth::More, "More");
-    ui.add_enabled(false, egui::Button::selectable(false, "Nodes"))
-        .on_disabled_hover_text("Nodes come in a later stage");
+    let Some(nodes) = nodes else { return false };
+    ui.add_enabled(nodes.enabled, egui::Button::selectable(nodes.open, "Nodes"))
+        .on_hover_text("Edit this module as blocks and wires, in the panel under the preview")
+        .on_disabled_hover_text(nodes.hover)
+        .clicked()
 }
 
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
@@ -324,10 +384,7 @@ mod tests {
     use super::*;
     use bpe_core::{Resolved, SlotId, SlotLink, Value, resolve};
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
 
     struct State {
         inspector: Inspector,

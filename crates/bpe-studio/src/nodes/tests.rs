@@ -1,15 +1,12 @@
 //! Drives the block canvas with simulated mouse and keys, on the real Rules catalog.
 
+use super::editor::{Editor, Outcome, PinRef};
 use super::params::{param_control, target_words};
-use super::{Editor, Outcome, PinRef};
 use bpe_core::{Scene, Target, ThingId};
 use bpe_graph::{Catalog, Graph, Link, Param, ParamSpec, SpecList};
 use bpe_vm::{Role, catalog};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, vec2};
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT, Queryable},
-};
+use egui_kittest::{Harness, kittest::Queryable};
 
 struct State {
     editor: Editor,
@@ -367,4 +364,20 @@ fn picking_a_target_writes_its_id() {
     harness.run();
     assert_eq!(harness.state().param, Param::Text("thing:2".into()));
     assert!(harness.state().changed);
+}
+
+#[test]
+fn drawing_a_block_leaves_a_value_beyond_its_range_alone() {
+    // A template may hold a value past a slider's end; showing it must not quietly clamp it.
+    let c = catalog(Role::Rules);
+    let mut graph = Graph::new("Test");
+    let counter = graph.add(c.spec("do.counter").unwrap(), [0.0, 0.0]);
+    graph.node_mut(counter).unwrap().params.insert("id".into(), Param::Number(99.0));
+    let setting = graph.add(c.spec("setting").unwrap(), [0.0, 300.0]);
+    graph.node_mut(setting).unwrap().params.insert("max".into(), Param::Number(20000.0));
+    let harness = harness(graph);
+    let state = harness.state();
+    assert_eq!(state.outcome, Outcome::default(), "nothing was edited");
+    assert_eq!(state.graph.node(counter).unwrap().params.get("id"), Some(&Param::Number(99.0)));
+    assert_eq!(state.graph.node(setting).unwrap().params.get("max"), Some(&Param::Number(20000.0)));
 }

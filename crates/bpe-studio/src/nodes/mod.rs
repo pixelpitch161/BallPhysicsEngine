@@ -3,9 +3,10 @@
 mod draw;
 pub mod editor;
 mod palette;
+pub mod panel;
 pub mod params;
 #[cfg(test)]
 mod tests;
 
-pub use editor::{Editor, LiveView, Outcome, PinRef, category_color, pin_color, take_wants_keyboard};
-pub use params::{param_control, target_words};
+pub use editor::take_wants_keyboard;
+pub use panel::NodePanel;
