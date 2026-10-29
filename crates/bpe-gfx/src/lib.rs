@@ -10,14 +10,16 @@ mod frame;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
+pub mod text;
 
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GpuLiquid, HitMark, LiquidLayer,
-    LookInstance, ModuleDraw, Points, ShapeInstance, Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex,
-    blend_alpha, build_frame, push_streak, thing_code,
+    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, HitMark,
+    LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart,
+    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, thing_code,
 };
+pub use text::Atlas;
 pub use wgpu;
 
 use bytemuck::{Pod, Zeroable};
@@ -73,18 +75,28 @@ struct Targets {
     composite: wgpu::BindGroup,
 }
 
+/// The glyph atlas on the GPU, remade when the atlas grows or changes.
+struct AtlasTexture {
+    size: u32,
+    generation: u64,
+    group: wgpu::BindGroup,
+}
+
 pub struct Renderer {
     globals: wgpu::Buffer,
     globals_group: wgpu::BindGroup,
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
+    atlas_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
+    soft: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     look: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
+    glyph: wgpu::RenderPipeline,
     /// What is where, for effects on things (see object.wgsl).
     shape_object: wgpu::RenderPipeline,
     ball_object: wgpu::RenderPipeline,
@@ -96,9 +108,12 @@ pub struct Renderer {
     composite: wgpu::RenderPipeline,
     trail_buffer: GrowableBuffer,
     shape_buffer: GrowableBuffer,
+    soft_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
     look_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
+    glyph_buffer: GrowableBuffer,
+    atlas: Option<AtlasTexture>,
     targets: Targets,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
@@ -124,6 +139,10 @@ impl Renderer {
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
+        });
+        let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("glyph shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
         });
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -175,6 +194,10 @@ impl Renderer {
             label: Some("composite layout"),
             entries: &[texture_entry(0), sampler_entry, texture_entry(2)],
         });
+        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("atlas layout"),
+            entries: &[texture_entry(0), sampler_entry],
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("linear clamp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -195,6 +218,11 @@ impl Renderer {
         let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("composite pipeline layout"),
             bind_group_layouts: &[Some(&globals_layout), Some(&composite_layout)],
+            immediate_size: 0,
+        });
+        let glyph_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("glyph pipeline layout"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
             immediate_size: 0,
         });
 
@@ -249,9 +277,18 @@ impl Renderer {
             6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
         ];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
+        let soft_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
+        let glyph_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,
             step_mode: wgpu::VertexStepMode::Instance,
+            attributes,
+        };
+        let vertices = |stride, attributes| wgpu::VertexBufferLayout {
+            array_stride: stride,
+            step_mode: wgpu::VertexStepMode::Vertex,
             attributes,
         };
 
@@ -278,6 +315,17 @@ impl Renderer {
             HDR_FORMAT,
             Some(premultiplied),
         );
+        let soft = make(
+            "soft bodies",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_soft",
+            "fs_soft",
+            &[Some(vertices(std::mem::size_of::<SoftVertex>() as u64, &soft_attributes))],
+            TriangleList,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
         let ball = make(
             "balls",
             &scene_pipeline_layout,
@@ -285,6 +333,17 @@ impl Renderer {
             "vs_ball",
             "fs_ball",
             &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
+        let glyph = make(
+            "glyphs",
+            &glyph_pipeline_layout,
+            &glyph_shader,
+            "vs_glyph",
+            "fs_glyph",
+            &[Some(instances(std::mem::size_of::<GlyphInstance>() as u64, &glyph_attributes))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -399,13 +458,16 @@ impl Renderer {
             globals_group,
             post_layout,
             composite_layout,
+            atlas_layout,
             sampler,
             background,
             trail,
             shape,
+            soft,
             ball,
             look,
             flash,
+            glyph,
             shape_object,
             ball_object,
             look_object,
@@ -416,13 +478,51 @@ impl Renderer {
             composite,
             trail_buffer: GrowableBuffer::new("trail vertices"),
             shape_buffer: GrowableBuffer::new("shape instances"),
+            soft_buffer: GrowableBuffer::new("soft vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
             look_buffer: GrowableBuffer::new("styled ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
+            glyph_buffer: GrowableBuffer::new("glyph instances"),
+            atlas: None,
             targets,
             surface: flow::surface::Surface::new(device),
             flow: None,
         }
+    }
+
+    /// Uploads the glyph atlas when it changed since the last frame.
+    fn sync_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let atlas = text::glyphs();
+        if self.atlas.as_ref().is_some_and(|a| a.size == atlas.size && a.generation == atlas.generation) {
+            return;
+        }
+        let size = atlas.size.max(1);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            texture.as_image_copy(),
+            &atlas.texels(),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size), rows_per_image: Some(size) },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&Default::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glyph atlas"),
+            layout: &self.atlas_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.atlas = Some(AtlasTexture { size: atlas.size, generation: atlas.generation, group });
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -482,9 +582,14 @@ impl Renderer {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
+        self.soft_buffer.upload(device, queue, bytemuck::cast_slice(&frame.soft));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
+        self.glyph_buffer.upload(device, queue, bytemuck::cast_slice(&frame.glyphs));
+        if !frame.glyphs.is_empty() {
+            self.sync_atlas(device, queue);
+        }
         self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
@@ -508,6 +613,12 @@ impl Renderer {
                 pass.set_pipeline(&self.shape);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
                 pass.draw(0..4, 0..frame.shapes.len() as u32);
+            }
+            let soft_vertices = frame.soft.len() - frame.soft.len() % 3;
+            if soft_vertices > 0 {
+                pass.set_pipeline(&self.soft);
+                pass.set_vertex_buffer(0, self.soft_buffer.slice());
+                pass.draw(0..soft_vertices as u32, 0..1);
             }
             if let Some(flow) = &self.flow {
                 flow.draw_swarms(&mut pass, &self.globals_group, frame);
@@ -584,6 +695,12 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
             self.particles.draw(&mut pass);
+            if let (false, Some(atlas)) = (frame.glyphs.is_empty(), &self.atlas) {
+                pass.set_pipeline(&self.glyph);
+                pass.set_bind_group(1, &atlas.group, &[]);
+                pass.set_vertex_buffer(0, self.glyph_buffer.slice());
+                pass.draw(0..4, 0..frame.glyphs.len() as u32);
+            }
         }
         self.chain.run(
             device,

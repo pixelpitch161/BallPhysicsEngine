@@ -8,4 +8,6 @@ pub mod folder;
 pub mod liquid;
 pub mod obstacle;
 pub mod scene;
+pub mod soft;
 pub mod swarm;
+pub mod text;

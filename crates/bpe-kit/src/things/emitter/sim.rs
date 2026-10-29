@@ -21,6 +21,10 @@ pub struct EmitterState {
     pub released: u32,
     /// Which of the matching targets gets the next item.
     pub next_target: usize,
+    /// Items owed by `base_time` at the rates before the current one: a keyframed rate changes
+    /// how fast the count grows from here, never how many are owed at once.
+    pub base_count: f32,
+    pub base_time: f32,
 }
 
 /// The size of one item of `thing`, when it is a kind that has one.
@@ -48,24 +52,45 @@ impl ThingSim for EmitterSim {
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let settings = EmitterSettings::from_params(&resolved.params);
         let rng = Rng::new(settings.seed, thing.id.0);
+        let base_time = settings.start;
         world.states.insert(
             thing.id,
-            Box::new(EmitterState { settings, position: thing.transform.position, rng, released: 0, next_target: 0 }),
+            Box::new(EmitterState {
+                settings,
+                position: thing.transform.position,
+                rng,
+                released: 0,
+                next_target: 0,
+                base_count: 0.0,
+                base_time,
+            }),
         );
+    }
+
+    fn settings_changed(&self, me: ThingId, resolved: &ResolvedThing, world: &mut World) {
+        let settings = EmitterSettings::from_params(&resolved.params);
+        let now = world.time() as f32;
+        let Some(st) = world.states.get_mut(&me) else { return };
+        let st = state_mut::<EmitterState>(st.as_mut());
+        if settings.rate != st.settings.rate {
+            st.base_count += (now - st.base_time).max(0.0) * st.settings.rate;
+            st.base_time = now.max(st.base_time);
+        }
+        st.settings = settings;
     }
 
     fn spawn(&self, me: ThingId, world: &mut World, log: &mut Log) {
         let time = world.time() as f32;
-        let (settings, released) = {
+        let (settings, released, base_count, base_time) = {
             let st = state::<EmitterState>(world.states[&me].as_ref());
-            (st.settings.clone(), st.released)
+            (st.settings.clone(), st.released, st.base_count, st.base_time)
         };
         if released >= settings.limit || time < settings.start || (settings.stop > 0.0 && time > settings.stop) {
             return;
         }
         let due = match settings.on {
             Trigger::Time => {
-                let steady = ((time - settings.start) * settings.rate).floor().max(0.0) as u32;
+                let steady = (base_count + (time - base_time) * settings.rate).floor().max(0.0) as u32;
                 (steady + settings.burst).min(settings.limit)
             }
             Trigger::Hit => {
@@ -126,6 +151,29 @@ mod tests {
             p.set("target", Value::Target(Target::Thing(BALLS)));
             f(p);
         })
+    }
+
+    #[test]
+    fn a_keyframed_rate_releases_steadily() {
+        // A key on Rate changes the physics while the world runs (stage 7). A rate ramping from
+        // 0 to 120 a second over 2 s releases about 120 drops, the area under the ramp, a few
+        // at a time: never a burst when the rate moves.
+        let (mut scene, _, kit, me) = emitter(|p| {
+            p.set("rate", Value::Number(0.0));
+            p.set("limit", Value::Int(10_000));
+        });
+        let rate = bpe_core::Address { owner: bpe_core::Owner::Thing(me), slot: None, key: "rate".into() };
+        scene.set_key(&kit.registry, &rate, 0.0, Value::Number(0.0)).unwrap();
+        scene.set_key(&kit.registry, &rate, 2.0, Value::Number(120.0)).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let (_, log) = run(&scene, &resolved, &kit, 2.0);
+        let spawns: Vec<_> = log.events().iter().filter(|e| e.kind == EventKind::Spawn).collect();
+        assert!((100..=130).contains(&spawns.len()), "{} drops", spawns.len());
+        let mut per_step = std::collections::BTreeMap::new();
+        for e in &spawns {
+            *per_step.entry(e.step).or_insert(0) += 1;
+        }
+        assert!(per_step.values().all(|&n| n <= 2), "a burst of {:?} drops in one step", per_step.values().max());
     }
 
     #[test]

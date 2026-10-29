@@ -74,6 +74,15 @@ impl ThingSim for FieldSim {
         world.states.insert(thing.id, Box::new(st));
     }
 
+    fn settings_changed(&self, me: ThingId, resolved: &ResolvedThing, world: &mut World) {
+        // A keyframe or pulse moved a setting: the push follows it, the region's memory of who
+        // is inside stays.
+        let settings = FieldSettings::from_params(&resolved.params);
+        if let Some(st) = world.states.get_mut(&me) {
+            state_mut::<FieldState>(st.as_mut()).settings = settings;
+        }
+    }
+
     fn forces(&self, me: ThingId, world: &mut World, dt: f32) {
         let st = state::<FieldState>(world.states[&me].as_ref());
         let (settings, center, rotation) = (st.settings.clone(), st.center, st.rotation);
@@ -161,6 +170,25 @@ mod tests {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         (scene, resolved, kit, id)
+    }
+
+    #[test]
+    fn a_keyframed_strength_pushes_while_running() {
+        // A key on Strength changes the physics while the world runs (stage 7); the field must
+        // read the new strength without a rebuild. A wind keyed from 0 to 1000 over a second
+        // gives a still ball about 500 px/s (the area under a smooth ramp).
+        let (mut scene, _, kit, me) = field(Vec2::new(-100.0, 0.0), |p| {
+            p.set("kind", Value::Choice("wind".into()));
+            p.set("strength", Value::Number(0.0));
+            p.set("shape", Value::Choice("everywhere".into()));
+        });
+        let strength = bpe_core::Address { owner: bpe_core::Owner::Thing(me), slot: None, key: "strength".into() };
+        scene.set_key(&kit.registry, &strength, 0.0, Value::Number(0.0)).unwrap();
+        scene.set_key(&kit.registry, &strength, 1.0, Value::Number(1000.0)).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let (w, _) = run(&scene, &resolved, &kit, 1.0);
+        let v = w.bodies[&BALLS].velocity[0];
+        assert!((v.x - 500.0).abs() < 25.0 && v.y.abs() < 1e-3, "the keyed wind should push: {v:?}");
     }
 
     #[test]

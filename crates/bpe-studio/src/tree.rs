@@ -713,6 +713,10 @@ enum Icon {
     Folder,
     /// An obstacle: a bar with a peg.
     Bar,
+    /// A soft body: a squashed blob.
+    Blob,
+    /// Text: a letter.
+    Letter,
     /// Anything else.
     Diamond,
 }
@@ -728,6 +732,8 @@ fn icon_shape(kind: &str) -> Icon {
         "field" => Icon::Wind,
         "folder" => Icon::Folder,
         "obstacle" => Icon::Bar,
+        "soft" => Icon::Blob,
+        "text" => Icon::Letter,
         _ => Icon::Diamond,
     }
 }
@@ -797,6 +803,17 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             let bar = Rect::from_center_size(c + Vec2::new(0.0, r * 0.4), Vec2::new(r * 2.0, r * 0.6));
             painter.rect_filled(bar, 1.5, ink);
             painter.circle_filled(c + Vec2::new(r * 0.3, -r * 0.5), r * 0.4, ink);
+        }
+        Icon::Blob => {
+            // A circle flattened on the ground it rests on.
+            let body = Rect::from_center_size(c + Vec2::new(0.0, r * 0.25), Vec2::new(r * 2.1, r * 1.5));
+            painter.rect_stroke(body, r * 0.7, stroke, egui::StrokeKind::Inside);
+            painter.circle_filled(c + Vec2::new(-r * 0.3, -r * 0.1), r * 0.18, ink);
+        }
+        Icon::Letter => {
+            let top = c + Vec2::new(0.0, -r * 0.9);
+            painter.line_segment([top - Vec2::new(r * 0.9, 0.0), top + Vec2::new(r * 0.9, 0.0)], Stroke::new(2.0, ink));
+            painter.line_segment([top, c + Vec2::new(0.0, r * 0.95)], Stroke::new(2.0, ink));
         }
         Icon::Diamond => {
             let points =

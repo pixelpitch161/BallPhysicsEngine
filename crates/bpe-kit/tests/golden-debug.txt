@@ -19,3 +19,8 @@ Wind tunnel	1182	6001915ec1b76f3a
 Small pool	8	c910ce5fcd5cbf75
 Deep pool	36	d8ad47ac593c2a3e
 Fireflies	13	44504adc0f47ac3a
+Jelly drop	83	78f937772976f709
+Rope bridge	204	0c6b7b2d9118c611
+Cloth hammock	147	398b0413a444fd8f
+Captioned reel	3005	46d9717c68fd16c0
+Drum beat	65	250299a39f93d9cf

@@ -4,9 +4,10 @@
 
 use crate::selection::Selection;
 use crate::theme;
-use crate::widgets::{GridCx, TargetChoices, settings_grid, settings_grid_marked};
+use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
 use bpe_core::{
-    Address, Attach, Depth, ModuleId, ModuleKind, Owner, Resolved, Scene, SlotId, SlotLink, ThingId, Transform, Value,
+    Address, Attach, Color, Depth, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene, SettingDef,
+    SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
@@ -16,6 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Inspector {
     /// The depth each card is open at: the kind's settings (`None`) and each slot.
     pub depth: BTreeMap<(ThingId, Option<SlotId>), Depth>,
+    /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
+    /// pauses so a drag doesn't leave a key on every frame.
+    pub keyed_edit: bool,
     /// Set when "Open in Library" was clicked; the app opens the Library window on it.
     pub open_library: Option<ModuleId>,
 }
@@ -34,6 +38,10 @@ enum Edit {
     SetSlot(SlotId, &'static str, Value),
     ResetOverride(SlotId, &'static str),
     PushOverride(SlotId, &'static str),
+    /// Add a key at the playhead, or remove the one there.
+    ToggleKey(Address),
+    /// Pulse with a source, or stop pulsing.
+    Pulse(Address, Option<PulseSource>),
     Link(SlotId, ModuleId),
     NewModule {
         slot: SlotId,
@@ -80,7 +88,8 @@ pub(crate) fn write_target(scene: &Scene, resolved: &Resolved, id: ThingId, slot
 }
 
 /// Draws the inspector for the selection's primary thing and applies its edits, to every
-/// selected thing where that makes sense. True when the scene changed.
+/// selected thing where that makes sense. Values are shown as they are at `time` (the
+/// playhead), and an edit to a keyed setting writes a key there. True when the scene changed.
 pub fn show(
     ui: &mut Ui,
     inspector: &mut Inspector,
@@ -88,6 +97,7 @@ pub fn show(
     kit: &Kit,
     resolved: &Resolved,
     selection: &Selection,
+    time: f64,
 ) -> bool {
     let reg = &kit.registry;
     let Some((id, thing)) = selection.primary.and_then(|id| scene.things.get(&id).map(|t| (id, t.clone()))) else {
@@ -154,14 +164,20 @@ pub fn show(
                 depth_switch(ui, inspector.depth.entry((id, None)).or_insert(Depth::Simple));
             });
             let depth = inspector.depth.get(&(id, None)).copied().unwrap_or(Depth::Simple);
-            let get = |key: &str| {
-                let a = Address { owner: Owner::Thing(id), slot: None, key: key.into() };
-                scene.value_at(reg, &a).expect("the kind's own settings all resolve")
+            let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
+            let get =
+                |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
+            let sim = kit.sims.thing(&thing.kind);
+            let marks = |key: &str| {
+                let def = kind.settings().iter().find(|d| d.key == key)?;
+                let physics = sim.is_some_and(|s| s.affects_physics(key));
+                mark_for(scene, def, &own(key), time, physics)
             };
-            let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None };
-            for (key, value) in settings_grid_marked(ui, ("kind", id), kind.settings(), depth, get, &cx).changes {
-                edits.push(Edit::SetKind(key, value));
-            }
+            let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+            let out = settings_grid_marked(ui, ("kind", id), kind.settings(), depth, get, &cx);
+            edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
+            edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
+            edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
         });
 
         // ---------- one card per slot ----------
@@ -298,32 +314,44 @@ pub fn show(
                 };
                 let Some(mkind) = reg.module(&m.kind) else { return };
                 let depth = inspector.depth.get(&(id, Some(slot))).copied().unwrap_or(Depth::Simple);
+                let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
+                let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
+                let of_thing = |key: &str| Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
+                let mark = |a: &Address| {
+                    let def = mkind.settings().iter().find(|d| d.key == a.key)?;
+                    mark_for(scene, def, a, time, physics)
+                };
                 ui.add_space(4.0);
                 match write {
-                    Write::Module(module) => {
+                    Write::Module(_) => {
                         let get = |key: &str| {
-                            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
-                            scene.value_at(reg, &a).expect("a module's settings all resolve")
+                            scene.value_at_time(reg, &of_module(key), time).expect("a module's settings all resolve")
                         };
-                        let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None };
+                        let marks = |key: &str| mark(&of_module(key));
+                        let cx =
+                            GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
                         let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
+                        edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
+                        edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
                     }
                     Write::Override(..) => {
                         let get = |key: &str| {
-                            let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
-                            scene.value_at(reg, &a).expect("a linked slot's settings all resolve")
+                            scene
+                                .value_at_time(reg, &of_thing(key), time)
+                                .expect("a linked slot's settings all resolve")
                         };
                         let overridden = |key: &str| overrides.is_some_and(|o| o.get(key).is_some());
-                        let inherited = |key: &str| {
-                            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
-                            scene.value_at(reg, &a)
-                        };
-                        let cx = GridCx { choices: &choices, overridden: &overridden, inherited: &inherited };
+                        let inherited = |key: &str| scene.value_at(reg, &of_module(key));
+                        let marks = |key: &str| mark(&of_thing(key));
+                        let cx =
+                            GridCx { choices: &choices, overridden: &overridden, inherited: &inherited, marks: &marks };
                         let out = settings_grid_marked(ui, ("slot", id, slot), mkind.settings(), depth, get, &cx);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
+                        edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_thing(key))));
+                        edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_thing(key), source)));
                     }
                     Write::Inherited { module, .. } => {
                         if ui
@@ -390,7 +418,7 @@ pub fn show(
                     .collect();
                 for t in &same_kind {
                     let a = Address { owner: Owner::Thing(*t), slot: None, key: key.into() };
-                    any |= scene.set_at(reg, &a, value.clone()).is_ok();
+                    any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
                 }
                 any
             }
@@ -403,7 +431,8 @@ pub fn show(
                     if !same {
                         continue;
                     }
-                    any |= write_slot(scene, resolved, reg, *t, slot, key, value.clone());
+                    any |=
+                        write_slot(scene, resolved, reg, *t, slot, key, value.clone(), time, &mut inspector.keyed_edit);
                 }
                 any
             }
@@ -421,6 +450,12 @@ pub fn show(
                     None => false,
                 }
             }
+            Edit::ToggleKey(address) => toggle_key(scene, reg, &address, time),
+            Edit::Pulse(address, Some(source)) => match scene.def_at(reg, &address) {
+                Some(def) => scene.set_pulse(reg, &address, source, pulse_amount(def), 0.25).is_ok(),
+                None => false,
+            },
+            Edit::Pulse(address, None) => scene.remove_pulse(&address),
             Edit::Link(slot, module) => scene.link(reg, id, slot, module).is_ok(),
             Edit::NewModule { slot, kind, copy_from } => {
                 let name = format!("{} {}", thing.name, slot.name());
@@ -470,6 +505,7 @@ pub fn show(
 
 /// Writes one slot setting for one thing, where its write policy says: the module, the thing's
 /// own override, or, for an inherited slot, a fresh link to the module and then an override.
+#[allow(clippy::too_many_arguments)]
 fn write_slot(
     scene: &mut Scene,
     resolved: &Resolved,
@@ -478,24 +514,44 @@ fn write_slot(
     slot: SlotId,
     key: &str,
     value: Value,
+    time: f64,
+    keyed: &mut bool,
 ) -> bool {
     match write_target(scene, resolved, id, slot) {
         Some(Write::Module(module)) => {
             let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
-            scene.set_at(reg, &a, value).is_ok()
+            set_or_key(scene, reg, &a, value, time, keyed)
         }
         Some(Write::Override(..)) => {
             let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
-            scene.set_at(reg, &a, value).is_ok()
+            set_or_key(scene, reg, &a, value, time, keyed)
         }
         Some(Write::Inherited { module, .. }) => {
             if scene.link(reg, id, slot, module).is_err() {
                 return false;
             }
             let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
-            scene.set_at(reg, &a, value).is_ok()
+            set_or_key(scene, reg, &a, value, time, keyed)
         }
         None => false,
+    }
+}
+
+/// Writes `value` to `a`: as a key at `time` when the setting has keys (and notes so in
+/// `keyed`), else as its plain value.
+fn set_or_key(
+    scene: &mut Scene,
+    reg: &bpe_core::Registry,
+    a: &Address,
+    value: Value,
+    time: f64,
+    keyed: &mut bool,
+) -> bool {
+    if scene.keyed(a) {
+        *keyed = true;
+        scene.set_key(reg, a, time, value).is_ok()
+    } else {
+        scene.set_at(reg, a, value).is_ok()
     }
 }
 
@@ -590,6 +646,42 @@ fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Ve
     ui.end_row();
 }
 
+/// What a setting's diamond shows, or `None` for a setting that can't be keyed or pulsed.
+fn mark_for(scene: &Scene, def: &SettingDef, a: &Address, time: f64, physics: bool) -> Option<KeyMark> {
+    if !def.flags.keyframe && !def.flags.pulse {
+        return None;
+    }
+    Some(KeyMark {
+        can_key: def.flags.keyframe,
+        can_pulse: def.flags.pulse,
+        keyed: scene.keyed(a),
+        on_key: scene.tracks.get(a).and_then(|t| t.key_near(time, SAME_TIME)).is_some(),
+        pulsed: scene.pulses.contains_key(a),
+        physics,
+    })
+}
+
+/// Removes the key at the playhead, or puts one there holding the setting's current value.
+fn toggle_key(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, time: f64) -> bool {
+    if let Some(index) = scene.tracks.get(a).and_then(|t| t.key_near(time, SAME_TIME)) {
+        return scene.remove_key(a, index);
+    }
+    let Some(value) = scene.value_at_time(reg, a, time) else { return false };
+    scene.set_key(reg, a, time, value).is_ok()
+}
+
+/// A pulse's starting amount: a quarter of the setting's range, as its kind of value.
+pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
+    let quarter = def.range.map_or(1.0, |(min, max)| (max - min) / 4.0);
+    match (&def.ty, &def.default) {
+        (ValueType::Int, _) => Value::Int(quarter.round().max(1.0) as i64),
+        (ValueType::Vec2, Value::Vec2(v)) if v != &[0.0, 0.0] => Value::Vec2([v[0] / 4.0, v[1] / 4.0]),
+        (ValueType::Vec2, _) => Value::Vec2([0.0, 100.0]),
+        (ValueType::Color, _) => Value::Color(Color::WHITE),
+        _ => Value::Number(quarter),
+    }
+}
+
 fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing)) -> bool {
     match scene.things.get_mut(&id) {
         Some(t) => {
@@ -618,7 +710,7 @@ fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Resolved, SlotId, SlotLink, Value, resolve};
+    use bpe_core::{Resolved, Settings, SlotId, SlotLink, Value, resolve};
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
         Harness,
@@ -632,6 +724,7 @@ mod tests {
         kit: Kit,
         resolved: Resolved,
         selection: Selection,
+        time: f64,
     }
 
     fn harness(selected: Option<ThingId>) -> Harness<'static, State> {
@@ -642,7 +735,7 @@ mod tests {
         if let Some(id) = selected {
             selection.set(id);
         }
-        let state = State { inspector: Inspector::default(), scene, kit, resolved, selection };
+        let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
             .with_size(egui::vec2(420.0, 1600.0))
             .with_step_dt(1.0 / 60.0)
@@ -651,7 +744,7 @@ mod tests {
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
-                    if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection) {
+                    if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, s.time) {
                         s.resolved = resolve(&s.scene, &s.kit.registry);
                     }
                 },
@@ -716,6 +809,59 @@ mod tests {
         let s = h.state();
         let v = s.scene.things[&ThingId(2)].params.get("radius").cloned();
         assert!(matches!(v, Some(Value::Number(r)) if r > 100.0), "{v:?}");
+    }
+
+    #[test]
+    fn clicking_a_diamond_adds_a_key_at_the_playhead_and_again_removes_it() {
+        let mut h = harness(Some(ThingId(2)));
+        h.state_mut().time = 2.0;
+        h.run();
+        h.get_by_label("Keyframe Size").click();
+        h.run();
+        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
+        let keys = &h.state().scene.tracks[&size].keys;
+        assert_eq!(keys.len(), 1);
+        assert_eq!((keys[0].time, &keys[0].value), (2.0, &Value::Number(24.0)));
+        h.get_by_label("Keyframe Size").click();
+        h.run();
+        assert!(!h.state().scene.tracks.contains_key(&size));
+        // Size can't pulse, so its diamond has no menu; the scene's bloom can.
+        h.get_by_label("Keyframe Size").click_secondary();
+        h.run();
+        assert!(h.query_by_label("Pulse with beat").is_none());
+        h.state_mut().selection.set(ThingId::ROOT);
+        h.run();
+        h.get_by_label("Keyframe Bloom").click_secondary();
+        h.run();
+        h.get_by_label("Pulse with beat").click();
+        h.run();
+        let bloom = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bloom".into() };
+        let pulse = &h.state().scene.pulses[&bloom];
+        assert_eq!((pulse.source, &pulse.amount), (PulseSource::Beat, &Value::Number(0.25)));
+        assert_eq!(pulse_amount(&bpe_kit::SceneSettings::defs()[1]), Value::Vec2([0.0, 125.0]), "gravity");
+        h.get_by_label("Keyframe Bloom").click_secondary();
+        h.run();
+        h.get_by_label("No pulse").click();
+        h.run();
+        assert!(h.state().scene.pulses.is_empty());
+    }
+
+    #[test]
+    fn editing_a_keyed_slider_writes_a_key_not_the_base_value() {
+        let mut h = harness(Some(ThingId(2)));
+        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
+        h.state_mut().scene.set_key(&bpe_kit::kit().registry, &size, 0.0, Value::Number(40.0)).unwrap();
+        h.state_mut().time = 3.0;
+        h.run();
+        let rect = slider_rect(&h, "Size");
+        drag_slider(&mut h, rect, 0.9);
+        let s = h.state();
+        assert_eq!(s.scene.things[&ThingId(2)].params.get("radius"), None, "the plain value is left alone");
+        let keys = &s.scene.tracks[&size].keys;
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert_eq!(keys[1].time, 3.0);
+        assert!(matches!(keys[1].value, Value::Number(r) if r > 100.0), "{:?}", keys[1].value);
+        assert!(s.inspector.keyed_edit, "the studio pauses on this, so the drag keys one moment");
     }
 
     #[test]

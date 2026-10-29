@@ -11,7 +11,8 @@ enum Icon {
     Restart,
 }
 
-pub fn show(ui: &mut Ui, studio: &mut Studio) {
+/// The first row: play, pause, the clock, loop and mute.
+pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
     ui.horizontal(|ui| {
         let icon = if studio.playing { Icon::Pause } else { Icon::Play };
         if round_button(ui, 34.0, icon).on_hover_text("Play or pause (Space)").clicked() {
@@ -27,19 +28,23 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
             studio.sync_mute();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let hint = "Drag the bar to scrub · ticks are hits";
+            let hint = if studio.panels.sound.beats.is_empty() {
+                "Drag the bar to scrub · ticks are hits"
+            } else {
+                "Drag the bar to scrub · ticks are hits · marks below are beats"
+            };
             ui.label(RichText::new(hint).small().color(theme::MUTED));
         });
     });
-    ui.add_space(4.0);
-    scrub_bar(ui, studio);
 }
 
-/// The whole video as a bar: hits as ticks, the playhead, and dragging to scrub.
-fn scrub_bar(ui: &mut Ui, studio: &mut Studio) {
+/// The whole video as a bar: hits as ticks, beats as marks along the bottom, the playhead,
+/// and dragging to scrub. The bar starts `inset` points in from the left, so the lanes below
+/// it can line up; the rect of the bar itself comes back.
+pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     let duration = studio.duration().max(0.001);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::click_and_drag());
-    let track = rect.shrink2(egui::vec2(0.0, 6.0));
+    let track = Rect::from_min_max(Pos2::new(rect.left() + inset, rect.top() + 6.0), rect.max - egui::vec2(0.0, 6.0));
     let painter = ui.painter_at(rect);
     painter.rect_filled(track, 6.0, theme::RAISED);
 
@@ -84,6 +89,17 @@ fn scrub_bar(ui: &mut Ui, studio: &mut Studio) {
             Stroke::new(1.0, theme::LINE),
         );
     }
+    // Beats, along the bottom.
+    for &beat in &studio.panels.sound.beats {
+        if beat < 0.0 || beat as f64 > duration {
+            continue;
+        }
+        let x = track.left() + (beat as f64 / duration) as f32 * track.width();
+        painter.line_segment(
+            [Pos2::new(x, track.bottom() - 6.0), Pos2::new(x, track.bottom() - 1.0)],
+            Stroke::new(1.0, theme::WARNING),
+        );
+    }
 
     // The playhead.
     let x = track.left() + (studio.time / duration) as f32 * track.width();
@@ -112,6 +128,7 @@ fn scrub_bar(ui: &mut Ui, studio: &mut Studio) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     response.on_hover_text("Click or drag to move through the video");
+    track
 }
 
 fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {

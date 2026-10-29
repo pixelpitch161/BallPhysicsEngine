@@ -3,6 +3,7 @@
 
 pub mod gizmo;
 pub mod modules;
+pub mod music;
 pub mod rng;
 pub mod scenes;
 #[cfg(test)]
@@ -20,10 +21,14 @@ use glam::Vec2;
 pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
+pub use modules::drums::mix::DrumSoundMix;
+pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
 pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
+pub use modules::melody::mix::MelodySoundMix;
+pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::motion_flock::{Flocking, FlockingKind};
@@ -37,6 +42,9 @@ pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
+pub use music::{
+    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
+};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -55,11 +63,13 @@ pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
 pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
-pub use things::scene::sim::SceneSim;
-pub use things::scene::{SceneKind, SceneSettings};
+pub use things::scene::sim::{SceneSim, SceneState};
+pub use things::scene::{BeatSync, SceneKind, SceneSettings};
+pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
 pub use things::swarm::draw::SwarmDraw;
 pub use things::swarm::sim::{SwarmSim, SwarmState};
 pub use things::swarm::{SwarmKind, SwarmSettings, SwarmStart};
+pub use things::text::{Align, Appear, Font, TextDraw, TextKind, TextSettings};
 
 /// Every kind's simulation part, for the runtime.
 pub fn sims() -> Sims {
@@ -71,6 +81,7 @@ pub fn sims() -> Sims {
     s.add_thing(FieldSim);
     s.add_thing(LiquidSim);
     s.add_thing(SwarmSim);
+    s.add_thing(SoftSim);
     s.add_thing(FolderSim);
     s.add_thing(ObstacleSim);
     s.add_module(BasicMotionSim);
@@ -87,6 +98,8 @@ pub fn draws() -> Draws {
     d.add(BallsDraw);
     d.add(LiquidDraw);
     d.add(SwarmDraw);
+    d.add(SoftDraw);
+    d.add(TextDraw);
     d.add(ObstacleDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
@@ -100,6 +113,8 @@ pub fn draws() -> Draws {
 pub fn mixes() -> Mixes {
     let mut m = Mixes::default();
     m.add(NoteSoundMix);
+    m.add(DrumSoundMix);
+    m.add(MelodySoundMix);
     m
 }
 
@@ -195,9 +210,20 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     }
 }
 
-/// The soundtrack of a finished run of `scene`.
+/// The soundtrack of a finished run of `scene`: its keyframed sound settings followed, its
+/// notes placed through the beat sync's time warp, and its song mixed in underneath.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    bpe_mix::mix(&mix_settings(scene, resolved), resolved, log, &kit.mixes)
+    let animation = bpe_core::Animation::new(scene, resolved);
+    let animation = (!animation.is_empty()).then_some(&animation);
+    let warp = warp_for(scene, resolved, log);
+    let mut track = bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, log, &kit.mixes, animation, &|t| {
+        warp.video_time(t)
+    });
+    let root = music::root_settings(resolved);
+    if let Some(song) = load_song(&root.song) {
+        music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
+    }
+    track
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
@@ -206,6 +232,8 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
+    r.add_thing(SoftKind);
+    r.add_thing(TextKind);
     r.add_thing(FolderKind);
     r.add_thing(ObstacleKind);
     r.add_thing(EmitterKind);
@@ -223,6 +251,8 @@ pub fn registry() -> Registry {
     r.add_module(FlockingKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
+    r.add_module(DrumSoundKind);
+    r.add_module(MelodySoundKind);
     for k in modules::shader::kinds() {
         r.add_module(k);
     }

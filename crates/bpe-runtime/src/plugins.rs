@@ -87,8 +87,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn forces(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
     /// After Integrate and before Collide in every substep: a liquid relaxes its particles.
     fn settle(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
-    /// The Events stage, last in every step: zone entries and leaves and the like.
+    /// The Events stage, last in every step, with the log: zone entries and leaves, a soft
+    /// body's impacts, the scene's beats.
     fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
+    /// A keyframe or pulse moved one of the thing's settings while the world runs: re-read
+    /// whatever can change without rebuilding. `resolved` holds the settings as they are now.
+    fn settings_changed(&self, _thing: ThingId, _resolved: &ResolvedThing, _world: &mut World) {}
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {

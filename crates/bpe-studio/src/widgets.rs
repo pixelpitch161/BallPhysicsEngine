@@ -1,7 +1,9 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, Depth, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
-use eframe::egui::{self, Color32, DragValue, Response, RichText, Sense, Slider, Ui, Vec2, color_picker::Alpha};
+use bpe_core::{Color, Depth, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
+use eframe::egui::{
+    self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
+};
 
 use crate::theme;
 
@@ -45,20 +47,26 @@ pub fn target_words(t: &Target, choices: &TargetChoices) -> String {
 }
 
 /// What a settings grid needs to know beyond the values: what targets can point at, which
-/// settings this thing changed for itself, and what they would be without that change.
+/// settings this thing changed for itself and what they would be without that change, and
+/// what each setting's keyframe diamond shows (none for a row without a diamond).
 pub struct GridCx<'a> {
     pub choices: &'a TargetChoices,
     pub overridden: &'a dyn Fn(&str) -> bool,
     pub inherited: &'a dyn Fn(&str) -> Option<Value>,
+    pub marks: &'a dyn Fn(&str) -> Option<KeyMark>,
 }
 
-/// What the user did in a marked grid: values changed, overrides reset to the module, and
-/// overrides pushed into the module.
+/// What the user did in a marked grid: values changed, overrides reset to the module, overrides
+/// pushed into the module, keyframe diamonds clicked and pulses picked.
 #[derive(Default)]
 pub struct GridOutcome {
     pub changes: Vec<(&'static str, Value)>,
     pub resets: Vec<&'static str>,
     pub pushes: Vec<&'static str>,
+    /// The settings whose diamond was clicked: add a key at the playhead, or remove the one there.
+    pub toggled_key: Vec<&'static str>,
+    /// Pulse choices from the diamond's menu: a source, or `None` to stop pulsing.
+    pub pulse: Vec<(&'static str, Option<PulseSource>)>,
 }
 
 /// `electric_piano` to "Electric piano".
@@ -94,6 +102,26 @@ pub fn rows_at(defs: &[SettingDef], depth: Depth) -> Vec<Row<'_>> {
     rows
 }
 
+/// What a setting's keyframe diamond shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyMark {
+    /// Keys are allowed on the setting.
+    pub can_key: bool,
+    /// A pulse is allowed on the setting.
+    pub can_pulse: bool,
+    /// The setting has keys.
+    pub keyed: bool,
+    /// A key sits at the playhead.
+    pub on_key: bool,
+    /// The setting pulses with the music or the hits.
+    pub pulsed: bool,
+    /// The setting moves the physics, so it can't pulse with hits.
+    pub physics: bool,
+}
+
+/// The width of the diamond cell at the left of every row.
+pub const DIAMOND_CELL: f32 = 16.0;
+
 /// A settings grid at `depth` with no marks and nothing for targets to point at. `get` supplies
 /// each setting's value as it stands; the rows the user changed come back as (key, new value)
 /// for the caller to write through `set_at`.
@@ -105,12 +133,13 @@ pub fn settings_grid(
     get: impl Fn(&str) -> Value,
 ) -> Vec<(&'static str, Value)> {
     let choices = TargetChoices::default();
-    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None };
+    let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &|_| None };
     settings_grid_marked(ui, id, defs, depth, get, &cx).changes
 }
 
-/// A settings grid at `depth` that marks the settings this thing changed for itself with a dot
-/// before their names. Such a row's double-click or Alt+click goes back to the module's value,
+/// A settings grid at `depth` with a keyframe diamond before each setting that can have one
+/// (click: a key at the playhead; right-click: pulses), and a dot before the settings this thing
+/// changed for itself. Such a row's double-click or Alt+click goes back to the module's value,
 /// and its right-click menu offers to reset or push the change.
 pub fn settings_grid_marked(
     ui: &mut Ui,
@@ -121,15 +150,24 @@ pub fn settings_grid_marked(
     cx: &GridCx,
 ) -> GridOutcome {
     let mut out = GridOutcome::default();
-    egui::Grid::new(id).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
+    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
         for row in rows_at(defs, depth) {
             match row {
                 Row::Group(group) => {
+                    empty_cell(ui);
                     // A grid can't take spacing, so the heading carries its own air above.
                     ui.add(egui::Label::new(RichText::new(format!("\n{group}")).strong().color(theme::MUTED)));
                     ui.end_row();
                 }
                 Row::Setting(def) => {
+                    match (cx.marks)(def.key) {
+                        Some(mark) => match diamond(ui, def.label, mark) {
+                            DiamondClick::None => {}
+                            DiamondClick::Toggle => out.toggled_key.push(def.key),
+                            DiamondClick::Pulse(source) => out.pulse.push((def.key, source)),
+                        },
+                        None => empty_cell(ui),
+                    }
                     let mut value = get(def.key);
                     let overridden = (cx.overridden)(def.key);
                     let inherited = (cx.inherited)(def.key);
@@ -157,6 +195,79 @@ pub enum RowAction {
     Reset,
     /// Write this thing's own change into the module.
     Push,
+}
+
+/// The diamond column's cell for a row without a diamond.
+fn empty_cell(ui: &mut Ui) {
+    ui.allocate_exact_size(egui::vec2(DIAMOND_CELL, DIAMOND_CELL), Sense::hover());
+}
+
+enum DiamondClick {
+    None,
+    Toggle,
+    Pulse(Option<PulseSource>),
+}
+
+/// The keyframe diamond of one row: hollow when the setting has no keys, outlined when it has
+/// some, filled when one sits at the playhead, with a small wave beside it when it pulses. A
+/// click toggles a key at the playhead; a right-click offers the pulses.
+fn diamond(ui: &mut Ui, label: &str, mark: KeyMark) -> DiamondClick {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(DIAMOND_CELL, DIAMOND_CELL), Sense::click());
+    let name = format!("Keyframe {label}");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+    let accent = theme::ACCENT_TEXT;
+    let color = if mark.keyed || response.hovered() { accent } else { theme::MUTED };
+    paint_diamond(ui.painter(), rect.center(), 5.0, mark.on_key, color);
+    if mark.pulsed {
+        let painter = ui.painter();
+        let x0 = rect.right() - 4.0;
+        let y = rect.center().y;
+        let points: Vec<Pos2> =
+            (0..=6).map(|i| Pos2::new(x0 + i as f32 * 0.8, y + ((i as f32) * 1.6).sin() * 3.0)).collect();
+        painter.add(egui::Shape::line(points, Stroke::new(1.0, theme::WARNING)));
+    }
+    let hint = match (mark.can_key, mark.on_key, mark.can_pulse) {
+        (false, _, _) => "Right-click to pulse with the music. This setting can't have keyframes.",
+        (true, true, true) => "Remove the key here. Right-click for pulses.",
+        (true, false, true) => "Add a keyframe at the playhead. Right-click to pulse with the music.",
+        (true, true, false) => "Remove the key here.",
+        (true, false, false) => "Add a keyframe at the playhead.",
+    };
+    let mut out = if response.clicked() && mark.can_key { DiamondClick::Toggle } else { DiamondClick::None };
+    if mark.can_pulse {
+        response.context_menu(|ui| {
+            for source in PulseSource::NAMED {
+                if source == PulseSource::Hits && mark.physics {
+                    continue;
+                }
+                if ui.button(format!("Pulse with {}", source.name().to_lowercase())).clicked() {
+                    out = DiamondClick::Pulse(Some(source));
+                    ui.close();
+                }
+            }
+            if mark.pulsed && ui.button("No pulse").clicked() {
+                out = DiamondClick::Pulse(None);
+                ui.close();
+            }
+        });
+    }
+    response.on_hover_text(hint);
+    out
+}
+
+/// A keyframe diamond: filled, or just its outline.
+pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: bool, color: Color32) {
+    let points = vec![
+        center + egui::vec2(0.0, -size),
+        center + egui::vec2(size, 0.0),
+        center + egui::vec2(0.0, size),
+        center + egui::vec2(-size, 0.0),
+    ];
+    if filled {
+        painter.add(egui::Shape::convex_polygon(points, color, Stroke::new(1.0, color)));
+    } else {
+        painter.add(egui::Shape::closed_line(points, Stroke::new(1.5, color)));
+    }
 }
 
 /// One grid row for `def`: the label (help on hover; a double-click or Alt+click puts the value
@@ -297,6 +408,20 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
                 response.response.mark_changed();
             }
             response.response.labelled_by(name)
+        }
+        (ValueType::Text, Value::Text(text)) if def.unit == "file" => {
+            // Leave room for the browse button, or the row grows past the panel.
+            let width = (ui.available_width() - 40.0).max(80.0);
+            let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(width)).labelled_by(name);
+            let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a file");
+            browse.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Browse {}", def.label)));
+            if browse.clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_file()
+            {
+                *text = path.to_string_lossy().into_owned();
+                response.mark_changed();
+            }
+            response
         }
         (ValueType::Text, Value::Text(text)) => {
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
@@ -451,6 +576,64 @@ mod tests {
     }
 
     #[test]
+    fn a_keyframe_diamond_reports_clicks_and_pulse_menu_items() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let defs = bpe_kit::BallsSettings::defs();
+        let mut h = Harness::builder().with_size(egui::vec2(420.0, 600.0)).allow_missing_glyphs().build_ui_state(
+            |ui, out: &mut GridOutcome| {
+                let marks = |key: &str| {
+                    (key == "radius").then_some(KeyMark {
+                        can_key: true,
+                        can_pulse: true,
+                        keyed: true,
+                        on_key: false,
+                        pulsed: true,
+                        physics: true,
+                    })
+                };
+                let choices = TargetChoices::default();
+                let cx = GridCx { choices: &choices, overridden: &|_| false, inherited: &|_| None, marks: &marks };
+                let got = settings_grid_marked(
+                    ui,
+                    "g",
+                    defs,
+                    Depth::Simple,
+                    |k| defs.iter().find(|d| d.key == k).unwrap().default.clone(),
+                    &cx,
+                );
+                out.changes.extend(got.changes);
+                out.toggled_key.extend(got.toggled_key);
+                out.pulse.extend(got.pulse);
+            },
+            GridOutcome::default(),
+        );
+        h.run();
+        let diamonds = h
+            .get_all_by_role(Role::Button)
+            .filter(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("Keyframe")))
+            .count();
+        assert_eq!(diamonds, 1);
+        h.get_by_label("Keyframe Size").click();
+        h.run();
+        assert_eq!(h.state().toggled_key, ["radius"]);
+        h.get_by_label("Keyframe Size").click_secondary();
+        h.run();
+        assert!(h.query_by_label("Pulse with hits").is_none(), "a physics setting can't follow the hits");
+        h.get_by_label("Pulse with bass").click();
+        h.run();
+        assert_eq!(h.state().pulse, [("radius", Some(PulseSource::Bass))]);
+        h.get_by_label("Keyframe Size").click_secondary();
+        h.run();
+        h.get_by_label("No pulse").click();
+        h.run();
+        assert_eq!(h.state().pulse.last(), Some(&("radius", None)));
+    }
+
+    #[test]
     fn simple_depth_shows_only_simple_rows_and_more_groups_the_rest() {
         let defs = bpe_kit::SceneSettings::defs();
         let simple = rows_at(defs, Depth::Simple);
@@ -459,7 +642,7 @@ mod tests {
         assert!(more.iter().filter(|r| matches!(r, Row::Setting(_))).count() == defs.len());
         let headings: Vec<&str> =
             more.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Sound", "Video"]);
+        assert_eq!(headings, ["Sound", "Video", "Song", "Beat"]);
         assert!(!simple.iter().any(|r| matches!(r, Row::Group(_))));
     }
 }

@@ -4,7 +4,7 @@
 use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::theme;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame_at, wgpu};
 use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings, GIZMO_GRAB, Gizmo, gizmos};
 use bpe_runtime::{Outline, Pose, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
@@ -138,10 +138,12 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
-    let catching_up = !studio.playback.seek_within(studio.time, Some(CATCH_UP_BUDGET));
+    // The playhead is in video time; the beat sync's warp says which moment of the run to show.
+    let catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
     // While catching up, the picture shows the moment the simulation has got to.
-    let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.time };
+    let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.sim_time() };
+    let shown_video = if outcome.catching_up { studio.warp.video_time(shown_time) } else { studio.time };
     let drawn = Drawn {
         scene: studio.scene.clone(),
         time: shown_time,
@@ -149,12 +151,13 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         size: (width, height),
     };
     if preview.drawn.as_ref() != Some(&drawn) {
-        build_frame(
+        build_frame_at(
             &studio.scene,
             &studio.resolved,
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
+            shown_video,
             &studio.kit.draws,
             &mut preview.frame,
         );
@@ -278,6 +281,16 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
             }
             let grab = (bodies.radius[i] * 1.5).max(8.0 / view.scale);
             let distance = (bodies.position[i] - p).length();
+            if distance <= grab && best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, *id));
+            }
+        }
+    }
+    for (id, st) in world.states.iter().filter(|(id, _)| shown(id)) {
+        let Some(soft) = st.as_any().downcast_ref::<bpe_kit::SoftState>() else { continue };
+        for point in &soft.world.points {
+            let grab = (point.radius * 1.5).max(8.0 / view.scale);
+            let distance = (point.position - p).length();
             if distance <= grab && best.is_none_or(|(d, _)| distance < d) {
                 best = Some((distance, *id));
             }
@@ -548,6 +561,26 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None);
         // The arrow tip sits a quarter second of launch speed from the ball.
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(75.0, -250.0))), Some(Handle::Aim(ThingId(2))));
+    }
+
+    #[test]
+    fn hit_testing_grabs_a_soft_body_by_its_points() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let soft = studio.scene.add_thing(&studio.kit.registry, "soft", ThingId::ROOT).unwrap();
+        studio.scene.things.get_mut(&soft).unwrap().transform.position = Vec2::new(0.0, 300.0);
+        studio.after_edit(before);
+        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25 };
+        // The top of the jelly's skin, 120 px above its middle.
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 182.0))), Some(Handle::Body(soft)));
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None, "the hollow middle");
+        apply_drag(
+            &mut studio.scene,
+            studio.playback.world(),
+            Drag { handle: Handle::Body(soft), offset: Vec2::ZERO },
+            Vec2::new(10.0, 20.0),
+        );
+        assert_eq!(studio.scene.things[&soft].transform.position, Vec2::new(10.0, 20.0));
     }
 
     #[test]

@@ -25,4 +25,4 @@ pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, Sims, ThingSim, Thin
 pub use pose::Pose;
 pub use solids::{Solid, Solids, keep_outside};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
-pub use world::{World, fingerprint};
+pub use world::{World, fingerprint, physics_animation};
