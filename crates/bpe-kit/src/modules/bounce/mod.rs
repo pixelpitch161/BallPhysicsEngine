@@ -1,5 +1,7 @@
 //! Basic bounce: how much speed a hit keeps, and what else a hit does to the ball.
 
+pub mod sim;
+
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct BasicBounceKind;

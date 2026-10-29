@@ -8,4 +8,5 @@ license.workspace = true
 [dependencies]
 bpe-core.workspace = true
 bpe-mix.workspace = true
+bpe-runtime.workspace = true
 glam.workspace = true

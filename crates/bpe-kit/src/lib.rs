@@ -3,18 +3,49 @@
 
 pub mod modules;
 pub mod scenes;
+#[cfg(test)]
+pub mod testing;
 pub mod things;
 
+use std::sync::Arc;
+
 use bpe_core::{Color, Registry, Scene, Settings, SlotId, ThingId};
+use bpe_runtime::Sims;
 use glam::Vec2;
 
+pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
+pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::sound::{NoteSound, NoteSoundKind};
+pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
+pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
+
+/// Every kind's simulation part, for the runtime.
+pub fn sims() -> Sims {
+    let mut s = Sims::default();
+    s.add_thing(SceneSim);
+    s.add_thing(ArenaSim);
+    s.add_thing(BallsSim);
+    s.add_module(BasicMotionSim);
+    s.add_module(BasicBounceSim);
+    s
+}
+
+/// Everything the kit gives the editor and the exporter, built once.
+pub struct Kit {
+    pub registry: Registry,
+    pub sims: Arc<Sims>,
+}
+
+pub fn kit() -> Kit {
+    Kit { registry: registry(), sims: Arc::new(sims()) }
+}
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
 pub fn registry() -> Registry {

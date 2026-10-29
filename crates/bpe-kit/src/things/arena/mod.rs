@@ -1,5 +1,9 @@
 //! The arena: a closed wall the balls stay inside of.
 
+pub mod sim;
+
+pub use sim::{ArenaSim, ArenaState};
+
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 
 pub struct ArenaKind;

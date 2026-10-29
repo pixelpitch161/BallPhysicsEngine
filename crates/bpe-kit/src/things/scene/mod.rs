@@ -1,6 +1,8 @@
 //! Scene defaults: the root of every scene. Its settings are the video, the world and the song,
 //! and its slots are what every thing uses unless it sets its own.
 
+pub mod sim;
+
 use bpe_core::{Color, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 

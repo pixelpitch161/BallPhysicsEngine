@@ -1,5 +1,7 @@
 //! Basic motion: gravity and air drag.
 
+pub mod sim;
+
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct BasicMotionKind;

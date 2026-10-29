@@ -276,11 +276,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-gfx"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bpe-core",
+ "bpe-runtime",
+ "bytemuck",
+ "glam",
+ "pollster 1.0.1",
+ "wgpu",
+]
+
+[[package]]
 name = "bpe-graph"
 version = "0.1.0"
 dependencies = [
  "ron",
  "serde",
+]
+
+[[package]]
+name = "bpe-kit"
+version = "0.1.0"
+dependencies = [
+ "bpe-core",
+ "bpe-gfx",
+ "bpe-mix",
+ "bpe-runtime",
+ "glam",
+ "png",
+]
+
+[[package]]
+name = "bpe-mix"
+version = "0.1.0"
+dependencies = [
+ "bpe-core",
 ]
 
 [[package]]
@@ -310,6 +342,15 @@ dependencies = [
  "png",
  "pollster 1.0.1",
  "wgpu",
+]
+
+[[package]]
+name = "bpe-runtime"
+version = "0.1.0"
+dependencies = [
+ "bpe-core",
+ "bpe-settings-derive",
+ "glam",
 ]
 
 [[package]]
