@@ -19,8 +19,13 @@ use glam::Vec2;
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
+pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
+pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
+pub use modules::motion_flock::{Flocking, FlockingKind};
+pub use modules::motion_liquid::sim::FlowingSim;
+pub use modules::motion_liquid::{Flowing, FlowingKind};
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use things::arena::draw::ArenaDraw;
@@ -41,6 +46,7 @@ pub fn sims() -> Sims {
     s.add_thing(BallsSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
+    s.add_module(FlowingSim);
     s
 }
 
@@ -98,7 +104,11 @@ pub fn registry() -> Registry {
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
     r.add_module(ClassicLookKind);
+    r.add_module(LiquidLookKind);
+    r.add_module(SwarmLookKind);
     r.add_module(BasicMotionKind);
+    r.add_module(FlowingKind);
+    r.add_module(FlockingKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
     r
@@ -139,6 +149,21 @@ mod tests {
     #[test]
     fn every_kit_plugin_passes_the_contract() {
         assert_eq!(bpe_core::check_registry(&registry()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_new_module_kinds_are_registered_on_their_slots() {
+        let reg = registry();
+        let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
+        assert_eq!(looks, ["look.classic", "look.liquid", "look.swarm"]);
+        let motions: Vec<&str> = reg.modules_for(SlotId::Motion).map(|m| m.id()).collect();
+        assert_eq!(motions, ["motion.basic", "motion.flock", "motion.liquid"]);
+        assert_eq!(reg.module("look.liquid").unwrap().name(), "Liquid surface");
+        assert_eq!(reg.module("motion.liquid").unwrap().name(), "Flowing");
+        assert_eq!(reg.module("look.swarm").unwrap().name(), "Glowing dots");
+        assert_eq!(reg.module("motion.flock").unwrap().name(), "Flocking");
+        assert!(sims().module("motion.liquid").is_some());
+        assert!(sims().module("motion.flock").is_none(), "flocking runs on the GPU only");
     }
 
     #[test]
