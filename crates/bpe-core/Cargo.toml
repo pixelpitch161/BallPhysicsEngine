@@ -1,0 +1,16 @@
+[package]
+name = "bpe-core"
+description = "The modular Ball Studio's data model: things in a tree, modules in a library, settings, resolve and save"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Small example plugins for tests here and in other crates.
+testkit = []
+
+[dependencies]
+serde.workspace = true
+ron.workspace = true
+glam.workspace = true
+bpe-settings-derive.workspace = true
