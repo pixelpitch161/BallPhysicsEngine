@@ -269,14 +269,12 @@ pub fn show(
                         }
                         ui.separator();
                         // One kind: a plain button. Several: a submenu naming each kind. A new
-                        // module copies the shown one's settings when it is of the same kind.
+                        // module copies the shown one's settings, all of them when it is of the
+                        // same kind, else the ones both kinds have (a look's colour and glow).
                         let kinds: Vec<&dyn ModuleKind> = reg.modules_for(slot).collect();
-                        let shown_kind =
-                            shown_module.and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.as_str());
-                        let copy_for = |kind: &str| shown_module.filter(|_| shown_kind == Some(kind));
                         if let [only] = kinds[..] {
                             if ui.button(format!("New {} module…", slot.name())).clicked() {
-                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: copy_for(only.id()) });
+                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
                                 ui.close();
                             }
                         } else if !kinds.is_empty() {
@@ -284,11 +282,7 @@ pub fn show(
                                 ui.set_min_width(180.0);
                                 for kind in &kinds {
                                     if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
-                                        edits.push(Edit::NewModule {
-                                            slot,
-                                            kind: kind.id(),
-                                            copy_from: copy_for(kind.id()),
-                                        });
+                                        edits.push(Edit::NewModule { slot, kind: kind.id(), copy_from: shown_module });
                                         ui.close();
                                     }
                                 }
@@ -589,11 +583,11 @@ pub fn show(
                 let name = format!("{} {}", thing.name, slot.name());
                 match scene.add_module(reg, kind, &name) {
                     Ok(module) => {
-                        // The current module's settings carry over when the new one is the same kind.
+                        // The current module's settings carry over: all of them to the same kind,
+                        // the ones both kinds have to another.
                         if let Some(params) = copy_from
                             .and_then(|c| scene.library.modules.get(&c))
-                            .filter(|m| m.kind == kind)
-                            .map(|m| m.params.clone())
+                            .map(|m| if m.kind == kind { m.params.clone() } else { reg.carry_over(&m.params, kind) })
                             && let Some(m) = scene.library.modules.get_mut(&module)
                         {
                             m.params = params;
@@ -1137,8 +1131,9 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
         assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
         assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
-        // The ball's Look has two kinds: the submenu names them, and a different kind starts
-        // from its own defaults rather than copying the classic look's settings.
+        // The ball's Look has two kinds: the submenu names them, and a different kind keeps only
+        // the settings both kinds share, such as the colour.
+        let classic = s.scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().params.clone();
         h.get_by_label("Ball look").click();
         h.run();
         h.get_by_label("New Look module").click();
@@ -1149,7 +1144,8 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
         let m = &s.scene.library.modules[module];
         assert_eq!(m.kind, "look.styled");
-        assert!(m.params.get("color").is_none(), "{:?}", m.params);
+        assert_eq!(m.params.get("color"), classic.get("color"), "{:?}", m.params);
+        assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.styled"));
     }
 
     #[test]
@@ -1499,5 +1495,54 @@ mod tests {
         h.get_by_label("Instrument");
         // Bound settings come from the graph: the volume is a slider, not shown twice.
         assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
+    }
+
+    #[test]
+    fn target_settings_offer_the_scene_things_and_tags() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        scene.things.get_mut(&ThingId(2)).unwrap().tags.insert("bouncers".into());
+        let emitter = scene.add_thing(&reg, "emitter", ThingId::ROOT).unwrap();
+        let mut h = harness_of(scene, Some(emitter));
+        h.get_by_role_and_label(Role::Button, "Target").click();
+        h.run();
+        h.get_by_label("Thing").hover();
+        h.run();
+        assert!(h.query_by_label("Ball").is_some(), "the ball is offered by name");
+        h.get_by_label("Tag").hover();
+        h.run();
+        h.get_by_label("bouncers").click();
+        h.run();
+        let target = h.state().scene.things[&emitter].params.get("target").cloned();
+        assert_eq!(target, Some(Value::Target(bpe_core::Target::Tag("bouncers".into()))));
+    }
+
+    #[test]
+    fn a_new_look_of_another_kind_keeps_the_colour_and_glow() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
+            panic!("the ball's look is linked");
+        };
+        let colour = Value::Color(bpe_core::Color { r: 12, g: 200, b: 90, a: 255 });
+        let set = |scene: &mut Scene, key: &str, v: Value| {
+            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
+            scene.set_at(&reg, &a, v).unwrap();
+        };
+        set(&mut scene, "color", colour.clone());
+        set(&mut scene, "glow", Value::Number(0.7));
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("New Look module").hover();
+        h.run();
+        h.get_by_label("Styled").click();
+        h.run();
+        let (new, _) = ball_look(h.state());
+        assert_ne!(new, module);
+        let styled = &h.state().scene.library.modules[&new];
+        assert_eq!(styled.kind, "look.styled");
+        assert_eq!(styled.params.get("color"), Some(&colour), "the colour comes along");
+        assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
     }
 }

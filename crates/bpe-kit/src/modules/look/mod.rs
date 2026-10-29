@@ -86,3 +86,34 @@ impl ModuleKind for ClassicLookKind {
         ClassicLook::defs()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::registry;
+    use bpe_core::{Color, Params, Value};
+
+    #[test]
+    fn switching_look_kind_keeps_the_shared_colour_and_glow() {
+        let reg = registry();
+        let colour = Value::Color(Color { r: 12, g: 200, b: 90, a: 255 });
+        let mut classic = Params::default();
+        classic.set("color", colour.clone());
+        classic.set("glow", Value::Number(0.7));
+        classic.set("flash", Value::Number(0.4));
+        let styled = reg.carry_over(&classic, "look.styled");
+        assert_eq!(styled.get("color"), Some(&colour));
+        assert_eq!(styled.get("glow"), Some(&Value::Number(0.7)));
+        assert_eq!(styled.get("flash"), Some(&Value::Number(0.4)));
+
+        let mut star = styled.clone();
+        star.set("shape", Value::Choice("star".into()));
+        let back = reg.carry_over(&star, "look.classic");
+        assert_eq!(back.get("color"), Some(&colour));
+        assert_eq!(back.get("shape"), None, "the classic look has no shapes");
+
+        let mut wrong = Params::default();
+        wrong.set("glow", Value::Text("bright".into()));
+        assert_eq!(reg.carry_over(&wrong, "look.styled").get("glow"), None, "a value of the wrong type stays behind");
+        assert!(reg.carry_over(&classic, "no.such.kind").0.is_empty());
+    }
+}
