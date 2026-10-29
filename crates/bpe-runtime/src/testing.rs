@@ -167,6 +167,26 @@ macro_rules! bounce_kind {
 bounce_kind!(StickyKind, "bounce.sticky");
 bounce_kind!(BouncyKind, "bounce.bouncy");
 
+/// A trail, which asks the runtime to keep a history of where the dots have been.
+struct TrailKind;
+impl ModuleKind for TrailKind {
+    fn id(&self) -> &'static str {
+        "trail.test"
+    }
+    fn name(&self) -> &'static str {
+        "trail.test"
+    }
+    fn help(&self) -> &'static str {
+        ""
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Trail
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        NoSettings::defs()
+    }
+}
+
 pub struct TestRoot;
 impl ThingSim for TestRoot {
     fn kind(&self) -> &'static str {
@@ -232,6 +252,9 @@ impl ThingSim for TestDots {
             bodies.push(at.position + offset, s.velocity + at.velocity, 5.0);
         }
         world.bodies.insert(thing.id, bodies);
+        if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
+            world.keep_history(thing.id);
+        }
     }
     fn affects_physics(&self, key: &str) -> bool {
         key != "tint"
@@ -354,6 +377,7 @@ pub fn reg() -> Registry {
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
     r.add_module(BumpyKind);
+    r.add_module(TrailKind);
     r
 }
 

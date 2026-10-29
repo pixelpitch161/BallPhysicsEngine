@@ -1,0 +1,82 @@
+//! Trails: a streak behind each ball along where it has been.
+
+pub mod draw;
+
+use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+
+pub struct StreakTrailKind;
+
+/// Where a trail takes its colour from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum TrailSource {
+    /// The ball's own colour.
+    #[default]
+    Ball,
+    /// The trail's own Colour setting.
+    Own,
+}
+
+/// Whether a trail adds its light or paints over what is behind it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum TrailBlend {
+    #[default]
+    Add,
+    Cover,
+}
+
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct StreakTrail {
+    /// How far back the streak reaches.
+    #[setting(label = "Length", range(0.05, 2), unit = "s", simple, keyframe, random)]
+    pub seconds: f32,
+    /// How wide the streak is at the ball, in ball radii.
+    #[setting(label = "Width", range(0.05, 2), simple, keyframe, random)]
+    pub width: f32,
+    /// How bright the streak is at the ball.
+    #[setting(label = "Brightness", range(0, 2), simple, keyframe, random, pulse)]
+    pub brightness: f32,
+    /// The ball's own colour, or the Colour below.
+    #[setting(label = "Colour from", simple, random)]
+    pub source: TrailSource,
+    /// The streak's colour when it has its own.
+    #[setting(label = "Colour", simple, keyframe, random)]
+    pub color: Color,
+    /// Add: the streak glows and adds its light. Cover: it paints over what is behind it.
+    #[setting(label = "Blend", simple, random)]
+    pub blend: TrailBlend,
+    /// How much the streak narrows towards its tail: 0 keeps its width, 1 ends in a point.
+    #[setting(label = "Taper", range(0, 1), keyframe, random)]
+    pub taper: f32,
+}
+
+impl Default for StreakTrail {
+    fn default() -> Self {
+        Self {
+            seconds: 0.5,
+            width: 0.5,
+            brightness: 0.5,
+            source: TrailSource::Ball,
+            color: Color::WHITE,
+            blend: TrailBlend::Add,
+            taper: 1.0,
+        }
+    }
+}
+
+impl ModuleKind for StreakTrailKind {
+    fn id(&self) -> &'static str {
+        "trail.streak"
+    }
+    fn name(&self) -> &'static str {
+        "Streak"
+    }
+    fn help(&self) -> &'static str {
+        "A fading streak behind each ball along where it has been."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Trail
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        StreakTrail::defs()
+    }
+}

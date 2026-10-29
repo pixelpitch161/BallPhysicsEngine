@@ -2,7 +2,7 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use bpe_core::{ResolvedThing, Settings, Thing};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing};
 use bpe_runtime::{Bodies, ThingSim, World};
 use glam::Vec2;
 
@@ -64,6 +64,10 @@ impl ThingSim for BallsSim {
         }
         world.bodies.insert(thing.id, bodies);
         world.states.insert(thing.id, Box::new(BallsState { settings }));
+        // A trail needs to know where the balls have been.
+        if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
+            world.keep_history(thing.id);
+        }
     }
 }
 

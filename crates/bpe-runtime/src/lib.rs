@@ -6,6 +6,7 @@
 pub mod bodies;
 pub mod events;
 pub mod pairs;
+pub mod history;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
@@ -18,6 +19,7 @@ pub mod world;
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
 pub use pairs::{Grid, Pairs, Support};
+pub use history::History;
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;

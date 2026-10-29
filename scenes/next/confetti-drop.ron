@@ -1,0 +1,161 @@
+(
+    format: 2,
+    name: "Confetti drop",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "duration": Number(23.0),
+                "gravity": Vec2((0.0, 160.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Linked(
+                    module: 7,
+                ),
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Linked(
+                    module: 6,
+                ),
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Block",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (37.0, -127.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(28),
+                "radius": Number(4.5),
+                "rows": Int(28),
+                "velocity": Vec2((-480.0, 265.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "gradient": Colors([
+                        "#3e9bff",
+                        "#8a4dff",
+                        "#ff3ec8",
+                        "#ff6a5c",
+                        "#ffb82e",
+                    ]),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Arena look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#d8dcd0"),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Confetti",
+                slot: Particles,
+                kind: "particles.burst",
+                params: {
+                    "count": Int(5),
+                    "drag": Number(1.5),
+                    "gravity": Number(500.0),
+                    "life": Number(1.2000000476837158),
+                    "preset": Choice("confetti"),
+                    "size": Number(4.0),
+                    "speed": Number(260.0),
+                },
+            ),
+            7: (
+                id: 7,
+                name: "Short streaks",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "brightness": Number(0.3499999940395355),
+                    "seconds": Number(0.20000000298023224),
+                    "width": Number(0.6000000238418579),
+                },
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 8,
+)

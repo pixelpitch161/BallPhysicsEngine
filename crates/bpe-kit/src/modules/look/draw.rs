@@ -14,17 +14,17 @@ pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
 /// The linear-light colour of each ball in `bodies`: the gradient sampled by what "Colours
 /// follow" says (`row_of(i)` in 0..=1 for rows) when there is one, else the look's one colour;
 /// then turned round the colour wheel by "Hue shift per hit" for every hit the ball has taken.
+/// The closure owns the look and borrows the bodies.
 pub fn colors<'a>(
-    look: &'a ClassicLook,
+    look: ClassicLook,
     bodies: &'a Bodies,
     row_of: impl Fn(usize) -> f32 + 'a,
 ) -> impl Fn(usize) -> [f32; 4] + 'a {
     let plain = look.color.to_linear();
-    let gradient: &[Color] = &look.gradient;
     let count = bodies.len();
     let full = look.gradient_full.max(1e-3);
     move |i| {
-        let base = if gradient.is_empty() {
+        let base = if look.gradient.is_empty() {
             plain
         } else {
             let t = match look.gradient_by {
@@ -34,7 +34,7 @@ pub fn colors<'a>(
                 GradientBy::Speed => bodies.velocity.get(i).map_or(0.0, |v| v.length() / full),
                 GradientBy::Hits => bodies.hits.get(i).map_or(0.0, |h| *h as f32 / full),
             };
-            Color::sample_gradient(gradient, t.clamp(0.0, 1.0))
+            Color::sample_gradient(&look.gradient, t.clamp(0.0, 1.0))
         };
         let hits = bodies.hits.get(i).copied().unwrap_or(0);
         if look.hue_per_hit == 0.0 || hits == 0 {

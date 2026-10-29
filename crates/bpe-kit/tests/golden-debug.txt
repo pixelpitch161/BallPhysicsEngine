@@ -9,3 +9,8 @@ Spinning bars	459	3bd53beeaf4aeebd
 Ball pit	2161	e2021554c8412964
 Riders	98	39d0d0b2d83979b2
 Pitch climb	32	c8de23a440d3bf4b
+Lava ball	15	60c6f21eab43aed2
+Confetti drop	10157	5630aed078884cf3
+Spark block	2570	8b4dc4984f22bf66
+Kaleido hexagon	491	46053bac9be2f409
+Neon ring	70	46f766d1e8a24787

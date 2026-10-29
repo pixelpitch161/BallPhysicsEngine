@@ -15,7 +15,7 @@ use crate::pairs::{Pairs, Prepared, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, Sims, ThingState};
 use crate::pose::Pose;
 use crate::solids::Solids;
-use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, keep_outside, reflect};
+use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, keep_outside, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -46,6 +46,8 @@ pub struct World {
     pub poses: BTreeMap<ThingId, Pose>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
+    /// Where the balls of a thing have been, for the things whose sim asked for it (trails).
+    pub history: BTreeMap<ThingId, History>,
     /// The kind of every thing that has a sim, in id order.
     kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
@@ -72,6 +74,7 @@ impl World {
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
             tags: BTreeMap::new(),
+            history: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
@@ -161,7 +164,15 @@ impl World {
 
     /// Bytes the world takes, for playback budgets.
     pub fn memory(&self) -> usize {
-        self.bodies.values().map(Bodies::memory).sum::<usize>() + std::mem::size_of::<World>()
+        self.bodies.values().map(Bodies::memory).sum::<usize>()
+            + self.history.values().map(History::memory).sum::<usize>()
+            + std::mem::size_of::<World>()
+    }
+
+    /// Starts keeping `thing`'s ball positions, so a trail can draw where they have been.
+    pub fn keep_history(&mut self, thing: ThingId) {
+        let rate = self.steps_per_second;
+        self.history.entry(thing).or_insert_with(|| History::new(rate));
     }
 
     /// Steps until `time` seconds have passed.
@@ -208,6 +219,12 @@ impl World {
 
         for _ in 0..substeps {
             self.substep(sims, sub_dt, &limits, log);
+        }
+
+        for (id, history) in &mut self.history {
+            if let Some(bodies) = self.bodies.get(id) {
+                history.record(self.step, &bodies.position);
+            }
         }
     }
 
@@ -424,6 +441,11 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                     h.value(value);
                 }
             }
+        }
+        if let Some(s) = r.slots.get(&SlotId::Trail) {
+            // Whether a history is kept depends on the trail, not on how it looks.
+            h.bytes(&[SlotId::Trail as u8]);
+            h.bytes(s.kind.as_bytes());
         }
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot) {
@@ -746,6 +768,41 @@ mod tests {
         let before = fingerprint(&scene, &resolved, &sims);
         scene.things.get_mut(&DOTS).unwrap().tags.insert("x".into());
         assert_ne!(fingerprint(&scene, &resolve(&scene, &reg()), &sims), before);
+    }
+
+    #[test]
+    fn a_trail_keeps_a_history_that_follows_the_balls() {
+        let (mut scene, resolved, sims) = dots_in_ring(2);
+        let plain = World::build(&scene, &resolved, &sims);
+        assert!(plain.history.is_empty());
+        let before = fingerprint(&scene, &resolved, &sims);
+        let trail = scene.add_module(&reg(), "trail.test", "Trail").unwrap();
+        scene.link(&reg(), DOTS, SlotId::Trail, trail).unwrap();
+        let resolved = resolve(&scene, &reg());
+        // Keeping a history is a rebuild, but how the trail looks is not.
+        let with_trail = fingerprint(&scene, &resolved, &sims);
+        assert_ne!(with_trail, before);
+        scene.library.modules.get_mut(&trail).unwrap().params.set("width", Value::Number(3.0));
+        let resolved = resolve(&scene, &reg());
+        assert_eq!(fingerprint(&scene, &resolved, &sims), with_trail);
+
+        let mut world = World::build(&scene, &resolved, &sims);
+        assert!(world.history.contains_key(&DOTS));
+        assert!(world.history[&DOTS].is_empty());
+        let mut log = Log::default();
+        world.advance_to(1.0, &sims, &mut log);
+        let history = &world.history[&DOTS];
+        assert_eq!(history.len(), 60);
+        assert_eq!(history.points(1).next(), Some(world.bodies[&DOTS].position[1]));
+        assert!(history.points(0).nth(30).unwrap() != world.bodies[&DOTS].position[0]);
+        assert!(world.memory() >= plain.memory() + 2 * 120 * 8);
+        // The same scene without the history steps the same.
+        let mut bare = World::build(&scene, &resolved, &sims);
+        bare.history.clear();
+        let mut bare_log = Log::default();
+        bare.advance_to(1.0, &sims, &mut bare_log);
+        assert_eq!(bare.bodies, world.bodies);
+        assert_eq!(bare_log.events(), log.events());
     }
 
     #[test]
