@@ -9,3 +9,8 @@ Confetti drop	10157	5630aed078884cf3
 Spark block	2570	8b4dc4984f22bf66
 Kaleido hexagon	491	46053bac9be2f409
 Neon ring	70	46f766d1e8a24787
+Grow on hit	43	5748ce6287ab5094
+Split on hit	1405	cb76dda247cd64ab
+Colour by speed	272	541f107a2789742d
+Bouncy when slow	14	d77d26b454d4cbba
+Wind and melody	144	ea59342cb27860ce

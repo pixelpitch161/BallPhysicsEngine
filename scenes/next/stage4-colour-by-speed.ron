@@ -1,0 +1,226 @@
+(
+    format: 2,
+    name: "Colour by speed",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 700.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Block",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -300.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(4),
+                "radius": Number(22.0),
+                "rows": Int(4),
+                "spacing": Number(70.0),
+                "velocity": Vec2((260.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+                Rules: Linked(
+                    module: 5,
+                ),
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.949999988079071),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Colour by speed",
+                slot: Rules,
+                kind: "rules.graph",
+                graph: Some((
+                    graph: (
+                        name: "Rules",
+                        nodes: [
+                            (
+                                id: 1,
+                                kind: "when.hit",
+                                pos: (40.0, 40.0),
+                                params: {
+                                    "what": Text("anything"),
+                                    "who": Text("me"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 2,
+                                kind: "math",
+                                pos: (260.0, 200.0),
+                                params: {
+                                    "a": Number(0.0),
+                                    "b": Number(1500.0),
+                                    "op": Choice("divide"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 3,
+                                kind: "clamp",
+                                pos: (480.0, 200.0),
+                                params: {
+                                    "max": Number(1.0),
+                                    "min": Number(0.0),
+                                    "x": Number(0.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 4,
+                                kind: "color.hsv",
+                                pos: (700.0, 200.0),
+                                params: {
+                                    "hue": Number(0.0),
+                                    "saturation": Number(1.0),
+                                    "value": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 5,
+                                kind: "do.color",
+                                pos: (920.0, 40.0),
+                                params: {
+                                    "amount": Number(1.0),
+                                    "color": Color((1.0, 0.3, 0.6, 1.0)),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                        ],
+                        links: [
+                            (
+                                from: (1, 3),
+                                to: (2, 0),
+                            ),
+                            (
+                                from: (2, 0),
+                                to: (3, 0),
+                            ),
+                            (
+                                from: (3, 0),
+                                to: (4, 0),
+                            ),
+                            (
+                                from: (1, 0),
+                                to: (5, 0),
+                            ),
+                            (
+                                from: (4, 0),
+                                to: (5, 2),
+                            ),
+                        ],
+                        notes: [
+                            (
+                                pos: (40.0, 40.0),
+                                size: (0.0, 0.0),
+                                text: "Add a rule with the Add rule menu, or drop a When block here.",
+                                color: (0.9, 0.8, 0.3, 1.0),
+                            ),
+                        ],
+                        enabled: true,
+                    ),
+                    template: "rules.graph",
+                    custom: true,
+                    simple: [
+                        (5, "amount"),
+                    ],
+                )),
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 6,
+)

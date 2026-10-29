@@ -16,8 +16,9 @@ fn playbacks() -> Vec<(String, Playback)> {
     scenes::stage2(&kit.registry)
         .into_iter()
         .chain(scenes::stage5(&kit.registry))
+        .chain(scenes::stage4(&kit.registry))
         .map(|(name, scene)| {
-            let resolved = bpe_core::resolve(&scene, &kit.registry);
+            let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{name}: {:?}", resolved.problems);
             (name, Playback::new(&scene, &resolved, kit.sims.clone()))
         })
