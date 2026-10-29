@@ -31,7 +31,9 @@ impl<T: Any + Clone + Send + Sync> ThingState for T {
 
 impl Clone for Box<dyn ThingState> {
     fn clone(&self) -> Self {
-        self.clone_box()
+        // Through the reference, not the box: the box is itself a `ThingState` by the blanket
+        // impl, and its `clone_box` would come straight back here.
+        (**self).clone_box()
     }
 }
 
@@ -115,5 +117,24 @@ impl Sims {
 
     pub fn module(&self, kind: &str) -> Option<&dyn ModuleSim> {
         self.modules.get(kind).map(|s| s.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boxed_state_clones_its_contents() {
+        let a: Box<dyn ThingState> = Box::new(7u32);
+        let b = a.clone();
+        assert_eq!(*state::<u32>(b.as_ref()), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "plugin state is not a f32")]
+    fn asking_for_the_wrong_type_names_it() {
+        let a: Box<dyn ThingState> = Box::new(7u32);
+        state::<f32>(a.as_ref());
     }
 }
