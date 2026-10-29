@@ -2,7 +2,9 @@
 
 use crate::theme;
 use crate::widgets::settings_grid;
-use bpe_core::{Address, Depth, ModuleId, Owner, Resolved, Scene, SlotId, SlotLink, ThingId, Transform, Value};
+use bpe_core::{
+    Address, Depth, ModuleId, ModuleKind, Owner, Resolved, Scene, SlotId, SlotLink, ThingId, Transform, Value,
+};
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
@@ -162,11 +164,31 @@ pub fn show(
                             }
                         }
                         ui.separator();
-                        if let Some(first) = reg.modules_for(slot).next()
-                            && ui.button(format!("New {} module…", slot.name())).clicked()
-                        {
-                            edits.push(Edit::NewModule { slot, kind: first.id(), copy_from: shown_module });
-                            ui.close();
+                        // One kind: a plain button. Several: a submenu naming each kind. A new
+                        // module copies the shown one's settings when it is of the same kind.
+                        let kinds: Vec<&dyn ModuleKind> = reg.modules_for(slot).collect();
+                        let shown_kind =
+                            shown_module.and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.as_str());
+                        let copy_for = |kind: &str| shown_module.filter(|_| shown_kind == Some(kind));
+                        if let [only] = kinds[..] {
+                            if ui.button(format!("New {} module…", slot.name())).clicked() {
+                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: copy_for(only.id()) });
+                                ui.close();
+                            }
+                        } else if !kinds.is_empty() {
+                            ui.menu_button(format!("New {} module", slot.name()), |ui| {
+                                ui.set_min_width(180.0);
+                                for kind in &kinds {
+                                    if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
+                                        edits.push(Edit::NewModule {
+                                            slot,
+                                            kind: kind.id(),
+                                            copy_from: copy_for(kind.id()),
+                                        });
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                         if ui.selectable_label(matches!(link, SlotLink::Inherit), "Inherit").clicked() {
                             edits.push(Edit::Inherit(slot));
@@ -411,13 +433,46 @@ mod tests {
         // The arena's first card is its Look, inherited from the scene's defaults.
         h.get_all_by_label_contains("from Scene defaults").next().expect("an inherited slot").click();
         h.run();
-        h.get_by_label("New Look module…").click();
+        h.get_by_label("New Look module").click();
+        h.run();
+        h.get_by_label("Classic").click();
         h.run();
         let s = h.state();
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(1)].slots[&SlotId::Look] else { panic!() };
         assert_eq!(s.scene.library.modules[module].name, "Arena Look");
         assert_eq!(s.scene.library.modules[module].kind, "look.classic");
         assert_eq!(s.scene.library.modules[module].params, s.scene.library.modules[&bpe_core::ModuleId(0)].params);
+    }
+
+    #[test]
+    fn a_new_module_is_picked_by_kind_when_a_slot_has_several() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        h.get_by_label("Particles").click();
+        h.run();
+        h.get_by_label("Inherit (nothing above)").click();
+        h.run();
+        // Particles has one kind: a plain button that makes it straight away.
+        h.get_by_label("New Particles module…").click();
+        h.run();
+        let s = h.state();
+        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
+        assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
+        assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
+        // The ball's Look has two kinds: the submenu names them, and a different kind starts
+        // from its own defaults rather than copying the classic look's settings.
+        h.get_by_label("Ball look").click();
+        h.run();
+        h.get_by_label("New Look module").click();
+        h.run();
+        h.get_by_label("Styled").click();
+        h.run();
+        let s = h.state();
+        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
+        let m = &s.scene.library.modules[module];
+        assert_eq!(m.kind, "look.styled");
+        assert!(m.params.get("color").is_none(), "{:?}", m.params);
     }
 
     #[test]
@@ -429,7 +484,7 @@ mod tests {
         h.run();
         h.get_by_label("+ Add slot").click();
         h.run();
-        assert!(h.query_by_label("Trail").is_none(), "no module kind fills a trail yet");
+        assert!(h.query_by_label("Trail").is_some());
         assert!(h.query_by_label("Shader").is_some());
         h.get_by_label("Motion").click();
         h.run();
