@@ -7,6 +7,7 @@ mod app;
 mod history;
 mod settings;
 mod theme;
+mod tree;
 
 fn main() -> eframe::Result {
     let scene_path = std::env::args().nth(1).map(std::path::PathBuf::from);

@@ -1,7 +1,8 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::history::{History, UNDO_MERGE};
-use crate::{settings, theme};
+use crate::tree::Tree;
+use crate::{settings, theme, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId, resolve};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Playback, fingerprint};
@@ -21,6 +22,7 @@ pub enum Pending {
 /// transport, export window and sound job.
 #[derive(Default)]
 pub struct Panels {
+    pub tree: Tree,
     pub export_open: bool,
 }
 
@@ -192,20 +194,6 @@ impl Studio {
         true
     }
 
-    /// Removes the selected thing and everything under it. The scene's defaults stay.
-    pub fn delete_selected(&mut self) {
-        let Some(id) = self.selected else { return };
-        let before = self.scene.clone();
-        match self.scene.remove_thing(id) {
-            Ok(_) => {
-                self.selected = None;
-                self.recorded = true;
-                self.after_separate_edit(before);
-            }
-            Err(error) => self.status = error.to_string(),
-        }
-    }
-
     // ---------- playback ----------
 
     pub fn seek(&mut self, time: f64) {
@@ -364,12 +352,8 @@ impl Studio {
         if ctx.memory(|m| m.focused().is_some()) {
             return;
         }
-        let (home, delete) = ctx.input(|i| (i.key_pressed(Key::Home), i.key_pressed(Key::Delete)));
-        if home {
+        if ctx.input(|i| i.key_pressed(Key::Home)) {
             self.seek(0.0);
-        }
-        if delete {
-            self.delete_selected();
         }
     }
 
@@ -503,13 +487,21 @@ impl eframe::App for Studio {
             .min_size(80.0)
             .max_size(320.0)
             .show(ui, |ui| self.transport(ui));
-        egui::Panel::left("tree")
+        let tree = egui::Panel::left("tree")
             .default_size(260.0)
             .min_size(180.0)
             .max_size(480.0)
             .resizable(true)
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
-            .show(ui, |ui| Self::placeholder(ui, "Scene tree"));
+            .show(ui, |ui| {
+                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selected)
+            })
+            .inner;
+        if tree.removed.is_some() {
+            // Deleting is always its own undo step.
+            self.recorded = true;
+            self.after_separate_edit(before.clone());
+        }
         egui::Panel::right("inspector")
             .default_size(420.0)
             .min_size(320.0)
@@ -617,18 +609,5 @@ mod tests {
         assert_eq!(studio.scene.name, "New scene");
         assert!(!studio.unsaved());
         assert!(studio.history.undo.is_empty());
-    }
-
-    #[test]
-    fn deleting_the_selected_thing_records_an_undo_step_and_clears_the_selection() {
-        let mut studio = Studio::headless();
-        studio.selected = Some(ThingId(2));
-        studio.delete_selected();
-        assert_eq!(studio.scene.things.len(), 2);
-        assert_eq!(studio.selected, None);
-        assert_eq!(studio.history.undo.len(), 1);
-        studio.selected = Some(ThingId::ROOT);
-        studio.delete_selected();
-        assert_eq!(studio.scene.things.len(), 2, "the root can't be deleted");
     }
 }
