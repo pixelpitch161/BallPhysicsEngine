@@ -36,13 +36,14 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    /// Whether `v` is a value of this type. A choice accepts only the names in its list.
+    /// Whether `v` is a value of this type. A choice accepts only the names in its list, and
+    /// numbers must be finite: NaN and infinity would spread through a simulation.
     pub fn accepts(&self, v: &Value) -> bool {
         match (self, v) {
-            (ValueType::Number, Value::Number(_))
-            | (ValueType::Int, Value::Int(_))
+            (ValueType::Number, Value::Number(x)) => x.is_finite(),
+            (ValueType::Vec2, Value::Vec2([x, y])) => x.is_finite() && y.is_finite(),
+            (ValueType::Int, Value::Int(_))
             | (ValueType::Bool, Value::Bool(_))
-            | (ValueType::Vec2, Value::Vec2(_))
             | (ValueType::Color, Value::Color(_))
             | (ValueType::Colors, Value::Colors(_))
             | (ValueType::Text, Value::Text(_))
@@ -59,30 +60,40 @@ impl ValueType {
 pub struct Params(pub BTreeMap<String, Value>);
 
 impl Params {
+    /// The value set for `key`, if any.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
     }
 
+    /// Sets `key`, replacing any earlier value.
     pub fn set(&mut self, key: &str, v: Value) {
         self.0.insert(key.to_owned(), v);
     }
 
+    /// Clears `key`, so it falls back to whatever comes from further up.
     pub fn remove(&mut self, key: &str) -> Option<Value> {
         self.0.remove(key)
     }
 
+    /// Whether nothing is set.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Every set key and value, in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.0.iter()
+    }
+
+    /// Lays `over`'s values on top of these: keys in `over` win.
+    pub fn apply(&mut self, over: &Params) {
+        self.0.extend(over.0.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
     /// These values with `over`'s laid on top: keys in `over` win.
     pub fn merged(&self, over: &Params) -> Params {
         let mut out = self.clone();
-        out.0.extend(over.0.iter().map(|(k, v)| (k.clone(), v.clone())));
+        out.apply(over);
         out
     }
 }
@@ -110,6 +121,14 @@ mod tests {
         let m = base.merged(&over);
         assert_eq!(m.get("glow"), Some(&Value::Number(0.7)));
         assert_eq!(m.get("size"), Some(&Value::Number(4.5)));
+    }
+
+    #[test]
+    fn numbers_must_be_finite() {
+        assert!(ValueType::Number.accepts(&Value::Number(-1e300)));
+        assert!(!ValueType::Number.accepts(&Value::Number(f64::NAN)));
+        assert!(!ValueType::Number.accepts(&Value::Number(f64::INFINITY)));
+        assert!(!ValueType::Vec2.accepts(&Value::Vec2([0.0, f32::NAN])));
     }
 
     #[test]

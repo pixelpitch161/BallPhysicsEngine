@@ -30,7 +30,7 @@ pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, ModuleGraph};
 pub use registry::{ModuleKind, Registry, ThingKind};
-pub use resolve::{Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve};
+pub use resolve::{Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve, resolve_slot};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, SlotLink, Target, Thing, Transform};
 pub use settings::{Choice, Depth, Flags, SettingDef, SettingValue, Settings};

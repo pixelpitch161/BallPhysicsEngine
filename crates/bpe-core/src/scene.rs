@@ -176,6 +176,84 @@ impl Scene {
         out
     }
 
+    /// Puts a scene that was edited by hand back in shape, so every later step can trust it: ids
+    /// match their map keys, Scene defaults is the root with no parent, things whose parent is
+    /// missing or part of a loop move under Scene defaults, and `order` lists every thing once with
+    /// each thing after its parent, keeping the old order among siblings. Returns `false` when there
+    /// is no Scene defaults to hang the tree on; the scene is then unusable.
+    pub fn mend(&mut self) -> bool {
+        for (id, t) in &mut self.things {
+            t.id = *id;
+        }
+        for (id, m) in &mut self.library.modules {
+            m.id = *id;
+        }
+        let Some(root) = self.things.get_mut(&ThingId::ROOT) else { return false };
+        root.parent = None;
+        root.kind = "scene".into();
+
+        let ids: Vec<ThingId> = self.things.keys().copied().collect();
+        for &id in &ids {
+            if id != ThingId::ROOT && self.things[&id].parent.is_none_or(|p| !self.things.contains_key(&p)) {
+                self.things.get_mut(&id).expect("listed above").parent = Some(ThingId::ROOT);
+            }
+        }
+
+        // Anything the walk down from the root can't reach hangs off a loop. Walking up from such
+        // a thing must repeat itself, and the repeated thing is on the loop: cut it there.
+        loop {
+            let reached = self.reachable();
+            let Some(&start) = ids.iter().find(|id| !reached.contains(id)) else { break };
+            let mut seen = BTreeSet::new();
+            let mut at = start;
+            while seen.insert(at) {
+                at = self.things[&at].parent.expect("only the root has no parent now");
+            }
+            self.things.get_mut(&at).expect("walked through it").parent = Some(ThingId::ROOT);
+        }
+
+        let rank: BTreeMap<ThingId, usize> = self.order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let mut children: BTreeMap<ThingId, Vec<ThingId>> = BTreeMap::new();
+        for t in self.things.values() {
+            if let Some(p) = t.parent {
+                children.entry(p).or_default().push(t.id);
+            }
+        }
+        for kids in children.values_mut() {
+            kids.sort_by_key(|k| (rank.get(k).copied().unwrap_or(usize::MAX), *k));
+        }
+        let mut order = Vec::with_capacity(self.things.len());
+        let mut stack = vec![ThingId::ROOT];
+        while let Some(id) = stack.pop() {
+            order.push(id);
+            if let Some(kids) = children.get(&id) {
+                stack.extend(kids.iter().rev());
+            }
+        }
+        self.order = order;
+        true
+    }
+
+    /// Every thing the parent links lead to from the root.
+    fn reachable(&self) -> BTreeSet<ThingId> {
+        let mut children: BTreeMap<ThingId, Vec<ThingId>> = BTreeMap::new();
+        for t in self.things.values() {
+            if let Some(p) = t.parent {
+                children.entry(p).or_default().push(t.id);
+            }
+        }
+        let mut reached = BTreeSet::new();
+        let mut stack = vec![ThingId::ROOT];
+        while let Some(id) = stack.pop() {
+            if reached.insert(id)
+                && let Some(kids) = children.get(&id)
+            {
+                stack.extend(kids);
+            }
+        }
+        reached
+    }
+
     /// The things that link module `m` in any slot, in tree order.
     pub fn users_of(&self, m: ModuleId) -> Vec<ThingId> {
         self.order
@@ -202,6 +280,40 @@ mod tests {
         assert_eq!(s.things[&ThingId::ROOT].name, "Scene defaults");
         assert_eq!(s.format, 2);
         assert_eq!(s.next_thing, 1);
+    }
+
+    #[test]
+    fn mend_repairs_a_hand_edited_tree() {
+        let mut s = Scene::empty(&testkit::registry());
+        let a = testkit::push(&mut s, "folder", ThingId::ROOT);
+        let b = testkit::push(&mut s, "balls", a);
+        let c = testkit::push(&mut s, "balls", ThingId::ROOT);
+        let d = testkit::push(&mut s, "balls", ThingId::ROOT);
+        let e = testkit::push(&mut s, "balls", d);
+        // Ids that disagree with their keys, an orphan, a loop (d <-> e), a child listed before
+        // its parent, a duplicate and a stranger in `order`, and a missing entry.
+        s.things.get_mut(&b).unwrap().id = ThingId(77);
+        s.things.get_mut(&c).unwrap().parent = Some(ThingId(999));
+        s.things.get_mut(&d).unwrap().parent = Some(e);
+        s.order = vec![b, ThingId::ROOT, a, a, ThingId(555), c];
+        assert!(s.mend());
+        assert_eq!(s.things[&b].id, b);
+        assert_eq!(s.things[&c].parent, Some(ThingId::ROOT));
+        // The loop is cut at the thing the upward walk repeats, which keeps the rest of it.
+        let (dp, ep) = (s.things[&d].parent, s.things[&e].parent);
+        assert!((dp == Some(ThingId::ROOT) && ep == Some(d)) || (ep == Some(ThingId::ROOT) && dp == Some(e)));
+        assert_eq!(s.order.len(), 6);
+        assert_eq!(&s.order[..4], &[ThingId::ROOT, a, b, c]);
+        for id in &s.order {
+            let parent = s.things[id].parent;
+            assert!(parent.is_none_or(|p| s.order.iter().position(|&x| x == p) < s.order.iter().position(|x| x == id)));
+        }
+    }
+
+    #[test]
+    fn mend_refuses_a_scene_without_defaults() {
+        let mut s = Scene::default();
+        assert!(!s.mend());
     }
 
     #[test]

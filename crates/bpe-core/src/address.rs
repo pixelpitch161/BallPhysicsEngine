@@ -1,6 +1,6 @@
 //! Addresses name one setting anywhere in a scene, for keyframes, dice, pulses and rules.
 
-use crate::resolve::{defaults, resolve_slot};
+use crate::resolve::find_slot;
 use crate::{EditError, ModuleId, Registry, Scene, SettingDef, SlotId, SlotLink, ThingId, Value};
 use serde::{Deserialize, Serialize};
 
@@ -25,20 +25,21 @@ fn find(defs: &'static [SettingDef], key: &str) -> Option<&'static SettingDef> {
 }
 
 impl Scene {
-    /// The module kind's settings for a thing's slot: its own link if it has one, else what it inherits.
-    fn slot_defs(&self, reg: &Registry, id: ThingId, slot: SlotId) -> Option<&'static [SettingDef]> {
-        let kind = match self.things.get(&id)?.slots.get(&slot) {
-            Some(SlotLink::Linked { module, .. }) => self.library.modules.get(module)?.kind.clone(),
-            _ => resolve_slot(self, reg, id, slot, &mut Vec::new())?.kind,
+    /// The module kind whose settings a thing's slot shows: its own link if it has one, else
+    /// whatever it inherits.
+    fn slot_module_kind(&self, reg: &Registry, id: ThingId, slot: SlotId) -> Option<&str> {
+        let module = match self.things.get(&id)?.slots.get(&slot) {
+            Some(SlotLink::Linked { module, .. }) => self.library.modules.get(module)?,
+            _ => find_slot(self, reg, id, slot, &mut Vec::new())?.kind,
         };
-        Some(reg.module(&kind)?.settings())
+        Some(&module.kind)
     }
 
     /// The description of the setting at `a`.
     pub fn def_at(&self, reg: &Registry, a: &Address) -> Option<&'static SettingDef> {
         let defs = match (a.owner, a.slot) {
             (Owner::Thing(id), None) => reg.thing(&self.things.get(&id)?.kind)?.settings(),
-            (Owner::Thing(id), Some(slot)) => self.slot_defs(reg, id, slot)?,
+            (Owner::Thing(id), Some(slot)) => reg.module(self.slot_module_kind(reg, id, slot)?)?.settings(),
             (Owner::Module(m), _) => reg.module(&self.library.modules.get(&m)?.kind)?.settings(),
         };
         find(defs, &a.key)
@@ -47,13 +48,15 @@ impl Scene {
     /// The value the setting at `a` has once everything above it is taken into account.
     pub fn value_at(&self, reg: &Registry, a: &Address) -> Option<Value> {
         let def = self.def_at(reg, a)?;
-        match (a.owner, a.slot) {
-            (Owner::Thing(id), None) => Some(self.things[&id].params.get(&a.key).unwrap_or(&def.default).clone()),
+        let value = match (a.owner, a.slot) {
+            (Owner::Thing(id), None) => self.things[&id].params.get(&a.key),
             (Owner::Thing(id), Some(slot)) => {
-                resolve_slot(self, reg, id, slot, &mut Vec::new())?.params.get(&a.key).cloned()
+                let source = find_slot(self, reg, id, slot, &mut Vec::new())?;
+                source.overrides.get(&a.key).or_else(|| source.kind.params.get(&a.key))
             }
-            (Owner::Module(m), _) => Some(self.library.modules[&m].params.get(&a.key).unwrap_or(&def.default).clone()),
-        }
+            (Owner::Module(m), _) => self.library.modules[&m].params.get(&a.key),
+        };
+        Some(value.unwrap_or(&def.default).clone())
     }
 
     /// Sets the setting at `a`, pulled into range. A value equal to what it would get anyway is
@@ -64,9 +67,11 @@ impl Scene {
             Owner::Module(m) if !self.library.modules.contains_key(&m) => return Err(EditError::MissingModule(m)),
             _ => {}
         }
+        // A thing's slot setting is a change to its own link, so the slot must be linked here.
         let linked = match (a.owner, a.slot) {
             (Owner::Thing(id), Some(slot)) => match self.things[&id].slots.get(&slot) {
-                Some(SlotLink::Linked { module, .. }) => Some(*module),
+                Some(SlotLink::Linked { module, .. }) if self.library.modules.contains_key(module) => Some(*module),
+                Some(SlotLink::Linked { module, .. }) => return Err(EditError::MissingModule(*module)),
                 _ => return Err(EditError::NotLinked),
             },
             _ => None,
@@ -78,23 +83,19 @@ impl Scene {
         let v = def.clamp(v);
         let (params, inherited) = match (a.owner, linked) {
             (Owner::Thing(id), Some(m)) => {
-                let module = &self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?.params;
-                let defs = reg.module(&self.library.modules[&m].kind).map(|k| k.settings()).unwrap_or_default();
-                let inherited = defaults(defs).merged(module).get(&a.key).cloned();
+                let inherited = self.library.modules[&m].params.get(&a.key).unwrap_or(&def.default).clone();
                 let slot = a.slot.expect("linked means a slot");
                 match self.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)) {
                     Some(SlotLink::Linked { overrides, .. }) => (overrides, inherited),
                     _ => unreachable!("checked above"),
                 }
             }
-            (Owner::Thing(id), None) => {
-                (&mut self.things.get_mut(&id).expect("checked").params, Some(def.default.clone()))
-            }
+            (Owner::Thing(id), None) => (&mut self.things.get_mut(&id).expect("checked").params, def.default.clone()),
             (Owner::Module(m), _) => {
-                (&mut self.library.modules.get_mut(&m).expect("checked").params, Some(def.default.clone()))
+                (&mut self.library.modules.get_mut(&m).expect("checked").params, def.default.clone())
             }
         };
-        if inherited.as_ref() == Some(&v) {
+        if inherited == v {
             params.remove(&a.key);
         } else {
             params.set(&a.key, v);
@@ -131,10 +132,18 @@ mod tests {
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         let radius = Address { owner: Owner::Thing(b), slot: None, key: "radius".into() };
         assert!(matches!(s.set_at(&r, &radius, Value::Bool(true)), Err(EditError::WrongType)));
+        assert!(matches!(s.set_at(&r, &radius, Value::Number(f64::NAN)), Err(EditError::WrongType)));
         let nope = Address { key: "wobble".into(), ..radius.clone() };
         assert!(matches!(s.set_at(&r, &nope, Value::Number(1.0)), Err(EditError::UnknownSetting(_))));
         let look = Address { owner: Owner::Thing(b), slot: Some(SlotId::Look), key: "glow".into() };
         assert!(matches!(s.set_at(&r, &look, Value::Number(1.0)), Err(EditError::NotLinked)));
+        let gone = ModuleId(42);
+        s.things
+            .get_mut(&b)
+            .unwrap()
+            .slots
+            .insert(SlotId::Look, SlotLink::Linked { module: gone, overrides: Default::default() });
+        assert_eq!(s.set_at(&r, &look, Value::Number(1.0)), Err(EditError::MissingModule(gone)));
     }
 
     #[test]
@@ -150,5 +159,23 @@ mod tests {
         let glow = Address { owner: Owner::Module(m), slot: None, key: "glow".into() };
         s.set_at(&r, &glow, Value::Number(1.0)).unwrap();
         assert_eq!(s.library.modules[&m].params.get("glow"), Some(&Value::Number(1.0)));
+        s.set_at(&r, &glow, Value::Number(0.0)).unwrap(); // back to the default
+        assert!(s.library.modules[&m].params.is_empty());
+    }
+
+    #[test]
+    fn inherited_slots_read_through_to_the_parents_module() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let m = s.add_module(&r, "look.plain", "Plain").unwrap();
+        s.library.modules.get_mut(&m).unwrap().params.set("glow", Value::Number(1.5));
+        s.link(&r, ThingId::ROOT, SlotId::Look, m).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let glow = Address { owner: Owner::Thing(b), slot: Some(SlotId::Look), key: "glow".into() };
+        assert_eq!(s.def_at(&r, &glow).map(|d| d.label), Some("Glow"));
+        assert_eq!(s.value_at(&r, &glow), Some(Value::Number(1.5)));
+        s.set_slot_off(b, SlotId::Look);
+        assert_eq!(s.def_at(&r, &glow), None);
+        assert_eq!(s.value_at(&r, &glow), None);
     }
 }

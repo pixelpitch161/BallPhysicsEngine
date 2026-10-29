@@ -165,18 +165,21 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// `RoundBox` to `round_box`.
+/// `RoundBox` to `round_box`, `HSV` to `hsv`, `GPULiquid` to `gpu_liquid`. A word starts at an
+/// uppercase letter that follows a lowercase letter or digit, or that starts a run of lowercase
+/// letters after other uppercase ones.
 fn snake_case(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
     let mut out = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            let prev = chars[i - 1];
+            let next_is_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if prev.is_lowercase() || prev.is_ascii_digit() || (prev.is_uppercase() && next_is_lower) {
                 out.push('_');
             }
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
         }
+        out.extend(c.to_lowercase());
     }
     out
 }

@@ -24,6 +24,22 @@ impl Default for Look {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Choice)]
+#[allow(clippy::upper_case_acronyms)] // the point is how such names come out
+enum Space {
+    HSV,
+    GPULiquid,
+    Mode2D,
+    Plain,
+}
+
+#[test]
+fn choice_names_keep_acronyms_together() {
+    assert_eq!(Space::NAMES, &["hsv", "gpu_liquid", "mode2_d", "plain"]);
+    assert_eq!(Space::from_name("gpu_liquid"), Some(Space::GPULiquid));
+    assert_eq!(Space::from_name("GPULiquid"), None);
+}
+
 #[test]
 fn defs_describe_each_field() {
     let d = Look::defs();

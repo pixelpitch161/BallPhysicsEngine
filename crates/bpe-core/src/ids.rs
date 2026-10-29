@@ -35,6 +35,7 @@ pub enum SlotId {
 }
 
 impl SlotId {
+    /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
     pub const ALL: [SlotId; 8] = [
         SlotId::Look,
         SlotId::Trail,

@@ -35,6 +35,7 @@ impl fmt::Display for EditError {
             EditError::SlotNotSupported(s) => write!(f, "This kind of thing has no {} slot", s.name()),
             EditError::WrongSlot => write!(f, "That module is made for a different slot"),
             EditError::NotLinked => write!(f, "This slot doesn't use a module of its own"),
+            EditError::InUse(users) if users.len() == 1 => write!(f, "One thing still uses this module"),
             EditError::InUse(users) => write!(f, "{} things still use this module", users.len()),
             EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
@@ -73,11 +74,11 @@ impl Scene {
         let highest = self
             .things
             .values()
-            .filter_map(|t| if t.name == base { Some(1) } else { t.name.strip_prefix(&prefix)?.parse::<u32>().ok() })
+            .filter_map(|t| if t.name == base { Some(1) } else { t.name.strip_prefix(&prefix)?.parse::<u64>().ok() })
             .max();
         match highest {
             None => base.to_owned(),
-            Some(n) => format!("{base} {}", n + 1),
+            Some(n) => format!("{base} {}", n.saturating_add(1)),
         }
     }
 
@@ -123,6 +124,13 @@ impl Scene {
         thing.attach = attach;
         let at = self.subtree(parent).end;
         self.order.splice(at..at, block);
+        Ok(())
+    }
+
+    /// Changes how `id` hangs off its parent without moving it among its siblings.
+    pub fn set_attach(&mut self, id: ThingId, attach: Attach) -> Result<(), EditError> {
+        self.check_movable(id)?;
+        self.things.get_mut(&id).expect("checked above").attach = attach;
         Ok(())
     }
 
@@ -287,6 +295,42 @@ mod tests {
     }
 
     #[test]
+    fn add_thing_copes_with_odd_names_and_parents() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.things.get_mut(&a).unwrap().name = "Balls 4294967295".into();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(s.things[&b].name, "Balls 4294967296");
+        assert!(matches!(s.add_thing(&r, "balls", ThingId(999)), Err(EditError::Missing(ThingId(999)))));
+    }
+
+    #[test]
+    fn slots_the_kind_lacks_are_refused() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert!(matches!(s.add_slot(&r, b, SlotId::Shader), Err(EditError::SlotNotSupported(SlotId::Shader))));
+        assert!(s.add_slot(&r, b, SlotId::Trail).is_ok() && s.things[&b].slots[&SlotId::Trail] == SlotLink::Inherit);
+        let m = s.add_module(&r, "look.plain", "Plain").unwrap();
+        s.library.modules.get_mut(&m).unwrap().slot = SlotId::Shader;
+        assert!(matches!(s.link(&r, b, SlotId::Shader, m), Err(EditError::SlotNotSupported(SlotId::Shader))));
+        assert!(matches!(s.link(&r, b, SlotId::Look, ModuleId(9)), Err(EditError::MissingModule(ModuleId(9)))));
+    }
+
+    #[test]
+    fn set_attach_keeps_the_place_among_siblings() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let ride = Attach::Ride { offset: glam::Vec2::new(1.0, 2.0), turn_with_parent: true, item: Some(3) };
+        s.set_attach(a, ride).unwrap();
+        assert_eq!((s.things[&a].attach, s.order.clone()), (ride, vec![ThingId::ROOT, a, b]));
+        assert!(matches!(s.set_attach(ThingId::ROOT, ride), Err(EditError::Root)));
+    }
+
+    #[test]
     fn riding_on_a_descendant_is_refused() {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
@@ -381,6 +425,35 @@ mod tests {
     fn modules_in_use_cannot_be_removed() {
         let (_, mut s, a, b, m) = shared_look();
         assert!(matches!(s.remove_module(m), Err(EditError::InUse(u)) if u == vec![a, b]));
+        assert_eq!(EditError::InUse(vec![a]).to_string(), "One thing still uses this module");
+        assert_eq!(EditError::InUse(vec![a, b]).to_string(), "2 things still use this module");
+        s.set_slot_inherit(a, SlotId::Look);
+        s.set_slot_off(b, SlotId::Look);
+        assert_eq!(s.things[&a].slots[&SlotId::Look], SlotLink::Inherit);
+        s.remove_module(m).unwrap();
+        assert!(s.library.modules.is_empty());
+        assert!(matches!(s.remove_module(m), Err(EditError::MissingModule(_))));
+    }
+
+    #[test]
+    fn reset_override_drops_one_change() {
+        let (_, mut s, a, _, _) = shared_look();
+        override_glow(&mut s, a, 0.7);
+        s.reset_override(a, SlotId::Look, "glow").unwrap();
+        assert!(
+            matches!(&s.things[&a].slots[&SlotId::Look], SlotLink::Linked { overrides, .. } if overrides.is_empty())
+        );
+        assert!(matches!(s.reset_override(a, SlotId::Sound, "glow"), Err(EditError::NotLinked)));
+    }
+
+    #[test]
+    fn make_unique_copies_the_graph_too() {
+        let (_, mut s, a, _, m) = shared_look();
+        let graph = crate::ModuleGraph { template: "glow".into(), custom: true, ..Default::default() };
+        s.library.modules.get_mut(&m).unwrap().graph = Some(graph.clone());
+        let copy = s.make_unique(a, SlotId::Look).unwrap();
+        assert_eq!(s.library.modules[&copy].graph, Some(graph));
+        assert_eq!(s.library.modules[&copy].kind, "look.plain");
     }
 
     #[test]

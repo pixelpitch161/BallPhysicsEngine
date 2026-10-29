@@ -31,16 +31,27 @@ pub fn save(scene: &Scene) -> String {
     ron::ser::to_string_pretty(scene, ron::ser::PrettyConfig::default()).expect("scenes always serialize")
 }
 
-/// Opens a saved scene. Values of the wrong type are dropped and numbers are pulled into range;
-/// settings and kinds the registry doesn't know are kept for `resolve` to report.
+/// Opens a saved scene. A hand-edited tree is mended (see [`Scene::mend`]), values of the wrong
+/// type are dropped and numbers are pulled into range; settings and kinds the registry doesn't
+/// know are kept for `resolve` to report.
 pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
     match probe_format(text)? {
         None => return Err(LoadError::OldEditor),
+        Some(v) if v < Scene::FORMAT => return Err(LoadError::OldEditor),
         Some(v) if v > Scene::FORMAT => return Err(LoadError::Newer(v)),
         Some(_) => {}
     }
     let mut scene: Scene = ron::from_str(text).map_err(|e| LoadError::Broken(e.to_string()))?;
+    if !scene.mend() {
+        return Err(LoadError::Broken("it has no Scene defaults".into()));
+    }
 
+    for module in scene.library.modules.values_mut() {
+        if let Some(kind) = reg.module(&module.kind) {
+            module.slot = kind.slot();
+            clean(&mut module.params, kind.settings());
+        }
+    }
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {
             clean(&mut thing.params, kind.settings());
@@ -53,12 +64,6 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
             }
         }
     }
-    for module in scene.library.modules.values_mut() {
-        if let Some(kind) = reg.module(&module.kind) {
-            clean(&mut module.params, kind.settings());
-        }
-    }
-
     if let Some(last) = scene.things.keys().next_back() {
         scene.next_thing = scene.next_thing.max(last.0 + 1);
     }
@@ -98,7 +103,7 @@ fn clean(params: &mut Params, defs: &[SettingDef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ThingId, Value, testkit};
+    use crate::{Color, SlotId, ThingId, Value, testkit};
 
     #[test]
     fn scene_round_trips() {
@@ -123,6 +128,12 @@ mod tests {
     }
 
     #[test]
+    fn lower_format_numbers_count_as_old() {
+        assert_eq!(load("(format: 1)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
+        assert!(matches!(load("(format: 2", &testkit::registry()).unwrap_err(), LoadError::Broken(_)));
+    }
+
+    #[test]
     fn load_clamps_out_of_range_values() {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
@@ -130,6 +141,61 @@ mod tests {
         s.things.get_mut(&b).unwrap().params.set("radius", Value::Number(5000.0));
         let back = load(&save(&s), &r).unwrap();
         assert_eq!(back.things[&b].params.get("radius"), Some(&Value::Number(200.0)));
+    }
+
+    #[test]
+    fn load_cleans_module_params_and_overrides_with_the_module_kinds_settings() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "look.plain", "Plain").unwrap();
+        s.link(&r, b, SlotId::Look, m).unwrap();
+        let module = s.library.modules.get_mut(&m).unwrap();
+        module.params.set("glow", Value::Text("bright".into()));
+        module.params.set("color", Value::Color(Color::rgb(1, 2, 3)));
+        module.slot = SlotId::Sound; // a hand edit the registry corrects
+        if let Some(SlotLink::Linked { overrides, .. }) = s.things.get_mut(&b).unwrap().slots.get_mut(&SlotId::Look) {
+            overrides.set("glow", Value::Number(99.0));
+            overrides.set("color", Value::Bool(true));
+            overrides.set("wobble", Value::Number(1.0));
+        }
+        let back = load(&save(&s), &r).unwrap();
+        let module = &back.library.modules[&m];
+        assert_eq!(module.params.get("glow"), None);
+        assert_eq!(module.params.get("color"), Some(&Value::Color(Color::rgb(1, 2, 3))));
+        assert_eq!(module.slot, SlotId::Look);
+        let SlotLink::Linked { overrides, .. } = &back.things[&b].slots[&SlotId::Look] else { panic!("still linked") };
+        assert_eq!(overrides.get("glow"), Some(&Value::Number(2.0)));
+        assert_eq!(overrides.get("color"), None);
+        assert_eq!(overrides.get("wobble"), Some(&Value::Number(1.0)), "unknown keys are left for resolve");
+    }
+
+    #[test]
+    fn load_mends_the_tree_and_refuses_a_file_without_defaults() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", a).unwrap();
+        s.things.get_mut(&b).unwrap().id = ThingId(50);
+        s.things.get_mut(&a).unwrap().parent = Some(ThingId(123));
+        s.order = vec![b];
+        s.next_thing = 0;
+        let back = load(&save(&s), &r).unwrap();
+        assert_eq!(back.order, vec![ThingId::ROOT, a, b]);
+        assert_eq!(back.things[&a].parent, Some(ThingId::ROOT));
+        assert_eq!(back.things[&b].id, b);
+        assert_eq!(back.next_thing, b.0 + 1);
+        let e = load("(format: 2)", &r).unwrap_err();
+        assert_eq!(e.to_string(), "This scene file is damaged: it has no Scene defaults");
+    }
+
+    #[test]
+    fn load_drops_non_finite_numbers() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.things.get_mut(&b).unwrap().params.set("radius", Value::Number(f64::NAN));
+        assert_eq!(load(&save(&s), &r).unwrap().things[&b].params.get("radius"), None);
     }
 
     #[test]

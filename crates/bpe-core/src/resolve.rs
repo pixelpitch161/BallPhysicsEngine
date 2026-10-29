@@ -55,26 +55,40 @@ pub struct Resolved {
     pub problems: Vec<Problem>,
 }
 
+/// A link that fills a slot: the thing that owns it, the module and the thing's changes to it.
+#[derive(Clone, Copy)]
+pub(crate) struct Source<'a> {
+    pub from: ThingId,
+    pub module: ModuleId,
+    pub kind: &'a Module,
+    pub overrides: &'a Params,
+}
+
 /// What one thing's link says about one slot.
 enum Step<'a> {
     /// Stop here: nothing fills the slot.
     Off,
-    /// This module fills it, with these changes.
-    Use(&'a Module, &'a Params),
+    /// This link fills it.
+    Use(Source<'a>),
     /// The link can't be used; look further up.
     Bad(ProblemKind),
     /// Nothing here; look further up.
     Pass,
 }
 
+/// Links in slots the thing's kind doesn't offer are ignored, like `link` refuses to make them.
 fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId) -> Step<'a> {
-    match scene.things.get(&id).and_then(|t| t.slots.get(&slot)) {
+    let Some(thing) = scene.things.get(&id) else { return Step::Pass };
+    if reg.thing(&thing.kind).is_none_or(|k| !k.slots().contains(&slot)) {
+        return Step::Pass;
+    }
+    match thing.slots.get(&slot) {
         Some(SlotLink::Off) => Step::Off,
         Some(SlotLink::Linked { module, overrides }) => match scene.library.modules.get(module) {
             None => Step::Bad(ProblemKind::MissingModule(*module)),
             Some(m) if m.slot != slot => Step::Bad(ProblemKind::WrongSlot(*module)),
             Some(m) if reg.module(&m.kind).is_none() => Step::Bad(ProblemKind::UnknownModuleKind(m.kind.clone())),
-            Some(m) => Step::Use(m, overrides),
+            Some(m) => Step::Use(Source { from: id, module: *module, kind: m, overrides }),
         },
         Some(SlotLink::Inherit) | None => Step::Pass,
     }
@@ -85,33 +99,44 @@ pub(crate) fn defaults(defs: &[SettingDef]) -> Params {
     Params(defs.iter().map(|d| (d.key.to_owned(), d.default.clone())).collect())
 }
 
-fn build(reg: &Registry, module: &Module, overrides: &Params, from: ThingId) -> ResolvedSlot {
-    let kind = reg.module(&module.kind).expect("step checks the module kind");
-    ResolvedSlot {
-        kind: module.kind.clone(),
-        module: module.id,
-        from,
-        params: defaults(kind.settings()).merged(&module.params).merged(overrides),
-    }
+fn build(reg: &Registry, source: Source<'_>) -> ResolvedSlot {
+    let kind = reg.module(&source.kind.kind).expect("step checks the module kind");
+    let mut params = defaults(kind.settings());
+    params.apply(&source.kind.params);
+    params.apply(source.overrides);
+    ResolvedSlot { kind: source.kind.kind.clone(), module: source.module, from: source.from, params }
 }
 
-/// One slot of one thing, walking up the tree. Problems with links on the way are added to `problems`.
-pub(crate) fn resolve_slot(
+/// The link that fills one slot of one thing, walking up the tree. Problems with links on the way
+/// are added to `problems`.
+pub(crate) fn find_slot<'a>(
+    scene: &'a Scene,
+    reg: &Registry,
+    id: ThingId,
+    slot: SlotId,
+    problems: &mut Vec<Problem>,
+) -> Option<Source<'a>> {
+    for at in std::iter::once(id).chain(scene.ancestors(id)) {
+        match step(scene, reg, at, slot) {
+            Step::Off => return None,
+            Step::Use(source) => return Some(source),
+            Step::Bad(kind) => problems.push(Problem { thing: at, slot: Some(slot), kind }),
+            Step::Pass => {}
+        }
+    }
+    None
+}
+
+/// One slot of one thing with every setting worked out, walking up the tree. Problems with links
+/// on the way are added to `problems`, nearest first. `resolve` does this for every thing at once.
+pub fn resolve_slot(
     scene: &Scene,
     reg: &Registry,
     id: ThingId,
     slot: SlotId,
     problems: &mut Vec<Problem>,
 ) -> Option<ResolvedSlot> {
-    for at in std::iter::once(id).chain(scene.ancestors(id)) {
-        match step(scene, reg, at, slot) {
-            Step::Off => return None,
-            Step::Use(m, overrides) => return Some(build(reg, m, overrides, at)),
-            Step::Bad(kind) => problems.push(Problem { thing: at, slot: Some(slot), kind }),
-            Step::Pass => {}
-        }
-    }
-    None
+    find_slot(scene, reg, id, slot, problems).map(|source| build(reg, source))
 }
 
 /// Works out every enabled thing's settings and lists what couldn't be used.
@@ -136,7 +161,8 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
 
         let above = thing.parent.and_then(|p| source.get(&p)).copied().unwrap_or([None; 8]);
         let mut here = [None; 8];
-        for (i, slot) in SlotId::ALL.into_iter().enumerate() {
+        for slot in SlotId::ALL {
+            let i = slot as usize;
             here[i] = match step(scene, reg, id, slot) {
                 Step::Off => None,
                 Step::Use(..) => Some(id),
@@ -149,18 +175,14 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
         }
         source.insert(id, here);
 
-        let mut resolved = ResolvedThing {
-            id,
-            kind: thing.kind.clone(),
-            params: defaults(kind.settings()).merged(&thing.params),
-            slots: BTreeMap::new(),
-        };
+        let mut params = defaults(kind.settings());
+        params.apply(&thing.params);
+        let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new() };
         for &slot in kind.slots() {
-            let i = SlotId::ALL.iter().position(|&s| s == slot).expect("every slot is in ALL");
-            if let Some(from) = here[i]
-                && let Step::Use(m, overrides) = step(scene, reg, from, slot)
+            if let Some(from) = here[slot as usize]
+                && let Step::Use(source) = step(scene, reg, from, slot)
             {
-                resolved.slots.insert(slot, build(reg, m, overrides, from));
+                resolved.slots.insert(slot, build(reg, source));
             }
         }
 
@@ -189,6 +211,13 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
 mod tests {
     use super::*;
     use crate::{Color, testkit};
+
+    #[test]
+    fn slot_ids_index_their_list() {
+        for (i, slot) in SlotId::ALL.into_iter().enumerate() {
+            assert_eq!(slot as usize, i);
+        }
+    }
 
     #[test]
     fn child_link_beats_parent_and_overrides_win() {
@@ -242,6 +271,61 @@ mod tests {
         let res = resolve(&s, &r);
         assert_eq!(res.things[&b].slots[&SlotId::Look].module, plain);
         assert_eq!(res.problems[0].kind, ProblemKind::WrongSlot(pluck));
+    }
+
+    #[test]
+    fn missing_and_unknown_modules_are_reported_against_their_owner() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let plain = s.add_module(&r, "look.plain", "Plain").unwrap();
+        s.link(&r, ThingId::ROOT, SlotId::Look, plain).unwrap();
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let g = s.add_thing(&r, "folder", f).unwrap();
+        let b = s.add_thing(&r, "balls", g).unwrap();
+        let gone = ModuleId(99);
+        s.things
+            .get_mut(&f)
+            .unwrap()
+            .slots
+            .insert(SlotId::Look, SlotLink::Linked { module: gone, overrides: Params::default() });
+        let odd = s.add_module(&r, "look.plain", "Odd").unwrap();
+        s.library.modules.get_mut(&odd).unwrap().kind = "look.hologram".into();
+        s.link(&r, g, SlotId::Look, odd).unwrap();
+        let res = resolve(&s, &r);
+        assert_eq!(res.things[&b].slots[&SlotId::Look].module, plain);
+        assert_eq!(
+            res.problems,
+            vec![
+                Problem { thing: f, slot: Some(SlotId::Look), kind: ProblemKind::MissingModule(gone) },
+                Problem {
+                    thing: g,
+                    slot: Some(SlotId::Look),
+                    kind: ProblemKind::UnknownModuleKind("look.hologram".into())
+                },
+            ]
+        );
+        // The one-slot walk blames the same owners, meeting the nearest first.
+        let mut problems = Vec::new();
+        assert_eq!(resolve_slot(&s, &r, b, SlotId::Look, &mut problems).unwrap().from, ThingId::ROOT);
+        problems.reverse();
+        assert_eq!(problems, res.problems);
+    }
+
+    #[test]
+    fn links_in_slots_the_kind_lacks_are_ignored() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "look.plain", "Plain").unwrap();
+        // A hand edit: balls have no Shader slot, and a Look module can't fill one anyway.
+        s.things
+            .get_mut(&b)
+            .unwrap()
+            .slots
+            .insert(SlotId::Shader, SlotLink::Linked { module: m, overrides: Params::default() });
+        let res = resolve(&s, &r);
+        assert!(res.problems.is_empty());
+        assert!(!res.things[&b].slots.contains_key(&SlotId::Shader));
     }
 
     #[test]
