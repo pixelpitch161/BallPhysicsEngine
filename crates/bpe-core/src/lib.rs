@@ -10,6 +10,7 @@ extern crate self as bpe_core;
 
 pub mod address;
 pub mod color;
+pub mod contract;
 pub mod edit;
 pub mod ids;
 pub mod library;
@@ -24,6 +25,7 @@ pub mod value;
 
 pub use address::{Address, Owner};
 pub use color::Color;
+pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, ModuleGraph};
