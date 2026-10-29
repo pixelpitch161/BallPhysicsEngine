@@ -634,7 +634,7 @@ mod tests {
         h.get_by_label("Grow on hit").click();
         h.run();
         assert!(h.query_by_label("No rules yet.").is_none());
-        h.get_by_label_contains("When hit → Grow");
+        h.get_by_label_contains("When hit › Grow");
         // The recipe's number is right there on the Simple card.
         let by = h.get_by_role_and_label(Role::Slider, "By (px)");
         assert_eq!(by.accesskit_node().numeric_value(), Some(2.0));

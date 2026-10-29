@@ -197,7 +197,7 @@ fn remove_chain(graph: &mut Graph, chain: &[u32]) -> BTreeSet<u32> {
     doomed
 }
 
-/// Rules as sentences: one row per When block and what its trigger reaches, with the
+/// Rules as sentences ("When hit › Grow"): one row per When block and what its trigger reaches, with the
 /// numbers inline, an "Add rule" menu of recipes and a way into the graph.
 pub fn rules_card(
     ui: &mut Ui,
@@ -221,7 +221,7 @@ pub fn rules_card(
             .map(|n| cat.spec(&n.kind).map_or_else(|| n.kind.clone(), |s| s.title.clone()))
             .collect();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(words.join(" → ")).strong());
+            ui.label(RichText::new(words.join(" › ")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("Remove").on_hover_text("Take this rule out of the graph").clicked() {
                     remove = Some(chain.clone());
