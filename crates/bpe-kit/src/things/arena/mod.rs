@@ -15,11 +15,13 @@ pub enum ArenaShape {
     Circle,
     Box,
     Polygon,
+    /// A box whose short sides are half circles.
+    Capsule,
 }
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ArenaSettings {
-    /// A round ring, a box, or a regular polygon.
+    /// A round ring, a box, a regular polygon or a capsule.
     #[setting(label = "Shape", simple, random)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
@@ -37,6 +39,9 @@ pub struct ArenaSettings {
     /// Box only.
     #[setting(label = "Height", range(20, 4000), unit = "px")]
     pub height: f32,
+    /// Box only: how round the corners are.
+    #[setting(label = "Corner radius", range(0, 1000), unit = "px", keyframe, random)]
+    pub corner: f32,
     /// Polygon only.
     #[setting(label = "Sides", range(3, 12), random)]
     pub sides: u32,
@@ -57,6 +62,7 @@ impl Default for ArenaSettings {
             spin: 0.0,
             width: 900.0,
             height: 1500.0,
+            corner: 0.0,
             sides: 6,
             shrink: 0.0,
             min_size: 100.0,

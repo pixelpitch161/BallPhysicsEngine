@@ -2,16 +2,19 @@
 //! root that sets gravity.
 
 use bpe_core::{
-    ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Thing, ThingId,
-    ThingKind, Value, resolve,
+    Attach, ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Target, Thing,
+    ThingId, ThingKind, Value, resolve,
 };
 use glam::Vec2;
 
-use crate::plugins::{ModuleSim, Sims, ThingSim, ThingState};
-use crate::{Bodies, Contact, Limits, Outline, Wall, World};
+use crate::plugins::{ModuleSim, PairRule, Sims, ThingSim, ThingState};
+use crate::{Bodies, Contact, Limits, Outline, Pose, Solid, Solids, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
+pub const PEG: ThingId = ThingId(3);
+/// The second dots thing in [`dots_pair`].
+pub const DOTS2: ThingId = ThingId(3);
 
 #[derive(Settings)]
 struct RootSettings {
@@ -30,10 +33,12 @@ impl Default for RootSettings {
 struct WallSettings {
     #[setting(label = "Radius", range(1, 10000))]
     radius: f32,
+    #[setting(label = "Spin", range(-100, 100))]
+    spin: f32,
 }
 impl Default for WallSettings {
     fn default() -> Self {
-        Self { radius: 100.0 }
+        Self { radius: 100.0, spin: 0.0 }
     }
 }
 
@@ -52,14 +57,59 @@ impl Default for DotsSettings {
     }
 }
 
+#[derive(Settings)]
+struct PegSettings {
+    #[setting(label = "Radius", range(1, 1000))]
+    radius: f32,
+}
+impl Default for PegSettings {
+    fn default() -> Self {
+        Self { radius: 10.0 }
+    }
+}
+
 #[derive(Default, Settings)]
 struct NoSettings {}
+
+#[derive(Clone, Settings)]
+struct BumpySettings {
+    #[setting(label = "Bounciness", range(0, 2))]
+    bounciness: f32,
+    #[setting(label = "Target")]
+    target: Target,
+    #[setting(label = "Pops after", range(0, 1000))]
+    pops_after: u32,
+}
+impl Default for BumpySettings {
+    fn default() -> Self {
+        Self { bounciness: 1.0, target: Target::Anything, pops_after: 0 }
+    }
+}
 
 struct RootKind;
 struct WallKind;
 struct DotsKind;
+struct PegKind;
 struct StickyKind;
 struct BouncyKind;
+struct BumpyKind;
+impl ModuleKind for BumpyKind {
+    fn id(&self) -> &'static str {
+        "bounce.bumpy"
+    }
+    fn name(&self) -> &'static str {
+        "Bumpy"
+    }
+    fn help(&self) -> &'static str {
+        ""
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Bounce
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        BumpySettings::defs()
+    }
+}
 
 macro_rules! thing_kind {
     ($t:ty, $id:literal, $defs:ty) => {
@@ -91,6 +141,7 @@ macro_rules! thing_kind {
 thing_kind!(RootKind, "scene", RootSettings);
 thing_kind!(WallKind, "wall", WallSettings);
 thing_kind!(DotsKind, "dots", DotsSettings);
+thing_kind!(PegKind, "peg", PegSettings);
 
 macro_rules! bounce_kind {
     ($t:ty, $id:literal) => {
@@ -158,9 +209,28 @@ impl ThingSim for TestWall {
     }
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let s = WallSettings::from_params(&resolved.params);
+        let base = world.anchor(thing.id);
         let outline =
-            Outline::Ring { center: thing.transform.position, radius: s.radius, sides: 0, angle: 0.0, thickness: 2.0 };
-        world.walls.insert(thing.id, Wall { outline, spin: 0.0, growth: 0.0 });
+            Outline::Ring { center: base.position, radius: s.radius, sides: 0, angle: base.angle, thickness: 2.0 };
+        world.walls.insert(thing.id, Wall { outline, spin: s.spin, growth: 0.0, velocity: base.velocity });
+        world.poses.insert(thing.id, Pose { spin: s.spin, ..base });
+        world.states.insert(thing.id, Box::new(s.spin));
+    }
+
+    fn scripted(&self, thing: ThingId, world: &mut World) {
+        let dt = world.dt();
+        let spin = world.states.get(&thing).map_or(0.0, |s| *crate::state::<f32>(s.as_ref()));
+        let base = world.anchor(thing);
+        if let Some(pose) = world.poses.get_mut(&thing) {
+            pose.angle += spin * dt;
+            pose.position = base.position;
+            pose.velocity = base.velocity;
+        }
+        if let Some(Wall { outline: Outline::Ring { center, angle, .. }, velocity, .. }) = world.walls.get_mut(&thing) {
+            *angle += spin * dt;
+            *center = base.position;
+            *velocity = base.velocity;
+        }
     }
 }
 
@@ -171,10 +241,16 @@ impl ThingSim for TestDots {
     }
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let s = DotsSettings::from_params(&resolved.params);
+        let at = world.anchor(thing.id);
         let mut bodies = Bodies::default();
+        // A block 12 px apart, as square as the count allows, centred on the thing.
+        let columns = (s.count as f32).sqrt().ceil().max(1.0) as u32;
+        let rows = s.count.div_ceil(columns);
         for i in 0..s.count {
-            let offset = Vec2::new(i as f32 * 0.5, 0.0);
-            bodies.push(thing.transform.position + offset, s.velocity, 5.0);
+            let column = (i % columns) as f32 - (columns - 1) as f32 * 0.5;
+            let row = (i / columns) as f32 - (rows - 1) as f32 * 0.5;
+            let offset = Vec2::new(column, row) * 12.0;
+            bodies.push(at.position + offset, s.velocity + at.velocity, 5.0);
         }
         world.bodies.insert(thing.id, bodies);
         if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
@@ -183,6 +259,25 @@ impl ThingSim for TestDots {
     }
     fn affects_physics(&self, key: &str) -> bool {
         key != "tint"
+    }
+}
+
+/// A round peg at the thing's place that rides along with its parent.
+pub struct TestPeg;
+impl ThingSim for TestPeg {
+    fn kind(&self) -> &'static str {
+        "peg"
+    }
+    fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
+        let s = PegSettings::from_params(&resolved.params);
+        world.states.insert(thing.id, Box::new(s.radius));
+        self.scripted(thing.id, world);
+    }
+    fn scripted(&self, thing: ThingId, world: &mut World) {
+        let radius = world.states.get(&thing).map_or(10.0, |s| *crate::state::<f32>(s.as_ref()));
+        let pose = world.anchor(thing);
+        world.poses.insert(thing, pose);
+        world.solids.insert(thing, Solids::new(pose, vec![Solid::Disc { center: pose.position, radius }]));
     }
 }
 
@@ -252,14 +347,37 @@ impl ModuleSim for Bouncy {
     }
 }
 
+/// Balls that bump into other balls and pop after so many hits.
+struct Bumpy;
+impl ModuleSim for Bumpy {
+    fn kind(&self) -> &'static str {
+        "bounce.bumpy"
+    }
+    fn prepare(&self, params: &Params) -> Box<dyn ThingState> {
+        Box::new(BumpySettings::from_params(params))
+    }
+    fn bounciness(&self, state: &dyn ThingState) -> f32 {
+        crate::state::<BumpySettings>(state).bounciness
+    }
+    fn pairs(&self, state: &dyn ThingState) -> Option<PairRule> {
+        Some(PairRule { target: crate::state::<BumpySettings>(state).target.clone(), friction: 0.0 })
+    }
+    fn effects(&self, state: &dyn ThingState, bodies: &mut Bodies, item: usize, _speed: f32, _limits: &Limits) -> bool {
+        let pops = crate::state::<BumpySettings>(state).pops_after;
+        pops > 0 && bodies.hits[item] >= pops
+    }
+}
+
 pub fn reg() -> Registry {
     let mut r = Registry::new();
     r.add_thing(RootKind);
     r.add_thing(WallKind);
     r.add_thing(DotsKind);
+    r.add_thing(PegKind);
     r.add_module(GravityKind);
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
+    r.add_module(BumpyKind);
     r.add_module(TrailKind);
     r
 }
@@ -269,9 +387,11 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_thing(TestRoot);
     s.add_thing(TestWall);
     s.add_thing(TestDots);
+    s.add_thing(TestPeg);
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
+    s.add_module(Bumpy);
     s
 }
 
@@ -287,6 +407,79 @@ pub fn dots_in_ring(count: u32) -> (Scene, Resolved, Sims) {
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(true))
+}
+
+/// One dot riding on a ring that turns clockwise at 1 rad/s.
+pub fn ring_with_rider(offset: Vec2, turn: bool) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    scene.things.get_mut(&WALL).unwrap().params.set("spin", Value::Number(1.0));
+    scene.set_parent(DOTS, WALL, Attach::Ride { offset, turn_with_parent: turn, item: None }).unwrap();
+    let resolved = resolve(&scene, &reg());
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// One still dot above a peg inside the ring, so it falls onto the peg.
+pub fn dots_and_peg() -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    let reg = reg();
+    let peg = scene.add_thing(&reg, "peg", ThingId::ROOT).unwrap();
+    assert_eq!(peg, PEG);
+    scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, 40.0);
+    scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -50.0);
+    scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// Two bumpy dots heading at each other at 100 px/s inside the ring, no gravity: the first at
+/// `(-gap, 0)`, the second (tagged "soft") at `(gap, 0)`. Both bumpy modules point at `target`.
+pub fn dots_pair(gap: f32, target: Target) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    let reg = reg();
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+    let second = scene.add_thing(&reg, "dots", ThingId::ROOT).unwrap();
+    assert_eq!(second, DOTS2);
+    scene.things.get_mut(&DOTS2).unwrap().tags.insert("soft".into());
+    for (id, x) in [(DOTS, -gap), (DOTS2, gap)] {
+        let t = scene.things.get_mut(&id).unwrap();
+        t.transform.position = Vec2::new(x, 0.0);
+        t.params.set("velocity", Value::Vec2([if x < 0.0 { 100.0 } else { -100.0 }, 0.0]));
+    }
+    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
+    scene.library.modules.get_mut(&bumpy).unwrap().params.set("target", Value::Target(target));
+    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// [`dots_pair`] with gravity, where the first dots' module pops its ball after `pops` hits.
+pub fn dots_pair_popping(pops: u32) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_pair(30.0, Target::Anything);
+    let reg = reg();
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 500.0]));
+    let popping = scene.add_module(&reg, "bounce.bumpy", "Popping").unwrap();
+    scene.library.modules.get_mut(&popping).unwrap().params.set("pops_after", Value::Int(pops as i64));
+    scene.link(&reg, DOTS, SlotId::Bounce, popping).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// `count` bumpy dots in a ring of 150 under gravity, spread over a block so they pile up.
+pub fn dots_pile(count: u32) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(count);
+    let reg = reg();
+    scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(150.0));
+    scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
+    scene.library.modules.get_mut(&bumpy).unwrap().params.set("bounciness", Value::Number(0.5));
+    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
 }
 
 /// The dots carry a bouncy module; the wall a sticky one that may or may not take over.

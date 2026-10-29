@@ -4,7 +4,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use bpe_core::{Params, ResolvedThing, Thing, ThingId};
+use bpe_core::{Params, ResolvedThing, Target, Thing, ThingId};
 use glam::Vec2;
 
 use crate::{Bodies, Contact, World, reflect};
@@ -58,6 +58,15 @@ pub struct Limits {
     pub resting: f32,
 }
 
+/// What a Bounce module says about hitting other balls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PairRule {
+    /// Only balls on things this points at are bumped into; both sides have to agree.
+    pub target: Target,
+    /// How much sideways speed rubs off, 0 to 1.
+    pub friction: f32,
+}
+
 /// How a thing kind takes part in the simulation.
 pub trait ThingSim: Send + Sync + 'static {
     /// The thing kind's id, as registered in `bpe_core`.
@@ -87,6 +96,47 @@ pub trait ModuleSim: Send + Sync + 'static {
     }
     /// Whether this module, on the thing that was hit, decides the bounce instead of the mover's.
     fn takes_over(&self, _state: &dyn ThingState) -> bool {
+        false
+    }
+    /// How much speed a ball keeps when it hits another ball: 1 keeps it all.
+    fn bounciness(&self, _state: &dyn ThingState) -> f32 {
+        1.0
+    }
+    /// `Some` when the balls using this module bump into other balls, and which ones.
+    fn pairs(&self, _state: &dyn ThingState) -> Option<PairRule> {
+        None
+    }
+    /// The things against which [`ModuleSim::respond_against`] is told the hit is special.
+    fn special_target(&self, _state: &dyn ThingState) -> Option<Target> {
+        None
+    }
+    /// Answers a contact for one item against a wall or solid; `special` says the thing hit
+    /// matches [`ModuleSim::special_target`]. The default ignores that and calls `respond`.
+    fn respond_against(
+        &self,
+        state: &dyn ThingState,
+        contact: &Contact,
+        bodies: &mut Bodies,
+        item: usize,
+        limits: &Limits,
+        _special: bool,
+    ) {
+        self.respond(state, contact, bodies, item, limits);
+    }
+    /// Finishes a hit against another ball, after the two have swapped momentum: speed gain,
+    /// growing, anything `respond` does beyond the bounce itself.
+    fn respond_pair(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _item: usize, _speed: f32, _limits: &Limits) {
+    }
+    /// What a real hit at `speed` does to the ball itself afterwards, against anything: counting
+    /// down to popping. Returns `true` when the ball should be removed.
+    fn effects(
+        &self,
+        _state: &dyn ThingState,
+        _bodies: &mut Bodies,
+        _item: usize,
+        _speed: f32,
+        _limits: &Limits,
+    ) -> bool {
         false
     }
 }

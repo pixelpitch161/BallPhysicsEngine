@@ -1,0 +1,133 @@
+(
+    format: 2,
+    name: "Ball pit",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "duration": Number(15.0),
+                "gravity": Vec2((0.0, 1200.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "height": Number(1400.0),
+                "shape": Choice("capsule"),
+                "width": Number(700.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Pit",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -300.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "radius": Number(20.0),
+                "rows": Int(14),
+                "spacing": Number(48.0),
+                "velocity": Vec2((120.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.5),
+                    "friction": Number(0.30000001192092896),
+                    "hit_balls": Bool(true),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "min_gap": Number(0.029999999329447746),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                    "gradient": Colors([
+                        "#3e9bff",
+                        "#ff3ec8",
+                        "#ffb82e",
+                    ]),
+                    "gradient_by": Choice("hits"),
+                    "gradient_full": Number(12.0),
+                },
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 5,
+)
