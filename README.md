@@ -102,6 +102,24 @@ cargo run --release -p bpe-export -- escape-rings out.mp4                       
 cargo run --release -p bpe-export -- --presets                                                         # list the presets
 ```
 
+## Ball Studio Next (work in progress)
+
+A rewrite of the editor around a modular engine is being built beside the old one, stage by stage, following `docs/superpowers/specs/2026-10-29-modular-studio-design.md`. It ships as a second program, `ball-studio-next`, and leaves the old editor and its crates untouched. Scenes are a tree of **things** (Scene defaults, Arena, Balls so far), and each thing has **slots** (Look, Motion, Bounce, Sound) that link a shared **module** from the scene's library or inherit the parent's. Every setting shows at two depths, Simple and More; Nodes comes in a later stage.
+
+```sh
+cargo run --release -p bpe-studio                                     # the new editor
+cargo run --release -p bpe-studio -- scenes/next/reel-block.ron        # open a scene
+cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4   # export from the command line
+cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4 --scale 0.5 --frames 300 --encoder cpu
+```
+
+- **A new scene** opens with a circle arena and one ball. The tree on the left adds, renames, duplicates, filters and deletes things, and hides them with the eye. The inspector on the right shows the selected thing's settings and one card per slot, where a menu switches the module, makes a new one, inherits or turns the slot off.
+- **The preview** draws the scene while paused or playing. Drag a ball group to move it, drag the tip of its arrow to aim it, drag the arena's edge to resize it. The bar below plays and pauses (Space), restarts (Home), shows every hit as a tick, and scrubs.
+- **Sound** is remixed on a thread a moment after an edit that changes it, and plays in time with the picture. **Export video…** saves an mp4 with sound next to the scene file, at full, half or quarter size, using the graphics card's encoder when ffmpeg can.
+- **Scenes** in `scenes/next/` are the new format: `one-ball`, `reel-block`, `box-drop`, `spinning-hexagon` and `shrinking-ring`. Old `.ron` files do not open in the new editor yet.
+- **Crates:** `bpe-core` (the scene model, library, slots and resolve), `bpe-runtime` (the stepper and event log), `bpe-gfx` (the renderer), `bpe-mix` (the mixer), `bpe-kit` (every thing and module kind, one folder each), `bpe-cli` (`bpe-render-next`) and `bpe-studio` (the editor). `cargo test --release -p bpe-kit --test speed -- --ignored --nocapture` compares the new engine with the old one on ten thousand balls.
+- **Not yet:** obstacles, folders, attaching, tags, the Library window, multi-select, nodes and rules, styled looks, trails, particles, shaders, emitters, liquid, swarms, fields, soft bodies, text, keyframes and music. They come in the later stages.
+
 ## How it fits together
 
 | Crate | Job |

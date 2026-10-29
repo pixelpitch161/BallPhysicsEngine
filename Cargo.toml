@@ -17,6 +17,11 @@ bpe-render = { path = "crates/bpe-render" }
 bpe-export = { path = "crates/bpe-export" }
 bpe-core = { path = "crates/bpe-core" }
 bpe-settings-derive = { path = "crates/bpe-settings-derive" }
+bpe-runtime = { path = "crates/bpe-runtime" }
+bpe-gfx = { path = "crates/bpe-gfx" }
+bpe-mix = { path = "crates/bpe-mix" }
+bpe-kit = { path = "crates/bpe-kit" }
+bpe-cli = { path = "crates/bpe-cli" }
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
 glam = { version = "0.34", features = ["serde", "bytemuck"] }

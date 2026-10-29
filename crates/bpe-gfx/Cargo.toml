@@ -1,0 +1,18 @@
+[package]
+name = "bpe-gfx"
+description = "The modular Ball Studio's renderer: things draw into a frame, the GPU draws the frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-core.workspace = true
+bpe-runtime.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
+
+[dev-dependencies]
+bpe-core = { workspace = true, features = ["testkit"] }
