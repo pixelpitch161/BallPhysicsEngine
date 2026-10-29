@@ -9,4 +9,8 @@ license.workspace = true
 bpe-core.workspace = true
 bpe-mix.workspace = true
 bpe-runtime.workspace = true
+bpe-gfx.workspace = true
 glam.workspace = true
+
+[dev-dependencies]
+png = "0.18"

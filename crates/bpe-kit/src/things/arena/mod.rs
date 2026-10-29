@@ -1,5 +1,6 @@
 //! The arena: a closed wall the balls stay inside of.
 
+pub mod draw;
 pub mod sim;
 
 pub use sim::{ArenaSim, ArenaState};

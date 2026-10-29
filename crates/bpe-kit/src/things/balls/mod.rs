@@ -1,5 +1,6 @@
 //! Balls: one ball, a block of them, or a ring.
 
+pub mod draw;
 pub mod sim;
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};

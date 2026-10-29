@@ -1,5 +1,7 @@
 //! The classic look: a lit sphere with a halo, and a flash where it hits.
 
+pub mod draw;
+
 use bpe_core::{Color, ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct ClassicLookKind;
