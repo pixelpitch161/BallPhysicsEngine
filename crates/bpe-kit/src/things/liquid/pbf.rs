@@ -88,7 +88,8 @@ pub fn lattice(region: &Rect, spacing: f32, keep: impl Fn(Vec2) -> bool, count: 
 
 /// The spacing of a hexagonal lattice that fits `count` particles into `area`.
 pub fn spacing_for(count: u32, area: f32) -> f32 {
-    (area.max(1.0) * ROW / count.max(1) as f32).sqrt()
+    // One particle per spacing × (spacing × ROW) of area.
+    (area.max(1.0) / (count.max(1) as f32 * ROW)).sqrt()
 }
 
 /// A uniform grid of the particles, rebuilt every substep with a counting sort so the order
@@ -454,5 +455,22 @@ mod tests {
         assert_eq!(bodies.len(), 100);
         assert!(bodies.position.iter().all(|p| p.is_finite()));
         assert!(bodies.velocity.iter().all(|v| v.length() > 0.0 && v.is_finite()), "velocities follow the moves");
+    }
+
+    #[test]
+    fn the_spacing_fits_the_count_into_the_area() {
+        // A hexagonal lattice holds one particle per spacing × (spacing × ROW) of area.
+        for (count, area) in [(100, 10_000.0), (12_000, 472_500.0), (1, 1.0)] {
+            let s = spacing_for(count, area);
+            let filled = count as f32 * s * s * ROW;
+            assert!((filled - area).abs() < area * 0.01, "{count} in {area}: spacing {s} fills {filled}");
+        }
+        // And the rows really reach the top of a rectangle.
+        let region = Rect { min: Vec2::new(-450.0, 225.0), max: Vec2::new(450.0, 750.0) };
+        // The sim tightens the spacing by 2% so the rows and columns the edges cut off still fit.
+        let points = lattice(&region, spacing_for(12_000, region.area()) * 0.98, |_| true, 12_000);
+        assert_eq!(points.len(), 12_000);
+        let top = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(top < 225.0 + 525.0 * 0.06, "the lattice stops {} px short of the top", top - 225.0);
     }
 }

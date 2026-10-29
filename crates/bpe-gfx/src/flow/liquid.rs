@@ -155,7 +155,8 @@ fn start(desc: &GpuLiquid, wall: Option<&Outline>) -> Start {
     }
     let fraction = (kept as f32 / (SAMPLES * SAMPLES) as f32).max(0.01);
     let count = desc.count.max(1) as usize;
-    let mut spacing = ((size.x * size.y * fraction).max(1.0) * ROW / count as f32).sqrt() * 0.98;
+    // One particle per spacing × (spacing × ROW) of the area inside the wall.
+    let mut spacing = ((size.x * size.y * fraction).max(1.0) / (count as f32 * ROW)).sqrt() * 0.98;
     let mut positions = Vec::new();
     for _ in 0..6 {
         spacing = spacing.max(MIN_SPACING);
@@ -412,8 +413,10 @@ mod tests {
         assert_eq!(s.state.len(), 12_000);
         assert!(s.state.iter().all(|p| p[0].abs() < 398.0 && p[1] > 210.0 && p[1] < 698.0));
         assert!(s.state[0][1] > s.state[11_999][1], "the first particle sits at the bottom");
-        let expected = (800.0 * 490.0 * ROW / 12_000.0_f32).sqrt();
-        assert!((s.spacing - expected * 0.98).abs() < expected * 0.1, "{} vs {expected}", s.spacing);
+        let expected = (800.0 * 490.0 / (12_000.0_f32 * ROW)).sqrt();
+        assert!((s.spacing - expected * 0.98).abs() < expected * 0.05, "{} vs {expected}", s.spacing);
+        let top = s.state.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        assert!(top < 210.0 + 490.0 * 0.06, "the lattice stops {} px short of the top", top - 210.0);
         // A round wall leaves the corners out and the lattice tightens to still hold the count.
         let ring = Outline::Ring { center: Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 4.0 };
         let r = start(&GpuLiquid { region: [-400.0, 120.0, 400.0, 400.0], ..pool(5_000) }, Some(&ring));
