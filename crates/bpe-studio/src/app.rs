@@ -14,7 +14,12 @@ use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Most time spent catching the simulation up in one go. A long stretch, such as a scrub far
+/// ahead on a huge scene, is worked out over several frames by the preview instead of
+/// freezing the editor.
+pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
 
 /// Something that would throw away unsaved changes.
 pub enum Pending {
@@ -217,9 +222,11 @@ impl Studio {
 
     // ---------- playback ----------
 
+    /// Moves the playhead. The simulation follows within the budget; the preview catches up
+    /// the rest a budget per frame.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek(self.time);
+        self.playback.seek_within(self.time, Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(audio) = &self.audio
         {
@@ -515,6 +522,11 @@ impl Studio {
 }
 
 impl eframe::App for Studio {
+    fn on_exit(&mut self) {
+        // A running export would otherwise leave a half-written video behind.
+        self.panels.export.shutdown();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.unsaved() {
@@ -644,7 +656,9 @@ fn file_label(path: &Path) -> String {
 mod tests {
     use super::*;
     use bpe_core::{Address, ModuleId, Owner, ThingId, Value};
+    use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn opening_an_old_scene_reports_it_and_keeps_the_current_one() {
@@ -692,5 +706,26 @@ mod tests {
         assert_eq!(studio.scene.name, "New scene");
         assert!(!studio.unsaved());
         assert!(studio.history.undo.is_empty());
+    }
+
+    #[test]
+    fn scrubbing_a_huge_scene_returns_within_its_budget() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let block = BallsSettings {
+            arrangement: Arrangement::Block,
+            columns: 200,
+            rows: 200,
+            spacing: 4.0,
+            radius: 1.5,
+            ..BallsSettings::default()
+        };
+        studio.scene.things.get_mut(&ThingId(2)).unwrap().params = block.to_params();
+        studio.after_edit(before);
+        let started = Instant::now();
+        studio.seek(20.0);
+        assert!(started.elapsed() < Duration::from_millis(500), "a scrub blocked for {:?}", started.elapsed());
+        assert_eq!(studio.time, 20.0);
+        assert!(studio.playback.time() < 20.0, "the preview catches the rest up a budget per frame");
     }
 }

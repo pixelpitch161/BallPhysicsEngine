@@ -127,20 +127,26 @@ fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wa
 }
 
 /// Moves a ball back inside the wall and reports the hardest contact it was moving into, if
-/// any. The velocity is left alone: the ball's Bounce module answers with [`reflect`].
+/// any. The velocity is left alone: the ball's Bounce module answers with [`reflect`]. A ball
+/// too big for the wall is held at the centre and never touches it.
 // Inlined so a loop over every ball works out a box's or polygon's directions only once.
 #[inline(always)]
 pub fn keep_inside(position: &mut Vec2, velocity: Vec2, radius: f32, wall: &Wall) -> Option<Contact> {
     match wall.outline {
         Outline::Ring { center, radius: wall_radius, sides: 0, thickness, .. } => {
             let inner = wall_radius - thickness * 0.5 - radius;
+            if inner <= 0.0 {
+                // The ball doesn't fit: it sits at the centre with no wall to bounce off.
+                *position = center;
+                return None;
+            }
             let offset = *position - center;
             let distance = offset.length();
             if distance <= inner || distance == 0.0 {
                 return None;
             }
             let outward = offset / distance;
-            *position = center + outward * inner.max(0.0);
+            *position = center + outward * inner;
             contact(*position, velocity, radius, outward, wall)
         }
         Outline::Ring { center, radius: wall_radius, sides, angle, thickness } => {
@@ -170,6 +176,12 @@ fn keep_inside_planes(
     let mut hardest: Option<Contact> = None;
     for (outward, distance) in planes {
         let limit = distance - thickness * 0.5 - radius;
+        if limit < 0.0 {
+            // The ball doesn't fit across this plane: it is held on the centre line instead,
+            // with no wall to bounce off.
+            *position -= outward * (*position - center).dot(outward);
+            continue;
+        }
         let excess = (*position - center).dot(outward) - limit;
         if excess <= 0.0 {
             continue;
@@ -281,5 +293,19 @@ mod tests {
         assert!(!outline.inside(rim + (rim - outline.center()).normalize()));
         assert!(outline.inside(rim - (rim - outline.center()).normalize()));
         assert_eq!(outline.thickness(), 2.0);
+    }
+
+    #[test]
+    fn a_ball_that_does_not_fit_is_pinned_without_a_contact() {
+        let mut p = Vec2::new(3.0, 1.0);
+        assert!(keep_inside(&mut p, Vec2::new(50.0, 0.0), 20.0, &ring(10.0)).is_none());
+        assert!(p.length() < 1e-3);
+        // A box too low for the ball pins it on that axis only; it still bounces off the ends.
+        let outline = Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 5.0), angle: 0.0, thickness: 2.0 };
+        let wall = Wall { outline, spin: 0.0, growth: 0.0 };
+        let mut p = Vec2::new(99.0, 3.0);
+        let c = keep_inside(&mut p, Vec2::new(50.0, 10.0), 20.0, &wall).expect("the end wall is hit");
+        assert!(p.y.abs() < 1e-3 && (p.x - 79.0).abs() < 1e-3, "{p:?}");
+        assert!((c.normal.x + 1.0).abs() < 1e-3 && c.normal.y.abs() < 1e-3, "{c:?}");
     }
 }

@@ -219,14 +219,19 @@ fn row(
             ui.painter().circle_filled(dot.center(), 3.5, theme::ERROR);
             response.on_hover_text(problems.join("\n"));
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let help = if thing.enabled { "Shown. Click to hide it." } else { "Hidden. Click to show it." };
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
-            paint_eye(ui.painter(), rect, thing.enabled, ink);
-            if response.on_hover_text(help).clicked() {
-                *action = Some(Action::Toggle(id));
-            }
-        });
+        // Hiding the root would hide the whole scene, so it has no eye.
+        if id != ThingId::ROOT {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let help = if thing.enabled { "Shown. Click to hide it." } else { "Hidden. Click to show it." };
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
+                let name = format!("{} {}", if thing.enabled { "Hide" } else { "Show" }, thing.name);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+                paint_eye(ui.painter(), rect, thing.enabled, ink);
+                if response.on_hover_text(help).clicked() {
+                    *action = Some(Action::Toggle(id));
+                }
+            });
+        }
     });
 }
 
@@ -438,5 +443,17 @@ mod tests {
         assert_eq!(problem_words(&p), "Look links a module that is missing (id 99)");
         let p = Problem { thing: ThingId(2), slot: None, kind: ProblemKind::UnknownKind("blob".into()) };
         assert_eq!(problem_words(&p), "Its kind \"blob\" isn't installed");
+    }
+
+    #[test]
+    fn the_root_has_no_eye_and_other_things_can_be_hidden() {
+        let mut h = harness();
+        assert!(h.query_by_label("Hide Scene defaults").is_none());
+        h.get_by_label("Hide Ball").click();
+        h.run();
+        assert!(!h.state().scene.things[&ThingId(2)].enabled);
+        h.get_by_label("Show Ball").click();
+        h.run();
+        assert!(h.state().scene.things[&ThingId(2)].enabled);
     }
 }

@@ -132,7 +132,8 @@ pub fn new_scene(reg: &Registry) -> Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Color, SlotId, ThingId, Value};
+    use bpe_core::{Color, SlotId, ThingId, Value, resolve};
+    use bpe_runtime::{Log, World};
 
     #[test]
     fn every_kit_plugin_passes_the_contract() {
@@ -157,5 +158,20 @@ mod tests {
         assert_eq!(ball.slots[&SlotId::Motion].from, ThingId::ROOT);
         assert_eq!(ball.slots[&SlotId::Sound].from, ThingId::ROOT);
         assert_eq!(res.things[&ThingId(1)].slots[&SlotId::Look].from, ThingId::ROOT);
+    }
+
+    #[test]
+    fn a_ball_bigger_than_its_arena_is_pinned_and_logs_no_hits() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        scene.things.get_mut(&ThingId(1)).unwrap().params.set("radius", Value::Number(20.0));
+        scene.things.get_mut(&ThingId(2)).unwrap().params.set("radius", Value::Number(24.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(1.0, &kit.sims, &mut log);
+        assert!(log.is_empty(), "a pinned ball buzzed {} hits", log.len());
+        let p = world.bodies[&ThingId(2)].position[0];
+        assert!(p.is_finite() && p.length() < 1e-3, "{p:?}");
     }
 }

@@ -1,7 +1,7 @@
 //! The video preview, plus the handles that set a scene up by dragging in it: move a thing,
 //! aim balls by their arrow tip, and resize the arena by its edge.
 
-use crate::app::Studio;
+use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::theme;
 use bpe_core::{Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
@@ -9,12 +9,6 @@ use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
 use bpe_runtime::{Outline, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
-use std::time::Duration;
-
-/// Most time spent catching the simulation up in one editor frame. A long stretch, such as
-/// after an edit with the playhead far in, is worked out over several frames instead of
-/// freezing the editor.
-const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
 
 /// The launch arrow's tip sits this many seconds of launch speed from the balls.
 pub const ARROW_SECONDS: f32 = 0.25;

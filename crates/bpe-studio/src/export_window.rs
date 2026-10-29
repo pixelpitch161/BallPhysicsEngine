@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The graphics card encoders that work, and the ffmpeg they were checked with.
 type CheckedEncoders = (PathBuf, Vec<Encoder>);
@@ -90,6 +90,15 @@ impl ExportWindow {
 
     pub fn busy(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// Stops a running export before the editor closes, so no half-written file is left.
+    pub fn shutdown(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+            // The export thread notices at its next frame, stops ffmpeg and deletes the file.
+            let _ = job.receiver.recv_timeout(Duration::from_secs(15));
+        }
     }
 
     fn output_path(&self, scene: &Scene, base_dir: Option<&Path>) -> PathBuf {
@@ -391,6 +400,7 @@ fn show_in_folder(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bpe_core::{Settings, ThingId};
 
     #[test]
     fn file_names_are_safe() {
@@ -414,5 +424,39 @@ mod tests {
         assert_eq!(beside, PathBuf::from("/scenes/New scene.mp4"));
         let alone = window.output_path(&scene, None);
         assert_eq!(alone.file_name().unwrap(), "New scene.mp4");
+    }
+
+    #[test]
+    fn closing_while_exporting_cancels_and_removes_the_file() {
+        let mut window = ExportWindow::default();
+        if window.ffmpeg.is_none() {
+            eprintln!("skipped: no ffmpeg");
+            return;
+        }
+        window.scale = 0.25;
+        let kit = Arc::new(bpe_kit::kit());
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let settings = SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params);
+        let dir = std::env::temp_dir().join(format!("bpe-next-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        window.start(&ctx, &scene, &settings, Some(&dir), &kit);
+        assert!(window.busy());
+        let path = dir.join("New scene.mp4");
+        // Let it get going (or fail for want of a graphics card), then close the editor.
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(20) {
+            if window.job.as_ref().unwrap().done.load(Ordering::Relaxed) > 5 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let done = window.job.as_ref().unwrap().done.load(Ordering::Relaxed);
+        window.shutdown();
+        eprintln!("frames done before closing: {done}");
+        assert!(!window.busy());
+        assert!(!path.exists(), "{} was left behind", path.display());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
