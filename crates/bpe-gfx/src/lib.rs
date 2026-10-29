@@ -4,14 +4,14 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
-pub mod atlas;
 mod frame;
+pub mod text;
 
-pub use atlas::Atlas;
 pub use frame::{
     BallInstance, DrawCx, Draws, FlashInstance, Frame, GlyphInstance, ShapeInstance, SoftVertex, ThingDraw,
     blend_alpha, build_frame, hit_strength,
 };
+pub use text::Atlas;
 pub use wgpu;
 
 use bytemuck::{Pod, Zeroable};
@@ -373,7 +373,7 @@ impl Renderer {
 
     /// Uploads the glyph atlas when it changed since the last frame.
     fn sync_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let atlas = atlas::glyphs();
+        let atlas = text::glyphs();
         if self.atlas.as_ref().is_some_and(|a| a.size == atlas.size && a.generation == atlas.generation) {
             return;
         }

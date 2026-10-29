@@ -32,6 +32,7 @@ pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
 pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
+pub use things::text::{Align, Appear, Font, TextDraw, TextKind, TextSettings};
 
 /// Every kind's simulation part, for the runtime.
 pub fn sims() -> Sims {
@@ -52,6 +53,7 @@ pub fn draws() -> Draws {
     d.add(ArenaDraw);
     d.add(BallsDraw);
     d.add(SoftDraw);
+    d.add(TextDraw);
     d
 }
 
@@ -101,6 +103,7 @@ pub fn registry() -> Registry {
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
     r.add_thing(SoftKind);
+    r.add_thing(TextKind);
     r.add_module(ClassicLookKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);

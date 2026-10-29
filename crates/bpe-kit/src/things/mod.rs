@@ -4,3 +4,4 @@ pub mod arena;
 pub mod balls;
 pub mod scene;
 pub mod soft;
+pub mod text;
