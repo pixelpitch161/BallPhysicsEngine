@@ -16,6 +16,9 @@ pub struct Bodies {
     pub alive: Vec<bool>,
     /// How many times the ball has hit something.
     pub hits: Vec<u32>,
+    /// Silent bodies (liquid particles) log no hits, count none, and never add substeps: their
+    /// own solver keeps them inside the walls.
+    pub silent: bool,
 }
 
 impl Bodies {

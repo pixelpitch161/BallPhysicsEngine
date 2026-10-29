@@ -73,10 +73,22 @@ pub trait ThingSim: Send + Sync + 'static {
     fn kind(&self) -> &'static str;
     /// Puts the thing into the world: its bodies, its wall, its state.
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
+    /// Whether `build` reads the walls other things put into the world. Such things are built
+    /// after everything else, whatever their place in the tree.
+    fn needs_walls(&self) -> bool {
+        false
+    }
+    /// The Spawn stage, first in every step: emitters add bodies (to any thing) and log
+    /// `Spawn` events for them.
+    fn spawn(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// Runs once a step before the physics: scripted motion such as a wall's spin.
     fn scripted(&self, _thing: ThingId, _world: &mut World) {}
-    /// Runs once a step after the physics, with the log, so a thing can log what happened to
-    /// it: a soft body's impacts, the scene's beats.
+    /// The Forces stage of every substep, before the Motion modules: fields push bodies.
+    fn forces(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
+    /// After Integrate and before Collide in every substep: a liquid relaxes its particles.
+    fn settle(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
+    /// The Events stage, last in every step, with the log: zone entries and leaves, a soft
+    /// body's impacts, the scene's beats.
     fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// A keyframe or pulse moved one of the thing's settings while the world runs: re-read
     /// whatever can change without rebuilding. `resolved` holds the settings as they are now.

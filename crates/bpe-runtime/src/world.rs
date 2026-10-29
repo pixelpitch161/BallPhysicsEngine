@@ -86,6 +86,8 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
     (!animation.is_empty()).then_some(animation)
 }
 
+const NO_TAGS: &BTreeSet<String> = &BTreeSet::new();
+
 impl World {
     /// Builds the world: every resolved thing in tree order through its sim, then the Motion and
     /// Bounce modules it uses. Things and modules without a sim are left out.
@@ -109,29 +111,36 @@ impl World {
             pulse_inputs: None,
             animated: None,
         };
-        for id in &scene.order {
-            let Some(r) = resolved.things.get(id) else { continue };
-            let Some(thing) = scene.things.get(id) else { continue };
-            if let Some(parent) = thing.parent {
-                world.attach.insert(*id, (parent, thing.attach, thing.transform));
-            }
-            let Some(sim) = sims.thing(&r.kind) else { continue };
-            sim.build(thing, r, &mut world);
-            world.kinds.insert(*id, r.kind.clone());
-            world.order.push(*id);
-            if !thing.tags.is_empty() {
-                world.tags.insert(*id, thing.tags.clone());
-            }
-            let mut prepared = Prepared::new();
-            for slot in SIM_SLOTS {
-                if let Some(s) = r.slots.get(&slot)
-                    && let Some(msim) = sims.module(&s.kind)
-                {
-                    prepared.insert(slot, (s.kind.clone(), msim.prepare(&s.params)));
+        // Things that need the walls (a liquid finding its pool) are built in a second pass, so
+        // an arena after them in the tree is there all the same; they come last in `order`.
+        for needs_walls in [false, true] {
+            for id in &scene.order {
+                let Some(r) = resolved.things.get(id) else { continue };
+                let Some(thing) = scene.things.get(id) else { continue };
+                if !needs_walls && let Some(parent) = thing.parent {
+                    world.attach.insert(*id, (parent, thing.attach, thing.transform));
                 }
-            }
-            if !prepared.is_empty() {
-                world.modules.insert(*id, prepared);
+                let Some(sim) = sims.thing(&r.kind) else { continue };
+                if sim.needs_walls() != needs_walls {
+                    continue;
+                }
+                sim.build(thing, r, &mut world);
+                world.kinds.insert(*id, r.kind.clone());
+                world.order.push(*id);
+                if !thing.tags.is_empty() {
+                    world.tags.insert(*id, thing.tags.clone());
+                }
+                let mut prepared = Prepared::new();
+                for slot in SIM_SLOTS {
+                    if let Some(s) = r.slots.get(&slot)
+                        && let Some(msim) = sims.module(&s.kind)
+                    {
+                        prepared.insert(slot, (s.kind.clone(), msim.prepare(&s.params)));
+                    }
+                }
+                if !prepared.is_empty() {
+                    world.modules.insert(*id, prepared);
+                }
             }
         }
         world.animated = physics_animation(scene, resolved, sims)
@@ -222,6 +231,22 @@ impl World {
         }
     }
 
+    /// The kind of a thing that has a sim.
+    pub fn kind(&self, thing: ThingId) -> Option<&str> {
+        self.kinds.get(&thing).map(String::as_str)
+    }
+
+    /// A thing's tags (empty for a thing without any, or without a sim).
+    pub fn tags(&self, thing: ThingId) -> &BTreeSet<String> {
+        self.tags.get(&thing).unwrap_or(NO_TAGS)
+    }
+
+    /// The things with a sim that `target` names, seen from `me`, in id order. `Anything` is
+    /// every one of them, `me` included.
+    pub fn matching(&self, target: &Target, me: ThingId) -> Vec<ThingId> {
+        self.kinds.keys().copied().filter(|&other| self.matches(target, me, other)).collect()
+    }
+
     /// The module kind and prepared state a thing uses in a slot, when the runtime tracks it.
     pub fn module_state(&self, thing: ThingId, slot: SlotId) -> Option<(&str, &dyn ThingState)> {
         self.modules.get(&thing)?.get(&slot).map(|(k, s)| (k.as_str(), s.as_ref()))
@@ -254,6 +279,16 @@ impl World {
         self.animate(sims);
         let limits = self.limits();
         let dt = self.dt();
+        // Things take their turns in tree order: parents go first, so riders see where their
+        // parent moved to.
+        let order = self.order.clone();
+
+        // Spawn: emitters add what they release this step.
+        for id in &order {
+            if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
+                sim.spawn(*id, self, log);
+            }
+        }
 
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
@@ -266,7 +301,11 @@ impl World {
                 if speed > limits.ceiling {
                     bodies.velocity[i] *= limits.ceiling / speed;
                 }
-                fastest = fastest.max(speed.min(limits.ceiling));
+                // Silent bodies (liquid particles) are held inside the walls by their own solver,
+                // so they never decide how finely everything else is stepped.
+                if !bodies.silent {
+                    fastest = fastest.max(speed.min(limits.ceiling));
+                }
                 bodies.previous[i] = bodies.position[i];
             }
         }
@@ -274,9 +313,7 @@ impl World {
         let substeps = ((travel / SAFE_MOVE).ceil() as u32).clamp(1, MAX_SUBSTEPS);
         let sub_dt = dt / substeps as f32;
 
-        // Scripted: walls spin and shrink, things follow their scripts. Parents go first, so
-        // riders see where their parent moved to.
-        let order = self.order.clone();
+        // Scripted: walls spin and shrink, things follow their scripts.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.scripted(*id, self);
@@ -284,10 +321,11 @@ impl World {
         }
 
         for _ in 0..substeps {
-            self.substep(sims, sub_dt, &limits, log);
+            self.substep(sims, &order, sub_dt, &limits, log);
         }
 
-        // Events: things log what happened to them this step, in tree order.
+        // Events: things log what happened to them this step, in tree order: zone entries and
+        // leaves, a soft body's impacts, the scene's beats.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.after_step(*id, self, log);
@@ -300,13 +338,28 @@ impl World {
         }
     }
 
-    fn substep(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, gravity, bodies, walls, solids, modules, kinds, tags, pairs, .. } = self;
-        let step = *step;
-        let gravity = *gravity;
-        let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
+    fn substep(&mut self, sims: &Sims, order: &[ThingId], dt: f32, limits: &Limits, log: &mut Log) {
+        // Forces from things: fields and the like, before the Motion modules.
+        for id in order {
+            if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
+                sim.forces(*id, self, dt);
+            }
+        }
+        self.move_bodies(sims, dt);
 
-        // Forces, then Integrate, per body thing.
+        // Settle: liquids relax their particles against each other and the walls.
+        for id in order {
+            if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
+                sim.settle(*id, self, dt);
+            }
+        }
+        self.collide(sims, dt, limits, log);
+    }
+
+    /// Forces from the Motion modules, then Integrate, per body thing.
+    fn move_bodies(&mut self, sims: &Sims, dt: f32) {
+        let World { gravity, bodies, modules, .. } = self;
+        let gravity = *gravity;
         for (id, bodies) in bodies.iter_mut() {
             if let Some((kind, state)) = modules.get(id).and_then(|m| m.get(&SlotId::Motion))
                 && let Some(sim) = sims.module(kind)
@@ -321,9 +374,16 @@ impl World {
                 }
             }
         }
+    }
 
-        // Collide and Respond, then the Hit events: first the walls around the balls, then the
-        // solids among them. What each ball touched holds it up in the pair solve after.
+    /// Collide and Respond, then the Hit events: first the walls around the balls, then the
+    /// solids among them, then the balls against each other. What each ball touched holds it
+    /// up in the pair solve. Silent bodies (liquid particles) are kept in and bounced like the
+    /// rest but never log a hit.
+    fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
+        let World { step, bodies, walls, solids, modules, kinds, tags, pairs, .. } = self;
+        let step = *step;
+        let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
         let mut supports: Vec<Support> = Vec::new();
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
@@ -346,7 +406,7 @@ impl World {
                         wall_velocity: contact.wall_velocity,
                     });
                     respond(decider, &contact, bodies, i, limits, special);
-                    if contact.speed >= limits.resting {
+                    if contact.speed >= limits.resting && !bodies.silent {
                         bodies.hits[i] += 1;
                         log.push(Event {
                             step,
@@ -400,7 +460,7 @@ impl World {
                             wall_velocity: contact.wall_velocity,
                         });
                         respond(decider, &contact, bodies, i, limits, special);
-                        if contact.speed >= limits.resting {
+                        if contact.speed >= limits.resting && !bodies.silent {
                             bodies.hits[i] += 1;
                             log.push(Event {
                                 step,
@@ -507,6 +567,10 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 h.bytes(&item.map_or(u32::MAX, |i| i).to_le_bytes());
             }
         }
+        for tag in &thing.tags {
+            h.bytes(tag.as_bytes());
+            h.bytes(&[0]);
+        }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
                 if sim.affects_physics(key) {
@@ -520,8 +584,11 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
             h.bytes(&[SlotId::Trail as u8]);
             h.bytes(s.kind.as_bytes());
         }
+        // Only modules the processor simulates count; a swarm's Flocking is the graphics card's.
         for slot in SIM_SLOTS {
-            if let Some(s) = r.slots.get(&slot) {
+            if let Some(s) = r.slots.get(&slot)
+                && sims.module(&s.kind).is_some()
+            {
                 h.bytes(&[slot as u8]);
                 h.bytes(s.kind.as_bytes());
                 for (key, value) in s.params.iter() {
@@ -600,8 +667,8 @@ mod tests {
     use super::*;
     use crate::plugins::Sims;
     use crate::testing::{
-        DOTS, DOTS2, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring, dots_pair,
-        dots_pair_popping, dots_pile, reg, ring_with_rider,
+        DOTS, DOTS2, EMITTER, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring,
+        dots_pair, dots_pair_popping, dots_pile, dots_with_emitter, reg, ring_with_rider,
     };
     use bpe_core::{Address, Attach, Ease, Owner, SlotId, Target, ThingId, Value, resolve};
 
@@ -987,5 +1054,79 @@ mod tests {
         assert_eq!(w.bodies.len(), 1);
         assert_eq!(w.steps_per_second, 240);
         drop(sims);
+    }
+    #[test]
+    fn hooks_run_in_spec_order_and_can_add_bodies() {
+        let (scene, resolved, sims) = dots_with_emitter();
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(0.5, &sims, &mut log);
+        assert_eq!(w.bodies[&DOTS].len(), 1 + 120);
+        assert_eq!(log.events()[0].kind, EventKind::Spawn, "spawn comes first in a step");
+        assert_eq!(log.events()[0].a, Party { thing: DOTS, item: 1 });
+        assert_eq!(log.events()[0].b, Some(Party { thing: EMITTER, item: 0 }));
+        let ticks = log.events().iter().filter(|e| e.kind == EventKind::Custom("tick".into())).count();
+        assert_eq!(ticks, 120, "after_step once per step");
+        // Within a step: spawn, then any hits, then the tick.
+        let first_step: Vec<_> = log.events().iter().filter(|e| e.step == 1).map(|e| e.kind.tag()).collect();
+        assert_eq!(first_step.first(), Some(&1));
+        assert_eq!(first_step.last(), Some(&7));
+        let settled = *crate::state::<u32>(w.states[&EMITTER].as_ref());
+        assert!(settled > 100, "settle saw the move after integrate on most substeps: {settled}");
+        // One step from the start, before any wall is met: the forces hook has added its push.
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.step(&sims, &mut Log::default());
+        let vx = w.bodies[&DOTS].velocity[0].x;
+        assert!((vx - (300.0 + 1000.0 / 240.0)).abs() < 1e-3, "the forces hook pushed the ball: {vx}");
+    }
+
+    #[test]
+    fn silent_bodies_log_no_hits() {
+        let (scene, resolved, sims) = dots_in_ring(1);
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.bodies.get_mut(&DOTS).unwrap().silent = true;
+        let mut log = Log::default();
+        w.advance_to(5.0, &sims, &mut log);
+        assert!(log.is_empty(), "{:?}", log.events());
+        assert_eq!(w.bodies[&DOTS].hits[0], 0);
+        assert!(w.bodies[&DOTS].position[0].length() < 100.0, "it still bounces off the wall");
+    }
+
+    #[test]
+    fn silent_bodies_do_not_add_substeps() {
+        let (scene, resolved, sims) = dots_in_ring(1);
+        let plain = {
+            let mut w = World::build(&scene, &resolved, &sims);
+            let mut log = Log::default();
+            w.advance_to(3.0, &sims, &mut log);
+            log
+        };
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut fast = Bodies { silent: true, ..Bodies::default() };
+        fast.push(Vec2::ZERO, Vec2::new(50_000.0, 0.0), 2.0);
+        w.bodies.insert(ThingId(9), fast);
+        let mut log = Log::default();
+        w.advance_to(3.0, &sims, &mut log);
+        assert_eq!(log, plain, "a liquid's speed never changes how the balls are stepped");
+        assert!(w.bodies[&ThingId(9)].position[0].is_finite() && w.bodies[&ThingId(9)].position[0].length() < 100.0);
+    }
+
+    #[test]
+    fn targets_resolve_by_tag_kind_thing_and_me() {
+        let (mut scene, _, sims) = dots_in_ring(1);
+        scene.things.get_mut(&DOTS).unwrap().tags.insert("red".into());
+        let resolved = resolve(&scene, &reg());
+        let w = World::build(&scene, &resolved, &sims);
+        assert_eq!(w.matching(&Target::Tag("red".into()), WALL), vec![DOTS]);
+        assert_eq!(w.matching(&Target::Tag("blue".into()), WALL), vec![]);
+        assert_eq!(w.matching(&Target::Kind("wall".into()), DOTS), vec![WALL]);
+        assert_eq!(w.matching(&Target::Thing(DOTS), WALL), vec![DOTS]);
+        assert_eq!(w.matching(&Target::Thing(ThingId(99)), WALL), vec![]);
+        assert_eq!(w.matching(&Target::Me, WALL), vec![WALL]);
+        assert_eq!(w.matching(&Target::Anything, WALL), vec![ThingId::ROOT, WALL, DOTS]);
+        assert_eq!(w.kind(DOTS), Some("dots"));
+        assert_eq!(w.kind(ThingId(99)), None);
+        assert!(w.tags(DOTS).contains("red"));
+        assert!(w.tags(WALL).is_empty());
     }
 }

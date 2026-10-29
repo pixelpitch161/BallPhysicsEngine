@@ -215,6 +215,11 @@ pub(crate) fn collide_pairs(
     let mut balls: Vec<Ball> = Vec::new();
     let mut largest: f32 = 0.0;
     for (thing, b) in bodies.iter() {
+        // Silent bodies (liquid particles) are pushed by the balls through their own solver and
+        // never hit anything themselves.
+        if b.silent {
+            continue;
+        }
         let Some((kind, state)) = modules.get(thing).and_then(|m| m.get(&SlotId::Bounce)) else { continue };
         let Some(sim) = sims.module(kind) else { continue };
         let Some(rule) = sim.pairs(state.as_ref()) else { continue };

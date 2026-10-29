@@ -5,7 +5,7 @@ use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::theme;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame_at, wgpu};
-use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
+use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings, GIZMO_GRAB, Gizmo, gizmos};
 use bpe_runtime::{Outline, Pose, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
@@ -161,8 +161,16 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             &studio.kit.draws,
             &mut preview.frame,
         );
-        preview.renderer.render(device, &render_state.queue, &preview.frame);
-        preview.drawn = Some(drawn);
+        // Liquids and swarms on the graphics card step towards the playhead within the same
+        // budget as the physics; until they are there the picture is drawn again next frame.
+        let source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
+        let status = preview.renderer.render_with_flow(device, &render_state.queue, &preview.frame, &source);
+        if status.caught_up {
+            preview.drawn = Some(drawn);
+        } else {
+            preview.drawn = None;
+            outcome.catching_up = true;
+        }
     }
     outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
 
@@ -210,11 +218,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
-    draw_hint(
-        ui,
-        rect,
-        "Drag balls, obstacles and riders to move them · drag the arrow tip to aim · drag the arena's edge to resize",
-    );
+    draw_hint(ui, rect, "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize");
     studio.panels.preview = Some(preview);
     outcome
 }
@@ -256,8 +260,8 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
         .unwrap_or_default()
 }
 
-/// What is under `pos`: an arrow tip first, then a ball, then an obstacle, then a selected thing
-/// with nothing of its own to show, then an arena's edge.
+/// What is under `pos`: an arrow tip first, then a ball, then an obstacle, then a gizmo's
+/// middle, then a selected thing with nothing of its own to show, then an arena's edge.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     let p = view.to_world(pos);
@@ -301,6 +305,19 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         let on_part = solids.bounds.iter().any(|(center, bound)| (*center - p).length() <= bound + grab);
         if on_part || (solids.pose.position - p).length() <= grab {
             return Some(Handle::Body(*id));
+        }
+    }
+    // Things with nothing of their own to click are grabbed by their gizmo's middle.
+    for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
+        let Some(r) = studio.resolved.things.get(id) else { continue };
+        for gizmo in gizmos(thing, r, world) {
+            let middle = match gizmo {
+                Gizmo::Dot(at) | Gizmo::Circle(at, _) | Gizmo::Rect { center: at, .. } | Gizmo::Arrow(at, _) => at,
+                Gizmo::Line(a, b) => (a + b) * 0.5,
+            };
+            if (view.to_screen(middle) - pos).length() <= GIZMO_GRAB {
+                return Some(Handle::Body(*id));
+            }
         }
     }
     if let Some(id) = studio.selection.primary.filter(|id| shown(id) && spot_only(world, *id))
@@ -369,6 +386,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     let faint = Color32::from_white_alpha(110);
     let world = studio.playback.world();
     let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
+    draw_gizmos(&painter, studio, view, active, selected);
 
     for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
         let edge_active = active == Some(Handle::Edge(*id));
@@ -451,6 +469,68 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
                 FontId::proportional(12.0),
                 Color32::WHITE,
             );
+        }
+    }
+}
+
+/// The dashed outlines of the things that have nothing visible of their own at rest: where an
+/// emitter points, what a field covers, where a liquid starts, where a swarm gathers.
+fn draw_gizmos(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &View,
+    active: Option<Handle>,
+    selected: Option<ThingId>,
+) {
+    let world = studio.playback.world();
+    for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
+        let Some(r) = studio.resolved.things.get(id) else { continue };
+        let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
+        let color = if highlighted { theme::ACCENT } else { theme::MUTED };
+        let stroke = Stroke::new(if highlighted { 1.6 } else { 1.0 }, color);
+        let dashed = |painter: &egui::Painter, points: &[Pos2]| {
+            painter.extend(egui::Shape::dashed_line(points, stroke, 5.0, 4.0));
+        };
+        for gizmo in gizmos(thing, r, world) {
+            match gizmo {
+                Gizmo::Dot(at) => {
+                    let at = view.to_screen(at);
+                    painter.circle_stroke(at, 6.0, stroke);
+                    painter.circle_filled(at, 2.0, color);
+                }
+                Gizmo::Circle(center, radius) => {
+                    let points: Vec<Pos2> = (0..=72)
+                        .map(|i| {
+                            let a = i as f32 / 72.0 * std::f32::consts::TAU;
+                            view.to_screen(center + Vec2::new(a.cos(), a.sin()) * radius)
+                        })
+                        .collect();
+                    dashed(painter, &points);
+                }
+                Gizmo::Rect { center, half, angle } => {
+                    let turn = Vec2::from_angle(angle);
+                    let corners: Vec<Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
+                        .iter()
+                        .map(|&(x, y)| view.to_screen(center + turn.rotate(Vec2::new(x, y) * half)))
+                        .collect();
+                    dashed(painter, &corners);
+                }
+                Gizmo::Arrow(from, to) => {
+                    let (from, to) = (view.to_screen(from), view.to_screen(to));
+                    painter.line_segment([from, to], stroke);
+                    let dir = (to - from).normalized();
+                    if dir.length() > 0.5 {
+                        let side = egui::vec2(-dir.y, dir.x);
+                        let back = to - dir * 9.0;
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![to, back + side * 4.5, back - side * 4.5],
+                            color,
+                            Stroke::NONE,
+                        ));
+                    }
+                }
+                Gizmo::Line(a, b) => dashed(painter, &[view.to_screen(a), view.to_screen(b)]),
+            }
         }
     }
 }
@@ -579,5 +659,27 @@ mod tests {
         let params = &studio.scene.things[&ThingId(1)].params;
         assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
         assert_eq!(params.get("height"), Some(&Value::Number(800.0)));
+    }
+
+    #[test]
+    fn hit_testing_finds_a_field_by_its_gizmo() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let field = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "field", ThingId::ROOT).unwrap();
+        let thing = studio.scene.things.get_mut(&field).unwrap();
+        thing.transform.position = Vec2::new(300.0, 0.0);
+        thing.params.set("radius", Value::Number(100.0));
+        studio.after_edit(before);
+        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25 };
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 0.0))), Some(Handle::Body(field)));
+        // Just past the grab distance there is nothing: a field's circle has no edge handle.
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 80.0))), None);
+        apply_drag(
+            &mut studio.scene,
+            studio.playback.world(),
+            Drag { handle: Handle::Body(field), offset: Vec2::ZERO },
+            Vec2::new(-100.0, 50.0),
+        );
+        assert_eq!(studio.scene.things[&field].transform.position, Vec2::new(-100.0, 50.0));
     }
 }
