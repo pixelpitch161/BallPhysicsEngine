@@ -191,6 +191,7 @@ pub struct SwarmGpu {
 impl SwarmGpu {
     /// Makes the swarm's buffers and records its start into `encoder`. The inputs' slot 0 must
     /// hold step 0 and the field must be baked first, since the start reads both.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

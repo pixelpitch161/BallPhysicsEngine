@@ -629,8 +629,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let mut renderer = Renderer::new(&device, 270, 480);
-        let mut frame = Frame::default();
-        frame.time = 0.5;
+        let mut frame = Frame { time: 0.5, ..Frame::default() };
         let mut layer = swarm_layer(ThingId(1));
         layer.count = 20_000;
         layer.look.brightness = 0.8;
