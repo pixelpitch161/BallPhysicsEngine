@@ -1,0 +1,11 @@
+[package]
+name = "bpe-kit"
+description = "The modular Ball Studio's plugins: every thing and module kind, one folder each"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-core.workspace = true
+bpe-mix.workspace = true
+glam.workspace = true

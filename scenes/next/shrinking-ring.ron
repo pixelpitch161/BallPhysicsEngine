@@ -1,0 +1,130 @@
+(
+    format: 2,
+    name: "Shrinking ring",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "min_size": Number(200.0),
+                "radius": Number(500.0),
+                "shrink": Number(0.029999999329447746),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Linked(
+                    module: 5,
+                ),
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ball",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -200.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(30.0),
+                "velocity": Vec2((600.0, -300.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "grow": Number(1.5),
+                    "max_size": Number(90.0),
+                },
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Choice("marimba"),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Lively wall",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(1.0499999523162842),
+                    "takes_over": Bool(true),
+                },
+            ),
+        },
+    ),
+    next_thing: 3,
+    next_module: 6,
+)
