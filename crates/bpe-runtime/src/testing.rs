@@ -2,17 +2,19 @@
 //! root that sets gravity.
 
 use bpe_core::{
-    Attach, ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Thing, ThingId,
-    ThingKind, Value, resolve,
+    Attach, ModuleKind, Params, Registry, Resolved, ResolvedThing, Scene, SettingDef, Settings, SlotId, Target, Thing,
+    ThingId, ThingKind, Value, resolve,
 };
 use glam::Vec2;
 
-use crate::plugins::{ModuleSim, Sims, ThingSim, ThingState};
+use crate::plugins::{ModuleSim, PairRule, Sims, ThingSim, ThingState};
 use crate::{Bodies, Contact, Limits, Outline, Pose, Solid, Solids, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
 pub const PEG: ThingId = ThingId(3);
+/// The second dots thing in [`dots_pair`].
+pub const DOTS2: ThingId = ThingId(3);
 
 #[derive(Settings)]
 struct RootSettings {
@@ -69,12 +71,45 @@ impl Default for PegSettings {
 #[derive(Default, Settings)]
 struct NoSettings {}
 
+#[derive(Clone, Settings)]
+struct BumpySettings {
+    #[setting(label = "Bounciness", range(0, 2))]
+    bounciness: f32,
+    #[setting(label = "Target")]
+    target: Target,
+    #[setting(label = "Pops after", range(0, 1000))]
+    pops_after: u32,
+}
+impl Default for BumpySettings {
+    fn default() -> Self {
+        Self { bounciness: 1.0, target: Target::Anything, pops_after: 0 }
+    }
+}
+
 struct RootKind;
 struct WallKind;
 struct DotsKind;
 struct PegKind;
 struct StickyKind;
 struct BouncyKind;
+struct BumpyKind;
+impl ModuleKind for BumpyKind {
+    fn id(&self) -> &'static str {
+        "bounce.bumpy"
+    }
+    fn name(&self) -> &'static str {
+        "Bumpy"
+    }
+    fn help(&self) -> &'static str {
+        ""
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Bounce
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        BumpySettings::defs()
+    }
+}
 
 macro_rules! thing_kind {
     ($t:ty, $id:literal, $defs:ty) => {
@@ -187,8 +222,13 @@ impl ThingSim for TestDots {
         let s = DotsSettings::from_params(&resolved.params);
         let at = world.anchor(thing.id);
         let mut bodies = Bodies::default();
+        // A block 12 px apart, as square as the count allows, centred on the thing.
+        let columns = (s.count as f32).sqrt().ceil().max(1.0) as u32;
+        let rows = s.count.div_ceil(columns);
         for i in 0..s.count {
-            let offset = Vec2::new(i as f32 * 0.5, 0.0);
+            let column = (i % columns) as f32 - (columns - 1) as f32 * 0.5;
+            let row = (i / columns) as f32 - (rows - 1) as f32 * 0.5;
+            let offset = Vec2::new(column, row) * 12.0;
             bodies.push(at.position + offset, s.velocity + at.velocity, 5.0);
         }
         world.bodies.insert(thing.id, bodies);
@@ -283,6 +323,27 @@ impl ModuleSim for Bouncy {
     }
 }
 
+/// Balls that bump into other balls and pop after so many hits.
+struct Bumpy;
+impl ModuleSim for Bumpy {
+    fn kind(&self) -> &'static str {
+        "bounce.bumpy"
+    }
+    fn prepare(&self, params: &Params) -> Box<dyn ThingState> {
+        Box::new(BumpySettings::from_params(params))
+    }
+    fn bounciness(&self, state: &dyn ThingState) -> f32 {
+        crate::state::<BumpySettings>(state).bounciness
+    }
+    fn pairs(&self, state: &dyn ThingState) -> Option<PairRule> {
+        Some(PairRule { target: crate::state::<BumpySettings>(state).target.clone(), friction: 0.0 })
+    }
+    fn effects(&self, state: &dyn ThingState, bodies: &mut Bodies, item: usize, _speed: f32, _limits: &Limits) -> bool {
+        let pops = crate::state::<BumpySettings>(state).pops_after;
+        pops > 0 && bodies.hits[item] >= pops
+    }
+}
+
 pub fn reg() -> Registry {
     let mut r = Registry::new();
     r.add_thing(RootKind);
@@ -292,6 +353,7 @@ pub fn reg() -> Registry {
     r.add_module(GravityKind);
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
+    r.add_module(BumpyKind);
     r
 }
 
@@ -304,6 +366,7 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
+    s.add_module(Bumpy);
     s
 }
 
@@ -340,6 +403,55 @@ pub fn dots_and_peg() -> (Scene, Resolved, Sims) {
     scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, 40.0);
     scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -50.0);
     scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// Two bumpy dots heading at each other at 100 px/s inside the ring, no gravity: the first at
+/// `(-gap, 0)`, the second (tagged "soft") at `(gap, 0)`. Both bumpy modules point at `target`.
+pub fn dots_pair(gap: f32, target: Target) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(1);
+    let reg = reg();
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+    let second = scene.add_thing(&reg, "dots", ThingId::ROOT).unwrap();
+    assert_eq!(second, DOTS2);
+    scene.things.get_mut(&DOTS2).unwrap().tags.insert("soft".into());
+    for (id, x) in [(DOTS, -gap), (DOTS2, gap)] {
+        let t = scene.things.get_mut(&id).unwrap();
+        t.transform.position = Vec2::new(x, 0.0);
+        t.params.set("velocity", Value::Vec2([if x < 0.0 { 100.0 } else { -100.0 }, 0.0]));
+    }
+    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
+    scene.library.modules.get_mut(&bumpy).unwrap().params.set("target", Value::Target(target));
+    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// [`dots_pair`] with gravity, where the first dots' module pops its ball after `pops` hits.
+pub fn dots_pair_popping(pops: u32) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_pair(30.0, Target::Anything);
+    let reg = reg();
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 500.0]));
+    let popping = scene.add_module(&reg, "bounce.bumpy", "Popping").unwrap();
+    scene.library.modules.get_mut(&popping).unwrap().params.set("pops_after", Value::Int(pops as i64));
+    scene.link(&reg, DOTS, SlotId::Bounce, popping).unwrap();
+    let resolved = resolve(&scene, &reg);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, sims)
+}
+
+/// `count` bumpy dots in a ring of 150 under gravity, spread over a block so they pile up.
+pub fn dots_pile(count: u32) -> (Scene, Resolved, Sims) {
+    let (mut scene, _, sims) = dots_in_ring(count);
+    let reg = reg();
+    scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(150.0));
+    scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
+    scene.library.modules.get_mut(&bumpy).unwrap().params.set("bounciness", Value::Number(0.5));
+    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)

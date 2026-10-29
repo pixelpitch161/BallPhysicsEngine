@@ -5,6 +5,7 @@
 
 pub mod bodies;
 pub mod events;
+pub mod pairs;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
@@ -16,8 +17,9 @@ pub mod world;
 
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
+pub use pairs::Grid;
 pub use playback::Playback;
-pub use plugins::{Limits, ModuleSim, ModuleState, Sims, ThingSim, ThingState, state, state_mut};
+pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
 pub use solids::{Solid, Solids, keep_outside};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};

@@ -5,14 +5,14 @@
 //! find their parent's pose) and collide in `ThingId` order, so two runs of the same scene give
 //! the same log.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bpe_core::{Attach, Resolved, Scene, SlotId, ThingId, Transform, Value};
+use bpe_core::{Attach, Resolved, Scene, SlotId, Target, ThingId, Transform, Value};
 use glam::Vec2;
 
 use crate::events::HASH_OFFSET;
-use crate::plugins::ModuleSim;
-use crate::plugins::{Limits, Sims, ThingState};
+use crate::pairs::{Grid, Prepared, collide_pairs, pop};
+use crate::plugins::{Limits, ModuleSim, Sims, ThingState};
 use crate::pose::Pose;
 use crate::solids::Solids;
 use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, keep_outside, reflect};
@@ -21,9 +21,6 @@ use crate::{Bodies, Event, EventKind, Log, Party, Wall, keep_inside, keep_outsid
 pub const SAFE_MOVE: f32 = 16.0;
 /// The most substeps a step is split into.
 pub const MAX_SUBSTEPS: u32 = 64;
-
-/// A thing's prepared modules: per slot, the module kind and its state.
-type Prepared = BTreeMap<SlotId, (String, Box<dyn ThingState>)>;
 
 /// Which slots the runtime asks a `ModuleSim` about.
 const SIM_SLOTS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
@@ -47,10 +44,14 @@ pub struct World {
     /// Where every placed thing is right now. Sims write it in `build` and `scripted`; riders
     /// read their parent's through [`World::anchor`].
     pub poses: BTreeMap<ThingId, Pose>,
+    /// Every built thing's tags, for matching targets.
+    pub tags: BTreeMap<ThingId, BTreeSet<String>>,
     /// The kind of every thing that has a sim, in id order.
     kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
     order: Vec<ThingId>,
+    /// Scratch space for the ball-to-ball stage.
+    grid: Grid,
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce only).
@@ -70,8 +71,10 @@ impl World {
             solids: BTreeMap::new(),
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
+            tags: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
+            grid: Grid::default(),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
@@ -85,6 +88,9 @@ impl World {
             sim.build(thing, r, &mut world);
             world.kinds.insert(*id, r.kind.clone());
             world.order.push(*id);
+            if !thing.tags.is_empty() {
+                world.tags.insert(*id, thing.tags.clone());
+            }
             let mut prepared = Prepared::new();
             for slot in SIM_SLOTS {
                 if let Some(s) = r.slots.get(&slot)
@@ -123,6 +129,12 @@ impl World {
             }
             None => own,
         }
+    }
+
+    /// Whether `other` is one of the things `target` points at, seen from `me`. The same rules
+    /// as `Scene::target_matches`, over the things the world was built from.
+    pub fn matches(&self, target: &Target, me: ThingId, other: ThingId) -> bool {
+        matches(&self.kinds, &self.tags, target, me, other)
     }
 
     /// Seconds since the start.
@@ -200,9 +212,10 @@ impl World {
     }
 
     fn substep(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, gravity, bodies, walls, solids, modules, .. } = self;
+        let World { step, gravity, bodies, walls, solids, modules, kinds, tags, grid, .. } = self;
         let step = *step;
         let gravity = *gravity;
+        let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
 
         // Forces, then Integrate, per body thing.
         for (id, bodies) in bodies.iter_mut() {
@@ -223,9 +236,11 @@ impl World {
         // solids among them.
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
+            let own = mover_bounce.and_then(|(kind, state)| Some((sims.module(kind)?, state.as_ref())));
             for (wall_id, wall) in walls.iter() {
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
+                let special = is_special(own, &matcher, *mover, *wall_id);
                 for i in 0..bodies.len() {
                     if !bodies.alive[i] {
                         continue;
@@ -233,7 +248,7 @@ impl World {
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let Some(contact) = keep_inside(&mut bodies.position[i], velocity, radius, wall) else { continue };
-                    respond(decider, &contact, bodies, i, limits);
+                    respond(decider, &contact, bodies, i, limits, special);
                     if contact.speed >= limits.resting {
                         bodies.hits[i] += 1;
                         log.push(Event {
@@ -245,6 +260,11 @@ impl World {
                             normal: contact.normal,
                             speed: contact.speed,
                         });
+                        if let Some((sim, state)) = own
+                            && sim.effects(state, bodies, i, contact.speed, limits)
+                        {
+                            pop(bodies, i, *mover, step, log);
+                        }
                     }
                 }
             }
@@ -254,6 +274,7 @@ impl World {
                 }
                 let solid_bounce = modules.get(solid_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, solid_bounce, mover_bounce);
+                let special = is_special(own, &matcher, *mover, *solid_id);
                 for i in 0..bodies.len() {
                     if !bodies.alive[i] {
                         continue;
@@ -275,7 +296,7 @@ impl World {
                         else {
                             continue;
                         };
-                        respond(decider, &contact, bodies, i, limits);
+                        respond(decider, &contact, bodies, i, limits, special);
                         if contact.speed >= limits.resting {
                             bodies.hits[i] += 1;
                             log.push(Event {
@@ -287,12 +308,48 @@ impl World {
                                 normal: contact.normal,
                                 speed: contact.speed,
                             });
+                            if let Some((sim, state)) = own
+                                && sim.effects(state, bodies, i, contact.speed, limits)
+                            {
+                                pop(bodies, i, *mover, step, log);
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
+
+        // Balls against balls.
+        collide_pairs(bodies, modules, &matcher, sims, grid, step, limits, log);
     }
+}
+
+/// The target rules, over a world's kinds and tags.
+fn matches(
+    kinds: &BTreeMap<ThingId, String>,
+    tags: &BTreeMap<ThingId, BTreeSet<String>>,
+    target: &Target,
+    me: ThingId,
+    other: ThingId,
+) -> bool {
+    match target {
+        Target::Anything => true,
+        Target::Me => other == me && kinds.contains_key(&other),
+        Target::Thing(t) => other == *t && kinds.contains_key(&other),
+        Target::Tag(tag) => tags.get(&other).is_some_and(|t| t.contains(tag)),
+        Target::Kind(kind) => kinds.get(&other).is_some_and(|k| k == kind),
+    }
+}
+
+/// Whether the mover's own Bounce module calls hitting `other` special.
+fn is_special(
+    own: Option<(&dyn ModuleSim, &dyn ThingState)>,
+    matcher: &dyn Fn(&Target, ThingId, ThingId) -> bool,
+    mover: ThingId,
+    other: ThingId,
+) -> bool {
+    own.and_then(|(sim, state)| sim.special_target(state)).is_some_and(|t| matcher(&t, mover, other))
 }
 
 /// A prepared Bounce module: its kind and state.
@@ -313,9 +370,10 @@ fn respond(
     bodies: &mut Bodies,
     i: usize,
     limits: &Limits,
+    special: bool,
 ) {
     match decider {
-        Some((sim, state)) => sim.respond(state, contact, bodies, i, limits),
+        Some((sim, state)) => sim.respond_against(state, contact, bodies, i, limits, special),
         None => bodies.velocity[i] = reflect(bodies.velocity[i], contact, 1.0),
     }
 }
@@ -329,6 +387,10 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
         h.bytes(r.kind.as_bytes());
+        for tag in &thing.tags {
+            h.bytes(b"#");
+            h.bytes(tag.as_bytes());
+        }
         h.bytes(&thing.parent.map_or(u32::MAX, |p| p.0).to_le_bytes());
         h.f32(thing.transform.position.x);
         h.f32(thing.transform.position.y);
@@ -418,9 +480,10 @@ mod tests {
     use super::*;
     use crate::plugins::Sims;
     use crate::testing::{
-        DOTS, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring, reg, ring_with_rider,
+        DOTS, DOTS2, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring, dots_pair,
+        dots_pair_popping, dots_pile, reg, ring_with_rider,
     };
-    use bpe_core::{Attach, SlotId, ThingId, Value, resolve};
+    use bpe_core::{Attach, SlotId, Target, ThingId, Value, resolve};
 
     #[test]
     fn two_runs_give_the_same_log_and_a_ball_bounces() {
@@ -574,6 +637,86 @@ mod tests {
         let p = w.bodies[&DOTS].position[0];
         assert!(p.is_finite() && (p - Vec2::new(0.0, 40.0)).length() >= 15.0 - 1e-3, "{p:?}");
         assert_eq!(w.solids[&PEG].reach, 10.0);
+    }
+
+    #[test]
+    fn two_balls_heading_at_each_other_bounce_and_log_one_hit() {
+        let (scene, resolved, sims) = dots_pair(30.0, Target::Anything);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &sims, &mut log);
+        let hits: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Hit).collect();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!((hits[0].a.thing, hits[0].b.map(|b| b.thing)), (DOTS, Some(DOTS2)));
+        assert!((hits[0].speed - 200.0).abs() < 5.0, "{:?}", hits[0]);
+        assert!((hits[0].normal - Vec2::new(-1.0, 0.0)).length() < 1e-3, "from the second ball towards the first");
+        let (a, b) = (w.bodies[&DOTS].velocity[0], w.bodies[&DOTS2].velocity[0]);
+        assert!(a.x < -90.0 && b.x > 90.0, "{a:?} {b:?}");
+        assert_eq!((w.bodies[&DOTS].hits[0], w.bodies[&DOTS2].hits[0]), (1, 1));
+    }
+
+    #[test]
+    fn a_target_that_does_not_match_lets_balls_pass_through() {
+        let (scene, resolved, sims) = dots_pair(30.0, Target::Tag("hard".into()));
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &sims, &mut log);
+        assert!(log.is_empty());
+        assert!(w.bodies[&DOTS].position[0].x > 0.0);
+        let (scene, resolved, sims) = dots_pair(30.0, Target::Tag("soft".into()));
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.advance_to(1.0, &sims, &mut Log::default());
+        // Only the second ball is tagged soft: the first wants it, it doesn't want the first.
+        assert!(w.bodies[&DOTS].position[0].x > 0.0);
+        assert!(w.matches(&Target::Tag("soft".into()), DOTS, DOTS2));
+        assert!(!w.matches(&Target::Tag("soft".into()), DOTS2, DOTS));
+        assert!(w.matches(&Target::Kind("dots".into()), DOTS, DOTS2) && w.matches(&Target::Me, DOTS, DOTS));
+        assert!(!w.matches(&Target::Thing(ThingId(99)), DOTS, ThingId(99)));
+        // Both sides pointing at the other's thing: they bump.
+        let (scene, resolved, sims) = dots_pair(30.0, Target::Kind("dots".into()));
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.advance_to(1.0, &sims, &mut Log::default());
+        assert!(w.bodies[&DOTS].position[0].x < 0.0);
+    }
+
+    #[test]
+    fn pair_collisions_are_deterministic_in_a_pile() {
+        let (scene, resolved, sims) = dots_pile(400);
+        let run = || {
+            let mut w = World::build(&scene, &resolved, &sims);
+            let mut log = Log::default();
+            w.advance_to(3.0, &sims, &mut log);
+            (w, log)
+        };
+        let (w1, l1) = run();
+        let (w2, l2) = run();
+        assert_eq!(l1.hash(), l2.hash());
+        assert_eq!(w1.bodies[&DOTS].position, w2.bodies[&DOTS].position);
+        assert!(l1.events().iter().any(|e| e.b.is_some_and(|b| b.thing == DOTS)), "balls hit each other");
+        assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 160.0));
+        assert!(l1.events().windows(2).all(|p| p[0].step <= p[1].step));
+    }
+
+    #[test]
+    fn a_ball_pops_after_its_hits_and_logs_a_remove() {
+        let (scene, resolved, sims) = dots_pair_popping(2);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(5.0, &sims, &mut log);
+        let removes: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Remove).collect();
+        assert_eq!(removes.len(), 1, "{removes:?}");
+        assert_eq!(removes[0].a.thing, DOTS);
+        assert!(!w.bodies[&DOTS].alive[0]);
+        assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == DOTS).count(), 2);
+        assert!(w.bodies[&DOTS2].alive[0], "the other ball never pops");
+    }
+
+    #[test]
+    fn tags_change_the_fingerprint() {
+        let (mut scene, resolved, sims) = dots_in_ring(1);
+        let before = fingerprint(&scene, &resolved, &sims);
+        scene.things.get_mut(&DOTS).unwrap().tags.insert("x".into());
+        assert_ne!(fingerprint(&scene, &resolve(&scene, &reg()), &sims), before);
     }
 
     #[test]
