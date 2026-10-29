@@ -34,8 +34,10 @@ pub struct Preview {
 
 #[derive(PartialEq)]
 struct Drawn {
-    scene: Scene,
+    revision: u64,
     time: f64,
+    /// The video clock, which beats and captions follow; a new mix can move it.
+    video: f64,
     step: u64,
     size: (u32, u32),
 }
@@ -138,40 +140,15 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
-    // The playhead is in video time; the beat sync's warp says which moment of the run to show.
-    let catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
+    let catching_up = draw_picture(
+        studio,
+        device,
+        &render_state.queue,
+        &mut preview.renderer,
+        &mut preview.frame,
+        &mut preview.drawn,
+    );
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
-    // While catching up, the picture shows the moment the simulation has got to.
-    let shown_time = if outcome.catching_up { studio.playback.time() } else { studio.sim_time() };
-    let shown_video = if outcome.catching_up { studio.warp.video_time(shown_time) } else { studio.time };
-    let drawn = Drawn {
-        scene: studio.scene.clone(),
-        time: shown_time,
-        step: studio.playback.world().step,
-        size: (width, height),
-    };
-    if preview.drawn.as_ref() != Some(&drawn) {
-        build_frame_at(
-            &studio.scene,
-            &studio.resolved,
-            studio.playback.world(),
-            studio.playback.log(),
-            shown_time,
-            shown_video,
-            &studio.kit.draws,
-            &mut preview.frame,
-        );
-        // Liquids and swarms on the graphics card step towards the playhead within the same
-        // budget as the physics; until they are there the picture is drawn again next frame.
-        let source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
-        let status = preview.renderer.render_with_flow(device, &render_state.queue, &preview.frame, &source);
-        if status.caught_up {
-            preview.drawn = Some(drawn);
-        } else {
-            preview.drawn = None;
-            outcome.catching_up = true;
-        }
-    }
     outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -221,6 +198,53 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     draw_hint(ui, rect, "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize");
     studio.panels.preview = Some(preview);
     outcome
+}
+
+/// Draws the playhead's moment into `renderer`, unless `drawn` says the picture already shows
+/// it. Returns whether the picture is still catching up with the playhead.
+fn draw_picture(
+    studio: &mut Studio,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut Renderer,
+    frame: &mut Frame,
+    drawn: &mut Option<Drawn>,
+) -> bool {
+    // The playhead is in video time; the beat sync's warp says which moment of the run to show.
+    let mut catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
+    // While catching up, the picture shows the moment the simulation has got to.
+    let shown_time = if catching_up { studio.playback.time() } else { studio.sim_time() };
+    let shown_video = if catching_up { studio.warp.video_time(shown_time) } else { studio.time };
+    let now = Drawn {
+        revision: studio.revision,
+        time: shown_time,
+        video: shown_video,
+        step: studio.playback.world().step,
+        size: renderer.size(),
+    };
+    if drawn.as_ref() != Some(&now) {
+        build_frame_at(
+            &studio.scene,
+            &studio.resolved,
+            studio.playback.world(),
+            studio.playback.log(),
+            shown_time,
+            shown_video,
+            &studio.kit.draws,
+            frame,
+        );
+        // Liquids and swarms on the graphics card step towards the playhead within the same
+        // budget as the physics; until they are there the picture is drawn again next frame.
+        let source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
+        let status = renderer.render_with_flow(device, queue, frame, &source);
+        if status.caught_up {
+            *drawn = Some(now);
+        } else {
+            *drawn = None;
+            catching_up = true;
+        }
+    }
+    catching_up
 }
 
 /// The launch arrow's tip of a Balls thing, in world pixels.
@@ -551,6 +575,69 @@ fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
 mod tests {
     use super::*;
     use eframe::egui::vec2;
+
+    /// The picture the preview shows at the playhead once it has caught up, as RGBA bytes.
+    fn shown(
+        studio: &mut Studio,
+        gpu: &(wgpu::Device, wgpu::Queue),
+        renderer: &mut Renderer,
+        drawn: &mut Option<Drawn>,
+    ) -> Vec<u8> {
+        let mut frame = Frame::default();
+        for _ in 0..200 {
+            if !draw_picture(studio, &gpu.0, &gpu.1, renderer, &mut frame, drawn) {
+                break;
+            }
+        }
+        renderer.read_output(&gpu.0, &gpu.1).unwrap()
+    }
+
+    /// Runs one editor frame around `edit` the way the panels do: the tree and the inspector
+    /// change the scene before the preview is drawn, and the edit is resolved at the frame's
+    /// end. Then the next frame draws. Returns that picture and a clean render of the edited
+    /// scene, which it must match.
+    fn edit_then_draw(edit: impl Fn(&mut Scene)) -> Option<(Vec<u8>, Vec<u8>)> {
+        let gpu = bpe_gfx::headless_device().ok()?;
+        let mut studio = Studio::headless();
+        studio.seek(1.0);
+        let mut renderer = Renderer::new(&gpu.0, 135, 240);
+        let mut drawn = None;
+        shown(&mut studio, &gpu, &mut renderer, &mut drawn);
+
+        let before = studio.scene.clone();
+        edit(&mut studio.scene);
+        draw_picture(&mut studio, &gpu.0, &gpu.1, &mut renderer, &mut Frame::default(), &mut drawn);
+        studio.after_edit(before);
+        let after = shown(&mut studio, &gpu, &mut renderer, &mut drawn);
+
+        let mut clean = Studio::headless();
+        let scene = studio.scene.clone();
+        clean.replace_scene(scene, None);
+        clean.seek(1.0);
+        let mut clean_renderer = Renderer::new(&gpu.0, 135, 240);
+        let expected = shown(&mut clean, &gpu, &mut clean_renderer, &mut None);
+        Some((after, expected))
+    }
+
+    #[test]
+    fn moving_the_arena_in_the_inspector_redraws_it_where_it_went() {
+        let Some((after, expected)) = edit_then_draw(|scene| {
+            scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
+        }) else {
+            return eprintln!("no GPU; skipped");
+        };
+        assert!(after == expected, "the preview still shows the arena from before the edit");
+    }
+
+    #[test]
+    fn hiding_a_thing_in_the_tree_takes_it_out_of_the_picture() {
+        let Some((after, expected)) = edit_then_draw(|scene| {
+            scene.things.get_mut(&ThingId(2)).unwrap().enabled = false;
+        }) else {
+            return eprintln!("no GPU; skipped");
+        };
+        assert!(after == expected, "the preview still shows the hidden balls");
+    }
 
     #[test]
     fn hit_testing_finds_balls_before_arenas() {

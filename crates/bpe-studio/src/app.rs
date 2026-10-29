@@ -84,6 +84,10 @@ pub struct Studio {
     pub playback: Playback,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
+    /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
+    /// preview knows its picture is out of date. The scene itself can be mid-edit during a
+    /// frame, ahead of both, so the preview never compares scenes.
+    pub revision: u64,
     /// The playhead, in video seconds.
     pub time: f64,
     /// The beat sync's time warp from the last mix: which moment of the run each video time
@@ -155,6 +159,7 @@ impl Studio {
             path: None,
             playback,
             fingerprint,
+            revision: 0,
             kit,
             time: 0.0,
             warp: TimeWarp::identity(),
@@ -231,6 +236,7 @@ impl Studio {
         }
         self.sound_dirty = true;
         self.time = self.time.min(self.duration());
+        self.revision += 1;
     }
 
     pub fn replace_scene(&mut self, scene: Scene, path: Option<PathBuf>) {
@@ -247,6 +253,7 @@ impl Studio {
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.sound_dirty = true;
+        self.revision += 1;
     }
 
     /// Starts decoding the scene's song on a thread of its own before the run is built, so the
@@ -274,6 +281,7 @@ impl Studio {
             _ => {
                 self.song_loading = false;
                 self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+                self.revision += 1;
                 self.panels.sound.remix();
             }
         }
@@ -705,6 +713,7 @@ impl eframe::App for Studio {
         self.poll_song(&ctx);
         self.update_sound(&ctx);
         let before = self.scene.clone();
+        let revision = self.revision;
         self.recorded = false;
         if self.confirm.is_none() {
             self.shortcuts(&ctx);
@@ -842,6 +851,10 @@ impl eframe::App for Studio {
 
         if !std::mem::take(&mut self.recorded) {
             self.after_edit(before);
+        }
+        if self.revision != revision {
+            // The preview drew this frame before the edit was resolved; draw it again now.
+            ctx.request_repaint();
         }
         let pointer_down = ctx.input(|i| i.pointer.any_down());
         if self.history.merge_expired(pointer_down) {
