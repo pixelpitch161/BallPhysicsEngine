@@ -25,9 +25,9 @@ pub struct BallInstance {
 pub struct ShapeInstance {
     /// Centre, angle.
     pub a: [f32; 4],
-    /// Ring: radius, sides. Box: half width, half height.
+    /// Ring: radius, sides. Box: half width, half height, corner radius. Capsule: half length.
     pub b: [f32; 4],
-    /// Kind, half line width, glow strength.
+    /// Kind (0 ring or polygon, 1 box, 2 capsule), half line width, glow strength.
     pub c: [f32; 4],
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
@@ -50,6 +50,34 @@ impl ShapeInstance {
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
             },
+            Outline::Rounded { center, half, corner, angle, thickness } => Self {
+                a: [center.x, center.y, angle, 0.0],
+                b: [half.x, half.y, corner, 0.0],
+                c: [1.0, thickness * 0.5, glow, 0.0],
+                color,
+            },
+        }
+    }
+
+    /// A bar with round ends: the line from `from` to `to`, `half_width` thick each side.
+    pub fn capsule(from: glam::Vec2, to: glam::Vec2, half_width: f32, color: [f32; 4], glow: f32) -> Self {
+        let mid = (from + to) * 0.5;
+        let along = to - from;
+        Self {
+            a: [mid.x, mid.y, along.to_angle(), 0.0],
+            b: [along.length() * 0.5, 0.0, 0.0, 0.0],
+            c: [2.0, half_width, glow, 0.0],
+            color: blend_alpha(color),
+        }
+    }
+
+    /// A filled disc: a ring as thick as it is wide.
+    pub fn disc(center: glam::Vec2, radius: f32, color: [f32; 4], glow: f32) -> Self {
+        Self {
+            a: [center.x, center.y, 0.0, 0.0],
+            b: [radius, 0.0, 0.0, 0.0],
+            c: [0.0, radius, glow, 0.0],
+            color: blend_alpha(color),
         }
     }
 }
@@ -237,6 +265,22 @@ mod tests {
         assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
         let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
         assert_eq!(ShapeInstance::outline(&b, [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
+        let r = Outline::Rounded {
+            center: glam::Vec2::ZERO,
+            half: glam::Vec2::new(30.0, 40.0),
+            corner: 10.0,
+            angle: 0.1,
+            thickness: 2.0,
+        };
+        let s = ShapeInstance::outline(&r, [1.0; 4], 0.0);
+        assert_eq!((s.c[0], s.b), (1.0, [30.0, 40.0, 10.0, 0.0]));
+        let cap = ShapeInstance::capsule(glam::Vec2::new(-10.0, 0.0), glam::Vec2::new(10.0, 0.0), 3.0, [1.0; 4], 0.2);
+        assert_eq!((cap.c[0], cap.c[1], cap.c[2], cap.b[0]), (2.0, 3.0, 0.2, 10.0));
+        assert_eq!(cap.a, [0.0, 0.0, 0.0, 0.0]);
+        let up = ShapeInstance::capsule(glam::Vec2::ZERO, glam::Vec2::new(0.0, 4.0), 1.0, [1.0; 4], 0.0);
+        assert!((up.a[2] - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && up.a[1] == 2.0);
+        let disc = ShapeInstance::disc(glam::Vec2::new(1.0, 2.0), 7.0, [1.0; 4], 0.0);
+        assert_eq!((disc.c[0], disc.c[1], disc.b[0], disc.a[0]), (0.0, 7.0, 7.0, 1.0));
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);

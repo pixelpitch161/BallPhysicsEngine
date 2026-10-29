@@ -216,9 +216,7 @@ fn arrow_tip(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<Vec2> {
 /// The point on `outline` in the direction of `world` from its centre.
 fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
     let offset = world - outline.center();
-    let angle = match *outline {
-        Outline::Ring { angle, .. } | Outline::Box { angle, .. } => angle,
-    };
+    let angle = outline.angle();
     let u = if offset.length_squared() > 1e-6 { offset.to_angle() - angle } else { 0.0 };
     outline.point(u)
 }
@@ -273,7 +271,7 @@ pub fn apply_drag(scene: &mut Scene, drag: Drag, world: Vec2) {
             let settings = ArenaSettings::from_params(&thing.params);
             let offset = world - thing.transform.position;
             match settings.shape {
-                ArenaShape::Box => {
+                ArenaShape::Box | ArenaShape::Capsule => {
                     let local = Vec2::from_angle(-thing.transform.rotation).rotate(offset);
                     thing.params.set("width", Value::Number((local.x.abs() * 2.0).round().max(20.0) as f64));
                     thing.params.set("height", Value::Number((local.y.abs() * 2.0).round().max(20.0) as f64));

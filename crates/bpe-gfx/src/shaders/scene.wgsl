@@ -53,9 +53,9 @@ const GLOW_REACH: f32 = 36.0;
 struct ShapeIn {
     // Centre xy, angle.
     @location(0) a: vec4<f32>,
-    // Ring: radius, sides. Box: half size.
+    // Ring: radius, sides. Box: half size, corner radius. Capsule: half length.
     @location(1) b: vec4<f32>,
-    // Kind (0 ring/polygon, 1 box), half line width, glow.
+    // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
 };
@@ -141,8 +141,15 @@ fn shape_distance(in: ShapeOut) -> f32 {
     if in.c.x < 0.5 {
         return ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z);
     }
-    let q = abs(rotate(in.world - in.a.xy, -in.a.z)) - in.b.xy;
-    return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
+    let local = rotate(in.world - in.a.xy, -in.a.z);
+    if in.c.x < 1.5 {
+        // A box, its corners rounded by b.z.
+        let corner = in.b.z;
+        let q = abs(local) - (in.b.xy - vec2<f32>(corner));
+        return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner);
+    }
+    // A capsule: the segment along x from -b.x to b.x.
+    return segment_distance(local, vec2<f32>(-in.b.x, 0.0), vec2<f32>(in.b.x, 0.0));
 }
 
 @fragment
