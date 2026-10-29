@@ -87,6 +87,8 @@ pub struct MixSettings {
 /// What a Sound module can read while turning events into notes.
 pub struct MixCx<'a> {
     pub settings: &'a MixSettings,
+    /// The whole run, for modules that count a thing's hits.
+    pub log: &'a Log,
     /// How many frames the track has.
     pub frames: usize,
     /// An event's position in the log, for repeatable note picks.
@@ -149,7 +151,7 @@ pub fn notes_with(
         let within = all[start..].iter().position(|x| x == e).unwrap_or(0);
         (start + within) as u64
     };
-    let cx = MixCx { settings, frames, hit_index: &hit_index, video_time };
+    let cx = MixCx { settings, log, frames, hit_index: &hit_index, video_time };
     let rate = settings.steps_per_second.max(1);
     let window = (rate / WINDOWS_PER_SECOND).max(1) as u64;
     let animated: std::collections::BTreeSet<ThingId> = animation

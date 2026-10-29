@@ -18,7 +18,11 @@ use glam::Vec2;
 
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
+pub use modules::drums::mix::DrumSoundMix;
+pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
 pub use modules::look::{ClassicLook, ClassicLookKind};
+pub use modules::melody::mix::MelodySoundMix;
+pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
 pub use modules::sound::mix::NoteSoundMix;
@@ -63,6 +67,8 @@ pub fn draws() -> Draws {
 pub fn mixes() -> Mixes {
     let mut m = Mixes::default();
     m.add(NoteSoundMix);
+    m.add(DrumSoundMix);
+    m.add(MelodySoundMix);
     m
 }
 
@@ -118,6 +124,8 @@ pub fn registry() -> Registry {
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
+    r.add_module(DrumSoundKind);
+    r.add_module(MelodySoundKind);
     r
 }
 
