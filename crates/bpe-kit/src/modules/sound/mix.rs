@@ -22,7 +22,8 @@ impl ModuleMix for NoteSoundMix {
         let gain_db = 10f32.powf(s.volume / 20.0);
         let span = (s.loudest_hit - s.quietest_hit).max(1.0);
         for e in events {
-            if e.kind != EventKind::Hit || e.speed < s.quietest_hit {
+            // Hits play a note, and so do the Note events a rule's "Play a note" block logs.
+            if !matches!(e.kind, EventKind::Hit | EventKind::Note) || e.speed < s.quietest_hit {
                 continue;
             }
             let time = e.time(rate);
@@ -93,6 +94,20 @@ mod tests {
         assert!(track.samples.iter().all(|s| s.abs() <= 0.9));
         assert!(mix_scene(&scene, &resolved, &Log::default(), &kit).samples.iter().all(|&s| s == 0.0));
         assert_eq!(mix_scene(&scene, &resolved, &log, &kit).samples, track.samples);
+    }
+
+    #[test]
+    fn a_note_action_plays_a_note() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut log = Log::default();
+        log.push(Event { kind: EventKind::Note, b: None, ..hit(240, 0.0, 600.0) });
+        let track = mix_scene(&scene, &resolved, &log, &kit);
+        assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
+        log.push(Event { kind: EventKind::Spawn, b: None, ..hit(480, 0.0, 600.0) });
+        let with_spawn = mix_scene(&scene, &resolved, &log, &kit);
+        assert_eq!(with_spawn.samples, track.samples, "only hits and notes make a sound");
     }
 
     #[test]

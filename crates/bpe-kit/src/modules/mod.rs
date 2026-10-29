@@ -5,5 +5,6 @@ pub mod look;
 pub mod motion;
 pub mod particles;
 pub mod shader;
+pub mod rules;
 pub mod sound;
 pub mod trail;

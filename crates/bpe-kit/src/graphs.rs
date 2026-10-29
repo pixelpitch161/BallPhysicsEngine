@@ -397,7 +397,7 @@ mod tests {
         assert!(resolved.problems.iter().any(|p| p.thing == ThingId::ROOT
             && p.slot == Some(SlotId::Bounce)
             && matches!(&p.kind, ProblemKind::BrokenGraph(m) if m.contains("Only one"))));
-        assert!(resolved.things[&ThingId(2)].slots.get(&SlotId::Bounce).is_none());
+        assert!(!resolved.things[&ThingId(2)].slots.contains_key(&SlotId::Bounce));
         assert_eq!(compile_module(SlotId::Look, &Graph::new("x")).unwrap_err(), "Look graphs come in a later stage.");
     }
 

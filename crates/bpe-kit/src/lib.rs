@@ -27,6 +27,7 @@ pub use modules::particles::draw::BurstDraw;
 pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
 pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
+pub use modules::rules::{Recipe, RulesKind, RulesSim, RulesState, recipes};
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
@@ -49,6 +50,7 @@ pub fn sims() -> Sims {
     s.add_thing(BallsSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
+    s.add_module(RulesSim);
     s
 }
 
@@ -120,6 +122,7 @@ pub fn registry() -> Registry {
     for k in modules::shader::kinds() {
         r.add_module(k);
     }
+    r.add_module(RulesKind);
     r
 }
 

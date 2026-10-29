@@ -16,9 +16,26 @@ impl ThingSim for SceneSim {
         let s = SceneSettings::from_params(&resolved.params);
         world.steps_per_second = s.steps_per_second.max(1);
         world.gravity = s.gravity;
+        world.seed = s.seed as u64;
     }
 
     fn affects_physics(&self, key: &str) -> bool {
         matches!(key, "gravity" | "steps_per_second" | "duration")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{kit, new_scene};
+    use bpe_core::{ThingId, Value, resolve};
+    use bpe_runtime::World;
+
+    #[test]
+    fn the_scene_seed_reaches_the_world() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("seed", Value::Int(77));
+        let resolved = resolve(&scene, &kit.registry);
+        assert_eq!(World::build(&scene, &resolved, &kit.sims).seed, 77);
     }
 }
