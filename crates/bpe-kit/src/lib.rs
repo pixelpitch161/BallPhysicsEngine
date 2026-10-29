@@ -1,6 +1,7 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
 //! its settings, its simulation, its drawing and its sound side by side.
 
+pub mod gizmo;
 pub mod modules;
 pub mod rng;
 pub mod scenes;
@@ -10,12 +11,13 @@ pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, ThingId};
+use bpe_core::{Color, EditError, ModuleId, Registry, Resolved, Scene, Settings, SlotId, ThingId, Value};
 use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
 use glam::Vec2;
 
+pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
@@ -93,6 +95,50 @@ pub struct Kit {
 
 pub fn kit() -> Kit {
     Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
+}
+
+/// A module a new thing starts with: the module kind, its name in the library, and the
+/// settings that differ from the kind's defaults.
+type Starter = (&'static str, &'static str, &'static [(&'static str, Value)]);
+
+/// The shared modules a new thing of `kind` starts with.
+fn starter_modules(kind: &str) -> &'static [Starter] {
+    const SOFT: &[(&str, Value)] = &[("bounciness", Value::Number(0.0))];
+    match kind {
+        "liquid" => &[
+            ("look.liquid", "Liquid surface", &[]),
+            ("motion.liquid", "Flowing", &[]),
+            ("bounce.basic", "Soft landing", SOFT),
+        ],
+        "swarm" => &[("look.swarm", "Glowing dots", &[]), ("motion.flock", "Flocking", &[])],
+        _ => &[],
+    }
+}
+
+/// Adds a thing of `kind` under `parent` and links the kit's shared starter modules for that
+/// kind (a liquid gets its surface look, flowing motion and a soft landing; a swarm its glowing
+/// dots and flocking), reusing a library module of the same kind and name when the scene
+/// already has one. Other kinds are added plain.
+pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
+    let id = scene.add_thing(reg, kind, parent)?;
+    for &(module_kind, name, settings) in starter_modules(kind) {
+        let existing: Option<ModuleId> =
+            scene.library.modules.values().find(|m| m.kind == module_kind && m.name == name).map(|m| m.id);
+        let module = match existing {
+            Some(m) => m,
+            None => {
+                let m = scene.add_module(reg, module_kind, name)?;
+                let params = &mut scene.library.modules.get_mut(&m).expect("just added").params;
+                for (key, value) in settings {
+                    params.set(key, value.clone());
+                }
+                m
+            }
+        };
+        let slot = reg.module(module_kind).expect("kit kinds are registered").slot();
+        scene.link(reg, id, slot, module)?;
+    }
+    Ok(id)
 }
 
 /// What the renderer's graphics-card layers step along with: the scene, keyed by its physics
@@ -242,5 +288,65 @@ mod tests {
         assert!(log.is_empty(), "a pinned ball buzzed {} hits", log.len());
         let p = world.bodies[&ThingId(2)].position[0];
         assert!(p.is_finite() && p.length() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn adding_a_liquid_links_its_three_shared_modules() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let a = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
+        let module = |scene: &Scene, id: ThingId, slot: SlotId| {
+            let bpe_core::SlotLink::Linked { module: m, .. } = scene.things[&id].slots[&slot] else { panic!("linked") };
+            let module = &scene.library.modules[&m];
+            (m, module.kind.clone(), module.name.clone())
+        };
+        let (look, look_kind, look_name) = module(&scene, a, SlotId::Look);
+        let (motion, motion_kind, motion_name) = module(&scene, a, SlotId::Motion);
+        let (bounce, bounce_kind, bounce_name) = module(&scene, a, SlotId::Bounce);
+        assert_eq!((look_kind.as_str(), look_name.as_str()), ("look.liquid", "Liquid surface"));
+        assert_eq!((motion_kind.as_str(), motion_name.as_str()), ("motion.liquid", "Flowing"));
+        assert_eq!((bounce_kind.as_str(), bounce_name.as_str()), ("bounce.basic", "Soft landing"));
+        assert_eq!(scene.library.modules[&bounce].params.get("bounciness"), Some(&Value::Number(0.0)));
+        let modules = scene.library.modules.len();
+        let b = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
+        assert_eq!(scene.library.modules.len(), modules, "the second liquid shares the first one's modules");
+        assert_eq!(module(&scene, b, SlotId::Look).0, look);
+        assert_eq!(module(&scene, b, SlotId::Motion).0, motion);
+        assert_eq!(module(&scene, b, SlotId::Bounce).0, bounce);
+        let resolved = resolve(&scene, &reg);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    }
+
+    #[test]
+    fn adding_a_swarm_links_dots_and_flocking() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let s = add_thing(&mut scene, &reg, "swarm", ThingId::ROOT).unwrap();
+        let kinds: Vec<(SlotId, String, String)> = scene.things[&s]
+            .slots
+            .iter()
+            .map(|(slot, link)| {
+                let bpe_core::SlotLink::Linked { module: m, .. } = link else { panic!("linked") };
+                (*slot, scene.library.modules[m].kind.clone(), scene.library.modules[m].name.clone())
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (SlotId::Look, "look.swarm".to_string(), "Glowing dots".to_string()),
+                (SlotId::Motion, "motion.flock".to_string(), "Flocking".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn adding_balls_is_unchanged() {
+        let reg = registry();
+        let mut plain = new_scene(&reg);
+        let mut kit_scene = plain.clone();
+        let a = plain.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
+        let b = add_thing(&mut kit_scene, &reg, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(plain, kit_scene);
     }
 }
