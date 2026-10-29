@@ -146,3 +146,57 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
     let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -20.0));
     assert!(head[0] < 120, "a black covering streak darkens a white background: {head:?}");
 }
+
+#[test]
+fn a_burst_of_sparks_flies_the_way_its_normal_points_and_dies_after_its_life() {
+    use crate::Burst;
+    const W: u32 = 270;
+    const H: u32 = 480;
+    let mut frame = Frame { bloom: 0.0, time: 0.3, ..Frame::default() };
+    frame.bursts.push(Burst {
+        origin: [0.0, 0.0],
+        normal: [0.0, -1.0],
+        time: 0.0,
+        color: [1.0, 0.2, 0.2, 1.0],
+        count: 300,
+        speed: 400.0,
+        spread: 40.0,
+        size: 6.0,
+        life: 1.0,
+        gravity: 0.0,
+        drag: 0.0,
+        shape: 0,
+        additive: true,
+        seed: 3,
+    });
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("sparks", &pixels, W, H);
+    let red_in = |pixels: &[u8], x0: f32, x1: f32, y0: f32, y1: f32| {
+        let mut sum = 0u32;
+        let mut y = y0;
+        while y < y1 {
+            let mut x = x0;
+            while x < x1 {
+                sum += pixel_sized(pixels, W, H, Vec2::new(x, y))[0] as u32;
+                x += 4.0;
+            }
+            y += 4.0;
+        }
+        sum
+    };
+    let above = red_in(&pixels, -150.0, 150.0, -300.0, -20.0);
+    let below = red_in(&pixels, -150.0, 150.0, 20.0, 300.0);
+    let aside = red_in(&pixels, 300.0, 500.0, -300.0, 300.0);
+    assert!(above > 2000, "sparks fly up: {above}");
+    assert!(below < above / 20, "and not down: {below} vs {above}");
+    assert!(aside < 50, "nothing far off to the side: {aside}");
+    // Rendered after the particles' life, nothing is left; a covering burst draws too.
+    frame.time = 1.5;
+    let pixels = render_sized(&frame, W, H).unwrap();
+    assert!(red_in(&pixels, -150.0, 150.0, -300.0, 300.0) < 50);
+    frame.time = 0.3;
+    frame.bursts[0].additive = false;
+    frame.bursts[0].shape = 2;
+    let pixels = render_sized(&frame, W, H).unwrap();
+    assert!(red_in(&pixels, -150.0, 150.0, -300.0, -20.0) > 1000);
+}

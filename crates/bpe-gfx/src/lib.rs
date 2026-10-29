@@ -79,6 +79,7 @@ pub struct Renderer {
     ball_object: wgpu::RenderPipeline,
     look_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
+    particles: particles::Particles,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -395,6 +396,7 @@ impl Renderer {
             ball_object,
             look_object,
             chain: effects::chain::Chain::new(device),
+            particles: particles::Particles::new(device, &globals_layout),
             downsample,
             upsample,
             composite,
@@ -444,6 +446,7 @@ impl Renderer {
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
         self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
+        self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
         if wants_objects {
@@ -509,12 +512,15 @@ impl Renderer {
             &self.targets.hdr,
             object_view,
         );
-        if !frame.flashes.is_empty() {
+        if !frame.flashes.is_empty() || !frame.bursts.is_empty() {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_pipeline(&self.flash);
-            pass.set_vertex_buffer(0, self.flash_buffer.slice());
-            pass.draw(0..4, 0..frame.flashes.len() as u32);
+            if !frame.flashes.is_empty() {
+                pass.set_pipeline(&self.flash);
+                pass.set_vertex_buffer(0, self.flash_buffer.slice());
+                pass.draw(0..4, 0..frame.flashes.len() as u32);
+            }
+            self.particles.draw(&mut pass);
         }
         self.chain.run(
             device,
