@@ -312,7 +312,10 @@ dependencies = [
 name = "bpe-mix"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bpe-core",
+ "bpe-runtime",
+ "hound",
 ]
 
 [[package]]

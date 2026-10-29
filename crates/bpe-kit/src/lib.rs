@@ -9,9 +9,10 @@ pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{Color, Registry, Scene, Settings, SlotId, ThingId};
+use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, ThingId};
 use bpe_gfx::Draws;
-use bpe_runtime::Sims;
+use bpe_mix::{MixSettings, Mixes, Soundtrack};
+use bpe_runtime::{Log, Sims};
 use glam::Vec2;
 
 pub use modules::bounce::sim::BasicBounceSim;
@@ -19,6 +20,7 @@ pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
+pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
@@ -50,15 +52,42 @@ pub fn draws() -> Draws {
     d
 }
 
+/// Every kind's sound part, for the mixer.
+pub fn mixes() -> Mixes {
+    let mut m = Mixes::default();
+    m.add(NoteSoundMix);
+    m
+}
+
 /// Everything the kit gives the editor and the exporter, built once.
 pub struct Kit {
     pub registry: Registry,
     pub sims: Arc<Sims>,
     pub draws: Draws,
+    pub mixes: Mixes,
 }
 
 pub fn kit() -> Kit {
-    Kit { registry: registry(), sims: Arc::new(sims()), draws: draws() }
+    Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
+}
+
+/// What the mixer needs from the root's settings.
+pub fn mix_settings(resolved: &Resolved) -> MixSettings {
+    let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    MixSettings {
+        duration: root.duration,
+        steps_per_second: root.steps_per_second,
+        chords: root.chords,
+        loudness: root.loudness,
+        seed: root.seed as u64,
+        half_width: root.width as f32 * 0.5,
+    }
+}
+
+/// The soundtrack of a finished run of `scene`.
+pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
+    let _ = scene;
+    bpe_mix::mix(&mix_settings(resolved), resolved, log, &kit.mixes)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.

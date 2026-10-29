@@ -1,5 +1,7 @@
 //! Notes: every hit plays a note of the current chord on an instrument.
 
+pub mod mix;
+
 use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
 use bpe_mix::Instrument;
 
