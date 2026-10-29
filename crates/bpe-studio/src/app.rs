@@ -587,7 +587,7 @@ impl eframe::App for Studio {
                     &mut self.scene,
                     &self.kit,
                     &self.resolved,
-                    self.selection.primary,
+                    &self.selection,
                 )
             });
         let outcome = egui::CentralPanel::default()

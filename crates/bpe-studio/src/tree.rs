@@ -332,7 +332,7 @@ fn keeping_place(scene: &Scene, id: ThingId, parent: ThingId, attach: Attach, wo
 
 /// Switches a thing between riding on and being grouped under the parent it has, without it
 /// jumping on screen.
-fn reattach(scene: &mut Scene, id: ThingId, attach: Attach) -> Result<(), EditError> {
+pub(crate) fn reattach(scene: &mut Scene, id: ThingId, attach: Attach) -> Result<(), EditError> {
     let world = world_position(scene, id).ok_or(EditError::Missing(id))?;
     let parent = scene.things[&id].parent.ok_or(EditError::Root)?;
     let attach = keeping_place(scene, id, parent, attach, world);
