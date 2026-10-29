@@ -17,6 +17,7 @@ use glam::Vec2;
 
 pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
+pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
@@ -102,6 +103,7 @@ pub fn registry() -> Registry {
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
     r.add_module(ClassicLookKind);
+    r.add_module(StyledLookKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);

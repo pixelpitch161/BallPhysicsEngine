@@ -1,11 +1,12 @@
 //! Drawing the balls and their hit flashes.
 
-use bpe_core::{Settings, ThingId};
+use bpe_core::{Settings, SlotId, ThingId};
 use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, HitMark, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::EventKind;
 
 use super::{Arrangement, BallsSettings};
 use crate::modules::look::draw::{colors, look_of};
+use crate::modules::look::styled::{self, StyledLook};
 
 pub struct BallsDraw;
 
@@ -38,17 +39,34 @@ impl ThingDraw for BallsDraw {
             _ => 0.0,
         };
         let color = colors(&look, bodies.len(), row_of);
+        let styled = cx.resolved.slots.get(&SlotId::Look).filter(|s| s.kind == "look.styled");
+        let styled = styled.map(|s| StyledLook::from_params(&s.params));
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
                 continue;
             }
             let seed = ball_seed(id, i);
+            let code = thing_code(id) + seed * 0.5;
+            if let Some(style) = &styled {
+                let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
+                frame.looks.push(styled::instance(
+                    style,
+                    color(i),
+                    center,
+                    velocity,
+                    radius,
+                    cx.time as f32,
+                    code,
+                    seed,
+                ));
+                continue;
+            }
             frame.balls.push(BallInstance {
                 center: bodies.position[i].into(),
                 radius: bodies.radius[i],
                 glow: look.glow,
                 color: blend_alpha(color(i)),
-                code: [thing_code(id) + seed * 0.5, seed, 0.0, 0.0],
+                code: [code, seed, 0.0, 0.0],
             });
         }
 
@@ -128,6 +146,31 @@ mod tests {
         assert_eq!(frame.balls[0].color, [1.0, 1.0, 1.0, 1.0]); // falls back to the root's Plain look
         assert_eq!(frame.balls[0].glow, 0.12);
         assert_eq!((frame.width, frame.height), (1080, 1920));
+    }
+
+    #[test]
+    fn a_styled_look_draws_looks_instead_of_balls_and_still_flashes() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let styled = scene.add_module(&reg, "look.styled", "Star look").unwrap();
+        let module = scene.library.modules.get_mut(&styled).unwrap();
+        module.params.set("shape", bpe_core::Value::Choice("star".into()));
+        module.params.set("flash", bpe_core::Value::Number(1.0));
+        scene.link(&reg, ThingId(2), SlotId::Look, styled).unwrap();
+        let resolved = bpe_core::resolve(&scene, &reg);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let kit = kit();
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(3.0);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 3.0, &kit.draws, &mut frame);
+        assert!(frame.balls.is_empty());
+        assert_eq!(frame.looks.len(), 1);
+        assert_eq!(frame.looks[0].form[0], 5.0);
+        assert_eq!(frame.looks[0].extent[1], bpe_gfx::thing_code(ThingId(2)) + frame.looks[0].seed * 0.5);
+        let rate = playback.world().steps_per_second;
+        let recent = playback.log().events().iter().filter(|e| e.time(rate) > 3.0 - 0.25).count();
+        assert_eq!(frame.flashes.len(), recent);
     }
 
     #[test]
