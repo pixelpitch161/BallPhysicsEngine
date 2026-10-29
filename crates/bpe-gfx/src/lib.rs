@@ -4,12 +4,17 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
+pub mod effects;
 mod frame;
+pub mod particles;
+#[cfg(test)]
+mod pictures;
 pub mod text;
 
 pub use frame::{
-    BallInstance, DrawCx, Draws, FlashInstance, Frame, GlyphInstance, ShapeInstance, SoftVertex, ThingDraw,
-    blend_alpha, build_frame, hit_strength,
+    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, GlyphInstance, HitMark, LookInstance,
+    ModuleDraw, ShapeInstance, SoftVertex, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, hit_strength,
+    push_streak, thing_code,
 };
 pub use text::Atlas;
 pub use wgpu;
@@ -17,7 +22,9 @@ pub use wgpu;
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The object picture shader effects on things read: own position, thing code, coverage.
+pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const BLOOM_LEVELS: usize = 6;
 
 #[repr(C)]
@@ -45,7 +52,10 @@ impl Globals {
 struct Targets {
     width: u32,
     height: u32,
+    hdr_texture: wgpu::Texture,
     hdr: wgpu::TextureView,
+    /// The object picture, made the first time an effect needs it.
+    object: Option<(wgpu::Texture, wgpu::TextureView)>,
     bloom: Vec<wgpu::TextureView>,
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
@@ -70,17 +80,27 @@ pub struct Renderer {
     atlas_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
+    trail: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     soft: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
+    look: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
     glyph: wgpu::RenderPipeline,
+    /// What is where, for effects on things (see object.wgsl).
+    shape_object: wgpu::RenderPipeline,
+    ball_object: wgpu::RenderPipeline,
+    look_object: wgpu::RenderPipeline,
+    chain: effects::chain::Chain,
+    particles: particles::Particles,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    trail_buffer: GrowableBuffer,
     shape_buffer: GrowableBuffer,
     soft_buffer: GrowableBuffer,
     ball_buffer: GrowableBuffer,
+    look_buffer: GrowableBuffer,
     flash_buffer: GrowableBuffer,
     glyph_buffer: GrowableBuffer,
     atlas: Option<AtlasTexture>,
@@ -91,7 +111,17 @@ impl Renderer {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [
+                    include_str!("shaders/scene.wgsl"),
+                    include_str!("shaders/object.wgsl"),
+                    include_str!("shaders/ball_look.wgsl"),
+                    include_str!("shaders/styled.wgsl"),
+                    include_str!("shaders/trail.wgsl"),
+                ]
+                .concat()
+                .into(),
+            ),
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
@@ -226,7 +256,13 @@ impl Renderer {
         };
 
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-        let ball_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
+        let ball_attributes =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
+        let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+        let look_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
+        ];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
         let soft_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
         let glyph_attributes = wgpu::vertex_attr_array![
@@ -299,6 +335,32 @@ impl Renderer {
             HDR_FORMAT,
             Some(premultiplied),
         );
+        let trail = make(
+            "trails",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_trail",
+            "fs_trail",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TrailVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &trail_attributes,
+            })],
+            TriangleList,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
+        let look = make(
+            "styled balls",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_look",
+            "fs_look",
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
         let flash = make(
             "flashes",
             &scene_pipeline_layout,
@@ -309,6 +371,39 @@ impl Renderer {
             TriangleStrip,
             HDR_FORMAT,
             Some(additive),
+        );
+        let shape_object = make(
+            "shape objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_shape",
+            "fs_shape_object",
+            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &shape_attributes))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
+        );
+        let ball_object = make(
+            "ball objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_ball",
+            "fs_ball_object",
+            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
+        );
+        let look_object = make(
+            "styled ball objects",
+            &scene_pipeline_layout,
+            &scene_shader,
+            "vs_look",
+            "fs_look_object",
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
         );
         let downsample = make(
             "bloom down",
@@ -353,17 +448,26 @@ impl Renderer {
             atlas_layout,
             sampler,
             background,
+            trail,
             shape,
             soft,
             ball,
+            look,
             flash,
             glyph,
+            shape_object,
+            ball_object,
+            look_object,
+            chain: effects::chain::Chain::new(device),
+            particles: particles::Particles::new(device, &globals_layout),
             downsample,
             upsample,
             composite,
+            trail_buffer: GrowableBuffer::new("trail vertices"),
             shape_buffer: GrowableBuffer::new("shape instances"),
             soft_buffer: GrowableBuffer::new("soft vertices"),
             ball_buffer: GrowableBuffer::new("ball instances"),
+            look_buffer: GrowableBuffer::new("styled ball instances"),
             flash_buffer: GrowableBuffer::new("flash instances"),
             glyph_buffer: GrowableBuffer::new("glyph instances"),
             atlas: None,
@@ -430,18 +534,31 @@ impl Renderer {
         frame.width as f32 / self.targets.width.max(1) as f32
     }
 
+    /// Why shader effects in the last frame could not be built, one line each: "{name}: {why}".
+    pub fn shader_problems(&self) -> Vec<String> {
+        self.chain.problems().map(str::to_owned).collect()
+    }
+
     /// Draws one frame into the output texture.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
+        self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.soft_buffer.upload(device, queue, bytemuck::cast_slice(&frame.soft));
         self.ball_buffer.upload(device, queue, bytemuck::cast_slice(&frame.balls));
+        self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
         self.glyph_buffer.upload(device, queue, bytemuck::cast_slice(&frame.glyphs));
         if !frame.glyphs.is_empty() {
             self.sync_atlas(device, queue);
         }
+        self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
 
+        let wants_objects = effects::chain::Chain::wants_objects(frame);
+        if wants_objects {
+            self.targets.ensure_object(device);
+        }
+        self.chain.begin_frame();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         {
             let mut pass =
@@ -449,6 +566,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
+            if !frame.trails.is_empty() {
+                pass.set_pipeline(&self.trail);
+                pass.set_vertex_buffer(0, self.trail_buffer.slice());
+                pass.draw(0..frame.trails.len() as u32, 0..1);
+            }
             if !frame.shapes.is_empty() {
                 pass.set_pipeline(&self.shape);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
@@ -465,11 +587,52 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
                 pass.draw(0..4, 0..frame.balls.len() as u32);
             }
+            if !frame.looks.is_empty() {
+                pass.set_pipeline(&self.look);
+                pass.set_vertex_buffer(0, self.look_buffer.slice());
+                pass.draw(0..4, 0..frame.looks.len() as u32);
+            }
+        }
+        if wants_objects {
+            let view = &self.targets.object.as_ref().expect("made above").1;
+            let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            if !frame.shapes.is_empty() {
+                pass.set_pipeline(&self.shape_object);
+                pass.set_vertex_buffer(0, self.shape_buffer.slice());
+                pass.draw(0..4, 0..frame.shapes.len() as u32);
+            }
+            if !frame.balls.is_empty() {
+                pass.set_pipeline(&self.ball_object);
+                pass.set_vertex_buffer(0, self.ball_buffer.slice());
+                pass.draw(0..4, 0..frame.balls.len() as u32);
+            }
+            if !frame.looks.is_empty() {
+                pass.set_pipeline(&self.look_object);
+                pass.set_vertex_buffer(0, self.look_buffer.slice());
+                pass.draw(0..4, 0..frame.looks.len() as u32);
+            }
+        }
+        let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v);
+        self.chain.run(
+            device,
+            queue,
+            &mut encoder,
+            Stage::Things,
+            frame,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            object_view,
+        );
+        if !frame.flashes.is_empty() || !frame.bursts.is_empty() {
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &self.globals_group, &[]);
             if !frame.flashes.is_empty() {
                 pass.set_pipeline(&self.flash);
                 pass.set_vertex_buffer(0, self.flash_buffer.slice());
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
+            self.particles.draw(&mut pass);
             if let (false, Some(atlas)) = (frame.glyphs.is_empty(), &self.atlas) {
                 pass.set_pipeline(&self.glyph);
                 pass.set_bind_group(1, &atlas.group, &[]);
@@ -477,6 +640,17 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.glyphs.len() as u32);
             }
         }
+        self.chain.run(
+            device,
+            queue,
+            &mut encoder,
+            Stage::Picture,
+            frame,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            object_view,
+        );
+        self.chain.end_frame();
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -577,7 +751,10 @@ impl Targets {
             })
         };
         let render_and_sample = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let hdr = texture("hdr", width, height, HDR_FORMAT, render_and_sample).create_view(&Default::default());
+        // Effects read the HDR picture while they draw their result beside it, then copy it back.
+        let copyable = render_and_sample | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        let hdr_texture = texture("hdr", width, height, HDR_FORMAT, copyable);
+        let hdr = hdr_texture.create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -609,7 +786,37 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
             ],
         });
-        Self { width, height, hdr, bloom, output, output_view, down_sources, up_sources, composite }
+        Self {
+            width,
+            height,
+            hdr_texture,
+            hdr,
+            object: None,
+            bloom,
+            output,
+            output_view,
+            down_sources,
+            up_sources,
+            composite,
+        }
+    }
+
+    /// Makes the object picture if it is missing.
+    fn ensure_object(&mut self, device: &wgpu::Device) {
+        if self.object.is_none() {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("objects"),
+                size: wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: OBJECT_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            self.object = Some((texture, view));
+        }
     }
 }
 

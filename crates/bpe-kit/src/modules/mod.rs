@@ -5,4 +5,7 @@ pub mod drums;
 pub mod look;
 pub mod melody;
 pub mod motion;
+pub mod particles;
+pub mod shader;
 pub mod sound;
+pub mod trail;

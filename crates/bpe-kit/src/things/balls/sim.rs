@@ -2,7 +2,7 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Bodies, ThingSim, World, state_mut};
 use glam::Vec2;
 
@@ -58,6 +58,10 @@ impl ThingSim for BallsSim {
         }
         world.bodies.insert(thing.id, bodies);
         world.states.insert(thing.id, Box::new(BallsState { settings }));
+        // A trail needs to know where the balls have been.
+        if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
+            world.keep_history(thing.id);
+        }
     }
 
     /// A keyframe moved the size: every ball takes it. Placement and launch speed only matter

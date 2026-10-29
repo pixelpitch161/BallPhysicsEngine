@@ -20,13 +20,20 @@ pub use modules::bounce::sim::BasicBounceSim;
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::drums::mix::DrumSoundMix;
 pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
+pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::BasicMotionSim;
 pub use modules::motion::{BasicMotion, BasicMotionKind};
+pub use modules::particles::draw::BurstDraw;
+pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
+pub use modules::shader::EffectKind;
+pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
+pub use modules::trail::draw::StreakDraw;
+pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use music::{Song, TimeWarp, beats_for, load_song, wants_beats, warp_for};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
@@ -60,6 +67,11 @@ pub fn draws() -> Draws {
     d.add(BallsDraw);
     d.add(SoftDraw);
     d.add(TextDraw);
+    for b in &bpe_gfx::effects::BUILTINS {
+        d.add_module(EffectDraw(b));
+    }
+    d.add_module(StreakDraw);
+    d.add_module(BurstDraw);
     d
 }
 
@@ -121,11 +133,17 @@ pub fn registry() -> Registry {
     r.add_thing(SoftKind);
     r.add_thing(TextKind);
     r.add_module(ClassicLookKind);
+    r.add_module(StyledLookKind);
+    r.add_module(StreakTrailKind);
+    r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     r.add_module(NoteSoundKind);
     r.add_module(DrumSoundKind);
     r.add_module(MelodySoundKind);
+    for k in modules::shader::kinds() {
+        r.add_module(k);
+    }
     r
 }
 

@@ -1,6 +1,10 @@
 //! The scenes the stages ship with: the new-scene default and others that exercise every
 //! setting. They double as the determinism test scenes.
 
+#[path = "scenes_stage5.rs"]
+mod stage5;
+pub use stage5::{stage5, stage5_with_twins};
+
 use bpe_core::{Address, Color, Ease, ModuleId, Owner, PulseSource, Registry, Scene, Settings, SlotId, ThingId, Value};
 use bpe_mix::Instrument;
 use glam::Vec2;
@@ -14,9 +18,10 @@ use crate::{
 const ARENA: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
 
-/// Every shipped scene: stage 2's, then stage 7's.
+/// Every shipped scene: stage 2's, then stage 5's, then stage 7's.
 pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     let mut scenes = stage2(reg);
+    scenes.extend(stage5(reg));
     scenes.extend(stage7(reg));
     scenes
 }
@@ -462,22 +467,17 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 10);
+        let in_order: Vec<String> = [scenes::stage2(&reg), scenes::stage5(&reg), scenes::stage7(&reg)]
+            .concat()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         let names: Vec<&str> = scenes.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, in_order);
+        assert_eq!(&names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
         assert_eq!(
-            names,
-            [
-                "One ball",
-                "Reel block",
-                "Box drop",
-                "Spinning hexagon",
-                "Shrinking ring",
-                "Jelly drop",
-                "Rope bridge",
-                "Cloth hammock",
-                "Captioned reel",
-                "Drum beat"
-            ]
+            &names[names.len() - 5..],
+            ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]
         );
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);

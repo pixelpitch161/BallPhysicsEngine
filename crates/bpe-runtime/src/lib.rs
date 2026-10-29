@@ -5,6 +5,7 @@
 
 pub mod bodies;
 pub mod events;
+pub mod history;
 pub mod playback;
 pub mod plugins;
 #[cfg(test)]
@@ -14,6 +15,7 @@ pub mod world;
 
 pub use bodies::Bodies;
 pub use events::{Event, EventKind, Log, Party};
+pub use history::History;
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, Sims, ThingSim, ThingState, state, state_mut};
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};

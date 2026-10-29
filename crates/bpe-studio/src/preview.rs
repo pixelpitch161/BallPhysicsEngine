@@ -73,6 +73,8 @@ pub struct Outcome {
     pub drag_started: bool,
     /// The preview was clicked while playing.
     pub clicked: bool,
+    /// What is wrong with a shader module the picture skipped, when one is.
+    pub shader_problem: Option<String>,
 }
 
 /// Converts between world pixels (origin at the video centre, y down) and screen points.
@@ -156,6 +158,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.renderer.render(device, &render_state.queue, &preview.frame);
         preview.drawn = Some(drawn);
     }
+    outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
