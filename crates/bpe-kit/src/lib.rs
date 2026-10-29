@@ -2,6 +2,7 @@
 //! its settings, its simulation, its drawing and its sound side by side.
 
 pub mod modules;
+pub mod rng;
 pub mod scenes;
 #[cfg(test)]
 pub mod testing;
