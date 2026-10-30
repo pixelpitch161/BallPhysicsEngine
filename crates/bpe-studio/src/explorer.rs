@@ -68,7 +68,7 @@ pub enum Outcome {
     Nothing,
     /// "Make a batch of these…": render many seeds around `base`, each `amount` away.
     Batch {
-        base: Scene,
+        base: Box<Scene>,
         amount: f32,
     },
 }
@@ -352,7 +352,7 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio, state: Option<&RenderState
         }
         Some(Request::Batch) => {
             let ex = &studio.panels.explorer;
-            return Outcome::Batch { base: ex.base.clone(), amount: ex.amount };
+            return Outcome::Batch { base: Box::new(ex.base.clone()), amount: ex.amount };
         }
         None => {}
     }

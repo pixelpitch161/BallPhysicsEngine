@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::FRAC_PI_4;
 
 use bpe_core::{ModuleGraph, MusicKey, Params, Settings, SlotId, ThingId};
-use bpe_mix::{ChordClock, MixCx, ModuleMix, Note, SAMPLE_RATE, candidates, mix64, voicing};
+use bpe_mix::{ChordClock, MixCx, ModuleMix, Note, NoteInstrument, SAMPLE_RATE, candidates, mix64, voicing};
 use bpe_runtime::{Event, EventKind, Party};
 use bpe_vm::{Ball, Host, Program, Val, Vm};
 
@@ -23,8 +23,6 @@ struct Played {
     velocity: f32,
     volume: f32,
     pan: f32,
-    decay: f32,
-    brightness: f32,
     /// The notes it could have picked from, for a graph asking for a chord note.
     candidates: Vec<u8>,
 }
@@ -105,16 +103,7 @@ fn native(s: &NoteSound, picker: &mut Picker, h: &Heard, cx: &MixCx) -> Played {
     if play {
         picker.arp += 1;
     }
-    Played {
-        play,
-        keys,
-        velocity,
-        volume: s.volume,
-        pan: cx.pan_of(h.event, s.stereo_width),
-        decay: s.decay,
-        brightness: s.brightness,
-        candidates,
-    }
+    Played { play, keys, velocity, volume: s.volume, pan: cx.pan_of(h.event, s.stereo_width), candidates }
 }
 
 fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
@@ -122,13 +111,12 @@ fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
     let angle = (p.pan + 1.0) * FRAC_PI_4;
     out.extend(p.keys.iter().map(|&key| Note {
         frame,
-        instrument: s.instrument,
+        instrument: NoteInstrument::Library(s.instrument.0),
         key,
         velocity: p.velocity,
         left: gain * angle.cos(),
         right: gain * angle.sin(),
-        decay: p.decay,
-        brightness: p.brightness,
+        channel: 0,
     }));
 }
 
@@ -299,8 +287,6 @@ impl ModuleMix for NoteSoundMix {
                     velocity: o.number(2, n.velocity).clamp(0.0, 1.0),
                     volume: o.number(3, n.volume).clamp(-80.0, 24.0),
                     pan: o.number(4, n.pan).clamp(-1.0, 1.0),
-                    decay: o.number(5, n.decay).clamp(0.01, 30.0),
-                    brightness: o.number(6, n.brightness).clamp(0.0, 1.0),
                     candidates: n.candidates.clone(),
                 })
             },
@@ -333,9 +319,10 @@ mod tests {
         // The arena's inherited sound only speaks for its own hits, so a second sound that plays
         // when it is hit adds a note.
         let m = scene.add_module(&kit.registry, "sound.notes", "Wall sound").unwrap();
+        let marimba = scene.add_instrument(crate::built_in_instrument(bpe_mix::Instrument::Marimba));
         let wall = &mut scene.library.modules.get_mut(&m).unwrap().params;
         wall.set("plays_when", Value::Choice("being_hit".into()));
-        wall.set("instrument", Value::Choice("marimba".into()));
+        wall.set("instrument", Value::Int(marimba.0 as i64));
         scene.link(&kit.registry, ThingId(1), SlotId::Sound, m).unwrap();
         let resolved = resolve(&scene, &kit.registry);
         let both = mix_scene(&scene, &resolved, &log, &kit);
@@ -438,6 +425,9 @@ mod tests {
             half_height: 960.0,
             off_shot_fade: 0.0,
             tags: Default::default(),
+            instruments: Default::default(),
+            scene_instrument: None,
+            macros: Default::default(),
         }
     }
 

@@ -3,10 +3,11 @@
 
 use bpe_core::{Owner, Resolved, Scene, Settings, SlotId, ThingId};
 use bpe_kit::{Kit, SceneSettings, TimeWarp};
+use bpe_mix::ChannelCache;
 use bpe_runtime::{EventKind, Log, Sims, World, fingerprint};
 use eframe::egui;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long after the last sound-changing edit the mix starts.
@@ -23,6 +24,9 @@ pub struct Mixed {
     pub beats: Vec<f32>,
     /// The beat sync's time warp the video plays through.
     pub warp: TimeWarp,
+    /// Plain sentences about sounds that couldn't play: a patch that doesn't compile, a voice
+    /// that made a bad sample, a sample file that can't be read.
+    pub problems: Vec<String>,
 }
 
 pub struct SoundJob {
@@ -37,6 +41,9 @@ pub struct SoundJob {
     pub hits: Vec<f32>,
     /// The beats of the last finished mix, in video seconds.
     pub beats: Vec<f32>,
+    /// Each channel's last render, shared by the mixes one after another, so an edit to one
+    /// sound re-renders only its channel.
+    channels: Arc<Mutex<ChannelCache>>,
 }
 
 impl Default for SoundJob {
@@ -51,6 +58,7 @@ impl Default for SoundJob {
             receiver,
             hits: Vec::new(),
             beats: Vec::new(),
+            channels: Default::default(),
         }
     }
 }
@@ -93,10 +101,19 @@ impl SoundJob {
             self.dirty_since = None;
             self.running = true;
             self.generation += 1;
-            let (generation, scene, resolved, kit, sender, ctx) =
-                (self.generation, scene.clone(), resolved.clone(), kit.clone(), self.sender.clone(), ctx.clone());
+            let (generation, scene, resolved, kit, sender, ctx, channels) = (
+                self.generation,
+                scene.clone(),
+                resolved.clone(),
+                kit.clone(),
+                self.sender.clone(),
+                ctx.clone(),
+                self.channels.clone(),
+            );
             std::thread::spawn(move || {
-                let mut mixed = mix(&scene, &resolved, &kit);
+                // One mix runs at a time, so the lock is never waited on.
+                let mut cache = channels.lock().unwrap_or_else(|e| e.into_inner());
+                let mut mixed = mix(&scene, &resolved, &kit, &mut cache);
                 mixed.generation = generation;
                 let _ = sender.send(mixed);
                 ctx.request_repaint();
@@ -110,7 +127,7 @@ impl SoundJob {
 
 /// Runs the whole scene and mixes it: the track, when every hit and beat happens in the video,
 /// and the time warp the video plays through.
-fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Mixed {
+fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) -> Mixed {
     let settings =
         resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     let mut world = World::build(scene, resolved, &kit.sims);
@@ -125,8 +142,8 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Mixed {
         .map(|e| warp.video_time(e.time(rate)) as f32)
         .collect();
     let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
-    let track = bpe_kit::mix_scene(scene, resolved, &log, kit).samples;
-    Mixed { generation: 0, track: Arc::new(track), hits, beats, warp }
+    let mixed = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, cache);
+    Mixed { generation: 0, track: Arc::new(mixed.samples), hits, beats, warp, problems: mixed.problems }
 }
 
 /// Everything the soundtrack depends on: the physics, every Sound module in use, the root's
@@ -159,6 +176,17 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
         ));
     }
     mix(&format!("{:?}", scene.library.progressions));
+    // An instrument's name and where its blocks sit don't sound.
+    for (id, i) in &scene.library.instruments {
+        let source = match &i.source {
+            bpe_core::InstrumentSource::Patch { graph } => bpe_synth::sound_key(graph),
+            built_in => format!("{built_in:?}"),
+        };
+        mix(&format!("{id:?} {source} {:?}", i.voices));
+    }
+    for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.macros.is_empty()) {
+        mix(&format!("{id:?} {:?}", m.macros));
+    }
     let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
         (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
         (Owner::Thing(_), None) => false,
@@ -176,7 +204,7 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Address, ModuleId, Owner, ThingId, Value, resolve};
+    use bpe_core::{Address, ModuleId, Owner, SettingValue, ThingId, Value, resolve};
 
     fn module_named(scene: &bpe_core::Scene, name: &str) -> ModuleId {
         scene.library.modules.values().find(|m| m.name == name).map(|m| m.id).expect(name)
@@ -191,6 +219,31 @@ mod tests {
         let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
         scene.set_at(&kit.registry, &glow, Value::Number(1.0)).unwrap();
         assert_eq!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), before);
+    }
+
+    #[test]
+    fn moving_a_patch_block_does_not_change_the_sound_fingerprint() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let id = scene.add_instrument(bpe_core::Instrument {
+            name: "Patch".into(),
+            source: bpe_core::InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
+            voices: Default::default(),
+        });
+        let print = |scene: &bpe_core::Scene| sound_fingerprint(scene, &resolve(scene, &kit.registry), &kit.sims);
+        let before = print(&scene);
+        let mut i = scene.library.instruments[&id].clone();
+        if let bpe_core::InstrumentSource::Patch { graph } = &mut i.source {
+            graph.nodes[0].pos = [900.0, 900.0];
+        }
+        i.name = "Renamed".into();
+        scene.set_instrument(id, i.clone()).unwrap();
+        assert_eq!(print(&scene), before, "where blocks sit and what it's called don't sound");
+        if let bpe_core::InstrumentSource::Patch { graph } = &mut i.source {
+            graph.links.clear();
+        }
+        scene.set_instrument(id, i).unwrap();
+        assert_ne!(print(&scene), before, "unwiring does");
     }
 
     #[test]
@@ -211,7 +264,45 @@ mod tests {
         let (&id, _) = scene.library.progressions.iter().next().unwrap();
         let am = bpe_core::Chord::new(9, bpe_core::Quality::Minor, bpe_core::Extension::Triad, 4);
         scene.set_progression(id, bpe_core::Progression { chords: vec![am], ..Default::default() }).unwrap();
-        assert_ne!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), moved);
+        let chords = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        assert_ne!(chords, moved);
+        // And so do the instrument and a module's own macro values.
+        let (&pluck, i) = scene.library.instruments.iter().next().unwrap();
+        let mut voices = i.voices;
+        voices.limit = 4;
+        scene.set_instrument(pluck, bpe_core::Instrument { voices, ..i.clone() }).unwrap();
+        let renamed = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        assert_ne!(renamed, chords);
+        scene.set_macro(sound, "1.cutoff", Some(400.0)).unwrap();
+        assert_ne!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), renamed);
+    }
+
+    #[test]
+    fn a_broken_patch_says_why_in_the_mix() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let mut graph = bpe_synth::blank_patch();
+        graph.nodes.retain(|n| n.kind != "voice_out");
+        let id = scene.add_instrument(bpe_core::Instrument {
+            name: "Broken".into(),
+            source: bpe_core::InstrumentSource::Patch { graph },
+            voices: Default::default(),
+        });
+        let sound = module_named(&scene, "Default sound");
+        scene
+            .library
+            .modules
+            .get_mut(&sound)
+            .unwrap()
+            .params
+            .set("instrument", bpe_core::InstrumentRef(Some(id)).to_value());
+        let resolved = resolve(&scene, &kit.registry);
+        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
+        assert!(
+            mixed.problems.iter().any(|p| p.starts_with("Broken: the patch doesn't compile")),
+            "{:?}",
+            mixed.problems
+        );
     }
 
     #[test]
@@ -219,7 +310,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit);
+        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
         let duration = SceneSettings::default().duration;
         assert_eq!(mixed.track.len(), (duration * bpe_mix::SAMPLE_RATE as f32) as usize * 2);
         assert!(!mixed.hits.is_empty());
@@ -232,7 +323,7 @@ mod tests {
         scene.set_at(&kit.registry, &bpm, Value::Number(120.0)).unwrap();
         scene.set_at(&kit.registry, &sync, Value::Choice("warp".into())).unwrap();
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit);
+        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
         assert_eq!(mixed.beats.len(), 42);
         assert!(!mixed.warp.is_identity());
     }

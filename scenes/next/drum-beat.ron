@@ -120,6 +120,9 @@
                 name: "Default sound",
                 slot: Sound,
                 kind: "sound.notes",
+                params: {
+                    "instrument": Int(0),
+                },
             ),
             4: (
                 id: 4,
@@ -146,7 +149,7 @@
                 slot: Sound,
                 kind: "sound.melody",
                 params: {
-                    "instrument": Choice("marimba"),
+                    "instrument": Int(1),
                     "volume": Number(-2.0),
                 },
             ),
@@ -187,8 +190,205 @@
                 ],
             ),
         },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+            1: (
+                name: "Warm pad",
+                source: Patch(
+                    graph: (
+                        name: "Warm pad",
+                        nodes: [
+                            (
+                                id: 1,
+                                kind: "osc",
+                                pos: (0.0, 0.0),
+                                params: {
+                                    "cents": Number(0.0),
+                                    "detune": Number(12.0),
+                                    "fm": Number(0.0),
+                                    "phase": Choice("note"),
+                                    "semitones": Number(0.0),
+                                    "spread": Number(0.9),
+                                    "unison": Number(4.0),
+                                    "wave": Choice("saw"),
+                                    "width": Number(0.5),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 2,
+                                kind: "osc",
+                                pos: (200.0, 0.0),
+                                params: {
+                                    "cents": Number(0.0),
+                                    "detune": Number(20.0),
+                                    "fm": Number(0.0),
+                                    "phase": Choice("note"),
+                                    "semitones": Number(-12.0),
+                                    "spread": Number(0.5),
+                                    "unison": Number(1.0),
+                                    "wave": Choice("square"),
+                                    "width": Number(0.5),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 3,
+                                kind: "mix",
+                                pos: (400.0, 0.0),
+                                params: {
+                                    "level1": Number(1.0),
+                                    "level2": Number(0.4),
+                                    "level3": Number(1.0),
+                                    "level4": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 4,
+                                kind: "ladder",
+                                pos: (600.0, 0.0),
+                                params: {
+                                    "cutoff": Number(1200.0),
+                                    "drive": Number(0.0),
+                                    "key_track": Number(0.0),
+                                    "resonance": Number(0.2),
+                                },
+                                enabled: true,
+                                exposed: [
+                                    "cutoff",
+                                ],
+                            ),
+                            (
+                                id: 5,
+                                kind: "lfo",
+                                pos: (800.0, 0.0),
+                                params: {
+                                    "phase": Number(0.0),
+                                    "rate": Number(0.3),
+                                    "retrigger": Bool(true),
+                                    "sync": Choice("off"),
+                                    "wave": Choice("sine"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 6,
+                                kind: "scale",
+                                pos: (1000.0, 0.0),
+                                params: {
+                                    "offset": Number(0.0),
+                                    "scale": Number(0.5),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 7,
+                                kind: "adsr",
+                                pos: (1200.0, 0.0),
+                                params: {
+                                    "attack": Number(0.6),
+                                    "curve": Number(0.0),
+                                    "decay": Number(1.0),
+                                    "release": Number(1.5),
+                                    "sustain": Number(0.8),
+                                },
+                                enabled: true,
+                                exposed: [
+                                    "attack",
+                                    "release",
+                                ],
+                            ),
+                            (
+                                id: 8,
+                                kind: "amp",
+                                pos: (1400.0, 0.0),
+                                params: {
+                                    "gain": Number(-6.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 9,
+                                kind: "voice_out",
+                                pos: (1600.0, 0.0),
+                                params: {},
+                                enabled: true,
+                                exposed: [],
+                            ),
+                        ],
+                        links: [
+                            (
+                                from: (1, 0),
+                                to: (3, 0),
+                            ),
+                            (
+                                from: (2, 0),
+                                to: (3, 1),
+                            ),
+                            (
+                                from: (3, 0),
+                                to: (4, 0),
+                            ),
+                            (
+                                from: (5, 0),
+                                to: (6, 0),
+                            ),
+                            (
+                                from: (6, 0),
+                                to: (4, 1),
+                            ),
+                            (
+                                from: (4, 0),
+                                to: (8, 0),
+                            ),
+                            (
+                                from: (7, 0),
+                                to: (8, 1),
+                            ),
+                            (
+                                from: (8, 0),
+                                to: (9, 0),
+                            ),
+                        ],
+                        notes: [],
+                        enabled: true,
+                    ),
+                ),
+                voices: (
+                    note_length: Beats(2.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
     ),
     next_thing: 4,
     next_module: 7,
     next_progression: 1,
+    next_instrument: 2,
 )

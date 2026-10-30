@@ -439,6 +439,9 @@ impl Studio {
         }
         if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit) {
             self.warp = mixed.warp;
+            if !mixed.problems.is_empty() {
+                self.status = format!("Sound: {}", mixed.problems.join(" · "));
+            }
             if let Some(audio) = &self.audio {
                 audio.set_track(mixed.track);
                 if self.playing {
@@ -828,7 +831,7 @@ impl eframe::App for Studio {
             .show(ui, |ui| {
                 // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
                 ui.set_min_width(ui.available_width());
-                self.panels.inspector.nodes_open = self.panels.nodes.open;
+                self.panels.inspector.nodes_open = self.panels.nodes.slot_open();
                 let time = self.sim_time();
                 inspector::show(
                     ui,
@@ -847,6 +850,9 @@ impl eframe::App for Studio {
         }
         if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
             self.panels.nodes.open_at(thing, slot);
+        }
+        if let Some(id) = self.panels.inspector.patch_request.take() {
+            self.panels.nodes.open_patch(id);
         }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.

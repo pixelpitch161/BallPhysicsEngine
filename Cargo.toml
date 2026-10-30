@@ -23,6 +23,7 @@ bpe-mix = { path = "crates/bpe-mix" }
 bpe-kit = { path = "crates/bpe-kit" }
 bpe-vm = { path = "crates/bpe-vm" }
 bpe-cli = { path = "crates/bpe-cli" }
+bpe-synth = { path = "crates/bpe-synth" }
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
 glam = { version = "0.34", features = ["serde", "bytemuck"] }

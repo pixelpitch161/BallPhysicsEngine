@@ -51,15 +51,8 @@ const SOUND_IN: &[(&str, PinType)] = &[
     ("y", Number),
     ("hits", Number),
 ];
-const SOUND_OUT: &[(&str, PinType)] = &[
-    ("play", Bool),
-    ("key", Number),
-    ("velocity", Number),
-    ("volume", Number),
-    ("pan", Number),
-    ("decay", Number),
-    ("brightness", Number),
-];
+const SOUND_OUT: &[(&str, PinType)] =
+    &[("play", Bool), ("key", Number), ("velocity", Number), ("volume", Number), ("pan", Number)];
 
 impl Role {
     /// The role a slot's graphs have, if its graphs run on the CPU.

@@ -142,6 +142,8 @@ pub struct Scene {
     pub next_module: u32,
     /// The id the next added chord progression gets.
     pub next_progression: u32,
+    /// The id the next added instrument gets.
+    pub next_instrument: u32,
     /// Keyframes, by the setting they move.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<Address, Track>,
@@ -164,6 +166,7 @@ impl Default for Scene {
             next_thing: 1,
             next_module: 0,
             next_progression: 0,
+            next_instrument: 0,
             tracks: BTreeMap::new(),
             pulses: BTreeMap::new(),
             locks: BTreeSet::new(),

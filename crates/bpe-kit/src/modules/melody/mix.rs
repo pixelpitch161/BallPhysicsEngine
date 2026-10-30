@@ -3,7 +3,7 @@
 use std::f32::consts::FRAC_PI_4;
 
 use bpe_core::{Params, Settings, ThingId};
-use bpe_mix::{MixCx, ModuleMix, Note, SAMPLE_RATE};
+use bpe_mix::{MixCx, ModuleMix, Note, NoteInstrument, SAMPLE_RATE};
 use bpe_runtime::{Event, EventKind};
 
 use super::{MelodySound, load_tune};
@@ -57,13 +57,12 @@ impl ModuleMix for MelodySoundMix {
             for &key in keys {
                 out.push(Note {
                     frame,
-                    instrument: s.instrument,
+                    instrument: NoteInstrument::Library(s.instrument.0),
                     key,
                     velocity,
                     left: gain * share * angle.cos(),
                     right: gain * share * angle.sin(),
-                    decay: 0.9,
-                    brightness: 0.5,
+                    channel: 0,
                 });
             }
         }
@@ -125,7 +124,7 @@ mod tests {
         assert_eq!(keys_at(4_800), steps[0].keys);
         assert_eq!(keys_at(9_600), steps[1].keys);
         assert_eq!(keys_at(4_800 * (steps.len() + 1)), steps[0].keys, "the tune starts over");
-        assert!(notes.iter().all(|n| n.instrument == bpe_mix::Instrument::ElectricPiano));
+        assert!(notes.iter().all(|n| n.instrument == bpe_mix::NoteInstrument::Library(None)));
         // A quiet hit plays nothing but still counts as a step? No: it is skipped, yet the
         // following hit keeps its place in the tune, so a melody never drifts with volume.
         let mut quiet = Log::default();

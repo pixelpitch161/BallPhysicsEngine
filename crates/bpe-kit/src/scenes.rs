@@ -6,8 +6,9 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Color, Ease, ModuleGraph, ModuleId, ModuleKind, MusicKey, Owner, Params, Progression,
-    ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId, Target, ThingId, Value,
+    Address, Attach, Choice, Color, Ease, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId, ModuleKind, MusicKey,
+    Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId, Target,
+    ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -129,7 +130,7 @@ pub fn long_drop(reg: &Registry) -> Scene {
     );
     b.tag(pegs, "pegs");
     let peg_sound = NoteSound {
-        instrument: Instrument::Marimba,
+        instrument: b.built_in(Instrument::Marimba),
         plays_when: PlaysWhen::BeingHit,
         order: Order::Speed,
         ..NoteSound::default()
@@ -204,6 +205,35 @@ impl<'a> Builder<'a> {
         let mut s = SceneSettings::from_params(&root.params);
         f(&mut s);
         root.params = s.to_params();
+    }
+
+    /// A library instrument playing the built-in `which` with its usual knobs, added the first
+    /// time it is asked for.
+    fn built_in(&mut self, which: Instrument) -> InstrumentRef {
+        let found = self
+            .scene
+            .library
+            .instruments
+            .iter()
+            .find(|(_, i)| matches!(&i.source, InstrumentSource::BuiltIn { which: w, .. } if w == which.name()));
+        if let Some((&id, _)) = found {
+            return InstrumentRef(Some(id));
+        }
+        InstrumentRef(Some(self.scene.add_instrument(crate::built_in_instrument(which))))
+    }
+
+    /// The library's copy of the starter patch `name`, added the first time it's asked for.
+    fn starter(&mut self, name: &str) -> InstrumentRef {
+        if let Some((&id, _)) = self.scene.library.instruments.iter().find(|(_, i)| i.name == name) {
+            return InstrumentRef(Some(id));
+        }
+        let (name, graph, voices) =
+            bpe_synth::starters().into_iter().find(|(n, ..)| *n == name).expect("a starter patch of that name");
+        InstrumentRef(Some(self.scene.add_instrument(bpe_core::Instrument {
+            name: name.into(),
+            source: InstrumentSource::Patch { graph },
+            voices,
+        })))
     }
 
     /// Scene defaults' chords become the preset `name`, in the key on `root`.
@@ -475,7 +505,8 @@ fn shrinking_ring(reg: &Registry) -> Scene {
         s.grow = 1.5;
         s.max_size = 90.0;
     });
-    b.sound(|s| s.instrument = Instrument::Marimba);
+    let marimba = b.built_in(Instrument::Marimba);
+    b.sound(|s| s.instrument = marimba);
     let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
     b.own_module(ARENA, "bounce.basic", "Lively wall", lively);
     b.scene
@@ -533,7 +564,8 @@ fn rope_bridge(reg: &Registry) -> Scene {
     });
     let look = ClassicLook { color: Color::rgb(0xe8, 0xe8, 0xe8), ..ClassicLook::default() };
     b.own_module(rope, "look.classic", "Rope look", look.to_params());
-    b.sound(|s| s.instrument = Instrument::Marimba);
+    let marimba = b.built_in(Instrument::Marimba);
+    b.sound(|s| s.instrument = marimba);
     b.scene
 }
 
@@ -641,7 +673,7 @@ fn drum_beat(reg: &Registry) -> Scene {
     b.own_module(ThingId::ROOT, "sound.drums", "Drum machine", drums.to_params());
     let melody = MelodySound {
         file: "builtin:twinkle".into(),
-        instrument: Instrument::Marimba,
+        instrument: b.starter("Warm pad"),
         volume: -2.0,
         ..MelodySound::default()
     };
@@ -681,7 +713,7 @@ fn peg_board(reg: &Registry) -> Scene {
     );
     b.tag(pegs, "pegs");
     let peg_sound = NoteSound {
-        instrument: Instrument::Marimba,
+        instrument: b.built_in(Instrument::Marimba),
         plays_when: PlaysWhen::BeingHit,
         order: Order::Speed,
         ..NoteSound::default()
@@ -828,9 +860,10 @@ fn pitch_climb(reg: &Registry) -> Scene {
         s.special_target = Target::Tag("soft".into());
         s.special_bounciness = 0.3;
     });
+    let bell = b.starter("Glass FM bell");
     b.sound(|s| {
         s.order = Order::Hits;
-        s.instrument = Instrument::Marimba;
+        s.instrument = bell;
     });
     b.chords("Dreamy loop", 9);
     b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
@@ -946,7 +979,8 @@ fn wind_and_melody(reg: &Registry) -> Scene {
         s.radius = 16.0;
         s.velocity = Vec2::new(0.0, -200.0);
     });
-    b.sound(|s| s.instrument = Instrument::Marimba);
+    let marimba = b.built_in(Instrument::Marimba);
+    b.sound(|s| s.instrument = marimba);
     b.custom(SlotId::Motion, |g| {
         let c = catalog(Role::Motion);
         let input = block(g, "motion.in");
