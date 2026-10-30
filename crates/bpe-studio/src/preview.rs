@@ -2,6 +2,7 @@
 //! rider by its offset), aim balls by their arrow tip, and resize the arena by its edge.
 
 use crate::app::{CATCH_UP_BUDGET, Studio};
+use crate::grid::{snap_length, snap_point};
 use crate::theme;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame_at, wgpu};
@@ -154,6 +155,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
+    studio.grid.draw(&ui.painter_at(rect), rect, rect.center(), rect.width() / video_width as f32);
 
     if studio.playing {
         preview.drag = None;
@@ -182,7 +184,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drag = None;
     }
     if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
-        apply_drag(&mut studio.scene, studio.playback.world(), drag, view.to_world(pos));
+        let step = studio.grid.step(ui.input(|i| i.modifiers.alt));
+        apply_drag(&mut studio.scene, studio.playback.world(), drag, view.to_world(pos), step);
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
         && let Some(handle) = hovered
@@ -195,7 +198,12 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
-    draw_hint(ui, rect, "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize");
+    let hint = if studio.grid.snap {
+        "Drags snap to the grid · hold Alt to place freely"
+    } else {
+        "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize"
+    };
+    draw_hint(ui, rect, hint);
     studio.panels.preview = Some(preview);
     outcome
 }
@@ -366,14 +374,17 @@ fn spot_only(world: &World, id: ThingId) -> bool {
 
 /// Moves what `drag` holds to the pointer at `pointer`, in world pixels. A rider moves by its
 /// offset from the parent it rides, so it stays a rider; its own position is left alone.
-pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2) {
+/// Moves, aims or resizes by a drag to `pointer`. With a grid `step`, the thing's middle, the
+/// arrow tip and the arena's size land on the grid.
+pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2, step: Option<f32>) {
     let id = drag.handle.thing();
+    let place = snap_point(pointer - drag.offset, step);
     if let Handle::Body(_) = drag.handle
         && let Some(thing) = scene.things.get(&id)
         && let (Some(parent), Attach::Ride { turn_with_parent, item, .. }) = (thing.parent, thing.attach)
     {
         let anchor = parent_pose(scene, world, parent, item);
-        let mut offset = pointer - drag.offset - anchor.position;
+        let mut offset = place - anchor.position;
         if turn_with_parent {
             offset = Vec2::from_angle(-anchor.angle).rotate(offset);
         }
@@ -383,9 +394,10 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2) {
     }
     let Some(thing) = scene.things.get_mut(&id) else { return };
     match drag.handle {
-        Handle::Body(_) => thing.transform.position = (pointer - drag.offset).round(),
+        Handle::Body(_) => thing.transform.position = place.round(),
         Handle::Aim(_) => {
-            let velocity = ((pointer - thing.transform.position) / ARROW_SECONDS).round();
+            let tip = snap_point(pointer, step);
+            let velocity = ((tip - thing.transform.position) / ARROW_SECONDS).round();
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
         Handle::Edge(_) => {
@@ -394,11 +406,14 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2) {
             match settings.shape {
                 ArenaShape::Box | ArenaShape::Capsule => {
                     let local = Vec2::from_angle(-thing.transform.rotation).rotate(offset);
-                    thing.params.set("width", Value::Number((local.x.abs() * 2.0).round().max(20.0) as f64));
-                    thing.params.set("height", Value::Number((local.y.abs() * 2.0).round().max(20.0) as f64));
+                    let (half_width, half_height) =
+                        (snap_length(local.x.abs(), step), snap_length(local.y.abs(), step));
+                    thing.params.set("width", Value::Number((half_width * 2.0).round().max(20.0) as f64));
+                    thing.params.set("height", Value::Number((half_height * 2.0).round().max(20.0) as f64));
                 }
                 ArenaShape::Circle | ArenaShape::Polygon => {
-                    thing.params.set("radius", Value::Number(offset.length().round().max(20.0) as f64));
+                    let radius = snap_length(offset.length(), step);
+                    thing.params.set("radius", Value::Number(radius.round().max(20.0) as f64));
                 }
             }
         }
@@ -666,6 +681,7 @@ mod tests {
             studio.playback.world(),
             Drag { handle: Handle::Body(soft), offset: Vec2::ZERO },
             Vec2::new(10.0, 20.0),
+            None,
         );
         assert_eq!(studio.scene.things[&soft].transform.position, Vec2::new(10.0, 20.0));
     }
@@ -679,6 +695,7 @@ mod tests {
             &world,
             Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
             Vec2::new(50.0, 60.0),
+            None,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].transform.position, Vec2::new(50.0, 60.0));
         apply_drag(
@@ -686,6 +703,7 @@ mod tests {
             &world,
             Drag { handle: Handle::Aim(ThingId(2)), offset: Vec2::ZERO },
             Vec2::new(150.0, 60.0),
+            None,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([400.0, 0.0])));
         apply_drag(
@@ -693,6 +711,7 @@ mod tests {
             &world,
             Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
             Vec2::new(300.0, 400.0),
+            None,
         );
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(500.0)));
     }
@@ -714,6 +733,7 @@ mod tests {
             &world,
             Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
             Vec2::new(30.0, -100.0),
+            None,
         );
         let thing = &studio.scene.things[&ThingId(2)];
         assert!(
@@ -742,6 +762,7 @@ mod tests {
             &world,
             Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
             Vec2::new(-300.0, 400.0),
+            None,
         );
         let params = &studio.scene.things[&ThingId(1)].params;
         assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
@@ -766,7 +787,78 @@ mod tests {
             studio.playback.world(),
             Drag { handle: Handle::Body(field), offset: Vec2::ZERO },
             Vec2::new(-100.0, 50.0),
+            None,
         );
         assert_eq!(studio.scene.things[&field].transform.position, Vec2::new(-100.0, 50.0));
+    }
+
+    #[test]
+    fn with_a_grid_drags_land_on_it() {
+        let mut studio = Studio::headless();
+        let world = studio.playback.world().clone();
+        let step = Some(60.0);
+        // Grabbed 7 px off the middle: the middle still lands on a grid point.
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::new(7.0, -3.0) },
+            Vec2::new(85.0, 50.0),
+            step,
+        );
+        assert_eq!(studio.scene.things[&ThingId(2)].transform.position, Vec2::new(60.0, 60.0));
+        // The arrow tip lands on a grid point: 60 px right of the ball over a quarter second.
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Aim(ThingId(2)), offset: Vec2::ZERO },
+            Vec2::new(131.0, 52.0),
+            step,
+        );
+        assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([240.0, 0.0])));
+        // A circle's radius grows in whole steps.
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
+            Vec2::new(0.0, 455.0),
+            step,
+        );
+        assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(480.0)));
+        // A centred box's edges land on grid lines.
+        studio.scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
+            Vec2::new(-310.0, 395.0),
+            step,
+        );
+        let params = &studio.scene.things[&ThingId(1)].params;
+        assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
+        assert_eq!(params.get("height"), Some(&Value::Number(840.0)));
+    }
+
+    #[test]
+    fn a_snapped_rider_lands_on_the_grid_in_the_world() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = Vec2::new(15.0, 0.0);
+        let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: false, item: None };
+        studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
+        studio.after_edit(before);
+        let world = studio.playback.world().clone();
+        apply_drag(
+            &mut studio.scene,
+            &world,
+            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
+            Vec2::new(70.0, -110.0),
+            Some(60.0),
+        );
+        let thing = &studio.scene.things[&ThingId(2)];
+        assert!(
+            matches!(thing.attach, Attach::Ride { offset, .. } if offset == Vec2::new(45.0, -120.0)),
+            "the world spot (60, -120) less the arena at (15, 0): {:?}",
+            thing.attach
+        );
     }
 }
