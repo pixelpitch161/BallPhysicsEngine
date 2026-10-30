@@ -319,11 +319,13 @@ pub fn mix_scene_cached(
     let settings = mix_settings(scene, resolved);
     let video_time = |t| warp.video_time(t);
     let mut track =
-        bpe_mix::mix_cached(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
+        bpe_mix::mix_premaster(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
     }
+    // The master runs once, over the notes and the song together.
+    track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
     track
 }
 

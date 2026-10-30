@@ -195,11 +195,19 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
             bpe_core::InstrumentSource::Patch { graph } => bpe_synth::sound_key(graph),
             built_in => format!("{built_in:?}"),
         };
-        mix(&format!("{id:?} {source} {:?}", i.voices));
+        mix(&format!("{id:?} {source} {:?} {}", i.voices, bpe_synth::sound_key(&i.fx)));
     }
     for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.macros.is_empty()) {
         mix(&format!("{id:?} {:?}", m.macros));
     }
+    // Effects, sends and buses: a bus's name doesn't sound.
+    for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.channel.is_default()) {
+        mix(&format!("{id:?} {} {:?}", bpe_synth::sound_key(&m.channel.inserts), m.channel.sends));
+    }
+    for b in &scene.library.buses {
+        mix(&format!("{:?} {} {}", b.id, b.volume, bpe_synth::sound_key(&b.fx)));
+    }
+    mix(&bpe_synth::sound_key(&scene.library.master_fx));
     let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
         (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
         (Owner::Thing(_), None) => false,
@@ -258,6 +266,33 @@ mod tests {
         }
         scene.set_instrument(id, i).unwrap();
         assert_ne!(print(&scene), before, "unwiring does");
+    }
+
+    #[test]
+    fn a_bus_edit_remixes() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let print = |scene: &Scene| {
+            let resolved = resolve(scene, &kit.registry);
+            sound_fingerprint(scene, &resolved, &kit.sims)
+        };
+        let before = print(&scene);
+        assert_eq!(before, print(&scene), "nothing changed");
+        scene.library.buses[0].volume = -6.0;
+        let bus = print(&scene);
+        assert_ne!(bus, before, "a bus volume");
+        scene.library.master_fx = bpe_synth::chain_graph(&[("width".into(), Default::default(), true)]);
+        let master = print(&scene);
+        assert_ne!(master, bus, "master effects");
+        let sound = *scene.library.modules.iter().find(|(_, m)| m.slot == SlotId::Sound).unwrap().0;
+        let id = scene.library.buses[0].id;
+        scene.library.modules.get_mut(&sound).unwrap().channel.sends.insert(id, -12.0);
+        let send = print(&scene);
+        assert_ne!(send, master, "a send");
+        let pluck = *scene.library.instruments.keys().next().unwrap();
+        scene.library.instruments.get_mut(&pluck).unwrap().fx =
+            bpe_synth::chain_graph(&[("chorus".into(), Default::default(), true)]);
+        assert_ne!(print(&scene), send, "instrument effects");
     }
 
     #[test]

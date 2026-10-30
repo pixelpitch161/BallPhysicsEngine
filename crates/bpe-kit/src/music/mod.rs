@@ -229,6 +229,35 @@ mod tests {
     }
 
     #[test]
+    fn a_scene_with_a_song_is_mastered_once() {
+        let path = temp_wav("mastered", 4.0, 48_000);
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
+        root.params.set("song", Value::Text(path.to_str().unwrap().into()));
+        root.params.set("duration", Value::Number(4.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(4.0, &kit.sims, &mut log);
+        let track = mix_scene(&scene, &resolved, &log, &kit);
+        let report = track.report.expect("mastered");
+        assert!((report.integrated + 14.0).abs() < 1.0, "{} LUFS", report.integrated);
+        assert!(report.true_peak <= -0.9, "{} dBTP", report.true_peak);
+        assert!(
+            (bpe_mix::integrated_lufs(&track.samples) - report.integrated).abs() < 0.1,
+            "the report is of the final mix"
+        );
+        // A lower ceiling holds over the song too: the master runs last.
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("ceiling", Value::Number(-3.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let track = mix_scene(&scene, &resolved, &log, &kit);
+        let measured = 20.0 * bpe_synth::blocks::true_peak(&track.samples).max(1e-9).log10();
+        assert!(measured <= -2.9, "the samples peak at {measured} dBTP");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn a_song_plays_under_the_mix_and_warp_follows_the_setting() {
         let path = temp_wav("mix", 3.0, 48_000);
         let kit = kit();

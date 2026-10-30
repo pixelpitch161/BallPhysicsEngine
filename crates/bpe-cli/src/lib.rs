@@ -276,6 +276,9 @@ fn export_with(
     for problem in &track.problems {
         eprintln!("sound: {problem}");
     }
+    if let Some(report) = &track.report {
+        eprintln!("Loudness {:.1} LUFS, true peak {:.1} dBTP", report.integrated, report.true_peak);
+    }
     track.write_wav(&wav.0)?;
     // Beat sync by time warp: each frame shows the moment of the run the warp puts there.
     let warp = bpe_kit::warp_for(scene, &resolved, &log);
