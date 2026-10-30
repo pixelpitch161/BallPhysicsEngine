@@ -68,6 +68,10 @@ pub(crate) type GroupKey = (u32, NoteInstrument);
 /// A compiled patch, how it plays notes, the notes it plays, and the inputs it reads.
 type PatchJob = (Program, VoiceSettings, Vec<PlayNote>, Uses);
 
+/// A fresh render going through its instrument's effects: the samples, the effects, whether
+/// they made bad samples, and the scene they read.
+type FxJob<'a> = (Vec<f32>, Option<&'a bpe_graph::Graph>, bool, Arc<SceneSignals>);
+
 /// The notes of one channel that share an instrument.
 struct Group<'a> {
     choice: InstrumentChoice,
@@ -334,7 +338,7 @@ pub(crate) fn render_with(
     debug_assert_eq!(fresh + fresh_before, fingerprints.len());
     // The instruments' own effects, over the fresh renders side by side.
     let cx = crate::buses::fx_ctx(settings);
-    let mut fx_jobs: Vec<(Vec<f32>, Option<&bpe_graph::Graph>, bool, Arc<SceneSignals>)> = rendered
+    let mut fx_jobs: Vec<FxJob> = rendered
         .iter_mut()
         .map(|(key, samples, _)| {
             (std::mem::take(samples), groups[key].fx.as_ref().map(|(_, g)| *g), false, signals(key.0))
