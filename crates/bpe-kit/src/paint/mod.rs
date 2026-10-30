@@ -11,7 +11,7 @@ use glam::Vec2;
 pub mod eval;
 pub mod gpu;
 pub use eval::{Inputs, beats_at, colour_at, hits_on, last_hit, last_hit_at, offset};
-pub use gpu::paint_gpu;
+pub use gpu::{background_gpu, paint_gpu};
 
 /// What the colours follow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]

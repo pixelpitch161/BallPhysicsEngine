@@ -537,6 +537,46 @@ pub fn blend_alpha(c: [f32; 4]) -> [f32; 4] {
     if c[3] == 0.0 && (c[0] > 0.0 || c[1] > 0.0 || c[2] > 0.0) { [c[0], c[1], c[2], -1.0] } else { c }
 }
 
+/// How the background pass paints: one gradient of the frame's atlas, its place measured on the
+/// screen or in the world (see `Frame::background_on_screen`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackgroundPaint {
+    /// The gradient's atlas row; `u32::MAX` paints black.
+    pub row: u32,
+    /// How the place runs: the direction in degrees, the span, and the centre xy.
+    pub place: [f32; 4],
+    /// Where along the gradient the paint starts, 0 to 1 (a Time or Beat paint gives its whole
+    /// place here).
+    pub t0: f32,
+    /// Gradients per second the place slides along.
+    pub scroll: f32,
+    /// 0 clamp, 1 repeat, 2 mirror.
+    pub repeat: f32,
+    /// 0 paints the colour at `t0` everywhere, 1 works the place out along the direction, 2
+    /// outward from the centre.
+    pub mode: f32,
+    /// 1 picks the nearest baked colour instead of blending neighbours.
+    pub steps: f32,
+    /// A plain two-colour blend (linear light) the shader mixes itself, exactly, instead of
+    /// reading the baked row, whose half floats are a hair off for very dark colours.
+    pub ends: Option<[[f32; 4]; 2]>,
+}
+
+impl Default for BackgroundPaint {
+    fn default() -> Self {
+        Self {
+            row: u32::MAX,
+            place: [90.0, 1920.0, 0.0, 0.0],
+            t0: 0.0,
+            scroll: 0.0,
+            repeat: 0.0,
+            mode: 0.0,
+            steps: 0.0,
+            ends: None,
+        }
+    }
+}
+
 /// Everything the renderer needs for one frame: the picture's globals and the instance lists.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -545,8 +585,8 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub time: f32,
-    pub background_top: [f32; 4],
-    pub background_bottom: [f32; 4],
+    /// The colours behind everything, painted by the background pass.
+    pub background: BackgroundPaint,
     pub bloom: f32,
     pub exposure: f32,
     pub shapes: Vec<ShapeInstance>,
@@ -568,10 +608,9 @@ pub struct Frame {
     pub gradients: GradientAtlas,
     /// What the camera shows: everything above is drawn through it.
     pub camera: CameraView,
-    /// The background gradient stays still on the screen; off, it is painted across the world
-    /// between `background_span`'s two heights.
+    /// The background's place is measured on the screen, still while the camera moves; off, it
+    /// is measured in the world and moves with the camera.
     pub background_on_screen: bool,
-    pub background_span: [f32; 2],
     /// Things stuck to the screen, drawn after the main lists with no camera. Its own camera,
     /// background and overlay are unused.
     pub overlay: Option<Box<Frame>>,
@@ -586,8 +625,7 @@ impl Default for Frame {
             width: 1080,
             height: 1920,
             time: 0.0,
-            background_top: [0.0, 0.0, 0.0, 1.0],
-            background_bottom: [0.0, 0.0, 0.0, 1.0],
+            background: BackgroundPaint::default(),
             bloom: 0.0,
             exposure: 1.0,
             shapes: Vec::new(),
@@ -605,7 +643,6 @@ impl Default for Frame {
             gradients: GradientAtlas::default(),
             camera: CameraView::default(),
             background_on_screen: true,
-            background_span: [-960.0, 960.0],
             overlay: None,
             video: (1080, 1920),
         }
@@ -628,6 +665,7 @@ impl Frame {
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
+        self.background = BackgroundPaint::default();
         self.camera = CameraView::default();
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();

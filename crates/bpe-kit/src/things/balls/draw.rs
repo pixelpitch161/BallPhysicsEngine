@@ -379,7 +379,7 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert!(frame.balls.iter().all(|b| b.paint == bpe_gfx::PaintGpu::default()));
-        assert!(frame.gradients.is_empty(), "nothing is baked for a plain look");
+        assert!(frame.gradients.len() == 1, "nothing is baked for a plain look");
 
         let m = ball_look(&scene, &kit);
         let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
@@ -389,11 +389,11 @@ mod tests {
         params.set("inside_spin", Value::Number(90.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
-        assert_eq!(frame.gradients.len(), 1, "the balls share one row");
+        assert_eq!(frame.gradients.len(), 2, "the balls share one row");
         let t0: Vec<f32> = frame.balls.iter().map(|b| b.paint.t0).collect();
         assert_eq!(t0, [0.0, 0.5, 1.0]);
         let paint = frame.balls[1].paint;
-        assert_eq!((paint.row, paint.pattern, paint.angle), (0.0, 2.0, 180.0));
+        assert_eq!((paint.row, paint.pattern, paint.angle), (1.0, 2.0, 180.0));
     }
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
         let ball = frame.looks[0];
         assert_eq!(ball.color2, RED.to_linear());
         assert_eq!(ball.outline_color, bpe_core::Gradient::even(&[BLUE, RED]).sample(0.5));
-        assert_eq!((ball.paint.row, ball.paint.pattern), (0.0, 1.0), "the fill's inside pattern");
+        assert_eq!((ball.paint.row, ball.paint.pattern), (1.0, 1.0), "the fill's inside pattern");
     }
 
     #[test]

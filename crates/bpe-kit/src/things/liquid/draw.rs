@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(points[0], [p.x, p.y, v.x, v.y], "each point's place and velocity");
         assert_eq!(layer.color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!((layer.follow, layer.paint), (0, bpe_gfx::PaintGpu::default()), "one colour bakes nothing");
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
         assert!((layer.radius - world.bodies[&me].radius[0]).abs() < 1e-5);
         assert_eq!((layer.clarity, layer.refraction, layer.highlight), (0.45, 0.5, 0.8));
         assert_eq!((layer.smoothing, layer.glow), (6.0, 0.1));
@@ -202,9 +202,9 @@ mod tests {
         };
         let frame = draw("place", "direction");
         let layer = &frame.liquids[0];
-        assert_eq!((layer.follow, layer.paint.row, layer.paint.t0), (1, 0.0, 1.0), "scrolled half a cycle a second");
+        assert_eq!((layer.follow, layer.paint.row, layer.paint.t0), (1, 1.0, 1.0), "scrolled half a cycle a second");
         assert_eq!(layer.paint_place, [90.0, 500.0, 0.0, 0.0]);
-        assert_eq!(frame.gradients.rows()[0][0], red.to_linear());
+        assert_eq!(frame.gradients.rows()[1][0], red.to_linear());
         assert_eq!(draw("place", "centre").liquids[0].follow, 2);
         let frame = draw("speed", "direction");
         assert_eq!((frame.liquids[0].follow, frame.liquids[0].paint_place[1]), (3, 500.0));
@@ -213,7 +213,7 @@ mod tests {
         let frame = draw("time", "direction");
         let layer = &frame.liquids[0];
         assert_eq!((layer.follow, layer.paint), (0, bpe_gfx::PaintGpu::default()));
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
         assert_eq!(layer.color, blue.to_linear());
     }
 

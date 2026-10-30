@@ -30,12 +30,14 @@ struct Params {
 struct Globals {
     // x, y: 2 / frame size, z: world size of one output pixel, w: time
     view: vec4<f32>,
-    bg_top: vec4<f32>,
-    bg_bottom: vec4<f32>,
+    // The background paint: atlas row, start, scroll, repeat.
+    bg_paint: vec4<f32>,
+    // The background place: direction, span, centre xy.
+    bg_place: vec4<f32>,
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y, z: world heights it spans
+    // x: background on screen, y: how its place runs, z: steps
     bg: vec4<f32>,
 };
 

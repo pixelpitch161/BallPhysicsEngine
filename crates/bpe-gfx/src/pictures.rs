@@ -149,7 +149,8 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
     assert!(outside[0] < 20, "dark past the margin: {outside:?}");
     assert!(ball[2] > 100 && ball[0] < 80, "the ball covers the streak: {ball:?}");
     // A covering streak hides the background instead of adding to it.
-    let mut covering = Frame { bloom: 0.0, background_top: [1.0; 4], background_bottom: [1.0; 4], ..Frame::default() };
+    let mut covering = Frame { bloom: 0.0, ..Frame::default() };
+    covering.background.row = covering.gradients.row(&bpe_core::Gradient::solid(bpe_core::Color::WHITE));
     push_streak(&mut covering.trails, &points, 24.0, 0.0, [0.0, 0.0, 0.0, 1.0], 1.0);
     let pixels = render_sized(&covering, W, H).unwrap();
     let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -20.0));

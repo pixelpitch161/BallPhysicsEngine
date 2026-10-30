@@ -102,7 +102,7 @@ mod tests {
         let middle = pegs[2].color;
         assert!(middle[0] > 0.05 && middle[2] > 0.05 && middle[1] < 1e-3, "{middle:?}: half way");
         assert!(pegs.iter().all(|s| s.paint.row == -1.0), "no inside pattern, so nothing is baked");
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
     }
 
     #[test]
@@ -154,9 +154,9 @@ mod tests {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &log, 5.0, &kit.draws, &mut frame);
         let pegs = &frame.shapes[1..];
-        assert!(pegs.iter().all(|s| s.paint.row == 0.0 && s.paint.pattern == crate::paint::gpu::PATH_PATTERN));
+        assert!(pegs.iter().all(|s| s.paint.row == 1.0 && s.paint.pattern == crate::paint::gpu::PATH_PATTERN));
         assert!(pegs.iter().all(|s| s.color == red), "the glow keeps the start colour");
-        assert_eq!(frame.gradients.len(), 1, "every peg shares one row");
+        assert_eq!(frame.gradients.len(), 2, "every peg shares one row");
         assert_eq!(frame.shapes[0].paint.row, -1.0, "the arena keeps its own plain look");
     }
 }

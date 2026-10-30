@@ -266,7 +266,7 @@ mod tests {
             "speed",
             bpe_core::Gradient { stops: bpe_core::Gradient::even(&[red, blue]).stops, ..Default::default() },
         );
-        assert!(frame.gradients.is_empty(), "nothing to bake");
+        assert!(frame.gradients.len() == 1, "nothing to bake");
         for (b, mark) in frame.bursts.iter().zip(frame.hits.iter().filter(|h| 4.0 - h.time < 0.6)) {
             assert_eq!(b.follow, 0);
             let t = (mark.speed / 1920.0).clamp(0.0, 1.0);
@@ -277,7 +277,7 @@ mod tests {
         // One colour over its life is that colour on the CPU, exactly.
         let frame = draw("life", bpe_core::Gradient::solid(green));
         assert_eq!((frame.bursts[0].follow, frame.bursts[0].color), (0, green.to_linear()));
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
     }
 
     #[test]

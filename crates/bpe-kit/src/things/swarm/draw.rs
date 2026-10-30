@@ -119,8 +119,8 @@ mod tests {
         assert_eq!((layer.seed, layer.release_seconds), (1, 0.0));
         // By speed, along the three default colours baked into one row.
         assert_eq!(layer.look.follow, 0);
-        assert_eq!(layer.look.paint.row, 0.0);
-        assert_eq!(frame.gradients.len(), 1);
+        assert_eq!(layer.look.paint.row, 1.0);
+        assert_eq!(frame.gradients.len(), 2);
         assert_eq!(layer.look.color, bpe_core::Color::rgb(0x20, 0x40, 0xff).to_linear());
         assert_eq!((layer.look.size, layer.look.brightness), (1.5, 0.25));
         assert_eq!(layer.motion, bpe_gfx::Flock::default());
@@ -156,11 +156,11 @@ mod tests {
         assert_eq!(frame.swarms[0].look.place, [90.0, 260.0, 10.0, 20.0]);
         let frame = draw("nearest_ball", two.clone());
         assert_eq!((follow(&frame), frame.swarms[0].look.color), (1, red.to_linear()));
-        assert!(frame.gradients.is_empty(), "the nearest ball paints with the ball's colour");
+        assert!(frame.gradients.len() == 1, "the nearest ball paints with the ball's colour");
         // One colour is every point's, exactly, with nothing baked.
         let frame = draw("speed", Gradient::solid(blue));
         assert_eq!((follow(&frame), frame.swarms[0].look.color), (5, blue.to_linear()));
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
     }
 
     #[test]

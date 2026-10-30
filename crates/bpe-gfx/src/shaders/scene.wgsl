@@ -4,14 +4,18 @@
 struct Globals {
     // x: 2 / video width, y: 2 / video height, z: world units per output pixel, w: time
     view: vec4<f32>,
-    bg_top: vec4<f32>,
-    bg_bottom: vec4<f32>,
+    // The background paint: atlas row, start, scroll, repeat.
+    bg_paint: vec4<f32>,
+    // The background place: direction, span, centre xy.
+    bg_place: vec4<f32>,
     // x: bloom strength, y: exposure
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y, z: world heights it spans
+    // x: background on screen, y: how its place runs, z: steps, w: 1 to mix the two colours below
     bg: vec4<f32>,
+    bg_from: vec4<f32>,
+    bg_to: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -69,14 +73,32 @@ fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
-    // `in.world` is in screen units here; painted across the world, the gradient runs between
-    // two world heights instead.
-    var t = clamp(in.world.y * g.view.y * 0.5 + 0.5, 0.0, 1.0);
-    if g.bg.x == 0.0 {
-        let y = screen_to_world(in.world).y;
-        t = clamp((y - g.bg.y) / max(g.bg.z - g.bg.y, 1.0), 0.0, 1.0);
+    if g.bg_paint.x < 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    return vec4<f32>(mix(g.bg_top.rgb, g.bg_bottom.rgb, t), 1.0);
+    // `in.world` is in screen units here; the place is measured there, or in the world.
+    var along = 0.0;
+    if g.bg.y > 0.5 {
+        var at = in.world;
+        if g.bg.x == 0.0 {
+            at = screen_to_world(in.world);
+        }
+        let d = at - g.bg_place.zw;
+        let span = max(g.bg_place.y, 0.001);
+        if g.bg.y < 1.5 {
+            let a = radians(g.bg_place.x);
+            along = dot(d, vec2<f32>(cos(a), sin(a))) / span + 0.5;
+        } else {
+            along = length(d) / span;
+        }
+    }
+    if g.bg.w > 0.5 {
+        // A plain blend of two colours, mixed here without the atlas's half floats.
+        let t = paint_wrap(along + g.bg_paint.y + g.view.w * g.bg_paint.z, g.bg_paint.w);
+        return vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0);
+    }
+    let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w);
+    return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
 }
 
 // ---- Walls (instanced quads with a distance function) ----

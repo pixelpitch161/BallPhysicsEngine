@@ -18,10 +18,10 @@ pub mod text;
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, HitMark,
-    LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, push_streak_colours,
-    thing_code,
+    BackgroundPaint, BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance,
+    GpuLiquid, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer,
+    SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak,
+    push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, PaintGpu};
 pub use text::Atlas;
@@ -40,13 +40,19 @@ const BLOOM_LEVELS: usize = 6;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Globals {
     view: [f32; 4],
-    bg_top: [f32; 4],
-    bg_bottom: [f32; 4],
+    /// The background paint: atlas row (below 0 paints black), start, scroll, repeat.
+    bg_paint: [f32; 4],
+    /// The background's place: direction in degrees, span, centre xy.
+    bg_place: [f32; 4],
     post: [f32; 4],
     /// The camera: centre xy, zoom, turn in radians.
     camera: [f32; 4],
-    /// x: 1 when the background stays on the screen, y, z: the world heights it spans otherwise.
+    /// x: 1 when the background stays on the screen, y: how its place runs (0 none, 1 direction,
+    /// 2 centre), z: 1 for hard steps, w: 1 to mix `bg_from` and `bg_to`.
     bg: [f32; 4],
+    /// The two colours of a plain blend the background mixes itself (`bg.w` is 1 then).
+    bg_from: [f32; 4],
+    bg_to: [f32; 4],
 }
 
 impl Globals {
@@ -57,16 +63,23 @@ impl Globals {
         let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
         Self {
             view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
-            bg_top: frame.background_top,
-            bg_bottom: frame.background_bottom,
+            bg_paint: [
+                if frame.background.row == u32::MAX { -1.0 } else { frame.background.row as f32 },
+                frame.background.t0,
+                frame.background.scroll,
+                frame.background.repeat,
+            ],
+            bg_place: frame.background.place,
             post: [frame.bloom, frame.exposure, 0.0, 0.0],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
-                frame.background_span[0],
-                frame.background_span[1],
-                0.0,
+                frame.background.mode,
+                frame.background.steps,
+                if frame.background.ends.is_some() { 1.0 } else { 0.0 },
             ],
+            bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
+            bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
         }
     }
 }

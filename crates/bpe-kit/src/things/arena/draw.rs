@@ -52,14 +52,14 @@ mod tests {
         };
         let frame = draw(&scene);
         let wall = frame.shapes[0];
-        assert_eq!((wall.paint.row, wall.paint.pattern), (0.0, crate::paint::gpu::PATH_PATTERN));
+        assert_eq!((wall.paint.row, wall.paint.pattern), (1.0, crate::paint::gpu::PATH_PATTERN));
         assert_eq!(wall.color, [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(frame.gradients.rows()[0].to_vec(), colours.bake(bpe_gfx::ATLAS_WIDTH));
+        assert_eq!(frame.gradients.rows()[1].to_vec(), colours.bake(bpe_gfx::ATLAS_WIDTH));
 
         // An inside pattern wins over Path.
         scene.library.modules.get_mut(&look).unwrap().params.set("inside", Value::Choice("stripes".into()));
         let wall = draw(&scene).shapes[0];
-        assert_eq!((wall.paint.row, wall.paint.pattern), (0.0, 1.0));
+        assert_eq!((wall.paint.row, wall.paint.pattern), (1.0, 1.0));
 
         // One colour paints nothing on the line, as before.
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
@@ -68,6 +68,6 @@ mod tests {
         params.set("follow", Value::Choice("order".into()));
         let frame = draw(&scene);
         assert_eq!((frame.shapes[0].paint.row, frame.shapes[0].color), (-1.0, [0.0, 1.0, 0.0, 1.0]));
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
     }
 }

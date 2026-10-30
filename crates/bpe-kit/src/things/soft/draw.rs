@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(skin(23), BLUE.to_linear(), "the last point takes the last colour");
         assert_eq!(frame.soft[23 * 3 + 2].color, RED.to_linear(), "the skin closes back on the first point");
         assert!(frame.soft.iter().all(|v| v.paint == PaintGpu::default()), "no inside pattern");
-        assert!(frame.gradients.is_empty());
+        assert!(frame.gradients.len() == 1);
         // A rope's links blend the colours of their two ends.
         let frame = painted_frame("rope", 3, |p| {
             p.set("colours", Value::Gradient(Gradient::even(&[RED, BLUE])));
@@ -283,8 +283,8 @@ mod tests {
             p.set("colours", Value::Gradient(Gradient::even(&[RED, BLUE])));
             p.set("inside", Value::Choice("stripes".into()));
         });
-        assert_eq!(frame.gradients.len(), 1);
-        assert!(frame.soft.iter().all(|v| v.paint.row == 0.0 && v.paint.pattern == 1.0));
+        assert_eq!(frame.gradients.len(), 2);
+        assert!(frame.soft.iter().all(|v| v.paint.row == 1.0 && v.paint.pattern == 1.0));
         let (lo, hi) = frame.soft.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| {
             ([lo[0].min(v.local[0]), lo[1].min(v.local[1])], [hi[0].max(v.local[0]), hi[1].max(v.local[1])])
         });

@@ -6,7 +6,8 @@ pub mod sim;
 
 pub use sim::{SceneSim, SceneState};
 
-use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
+use crate::paint::Paint;
+use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
@@ -30,12 +31,9 @@ pub struct SceneSettings {
     /// How hard everything is pulled, and which way. Down is positive y.
     #[setting(label = "Gravity", unit = "px/s²", simple, keyframe)]
     pub gravity: Vec2,
-    /// The colour at the top of the background.
-    #[setting(label = "Background top", simple, keyframe, random)]
-    pub background_top: Color,
-    /// The colour at the bottom of the background.
-    #[setting(label = "Background bottom", simple, keyframe, random)]
-    pub background_bottom: Color,
+    /// The colours behind everything, at any angle or spreading from a centre.
+    #[setting(paint, label = "Background", prefix = "background_", follows = "place|time|beat", screen_only, simple)]
+    pub background: Paint,
     /// How much bright things bleed light around them.
     #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse)]
     pub bloom: f32,
@@ -48,11 +46,11 @@ pub struct SceneSettings {
     /// The video's height in pixels.
     #[setting(label = "Height", range(2, 7680), unit = "px", group = "Video")]
     pub height: u32,
-    /// Frames per second.
     /// Keep the background still on the screen while the camera moves; off paints it across
     /// the world instead.
     #[setting(label = "Background stays on screen", group = "Video")]
     pub background_on_screen: bool,
+    /// Frames per second.
     #[setting(label = "Frame rate", range(1, 240), unit = "fps", group = "Video")]
     pub fps: u32,
     /// How many times a second the physics moves everything.
@@ -101,8 +99,10 @@ impl Default for SceneSettings {
         Self {
             duration: 20.0,
             gravity: Vec2::new(0.0, 500.0),
-            background_top: Color::rgb(0x02, 0x02, 0x2a),
-            background_bottom: Color::rgb(0x01, 0x00, 0x06),
+            background: Paint {
+                colours: Gradient::even(&[Color::rgb(0x02, 0x02, 0x2a), Color::rgb(0x01, 0x00, 0x06)]),
+                ..Paint::default()
+            },
             bloom: 0.15,
             chords: "C 4.2, Dsus4 4, Am 5, C 4, Am 3.1, Dsus4 3".into(),
             width: 1080,
@@ -147,5 +147,28 @@ impl ThingKind for SceneKind {
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &SlotId::ALL
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_background_is_one_paint_that_follows_place_time_or_beat_on_the_screen() {
+        let defs = SceneSettings::defs();
+        let keys: Vec<_> = defs.iter().map(|d| d.key).collect();
+        for gone in ["background_top", "background_bottom", "background_space"] {
+            assert!(!keys.contains(&gone), "{gone}");
+        }
+        assert_eq!(keys.iter().filter(|k| **k == "background_on_screen").count(), 1);
+        for key in ["background_colours", "background_follow", "background_angle", "background_span"] {
+            assert!(keys.contains(&key), "{key}");
+        }
+        let follow = defs.iter().find(|d| d.key == "background_follow").unwrap();
+        assert_eq!(follow.ty, bpe_core::ValueType::Choice(&["place", "time", "beat"]));
+        let d = SceneSettings::default().background;
+        assert_eq!((d.angle, d.span, d.centre), (90.0, 1920.0, Vec2::ZERO));
+        assert_eq!(d.colours.stops.len(), 2);
     }
 }

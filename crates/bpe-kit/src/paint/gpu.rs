@@ -2,10 +2,10 @@
 //! atlas and the pattern's numbers in a [`PaintGpu`].
 
 use bpe_core::Transition;
-use bpe_gfx::{GradientAtlas, PaintGpu};
+use bpe_gfx::{BackgroundPaint, GradientAtlas, PaintGpu};
 use bpe_runtime::CameraView;
 
-use super::{Follow, Inputs, Inside, Paint, Repeat, Space, offset};
+use super::{Follow, Inputs, Inside, Paint, PlaceShape, Repeat, Space, offset};
 
 /// Pattern 4 in paint.wgsl: a gradient along a wall's line, the shape working out how far round
 /// it each pixel is.
@@ -64,6 +64,47 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f3
     }
 }
 
+/// How the background pass paints `p`. A Place paint leaves the place to the shader, which
+/// works it out per pixel (its scroll running with the frame's time); a Time or Beat paint is a
+/// single place for the whole picture, worked out here from `inputs` (`time` on the simulation
+/// clock, `beats` on the video clock). The caller says in `Frame::background_on_screen` whether
+/// the place is measured on the screen or in the world; the paint's own space is ignored.
+pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> BackgroundPaint {
+    let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
+    let steps = if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 };
+    let row = atlas.row(&p.colours);
+    let ends = match p.colours.stops.as_slice() {
+        [a, b] if a.at == 0.0 && b.at == 1.0 && p.colours.transition == Transition::Smooth => {
+            Some([a.color.to_linear(), b.color.to_linear()])
+        }
+        _ => None,
+    };
+    let place = [finite(p.angle), finite(p.span).max(1e-3), finite(p.centre.x), finite(p.centre.y)];
+    if p.follow == Follow::Place {
+        let mode = if p.shape == PlaceShape::Centre { 2.0 } else { 1.0 };
+        return BackgroundPaint {
+            row,
+            place,
+            scroll: finite(p.scroll),
+            repeat: repeat_code(p.repeat),
+            mode,
+            steps,
+            t0: 0.0,
+            ends,
+        };
+    }
+    // Hard bands step one stop per beat, whatever the stops' places: land on that stop's place.
+    let n = p.colours.stops.len().max(1);
+    let t0 = if p.follow == Follow::Beat && steps > 0.5 {
+        let k = finite(inputs.beats).max(0.0).floor() as usize % n;
+        p.colours.stops.get(k).map_or(0.0, |s| finite(s.at).clamp(0.0, 1.0))
+    } else {
+        offset(p, inputs)
+    };
+    let repeat = if p.follow == Follow::Beat && steps > 0.5 { 0.0 } else { repeat_code(p.repeat) };
+    BackgroundPaint { row, place, t0, scroll: 0.0, repeat, mode: 0.0, steps, ends }
+}
+
 /// `p`'s gradient for a shader that works out the place along it itself (from a speed, a place
 /// or a hash) and calls `paint_along`: its row in `atlas`, moved on by the scroll `time` seconds
 /// in, with its steps and repeat.
@@ -98,7 +139,7 @@ pub fn place_in_world(p: &Paint, camera: &CameraView) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Color, Gradient};
+    use bpe_core::{Color, Gradient, Stop};
 
     #[test]
     fn a_screen_place_in_the_world_paints_what_offset_gives() {
@@ -193,5 +234,33 @@ mod tests {
         let gpu = paint_gpu(&rings, &Inputs { path: 0.5, ..Inputs::default() }, &mut atlas, 0.0);
         assert_eq!((gpu.pattern, gpu.t0), (2.0, 0.5));
         assert_eq!(atlas.len(), 1);
+    }
+
+    #[test]
+    fn a_background_paint_leaves_a_place_to_the_shader_and_fixes_time_and_beat() {
+        let mut atlas = GradientAtlas::default();
+        let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::WHITE]);
+        let place = Paint { colours: colours.clone(), angle: 30.0, span: 800.0, scroll: 0.5, ..Paint::default() };
+        let gpu = background_gpu(&place, &Inputs::default(), &mut atlas);
+        assert_eq!((gpu.mode, gpu.scroll, gpu.t0, gpu.place), (1.0, 0.5, 0.0, [30.0, 800.0, 0.0, 0.0]));
+        assert_eq!(gpu.ends, Some([Color::rgb(255, 0, 0).to_linear(), Color::WHITE.to_linear()]));
+        let centre = Paint { shape: PlaceShape::Centre, ..place.clone() };
+        assert_eq!(background_gpu(&centre, &Inputs::default(), &mut atlas).mode, 2.0);
+
+        let time = Paint { follow: Follow::Time, scroll: 0.5, ..place.clone() };
+        let gpu = background_gpu(&time, &Inputs { time: 1.0, ..Inputs::default() }, &mut atlas);
+        assert_eq!((gpu.mode, gpu.scroll, gpu.t0), (0.0, 0.0, 0.5));
+        let beat = Paint { follow: Follow::Beat, ..place };
+        let gpu = background_gpu(&beat, &Inputs { beats: 0.5, ..Inputs::default() }, &mut atlas);
+        assert_eq!((gpu.mode, gpu.t0), (0.0, 0.25));
+
+        // Hard bands land on the stop's own place.
+        let bands = Gradient {
+            stops: vec![Stop { at: 0.0, color: Color::rgb(255, 0, 0) }, Stop { at: 0.7, color: Color::WHITE }],
+            transition: Transition::Steps,
+        };
+        let beat = Paint { follow: Follow::Beat, colours: bands, ..Paint::default() };
+        let gpu = background_gpu(&beat, &Inputs { beats: 1.2, ..Inputs::default() }, &mut atlas);
+        assert_eq!((gpu.t0, gpu.steps), (0.7, 1.0));
     }
 }

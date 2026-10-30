@@ -491,7 +491,8 @@ mod tests {
     #[test]
     fn a_full_colour_roll_keeps_brightness_and_transparency() {
         let reg = registry();
-        let top = def(&reg, "scene", "background_top");
+        // A single colour rolls the same way whatever setting holds it.
+        let top = def(&reg, "scene", "background_colours");
         let navy = Color { r: 10, g: 12, b: 48, a: 200 };
         let (_, _, dark) = navy.to_hsv();
         let new = rolls(&top, &Value::Color(navy), 1.0, 30);
