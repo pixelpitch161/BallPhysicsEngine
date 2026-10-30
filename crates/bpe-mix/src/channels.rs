@@ -202,9 +202,105 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     render_with(settings, notes, frames, cache, &PhysicsInputs::default())
 }
 
+/// The sound module a channel name means: the first with that name.
+fn channel_named(settings: &MixSettings, name: &str) -> Option<u32> {
+    settings.channel_names.iter().find(|(_, n)| n.as_str() == name).map(|(id, _)| *id)
+}
+
+/// The names of the channels each channel's graphs read the level of: its patches, its
+/// instruments' effects and its inserts.
+fn level_reads(settings: &MixSettings, notes: &[Note]) -> BTreeMap<u32, BTreeSet<String>> {
+    let mut out: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for n in notes {
+        let entry = out.entry(n.channel).or_default();
+        if !seen.insert((n.channel, n.instrument)) {
+            continue;
+        }
+        if let InstrumentChoice::Patch { graph, .. } = resolve(settings, n) {
+            entry.extend(bpe_synth::uses(&graph).channels);
+        }
+        if let Some((_, fx)) = instrument_fx(settings, n) {
+            entry.extend(bpe_synth::uses(fx).channels);
+        }
+    }
+    for (channel, names) in &mut out {
+        if let Some(strip) = settings.strips.get(channel) {
+            names.extend(bpe_synth::uses(&strip.inserts).channels);
+        }
+    }
+    out
+}
+
+/// The order channels render in: each wave holds the channels whose level reads are all in
+/// earlier waves. Channels caught in a loop go last, with a line for each loop.
+pub(crate) fn waves(settings: &MixSettings, notes: &[Note]) -> (Vec<Vec<u32>>, Vec<String>) {
+    let reads: BTreeMap<u32, BTreeSet<u32>> = level_reads(settings, notes)
+        .into_iter()
+        .map(|(ch, names)| (ch, names.iter().filter_map(|n| channel_named(settings, n)).collect()))
+        .collect();
+    let mut left: BTreeSet<u32> = reads.keys().copied().collect();
+    let mut done = BTreeSet::new();
+    let mut waves = Vec::new();
+    loop {
+        let ready: Vec<u32> =
+            left.iter().copied().filter(|ch| reads[ch].iter().all(|r| done.contains(r) || !left.contains(r))).collect();
+        if ready.is_empty() {
+            break;
+        }
+        for ch in &ready {
+            left.remove(ch);
+            done.insert(*ch);
+        }
+        waves.push(ready);
+    }
+    let mut problems = Vec::new();
+    if !left.is_empty() {
+        let name = |ch: u32| settings.channel_names.get(&ch).cloned().unwrap_or_else(|| format!("Channel {ch}"));
+        // Whether `from` leads back to `to` through the channels left.
+        let reaches = |from: u32, to: u32| {
+            let mut stack = vec![from];
+            let mut seen = BTreeSet::new();
+            while let Some(at) = stack.pop() {
+                if at == to {
+                    return true;
+                }
+                if seen.insert(at) {
+                    stack.extend(reads.get(&at).into_iter().flatten().filter(|c| left.contains(c)));
+                }
+            }
+            false
+        };
+        for &ch in &left {
+            for &other in reads[&ch].iter().filter(|c| left.contains(c)) {
+                if reaches(other, ch) {
+                    problems.push(format!(
+                        "{}: Channel level loops back through {}, so it reads silence",
+                        name(ch),
+                        name(other)
+                    ));
+                }
+            }
+        }
+        waves.push(left.into_iter().collect());
+    }
+    (waves, problems)
+}
+
+/// A channel's level in dBFS for each block of [`bpe_synth::BLOCK`] frames.
+fn level_of(samples: &[f32]) -> Vec<f32> {
+    samples
+        .chunks(bpe_synth::BLOCK * 2)
+        .map(|block| {
+            let power = block.iter().map(|v| v * v).sum::<f32>() / block.len().max(1) as f32;
+            (10.0 * power.max(1e-30).log10()).max(bpe_synth::inputs::SILENT_DB)
+        })
+        .collect()
+}
+
 /// Plays every note through its channel's instrument into `frames` frames of interleaved stereo,
 /// taking channels that haven't changed from `cache` and keeping the new ones there. Input
-/// blocks read `physics`.
+/// blocks read `physics`; a channel that reads another's level renders after it.
 pub(crate) fn render_with(
     settings: &MixSettings,
     notes: &[Note],
@@ -212,13 +308,66 @@ pub(crate) fn render_with(
     cache: &mut ChannelCache,
     physics: &PhysicsInputs,
 ) -> Rendered {
-    // Each channel's view of the scene, made once.
+    let (order, loops) = waves(settings, notes);
+    let wanted = level_reads(settings, notes);
+    // The levels anything reads: channels, buses and the master effects.
+    let mut needed: BTreeSet<String> = wanted.values().flatten().cloned().collect();
+    for bus in &settings.buses {
+        needed.extend(bpe_synth::uses(&bus.fx).channels);
+    }
+    needed.extend(bpe_synth::uses(&settings.master_fx).channels);
+    let mut levels: BTreeMap<String, Arc<Vec<f32>>> = BTreeMap::new();
+    let mut out = Rendered { channels: BTreeMap::new(), problems: loops, scene: physics.scene.clone(), fresh: 0 };
+    let mut kept = BTreeSet::new();
+    for wave in &order {
+        let part: Vec<Note> = notes.iter().filter(|n| wave.contains(&n.channel)).cloned().collect();
+        let r = render_part(settings, &part, frames, cache, physics, &levels, &wanted, &mut kept);
+        for (ch, (samples, fingerprint)) in r.channels {
+            if let Some(name) = settings.channel_names.get(&ch).filter(|n| needed.contains(*n))
+                && channel_named(settings, name) == Some(ch)
+            {
+                levels.insert(name.clone(), Arc::new(level_of(&samples)));
+            }
+            out.channels.insert(ch, (samples, fingerprint));
+        }
+        out.problems.extend(r.problems);
+        out.fresh += r.fresh;
+    }
+    // Channels gone from the mix leave the cache.
+    cache.groups.retain(|key, _| kept.contains(key));
+    cache.strips.retain(|channel, _| out.channels.contains_key(channel));
+    out.problems.sort();
+    out.problems.dedup();
+    out.scene.levels = levels;
+    out
+}
+
+/// [`render_with`] for one wave of channels, reading the `levels` of the waves before. Adds the
+/// instrument groups it used to `kept`.
+#[allow(clippy::too_many_arguments)]
+fn render_part(
+    settings: &MixSettings,
+    notes: &[Note],
+    frames: usize,
+    cache: &mut ChannelCache,
+    physics: &PhysicsInputs,
+    levels: &BTreeMap<String, Arc<Vec<f32>>>,
+    wanted: &BTreeMap<u32, BTreeSet<String>>,
+    kept: &mut BTreeSet<GroupKey>,
+) -> Rendered {
+    // Each channel's view of the scene, made once, with the levels it reads.
+    let view = |channel: u32| {
+        let mut s = physics.channel_signals(channel);
+        for name in wanted.get(&channel).into_iter().flatten() {
+            if let Some(l) = levels.get(name) {
+                s.levels.insert(name.clone(), l.clone());
+            }
+        }
+        Arc::new(s)
+    };
     let mut views: BTreeMap<u32, Arc<SceneSignals>> = BTreeMap::new();
     for n in notes {
-        views.entry(n.channel).or_insert_with(|| Arc::new(physics.channel_signals(n.channel)));
-    }
-    for &channel in settings.strips.keys() {
-        views.entry(channel).or_insert_with(|| Arc::new(physics.channel_signals(channel)));
+        views.entry(n.channel).or_insert_with(|| view(n.channel));
     }
     let signals = |channel: u32| views.get(&channel).cloned().unwrap_or_else(|| Arc::new(physics.scene.clone()));
     let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
@@ -364,8 +513,7 @@ pub(crate) fn render_with(
         );
         channels.insert(key, samples);
     }
-    // Channels gone from the mix leave the cache.
-    cache.groups.retain(|key, _| fingerprints.contains_key(key));
+    kept.extend(fingerprints.keys().copied());
     for key in &bad {
         if let InstrumentChoice::Patch { name, .. } = &groups[key].choice {
             problems.insert(format!("{name} made a bad sample and was stopped"));
@@ -537,6 +685,69 @@ mod tests {
         assert_eq!(render_with(&s, &notes, 48_000, &mut cache, &physics).fresh, 1, "only the patch channel");
     }
 
+    /// Channel 1 "Kick": plucks every half second. Channel 2 "Pad": a held saw whose inserts
+    /// turn it down by up to 40 dB as Kick's level rises. Pad reads `reads` (Kick by default).
+    fn ducking(reads: &str) -> (MixSettings, Vec<Note>) {
+        let mut s = one_patch(bpe_synth::blank_patch(), 4.0);
+        let mut fx = bpe_synth::chain_graph(&[("amp".into(), Default::default(), true)]);
+        let amp = fx.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let level =
+            bpe_synth::FollowInput { kind: "scene_input".into(), input: "channel".into(), channel: reads.into() };
+        fx = bpe_synth::follow(&fx, amp, "gain", &level).unwrap();
+        let scale = fx.nodes.iter().find(|n| n.kind == "scale").unwrap().id;
+        fx.node_mut(scale).unwrap().params.insert("scale".into(), bpe_graph::Param::Number(-40.0));
+        s.strips.insert(2, bpe_core::ChannelStrip { inserts: fx, sends: Default::default() });
+        s.channel_names.insert(1, "Kick".into());
+        s.channel_names.insert(2, "Pad".into());
+        let pluck = NoteInstrument::BuiltIn(Instrument::Pluck);
+        let saw = NoteInstrument::Library(Some(InstrumentId(0)));
+        let mut notes: Vec<Note> = (1..8).map(|i| Note { velocity: 1.0, ..note(i * 24_000, 48, 1, pluck) }).collect();
+        notes.push(note(0, 48, 2, saw));
+        (s, notes)
+    }
+
+    #[test]
+    fn a_channel_ducks_under_another() {
+        let pad = |reads: &str| {
+            let (s, notes) = ducking(reads);
+            let r = render_with(&s, &notes, 4 * 48_000, &mut ChannelCache::default(), &PhysicsInputs::default());
+            r.channels[&2].0.clone()
+        };
+        let (ducked, plain) = (pad("Kick"), pad("Nobody"));
+        let window = |x: &[f32], from: usize| rms_of(&x[from * 2..(from + 960) * 2]);
+        for i in 2..7 {
+            // Just after each kick, past the input's smoothing.
+            let at = i * 24_000 + 1_200;
+            let (d, p) = (window(&ducked, at), window(&plain, at));
+            assert!(d < 0.5 * p, "kick {i}: {d} ducked vs {p}");
+        }
+    }
+
+    #[test]
+    fn reading_a_channel_renders_after_it() {
+        let (s, notes) = ducking("Kick");
+        assert_eq!(waves(&s, &notes).0, vec![vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn a_level_loop_is_a_problem_not_a_hang() {
+        let (mut s, notes) = ducking("Kick");
+        // Kick reads Pad back.
+        let mut back = s.strips[&2].inserts.clone();
+        for n in back.nodes.iter_mut().filter(|n| n.kind == "scene_input") {
+            n.params.insert("channel".into(), bpe_graph::Param::Text("Pad".into()));
+        }
+        s.strips.insert(1, bpe_core::ChannelStrip { inserts: back, sends: Default::default() });
+        let r = render_with(&s, &notes, 4 * 48_000, &mut ChannelCache::default(), &PhysicsInputs::default());
+        assert!(
+            r.problems.iter().any(|p| p == "Kick: Channel level loops back through Pad, so it reads silence"),
+            "{:?}",
+            r.problems
+        );
+        assert!(r.problems.iter().any(|p| p == "Pad: Channel level loops back through Kick, so it reads silence"));
+        assert!(rms_of(&r.channels[&1].0) > 0.0 && rms_of(&r.channels[&2].0) > 0.0);
+    }
+
     #[test]
     fn scene_inputs_reach_effects() {
         let cat = bpe_synth::catalog();
@@ -681,7 +892,7 @@ mod tests {
         }
         let mut cache = ChannelCache::default();
         let full = |s: &MixSettings, cache: &mut ChannelCache| {
-            let (mut mix, _, _) = crate::buses::premaster_from_notes(s, &notes, frames, cache, &Default::default());
+            let mut mix = crate::buses::premaster_from_notes(s, &notes, frames, cache, &Default::default()).samples;
             crate::master(&mut mix, &s.master);
         };
         let started = Instant::now();

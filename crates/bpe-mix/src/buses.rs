@@ -123,8 +123,18 @@ pub(crate) fn strips(
             .insert(channel, CachedChannel { fingerprint, samples: samples.clone(), bad_samples: false, fx_bad: bad });
         out.insert(channel, (samples, fingerprint));
     }
-    cache.strips.retain(|channel, _| out.contains_key(channel));
     out
+}
+
+/// The mix before the master effects and the master stage.
+pub(crate) struct Premaster {
+    pub samples: Vec<f32>,
+    pub problems: Vec<String>,
+    /// How many instrument groups were rendered rather than taken from the cache.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fresh: usize,
+    /// The channel levels anything reads, by name, for the master effects.
+    pub levels: BTreeMap<String, Arc<Vec<f32>>>,
 }
 
 /// Plays `notes` through their channels, sends and buses: the mix before the master effects
@@ -136,7 +146,7 @@ pub(crate) fn premaster_from_notes(
     frames: usize,
     cache: &mut ChannelCache,
     physics: &PhysicsInputs,
-) -> (Vec<f32>, Vec<String>, usize) {
+) -> Premaster {
     let rendered = crate::channels::render_with(settings, notes, frames, cache, physics);
     let mut problems: BTreeSet<String> = rendered.problems.into_iter().collect();
     let mut mix = vec![0.0f32; frames * 2];
@@ -210,7 +220,12 @@ pub(crate) fn premaster_from_notes(
         add(&mut mix, &samples, db_to_gain(settings.buses[i].volume));
     }
 
-    (mix, problems.into_iter().collect(), rendered.fresh)
+    Premaster {
+        samples: mix,
+        problems: problems.into_iter().collect(),
+        fresh: rendered.fresh,
+        levels: rendered.scene.levels,
+    }
 }
 
 /// Runs the master effects over the whole mix (the song in it too), before the master stage.
@@ -272,7 +287,8 @@ mod tests {
 
     fn premaster(s: &crate::MixSettings, cache: &mut crate::ChannelCache) -> (Vec<f32>, Vec<String>, usize) {
         let frames = crate::Soundtrack::silent(s.duration).frames();
-        let (mut mix, mut problems, fresh) = premaster_from_notes(s, &plucks(1), frames, cache, &Default::default());
+        let p = premaster_from_notes(s, &plucks(1), frames, cache, &Default::default());
+        let (mut mix, mut problems, fresh) = (p.samples, p.problems, p.fresh);
         problems.extend(run_master_fx(&mut mix, s, &Default::default()));
         (mix, problems, fresh)
     }

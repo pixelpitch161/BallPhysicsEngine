@@ -48,6 +48,8 @@ pub struct Soundtrack {
     pub problems: Vec<String>,
     /// What the master stage measured, once the mix is finished.
     pub report: Option<MasterReport>,
+    /// The channel levels the master effects read, by channel name, in dBFS per block.
+    pub levels: BTreeMap<String, std::sync::Arc<Vec<f32>>>,
 }
 
 impl Soundtrack {
@@ -56,6 +58,7 @@ impl Soundtrack {
             samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2],
             problems: Vec::new(),
             report: None,
+            levels: BTreeMap::new(),
         }
     }
 
@@ -122,6 +125,13 @@ pub struct PhysicsInputs {
 }
 
 impl PhysicsInputs {
+    /// The same inputs with the channel `levels` the master effects read.
+    pub fn with_levels(&self, levels: &BTreeMap<String, std::sync::Arc<Vec<f32>>>) -> PhysicsInputs {
+        let mut p = self.clone();
+        p.scene.levels = levels.clone();
+        p
+    }
+
     /// The scene's series as `channel` sees them: its own chords when it has them.
     pub fn channel_signals(&self, channel: u32) -> bpe_synth::SceneSignals {
         let mut s = self.scene.clone();
@@ -409,7 +419,7 @@ pub fn mix_cached(
     cache: &mut ChannelCache,
 ) -> Soundtrack {
     let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, physics, cache);
-    let problems = run_master_fx(&mut track.samples, settings, physics);
+    let problems = run_master_fx(&mut track.samples, settings, &physics.with_levels(&track.levels));
     track.problems.extend(problems);
     track.report = Some(master(&mut track.samples, &settings.master));
     track
@@ -435,9 +445,10 @@ pub fn mix_premaster(
         return track;
     }
     let frames = track.frames();
-    let (samples, problems, _) = buses::premaster_from_notes(settings, &notes, frames, cache, physics);
-    track.samples = samples;
-    track.problems = problems;
+    let p = buses::premaster_from_notes(settings, &notes, frames, cache, physics);
+    track.samples = p.samples;
+    track.problems = p.problems;
+    track.levels = p.levels;
     track
 }
 
