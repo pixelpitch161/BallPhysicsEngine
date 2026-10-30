@@ -12,11 +12,13 @@
 pub mod blocks;
 mod catalog;
 mod program;
+mod starters;
 mod voices;
 
 pub use blocks::missing_samples;
 pub use catalog::catalog;
 pub use program::{MacroKnob, Patch, Program, blank_patch, compile, macros, with_macros};
+pub use starters::starters;
 pub use voices::{ChannelAudio, NoteLength, PlayNote, STEAL_FADE, VoiceSettings, global_steals, render_channel};
 
 use bpe_graph::Param;
