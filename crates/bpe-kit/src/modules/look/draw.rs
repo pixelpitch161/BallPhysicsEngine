@@ -1,12 +1,15 @@
 //! Reading a thing's Look and turning it into colours.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
 use bpe_core::{Color, Resolved, Settings, SlotId, ThingId};
 use bpe_gfx::{DrawCx, GradientAtlas, PaintGpu};
-use bpe_runtime::{Bodies, CameraView, Log};
+use bpe_runtime::{Bodies, CameraView};
 use glam::Vec2;
 
 use super::ClassicLook;
-use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, last_hit_at, paint_gpu};
+use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, paint_gpu};
 
 /// The thing's classic look, when its Look slot is filled.
 pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
@@ -21,20 +24,20 @@ pub fn for_balls(mut p: Paint) -> Paint {
     p
 }
 
-/// What the paints of one thing's balls read this frame: the balls, the log for their hits,
-/// the camera for screen places, and the beats so far (counted once, only when a paint follows
-/// them).
+/// What the paints of one thing's balls read this frame: the balls, their latest hits (found in
+/// one pass over the log, only when a paint steps on them), the camera for screen places, and
+/// the beats so far (counted once, only when a paint follows them).
 pub struct BallInputs<'a> {
-    thing: ThingId,
     bodies: &'a Bodies,
-    log: &'a Log,
-    scene: &'a Resolved,
     camera: CameraView,
     /// Stuck to the screen: the balls' own places are screen places.
     screen: bool,
     time: f64,
-    steps_per_second: u32,
     beats: f32,
+    /// Per ball: its latest hit (when, what it hit, where); empty when no paint steps on hits.
+    #[allow(clippy::type_complexity)]
+    last: Vec<Option<(f64, Option<ThingId>, Vec2)>>,
+    still: StillColours<'a>,
 }
 
 impl<'a> BallInputs<'a> {
@@ -46,16 +49,19 @@ impl<'a> BallInputs<'a> {
         } else {
             0.0
         };
+        let last = if paints.iter().any(|p| p.follow == Follow::Step) {
+            hits_on(cx.log, cx.thing.id, bodies.len(), cx.time, steps_per_second).into_iter().map(|h| h.1).collect()
+        } else {
+            Vec::new()
+        };
         Self {
-            thing: cx.thing.id,
             bodies,
-            log: cx.log,
-            scene: cx.scene,
             camera: cx.world.camera,
             screen: cx.resolved.screen,
             time: cx.time,
-            steps_per_second,
             beats,
+            last,
+            still: StillColours::new(cx),
         }
     }
 
@@ -64,8 +70,8 @@ impl<'a> BallInputs<'a> {
         if self.screen { world } else { self.camera.to_screen(world) }
     }
 
-    /// What `p` reads about ball `i`. The log is only searched for the last hit when `p` steps
-    /// on hits and the ball has hit something.
+    /// What `p` reads about ball `i`. The latest hit only counts when `p` steps on hits and the
+    /// ball has hit something.
     pub fn get(&self, p: &Paint, i: usize) -> Inputs {
         let b = self.bodies;
         let place = b.position.get(i).copied().unwrap_or_default();
@@ -84,29 +90,54 @@ impl<'a> BallInputs<'a> {
         };
         if p.follow == Follow::Step
             && hits > 0
-            && let Some((at, other, point)) = last_hit_at(self.log, self.thing, i, self.time, self.steps_per_second)
+            && let Some(&Some((at, other, point))) = self.last.get(i)
         {
             inputs.since_hit = (self.time - at) as f32;
             if p.take_hit_colour {
-                inputs.hit_colour = other.and_then(|o| self.colour_of(o, point));
+                inputs.hit_colour = other.and_then(|o| self.still.at(o, point));
             }
         }
         inputs
     }
-
-    /// The colour thing `other`'s look paints at `point`, as a still thing with no hits.
-    fn colour_of(&self, other: ThingId, point: Vec2) -> Option<[f32; 4]> {
-        still_colour(self.scene, self.camera, self.time, other, point)
-    }
 }
 
-/// The colour thing `other`'s look paints at `point` at `time`, as a still thing with no hits.
-fn still_colour(scene: &Resolved, camera: CameraView, time: f64, other: ThingId, point: Vec2) -> Option<[f32; 4]> {
-    let r = scene.things.get(&other)?;
-    let fill = for_balls(ClassicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill);
-    let place_screen = if r.screen { point } else { camera.to_screen(point) };
-    let inputs = Inputs { count: 1, place: point, place_screen, start: point, time: time as f32, ..Inputs::default() };
-    Some(colour_at(&fill, &inputs))
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has read another thing's look for its still colour.
+    pub(crate) static LOOK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The colours other things' looks paint as still things with no hits, for paints that take
+/// the colour of what they hit. Each thing's look is read once, the first time it is asked for.
+pub struct StillColours<'a> {
+    scene: &'a Resolved,
+    camera: CameraView,
+    time: f64,
+    /// Each thing's fill as a ball reads it and whether it is stuck to the screen; None for a
+    /// thing with no look.
+    looks: RefCell<BTreeMap<ThingId, Option<(Paint, bool)>>>,
+}
+
+impl<'a> StillColours<'a> {
+    pub fn new(cx: &DrawCx<'a>) -> Self {
+        Self { scene: cx.scene, camera: cx.world.camera, time: cx.time, looks: RefCell::default() }
+    }
+
+    /// The colour thing `other`'s look paints at `point`.
+    pub fn at(&self, other: ThingId, point: Vec2) -> Option<[f32; 4]> {
+        let mut looks = self.looks.borrow_mut();
+        let look = looks.entry(other).or_insert_with(|| {
+            let r = self.scene.things.get(&other)?;
+            #[cfg(test)]
+            LOOK_READS.with(|n| n.set(n.get() + 1));
+            Some((for_balls(ClassicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill), r.screen))
+        });
+        let (fill, screen) = look.as_ref()?;
+        let place_screen = if *screen { point } else { self.camera.to_screen(point) };
+        let inputs =
+            Inputs { count: 1, place: point, place_screen, start: point, time: self.time as f32, ..Inputs::default() };
+        Some(colour_at(fill, &inputs))
+    }
 }
 
 /// `p` as a wall or obstacle reads it: a wall never spawns, so Start reads as Place.
@@ -123,7 +154,7 @@ pub fn for_walls(mut p: Paint) -> Paint {
 /// follows them), the camera for screen places, and how fast the thing moves. A wall has no life
 /// and its place along its own line is worked out on the GPU, so both read 0.
 pub struct WallInputs<'a> {
-    scene: &'a Resolved,
+    still: StillColours<'a>,
     camera: CameraView,
     /// Stuck to the screen: the pieces' own places are screen places.
     screen: bool,
@@ -148,7 +179,7 @@ impl<'a> WallInputs<'a> {
             Vec::new()
         };
         Self {
-            scene: cx.scene,
+            still: StillColours::new(cx),
             camera: cx.world.camera,
             screen: cx.resolved.screen,
             time: cx.time,
@@ -179,7 +210,7 @@ impl<'a> WallInputs<'a> {
         {
             inputs.since_hit = (self.time - at) as f32;
             if p.take_hit_colour {
-                inputs.hit_colour = other.and_then(|o| still_colour(self.scene, self.camera, self.time, o, point));
+                inputs.hit_colour = other.and_then(|o| self.still.at(o, point));
             }
         }
         inputs

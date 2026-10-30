@@ -324,6 +324,33 @@ mod tests {
         assert_eq!(frame.hits.len(), flash_worth);
     }
 
+    #[test]
+    fn stepping_on_hits_reads_the_log_and_the_hit_looks_once_a_frame() {
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(4));
+            p.set("rows", Value::Int(3));
+        });
+        let m = ball_look(&scene, &kit);
+        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        params.set("follow", Value::Choice("step".into()));
+        params.set("take_hit_colour", Value::Bool(true));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(6.0);
+        let hit = playback.world().bodies[&ThingId(2)].hits.iter().filter(|&&h| h > 0).count();
+        assert!(hit >= 4, "only {hit} balls hit something");
+        let (searches, reads) = (&crate::paint::eval::LOG_SEARCHES, &crate::modules::look::draw::LOOK_READS);
+        let (s0, r0) = (searches.with(|n| n.get()), reads.with(|n| n.get()));
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 6.0, &kit.draws, &mut frame);
+        let (s1, r1) = (searches.with(|n| n.get()) - s0, reads.with(|n| n.get()) - r0);
+        // The balls' draw reads their colours twice (once for the balls, once for their paints);
+        // each reads the log once, and each other thing's look once, whatever the number of balls.
+        assert!(s1 <= 2, "{s1} searches of the log for {hit} balls that hit");
+        assert!(r1 <= 2, "{r1} reads of the hit things' looks for {hit} balls that hit");
+    }
+
     /// The look module of the balls in `scene`.
     fn ball_look(scene: &bpe_core::Scene, kit: &crate::Kit) -> bpe_core::ModuleId {
         bpe_core::resolve_slot(scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module

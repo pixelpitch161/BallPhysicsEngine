@@ -202,6 +202,19 @@ pub fn last_hit(
     last_hit_at(log, thing, index, time, steps_per_second).map(|(at, other, _)| (at, other))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has searched the log for hits, so tests can check a frame
+    /// does not search it once per ball.
+    pub(crate) static LOG_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a search of the log for hits, in tests.
+fn searched() {
+    #[cfg(test)]
+    LOG_SEARCHES.with(|n| n.set(n.get() + 1));
+}
+
 /// [`last_hit`] with where the hit happened, for reading the colour of what was hit there.
 pub fn last_hit_at(
     log: &Log,
@@ -210,6 +223,7 @@ pub fn last_hit_at(
     time: f64,
     steps_per_second: u32,
 ) -> Option<(f64, Option<ThingId>, Vec2)> {
+    searched();
     let now = step_at(if time.is_finite() { time } else { 0.0 }, steps_per_second);
     let events = log.events();
     let upto = events.partition_point(|e| e.step <= now);
@@ -226,10 +240,12 @@ pub fn last_hit_at(
     })
 }
 
-/// The hits so far on each of the `count` pieces of `thing` (a wall or an obstacle) at or before
-/// `time` seconds on the simulation clock, with the latest one: when, what hit it, and where.
-/// The thing counts as either party, the piece being its item; items past `count` are left out.
-/// One pass over the log up to `time`, so call it once a frame, not once a piece.
+/// The hits so far on each of the `count` pieces of `thing` (the pegs of an obstacle, the balls
+/// of a group) at or before `time` seconds on the simulation clock, with the latest one: when,
+/// what hit it, and where. The thing counts as either party, the piece being its item (both
+/// pieces when it hit itself, each with the thing as what it hit); items past `count` are left
+/// out. One pass over the log up to `time`, so call it once a frame, not once a piece: the
+/// latest hits match [`last_hit_at`] for each piece.
 #[allow(clippy::type_complexity)]
 pub fn hits_on(
     log: &Log,
@@ -238,21 +254,19 @@ pub fn hits_on(
     time: f64,
     steps_per_second: u32,
 ) -> Vec<(u32, Option<(f64, Option<ThingId>, Vec2)>)> {
+    searched();
     let mut out = vec![(0, None); count];
     let now = step_at(if time.is_finite() { time } else { 0.0 }, steps_per_second);
     let events = log.events();
     let upto = events.partition_point(|e| e.step <= now);
     for e in events[..upto].iter().filter(|e| e.kind == EventKind::Hit) {
-        let (item, other) = if e.a.thing == thing {
-            (e.a.item, e.b.map(|b| b.thing))
-        } else if let Some(b) = e.b.filter(|b| b.thing == thing) {
-            (b.item, Some(e.a.thing))
-        } else {
-            continue;
-        };
-        if let Some(piece) = out.get_mut(item as usize) {
-            piece.0 += 1;
-            piece.1 = Some((seconds(e.step, steps_per_second), other, e.point));
+        let mover = (e.a.thing == thing).then(|| (e.a.item, e.b.map(|b| b.thing)));
+        let hit = e.b.filter(|b| b.thing == thing).map(|b| (b.item, Some(e.a.thing)));
+        for (item, other) in mover.into_iter().chain(hit) {
+            if let Some(piece) = out.get_mut(item as usize) {
+                piece.0 += 1;
+                piece.1 = Some((seconds(e.step, steps_per_second), other, e.point));
+            }
         }
     }
     out
@@ -486,5 +500,23 @@ mod tests {
         assert_eq!(hits_on(&log, ThingId(9), 3, 10.0, sps)[0].0, 2, "later hits count once their time comes");
         assert_eq!(hits_on(&log, ThingId(9), 3, 2.0, sps)[2], (1, Some((2.0, Some(ThingId(1)), Vec2::new(5.0, 6.0)))));
         assert!(hits_on(&log, ThingId(9), 0, 10.0, sps).is_empty());
+    }
+
+    #[test]
+    fn hits_on_finds_each_ball_s_last_hit_like_last_hit_at() {
+        let mut log = Log::default();
+        // Balls 0 and 1 of thing 1 hit each other, then ball 0 hits a wall, then ball 2 is hit.
+        log.push(ev(10, EventKind::Hit, (1, 0), Some((1, 1))));
+        log.push(ev(20, EventKind::Hit, (1, 0), Some((9, 0))));
+        log.push(ev(30, EventKind::Hit, (5, 0), Some((1, 2))));
+        log.push(ev(40, EventKind::Hit, (1, 1), None));
+        let sps = 10;
+        for time in [0.5, 1.0, 1.5, 2.5, 3.5, 9.0] {
+            let all = hits_on(&log, ThingId(1), 4, time, sps);
+            for (i, (_, last)) in all.iter().enumerate() {
+                assert_eq!(*last, last_hit_at(&log, ThingId(1), i, time, sps), "ball {i} at {time}");
+            }
+        }
+        assert_eq!(hits_on(&log, ThingId(1), 4, 1.0, sps)[1], (1, Some((1.0, Some(ThingId(1)), Vec2::ZERO))));
     }
 }
