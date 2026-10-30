@@ -3,7 +3,7 @@
 //! particles here, so it sends what the renderer needs to run it, and is always a surface.
 
 use bpe_core::{Settings, SlotId};
-use bpe_gfx::{BallInstance, DrawCx, Frame, GpuLiquid, LiquidLayer, Points, ThingDraw};
+use bpe_gfx::{BallInstance, DrawCx, Frame, GpuLiquid, GradientAtlas, LiquidLayer, PaintGpu, Points, ThingDraw};
 use bpe_runtime::state;
 
 use super::sim::LiquidState;
@@ -11,6 +11,8 @@ use crate::modules::bounce::sim::BounceState;
 use crate::modules::look::ClassicLook;
 use crate::modules::look_liquid::LiquidLook;
 use crate::modules::motion_liquid::Flowing;
+use crate::paint::gpu::{along_gpu, place_in_world};
+use crate::paint::{Follow, Inputs, Paint, PlaceShape, beats_at, colour_at};
 
 pub struct LiquidDraw;
 
@@ -21,16 +23,49 @@ fn surface_look(cx: &DrawCx) -> Option<LiquidLook> {
     Some(if look.kind == "look.liquid" {
         LiquidLook::from_params(&look.params)
     } else {
-        LiquidLook { color: ClassicLook::from_params(&look.params).fill.colours.first(), ..LiquidLook::default() }
+        let colour = ClassicLook::from_params(&look.params).fill.colours.first();
+        LiquidLook { colour: Paint::solid(colour), ..LiquidLook::default() }
     })
 }
 
-fn layer(cx: &DrawCx, look: &LiquidLook, points: Points, radius: f32) -> LiquidLayer {
+/// How the surface pass paints the liquid with `p`: its `LiquidLayer` follow, paint, place and
+/// one colour. A single stop, the time and the beat give one colour for the whole liquid,
+/// worked out here (nothing baked); a place or the speed is worked out per pixel on the GPU.
+fn liquid_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, PaintGpu, [f32; 4], [f32; 4]) {
+    let first = p.colours.first().to_linear();
+    let none = PaintGpu::default();
+    if p.colours.stops.len() <= 1 {
+        return (0, none, [0.0; 4], first);
+    }
+    let time = cx.time as f32;
+    match p.follow {
+        Follow::Place => {
+            let follow = if p.shape == PlaceShape::Centre { 2 } else { 1 };
+            (follow, along_gpu(p, time, atlas), place_in_world(p, &cx.world.camera), first)
+        }
+        Follow::Speed => {
+            let span = if p.span.is_finite() { p.span.max(1e-3) } else { 1e-3 };
+            (3, along_gpu(p, time, atlas), [0.0, span, 0.0, 0.0], first)
+        }
+        Follow::Time | Follow::Beat => {
+            let beats =
+                if p.follow == Follow::Beat { beats_at(cx.log, cx.video_time, cx.world.steps_per_second) } else { 0.0 };
+            (0, none, [0.0; 4], colour_at(p, &Inputs { time, beats, count: 1, ..Inputs::default() }))
+        }
+        _ => (0, none, [0.0; 4], first),
+    }
+}
+
+fn layer(cx: &DrawCx, look: &LiquidLook, points: Points, radius: f32, atlas: &mut GradientAtlas) -> LiquidLayer {
+    let (follow, paint, paint_place, color) = liquid_paint(cx, &look.colour, atlas);
     LiquidLayer {
         thing: cx.thing.id,
         points,
         radius,
-        color: look.color.to_linear(),
+        color,
+        follow,
+        paint,
+        paint_place,
         clarity: look.clarity,
         refraction: look.refraction,
         highlight: look.highlight,
@@ -70,15 +105,24 @@ impl ThingDraw for LiquidDraw {
                 bounciness,
             };
             let Some(look) = surface_look(cx) else { return };
-            frame.liquids.push(layer(cx, &look, Points::Gpu(gpu), st.radius()));
+            let layer = layer(cx, &look, Points::Gpu(gpu), st.radius(), &mut frame.gradients);
+            frame.liquids.push(layer);
             return;
         }
         let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
         let alive = (0..bodies.len()).filter(|&i| bodies.alive[i]);
         if look.kind == "look.liquid" {
             let look = LiquidLook::from_params(&look.params);
-            let points = Points::Cpu(alive.map(|i| bodies.position[i].into()).collect());
-            frame.liquids.push(layer(cx, &look, points, bodies.radius.first().copied().unwrap_or(0.0)));
+            let points = Points::Cpu(
+                alive
+                    .map(|i| {
+                        let (p, v) = (bodies.position[i], bodies.velocity[i]);
+                        [p.x, p.y, v.x, v.y]
+                    })
+                    .collect(),
+            );
+            let radius = bodies.radius.first().copied().unwrap_or(0.0);
+            frame.liquids.push(layer(cx, &look, points, radius, &mut frame.gradients));
         } else {
             let color = ClassicLook::from_params(&look.params).first_colour();
             let code = bpe_gfx::thing_code(cx.thing.id);
@@ -107,11 +151,8 @@ mod tests {
         let look = scene.add_module(&kit.registry, look_kind, "Blue").unwrap();
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         let blue = Color::rgb(0, 0, 255);
-        if look_kind == "look.liquid" {
-            params.set("color", Value::Color(blue));
-        } else {
-            params.set("colours", Value::Gradient(bpe_core::Gradient::solid(blue)));
-        }
+        // Both looks keep their colours under the same key.
+        params.set("colours", Value::Gradient(bpe_core::Gradient::solid(blue)));
         scene.link(&kit.registry, me, SlotId::Look, look).unwrap();
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = World::build(&scene, &resolved, &kit.sims);
@@ -129,11 +170,51 @@ mod tests {
         assert_eq!(layer.thing, me);
         let Points::Cpu(points) = &layer.points else { panic!("a CPU liquid sends its points") };
         assert_eq!(points.len(), 100);
-        assert_eq!(points[0], <[f32; 2]>::from(world.bodies[&me].position[0]));
+        let (p, v) = (world.bodies[&me].position[0], world.bodies[&me].velocity[0]);
+        assert_eq!(points[0], [p.x, p.y, v.x, v.y], "each point's place and velocity");
         assert_eq!(layer.color, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!((layer.follow, layer.paint), (0, bpe_gfx::PaintGpu::default()), "one colour bakes nothing");
+        assert!(frame.gradients.is_empty());
         assert!((layer.radius - world.bodies[&me].radius[0]).abs() < 1e-5);
         assert_eq!((layer.clarity, layer.refraction, layer.highlight), (0.45, 0.5, 0.8));
         assert_eq!((layer.smoothing, layer.glow), (6.0, 0.1));
+    }
+
+    #[test]
+    fn a_liquid_paints_by_place_and_speed_on_the_gpu_and_by_time_here() {
+        let (mut scene, _, kit, me) = scene_with("liquid", "Pool", Vec2::ZERO, |p| p.set("count", Value::Int(100)));
+        let look = scene.add_module(&kit.registry, "look.liquid", "Two colours").unwrap();
+        scene.link(&kit.registry, me, SlotId::Look, look).unwrap();
+        let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        let mut draw = |follow: &str, shape: &str| {
+            let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+            params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, blue])));
+            params.set("follow", Value::Choice(follow.into()));
+            params.set("shape", Value::Choice(shape.into()));
+            params.set("span", Value::Number(500.0));
+            params.set("scroll", Value::Number(0.5));
+            let resolved = bpe_core::resolve(&scene, &kit.registry);
+            assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+            let world = World::build(&scene, &resolved, &kit.sims);
+            let mut frame = Frame::default();
+            build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
+            frame
+        };
+        let frame = draw("place", "direction");
+        let layer = &frame.liquids[0];
+        assert_eq!((layer.follow, layer.paint.row, layer.paint.t0), (1, 0.0, 1.0), "scrolled half a cycle a second");
+        assert_eq!(layer.paint_place, [90.0, 500.0, 0.0, 0.0]);
+        assert_eq!(frame.gradients.rows()[0][0], red.to_linear());
+        assert_eq!(draw("place", "centre").liquids[0].follow, 2);
+        let frame = draw("speed", "direction");
+        assert_eq!((frame.liquids[0].follow, frame.liquids[0].paint_place[1]), (3, 500.0));
+        // Time is one colour for the whole liquid, worked out here: 2 s at half a cycle a second
+        // reaches the end of the colours.
+        let frame = draw("time", "direction");
+        let layer = &frame.liquids[0];
+        assert_eq!((layer.follow, layer.paint), (0, bpe_gfx::PaintGpu::default()));
+        assert!(frame.gradients.is_empty());
+        assert_eq!(layer.color, blue.to_linear());
     }
 
     #[test]

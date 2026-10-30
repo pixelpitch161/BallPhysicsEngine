@@ -83,6 +83,10 @@ struct Targets {
     /// Half-size liquid thickness pictures: the splat target and the blur's scratch.
     thickness: wgpu::TextureView,
     blur: wgpu::TextureView,
+    /// The same size: the particles' speed over the paint's span, times their thickness, and
+    /// the blur's scratch for it.
+    speed: wgpu::TextureView,
+    speed_blur: wgpu::TextureView,
     thickness_size: (u32, u32),
     /// The object picture, made the first time an effect needs it.
     object: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -336,14 +340,7 @@ impl Renderer {
             label: Some("atlas layout"),
             entries: &[texture_entry(0), sampler_entry],
         });
-        // Read in vertex shaders too, so things that colour their vertices can paint.
-        let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("paint layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..texture_entry(0) },
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..sampler_entry },
-            ],
-        });
+        let paint_layout = gradients::paint_layout(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("linear clamp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -801,7 +798,7 @@ impl Renderer {
                 pass.draw(0..soft_vertices as u32, 0..1);
             }
             if let Some(flow) = &self.flow {
-                flow.draw_swarms(&mut pass, &self.globals_group, frame);
+                flow.draw_swarms(&mut pass, &self.globals_group, &self.paint.group, frame);
             }
         }
         if !frame.liquids.is_empty() {
@@ -827,6 +824,7 @@ impl Renderer {
                         &frame.camera,
                         layer,
                         points,
+                        &self.paint.group,
                     );
                 }
             }
@@ -1075,6 +1073,11 @@ impl Targets {
                 .create_view(&Default::default());
         let blur = texture("liquid blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
             .create_view(&Default::default());
+        let speed = texture("liquid speed", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+            .create_view(&Default::default());
+        let speed_blur =
+            texture("liquid speed blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+                .create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -1115,6 +1118,8 @@ impl Targets {
             behind_view,
             thickness,
             blur,
+            speed,
+            speed_blur,
             thickness_size,
             object: None,
             bloom,
@@ -1339,6 +1344,8 @@ mod surface_tests {
                 points.push([
                     center[0] - 100.0 + spacing * 0.5 + col as f32 * spacing + shift,
                     center[1] - 100.0 + spacing * 0.5 + row as f32 * spacing * 0.866,
+                    0.0,
+                    0.0,
                 ]);
             }
         }
@@ -1347,6 +1354,9 @@ mod surface_tests {
             points: Points::Cpu(points),
             radius: spacing * 0.5,
             color: [0.1, 0.3, 1.0, 1.0],
+            follow: 0,
+            paint: PaintGpu::default(),
+            paint_place: [0.0; 4],
             clarity,
             refraction,
             highlight: 0.8,
@@ -1384,6 +1394,59 @@ mod surface_tests {
         let a = pixel(&pixels, 0.0, 300.0);
         let b = pixel(&pixels, 8.0, 300.0);
         assert!(a[2] > 120 && (a[2] as i32 - b[2] as i32).abs() < 20, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn liquid_speed_paints_the_fast_block() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let row = frame
+            .gradients
+            .row(&bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)]));
+        // A still block on the left and one racing at 1000 px/s on the right, one liquid.
+        let mut liquid = block([-200.0, 300.0], 0.0, 0.0);
+        let Points::Cpu(still) = &liquid.points else { unreachable!() };
+        let fast = still.iter().map(|p| [p[0] + 400.0, p[1], 1000.0 * 0.6, 1000.0 * 0.8]);
+        let all: Vec<_> = still.iter().copied().chain(fast).collect();
+        liquid.points = Points::Cpu(all);
+        // Green, so a surface that ignores its paint fails.
+        liquid.color = [0.0, 1.0, 0.0, 1.0];
+        liquid.follow = 3;
+        liquid.paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
+        liquid.paint_place = [0.0, 1000.0, 0.0, 0.0];
+        frame.liquids.push(liquid);
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let (slow, fast) = (pixel(&pixels, -200.0, 300.0), pixel(&pixels, 200.0, 300.0));
+        assert!(slow[1] < 60 && fast[1] < 60, "{slow:?} {fast:?}: green is the liquid's own colour");
+        assert!(slow[2] > 120 && slow[0] < 60, "{slow:?}: the still block is the first stop");
+        assert!(fast[0] > 120 && fast[2] < 60, "{fast:?}: the fast block is the last stop");
+    }
+
+    #[test]
+    fn liquid_place_is_measured_in_the_world_through_the_camera() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let row = frame
+            .gradients
+            .row(&bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)]));
+        let mut liquid = block([0.0, 300.0], 0.0, 0.0);
+        liquid.color = [0.0, 1.0, 0.0, 1.0];
+        liquid.follow = 1;
+        liquid.paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
+        // Left to right across the block: blue on its left, red on its right.
+        liquid.paint_place = [0.0, 200.0, 0.0, 300.0];
+        frame.liquids.push(liquid);
+        // Turned a quarter round and zoomed in on the block: its left is at the screen's bottom.
+        let turn = std::f32::consts::FRAC_PI_2;
+        frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(0.0, 300.0), zoom: 2.0, turn };
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        // World x -60 and 60, a fifth of the way in from each end.
+        let (world_left, world_right) = (pixel(&pixels, 0.0, 120.0), pixel(&pixels, 0.0, -120.0));
+        assert!(world_left[1] < 60 && world_right[1] < 60, "{world_left:?} {world_right:?}: no own green");
+        assert!(world_left[2] > world_left[0] + 60, "{world_left:?}: the world's left is blue");
+        assert!(world_right[0] > world_right[2] + 60, "{world_right:?}: the world's right is red");
     }
 
     #[test]

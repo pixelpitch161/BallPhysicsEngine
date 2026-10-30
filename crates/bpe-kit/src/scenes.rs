@@ -21,7 +21,7 @@ use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
     ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
     LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind,
-    SceneSettings, SoftSettings, SoftShape, SwarmColors, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
+    SceneSettings, SoftSettings, SoftShape, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -1132,12 +1132,15 @@ fn fireflies(reg: &Registry) -> Scene {
     let swarm = SwarmSettings { count: 20_000, ..SwarmSettings::default() };
     let swarm = b.add("swarm", ThingId::ROOT, "Fireflies", Vec2::ZERO, swarm.to_params());
     let look = SwarmLook {
-        colors_by: SwarmColors::Gradient,
-        colors: Gradient::even(&[
-            Color::rgb(0xff, 0xe0, 0x66),
-            Color::rgb(0x8a, 0xff, 0x80),
-            Color::rgb(0x40, 0xc8, 0xff),
-        ]),
+        colours: Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0xe0, 0x66),
+                Color::rgb(0x8a, 0xff, 0x80),
+                Color::rgb(0x40, 0xc8, 0xff),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        },
         ..SwarmLook::default()
     };
     let m = b.module_of(swarm, SlotId::Look);

@@ -32,7 +32,7 @@ pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
 pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
-pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
+pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};

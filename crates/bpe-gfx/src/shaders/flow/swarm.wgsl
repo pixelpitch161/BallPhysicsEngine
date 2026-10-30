@@ -14,13 +14,20 @@ struct Params {
     steer: vec4<f32>,
     // x: ball reach, y: wall avoidance, z: gravity scale, w: grid cell size
     more: vec4<f32>,
-    // x: colour mode (0 speed, 1 nearest ball, 2 gradient), y: colour stops, z: start (0 fill, 1 centre, 2 ring)
+    // x: colour follow (0 speed, 1 nearest ball, 2 random, 3 place along a direction, 4 distance
+    // from a centre, 5 one colour), z: start (0 fill, 1 centre, 2 ring)
     look: vec4<u32>,
     // xy: swarm centre, z: half size of the area a Fill start covers, w: point size (drawing)
     arena: vec4<f32>,
     // x: brightness (drawing), y: seconds the release from the centre takes (0: all at once)
     draw: vec4<f32>,
-    colors: array<vec4<f32>, 6>,
+    // The one colour, and a point's colour before it has a nearest ball.
+    color: vec4<f32>,
+    // The paint, as `PaintGpu`'s fields in order.
+    paint_a: vec4<f32>,
+    paint_b: vec4<f32>,
+    // x: direction in degrees, y: span, zw: centre
+    place: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> step: Step;
@@ -118,7 +125,7 @@ fn init_points(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     if params.draw.y > 0.0 {
         points[i] = vec4<f32>(params.arena.xy, release_velocity(i));
-        tints[i] = pack_color(params.colors[0]);
+        tints[i] = pack_color(params.color);
         return;
     }
     var p = start_point(i, 0u);
@@ -132,7 +139,7 @@ fn init_points(@builtin(global_invocation_id) id: vec3<u32>) {
     let angle = rand(i, 40u) * TAU;
     let v = vec2<f32>(cos(angle), sin(angle)) * params.motion.x * 0.1 * rand(i, 41u);
     points[i] = vec4<f32>(p, v);
-    tints[i] = pack_color(params.colors[0]);
+    tints[i] = pack_color(params.color);
 }
 
 @compute @workgroup_size(256)
@@ -228,7 +235,7 @@ fn move_points(@builtin(global_invocation_id) id: vec3<u32>) {
     // Balls pull (or push) points that are within reach, and shove them out of the way.
     let count = u32(step.a.w);
     var nearest = 1e9;
-    var nearest_color = params.colors[0];
+    var nearest_color = params.color;
     for (var b = 0u; b < count; b++) {
         let ball = step.balls[b];
         let d = ball.place.xy - p;

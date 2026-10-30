@@ -75,6 +75,33 @@ pub(crate) fn paint_wgsl(group: u32) -> String {
     include_str!("shaders/paint.wgsl").replace("PAINT_GROUP", &group.to_string())
 }
 
+/// The bind group layout paint.wgsl reads the atlas through: the texture and its sampler, read
+/// in vertex shaders too, so things that colour their vertices can paint.
+pub(crate) fn paint_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    use wgpu::ShaderStages as S;
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("paint layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: S::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: S::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 /// How many rows the texture needs for `len` gradients: a power of two, at least 8.
 pub(crate) fn atlas_height(len: usize) -> usize {
     len.next_power_of_two().max(MIN_HEIGHT)

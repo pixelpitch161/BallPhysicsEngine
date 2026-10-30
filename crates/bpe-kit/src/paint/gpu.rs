@@ -3,8 +3,9 @@
 
 use bpe_core::Transition;
 use bpe_gfx::{GradientAtlas, PaintGpu};
+use bpe_runtime::CameraView;
 
-use super::{Follow, Inputs, Inside, Paint, Repeat, offset};
+use super::{Follow, Inputs, Inside, Paint, Repeat, Space, offset};
 
 /// Pattern 4 in paint.wgsl: a gradient along a wall's line, the shape working out how far round
 /// it each pixel is.
@@ -63,10 +64,74 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f3
     }
 }
 
+/// `p`'s gradient for a shader that works out the place along it itself (from a speed, a place
+/// or a hash) and calls `paint_along`: its row in `atlas`, moved on by the scroll `time` seconds
+/// in, with its steps and repeat.
+pub fn along_gpu(p: &Paint, time: f32, atlas: &mut GradientAtlas) -> PaintGpu {
+    let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
+    PaintGpu {
+        row: atlas.row(&p.colours) as f32,
+        t0: finite(time * p.scroll),
+        steps: if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 },
+        repeat: repeat_code(p.repeat),
+        ..PaintGpu::default()
+    }
+}
+
+/// Where `p`'s place runs, for a shader that measures places in the world: the direction in
+/// degrees, the span, and the centre. A place measured on the screen is turned into the same
+/// place in the world through `camera` (screen = turned, zoomed world), so the shader paints
+/// what [`offset`] gives for `Inputs::place_screen` without knowing the camera.
+pub fn place_in_world(p: &Paint, camera: &CameraView) -> [f32; 4] {
+    let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
+    let span = finite(p.span).max(1e-3);
+    let zoom = if camera.zoom.is_finite() && camera.zoom > 1e-6 { camera.zoom } else { 1.0 };
+    match p.space {
+        Space::World => [finite(p.angle), span, finite(p.centre.x), finite(p.centre.y)],
+        Space::Screen => {
+            let centre = camera.to_world(p.centre);
+            [finite(p.angle + camera.turn.to_degrees()), span / zoom, finite(centre.x), finite(centre.y)]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bpe_core::{Color, Gradient};
+
+    #[test]
+    fn a_screen_place_in_the_world_paints_what_offset_gives() {
+        use super::super::PlaceShape;
+        use glam::Vec2;
+        let camera = CameraView { center: Vec2::new(120.0, -40.0), zoom: 1.7, turn: 0.6 };
+        for shape in [PlaceShape::Direction, PlaceShape::Centre] {
+            for space in [Space::World, Space::Screen] {
+                let p = Paint {
+                    shape,
+                    space,
+                    angle: 30.0,
+                    centre: Vec2::new(-50.0, 80.0),
+                    span: 900.0,
+                    repeat: Repeat::Repeat,
+                    ..Paint::default()
+                };
+                let [angle, span, cx, cy] = place_in_world(&p, &camera);
+                for world in [Vec2::new(0.0, 0.0), Vec2::new(300.0, -200.0), Vec2::new(-410.0, 650.0)] {
+                    let inputs = Inputs { place: world, place_screen: camera.to_screen(world), ..Inputs::default() };
+                    // What the shaders work out from the world place.
+                    let d = world - Vec2::new(cx, cy);
+                    let raw = match shape {
+                        PlaceShape::Direction => d.dot(Vec2::from_angle(angle.to_radians())) / span + 0.5,
+                        PlaceShape::Centre => d.length() / span,
+                    };
+                    let want = offset(&p, &inputs);
+                    let got = raw - raw.floor();
+                    assert!((got - want).abs() < 1e-4, "{shape:?} {space:?} at {world}: {got} vs {want}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn no_inside_pattern_paints_nothing_and_bakes_nothing() {

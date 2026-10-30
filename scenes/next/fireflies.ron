@@ -130,7 +130,7 @@
                 slot: Look,
                 kind: "look.swarm",
                 params: {
-                    "colors": Gradient((
+                    "colours": Gradient((
                         stops: [
                             (
                                 at: 0.0,
@@ -147,7 +147,7 @@
                         ],
                         transition: Smooth,
                     )),
-                    "colors_by": Choice("gradient"),
+                    "follow": Choice("order"),
                 },
             ),
             6: (

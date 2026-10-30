@@ -189,8 +189,17 @@ pub struct LiquidLayer {
     pub points: Points,
     /// Particle radius in world pixels.
     pub radius: f32,
-    /// Linear light.
+    /// Linear light: the whole liquid's colour when `follow` is 0.
     pub color: [f32; 4],
+    /// 0: the liquid is `color`. 1: each pixel takes `paint` at its place along a direction,
+    /// 2: at its distance from a centre (see `paint_place`). 3: at the mean speed of the
+    /// particles under it, over `paint_place`'s span.
+    pub follow: u32,
+    /// The gradient the liquid is painted from when `follow` is not 0; only its row, start,
+    /// steps and repeat are read.
+    pub paint: PaintGpu,
+    /// Where a place runs in world pixels: the direction in degrees, the span, the centre.
+    pub paint_place: [f32; 4],
     /// How much of what is behind shows through, 0 to 1.
     pub clarity: f32,
     /// How much the surface bends what is behind it.
@@ -206,8 +215,8 @@ pub struct LiquidLayer {
 /// Where a liquid's particles come from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Points {
-    /// Positions simulated on the CPU, one per particle.
-    Cpu(Vec<[f32; 2]>),
+    /// Positions and velocities simulated on the CPU, one per particle.
+    Cpu(Vec<[f32; 4]>),
     /// A liquid the renderer simulates itself.
     Gpu(GpuLiquid),
 }
@@ -260,10 +269,19 @@ pub struct SwarmLook {
     /// Point size in world pixels.
     pub size: f32,
     pub brightness: f32,
-    /// 0 colours by speed, 1 by the nearest ball, 2 along the gradient.
-    pub colors_by: u32,
-    /// Linear light, the stops of the gradient or the speed ramp.
-    pub colors: Vec<[f32; 4]>,
+    /// What picks a point's place along `paint`: 0 its speed over the top speed, 1 the nearest
+    /// ball (the ball's colour, not the paint), 2 a place at random for each point, 3 its place
+    /// along a direction, 4 its distance from a centre (both from `place`). 5 paints every point
+    /// `color`.
+    pub follow: u32,
+    /// The gradient the points take their colour from; only its row, start, steps and repeat
+    /// are read.
+    pub paint: PaintGpu,
+    /// Where a place runs in world pixels: the direction in degrees, the span, the centre.
+    pub place: [f32; 4],
+    /// Linear light: every point's colour for follow 5, and a point's colour before it has a
+    /// nearest ball.
+    pub color: [f32; 4],
 }
 
 /// How a swarm moves. Each field matches a setting of the Flocking module.
@@ -1061,9 +1079,12 @@ mod flow_tests {
         let mut frame = Frame::default();
         frame.liquids.push(LiquidLayer {
             thing: ThingId(1),
-            points: Points::Cpu(vec![[0.0, 0.0]]),
+            points: Points::Cpu(vec![[0.0; 4]]),
             radius: 3.0,
             color: [0.0, 0.5, 1.0, 1.0],
+            follow: 0,
+            paint: PaintGpu::default(),
+            paint_place: [0.0; 4],
             clarity: 0.45,
             refraction: 0.5,
             highlight: 0.8,
@@ -1077,7 +1098,14 @@ mod flow_tests {
             center: [0.0; 2],
             seed: 1,
             release_seconds: 0.0,
-            look: SwarmLook { size: 1.0, brightness: 0.2, colors_by: 2, colors: vec![[1.0; 4]] },
+            look: SwarmLook {
+                size: 1.0,
+                brightness: 0.2,
+                follow: 0,
+                paint: PaintGpu::default(),
+                place: [0.0; 4],
+                color: [1.0; 4],
+            },
             motion: Flock::default(),
         });
         let copy = frame.clone();
