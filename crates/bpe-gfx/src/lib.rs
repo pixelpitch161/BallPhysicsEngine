@@ -152,18 +152,26 @@ impl PaintTexture {
         sampler: &wgpu::Sampler,
         atlas: &GradientAtlas,
     ) {
-        if atlas.len() > self.rows {
-            *self = Self::new(device, layout, sampler, gradients::atlas_height(atlas.len()));
+        let max = device.limits().max_texture_dimension_2d as usize;
+        if atlas.len() > max {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!("{} gradients in one frame; past {max} they reuse the last one", atlas.len());
+            });
         }
-        if atlas.is_empty() {
+        let rows = gradients::uploaded_rows(atlas.len(), max);
+        if rows > self.rows {
+            *self = Self::new(device, layout, sampler, gradients::atlas_height(rows, max));
+        }
+        if rows == 0 {
             return;
         }
         let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
         queue.write_texture(
             self.texture.as_image_copy(),
-            &gradients::half_texels(atlas.rows()),
+            &gradients::half_texels(&atlas.rows()[..rows]),
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
-            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: atlas.len() as u32, depth_or_array_layers: 1 },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
         );
     }
 }
@@ -615,8 +623,9 @@ impl Renderer {
         );
 
         let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
-        let paint = PaintTexture::new(device, &paint_layout, &sampler, gradients::atlas_height(0));
-        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, gradients::atlas_height(0));
+        let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
+        let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
+        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
         Self {
             globals,

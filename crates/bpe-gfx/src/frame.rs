@@ -681,6 +681,26 @@ impl Frame {
         overlay
     }
 
+    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
+    /// stuck things work on the whole picture like everyone else's, and the overlay only holds
+    /// what is drawn as shapes.
+    pub fn lift_overlay_extras(&mut self) {
+        let Some(o) = self.overlay.as_deref_mut() else { return };
+        let (effects, mut bursts, hits) =
+            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        // A burst names its gradient by the overlay's atlas row: give it the same row here.
+        for b in &mut bursts {
+            if b.paint.row >= 0.0
+                && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
+            {
+                b.paint.row = self.gradients.adopt(baked) as f32;
+            }
+        }
+        self.effects.extend(effects);
+        self.bursts.extend(bursts);
+        self.hits.extend(hits);
+    }
+
     /// Whether the overlay has anything to draw.
     pub fn has_overlay(&self) -> bool {
         self.overlay.as_ref().is_some_and(|o| {
@@ -834,15 +854,7 @@ pub fn build_frame_at(
         }
     }
     frame.camera = world.camera;
-    // Shader effects, hit particles and hit marks of stuck things work on the whole picture
-    // like everyone else's: the overlay only holds what is drawn as shapes.
-    if let Some(o) = frame.overlay.as_deref_mut() {
-        let (effects, bursts, hits) =
-            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        frame.effects.extend(effects);
-        frame.bursts.extend(bursts);
-        frame.hits.extend(hits);
-    }
+    frame.lift_overlay_extras();
 }
 
 #[cfg(test)]

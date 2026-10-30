@@ -280,7 +280,7 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     // A gradient painted on the line takes the place of its colour; the glow keeps the colour.
     var line = vec3<f32>(0.0);
     if paint.pattern > 3.5 {
-        line = paint_along(paint, shape_path(in) * paint.scale, g.view.w).rgb;
+        line = paint_pattern(paint, shape_path(in) * paint.scale, g.view.w).rgb;
     } else {
         line = paint_colour(paint, shape_local(in), g.view.w).rgb;
     }

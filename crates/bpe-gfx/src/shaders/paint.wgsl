@@ -9,7 +9,7 @@ struct PaintGpu {
     row: f32,
     t0: f32,
     // 0 none, 1 stripes, 2 rings, 3 sweep, 4 path (along a wall's outline; the shape works the
-    // place along it out and calls `paint_along`).
+    // place along it out and calls `paint_pattern`).
     pattern: f32,
     // 1 picks the nearest baked colour.
     steps: f32,
@@ -45,18 +45,32 @@ fn paint_wrap(x: f32, repeat: f32) -> f32 {
 }
 
 // The linear-light colour `p` paints at `local`, the point in the instance's own space (-1 to 1
-// across it), `time` seconds in.
+// across it), `time` seconds in. A pattern runs `p.scale` gradients across the shape (stripes
+// across it at `p.angle`, rings out from its centre, sweep round it from `p.angle`), with `p.t0`
+// in its middle: on the stripes' centre line, at the rings' centre, half way round the sweep.
 fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32) -> vec4<f32> {
-    var t = 0.0;
+    var along = 0.0;
     if p.pattern > 2.5 {
-        t = (atan2(local.y, local.x) / PAINT_TAU + 0.5) * p.scale;
+        // `fract` so the seam can sit at any angle.
+        along = (fract(atan2(local.y, local.x) / PAINT_TAU + 0.5 - p.angle / 360.0) - 0.5) * p.scale;
     } else if p.pattern > 1.5 {
-        t = length(local) * p.scale;
+        along = length(local) * p.scale;
     } else if p.pattern > 0.5 {
         let a = radians(p.angle);
-        t = dot(local, vec2<f32>(cos(a), sin(a))) * 0.5 * p.scale + 0.5;
+        along = dot(local, vec2<f32>(cos(a), sin(a))) * 0.5 * p.scale;
     }
-    return paint_along(p, t, time);
+    if p.pattern < 0.5 {
+        return paint_along(p, 0.0, time);
+    }
+    return paint_pattern(p, along, time);
+}
+
+// The linear-light colour of an inside pattern or a path `along` from its start, `time` seconds
+// in. A pattern never runs off the end of its gradient: the paint's Clamp mirrors it instead.
+fn paint_pattern(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
+    var q = p;
+    q.repeat = select(p.repeat, 2.0, p.repeat < 0.5);
+    return paint_along(q, along, time);
 }
 
 // The linear-light colour `p` paints `along` its pattern (0 to 1 is one gradient), `time` seconds

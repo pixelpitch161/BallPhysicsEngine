@@ -34,6 +34,16 @@ impl GradientAtlas {
         row
     }
 
+    /// The row holding exactly `baked`, copying it into a new row unless one already matches:
+    /// for moving instances painted from another frame's atlas into this one.
+    pub fn adopt(&mut self, baked: &[[f32; 4]; ATLAS_WIDTH]) -> u32 {
+        if let Some(row) = self.rows.iter().position(|r| r == baked) {
+            return row as u32;
+        }
+        self.rows.push(*baked);
+        (self.rows.len() - 1) as u32
+    }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -102,9 +112,16 @@ pub(crate) fn paint_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
-/// How many rows the texture needs for `len` gradients: a power of two, at least 8.
-pub(crate) fn atlas_height(len: usize) -> usize {
-    len.next_power_of_two().max(MIN_HEIGHT)
+/// How many rows the texture needs for `len` gradients: a power of two, at least 8, but no
+/// taller than `max` (the device's largest texture side).
+pub(crate) fn atlas_height(len: usize, max: usize) -> usize {
+    len.next_power_of_two().max(MIN_HEIGHT).min(max)
+}
+
+/// How many of `len` gradients fit in a texture at most `max` rows tall. paint.wgsl paints any
+/// row past the last with the last one.
+pub(crate) fn uploaded_rows(len: usize, max: usize) -> usize {
+    len.min(max)
 }
 
 /// The rows as half floats, ready for an `Rgba16Float` texture.
@@ -149,7 +166,7 @@ fn f16_bits(x: f32) -> u16 {
 pub struct PaintGpu {
     /// The gradient's atlas row; -1 paints nothing and the instance keeps its own colours.
     pub row: f32,
-    /// Where along the gradient the pattern starts, 0 to 1.
+    /// Where along the gradient the pattern is centred (a path starts), 0 to 1.
     pub t0: f32,
     /// 0 none (the colour at `t0`), 1 stripes, 2 rings, 3 sweep.
     pub pattern: f32,
@@ -157,7 +174,7 @@ pub struct PaintGpu {
     pub steps: f32,
     /// The stripes' direction in degrees, from +x towards +y.
     pub angle: f32,
-    /// Stripes and rings: gradients across the shape; sweep: repeats round it.
+    /// Stripes: gradients across the shape; rings: from its centre out; sweep: round it.
     pub scale: f32,
     /// Gradients per second the pattern moves along.
     pub scroll: f32,
@@ -197,6 +214,22 @@ mod tests {
     }
 
     #[test]
+    fn adopting_a_row_reuses_a_matching_one() {
+        let mut from = GradientAtlas::default();
+        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth);
+        let green = two(Color::rgb(0, 255, 0), Color::rgb(0, 255, 0), Transition::Smooth);
+        let (rb, g) = (from.row(&red_blue), from.row(&green));
+        let mut into = GradientAtlas::default();
+        into.row(&green);
+        assert_eq!(into.adopt(&from.rows()[rb as usize]), 1);
+        assert_eq!(into.adopt(&from.rows()[g as usize]), 0);
+        assert_eq!(into.adopt(&from.rows()[rb as usize]), 1);
+        assert_eq!(into.len(), 2);
+        // The adopted row holds the same colours.
+        assert_eq!(into.rows()[1], from.rows()[rb as usize]);
+    }
+
+    #[test]
     fn atlas_grows_past_its_first_height() {
         let mut atlas = GradientAtlas::default();
         let gradients: Vec<Gradient> =
@@ -206,10 +239,22 @@ mod tests {
         assert_eq!(atlas.len(), 20);
         assert_eq!(atlas.rows()[0].to_vec(), gradients[0].bake(ATLAS_WIDTH));
         assert_eq!(atlas.rows()[19].to_vec(), gradients[19].bake(ATLAS_WIDTH));
-        assert_eq!(atlas_height(atlas.len()), 32);
-        assert_eq!(atlas_height(0), 8);
-        assert_eq!(atlas_height(8), 8);
-        assert_eq!(atlas_height(9), 16);
+        assert_eq!(atlas_height(atlas.len(), 8192), 32);
+        assert_eq!(atlas_height(0, 8192), 8);
+        assert_eq!(atlas_height(8, 8192), 8);
+        assert_eq!(atlas_height(9, 8192), 16);
+    }
+
+    #[test]
+    fn the_atlas_stops_growing_at_the_device_s_largest_texture() {
+        assert_eq!(atlas_height(5000, 8192), 8192);
+        assert_eq!(atlas_height(9000, 8192), 8192);
+        // A limit that is not a power of two is still a limit.
+        assert_eq!(atlas_height(3000, 2048 + 100), 2148);
+        assert_eq!(atlas_height(0, 4), 4);
+        // Only the rows that fit are uploaded; the shader paints later rows with the last one.
+        assert_eq!(uploaded_rows(9000, 8192), 8192);
+        assert_eq!(uploaded_rows(20, 8192), 20);
     }
 
     #[test]

@@ -356,7 +356,14 @@ impl SettingGroup for Paint {
                 (-720.0, 720.0),
                 "deg/s",
             );
-            more("inside_scale", "Pattern size", "How big the inside pattern is.", d.inside_scale, (0.1, 8.0), "");
+            more(
+                "inside_scale",
+                "Pattern size",
+                "How many times the inside pattern's colours go by across the shape.",
+                d.inside_scale,
+                (0.1, 8.0),
+                "",
+            );
             more(
                 "inside_scroll",
                 "Pattern scroll",

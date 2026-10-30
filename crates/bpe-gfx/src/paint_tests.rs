@@ -27,7 +27,8 @@ fn red_blue_steps() -> Gradient {
     }
 }
 
-/// A big green styled ball at the centre painting stripes from atlas row `row`.
+/// A big green styled ball at the centre painting stripes from atlas row `row`, the middle of
+/// the gradient on its centre line.
 fn striped_ball(row: u32) -> LookInstance {
     LookInstance {
         center: [0.0, 0.0],
@@ -41,7 +42,7 @@ fn striped_ball(row: u32) -> LookInstance {
         look: [0.0, 0.0, 1.0, 0.0],
         stretch: [1.0, 0.0, 1.0, 1.0],
         extent: [0.8, 1.0, 0.0, 0.0],
-        paint: PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, scale: 1.0, ..PaintGpu::default() },
+        paint: PaintGpu { row: row as f32, t0: 0.5, pattern: 1.0, steps: 1.0, scale: 1.0, ..PaintGpu::default() },
     }
 }
 
@@ -128,7 +129,7 @@ fn ring_path_gradient_goes_round() {
 fn an_inside_pattern_paints_across_a_shape() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&red_blue_steps());
-    let stripes = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    let stripes = PaintGpu { row: row as f32, t0: 0.5, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
     // A disc 400 across each way, so as big as the striped ball.
     frame.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 200.0, [0.0, 1.0, 0.0, 1.0], 0.0).painted(stripes));
     assert_two_halves("paint-shape-stripes", &frame);
@@ -169,7 +170,7 @@ fn box_path_runs_clockwise_from_the_top_left() {
 fn a_soft_body_paints_stripes_across_its_box() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&red_blue_steps());
-    let paint = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    let paint = PaintGpu { row: row as f32, t0: 0.5, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
     // A square 400 across each way, as two triangles, its corners at the box's corners.
     let corner = |x: f32, y: f32| SoftVertex {
         position: [x * 400.0, y * 400.0],
@@ -202,7 +203,7 @@ fn a_glyph_paints_stripes_across_its_box() {
     crate::text::layout_text("H", face, 1200.0, glam::Vec2::ZERO, align, 0.0, usize::MAX, &style, &mut o.glyphs);
     assert_eq!(o.glyphs.len(), 1);
     let g = &mut o.glyphs[0];
-    g.paint = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    g.paint = PaintGpu { row: row as f32, t0: 0.5, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
     let rect = g.rect;
     let Some((device, queue)) = gpu() else { return };
     let mut renderer = Renderer::new(&device, W, H);
@@ -233,10 +234,9 @@ fn a_glyph_paints_stripes_across_its_box() {
 }
 
 /// A covering burst of confetti at the centre, green (so a shader that ignores its paint fails),
-/// painted from `paint` the way `follow` says, drawn `at` seconds after it went off.
-fn painted_burst(name: &str, frame: &mut Frame, paint: PaintGpu, follow: u32, at: f32) -> Option<Vec<u8>> {
-    frame.time = at;
-    frame.bursts.push(crate::Burst {
+/// painted from `paint` the way `follow` says.
+fn confetti(paint: PaintGpu, follow: u32) -> crate::Burst {
+    crate::Burst {
         origin: [0.0, 0.0],
         normal: [0.0, -1.0],
         time: 0.0,
@@ -253,7 +253,18 @@ fn painted_burst(name: &str, frame: &mut Frame, paint: PaintGpu, follow: u32, at
         seed: 11,
         paint,
         follow,
-    });
+    }
+}
+
+/// [`confetti`] drawn `at` seconds after it went off.
+fn painted_burst(name: &str, frame: &mut Frame, paint: PaintGpu, follow: u32, at: f32) -> Option<Vec<u8>> {
+    frame.time = at;
+    frame.bursts.push(confetti(paint, follow));
+    render(name, frame)
+}
+
+/// `frame` drawn on the software GPU and saved as `name`; `None` without a GPU.
+fn render(name: &str, frame: &Frame) -> Option<Vec<u8>> {
     let (device, queue) = gpu()?;
     let mut renderer = Renderer::new(&device, W, H);
     renderer.render(&device, &queue, frame);
@@ -289,6 +300,26 @@ fn particles_life_fades_through_colours() {
 }
 
 #[test]
+fn particles_of_things_stuck_to_the_screen_paint_from_their_own_atlas() {
+    let mut frame = Frame { bloom: 0.0, time: 0.1, ..Frame::default() };
+    // The world's rows 0 and 1 are all green, so a burst reading the wrong atlas shows.
+    frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
+    frame.gradients.row(&Gradient::solid(Color::rgb(0, 250, 0)));
+    let o = frame.overlay_mut();
+    o.gradients.row(&Gradient::solid(Color::rgb(255, 255, 255)));
+    let row = o.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
+    o.bursts.push(confetti(PaintGpu { row: row as f32, ..PaintGpu::default() }, 1));
+    frame.lift_overlay_extras();
+    let Some(pixels) = render("particles-overlay", &frame) else { return };
+    let lit = lit(&pixels);
+    assert!(lit.len() > 50, "only {} pixels drawn", lit.len());
+    for p in lit {
+        assert!(p[1] < 40, "{p:?} is green or white: the burst read another row than its own");
+        assert!(p[0] > p[2], "{p:?} should be mostly red early in its life");
+    }
+}
+
+#[test]
 fn particles_order_takes_one_stop_each() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&red_blue_steps());
@@ -300,4 +331,86 @@ fn particles_order_takes_one_stop_each() {
     assert!(red > 50 && blue > 50, "both stops show: {red} red, {blue} blue");
     // Overlapping particles may mix, but none is green or half way.
     assert!(lit.iter().all(|p| p[1] < 40), "no green");
+}
+
+/// The red and the blue pixels along the horizontal and vertical lines through the middle of a
+/// shape 200 pixels round on the output, 20 pixels in from its edge.
+fn reds_and_blues(pixels: &[u8]) -> (usize, usize) {
+    let (cx, cy) = (W as i32 / 2, H as i32 / 2);
+    let (mut red, mut blue) = (0, 0);
+    for d in -180..=180 {
+        for (x, y) in [(cx + d, cy), (cx, cy + d)] {
+            let i = (y as u32 * W + x as u32) as usize * 4;
+            let p = &pixels[i..i + 3];
+            if p[0] > 150 && p[1] < 60 && p[2] < 60 {
+                red += 1;
+            } else if p[2] > 150 && p[0] < 60 && p[1] < 60 {
+                blue += 1;
+            }
+        }
+    }
+    (red, blue)
+}
+
+#[test]
+fn inside_patterns_keep_repeating_whatever_the_start_size_and_scroll() {
+    // With the paint's Clamp, a start of 1 used to clamp every pixel to the last colour, a size
+    // of 3 squeezed the gradient into the middle and a scroll ran off the end after a while.
+    for pattern in [1.0, 2.0, 3.0] {
+        for (t0, scale, scroll, time) in [(1.0, 3.0, 0.0, 0.0), (1.0, 3.0, 0.4, 10.0), (0.3, 2.0, 0.7, 10.0)] {
+            let mut frame = Frame { bloom: 0.0, time, ..Frame::default() };
+            let row = frame.gradients.row(&red_blue_steps());
+            let mut ball = striped_ball(row);
+            ball.paint = PaintGpu { row: row as f32, t0, pattern, steps: 1.0, scale, scroll, ..PaintGpu::default() };
+            frame.looks.push(ball);
+            let name = format!("paint-pattern-{pattern}-{t0}-{scale}-{scroll}");
+            let Some(pixels) = render(&name, &frame) else { return };
+            let (red, blue) = reds_and_blues(&pixels);
+            assert!(red > 40 && blue > 40, "{name}: both colours show across the shape: {red} red, {blue} blue");
+        }
+    }
+}
+
+#[test]
+fn a_path_keeps_going_round_as_it_scrolls() {
+    let mut frame = Frame { bloom: 0.0, time: 10.0, ..Frame::default() };
+    let row = frame.gradients.row(&red_blue_steps());
+    let ring =
+        bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
+    let paint = PaintGpu { row: row as f32, pattern: 4.0, steps: 1.0, scroll: 0.37, ..PaintGpu::default() };
+    frame.shapes.push(ShapeInstance::outline(&ring, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
+    let Some(pixels) = render("paint-path-scrolled", &frame) else { return };
+    let (mut red, mut blue) = (0, 0);
+    for i in 0..64 {
+        let a = i as f32 / 64.0 * std::f32::consts::TAU;
+        let (x, y) = ((W as f32 / 2.0 + 200.0 * a.cos()) as u32, (H as f32 / 2.0 + 200.0 * a.sin()) as u32);
+        let k = (y * W + x) as usize * 4;
+        let p = &pixels[k..k + 3];
+        red += (p[0] > 150 && p[2] < 60) as u32;
+        blue += (p[2] > 150 && p[0] < 60) as u32;
+    }
+    assert!(red > 10 && blue > 10, "both colours still go round the ring: {red} red, {blue} blue");
+}
+
+#[test]
+fn turning_a_sweep_half_way_swaps_its_sides() {
+    let mut sides = Vec::new();
+    for angle in [90.0, 270.0] {
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let row = frame.gradients.row(&red_blue_steps());
+        let mut ball = striped_ball(row);
+        ball.paint = PaintGpu { row: row as f32, t0: 0.5, pattern: 3.0, steps: 1.0, angle, ..PaintGpu::default() };
+        frame.looks.push(ball);
+        let Some(pixels) = render(&format!("paint-sweep-{angle}"), &frame) else { return };
+        let at = |x: u32| {
+            let i = ((H / 2) * W + x) as usize * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        sides.push((at(W / 2 - 120), at(W / 2 + 120)));
+    }
+    let red = |p: [u8; 3]| p[0] > 150 && p[1] < 60 && p[2] < 60;
+    let blue = |p: [u8; 3]| p[2] > 150 && p[0] < 60 && p[1] < 60;
+    let ((l0, r0), (l1, r1)) = (sides[0], sides[1]);
+    assert!(blue(l0) && red(r0), "at 90°: blue left {l0:?}, red right {r0:?}");
+    assert!(red(l1) && blue(r1), "at 270°: red left {l1:?}, blue right {r1:?}");
 }

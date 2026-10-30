@@ -30,12 +30,14 @@ pub(crate) fn repeat_code(repeat: Repeat) -> f32 {
     }
 }
 
-/// How `p` paints inside one shape at `time` seconds: its gradient's row in `atlas`, starting
+/// How `p` paints inside one shape at `time` seconds: its gradient's row in `atlas`, centred
 /// where the paint puts this shape (`offset`), with the inside pattern's angle (turned by its
-/// spin), size and scroll. No inside pattern paints nothing (row -1) and bakes nothing, so the
-/// shape keeps its own colour; except a paint that follows Path, which paints along the wall's
-/// line (pattern 4) once from start to end, moving by the paint's scroll. An inside pattern wins
-/// over Path, which then only gives the start (`Inputs::path`, 0 for a wall).
+/// spin), repeats across the shape and scroll. No inside pattern paints nothing (row -1) and
+/// bakes nothing, so the shape keeps its own colour; except a paint that follows Path, which
+/// paints along the wall's line (pattern 4) from start to end, moving by the paint's scroll. A
+/// pattern or path never runs off its gradient's end: the paint's Clamp mirrors it instead. An
+/// inside pattern wins over Path, which then only gives the start (`Inputs::path`, 0 for a
+/// wall).
 pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f32) -> PaintGpu {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
     let steps = if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 };
