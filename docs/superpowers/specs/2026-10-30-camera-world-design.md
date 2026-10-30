@@ -45,8 +45,10 @@ out exactly as before.
 ## 1. The Camera thing
 
 There is a new thing kind, `camera`, in `bpe-kit/src/things/camera/`, with Settings derive, sim
-and draw parts, registered like every other kind. `new_scene` adds one, named "Camera", directly
-under the root. The tree won't let you delete the live camera, and the add menu offers no second
+and draw parts, registered like every other kind. `bpe_kit::ensure_camera` adds one, named
+"Camera", directly under the root, whenever the editor or the CLI opens, creates or loads a scene
+that has none. It is always the newest thing, so no other thing's id moves. A scene with no camera
+(for example the built-in scene builders the golden tests use) behaves as an identity camera. The tree won't let you delete the live camera, and the add menu offers no second
 camera for now.
 
 The settings use foldable cards. Each setting has a `when` condition, so a setting only shows when
@@ -77,17 +79,21 @@ collides with it.
 The final pose is computed in this order: keyed shot, then blend with follow by Follow amount,
 then Fit all, then shake and punch, then the world box clamp.
 
-**Several cameras later.** Scene defaults gets a hidden `live_camera: ThingId` setting, pointing
-at the camera. Cuts can later become keyframes on it, with no change to the file format.
+**Several cameras later.** The camera is an ordinary thing kind marked "one per scene", so
+allowing more later is just lifting that limit and adding a "live camera" setting that defaults
+to the only one. Existing files need no change.
 
 ## 2. Drawing through the camera
 
 - `Frame` gets `camera: CameraView { center, zoom, turn, screen_width: 1080.0 }`.
   `build_frame_at` fills it from the live camera's pose (identity when there is no camera).
-- Each frame item list (shapes, balls, flashes, looks, trails, soft, glyphs, bursts, hits) gets a
-  `screen: bool` per item, or a separate screen list where a per-item flag would be awkward. Draw
-  parts set it from the thing's new common `stick_to_screen` setting (in `Transform`/`Thing`, so
-  every kind has it, shown on the thing's first card).
+- `Frame` gets an `overlay: Option<Box<Frame>>`. `build_frame_at` draws every thing whose
+  "Stick to screen" is on into the overlay instead of the main frame, so draw parts don't change.
+  The renderer draws the main frame's scene passes through the camera, then the overlay's scene
+  passes with no camera, before bloom and the screen effects. The switch is a new
+  `screen: Option<bool>` on `Thing` (`None` means the kind's default, from a new
+  `ThingKind::sticks_to_screen()` that is true for Text). It is shown on the thing's first card,
+  and hidden for Liquid, Swarm, the Camera and Scene defaults.
 - The shader `Globals` gets a world-to-clip matrix and a screen-to-clip matrix. `to_clip` takes
   the layer into account. The background gradient uses screen space when stuck, and world space
   (spanning the world box, or a 1080 x 1920 area around the camera's start when there is no box)
@@ -128,14 +134,15 @@ at the camera. Cuts can later become keyframes on it, with no change to the file
 ## 4. Sound, scores and dice
 
 - **Sound.** The mixer gets the camera pose at every hit (from the run's log of poses, sampled at
-  the physics rate). There are two new Scene settings in a "Camera sound" group:
+  the physics rate). Sound modules already pan hits by their horizontal position with their own
+  Stereo width setting. That pan now uses the hit's position on screen, through the camera,
+  clamped to full left or right off-screen, so no separate Scene spread setting is needed. There
+  is one new Scene setting in a "Camera sound" group:
   - **Off-shot fade:** the distance past the shot edge, in shot widths, where a hit reaches
     silence. 0 means off.
-  - **Stereo spread:** 0 to 1. It pans by the hit's horizontal screen position, clamped to full
-    left or right off-screen.
 
-  Old scenes open with both at 0. New scenes start with fade 1.5 and spread 0.5. This applies to
-  hit sounds only. Beats, drums on the beat, and the song are unaffected.
+  Old scenes open with it at 0. New scenes start with 1.5. This applies to hit sounds only.
+  Beats, drums on the beat, and the song are unaffected.
 - **Scores.** `score::sample` counts a ball as on screen when it is inside the camera's shot at
   that moment, not inside the fixed box.
 - **Dice.** `random.rs` sizes arenas to fit the camera's starting shot instead of the fixed 520
@@ -146,9 +153,9 @@ at the camera. Cuts can later become keyframes on it, with no change to the file
 - All 30 scenes in `scenes::all()` must keep their exact golden hashes (pictures and sound). The
   default camera must therefore be an exact identity, with no float rounding in the matrix path
   at Zoom 1 and Turn 0.
-- Old scene files load. A missing camera is added on load with the defaults above. A missing
-  `stick_to_screen` defaults to on for Text, and to off for everything else (the background is a
-  Scene setting, default on).
+- Old scene files load. A missing camera is added on open with the defaults above. A missing
+  `screen` uses the kind's default: on for Text, off for everything else. The background is a
+  Scene setting, on by default.
 - New tests:
   - Follow, smoothing, shake and punch give the same pose when scrubbed as when played straight
     through.
