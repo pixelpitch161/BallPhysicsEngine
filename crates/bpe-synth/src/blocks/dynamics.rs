@@ -155,8 +155,6 @@ struct LimiterCore {
     needed: VecDeque<(usize, f32)>,
     /// Sliding minimums waiting to be averaged, and their sum.
     mins: VecDeque<f32>,
-    /// The same minimums as a sliding minimum: increasing from the front, by frame.
-    mins_low: VecDeque<(usize, f32)>,
     sum: f64,
     count: usize,
     gain: f32,
@@ -177,7 +175,6 @@ impl LimiterCore {
             audio: VecDeque::new(),
             needed: VecDeque::new(),
             mins: VecDeque::new(),
-            mins_low: VecDeque::new(),
             sum: 0.0,
             count: 0,
             gain: 1.0,
@@ -187,7 +184,7 @@ impl LimiterCore {
     }
 
     fn latency(&self) -> usize {
-        OVERSAMPLE_DELAY + 2 * self.lookahead
+        OVERSAMPLE_DELAY + self.lookahead + 1
     }
 
     /// Takes the next frame and gives back the one [`LimiterCore::latency`] frames ago (silence
@@ -204,26 +201,20 @@ impl LimiterCore {
             self.needed.pop_back();
         }
         self.needed.push_back((at, need));
-        // The minimum over a lookahead window ending now.
-        while self.needed.front().is_some_and(|&(i, _)| i + self.lookahead < at) {
+        // The minimum over a lookahead window ending now, and a frame either side of it: a peak
+        // between two frames is down to both.
+        while self.needed.front().is_some_and(|&(i, _)| i + self.lookahead + 2 < at) {
             self.needed.pop_front();
         }
         let min = self.needed.front().map_or(1.0, |&(_, v)| v);
-        // Averaged over another lookahead, it ramps down before every peak and never above it.
         self.mins.push_back(min);
         self.sum += min as f64;
         if self.mins.len() > self.lookahead + 1 {
             self.sum -= self.mins.pop_front().unwrap_or(1.0) as f64;
         }
-        while self.mins_low.back().is_some_and(|&(_, v)| v >= min) {
-            self.mins_low.pop_back();
-        }
-        self.mins_low.push_back((at, min));
-        while self.mins_low.front().is_some_and(|&(i, _)| i + self.lookahead < at) {
-            self.mins_low.pop_front();
-        }
-        let target = (self.sum / self.mins.len() as f64) as f32;
-        let target = target.min(*self.mins.back().unwrap_or(&1.0)).min(self.window_min());
+        // Each minimum covers the frame a lookahead and one ago and its neighbours, so their average does too: it slides
+        // down over the lookahead and is never above what that frame needs.
+        let target = ((self.sum / self.mins.len() as f64) as f32).min(1.0);
         let release = self.release.unwrap_or_else(|| {
             // 50 ms, stretching to 500 ms as more of the last second is spent turned down.
             let share = self.busy_count as f32 / self.rate;
@@ -238,11 +229,6 @@ impl LimiterCore {
         }
         let out = if self.audio.len() > self.latency() { self.audio.pop_front().unwrap_or([0.0; 2]) } else { [0.0; 2] };
         (out.map(|v| flush(v * self.gain)), self.gain)
-    }
-
-    /// The smallest of the minimums still being averaged.
-    fn window_min(&self) -> f32 {
-        self.mins_low.front().map_or(1.0, |&(_, v)| v.min(1.0))
     }
 }
 
@@ -433,6 +419,27 @@ impl Block for Compressor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_limiter_ramps_into_a_peak() {
+        // A steady level, then a jump far over the ceiling: the gain slides down over the
+        // lookahead instead of stepping, and the loud part still stays under the ceiling.
+        let mut core = LimiterCore::new(48_000.0, -1.0, None);
+        let latency = core.latency();
+        let input: Vec<f32> = (0..4_800).map(|i| if i < 2_400 { 0.3 } else { 1.5 }).collect();
+        let mut gains = Vec::new();
+        let mut out = Vec::new();
+        for i in 0..input.len() + latency {
+            let x = input.get(i).copied().unwrap_or(0.0);
+            let (o, g) = core.push([x, x]);
+            gains.push(g);
+            out.push(o[0]);
+        }
+        let biggest = gains.windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0f32, f32::max);
+        assert!(biggest < 0.01, "the gain jumps by {biggest} in one frame");
+        let ceiling = 10f32.powf(-1.0 / 20.0);
+        assert!(out.iter().all(|v| v.abs() <= ceiling * 1.0001), "{}", out.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+    }
     use crate::testing::{constant, run, sine};
     use crate::{BLOCK, Ctx, Knobs, Rng};
     use bpe_graph::Param;
@@ -543,7 +550,19 @@ mod tests {
             s.iter_mut().flatten().for_each(|v| *v *= 2.0);
             vec![Some(s)]
         });
-        let flat: Vec<f32> = out[4_800..].iter().flatten().copied().collect();
+        // A slice cut mid-wave jumps to and from silence at its ends, which rings over the
+        // ceiling on its own: fade the ends in and out before measuring.
+        let part = &out[4_800..];
+        let fade = 2_000.0;
+        let flat: Vec<f32> = part
+            .iter()
+            .enumerate()
+            .flat_map(|(i, f)| {
+                let edge = (i as f32).min((part.len() - 1 - i) as f32);
+                let g = (edge / fade).min(1.0);
+                [f[0] * g, f[1] * g]
+            })
+            .collect();
         assert!(db(true_peak(&flat)) <= -2.9, "{}", db(true_peak(&flat)));
     }
 }

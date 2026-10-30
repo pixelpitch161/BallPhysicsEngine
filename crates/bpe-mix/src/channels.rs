@@ -117,10 +117,14 @@ impl ChannelCache {
 }
 
 /// Hashes a fingerprint together with an effects graph's sound.
-pub(crate) fn with_fx(fingerprint: u64, fx: Option<&bpe_graph::Graph>) -> u64 {
+pub(crate) fn with_fx(fingerprint: u64, fx: Option<&bpe_graph::Graph>, cx: &bpe_synth::Ctx) -> u64 {
     let mut h = DefaultHasher::new();
     fingerprint.hash(&mut h);
     fx.map(bpe_synth::sound_key).hash(&mut h);
+    // Synced delays, sweeps and LFOs follow the tempo, and noise the seed.
+    if fx.is_some() {
+        (cx.seconds_per_beat.to_bits(), cx.seed).hash(&mut h);
+    }
     h.finish()
 }
 
@@ -217,7 +221,8 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
             (InstrumentChoice::Patch { .. }, Some((_, _, notes))) => patch_fingerprint(&g.choice, notes, spb, frames),
             (InstrumentChoice::Patch { .. }, None) => continue,
         };
-        fingerprints.insert(*key, with_fx(fingerprint, g.fx.as_ref().map(|(_, fx)| *fx)));
+        fingerprints
+            .insert(*key, with_fx(fingerprint, g.fx.as_ref().map(|(_, fx)| *fx), &crate::buses::fx_ctx(settings)));
     }
     let mut channels: BTreeMap<GroupKey, Arc<Vec<f32>>> = BTreeMap::new();
     let mut bad: BTreeSet<GroupKey> = BTreeSet::new();

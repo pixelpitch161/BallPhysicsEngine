@@ -80,7 +80,7 @@ pub(crate) fn strips(
         for k in keys {
             fingerprints.get(k).hash(&mut h);
         }
-        let fingerprint = with_fx(h.finish(), inserts);
+        let fingerprint = with_fx(h.finish(), inserts, &fx_ctx(settings));
         let name = settings.channel_names.get(&channel).cloned().unwrap_or_else(|| format!("Channel {channel}"));
         let place = format!("{name} inserts");
         if let Some(fx) = inserts {
@@ -125,8 +125,8 @@ pub(crate) fn strips(
     out
 }
 
-/// Plays `notes` through their channels, sends and buses and the master effects: the mix
-/// before the master stage. Gives the samples, the problems, and how many instrument groups
+/// Plays `notes` through their channels, sends and buses: the mix before the master effects
+/// and the master stage. Gives the samples, the problems, and how many instrument groups
 /// were rendered rather than taken from `cache`.
 pub(crate) fn premaster_from_notes(
     settings: &MixSettings,
@@ -167,7 +167,7 @@ pub(crate) fn premaster_from_notes(
         for (ch, db) in &sends {
             (ch, rendered.channels[ch].1, db.to_bits()).hash(&mut h);
         }
-        let fingerprint = with_fx(h.finish(), fx);
+        let fingerprint = with_fx(h.finish(), fx, &cx);
         match cache.buses.get(&bus.id).filter(|c| c.fingerprint == fingerprint) {
             Some(c) => {
                 if c.fx_bad {
@@ -206,13 +206,20 @@ pub(crate) fn premaster_from_notes(
         add(&mut mix, &samples, db_to_gain(settings.buses[i].volume));
     }
 
-    if !settings.master_fx.nodes.is_empty() {
-        problems.extend(fx_problem(&settings.master_fx, "Master effects"));
-        if run_fx(&settings.master_fx, &mut mix, cx) {
-            problems.insert("Master effects made bad samples".into());
-        }
-    }
     (mix, problems.into_iter().collect(), rendered.fresh)
+}
+
+/// Runs the master effects over the whole mix (the song in it too), before the master stage.
+/// Gives what went wrong, as lines for the status bar.
+pub fn run_master_fx(samples: &mut [f32], settings: &MixSettings) -> Vec<String> {
+    if settings.master_fx.nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut problems: Vec<String> = fx_problem(&settings.master_fx, "Master effects").into_iter().collect();
+    if run_fx(&settings.master_fx, samples, fx_ctx(settings)) {
+        problems.push("Master effects made bad samples".into());
+    }
+    problems
 }
 
 #[cfg(test)]
@@ -259,7 +266,9 @@ mod tests {
 
     fn premaster(s: &crate::MixSettings, cache: &mut crate::ChannelCache) -> (Vec<f32>, Vec<String>, usize) {
         let frames = crate::Soundtrack::silent(s.duration).frames();
-        premaster_from_notes(s, &plucks(1), frames, cache)
+        let (mut mix, mut problems, fresh) = premaster_from_notes(s, &plucks(1), frames, cache);
+        problems.extend(run_master_fx(&mut mix, s));
+        (mix, problems, fresh)
     }
 
     fn energy(x: &[f32], from: f32, to: f32) -> f32 {
@@ -322,6 +331,25 @@ mod tests {
         assert_ne!(first, second);
         // And the cached mix is the same as a fresh one.
         assert_eq!(second, premaster(&s, &mut Default::default()).0);
+    }
+
+    #[test]
+    fn a_tempo_change_reruns_synced_effects() {
+        let synced = || {
+            let mut g = chain("delay", &[("mix", 1.0)]);
+            let id = g.nodes.iter().find(|n| n.kind == "delay").unwrap().id;
+            g.node_mut(id).unwrap().params.insert("time_mode".into(), Param::Choice("1/4".into()));
+            g
+        };
+        let mut s = with_reverb_bus(Some((BusId(0), 0.0)));
+        s.buses[0].fx = synced();
+        s.strips.get_mut(&1).unwrap().inserts = synced();
+        s.beats = (0..20).map(|i| i as f64 * 0.5).collect();
+        let mut cache = crate::ChannelCache::default();
+        premaster(&s, &mut cache);
+        s.beats = (0..20).map(|i| i as f64 * 0.3).collect();
+        let cached = premaster(&s, &mut cache).0;
+        assert!(cached == premaster(&s, &mut Default::default()).0, "the echoes follow the new tempo");
     }
 
     #[test]

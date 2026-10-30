@@ -149,13 +149,16 @@ impl Block for Reverb {
         for s in 0..BLOCK {
             let along = s as f32 / BLOCK as f32;
             let mut wet = [0.0f32; 2];
+            // Both sides' rooms hear both sides, as in Freeverb, so a sound on one side still
+            // fills the space; the two rooms' different lengths keep the tail wide.
+            let mono = (input[0][s] + input[1][s]) * 0.5;
             for side in 0..2 {
                 let delayed = if pre_len > 1 {
                     let d = self.pre[side][self.pre_pos];
-                    self.pre[side][self.pre_pos] = input[side][s];
+                    self.pre[side][self.pre_pos] = mono;
                     d
                 } else {
-                    input[side][s]
+                    mono
                 };
                 let x = delayed * self.gain;
                 let mut sum = 0.0;
@@ -211,6 +214,21 @@ mod tests {
         let at = |db: f64| edc.iter().position(|&e| 10.0 * (e / total).log10() < db).unwrap() as f64 / 48_000.0;
         let t60 = (at(-35.0) - at(-5.0)) * 2.0;
         assert!((t60 - 2.0).abs() < 0.2, "RT60 {t60}");
+    }
+
+    #[test]
+    fn a_sound_on_one_side_fills_both() {
+        let k = Knobs::default().with("mix", Param::Number(1.0)).with("predelay", Param::Number(0.0));
+        let out = run(&mut Reverb::new(&k), &mut Ctx::default(), 48_000 / BLOCK, |b, _| {
+            let mut buf = SILENT;
+            if b == 0 {
+                buf[0][0] = 1.0;
+            }
+            vec![Some(buf)]
+        });
+        let energy = |side: usize| out.iter().map(|f| f[side] * f[side]).sum::<f32>();
+        let (left, right) = (energy(0), energy(1));
+        assert!(right > left * 0.5, "left {left}, right {right}");
     }
 
     #[test]

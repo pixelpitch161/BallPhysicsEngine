@@ -229,6 +229,45 @@ mod tests {
     }
 
     #[test]
+    fn the_song_goes_through_the_master_effects() {
+        // A song only on the left, and master effects that fold everything to mono: if the
+        // song runs through them, both sides come out the same.
+        let dir = std::env::temp_dir().join(format!("bpe-kit-music-{}-masterfx", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("left.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..3 * 48_000 {
+            let s = (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin() * 0.5;
+            writer.write_sample((s * i16::MAX as f32) as i16).unwrap();
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
+        root.params.set("song", Value::Text(path.to_str().unwrap().into()));
+        root.params.set("duration", Value::Number(3.0));
+        root.params.set("song_volume", Value::Number(12.0));
+        let width = [("width".to_owned(), bpe_graph::Param::Number(0.0))].into();
+        scene.library.master_fx = bpe_synth::chain_graph(&[("width".into(), width, true)]);
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(3.0, &kit.sims, &mut log);
+        let track = mix_scene(&scene, &resolved, &log, &kit);
+        let energy = |side: usize| track.samples.iter().skip(side).step_by(2).map(|v| v * v).sum::<f32>();
+        let (left, right) = (energy(0), energy(1));
+        assert!(left > 0.0 && (left - right).abs() < left * 0.01, "left {left}, right {right}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_scene_with_a_song_is_mastered_once() {
         let path = temp_wav("mastered", 4.0, 48_000);
         let kit = kit();

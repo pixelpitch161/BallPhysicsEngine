@@ -26,6 +26,7 @@ use bpe_core::{
 use bpe_runtime::{Event, Log};
 
 pub use audition::{audition, audition_keys};
+pub use buses::run_master_fx;
 pub use channels::{ChannelCache, InstrumentChoice, VOICE_CAP, instrument_for};
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
@@ -380,12 +381,14 @@ pub fn mix_cached(
     cache: &mut ChannelCache,
 ) -> Soundtrack {
     let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, cache);
+    let problems = run_master_fx(&mut track.samples, settings);
+    track.problems.extend(problems);
     track.report = Some(master(&mut track.samples, &settings.master));
     track
 }
 
-/// [`mix_cached`] without the master stage: channels, sends, buses and master effects, ready
-/// for a song to be mixed in before [`master`] finishes it.
+/// [`mix_cached`] without the master effects and the master stage: channels, sends and buses,
+/// ready for a song to be mixed in before [`run_master_fx`] and [`master`] finish it.
 #[allow(clippy::too_many_arguments)]
 pub fn mix_premaster(
     settings: &MixSettings,

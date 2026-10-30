@@ -324,7 +324,9 @@ pub fn mix_scene_cached(
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
     }
-    // The master runs once, over the notes and the song together.
+    // The master effects and the master run once, over the notes and the song together.
+    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings);
+    track.problems.extend(problems);
     track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
     track
 }
