@@ -52,6 +52,7 @@ pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
+pub use music::{Extras, SceneExport, midi_path, mix_scene_export, stems_folder, write_extras};
 pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
     uses_live_inputs, wants_beats, warp_for,
