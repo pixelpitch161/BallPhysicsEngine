@@ -117,6 +117,7 @@ fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
         left: gain * angle.cos(),
         right: gain * angle.sin(),
         channel: 0,
+        hit: None,
     }));
 }
 

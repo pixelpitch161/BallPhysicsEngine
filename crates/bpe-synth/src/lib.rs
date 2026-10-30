@@ -29,6 +29,7 @@ pub use program::{MacroKnob, Patch, Program, blank_patch, compile, compile_effec
 pub use starters::starters;
 pub use voices::{
     ChannelAudio, NoteLength, PlayNote, STEAL_FADE, VoiceSettings, global_steals, render_channel, render_channel_on,
+    render_channel_with,
 };
 
 use bpe_graph::Param;

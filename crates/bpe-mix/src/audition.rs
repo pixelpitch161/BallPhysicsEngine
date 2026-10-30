@@ -62,7 +62,15 @@ pub fn audition_keys(steps: &[(Vec<u8>, f64)], instrument: &InstrumentChoice, se
             (InstrumentChoice::Patch { voices, .. }, Some(program)) => {
                 let notes: Vec<PlayNote> = keys
                     .iter()
-                    .map(|&key| PlayNote { frame: 0, key, velocity: 0.7, left: 1.0, right: 1.0, steal_at: None })
+                    .map(|&key| PlayNote {
+                        frame: 0,
+                        key,
+                        velocity: 0.7,
+                        left: 1.0,
+                        right: 1.0,
+                        steal_at: None,
+                        physics: None,
+                    })
                     .collect();
                 let held = VoiceSettings { note_length: NoteLength::Seconds(length as f32), mono: false, ..*voices };
                 let audio =

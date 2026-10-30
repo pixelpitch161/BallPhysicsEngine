@@ -2,8 +2,8 @@
 //! effects over the whole mix. What comes out goes to the master stage.
 
 use crate::channels::{CachedChannel, ChannelCache, GroupKey, with_fx};
-use crate::{MixSettings, Note};
-use bpe_synth::{Ctx, effects_or_through};
+use crate::{MixSettings, Note, PhysicsInputs};
+use bpe_synth::{Ctx, SceneSignals, Sources, effects_or_through};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -36,9 +36,9 @@ pub(crate) fn fx_problem(graph: &bpe_graph::Graph, place: &str) -> Option<String
 
 /// Runs an effects graph over `samples` in place; one that doesn't compile leaves them be.
 /// Samples that aren't numbers become silence, and the answer is whether there were any.
-pub(crate) fn run_fx(graph: &bpe_graph::Graph, samples: &mut [f32], cx: Ctx) -> bool {
+pub(crate) fn run_fx(graph: &bpe_graph::Graph, samples: &mut [f32], cx: Ctx, scene: &Arc<SceneSignals>) -> bool {
     let (Some(program), _) = effects_or_through(graph) else { return false };
-    program.run(samples, cx);
+    program.run_with(samples, cx, &Sources { hit: None, scene: Some(scene.clone()) });
     let mut bad = false;
     for v in samples.iter_mut().filter(|v| !v.is_finite()) {
         *v = 0.0;
@@ -66,6 +66,7 @@ pub(crate) fn strips(
     frames: usize,
     cache: &mut ChannelCache,
     problems: &mut BTreeSet<String>,
+    signals: &dyn Fn(u32) -> Arc<SceneSignals>,
 ) -> BTreeMap<u32, (Arc<Vec<f32>>, u64)> {
     let mut members: BTreeMap<u32, Vec<&GroupKey>> = BTreeMap::new();
     for key in groups.keys() {
@@ -80,7 +81,8 @@ pub(crate) fn strips(
         for k in keys {
             fingerprints.get(k).hash(&mut h);
         }
-        let fingerprint = with_fx(h.finish(), inserts, &fx_ctx(settings));
+        let scene = signals(channel);
+        let fingerprint = with_fx(h.finish(), inserts, &fx_ctx(settings), &scene);
         let name = settings.channel_names.get(&channel).cloned().unwrap_or_else(|| format!("Channel {channel}"));
         let place = format!("{name} inserts");
         if let Some(fx) = inserts {
@@ -101,17 +103,17 @@ pub(crate) fn strips(
                 for k in keys {
                     add(&mut sum, &groups[*k], 1.0);
                 }
-                jobs.push((channel, fingerprint, sum, inserts, place, false));
+                jobs.push((channel, fingerprint, sum, inserts, place, false, scene));
             }
         }
     }
     let cx = fx_ctx(settings);
-    par_each(&mut jobs, |(_, _, samples, fx, _, bad)| {
+    par_each(&mut jobs, |(_, _, samples, fx, _, bad, scene)| {
         if let Some(fx) = fx {
-            *bad = run_fx(fx, samples, cx);
+            *bad = run_fx(fx, samples, cx, scene);
         }
     });
-    for (channel, fingerprint, samples, _, place, bad) in jobs {
+    for (channel, fingerprint, samples, _, place, bad, _) in jobs {
         if bad {
             problems.insert(format!("{place} made bad samples"));
         }
@@ -133,8 +135,9 @@ pub(crate) fn premaster_from_notes(
     notes: &[Note],
     frames: usize,
     cache: &mut ChannelCache,
+    physics: &PhysicsInputs,
 ) -> (Vec<f32>, Vec<String>, usize) {
-    let rendered = crate::channels::render(settings, notes, frames, cache);
+    let rendered = crate::channels::render_with(settings, notes, frames, cache, physics);
     let mut problems: BTreeSet<String> = rendered.problems.into_iter().collect();
     let mut mix = vec![0.0f32; frames * 2];
     for (samples, _) in rendered.channels.values() {
@@ -144,6 +147,7 @@ pub(crate) fn premaster_from_notes(
     // Each bus: what the channels send it, through its effects. Kept before its volume, so
     // turning a bus up or down doesn't run its effects again.
     let cx = fx_ctx(settings);
+    let scene = Arc::new(rendered.scene.clone());
     let mut jobs = Vec::new();
     let mut ready: Vec<(usize, Arc<Vec<f32>>)> = Vec::new();
     let mut live = BTreeSet::new();
@@ -167,7 +171,7 @@ pub(crate) fn premaster_from_notes(
         for (ch, db) in &sends {
             (ch, rendered.channels[ch].1, db.to_bits()).hash(&mut h);
         }
-        let fingerprint = with_fx(h.finish(), fx, &cx);
+        let fingerprint = with_fx(h.finish(), fx, &cx, &scene);
         match cache.buses.get(&bus.id).filter(|c| c.fingerprint == fingerprint) {
             Some(c) => {
                 if c.fx_bad {
@@ -186,7 +190,7 @@ pub(crate) fn premaster_from_notes(
     }
     par_each(&mut jobs, |(_, _, samples, fx, _, bad)| {
         if let Some(fx) = fx {
-            *bad = run_fx(fx, samples, cx);
+            *bad = run_fx(fx, samples, cx, &scene);
         }
     });
     for (i, fingerprint, samples, _, place, bad) in jobs {
@@ -211,12 +215,13 @@ pub(crate) fn premaster_from_notes(
 
 /// Runs the master effects over the whole mix (the song in it too), before the master stage.
 /// Gives what went wrong, as lines for the status bar.
-pub fn run_master_fx(samples: &mut [f32], settings: &MixSettings) -> Vec<String> {
+pub fn run_master_fx(samples: &mut [f32], settings: &MixSettings, physics: &PhysicsInputs) -> Vec<String> {
     if settings.master_fx.nodes.is_empty() {
         return Vec::new();
     }
     let mut problems: Vec<String> = fx_problem(&settings.master_fx, "Master effects").into_iter().collect();
-    if run_fx(&settings.master_fx, samples, fx_ctx(settings)) {
+    let scene = Arc::new(physics.scene.clone());
+    if run_fx(&settings.master_fx, samples, fx_ctx(settings), &scene) {
         problems.push("Master effects made bad samples".into());
     }
     problems
@@ -241,6 +246,7 @@ mod tests {
                 left: 0.7,
                 right: 0.7,
                 channel,
+                hit: None,
             })
             .collect()
     }
@@ -266,8 +272,8 @@ mod tests {
 
     fn premaster(s: &crate::MixSettings, cache: &mut crate::ChannelCache) -> (Vec<f32>, Vec<String>, usize) {
         let frames = crate::Soundtrack::silent(s.duration).frames();
-        let (mut mix, mut problems, fresh) = premaster_from_notes(s, &plucks(1), frames, cache);
-        problems.extend(run_master_fx(&mut mix, s));
+        let (mut mix, mut problems, fresh) = premaster_from_notes(s, &plucks(1), frames, cache, &Default::default());
+        problems.extend(run_master_fx(&mut mix, s, &Default::default()));
         (mix, problems, fresh)
     }
 

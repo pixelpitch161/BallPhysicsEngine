@@ -104,6 +104,32 @@ pub struct Note {
     /// The sound module that played it (its id), which is the channel it renders in. The mixer
     /// sets it; modules leave it at 0.
     pub channel: u32,
+    /// The place in the run's log of the event that played it, so its voice can read the hit's
+    /// physics; `None` for notes no event played.
+    pub hit: Option<u64>,
+}
+
+/// What the run gives input blocks: each hit's values and track, by its place in the log, and
+/// the scene-wide series on the video clock.
+#[derive(Clone, Debug, Default)]
+pub struct PhysicsInputs {
+    /// Filled only when some patch reads at-the-hit or live inputs.
+    pub hits: BTreeMap<u64, std::sync::Arc<bpe_synth::HitPhysics>>,
+    /// The scene's series, with Scene defaults' chords and no channel levels.
+    pub scene: bpe_synth::SceneSignals,
+    /// The chords of each channel whose progression isn't Scene defaults', by module id.
+    pub chords: BTreeMap<u32, Vec<[f32; 2]>>,
+}
+
+impl PhysicsInputs {
+    /// The scene's series as `channel` sees them: its own chords when it has them.
+    pub fn channel_signals(&self, channel: u32) -> bpe_synth::SceneSignals {
+        let mut s = self.scene.clone();
+        if let Some(c) = self.chords.get(&channel) {
+            s.chords = c.clone();
+        }
+        s
+    }
 }
 
 /// What the whole mix needs from the scene.
@@ -365,7 +391,8 @@ pub fn mix_with(
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
 ) -> Soundtrack {
-    mix_cached(settings, resolved, library, log, mixes, animation, video_time, &mut ChannelCache::default())
+    let physics = PhysicsInputs::default();
+    mix_cached(settings, resolved, library, log, mixes, animation, video_time, &physics, &mut ChannelCache::default())
 }
 
 /// [`mix_with`], rendering only the channels that changed since the mix that filled `cache`.
@@ -378,10 +405,11 @@ pub fn mix_cached(
     mixes: &Mixes,
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
+    physics: &PhysicsInputs,
     cache: &mut ChannelCache,
 ) -> Soundtrack {
-    let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, cache);
-    let problems = run_master_fx(&mut track.samples, settings);
+    let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, physics, cache);
+    let problems = run_master_fx(&mut track.samples, settings, physics);
     track.problems.extend(problems);
     track.report = Some(master(&mut track.samples, &settings.master));
     track
@@ -398,6 +426,7 @@ pub fn mix_premaster(
     mixes: &Mixes,
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
+    physics: &PhysicsInputs,
     cache: &mut ChannelCache,
 ) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
@@ -406,7 +435,7 @@ pub fn mix_premaster(
         return track;
     }
     let frames = track.frames();
-    let (samples, problems, _) = buses::premaster_from_notes(settings, &notes, frames, cache);
+    let (samples, problems, _) = buses::premaster_from_notes(settings, &notes, frames, cache, physics);
     track.samples = samples;
     track.problems = problems;
     track
@@ -441,6 +470,7 @@ pub(crate) mod tests {
                     left: gain,
                     right: gain,
                     channel: 0,
+                    hit: None,
                 });
             }
         }

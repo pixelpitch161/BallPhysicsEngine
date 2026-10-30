@@ -244,7 +244,7 @@ mod tests {
 
     fn play(graph: &Graph, voices: &VoiceSettings) -> Vec<f32> {
         let program = compile(graph).unwrap_or_else(|e| panic!("{}: {e:?}", graph.name));
-        let note = PlayNote { frame: 0, key: 60, velocity: 0.8, left: 1.0, right: 1.0, steal_at: None };
+        let note = PlayNote { frame: 0, key: 60, velocity: 0.8, left: 1.0, right: 1.0, steal_at: None, physics: None };
         render_channel(&program, &[note], voices, 0.5, 48_000.0, 48_000).samples
     }
 

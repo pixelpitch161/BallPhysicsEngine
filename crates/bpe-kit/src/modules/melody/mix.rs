@@ -63,6 +63,7 @@ impl ModuleMix for MelodySoundMix {
                     left: gain * share * angle.cos(),
                     right: gain * share * angle.sin(),
                     channel: 0,
+                    hit: None,
                 });
             }
         }

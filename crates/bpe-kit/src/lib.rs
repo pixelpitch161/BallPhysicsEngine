@@ -318,14 +318,24 @@ pub fn mix_scene_cached(
     let warp = warp_for(scene, resolved, log);
     let settings = mix_settings(scene, resolved);
     let video_time = |t| warp.video_time(t);
-    let mut track =
-        bpe_mix::mix_premaster(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
+    let physics = bpe_mix::PhysicsInputs::default();
+    let mut track = bpe_mix::mix_premaster(
+        &settings,
+        resolved,
+        &scene.library,
+        log,
+        &kit.mixes,
+        animation,
+        &video_time,
+        &physics,
+        cache,
+    );
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
     }
     // The master effects and the master run once, over the notes and the song together.
-    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings);
+    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings, &physics);
     track.problems.extend(problems);
     track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
     track

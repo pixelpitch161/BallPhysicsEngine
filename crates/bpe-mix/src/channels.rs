@@ -3,9 +3,9 @@
 //! render side by side on all cores and are added up in channel order, so the mix is the same
 //! every time.
 
-use crate::{Instrument, MixSettings, Note, NoteCache, NoteInstrument, SAMPLE_RATE, mix_notes};
+use crate::{Instrument, MixSettings, Note, NoteCache, NoteInstrument, PhysicsInputs, SAMPLE_RATE, mix_notes};
 use bpe_core::{Choice, InstrumentId, InstrumentSource, VoiceSettings};
-use bpe_synth::{PlayNote, Program, global_steals, render_channel_on};
+use bpe_synth::{PlayNote, Program, SceneSignals, Uses, global_steals, render_channel_with};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -65,8 +65,8 @@ fn resolve(settings: &MixSettings, n: &Note) -> InstrumentChoice {
 
 /// A channel and the instrument some of its notes play through.
 pub(crate) type GroupKey = (u32, NoteInstrument);
-/// A compiled patch, how it plays notes, and the notes it plays.
-type PatchJob = (Program, VoiceSettings, Vec<PlayNote>);
+/// A compiled patch, how it plays notes, the notes it plays, and the inputs it reads.
+type PatchJob = (Program, VoiceSettings, Vec<PlayNote>, Uses);
 
 /// The notes of one channel that share an instrument.
 struct Group<'a> {
@@ -81,6 +81,8 @@ struct Group<'a> {
 pub(crate) struct Rendered {
     pub channels: BTreeMap<u32, (Arc<Vec<f32>>, u64)>,
     pub problems: Vec<String>,
+    /// The scene's series as buses and the master effects see them.
+    pub scene: SceneSignals,
     /// How many channels were rendered rather than taken from the cache.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fresh: usize,
@@ -117,13 +119,22 @@ impl ChannelCache {
 }
 
 /// Hashes a fingerprint together with an effects graph's sound.
-pub(crate) fn with_fx(fingerprint: u64, fx: Option<&bpe_graph::Graph>, cx: &bpe_synth::Ctx) -> u64 {
+pub(crate) fn with_fx(
+    fingerprint: u64,
+    fx: Option<&bpe_graph::Graph>,
+    cx: &bpe_synth::Ctx,
+    scene: &SceneSignals,
+) -> u64 {
     let mut h = DefaultHasher::new();
     fingerprint.hash(&mut h);
     fx.map(bpe_synth::sound_key).hash(&mut h);
     // Synced delays, sweeps and LFOs follow the tempo, and noise the seed.
-    if fx.is_some() {
+    if let Some(fx) = fx {
         (cx.seconds_per_beat.to_bits(), cx.seed).hash(&mut h);
+        // Scene inputs follow the run.
+        if bpe_synth::uses(fx).scene {
+            scene.key().hash(&mut h);
+        }
     }
     h.finish()
 }
@@ -153,7 +164,14 @@ fn built_in_fingerprint(choice: &InstrumentChoice, notes: &[&Note], frames: usiz
 }
 
 /// What a patch channel's render depends on; the graph already carries the module's macros.
-fn patch_fingerprint(choice: &InstrumentChoice, notes: &[PlayNote], spb: f32, frames: usize) -> u64 {
+fn patch_fingerprint(
+    choice: &InstrumentChoice,
+    notes: &[PlayNote],
+    spb: f32,
+    frames: usize,
+    uses: &Uses,
+    scene: &SceneSignals,
+) -> u64 {
     let mut h = DefaultHasher::new();
     // Only what sounds: moving a block or renaming the patch keeps the render.
     if let InstrumentChoice::Patch { graph, voices, .. } = choice {
@@ -164,13 +182,41 @@ fn patch_fingerprint(choice: &InstrumentChoice, notes: &[PlayNote], spb: f32, fr
     for n in notes {
         hash_note(&mut h, n.frame, n.key, n.velocity, n.left, n.right);
         n.steal_at.hash(&mut h);
+        if uses.hit || uses.live {
+            n.physics.as_ref().map(|p| p.key()).hash(&mut h);
+        }
+    }
+    if uses.scene {
+        scene.key().hash(&mut h);
     }
     h.finish()
 }
 
-/// Plays every note through its channel's instrument into `frames` frames of interleaved stereo,
-/// taking channels that haven't changed from `cache` and keeping the new ones there.
+/// [`render_with`] without physics.
+#[cfg(test)]
 pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cache: &mut ChannelCache) -> Rendered {
+    render_with(settings, notes, frames, cache, &PhysicsInputs::default())
+}
+
+/// Plays every note through its channel's instrument into `frames` frames of interleaved stereo,
+/// taking channels that haven't changed from `cache` and keeping the new ones there. Input
+/// blocks read `physics`.
+pub(crate) fn render_with(
+    settings: &MixSettings,
+    notes: &[Note],
+    frames: usize,
+    cache: &mut ChannelCache,
+    physics: &PhysicsInputs,
+) -> Rendered {
+    // Each channel's view of the scene, made once.
+    let mut views: BTreeMap<u32, Arc<SceneSignals>> = BTreeMap::new();
+    for n in notes {
+        views.entry(n.channel).or_insert_with(|| Arc::new(physics.channel_signals(n.channel)));
+    }
+    for &channel in settings.strips.keys() {
+        views.entry(channel).or_insert_with(|| Arc::new(physics.channel_signals(channel)));
+    }
+    let signals = |channel: u32| views.get(&channel).cloned().unwrap_or_else(|| Arc::new(physics.scene.clone()));
     let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
     for n in notes.iter().filter(|n| n.frame < frames) {
         groups
@@ -196,8 +242,8 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
             Ok(program) => {
                 let index = gates.len();
                 gates.push(voices.note_length.frames(spb, SAMPLE_RATE as f32));
-                capped.extend(g.notes.iter().map(|n| (index, play_note(n))));
-                programs.insert(*key, (program, *voices, Vec::new()));
+                capped.extend(g.notes.iter().map(|n| (index, play_note(n, physics))));
+                programs.insert(*key, (program, *voices, Vec::new(), bpe_synth::uses(graph)));
             }
             Err(diagnostics) => {
                 let first = diagnostics.first().map_or("", |d| d.message.as_str());
@@ -208,7 +254,7 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     global_steals(&mut capped, |i| gates[i], VOICE_CAP);
     let keys: Vec<GroupKey> = programs.keys().copied().collect();
     for (index, note) in capped {
-        if let Some((_, _, notes)) = programs.get_mut(&keys[index]) {
+        if let Some((_, _, notes, _)) = programs.get_mut(&keys[index]) {
             notes.push(note);
         }
     }
@@ -218,11 +264,13 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     for (key, g) in &groups {
         let fingerprint = match (&g.choice, programs.get(key)) {
             (InstrumentChoice::BuiltIn { .. }, _) => built_in_fingerprint(&g.choice, &g.notes, frames),
-            (InstrumentChoice::Patch { .. }, Some((_, _, notes))) => patch_fingerprint(&g.choice, notes, spb, frames),
+            (InstrumentChoice::Patch { .. }, Some((_, _, notes, uses))) => {
+                patch_fingerprint(&g.choice, notes, spb, frames, uses, &signals(key.0))
+            }
             (InstrumentChoice::Patch { .. }, None) => continue,
         };
-        fingerprints
-            .insert(*key, with_fx(fingerprint, g.fx.as_ref().map(|(_, fx)| *fx), &crate::buses::fx_ctx(settings)));
+        let fx = g.fx.as_ref().map(|(_, fx)| *fx);
+        fingerprints.insert(*key, with_fx(fingerprint, fx, &crate::buses::fx_ctx(settings), &signals(key.0)));
     }
     let mut channels: BTreeMap<GroupKey, Arc<Vec<f32>>> = BTreeMap::new();
     let mut bad: BTreeSet<GroupKey> = BTreeSet::new();
@@ -268,8 +316,10 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     let cores = crate::level::threads();
     let per_channel = (cores / jobs.len().max(1)).max(1);
     let work = || {
-        while let Some(&(key, (program, voices, notes))) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-            let audio = render_channel_on(program, notes, voices, spb, SAMPLE_RATE as f32, frames, per_channel);
+        while let Some(&(key, (program, voices, notes, uses))) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+            let scene = uses.scene.then(|| signals(key.0));
+            let rate = SAMPLE_RATE as f32;
+            let audio = render_channel_with(program, notes, voices, spb, rate, frames, per_channel, scene);
             done.lock().unwrap().push((*key, audio));
         }
     };
@@ -284,16 +334,18 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     debug_assert_eq!(fresh + fresh_before, fingerprints.len());
     // The instruments' own effects, over the fresh renders side by side.
     let cx = crate::buses::fx_ctx(settings);
-    let mut fx_jobs: Vec<(Vec<f32>, Option<&bpe_graph::Graph>, bool)> = rendered
+    let mut fx_jobs: Vec<(Vec<f32>, Option<&bpe_graph::Graph>, bool, Arc<SceneSignals>)> = rendered
         .iter_mut()
-        .map(|(key, samples, _)| (std::mem::take(samples), groups[key].fx.as_ref().map(|(_, g)| *g), false))
+        .map(|(key, samples, _)| {
+            (std::mem::take(samples), groups[key].fx.as_ref().map(|(_, g)| *g), false, signals(key.0))
+        })
         .collect();
-    crate::buses::par_each(&mut fx_jobs, |(samples, fx, bad)| {
+    crate::buses::par_each(&mut fx_jobs, |(samples, fx, bad, scene)| {
         if let Some(fx) = fx {
-            *bad = crate::buses::run_fx(fx, samples, cx);
+            *bad = crate::buses::run_fx(fx, samples, cx, scene);
         }
     });
-    for ((key, samples, bad_samples), (fx_samples, _, bad_fx)) in rendered.into_iter().zip(fx_jobs) {
+    for ((key, samples, bad_samples), (fx_samples, _, bad_fx, _)) in rendered.into_iter().zip(fx_jobs) {
         let _ = samples;
         let samples = Arc::new(fx_samples);
         if bad_samples {
@@ -330,8 +382,8 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
             missing_samples(name, graph, &mut problems);
         }
     }
-    let strips = crate::buses::strips(settings, &channels, &fingerprints, frames, cache, &mut problems);
-    Rendered { channels: strips, problems: problems.into_iter().collect(), fresh }
+    let strips = crate::buses::strips(settings, &channels, &fingerprints, frames, cache, &mut problems, &signals);
+    Rendered { channels: strips, problems: problems.into_iter().collect(), scene: physics.scene.clone(), fresh }
 }
 
 #[cfg(test)]
@@ -347,8 +399,16 @@ impl Rendered {
     }
 }
 
-fn play_note(n: &Note) -> PlayNote {
-    PlayNote { frame: n.frame, key: n.key, velocity: n.velocity, left: n.left, right: n.right, steal_at: None }
+fn play_note(n: &Note, physics: &PhysicsInputs) -> PlayNote {
+    PlayNote {
+        frame: n.frame,
+        key: n.key,
+        velocity: n.velocity,
+        left: n.left,
+        right: n.right,
+        steal_at: None,
+        physics: n.hit.and_then(|h| physics.hits.get(&h).cloned()),
+    }
 }
 
 /// Adds a line for each sample file a patch's samplers couldn't read.
@@ -369,9 +429,133 @@ mod tests {
     use super::*;
     use crate::tests::settings;
     use bpe_core::{Instrument as LibraryInstrument, InstrumentId, NoteLength};
+    use bpe_graph::Catalog;
 
     fn note(frame: usize, key: u8, channel: u32, instrument: NoteInstrument) -> Note {
-        Note { frame, instrument, key, velocity: 0.8, left: 0.7, right: 0.5, channel }
+        Note { frame, instrument, key, velocity: 0.8, left: 0.7, right: 0.5, channel, hit: None }
+    }
+
+    /// One channel (7) playing `graph` with the given notes and physics.
+    fn one_patch(graph: bpe_graph::Graph, seconds: f32) -> MixSettings {
+        let mut s = settings();
+        let mut i = patch("P", graph);
+        i.voices.note_length = NoteLength::Seconds(seconds);
+        s.instruments.insert(InstrumentId(0), i);
+        s
+    }
+
+    fn rms_of(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    fn hit_with(values: &[(usize, f32)], track: Option<bpe_synth::Track>) -> Arc<bpe_synth::HitPhysics> {
+        let mut h = bpe_synth::HitPhysics { track: track.map(Arc::new), ..Default::default() };
+        for &(i, v) in values {
+            h.values[i] = v;
+        }
+        Arc::new(h)
+    }
+
+    #[test]
+    fn a_filter_following_falling_height_closes_monotonically() {
+        let mut g = bpe_synth::blank_patch();
+        let filter = g.nodes.iter().find(|n| n.kind == "filter").unwrap().id;
+        g.node_mut(filter).unwrap().params.insert("cutoff".into(), bpe_graph::Param::Number(200.0));
+        let height =
+            bpe_synth::FollowInput { kind: "live_input".into(), input: "height".into(), channel: String::new() };
+        let g = bpe_synth::follow(&g, filter, "cutoff", &height).unwrap();
+        let s = one_patch(g, 1.2);
+        let saw = NoteInstrument::Library(Some(InstrumentId(0)));
+        let samples: Vec<[f32; 4]> = (0..=60).map(|i| [0.0, 1.0 - i as f32 / 60.0, 0.5, 0.0]).collect();
+        let track = bpe_synth::Track { rate: 60.0, samples };
+        let mut physics = PhysicsInputs::default();
+        physics.hits.insert(0, hit_with(&[], Some(track)));
+        let notes = vec![Note { hit: Some(0), ..note(0, 48, 7, saw) }];
+        let out = render_with(&s, &notes, 48_000, &mut ChannelCache::default(), &physics).mixed();
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let brightness: Vec<f32> = left
+            .chunks(4_800)
+            .map(|w| {
+                let d: Vec<f32> = w.windows(2).map(|p| p[1] - p[0]).collect();
+                rms_of(&d) / rms_of(w).max(1e-9)
+            })
+            .collect();
+        for pair in brightness.windows(2) {
+            assert!(pair[1] <= pair[0] * 1.01, "{brightness:?}");
+        }
+        assert!(brightness[0] > 2.0 * brightness[9], "{brightness:?}");
+    }
+
+    #[test]
+    fn hit_values_reach_the_voice() {
+        let cat = bpe_synth::catalog();
+        let mut g = bpe_synth::blank_patch();
+        let amp = g.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let env = g.nodes.iter().find(|n| n.kind == "adsr").unwrap().id;
+        g.links.retain(|l| l.to != (amp, 1));
+        let speed = g.add(cat.spec("hit_input").unwrap(), [0.0, 0.0]);
+        let n = g.node_mut(speed).unwrap();
+        n.params.insert("high".into(), bpe_graph::Param::Number(1200.0));
+        // The envelope times the hit speed, so each note still ends.
+        let times = g.add(cat.spec("multiply").unwrap(), [0.0, 0.0]);
+        g.connect(bpe_graph::Link { from: (speed, 0), to: (times, 0) }, cat);
+        g.connect(bpe_graph::Link { from: (env, 0), to: (times, 1) }, cat);
+        g.connect(bpe_graph::Link { from: (times, 0), to: (amp, 1) }, cat);
+        let s = one_patch(g, 0.3);
+        let saw = NoteInstrument::Library(Some(InstrumentId(0)));
+        let mut physics = PhysicsInputs::default();
+        physics.hits.insert(1, hit_with(&[(0, 300.0)], None));
+        physics.hits.insert(2, hit_with(&[(0, 1200.0)], None));
+        let notes =
+            vec![Note { hit: Some(1), ..note(0, 48, 7, saw) }, Note { hit: Some(2), ..note(48_000, 48, 7, saw) }];
+        let out = render_with(&s, &notes, 96_000, &mut ChannelCache::default(), &physics).mixed();
+        let ratio = rms_of(&out[96_000..]) / rms_of(&out[..96_000]);
+        assert!((ratio - 4.0).abs() < 0.2, "{ratio}");
+    }
+
+    #[test]
+    fn physics_values_are_in_the_fingerprint() {
+        let mut g = bpe_synth::blank_patch();
+        let filter = g.nodes.iter().find(|n| n.kind == "filter").unwrap().id;
+        let height =
+            bpe_synth::FollowInput { kind: "hit_input".into(), input: "height".into(), channel: String::new() };
+        g = bpe_synth::follow(&g, filter, "cutoff", &height).unwrap();
+        let s = one_patch(g, 0.2);
+        let saw = NoteInstrument::Library(Some(InstrumentId(0)));
+        let pluck = NoteInstrument::BuiltIn(Instrument::Pluck);
+        let notes = vec![Note { hit: Some(0), ..note(0, 48, 7, saw) }, Note { hit: Some(0), ..note(0, 60, 3, pluck) }];
+        let mut physics = PhysicsInputs::default();
+        physics.hits.insert(0, hit_with(&[(7, 0.2)], None));
+        let mut cache = ChannelCache::default();
+        assert_eq!(render_with(&s, &notes, 48_000, &mut cache, &physics).fresh, 2);
+        assert_eq!(render_with(&s, &notes, 48_000, &mut cache, &physics).fresh, 0);
+        physics.hits.insert(0, hit_with(&[(7, 0.9)], None));
+        assert_eq!(render_with(&s, &notes, 48_000, &mut cache, &physics).fresh, 1, "only the patch channel");
+    }
+
+    #[test]
+    fn scene_inputs_reach_effects() {
+        let cat = bpe_synth::catalog();
+        let mut s = one_patch(bpe_synth::blank_patch(), 2.0);
+        let mut fx = bpe_synth::chain_graph(&[(
+            "amp".into(),
+            [("gain".to_string(), bpe_graph::Param::Number(-60.0))].into(),
+            true,
+        )]);
+        let amp = fx.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let beat = bpe_synth::FollowInput { kind: "scene_input".into(), input: "beat".into(), channel: String::new() };
+        fx = bpe_synth::follow(&fx, amp, "gain", &beat).unwrap();
+        let scale = fx.nodes.iter().find(|n| n.kind == "scale").unwrap().id;
+        fx.node_mut(scale).unwrap().params.insert("scale".into(), bpe_graph::Param::Number(60.0));
+        let _ = cat;
+        s.strips.insert(7, bpe_core::ChannelStrip { inserts: fx, sends: Default::default() });
+        let mut physics = PhysicsInputs::default();
+        physics.scene.beats = (0..10).map(|i| i as f64 * 0.5).collect();
+        let saw = NoteInstrument::Library(Some(InstrumentId(0)));
+        let notes = vec![note(0, 48, 7, saw)];
+        let out = render_with(&s, &notes, 48_000, &mut ChannelCache::default(), &physics).mixed();
+        let window = |from: f32, to: f32| rms_of(&out[(from * 96_000.0) as usize..(to * 96_000.0) as usize]);
+        assert!(window(0.4, 0.5) > 10.0 * window(0.0, 0.05), "{} vs {}", window(0.4, 0.5), window(0.0, 0.05));
     }
 
     fn patch(name: &str, graph: bpe_graph::Graph) -> LibraryInstrument {
@@ -493,7 +677,7 @@ mod tests {
         }
         let mut cache = ChannelCache::default();
         let full = |s: &MixSettings, cache: &mut ChannelCache| {
-            let (mut mix, _, _) = crate::buses::premaster_from_notes(s, &notes, frames, cache);
+            let (mut mix, _, _) = crate::buses::premaster_from_notes(s, &notes, frames, cache, &Default::default());
             crate::master(&mut mix, &s.master);
         };
         let started = Instant::now();
