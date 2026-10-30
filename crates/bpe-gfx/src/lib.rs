@@ -714,7 +714,7 @@ impl Renderer {
                 };
                 if let Some(points) = points {
                     let world = (frame.width, frame.height);
-                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, layer, points);
+                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, &frame.camera, layer, points);
                 }
             }
         }

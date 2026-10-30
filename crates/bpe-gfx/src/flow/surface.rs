@@ -1,6 +1,7 @@
 //! The liquid surface: a liquid's particles splatted into a thickness picture, blurred and
 //! shaded as one body of liquid that bends what is behind it.
 
+use bpe_runtime::CameraView;
 use bytemuck::{Pod, Zeroable};
 
 use super::util;
@@ -19,6 +20,8 @@ struct SurfaceUniform {
     look: [f32; 4],
     blur: [f32; 4],
     extra: [f32; 4],
+    /// The camera: centre xy, zoom, turn.
+    camera: [f32; 4],
 }
 
 /// Where a layer's particle positions come from.
@@ -125,7 +128,7 @@ impl Surface {
 
     /// Records one liquid's surface into `encoder`: splat, blur across and down, then shade
     /// into the HDR target over what is there. `slot` tells layers of one frame apart;
-    /// `world` is the frame's size in world pixels.
+    /// `world` is the frame's size in world pixels, seen through `camera`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -135,6 +138,7 @@ impl Surface {
         targets: &Targets,
         slot: usize,
         world: (u32, u32),
+        camera: &CameraView,
         layer: &LiquidLayer,
         points: PointsBinding,
     ) {
@@ -184,7 +188,7 @@ impl Surface {
         // Blobs overlap their neighbours so a resting lattice reads as one body of thickness 1.
         let blob = (layer.radius.max(0.25) * 2.5).max(spacing * 1.25);
         let strength = spacing * spacing * 0.866 / (0.7134 * blob * blob);
-        let world_per_texel = w / targets.thickness_size.0.max(1) as f32;
+        let world_per_texel = w / targets.thickness_size.0.max(1) as f32 / camera.zoom.max(1e-3);
         let blur_step = (layer.smoothing.max(0.0) / world_per_texel * 0.5).min(16.0);
         let uniform = SurfaceUniform {
             view: [2.0 / w, 2.0 / h, blob, strength],
@@ -192,6 +196,7 @@ impl Surface {
             look: [layer.refraction.max(0.0), layer.highlight.max(0.0), blur_step, count as f32],
             blur: [1.0, 0.0, pour_steps, step as f32],
             extra: [layer.glow.max(0.0), 0.0, 0.0, 0.0],
+            camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
         };
         queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniform));
         let vertical = SurfaceUniform { blur: [0.0, 1.0, pour_steps, step as f32], ..uniform };

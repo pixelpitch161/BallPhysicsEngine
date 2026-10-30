@@ -779,6 +779,33 @@ mod tests {
     }
 
     #[test]
+    fn swarm_physics_ignores_camera() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let run = |camera: bpe_runtime::CameraView| {
+            let mut frame = Frame { camera, ..Frame::default() };
+            let mut layer = swarm_layer(ThingId(1));
+            layer.count = 2_000;
+            frame.swarms.push(layer);
+            let mut flow = FlowLayers::new(&device);
+            flow.prepare(&device, &queue, &frame, &source);
+            assert!(flow.step_to(&device, &queue, 0.5, &source).caught_up);
+            flow.swarm(ThingId(1)).unwrap().read_points(&device, &queue)
+        };
+        let moved = bpe_runtime::CameraView { center: Vec2::new(400.0, -300.0), zoom: 1.7, turn: 0.3 };
+        assert_eq!(run(bpe_runtime::CameraView::default()), run(moved));
+    }
+
+    #[test]
     fn a_swarm_draws_light() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
