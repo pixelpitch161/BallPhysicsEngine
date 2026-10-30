@@ -29,6 +29,8 @@ struct SwarmParams {
     paint_b: [f32; 4],
     /// Direction in degrees, span, centre.
     place: [f32; 4],
+    /// Each point's colour variation, as `SwarmLook::vary`.
+    vary: [f32; 4],
 }
 
 impl SwarmParams {
@@ -59,6 +61,7 @@ impl SwarmParams {
             paint_a: [p.row, p.t0, p.pattern, p.steps],
             paint_b: [p.angle, p.scale, p.scroll, p.repeat],
             place: layer.look.place,
+            vary: layer.look.vary,
         }
     }
 }

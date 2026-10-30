@@ -31,9 +31,10 @@ struct Burst {
     // x: shape, y: seed, z: follow (0 the colour above, 1 the paint over each particle's life,
     // 2 one of the paint's stops at random)
     ids: vec4<u32>,
-    // The paint, as `PaintGpu`'s fields in order.
+    // The paint, as `PaintGpu`'s fields in order, the last its variation.
     paint_a: vec4<f32>,
     paint_b: vec4<f32>,
+    paint_c: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -128,7 +129,7 @@ fn hidden() -> Out {
 // spaced on a Steps row). A colour with alpha 0 but some light adds its light (alpha -1), as
 // `blend_alpha` does on the CPU.
 fn particle_colour(burst: Burst, k: u32, t: f32) -> vec4<f32> {
-    let p = paint_from(burst.paint_a, burst.paint_b);
+    let p = paint_from_varied(burst.paint_a, burst.paint_b, burst.paint_c);
     var along = t;
     if burst.ids.z == 2u {
         let n = max(floor(p.scale), 1.0);

@@ -5,6 +5,7 @@
 
 use super::Paint;
 use bpe_core::ThingId;
+pub use bpe_gfx::NO_VARY;
 
 /// One step of the PCG hash: a well mixed 32-bit value for `x`.
 fn pcg(x: u32) -> u32 {
@@ -59,6 +60,13 @@ pub fn vary_offsets(p: &Paint, seed: u32, time: f32) -> Option<[f32; 3]> {
     Some([hue * r(0), sat * r(1), (1.0 + bright * r(2)).max(0.0)])
 }
 
+/// [`vary_offsets`] as a shader reads it (`PaintGpu::vary`): the hue turn in turns rather than
+/// degrees, the saturation added, the brightness multiplier, and 0. [`NO_VARY`] when the paint
+/// varies nothing.
+pub fn vary_gpu(p: &Paint, seed: u32, time: f32) -> [f32; 4] {
+    vary_offsets(p, seed, time).map_or(NO_VARY, |[hue, sat, bright]| [hue / 360.0, sat, bright, 0.0])
+}
+
 /// Linear RGB to hue (0 to 1), saturation and value. Value may be above 1 (HDR).
 fn to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
@@ -78,6 +86,9 @@ fn to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 /// Hue, saturation and value back to linear RGB. Value is not clamped, so HDR stays HDR.
 fn from_hsv(hue: f32, s: f32, v: f32) -> [f32; 3] {
     let h = hue.rem_euclid(1.0) * 6.0;
+    // A hue a hair below 0 wraps to a hair below 1, which can round to exactly 1: red, not the
+    // sector after magenta.
+    let h = if h >= 6.0 { 0.0 } else { h };
     let f = h - h.floor();
     let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f)));
     match h as u32 {
@@ -226,5 +237,25 @@ mod tests {
         let turned = apply_vary(c, [120.0, 0.0, 1.0]);
         assert!((turned.iter().take(3).cloned().fold(0.0, f32::max) - 4.0).abs() < 1e-5, "{turned:?}");
         assert!((turned[1] - 4.0).abs() < 1e-5, "red turned a third round is green: {turned:?}");
+    }
+
+    #[test]
+    fn a_tiny_turn_back_from_red_stays_red() {
+        // -1e-5 degrees wraps to a hue a hair below 1, which rounds to exactly 1 in f32.
+        for c in [[1.0, 0.0, 0.0, 1.0], [0.8, 0.1, 0.1, 1.0]] {
+            let out = apply_vary(c, [-1e-5, 0.0, 1.0]);
+            for k in 0..3 {
+                assert!((out[k] - c[k]).abs() < 1e-4, "{c:?} turned to {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gpu_gets_the_same_variation_in_turns() {
+        let p = varied(90.0, 0.5, 0.5, 0.0);
+        let s = seed_of(ThingId(3), 4);
+        let v = vary_offsets(&p, s, 1.0).unwrap();
+        assert_eq!(vary_gpu(&p, s, 1.0), [v[0] / 360.0, v[1], v[2], 0.0]);
+        assert_eq!(vary_gpu(&Paint::default(), s, 1.0), NO_VARY);
     }
 }

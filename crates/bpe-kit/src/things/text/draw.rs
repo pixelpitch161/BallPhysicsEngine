@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::fill::{Values, fill};
 use super::{Appear, TextSettings};
 use crate::modules::look::draw::look_of;
-use crate::paint::{Follow, Inputs, Inside, Paint, beats_at, colour_at, paint_gpu};
+use crate::paint::{Follow, Inputs, Inside, Paint, beats_at, colour_at, paint_gpu, seed_of};
 
 pub struct TextDraw;
 
@@ -119,6 +119,8 @@ impl ThingDraw for TextDraw {
                 start: place,
                 beats,
                 time: cx.time as f32,
+                // Each letter varies on its own, even when the letters share one place.
+                seed: seed_of(cx.thing.id, k),
                 ..Inputs::default()
             };
             g.color = blend_alpha(faded(colour_at(&fill, &inputs)));
@@ -289,5 +291,33 @@ mod tests {
     fn empty_text_draws_nothing() {
         assert_eq!(glyphs_at(1.0, |p| p.set("text", Value::Text("   ".into()))), 0);
         assert_eq!(glyphs_at(1.0, |p| p.set("text", Value::Text("{hits} hits".into()))), 5, "0 h i t s");
+    }
+
+    /// How many of `colours` differ from all the others before them by more than a hair.
+    fn distinct(colours: &[[f32; 4]]) -> usize {
+        let mut seen: Vec<[f32; 4]> = Vec::new();
+        for c in colours {
+            if !seen.iter().any(|d| (0..3).all(|k| (d[k] - c[k]).abs() < 1e-4)) {
+                seen.push(*c);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn text_letters_each_vary_their_colour() {
+        let red = |p: &mut Params| p.set("colours", Value::Gradient(Gradient::even(&[RED])));
+        let (glyphs, _) = painted_glyphs("ABCDEF", red, |_| {});
+        assert_eq!(distinct(&glyphs.iter().map(|g| g.color).collect::<Vec<_>>()), 1);
+        let varied = |p: &mut Params| {
+            red(p);
+            p.set("vary_hue", Value::Number(60.0));
+        };
+        for per_letter in [true, false] {
+            let each = |p: &mut Params| p.set("paint_per_letter", Value::Bool(per_letter));
+            let (glyphs, _) = painted_glyphs("ABCDEF", varied, each);
+            let colours: Vec<[f32; 4]> = glyphs.iter().map(|g| g.color).collect();
+            assert!(distinct(&colours) >= 5, "per letter {per_letter}: {colours:?}");
+        }
     }
 }

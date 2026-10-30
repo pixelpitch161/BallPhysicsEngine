@@ -283,6 +283,10 @@ pub struct SwarmLook {
     /// Linear light: every point's colour for follow 5, and a point's colour before it has a
     /// nearest ball.
     pub color: [f32; 4],
+    /// Each point's own colour variation, worked out per point on the GPU: hue turned by up to
+    /// this many degrees, saturation added and brightness scaled by up to these, and how many
+    /// times a second the variation wobbles (0 holds each point's still).
+    pub vary: [f32; 4],
 }
 
 /// How a swarm moves. Each field matches a setting of the Flocking module.
@@ -1134,8 +1138,8 @@ mod tests {
         frame.glyphs.push(GlyphInstance::default());
         frame.clear();
         assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
-        assert_eq!(std::mem::size_of::<SoftVertex>(), 72);
-        assert_eq!(std::mem::size_of::<GlyphInstance>(), 128);
+        assert_eq!(std::mem::size_of::<SoftVertex>(), 88);
+        assert_eq!(std::mem::size_of::<GlyphInstance>(), 144);
     }
 
     #[test]
@@ -1424,8 +1428,8 @@ mod tests {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 160);
-        assert_eq!(std::mem::size_of::<BallInstance>(), 80);
+        assert_eq!(std::mem::size_of::<LookInstance>(), 176);
+        assert_eq!(std::mem::size_of::<BallInstance>(), 96);
     }
 
     #[test]
@@ -1497,6 +1501,7 @@ mod flow_tests {
                 paint: PaintGpu::default(),
                 place: [0.0; 4],
                 color: [1.0; 4],
+                vary: [0.0; 4],
             },
             motion: Flock::default(),
         });

@@ -24,6 +24,9 @@ struct Params {
     paint_b: vec4<f32>,
     // x: direction in degrees, y: span (also of a speed), zw: centre
     place: vec4<f32>,
+    // Each point's colour variation (drawing): x hue in degrees, y saturation, z brightness,
+    // w wobbles a second.
+    vary: vec4<f32>,
 };
 
 // Matches `Globals` in lib.rs.
@@ -62,6 +65,19 @@ fn draw_gradient(along: f32) -> vec4<f32> {
     return paint_along(paint_from(draw_params.paint_a, draw_params.paint_b), along, 0.0);
 }
 
+// `color` turned by point `ii`'s own variation at the frame's time, as `vary_offsets` turns an
+// instance's colour on the CPU, the point's seed from `draw_rand`. No variation leaves it as it is.
+fn draw_vary(ii: u32, color: vec4<f32>) -> vec4<f32> {
+    let v = draw_params.vary;
+    if v.x == 0.0 && v.y == 0.0 && v.z == 0.0 {
+        return color;
+    }
+    let seed = u32(draw_rand(ii, 7u) * 16777216.0);
+    let time = g.view.w;
+    let r = vec3<f32>(vary_value(seed, 0u, time, v.w), vary_value(seed, 1u, time, v.w), vary_value(seed, 2u, time, v.w));
+    return paint_vary(color, vec4<f32>(v.x * r.x / 360.0, v.y * r.y, max(1.0 + v.z * r.z, 0.0), 0.0));
+}
+
 struct PointOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) local: vec2<f32>,
@@ -97,6 +113,7 @@ fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
             color = draw_params.color;
         }
     }
+    color = draw_vary(ii, color);
     let px = g.view.z;
     let size = draw_params.arena.w;
     // Points smaller than a pixel get dimmer instead of vanishing between pixels.

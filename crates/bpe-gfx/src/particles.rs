@@ -32,9 +32,10 @@ pub struct BurstGpu {
     /// Shape, seed, follow (0 the colour above, 1 the paint over each particle's life, 2 one of
     /// the paint's stops at random).
     pub ids: [u32; 4],
-    /// The paint, as `PaintGpu`'s fields in order.
+    /// The paint, as `PaintGpu`'s fields in order, the last its variation.
     pub paint_a: [f32; 4],
     pub paint_b: [f32; 4],
+    pub paint_c: [f32; 4],
 }
 
 /// The bursts of one frame in draw order: glowing ones first, then covering ones, each oldest
@@ -87,6 +88,7 @@ pub fn pick(bursts: &[Burst], time: f32) -> Picked {
                 ids: [b.shape.min(5), b.seed, follow, 0],
                 paint_a: [p.row, p.t0, p.pattern, p.steps],
                 paint_b: [p.angle, p.scale, p.scroll, p.repeat],
+                paint_c: p.vary,
             });
             first += count;
         }

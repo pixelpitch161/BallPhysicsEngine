@@ -567,6 +567,7 @@ mod tests {
                 // The top speed below reaches the end of the colours.
                 place: [0.0, 260.0, 0.0, 0.0],
                 color: [1.0; 4],
+                vary: [0.0; 4],
             },
             motion: Flock {
                 top_speed: 260.0,
@@ -1087,6 +1088,59 @@ mod tests {
         assert!(top[2] > top[0], "{top:?}: the top is bluer");
         assert!(bottom[0] > bottom[2], "{bottom:?}: the floor is redder");
         assert!(top[2] > bottom[2] && bottom[0] > top[0], "{top:?} {bottom:?}");
+    }
+
+    #[test]
+    fn swarm_points_vary() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame { time: 0.5, bloom: 0.0, ..Frame::default() };
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 400;
+        layer.look.brightness = 0.3;
+        layer.look.size = 12.0;
+        // Every point one dull red.
+        layer.look.follow = 5;
+        layer.look.color = [0.5, 0.0, 0.0, 1.0];
+        frame.swarms.push(layer);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut draw = |vary: [f32; 4], time: f32| {
+            frame.time = time;
+            frame.swarms[0].look.vary = vary;
+            renderer.render_with_flow(&device, &queue, &frame, &source);
+            renderer.read_output(&device, &queue).unwrap()
+        };
+        let plain = draw([0.0; 4], 0.5);
+        let lit = |p: &[u8]| p[0] > 30;
+        assert!(plain.chunks(4).filter(|p| lit(p)).count() > 200);
+        assert!(plain.chunks(4).all(|p| p[1] < 8 && p[2] < 8), "no variation: every point red");
+        // The look alone changed: the points are where they were, each brighter or darker.
+        let bright = draw([0.0, 0.0, 1.0, 0.0], 0.5);
+        let ratios: Vec<f32> = plain
+            .chunks(4)
+            .zip(bright.chunks(4))
+            .filter(|(a, _)| lit(a))
+            .map(|(a, b)| b[0] as f32 / a[0] as f32)
+            .collect();
+        let (lo, hi) = ratios.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+        assert!(lo < 0.7 && hi > 1.3, "brightness spread across points: {lo} to {hi}");
+        // A hue turn of up to 120 degrees shows green and blue points.
+        let turned = draw([120.0, 0.0, 0.0, 0.0], 0.5);
+        assert!(turned.chunks(4).any(|p| p[1] > p[0] + 20), "some points turn green");
+        assert!(turned.chunks(4).any(|p| p[2] > p[0] + 20), "some points turn blue");
+        // Wobbling, the colours move with the frame's time.
+        let still = draw([120.0, 0.0, 0.0, 3.0], 0.5);
+        let later = draw([120.0, 0.0, 0.0, 3.0], 0.6);
+        assert_ne!(still, later);
     }
 
     #[test]
