@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use bpe_core::{Animation, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
+use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
 use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
@@ -486,6 +486,9 @@ pub struct Burst {
     /// 0: every particle is `color`. 1: each runs along `paint` over its life. 2: each takes one
     /// of `paint`'s stops at random, `paint.scale` of them evenly spaced on a Steps row.
     pub follow: u32,
+    /// How much of a colour painted on the GPU (`follow` 1 and 2) shows, 0 to 1: its alpha, or
+    /// for added light its light, is scaled by this. `color` comes faded already.
+    pub amount: f32,
 }
 
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.
@@ -617,6 +620,22 @@ pub struct Frame {
     /// The scene's video size. Usually `width` by `height`; the editor's World view draws a
     /// picture of another shape, and the GPU layers keep stepping in the video's.
     pub video: (u32, u32),
+    /// Things drawn with a blend other than Normal at full amount, one layer per blend and
+    /// amount, in the order they were first drawn into. Each is mixed into the picture after
+    /// this frame's own lists.
+    pub layers: Vec<BlendLayer>,
+}
+
+/// What things with one blend and amount drew, mixed into the picture under them as one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlendLayer {
+    pub blend: Blend,
+    /// 0 to 1.
+    pub amount: f32,
+    /// The layer's own lists. Its globals follow the frame it belongs to; it paints from that
+    /// frame's gradient atlas, so its own `gradients` stay empty, and the hits and effects drawn
+    /// into it are handed to that frame.
+    pub frame: Frame,
 }
 
 impl Default for Frame {
@@ -645,6 +664,7 @@ impl Default for Frame {
             background_on_screen: true,
             overlay: None,
             video: (1080, 1920),
+            layers: Vec::new(),
         }
     }
 }
@@ -667,9 +687,47 @@ impl Frame {
         self.gradients.clear();
         self.background = BackgroundPaint::default();
         self.camera = CameraView::default();
+        self.layers.clear();
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
         }
+    }
+
+    /// The frame things drawn with `blend` at `amount` go into: this one for Normal at full
+    /// amount, else the layer for exactly that blend and amount, made on first use. The layer
+    /// takes this frame's size, moment, camera and picture settings.
+    pub fn layer_mut(&mut self, blend: Blend, amount: f32) -> &mut Frame {
+        if !layered(blend, amount) {
+            return self;
+        }
+        let i = match self.layers.iter().position(|l| l.blend == blend && l.amount.to_bits() == amount.to_bits()) {
+            Some(i) => i,
+            None => {
+                self.layers.push(BlendLayer { blend, amount, frame: Frame::default() });
+                self.layers.len() - 1
+            }
+        };
+        let (width, height, time, video, camera) = (self.width, self.height, self.time, self.video, self.camera);
+        let (bloom, exposure, on_screen) = (self.bloom, self.exposure, self.background_on_screen);
+        let f = &mut self.layers[i].frame;
+        (f.width, f.height, f.time, f.video, f.camera) = (width, height, time, video, camera);
+        (f.bloom, f.exposure, f.background_on_screen) = (bloom, exposure, on_screen);
+        f
+    }
+
+    /// Whether none of the lists the picture is drawn from has anything in them.
+    fn draws_nothing(&self) -> bool {
+        self.shapes.is_empty()
+            && self.balls.is_empty()
+            && self.flashes.is_empty()
+            && self.liquids.is_empty()
+            && self.swarms.is_empty()
+            && self.soft.is_empty()
+            && self.glyphs.is_empty()
+            && self.looks.is_empty()
+            && self.trails.is_empty()
+            && self.bursts.is_empty()
+            && self.layers.is_empty()
     }
 
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
@@ -683,13 +741,21 @@ impl Frame {
 
     /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
     /// stuck things work on the whole picture like everyone else's, and the overlay only holds
-    /// what is drawn as shapes.
+    /// what is drawn as shapes. Particles in one of the overlay's layers go into this frame's
+    /// layer of the same blend and amount, and a layer left with nothing to draw is dropped.
     pub fn lift_overlay_extras(&mut self) {
         let Some(o) = self.overlay.as_deref_mut() else { return };
         let (effects, mut bursts, hits) =
             (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        let mut layered: Vec<(Blend, f32, Vec<Burst>)> = o
+            .layers
+            .iter_mut()
+            .filter(|l| !l.frame.bursts.is_empty())
+            .map(|l| (l.blend, l.amount, std::mem::take(&mut l.frame.bursts)))
+            .collect();
+        o.layers.retain(|l| !l.frame.draws_nothing());
         // A burst names its gradient by the overlay's atlas row: give it the same row here.
-        for b in &mut bursts {
+        for b in bursts.iter_mut().chain(layered.iter_mut().flat_map(|(_, _, list)| list.iter_mut())) {
             if b.paint.row >= 0.0
                 && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
             {
@@ -699,6 +765,9 @@ impl Frame {
         self.effects.extend(effects);
         self.bursts.extend(bursts);
         self.hits.extend(hits);
+        for (blend, amount, list) in layered {
+            self.layer_mut(blend, amount).bursts.extend(list);
+        }
     }
 
     /// Whether the overlay has anything to draw.
@@ -710,7 +779,8 @@ impl Frame {
                 && o.soft.is_empty()
                 && o.glyphs.is_empty()
                 && o.looks.is_empty()
-                && o.trails.is_empty())
+                && o.trails.is_empty()
+                && o.layers.is_empty())
         })
     }
 
@@ -725,6 +795,37 @@ impl Frame {
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
         self.flashes.retain(|f| sees(f.center, f.size));
+        for l in &mut self.layers {
+            l.frame.cull();
+        }
+    }
+}
+
+/// Whether things drawn with `blend` at `amount` need a layer of their own.
+fn layered(blend: Blend, amount: f32) -> bool {
+    !(blend == Blend::Normal && amount >= 1.0)
+}
+
+/// Runs `draw` on what things with `blend` at `amount` draw into: `target` itself, or its layer
+/// (see [`Frame::layer_mut`]). A layer borrows `target`'s gradient atlas, hits and effects while
+/// it is drawn into, so its paint rows are the rows the renderer uploads and every module reads
+/// every hit. A layer nothing was drawn into is not kept.
+fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, draw: impl FnOnce(&mut Frame)) {
+    if !layered(blend, amount) {
+        draw(target);
+        return;
+    }
+    let before = target.layers.len();
+    let take =
+        |f: &mut Frame| (std::mem::take(&mut f.gradients), std::mem::take(&mut f.hits), std::mem::take(&mut f.effects));
+    let shared = take(target);
+    let layer = target.layer_mut(blend, amount);
+    (layer.gradients, layer.hits, layer.effects) = shared;
+    draw(layer);
+    let shared = take(layer);
+    (target.gradients, target.hits, target.effects) = shared;
+    if target.layers.len() > before && target.layers.last().is_some_and(|l| l.frame.draws_nothing()) {
+        target.layers.pop();
     }
 }
 
@@ -762,6 +863,11 @@ pub trait ModuleDraw: Send + Sync + 'static {
     /// `slot` is the slot this module fills on `cx.thing`; its settings are
     /// `cx.resolved.slots[&slot].params`.
     fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame);
+    /// Whether the module mixes Normal (at any amount) and Add in by itself, drawing straight
+    /// into the frame; any other blend still goes into a layer.
+    fn draws_add_itself(&self) -> bool {
+        false
+    }
 }
 
 /// Every registered drawing part, by kind id.
@@ -796,7 +902,10 @@ impl Draws {
 /// Fills `frame` for `time`: the lists are emptied, the scene's keyframes and pulses are
 /// applied to a copy of the resolved scene for this moment, then every resolved thing in id
 /// order whose kind has a drawing part draws, then every module with a drawing part draws for
-/// each thing (in id order) and slot (in slot order) it fills.
+/// each thing (in id order) and slot (in slot order) it fills. Things stuck to the screen draw
+/// into the overlay. A thing follows its look's blend and a module its own: anything but Normal
+/// at full amount goes into a layer (see [`Frame::layer_mut`]), except Normal and Add on a module
+/// that [draws them itself](ModuleDraw::draws_add_itself). The root, the scene, never blends.
 pub fn build_frame(
     scene: &Scene,
     resolved: &Resolved,
@@ -841,19 +950,32 @@ pub fn build_frame_at(
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        let into = if r.screen { frame.overlay_mut() } else { &mut *frame };
-        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, into);
+        let (blend, amount) = match r.slots.get(&SlotId::Look) {
+            Some(look) if *id != ThingId::ROOT => Blend::from_params(&look.params),
+            _ => (Blend::Normal, 1.0),
+        };
+        let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
+        draw_routed(target, blend, amount, |into| d.draw(&cx, into));
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         for slot in SlotId::ALL {
             let Some(s) = r.slots.get(&slot) else { continue };
             let Some(d) = draws.module(&s.kind) else { continue };
-            let into = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, slot, into);
+            let (mut blend, mut amount) = Blend::from_params(&s.params);
+            if d.draws_add_itself() && matches!(blend, Blend::Normal | Blend::Add) {
+                (blend, amount) = (Blend::Normal, 1.0);
+            }
+            let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
+            draw_routed(target, blend, amount, |into| d.draw(&cx, slot, into));
         }
     }
     frame.camera = world.camera;
+    for l in &mut frame.layers {
+        l.frame.camera = world.camera;
+    }
     frame.lift_overlay_extras();
 }
 
@@ -1049,6 +1171,225 @@ mod tests {
         assert!(draws.module("look.plain").is_some() && draws.module("look.other").is_none());
         frame.clear();
         assert!(frame.flashes.is_empty() && frame.effects.is_empty() && frame.hits.is_empty());
+    }
+
+    #[test]
+    fn layer_mut_keeps_normal_at_full_amount_in_the_frame_and_groups_the_rest_by_mode_and_amount() {
+        use bpe_core::Blend;
+        let mut frame = Frame { width: 100, height: 200, time: 1.5, video: (300, 400), ..Frame::default() };
+        frame.camera.zoom = 2.0;
+        frame.bloom = 0.25;
+        frame.layer_mut(Blend::Normal, 1.0).balls.push(BallInstance::default());
+        assert_eq!(frame.balls.len(), 1, "Normal at full amount is the frame itself");
+        assert!(frame.layers.is_empty());
+        frame.layer_mut(Blend::Multiply, 1.0).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 0.5).looks.push(LookInstance::default());
+        frame.layer_mut(Blend::Multiply, 1.0).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Normal, 0.5).shapes.push(ShapeInstance::default());
+        let kept: Vec<(Blend, f32)> = frame.layers.iter().map(|l| (l.blend, l.amount)).collect();
+        assert_eq!(kept, [(Blend::Multiply, 1.0), (Blend::Screen, 0.5), (Blend::Normal, 0.5)], "first-use order");
+        let l = &frame.layers[0].frame;
+        assert_eq!(l.balls.len(), 2, "the same mode and amount share a layer");
+        assert_eq!((l.width, l.height, l.time, l.video), (100, 200, 1.5, (300, 400)));
+        assert_eq!((l.camera, l.bloom), (frame.camera, 0.25));
+        frame.clear();
+        assert!(frame.layers.is_empty(), "clear empties the layers");
+    }
+
+    #[test]
+    fn a_layer_counts_towards_the_overlay_and_is_culled_with_the_frame() {
+        use bpe_core::Blend;
+        let mut frame = Frame::default();
+        frame.overlay_mut();
+        assert!(!frame.has_overlay());
+        frame.overlay_mut().layer_mut(Blend::Screen, 1.0).balls.push(BallInstance::default());
+        assert!(frame.has_overlay(), "a stuck blended thing is something to draw");
+        frame.camera.zoom = 4.0;
+        let layer = frame.layer_mut(Blend::Multiply, 1.0);
+        layer.balls.push(BallInstance { center: [0.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        layer.balls.push(BallInstance { center: [5000.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        frame.cull();
+        assert_eq!(frame.layers[0].frame.balls.len(), 1, "what the camera can't see is dropped in layers too");
+    }
+
+    #[test]
+    fn lifting_moves_a_stuck_layers_bursts_into_the_frames_layer_with_their_atlas_rows() {
+        use bpe_core::{Blend, Color, Gradient};
+        let mut frame = Frame::default();
+        frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
+        let o = frame.overlay_mut();
+        o.gradients.row(&Gradient::solid(Color::rgb(255, 255, 255)));
+        let red = o.gradients.row(&Gradient::solid(Color::rgb(255, 0, 0)));
+        let burst = Burst {
+            origin: [0.0; 2],
+            normal: [0.0, -1.0],
+            time: 0.0,
+            color: [1.0; 4],
+            count: 4,
+            speed: 1.0,
+            spread: 1.0,
+            size: 1.0,
+            life: 1.0,
+            gravity: 0.0,
+            drag: 0.0,
+            shape: 0,
+            additive: false,
+            seed: 1,
+            paint: PaintGpu { row: red as f32, ..PaintGpu::default() },
+            follow: 1,
+            amount: 1.0,
+        };
+        o.layer_mut(Blend::Screen, 0.5).bursts.push(burst);
+        frame.lift_overlay_extras();
+        let o = frame.overlay.as_deref().unwrap();
+        assert!(o.layers.is_empty(), "a layer left with nothing to draw is dropped");
+        assert!(frame.bursts.is_empty());
+        assert_eq!((frame.layers.len(), frame.layers[0].blend, frame.layers[0].amount), (1, Blend::Screen, 0.5));
+        let lifted = frame.layers[0].frame.bursts[0];
+        let row = frame.gradients.rows()[lifted.paint.row as usize];
+        assert_eq!(row[0], Color::rgb(255, 0, 0).to_linear(), "the burst paints from the frame's atlas now");
+    }
+
+    struct Painter;
+    impl ThingDraw for Painter {
+        fn kind(&self) -> &'static str {
+            "balls"
+        }
+        fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
+            let red = bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0));
+            let row = frame.gradients.row(&red);
+            let paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
+            frame.balls.push(BallInstance { paint, ..BallInstance::default() });
+            frame.hits.push(HitMark {
+                thing: cx.thing.id,
+                other: None,
+                point: [0.0; 2],
+                normal: [0.0, 1.0],
+                time: 0.0,
+                speed: 1.0,
+                color: [1.0; 4],
+            });
+        }
+    }
+
+    /// A module that marks each thing it draws for with a trail vertex, and says whether it saw
+    /// the thing's hit.
+    struct Sees(bool);
+    impl ModuleDraw for Sees {
+        fn kind(&self) -> &'static str {
+            "look.plain"
+        }
+        fn draws_add_itself(&self) -> bool {
+            self.0
+        }
+        fn draw(&self, cx: &DrawCx, _slot: SlotId, frame: &mut Frame) {
+            let seen = frame.hits.iter().any(|h| h.thing == cx.thing.id);
+            frame.trails.push(TrailVertex { color: [seen as u32 as f32; 4], ..TrailVertex::default() });
+        }
+    }
+
+    /// One ball group with a look slot whose blend and amount are set straight on the resolved
+    /// scene, drawn by [`Painter`] and the look's module by [`Sees`].
+    fn routed(blend: &str, amount: f64, screen: bool, adds_itself: bool) -> Frame {
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
+        let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.link(&reg, balls, SlotId::Look, look).unwrap();
+        let mut resolved = resolve(&scene, &reg);
+        let r = resolved.things.get_mut(&balls).unwrap();
+        r.screen = screen;
+        let params = &mut r.slots.get_mut(&SlotId::Look).unwrap().params;
+        params.set("blend", Value::Choice(blend.into()));
+        params.set("blend_amount", Value::Number(amount));
+        let world = World::build(&scene, &resolved, &Sims::default());
+        let mut draws = Draws::default();
+        draws.add(Painter);
+        draws.add_module(Sees(adds_itself));
+        let mut frame = Frame::default();
+        frame.gradients.row(&bpe_core::Gradient::solid(bpe_core::Color::rgb(0, 255, 0)));
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &draws, &mut frame);
+        frame
+    }
+
+    #[test]
+    fn a_blended_thing_draws_into_a_layer_that_paints_from_the_frames_atlas() {
+        use bpe_core::{Blend, Color};
+        let plain = routed("normal", 1.0, false, false);
+        assert!(plain.layers.is_empty());
+        assert_eq!((plain.balls.len(), plain.trails.len()), (1, 1));
+
+        let frame = routed("multiply", 1.0, false, false);
+        assert!(frame.balls.is_empty() && frame.trails.is_empty());
+        assert_eq!(frame.layers.len(), 1, "the thing and its module share the layer");
+        let layer = &frame.layers[0];
+        assert_eq!((layer.blend, layer.amount), (Blend::Multiply, 1.0));
+        assert_eq!((layer.frame.balls.len(), layer.frame.trails.len()), (1, 1));
+        assert!(layer.frame.gradients.is_empty(), "a layer keeps no atlas of its own");
+        let row = layer.frame.balls[0].paint.row as usize;
+        assert_eq!(
+            frame.gradients.rows()[row][0],
+            Color::rgb(255, 0, 0).to_linear(),
+            "its row is in the frame's atlas"
+        );
+        assert_eq!(frame.hits.len(), 1, "the hit is the frame's, for every module to read");
+        assert!(frame.layers[0].frame.hits.is_empty());
+        assert_eq!(layer.frame.trails[0].color[0], 1.0, "a layered module still sees the thing's hits");
+    }
+
+    #[test]
+    fn a_module_that_adds_itself_keeps_normal_and_add_in_the_frame() {
+        use bpe_core::Blend;
+        for (blend, amount) in [("normal", 0.5), ("add", 0.25), ("add", 1.0)] {
+            let frame = routed(blend, amount, false, true);
+            assert_eq!(frame.trails.len(), 1, "{blend} {amount}: the module draws in the frame");
+            assert_eq!(frame.layers.len(), 1, "{blend} {amount}: the thing itself is layered");
+            assert!(frame.layers[0].frame.trails.is_empty());
+        }
+        let frame = routed("screen", 1.0, false, true);
+        assert!(frame.trails.is_empty());
+        assert_eq!((frame.layers.len(), frame.layers[0].blend), (1, Blend::Screen));
+        assert_eq!(frame.layers[0].frame.trails.len(), 1);
+    }
+
+    #[test]
+    fn a_stuck_blended_thing_draws_into_the_overlays_layer() {
+        let frame = routed("screen", 0.5, true, false);
+        assert!(frame.layers.is_empty());
+        let o = frame.overlay.as_deref().unwrap();
+        assert!(o.balls.is_empty());
+        assert_eq!((o.layers.len(), o.layers[0].frame.balls.len()), (1, 1));
+        assert!(frame.has_overlay());
+        let row = o.layers[0].frame.balls[0].paint.row as usize;
+        assert!(row < o.gradients.len(), "its row is in the overlay's atlas");
+    }
+
+    #[test]
+    fn a_layer_nothing_was_drawn_into_is_dropped() {
+        struct Nothing;
+        impl ThingDraw for Nothing {
+            fn kind(&self) -> &'static str {
+                "balls"
+            }
+            fn draw(&self, _: &DrawCx, frame: &mut Frame) {
+                frame.gradients.row(&bpe_core::Gradient::solid(bpe_core::Color::rgb(1, 2, 3)));
+            }
+        }
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
+        let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.link(&reg, balls, SlotId::Look, look).unwrap();
+        let mut resolved = resolve(&scene, &reg);
+        let params = &mut resolved.things.get_mut(&balls).unwrap().slots.get_mut(&SlotId::Look).unwrap().params;
+        params.set("blend", Value::Choice("darken".into()));
+        let world = World::build(&scene, &resolved, &Sims::default());
+        let mut draws = Draws::default();
+        draws.add(Nothing);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &draws, &mut frame);
+        assert!(frame.layers.is_empty());
+        assert_eq!(frame.gradients.len(), 1, "what it baked is still in the frame's atlas");
     }
 
     #[test]

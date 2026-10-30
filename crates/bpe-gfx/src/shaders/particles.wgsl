@@ -25,7 +25,8 @@ struct Burst {
     color: vec4<f32>,
     // speed, spread (radians), size, life
     motion: vec4<f32>,
-    // gravity, drag
+    // gravity, drag, how much of a colour painted here shows (its alpha or added light is
+    // scaled by it; `color` comes faded already)
     more: vec4<f32>,
     // x: shape, y: seed, z: follow (0 the colour above, 1 the paint over each particle's life,
     // 2 one of the paint's stops at random)
@@ -245,7 +246,7 @@ fn vs_particle(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     out.color = vec4<f32>(burst.color.rgb, burst.color.a * fade);
     if burst.ids.z != 0u {
         let c = particle_colour(burst, k, t);
-        out.color = vec4<f32>(c.rgb, c.a * fade);
+        out.color = vec4<f32>(c.rgb, c.a * fade * burst.more.z);
     }
     out.info = vec4<f32>(t, scale, shade, ring);
     out.kind = kind;

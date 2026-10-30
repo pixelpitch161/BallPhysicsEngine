@@ -19,6 +19,10 @@ impl ModuleDraw for StreakDraw {
         "trail.streak"
     }
 
+    fn draws_add_itself(&self) -> bool {
+        true
+    }
+
     fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame) {
         let Some(rslot) = cx.resolved.slots.get(&slot) else { return };
         let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
@@ -59,8 +63,8 @@ impl ModuleDraw for StreakDraw {
 
 /// The streak's colour from `base` (linear light) at its brightness, faded by the blend amount:
 /// covering with the brightness as opacity, or adding that much light. An additive colour glows
-/// whatever the blend says. Blends other than Normal and Add are mixed in later, so here they
-/// cover at full amount.
+/// whatever the blend says. Other blends draw into a layer that is mixed in at its amount later,
+/// so here they are plain: Normal at full amount.
 fn shade(trail: &StreakTrail, base: [f32; 4]) -> [f32; 4] {
     let k = trail.brightness;
     let amount = match trail.blend {

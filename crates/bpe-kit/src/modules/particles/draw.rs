@@ -17,6 +17,10 @@ impl ModuleDraw for BurstDraw {
         "particles.burst"
     }
 
+    fn draws_add_itself(&self) -> bool {
+        true
+    }
+
     fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame) {
         let Some(rslot) = cx.resolved.slots.get(&slot) else { return };
         // Only things that hit let off bursts: a root module is inherited by every ball group.
@@ -144,11 +148,16 @@ pub fn burst_of(burst: &HitBurst, mark: &HitMark, own: &OwnColours, thing: Thing
         seed: seed_of(thing, mark),
         paint: PaintGpu::default(),
         follow: 0,
+        amount: match burst.blend {
+            Blend::Normal | Blend::Add => burst.blend_amount.clamp(0.0, 1.0),
+            _ => 1.0,
+        },
     }
 }
 
 /// `color` faded by the blend amount: added light dimmed, a covering colour made see-through.
-/// Blends other than Normal and Add are mixed in later, so they keep the whole colour here.
+/// Other blends draw into a layer that is mixed in at its amount later, so they keep the whole
+/// colour here, covering as Normal at full amount does.
 fn faded(burst: &HitBurst, color: [f32; 4]) -> [f32; 4] {
     let amount = burst.blend_amount.clamp(0.0, 1.0);
     match burst.blend {

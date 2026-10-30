@@ -3,6 +3,8 @@
 
 pub mod gizmo;
 pub mod graphs;
+#[cfg(test)]
+mod layer_tests;
 pub mod modules;
 pub mod music;
 pub mod paint;

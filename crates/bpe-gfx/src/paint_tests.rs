@@ -253,6 +253,7 @@ fn confetti(paint: PaintGpu, follow: u32) -> crate::Burst {
         seed: 11,
         paint,
         follow,
+        amount: 1.0,
     }
 }
 
@@ -316,6 +317,23 @@ fn particles_of_things_stuck_to_the_screen_paint_from_their_own_atlas() {
     for p in lit {
         assert!(p[1] < 40, "{p:?} is green or white: the burst read another row than its own");
         assert!(p[0] > p[2], "{p:?} should be mostly red early in its life");
+    }
+}
+
+#[test]
+fn particles_painted_on_the_gpu_fade_with_the_blend_amount() {
+    let row_of =
+        |frame: &mut Frame| frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
+    for (amount, glows) in [(1.0, true), (0.0, false)] {
+        for additive in [false, true] {
+            let mut frame = Frame { bloom: 0.0, time: 0.1, ..Frame::default() };
+            let paint = PaintGpu { row: row_of(&mut frame) as f32, ..PaintGpu::default() };
+            frame.bursts.push(crate::Burst { additive, amount, ..confetti(paint, 1) });
+            let name = format!("particles-amount-{}-{}", amount as u32, if additive { "add" } else { "normal" });
+            let Some(pixels) = render(&name, &frame) else { return };
+            let lit = lit(&pixels).len();
+            assert_eq!(lit > 50, glows, "{name}: {lit} pixels lit");
+        }
     }
 }
 
