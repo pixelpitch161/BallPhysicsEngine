@@ -2,7 +2,9 @@
 
 pub mod adsr;
 pub mod amp;
+pub mod chorus;
 pub mod crush;
+pub mod delay;
 pub mod drive;
 pub mod eq;
 pub mod filter;
@@ -11,13 +13,16 @@ pub mod lfo;
 pub mod maths;
 pub mod noise;
 pub mod osc;
+pub mod reverb;
 pub mod sampler;
 pub mod space;
 pub mod tables;
 
 pub use adsr::Adsr;
 pub use amp::Amp;
+pub use chorus::Chorus;
 pub use crush::Bitcrush;
+pub use delay::Delay;
 pub use drive::Drive;
 pub use eq::Equaliser;
 pub use filter::Svf;
@@ -26,6 +31,7 @@ pub use lfo::{Hold, Lfo};
 pub use maths::{Arith, Crossfade, Macro, Mix, NoteIn, PitchToHz, Scale, VoiceOut};
 pub use noise::Noise;
 pub use osc::Osc;
+pub use reverb::Reverb;
 pub use sampler::{Sampler, missing_samples};
 pub use space::{Follower, Width};
 

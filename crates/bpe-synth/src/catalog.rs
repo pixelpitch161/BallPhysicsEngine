@@ -110,6 +110,33 @@ fn specs() -> Vec<NodeSpec> {
             .param(n("bits", "Bits", 8.0, 1.0, 16.0))
             .param(n("downsample", "Downsample", 1.0, 1.0, 32.0))
             .param(n("mix", "Mix", 1.0, 0.0, 1.0)),
+        NodeSpec::new("delay", "Delay", "Effects", "Echoes. Inside a patch it runs on every voice.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(choice("time_mode", "Time", &["ms", "1/4", "1/8", "1/16", "1/2", "1/1"], "ms"))
+            .param(choice("feel", "Feel", &["straight", "dotted", "triplet"], "straight"))
+            .param(n("ms", "Milliseconds", 250.0, 1.0, 2_000.0))
+            .param(n("feedback", "Feedback", 0.35, 0.0, 1.0))
+            .param(flag("ping_pong", "Ping-pong", false))
+            .param(n("low_cut", "Low cut", 20.0, 20.0, 2_000.0))
+            .param(n("high_cut", "High cut", 20_000.0, 500.0, 20_000.0))
+            .param(n("mix", "Mix", 0.3, 0.0, 1.0)),
+        NodeSpec::new("chorus", "Chorus", "Effects", "Copies on slowly moving short delays, for width.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("rate", "Rate Hz", 0.8, 0.01, 10.0))
+            .param(n("depth", "Depth ms", 3.0, 0.0, 10.0))
+            .param(n("voices", "Voices", 2.0, 1.0, 4.0))
+            .param(n("mix", "Mix", 0.5, 0.0, 1.0)),
+        NodeSpec::new("reverb", "Reverb", "Effects", "A room or hall. Inside a patch it runs on every voice.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("size", "Size", 0.6, 0.0, 1.0))
+            .param(n("decay", "Decay s", 2.0, 0.1, 60.0).help("Seconds for the tail to fall by 60 dB"))
+            .param(n("damping", "Damping", 0.4, 0.0, 1.0))
+            .param(n("predelay", "Pre-delay ms", 10.0, 0.0, 200.0))
+            .param(n("width", "Width", 1.0, 0.0, 1.0))
+            .param(n("mix", "Mix", 0.3, 0.0, 1.0)),
         NodeSpec::new("width", "Stereo width", "Effects", "0 is mono, 1 unchanged, 2 twice as wide.")
             .input(audio("in").required())
             .output(audio("out"))
@@ -204,6 +231,9 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "drive" => Box::new(Drive::new(k)),
         "amp" => Box::new(Amp::new(k)),
         "eq" => Box::new(Equaliser::new(k)),
+        "delay" => Box::new(Delay::new(k)),
+        "chorus" => Box::new(Chorus::new(k)),
+        "reverb" => Box::new(Reverb::new(k)),
         "bitcrush" => Box::new(Bitcrush::new(k)),
         "width" => Box::new(Width::new(k)),
         "follower" => Box::new(Follower::new(k)),
