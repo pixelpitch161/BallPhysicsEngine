@@ -53,7 +53,8 @@ pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use music::{
-    Song, SongState, TimeWarp, beats_for, physics_inputs, uses_live_inputs, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
+    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
+    uses_live_inputs, wants_beats, warp_for,
 };
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};

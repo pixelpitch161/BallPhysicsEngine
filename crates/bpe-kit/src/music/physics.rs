@@ -130,7 +130,10 @@ fn hit_values(resolved: &Resolved, log: &Log, settings: &MixSettings) -> BTreeMa
             EventKind::Note => {}
             _ => continue,
         }
-        out.insert(i as u64, Arc::new(one_hit(e, resolved, log, settings, &hits_so_far, &born, &mut fills, track_steps)));
+        out.insert(
+            i as u64,
+            Arc::new(one_hit(e, resolved, log, settings, &hits_so_far, &born, &mut fills, track_steps)),
+        );
     }
     out
 }
@@ -148,7 +151,8 @@ fn one_hit(
 ) -> HitPhysics {
     let sps = settings.steps_per_second.max(1);
     let fill = fills.entry(e.a.thing).or_insert_with(|| fill_of(resolved, e.a.thing));
-    let screen = fill.as_ref().map(|f| f.1).unwrap_or_else(|| resolved.things.get(&e.a.thing).is_some_and(|r| r.screen));
+    let screen =
+        fill.as_ref().map(|f| f.1).unwrap_or_else(|| resolved.things.get(&e.a.thing).is_some_and(|r| r.screen));
     let track = log.track(e.a);
     let from = track.partition_point(|s| s.step < e.step);
     let at_hit = track.get(from).filter(|s| s.step == e.step);
@@ -221,7 +225,12 @@ fn chord_series(p: &bpe_core::Progression, settings: &MixSettings, n: usize, rat
 }
 
 /// The scene's series at [`MOTION_RATE`] on the video clock.
-fn scene_series(resolved: &Resolved, log: &Log, settings: &MixSettings, video_time: &dyn Fn(f64) -> f64) -> SceneSignals {
+fn scene_series(
+    resolved: &Resolved,
+    log: &Log,
+    settings: &MixSettings,
+    video_time: &dyn Fn(f64) -> f64,
+) -> SceneSignals {
     let rate = MOTION_RATE as f64;
     let sps = settings.steps_per_second.max(1) as f64;
     let n = (settings.duration.max(0.0) as f64 * rate).ceil() as usize + 1;
@@ -322,7 +331,8 @@ mod tests {
         world.advance_to(4.0, &kit.sims, &mut log);
         let settings = mix_settings(&scene, &resolved);
         let p = physics_inputs(&scene, &resolved, &log, &settings, &same);
-        let (i, first) = log.events().iter().enumerate().find(|(_, e)| e.kind == EventKind::Hit && e.a.thing == BALLS).unwrap();
+        let (i, first) =
+            log.events().iter().enumerate().find(|(_, e)| e.kind == EventKind::Hit && e.a.thing == BALLS).unwrap();
         let next = log.events().iter().skip(i + 1).find(|e| e.kind == EventKind::Hit && e.a == first.a).unwrap();
         let track = p.hits[&(i as u64)].track.clone().unwrap();
         let sps = settings.steps_per_second as f64;
