@@ -144,47 +144,35 @@
         },
         progressions: {
             0: (
-                name: "Starter",
+                name: "Dreamy loop",
                 key: (
-                    root: 0,
-                    mode: Major,
+                    root: 9,
+                    mode: Minor,
                 ),
                 meter: (4, 4),
                 chords: [
                     (
-                        root: 0,
-                        quality: Major,
-                        ext: Triad,
-                        beats: 8,
-                    ),
-                    (
-                        root: 2,
-                        quality: Major,
-                        ext: Sus4,
-                        beats: 8,
-                    ),
-                    (
                         root: 9,
                         quality: Minor,
-                        ext: Triad,
-                        beats: 8,
-                    ),
-                    (
-                        root: 0,
-                        quality: Major,
-                        ext: Triad,
-                        beats: 8,
-                    ),
-                    (
-                        root: 9,
-                        quality: Minor,
-                        ext: Triad,
+                        ext: Seven,
                         beats: 4,
                     ),
                     (
-                        root: 2,
+                        root: 5,
                         quality: Major,
-                        ext: Sus4,
+                        ext: Maj7,
+                        beats: 4,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Maj7,
+                        beats: 4,
+                    ),
+                    (
+                        root: 7,
+                        quality: Major,
+                        ext: Triad,
                         beats: 4,
                     ),
                 ],

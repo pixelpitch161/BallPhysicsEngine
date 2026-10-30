@@ -9,6 +9,7 @@
             params: {
                 "beat_sync": Choice("warp"),
                 "bpm": Number(128.0),
+                "chords": Int(0),
             },
             slots: {
                 Look: Linked(
@@ -152,37 +153,13 @@
         },
         progressions: {
             0: (
-                name: "Starter",
+                name: "Epic minor",
                 key: (
-                    root: 0,
-                    mode: Major,
+                    root: 9,
+                    mode: Minor,
                 ),
                 meter: (4, 4),
                 chords: [
-                    (
-                        root: 0,
-                        quality: Major,
-                        ext: Triad,
-                        beats: 8,
-                    ),
-                    (
-                        root: 2,
-                        quality: Major,
-                        ext: Sus4,
-                        beats: 8,
-                    ),
-                    (
-                        root: 9,
-                        quality: Minor,
-                        ext: Triad,
-                        beats: 8,
-                    ),
-                    (
-                        root: 0,
-                        quality: Major,
-                        ext: Triad,
-                        beats: 8,
-                    ),
                     (
                         root: 9,
                         quality: Minor,
@@ -190,9 +167,21 @@
                         beats: 4,
                     ),
                     (
-                        root: 2,
+                        root: 5,
                         quality: Major,
-                        ext: Sus4,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 7,
+                        quality: Major,
+                        ext: Triad,
                         beats: 4,
                     ),
                 ],

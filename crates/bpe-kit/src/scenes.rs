@@ -6,8 +6,8 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Color, Ease, ModuleGraph, ModuleId, ModuleKind, Owner, Params, PulseSource, Registry, Scene,
-    Settings, SlotId, Target, ThingId, Value,
+    Address, Attach, Color, Ease, ModuleGraph, ModuleId, ModuleKind, MusicKey, Owner, Params, Progression,
+    ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId, Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -199,9 +199,25 @@ impl<'a> Builder<'a> {
     }
 
     fn scene_settings(&mut self, f: impl FnOnce(&mut SceneSettings)) {
-        let mut s = SceneSettings::default();
+        let root = self.scene.things.get_mut(&ThingId::ROOT).expect("root");
+        // Keep what the new scene set, such as its chords.
+        let mut s = SceneSettings::from_params(&root.params);
         f(&mut s);
-        self.scene.things.get_mut(&ThingId::ROOT).expect("root").params = s.to_params();
+        root.params = s.to_params();
+    }
+
+    /// Scene defaults' chords become the preset `name`, in the key on `root`.
+    fn chords(&mut self, name: &str, root: u8) {
+        let preset = bpe_mix::PRESETS.iter().find(|p| p.name == name).expect("a known preset");
+        let a = own(ThingId::ROOT, "chords");
+        let id = self.scene.value_at(self.reg, &a).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0);
+        let p = Progression {
+            name: preset.name.into(),
+            key: MusicKey { root, mode: preset.mode },
+            chords: preset.chords(root),
+            ..Progression::default()
+        };
+        self.scene.set_progression(id.expect("a new scene has chords"), p).expect("the progression is there");
     }
 
     fn arena(&mut self, f: impl FnOnce(&mut ArenaSettings)) {
@@ -610,6 +626,7 @@ fn drum_beat(reg: &Registry) -> Scene {
         s.beat_sync = BeatSync::Warp;
         s.warp_strength = 0.5;
     });
+    b.chords("Epic minor", 9);
     b.arena(|a| {
         a.shape = ArenaShape::Polygon;
         a.sides = 6;
@@ -815,6 +832,7 @@ fn pitch_climb(reg: &Registry) -> Scene {
         s.order = Order::Hits;
         s.instrument = Instrument::Marimba;
     });
+    b.chords("Dreamy loop", 9);
     b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
     b.scene
 }
