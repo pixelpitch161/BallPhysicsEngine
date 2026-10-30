@@ -18,7 +18,6 @@ pub struct ClassicLook {
         label = "Colours",
         prefix = "",
         group = "Colours",
-        when = "thing!=liquid",
         follows = "place|start|order|speed|hits|step|beat|time|path",
         inside,
         simple
@@ -76,6 +75,18 @@ impl ModuleKind for ClassicLookKind {
 mod tests {
     use crate::registry;
     use bpe_core::{Color, Gradient, Params, Value};
+
+    #[test]
+    fn a_liquid_wearing_a_look_shows_its_colours() {
+        let reg = registry();
+        for look in ["look.classic", "look.styled"] {
+            let defs = reg.module(look).unwrap().settings();
+            let colours = defs.iter().find(|d| d.key == "colours").unwrap();
+            let get = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
+            assert!(colours.applies(Some("liquid"), &get), "{look}: a liquid paints with its Colours");
+            assert!(colours.applies(Some("balls"), &get), "{look}");
+        }
+    }
 
     #[test]
     fn no_saved_settings_read_as_the_default_look() {

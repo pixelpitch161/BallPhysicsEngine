@@ -164,7 +164,11 @@ impl<'de> Deserialize<'de> for Gradient {
         #[serde(untagged)]
         enum Saved {
             Solid(Color),
-            Stops { stops: Vec<Stop>, transition: Transition },
+            Stops {
+                stops: Vec<Stop>,
+                #[serde(default)]
+                transition: Transition,
+            },
         }
         Ok(match Saved::deserialize(deserializer)? {
             Saved::Solid(c) => Gradient::solid(c),
@@ -404,5 +408,11 @@ mod tests {
         let text = ron::to_string(&g).unwrap();
         assert_eq!(ron::from_str::<Gradient>(&text).unwrap(), g);
         assert_eq!(ron::from_str::<Gradient>("\"#ff0000\"").unwrap(), Gradient::solid(RED));
+    }
+
+    #[test]
+    fn stops_without_a_transition_read_as_smooth() {
+        let text = r##"(stops: [(at: 0.0, color: "#ff0000"), (at: 1.0, color: "#0000ff")])"##;
+        assert_eq!(ron::from_str::<Gradient>(text).unwrap(), Gradient::even(&[RED, BLUE]));
     }
 }

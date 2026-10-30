@@ -89,7 +89,6 @@ pub struct StyledLook {
         label = "Colours",
         prefix = "",
         group = "Colours",
-        when = "thing!=liquid",
         follows = "place|start|order|speed|hits|step|beat|time|path",
         inside,
         simple

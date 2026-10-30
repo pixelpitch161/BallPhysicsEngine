@@ -8,8 +8,7 @@ use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
-    GridCx, KeyMark, MAKE_UNIQUE, NEW_PROGRESSION, TargetChoices, fold_toggle, settings_grid,
-    settings_grid_marked,
+    GridCx, KeyMark, MAKE_UNIQUE, NEW_PROGRESSION, TargetChoices, fold_toggle, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
     Address, Attach, Chord, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,

@@ -255,7 +255,7 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         Value::Gradient(g) => {
             // As many stops as before, each colour rolled like a colour; the stops between the
             // ends head for an even spread, give or take a tenth (at most 0.4 of the even gap, so
-            // neighbours never swap however many stops there are), and the ends stay at 0 and 1.
+            // neighbours never swap however many stops there are), and the ends for 0 and 1.
             let mut rolled = g.clone();
             if amount >= 1.0 {
                 for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
@@ -268,11 +268,13 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
                 }
             }
             let last = rolled.stops.len().saturating_sub(1);
+            // The ends head for 0 and 1 as far as `amount` says, landing there on a full roll.
+            let to_end = |at: f32, end: f32| if amount >= 1.0 { end } else { at + (end - at) * amount };
             for (i, stop) in rolled.stops.iter_mut().enumerate() {
                 stop.at = if i == 0 {
-                    0.0
+                    to_end(stop.at, 0.0)
                 } else if i == last {
-                    1.0
+                    to_end(stop.at, 1.0)
                 } else {
                     let even = i as f32 / last as f32;
                     let jitter = (0.4 / last as f32).min(0.1);
@@ -534,6 +536,26 @@ mod tests {
             middles.insert(g.stops[1].at.to_bits());
         }
         assert!(middles.len() > 1, "the stop between moves");
+    }
+
+    #[test]
+    fn a_little_gradient_dice_moves_the_end_stops_part_way_to_the_ends() {
+        let reg = registry();
+        let gradient = def(&reg, "look.classic", "colours");
+        let inset = Gradient {
+            stops: [0.2, 0.5, 0.8].iter().map(|&at| bpe_core::Stop { at, color: Color::rgb(200, 40, 40) }).collect(),
+            transition: bpe_core::Transition::Smooth,
+        };
+        for v in rolls(&gradient, &Value::Gradient(inset.clone()), 0.3, 20) {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            let (first, last) = (g.stops[0].at, g.stops[2].at);
+            assert!((first - 0.14).abs() < 1e-5, "the first stop moves 0.3 of the way to 0: {first}");
+            assert!((last - 0.86).abs() < 1e-5, "the last stop moves 0.3 of the way to 1: {last}");
+        }
+        for v in rolls(&gradient, &Value::Gradient(inset), 1.0, 5) {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            assert_eq!((g.stops[0].at, g.stops[2].at), (0.0, 1.0), "all the way: the ends");
+        }
     }
 
     #[test]
