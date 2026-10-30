@@ -161,8 +161,10 @@ pub(crate) fn meters(ui: &mut Ui, report: Option<&bpe_mix::MasterReport>, time: 
         .on_hover_text("Loudness over the last 3 seconds; the tick is the target");
     let reduction = reading.map(|(_, gr)| gr);
     bar(ui, reduction.map(|g| g / 12.0), None, theme::WARNING);
-    ui.label(RichText::new(reduction.map_or("--".into(), |g| format!("GR {g:.1} dB"))).small().monospace())
-        .on_hover_text("How much the limiter is turning the mix down here");
+    ui.label(
+        RichText::new(reduction.map_or("--".into(), |g| format!("GR {:.1} dB", g.max(0.0) + 0.0))).small().monospace(),
+    )
+    .on_hover_text("How much the limiter is turning the mix down here");
 }
 
 fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {

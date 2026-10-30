@@ -1145,8 +1145,11 @@ fn channel_section(
                 let slider = egui::Slider::new(&mut db, SEND_OFF..=6.0)
                     .step_by(0.5)
                     .max_decimals(1)
-                    .suffix(" dB")
-                    .custom_formatter(|v, _| if v <= SEND_OFF as f64 { "off".into() } else { format!("{v:.1}") });
+                    .custom_formatter(|v, _| if v <= SEND_OFF as f64 { "off".into() } else { format!("{v:.1} dB") })
+                    .custom_parser(|t| match t.trim() {
+                        "off" => Some(SEND_OFF as f64),
+                        t => t.trim_end_matches("dB").trim().parse().ok(),
+                    });
                 if ui.add(slider).labelled_by(label.id).changed() {
                     let after = (db > SEND_OFF).then_some(db);
                     if after != before {
