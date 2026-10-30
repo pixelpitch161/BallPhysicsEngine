@@ -11,7 +11,7 @@ pub fn effects_catalog_kinds() -> Vec<&'static str> {
     EFFECTS.to_vec()
 }
 
-const EFFECTS: &[&str] = &["filter", "ladder", "drive", "amp"];
+const EFFECTS: &[&str] = &["eq", "filter", "ladder", "drive", "bitcrush", "width", "amp"];
 
 /// An effects graph ready to run: `(None, None)` for no effects, `(Some, None)` when it
 /// compiles, and `(None, Some(first problem))` when it doesn't, so the sound passes through.

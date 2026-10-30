@@ -19,6 +19,18 @@ pub struct Svf {
     state: [(f32, f32); 2],
     /// The cutoff the coefficients were worked out for, and (g, a1, a2, a3).
     coeffs: (f32, [f32; 4]),
+    /// A built-in sweep of the cutoff: cycles per second, or beats per cycle when synced, and
+    /// how many octaves up and down it goes.
+    sweep: Sweep,
+    sweep_depth: f32,
+}
+
+/// What moves a filter's cutoff on its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sweep {
+    Off,
+    Hz(f32),
+    Beats(f32),
 }
 
 /// Passes values under 2 unchanged and bends louder ones smoothly towards 4, so a screaming
@@ -64,7 +76,24 @@ impl Svf {
             key_track: k.number("key_track", 0.0).clamp(0.0, 1.0),
             state: [(0.0, 0.0); 2],
             coeffs: (-1.0, [0.0; 4]),
+            sweep: match k.choice("sweep", "off") {
+                "off" => Sweep::Off,
+                "lfo" => Sweep::Hz(k.number("sweep_rate", 1.0).clamp(0.01, 50.0)),
+                synced => super::lfo::sync_beats(synced).map_or(Sweep::Off, Sweep::Beats),
+            },
+            sweep_depth: k.number("sweep_depth", 0.0).clamp(0.0, 4.0),
         }
+    }
+
+    /// Octaves the sweep moves the cutoff at `time` seconds into the track.
+    #[inline]
+    fn swept(&self, time: f64, seconds_per_beat: f32) -> f32 {
+        let hz = match self.sweep {
+            Sweep::Off => return 0.0,
+            Sweep::Hz(hz) => hz as f64,
+            Sweep::Beats(beats) => 1.0 / (beats * seconds_per_beat.max(1e-3)) as f64,
+        };
+        self.sweep_depth * (std::f64::consts::TAU * (time * hz).fract()).sin() as f32
     }
 
     fn coefficients(&mut self, hz: f32, rate: f32) -> [f32; 4] {
@@ -89,7 +118,12 @@ impl Block for Svf {
         };
         let k = self.k;
         for s in 0..BLOCK {
-            let hz = cutoff_at(self.cutoff, at(inputs, 1, s, 0.0), self.key_track, cx.note, cx.rate);
+            let sweep = if self.sweep_depth > 0.0 {
+                self.swept(cx.time + s as f64 / cx.rate as f64, cx.seconds_per_beat)
+            } else {
+                0.0
+            };
+            let hz = cutoff_at(self.cutoff, at(inputs, 1, s, 0.0) + sweep, self.key_track, cx.note, cx.rate);
             let [_, a1, a2, a3] = self.coefficients(hz, cx.rate);
             for side in 0..2 {
                 let v0 = input[side][s];
@@ -132,6 +166,29 @@ mod tests {
         });
         assert!(out[out.len() - 1000..].iter().all(|f| f[0] == 0.0 || f[0].abs() > 1e-30));
         assert_eq!(out[out.len() - 1][0], 0.0);
+    }
+
+    #[test]
+    fn filter_sweep_moves_the_cutoff() {
+        let k = Knobs::default()
+            .with("sweep", Param::Choice("lfo".into()))
+            .with("sweep_rate", Param::Number(1.0))
+            .with("sweep_depth", Param::Number(2.0));
+        let mut rng = crate::Rng::new(5);
+        let out = run(&mut Svf::new(&k), &mut Ctx::default(), 1500, |_, _| {
+            let mut b = crate::SILENT;
+            for s in 0..BLOCK {
+                b[0][s] = rng.next();
+                b[1][s] = b[0][s];
+            }
+            vec![Some(b)]
+        });
+        let rms: Vec<f32> = out
+            .chunks(4_800)
+            .map(|c| 10.0 * (c.iter().map(|f| f[0] * f[0]).sum::<f32>() / c.len() as f32).log10())
+            .collect();
+        let (lo, hi) = rms.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!(hi - lo > 3.0, "{lo} {hi}");
     }
 
     #[test]

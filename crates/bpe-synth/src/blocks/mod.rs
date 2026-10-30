@@ -2,7 +2,9 @@
 
 pub mod adsr;
 pub mod amp;
+pub mod crush;
 pub mod drive;
+pub mod eq;
 pub mod filter;
 pub mod ladder;
 pub mod lfo;
@@ -10,11 +12,14 @@ pub mod maths;
 pub mod noise;
 pub mod osc;
 pub mod sampler;
+pub mod space;
 pub mod tables;
 
 pub use adsr::Adsr;
 pub use amp::Amp;
+pub use crush::Bitcrush;
 pub use drive::Drive;
+pub use eq::Equaliser;
 pub use filter::Svf;
 pub use ladder::Ladder;
 pub use lfo::{Hold, Lfo};
@@ -22,6 +27,7 @@ pub use maths::{Arith, Crossfade, Macro, Mix, NoteIn, PitchToHz, Scale, VoiceOut
 pub use noise::Noise;
 pub use osc::Osc;
 pub use sampler::{Sampler, missing_samples};
+pub use space::{Follower, Width};
 
 #[cfg(test)]
 mod tests {

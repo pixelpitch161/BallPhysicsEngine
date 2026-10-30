@@ -6,6 +6,7 @@ use crate::{Block, Knobs};
 use bpe_graph::{NodeSpec, Param, ParamSpec, PinSpec, PinType, SpecList};
 use std::sync::OnceLock;
 
+const SWEEP: &[&str] = &["off", "lfo", "1/1", "1/2", "1/4", "1/8", "1/16"];
 const SYNC: &[&str] = &["off", "1/1", "1/2", "1/4", "1/8", "1/16", "1/4T", "1/8T"];
 
 fn audio(name: &str) -> PinSpec {
@@ -71,7 +72,10 @@ fn specs() -> Vec<NodeSpec> {
             .param(choice("mode", "Mode", &["low", "high", "band", "notch"], "low"))
             .param(n("cutoff", "Cutoff", 2_000.0, 20.0, 20_000.0))
             .param(n("resonance", "Resonance", 0.0, 0.0, 1.0))
-            .param(n("key_track", "Key tracking", 0.0, 0.0, 1.0).help("1 moves the cutoff with the note")),
+            .param(n("key_track", "Key tracking", 0.0, 0.0, 1.0).help("1 moves the cutoff with the note"))
+            .param(choice("sweep", "Sweep", SWEEP, "off").help("Moves the cutoff up and down on its own"))
+            .param(n("sweep_rate", "Sweep rate Hz", 1.0, 0.01, 50.0))
+            .param(n("sweep_depth", "Sweep depth", 0.0, 0.0, 4.0).help("Octaves up and down")),
         NodeSpec::new("ladder", "Ladder", "Shaping", "A warm four-pole low-pass that can be driven.")
             .input(audio("in").required())
             .input(number("cutoff_mod").help("Octaves up or down from the cutoff"))
@@ -83,9 +87,38 @@ fn specs() -> Vec<NodeSpec> {
         NodeSpec::new("drive", "Drive", "Shaping", "Distortion.")
             .input(audio("in").required())
             .output(audio("out"))
-            .param(choice("mode", "Mode", &["soft", "hard", "fold"], "soft"))
+            .param(choice("mode", "Mode", &["soft", "hard", "fold", "tube"], "soft"))
             .param(n("amount", "Amount", 0.3, 0.0, 1.0))
-            .param(n("bias", "Bias", 0.0, -1.0, 1.0)),
+            .param(n("bias", "Bias", 0.0, -1.0, 1.0))
+            .param(n("tone", "Tone", 1.0, 0.0, 1.0).help("Darker towards 0"))
+            .param(n("mix", "Mix", 1.0, 0.0, 1.0)),
+        NodeSpec::new("eq", "EQ", "Effects", "Three bands of boost or cut, with low and high cuts.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("low_cut", "Low cut", 20.0, 20.0, 1_000.0))
+            .param(n("low_gain", "Low dB", 0.0, -18.0, 18.0))
+            .param(n("low_freq", "Low freq", 120.0, 20.0, 1_000.0))
+            .param(n("mid_gain", "Mid dB", 0.0, -18.0, 18.0))
+            .param(n("mid_freq", "Mid freq", 1_000.0, 100.0, 10_000.0))
+            .param(n("mid_q", "Mid width Q", 0.7, 0.1, 10.0))
+            .param(n("high_gain", "High dB", 0.0, -18.0, 18.0))
+            .param(n("high_freq", "High freq", 8_000.0, 1_000.0, 20_000.0))
+            .param(n("high_cut", "High cut", 20_000.0, 1_000.0, 20_000.0)),
+        NodeSpec::new("bitcrush", "Bitcrush", "Effects", "Fewer bits and a lower sample rate, for grit.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("bits", "Bits", 8.0, 1.0, 16.0))
+            .param(n("downsample", "Downsample", 1.0, 1.0, 32.0))
+            .param(n("mix", "Mix", 1.0, 0.0, 1.0)),
+        NodeSpec::new("width", "Stereo width", "Effects", "0 is mono, 1 unchanged, 2 twice as wide.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("width", "Width", 1.0, 0.0, 2.0)),
+        NodeSpec::new("follower", "Envelope follower", "Modulators", "How loud a sound is, as a control from 0.")
+            .input(audio("in"))
+            .output(number("level"))
+            .param(n("attack", "Attack", 0.01, 0.0, 1.0))
+            .param(n("release", "Release", 0.2, 0.0, 5.0)),
         NodeSpec::new("amp", "Amp", "Shaping", "Louder or quieter; wire an envelope into mod.")
             .input(audio("in").required())
             .input(number("mod").help("Multiplies the sound, usually by an envelope"))
@@ -170,6 +203,10 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "ladder" => Box::new(Ladder::new(k)),
         "drive" => Box::new(Drive::new(k)),
         "amp" => Box::new(Amp::new(k)),
+        "eq" => Box::new(Equaliser::new(k)),
+        "bitcrush" => Box::new(Bitcrush::new(k)),
+        "width" => Box::new(Width::new(k)),
+        "follower" => Box::new(Follower::new(k)),
         "adsr" => Box::new(Adsr::new(k)),
         "lfo" => Box::new(Lfo::new(k)),
         "hold" => Box::new(Hold::new(k)),
