@@ -2,6 +2,7 @@
 //! each one.
 
 use crate::blocks::*;
+use crate::inputs::{HIT_INPUTS, InputDef, LIVE_INPUTS, SCENE_INPUTS};
 use crate::{Block, Knobs};
 use bpe_graph::{NodeSpec, Param, ParamSpec, PinSpec, PinType, SpecList};
 use std::sync::OnceLock;
@@ -23,6 +24,19 @@ fn flag(name: &str, label: &str, default: bool) -> ParamSpec {
 
 fn choice(name: &str, label: &str, choices: &[&str], default: &str) -> ParamSpec {
     ParamSpec { default: Param::Choice(default.into()), ..ParamSpec::choice(name, label, choices) }
+}
+
+/// An input block reading one of `table`, mapped to 0 to 1.
+fn input_block(kind: &str, title: &str, help: &str, table: &[InputDef], smoothing: f32) -> NodeSpec {
+    let names: Vec<&str> = table.iter().map(|d| d.name).collect();
+    let n = ParamSpec::number;
+    NodeSpec::new(kind, title, "Inputs", help)
+        .output(number("out"))
+        .param(choice("input", "Input", &names, names[0]))
+        .param(n("low", "In low", 0.0, -10_000.0, 10_000.0).help("The value that gives 0"))
+        .param(n("high", "In high", 1.0, -10_000.0, 10_000.0).help("The value that gives 1"))
+        .param(choice("curve", "Curve", &["linear", "exponential", "S"], "linear"))
+        .param(n("smoothing", "Smoothing ms", smoothing, 0.0, 2_000.0))
 }
 
 /// Every block a patch can use.
@@ -230,6 +244,11 @@ fn specs() -> Vec<NodeSpec> {
             .output(number("velocity"))
             .output(number("gate"))
             .output(number("time")),
+        input_block("hit_input", "At the hit", "A value from the hit that started the note, fixed for the voice.", HIT_INPUTS, 0.0)
+            .param(ParamSpec::new("tag", "Tag", Param::Text(String::new())).help("For Hit thing's tag: 1 when the thing hit has this tag")),
+        input_block("live_input", "Live", "The ball's value while the note sounds.", LIVE_INPUTS, 30.0),
+        input_block("scene_input", "Scene", "A value from the whole scene, on the video's clock.", SCENE_INPUTS, 30.0)
+            .param(ParamSpec::new("channel", "Channel", Param::Text(String::new())).help("For Channel level: the sound module to listen to")),
         NodeSpec::new("macro", "Macro", "Inputs", "A value to show on the card: Show on the card to expose it.")
             .output(number("out"))
             .param(n("value", "Value", 0.5, 0.0, 1.0))
@@ -276,6 +295,9 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "pitch_to_hz" => Box::new(PitchToHz),
         "note" => Box::new(NoteIn),
         "macro" => Box::new(Macro::new(k)),
+        "hit_input" => Box::new(PhysicsIn::new(Reads::Hit, k)),
+        "live_input" => Box::new(PhysicsIn::new(Reads::Live, k)),
+        "scene_input" => Box::new(PhysicsIn::new(Reads::Scene, k)),
         "voice_out" | "fx_out" => Box::new(VoiceOut),
         // Never run: the program fills its register with the incoming sound.
         "fx_in" => Box::new(Mix::new(k)),

@@ -2,7 +2,7 @@
 //! voice.
 
 use crate::catalog::{catalog, make};
-use crate::{BLOCK, Block, Buf, Ctx, Knobs, SILENT};
+use crate::{BLOCK, Block, Buf, Ctx, Knobs, SILENT, Sources};
 use bpe_graph::{Catalog, Diagnostic, Graph, Link, Param, order, validate};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -93,6 +93,12 @@ fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
     {
         first.push(Diagnostic { node: Some(n), link: None, message: "In is for effects; use Note".into() });
     }
+    if mode == Mode::Effects {
+        for n in graph.nodes.iter().filter(|n| n.kind == "hit_input" || n.kind == "live_input") {
+            let message = "At-the-hit and live inputs only work in instrument patches".into();
+            first.push(Diagnostic { node: Some(n.id), link: None, message });
+        }
+    }
     if outs.len() != 1 {
         let message = match (mode, outs.is_empty()) {
             (Mode::Patch, true) => "Add a Voice out block",
@@ -161,12 +167,18 @@ fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
 impl Program {
     /// A fresh voice of this patch, ready for a note.
     pub fn instantiate(&self, cx: &Ctx) -> Patch {
+        self.instantiate_with(cx, &Sources::default())
+    }
+
+    /// A fresh voice reading `sources`.
+    pub fn instantiate_with(&self, cx: &Ctx, sources: &Sources) -> Patch {
         let blocks = self
             .ops
             .iter()
             .map(|op| {
                 let mut b = make(&op.kind, &op.knobs).filter(|_| op.enabled)?;
                 b.reset(cx);
+                b.bind(sources);
                 Some(b)
             })
             .collect();
@@ -175,8 +187,13 @@ impl Program {
 
     /// Runs an effects program over interleaved stereo `audio` in place, a block at a time from
     /// `cx`'s time. The last part block is padded with silence.
-    pub fn run(&self, audio: &mut [f32], mut cx: Ctx) {
-        let mut patch = self.instantiate(&cx);
+    pub fn run(&self, audio: &mut [f32], cx: Ctx) {
+        self.run_with(audio, cx, &Sources::default())
+    }
+
+    /// [`Program::run`], with input blocks reading `sources`.
+    pub fn run_with(&self, audio: &mut [f32], mut cx: Ctx, sources: &Sources) {
+        let mut patch = self.instantiate_with(&cx, sources);
         for chunk in audio.chunks_mut(BLOCK * 2) {
             let mut input = SILENT;
             for (s, frame) in chunk.chunks_exact(2).enumerate() {
@@ -234,6 +251,13 @@ impl Patch {
             }
         }
         *out = self.regs[self.program.out];
+    }
+
+    /// Hands every block new sources, as a mono voice does on a new note.
+    pub fn bind(&mut self, sources: &Sources) {
+        for b in self.blocks.iter_mut().flatten() {
+            b.bind(sources);
+        }
     }
 
     /// Sets the sound coming into an effects graph's In for the next [`Patch::process`].
@@ -426,6 +450,37 @@ mod tests {
             a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             b.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn hit_inputs_are_patch_only() {
+        let cat = catalog();
+        let message = "At-the-hit and live inputs only work in instrument patches";
+        let mut fx = crate::chain_graph(&[("amp".into(), Default::default(), true)]);
+        let amp = fx.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let input = fx.add(cat.spec("hit_input").unwrap(), [0.0, 0.0]);
+        assert!(fx.connect(Link { from: (input, 0), to: (amp, 1) }, cat));
+        let problems = compile_effects(&fx).unwrap_err();
+        assert!(problems.iter().any(|d| d.message == message && d.node == Some(input)), "{problems:?}");
+
+        let mut patch = blank_patch();
+        let amp = patch.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let input = patch.add(cat.spec("hit_input").unwrap(), [0.0, 0.0]);
+        assert!(patch.connect(Link { from: (input, 0), to: (amp, 1) }, cat));
+        assert!(compile(&patch).is_ok());
+    }
+
+    #[test]
+    fn uses_lists_inputs() {
+        let cat = catalog();
+        let mut g = blank_patch();
+        g.add(cat.spec("live_input").unwrap(), [0.0, 0.0]);
+        let s = g.add(cat.spec("scene_input").unwrap(), [0.0, 0.0]);
+        let node = g.node_mut(s).unwrap();
+        node.params.insert("input".into(), Param::Choice("channel".into()));
+        node.params.insert("channel".into(), Param::Text("Kick".into()));
+        let expected = crate::Uses { hit: false, live: true, scene: true, channels: ["Kick".to_string()].into() };
+        assert_eq!(crate::uses(&g), expected);
     }
 
     #[test]

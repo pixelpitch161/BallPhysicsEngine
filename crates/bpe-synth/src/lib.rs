@@ -12,12 +12,16 @@
 pub mod blocks;
 mod catalog;
 pub mod effects;
+pub mod inputs;
 mod program;
 mod starters;
 mod voices;
 
 pub use blocks::missing_samples;
 pub use catalog::catalog;
+pub use inputs::{
+    HIT_INPUTS, HitPhysics, InputDef, LIVE_INPUTS, SCENE_INPUTS, SceneSignals, Sources, Track, Uses, inputs_of, uses,
+};
 pub use effects::{chain_graph, effects_catalog_kinds, effects_or_through, straight_chain};
 pub use program::{MacroKnob, Patch, Program, blank_patch, compile, compile_effects, macros, sound_key, with_macros};
 pub use starters::starters;
@@ -99,6 +103,8 @@ pub trait Block: Send {
     fn idle(&self) -> bool {
         true
     }
+    /// Takes what the run gives this voice or effects run, before its first block.
+    fn bind(&mut self, _sources: &Sources) {}
 }
 
 /// A block's knob values by name.
