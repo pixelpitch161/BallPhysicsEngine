@@ -93,7 +93,7 @@ impl Val {
             PinType::Color => Val::Color([0.0; 4]),
             PinType::Bool => Val::Bool(false),
             PinType::Ball => Val::Ball(None),
-            PinType::Number | PinType::Trigger | PinType::Text | PinType::Field => Val::Number(0.0),
+            PinType::Number | PinType::Trigger | PinType::Text | PinType::Field | PinType::Audio => Val::Number(0.0),
         }
     }
 

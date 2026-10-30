@@ -1352,6 +1352,7 @@ pub fn pin_color(ty: PinType) -> Color32 {
         PinType::Ball => Color32::from_rgb(0x6d, 0xe0, 0x9a),
         PinType::Text => Color32::from_rgb(0xd6, 0xd0, 0xb8),
         PinType::Field => Color32::from_rgb(0xff, 0x9a, 0x5c),
+        PinType::Audio => Color32::from_rgb(0x4f, 0xe0, 0xd0),
     }
 }
 
