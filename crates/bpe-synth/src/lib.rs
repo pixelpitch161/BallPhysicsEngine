@@ -12,17 +12,24 @@
 pub mod blocks;
 mod catalog;
 pub mod effects;
+mod follow;
+pub mod inputs;
 mod program;
 mod starters;
 mod voices;
 
 pub use blocks::missing_samples;
-pub use catalog::catalog;
-pub use effects::{chain_graph, effects_catalog_kinds, effects_or_through, straight_chain};
+pub use catalog::{catalog, followable};
+pub use effects::{ChainBlock, chain_graph, effects_catalog_kinds, effects_or_through, rechain, straight_chain};
+pub use follow::{FollowInput, follow, followed, unfollow};
+pub use inputs::{
+    HIT_INPUTS, HitPhysics, InputDef, LIVE_INPUTS, SCENE_INPUTS, SceneSignals, Sources, Track, Uses, inputs_of, uses,
+};
 pub use program::{MacroKnob, Patch, Program, blank_patch, compile, compile_effects, macros, sound_key, with_macros};
 pub use starters::starters;
 pub use voices::{
     ChannelAudio, NoteLength, PlayNote, STEAL_FADE, VoiceSettings, global_steals, render_channel, render_channel_on,
+    render_channel_with,
 };
 
 use bpe_graph::Param;
@@ -99,6 +106,11 @@ pub trait Block: Send {
     fn idle(&self) -> bool {
         true
     }
+    /// Takes what the run gives this voice or effects run, before its first block.
+    fn bind(&mut self, _sources: &Sources) {}
+    /// Changes a knob while the block runs, keeping what it is playing. Only the knobs
+    /// [`followable`] lists for the block's kind are ever set.
+    fn set_knob(&mut self, _name: &str, _value: f32) {}
 }
 
 /// A block's knob values by name.

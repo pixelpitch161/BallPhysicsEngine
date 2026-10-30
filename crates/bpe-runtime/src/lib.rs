@@ -21,7 +21,7 @@ pub mod world;
 pub use actions::{Action, MAX_BALLS, SPLIT_SPREAD_DEGREES};
 pub use bodies::Bodies;
 pub use camera::CameraView;
-pub use events::{Event, EventKind, Log, Party};
+pub use events::{Event, EventKind, Log, MOTION_RATE, Party, SceneSample, TRACK_SECONDS, TrackSample};
 pub use history::History;
 pub use pairs::{Grid, Pairs, Support};
 pub use playback::Playback;

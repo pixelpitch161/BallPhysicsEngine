@@ -5,7 +5,8 @@
 use crate::theme;
 use bpe_core::{BusId, InstrumentId, ModuleId, Scene};
 use bpe_graph::{Catalog, Graph, Param, ParamSpec};
-use eframe::egui::{self, RichText, Ui};
+use bpe_synth::ChainBlock;
+use eframe::egui::{self, RichText, Sense, Ui};
 use std::collections::BTreeMap;
 use std::hash::Hash;
 
@@ -68,15 +69,13 @@ pub enum FxEdit {
     OpenNodes,
 }
 
-/// One block of a chain: its kind, knobs and whether it's on.
-type ChainBlock = (String, BTreeMap<String, Param>, bool);
-
 /// Shows `graph` as a list of blocks, or as "Custom routing" when it isn't a straight chain.
-pub fn show(ui: &mut Ui, graph: &Graph, salt: impl Hash + std::fmt::Debug) -> FxEdit {
-    ui.push_id(salt, |ui| list(ui, graph)).inner
+/// `channels` names the sounds a knob's Channel level can follow.
+pub fn show(ui: &mut Ui, graph: &Graph, salt: impl Hash + std::fmt::Debug, channels: &[String]) -> FxEdit {
+    ui.push_id(salt, |ui| list(ui, graph, channels)).inner
 }
 
-fn list(ui: &mut Ui, graph: &Graph) -> FxEdit {
+fn list(ui: &mut Ui, graph: &Graph, channels: &[String]) -> FxEdit {
     let cat = bpe_synth::catalog();
     let Some(ids) = bpe_synth::straight_chain(graph) else {
         let mut edit = FxEdit::None;
@@ -89,12 +88,17 @@ fn list(ui: &mut Ui, graph: &Graph) -> FxEdit {
         });
         return edit;
     };
-    let mut chain: Vec<ChainBlock> =
-        ids.iter().filter_map(|id| graph.node(*id)).map(|n| (n.kind.clone(), n.params.clone(), n.enabled)).collect();
+    let mut chain: Vec<ChainBlock> = ids
+        .iter()
+        .filter_map(|id| graph.node(*id))
+        .map(|n| ChainBlock { id: Some(n.id), kind: n.kind.clone(), params: n.params.clone(), enabled: n.enabled })
+        .collect();
     let mut changed = false;
     let mut action: Option<(usize, Move)> = None;
-    for (i, (kind, params, enabled)) in chain.iter_mut().enumerate() {
+    let mut follow: Option<Graph> = None;
+    for (i, ChainBlock { id, kind, params, enabled }) in chain.iter_mut().enumerate() {
         let Some(spec) = cat.spec(kind) else { continue };
+        let followable = bpe_synth::followable(kind);
         ui.push_id(i, |ui| {
             egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -116,9 +120,28 @@ fn list(ui: &mut Ui, graph: &Graph) -> FxEdit {
                 egui::Grid::new("knobs").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                     for p in &spec.params {
                         let value = params.entry(p.name.clone()).or_insert_with(|| p.default.clone());
-                        let label = ui.label(p.label.as_str());
+                        let node = (*id).filter(|_| followable.contains(&p.name.as_str()));
+                        let follows = node.and_then(|n| bpe_synth::followed(graph, n, &p.name));
+                        let label = ui
+                            .horizontal(|ui| {
+                                let label = ui.add(egui::Label::new(p.label.as_str()).sense(Sense::click()));
+                                crate::follow_menu::mark(ui, follows.as_deref());
+                                label
+                            })
+                            .inner;
                         if !p.help.is_empty() {
                             label.clone().on_hover_text(p.help.as_str());
+                        }
+                        if let Some(n) = node {
+                            label.context_menu(|ui| {
+                                if let Some(with) = crate::follow_menu::menu(ui, false, channels) {
+                                    follow = bpe_synth::follow(graph, n, &p.name, &with);
+                                }
+                                if follows.is_some() && ui.button("Stop following").clicked() {
+                                    follow = Some(bpe_synth::unfollow(graph, n, &p.name));
+                                    ui.close();
+                                }
+                            });
                         }
                         changed |= knob(ui, p, value, label.id);
                         ui.end_row();
@@ -152,15 +175,17 @@ fn list(ui: &mut Ui, graph: &Graph) -> FxEdit {
         .response
         .on_hover_text("Add an effect at the end of the chain");
         if let Some(kind) = picked {
-            chain.push((kind.to_owned(), BTreeMap::new(), true));
+            chain.push(ChainBlock { id: None, kind: kind.to_owned(), params: BTreeMap::new(), enabled: true });
             changed = true;
         }
         open = ui.small_button("Open nodes").on_hover_text("Edit these effects as a graph").clicked();
     });
     if open {
         FxEdit::OpenNodes
+    } else if let Some(g) = follow {
+        FxEdit::Set(g)
     } else if changed {
-        FxEdit::Set(bpe_synth::chain_graph(&chain))
+        FxEdit::Set(bpe_synth::rechain(graph, &chain))
     } else {
         FxEdit::None
     }
@@ -229,7 +254,7 @@ mod tests {
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
-                    egui::ScrollArea::vertical().show(ui, |ui| match show(ui, &s.graph, "test") {
+                    egui::ScrollArea::vertical().show(ui, |ui| match show(ui, &s.graph, "test", &["Kick".into()]) {
                         FxEdit::Set(g) => s.graph = g,
                         FxEdit::OpenNodes => s.opened = true,
                         FxEdit::None => {}
@@ -284,5 +309,45 @@ mod tests {
         h.get_by_label("Open nodes").click();
         h.run();
         assert!(h.state().opened);
+    }
+
+    fn open_follow(h: &mut Harness<'_, State>, knob: &str, path: &[&str]) {
+        h.query_all_by_role_and_label(egui::accesskit::Role::Label, knob).next().unwrap().click_secondary();
+        h.run();
+        for step in path {
+            h.get_by_label(step).hover();
+            h.run();
+            h.get_by_label(step).click();
+            h.run();
+        }
+    }
+
+    #[test]
+    fn follow_a_knob_from_the_list() {
+        let g = bpe_synth::chain_graph(&[("delay".into(), BTreeMap::new(), true)]);
+        let mut h = harness(g);
+        open_follow(&mut h, "Mix", &["Follow…", "Scene", "Beat phase"]);
+        let g = h.state().graph.clone();
+        let delay = g.nodes.iter().find(|n| n.kind == "delay").unwrap().id;
+        assert_eq!(bpe_synth::followed(&g, delay, "mix").as_deref(), Some("Beat phase"));
+        assert_eq!(kinds(&g), ["delay"], "still a list, not custom routing");
+        h.get_by_label("Follows Beat phase");
+        // Editing the chain keeps the follow.
+        add(&mut h, "Reverb");
+        let g = h.state().graph.clone();
+        assert_eq!(kinds(&g), ["delay", "reverb"]);
+        assert_eq!(bpe_synth::followed(&g, delay, "mix").as_deref(), Some("Beat phase"));
+        open_follow(&mut h, "Mix", &["Stop following"]);
+        assert_eq!(bpe_synth::followed(&h.state().graph, delay, "mix"), None);
+    }
+
+    #[test]
+    fn effects_offer_only_scene_inputs() {
+        let g = bpe_synth::chain_graph(&[("delay".into(), BTreeMap::new(), true)]);
+        let mut h = harness(g);
+        open_follow(&mut h, "Mix", &["Follow…"]);
+        h.get_by_label("Scene");
+        assert!(h.query_by_label("At the hit").is_none());
+        assert!(h.query_by_label("Live").is_none());
     }
 }

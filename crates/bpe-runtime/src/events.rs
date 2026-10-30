@@ -5,6 +5,7 @@
 
 use bpe_core::ThingId;
 use glam::Vec2;
+use std::collections::BTreeMap;
 
 use crate::camera::CameraView;
 
@@ -88,6 +89,34 @@ pub struct Log {
     /// Where the camera looked, from each step it moved: `(step, view)` in step order. Kept
     /// apart from the events so it never changes the log's hash.
     camera: Vec<(u64, CameraView)>,
+    /// Where each ball went after its hits, for sounds that follow it. Not in the hash.
+    tracks: BTreeMap<Party, Vec<TrackSample>>,
+    /// The whole scene's motion, 60 times a second. Not in the hash.
+    scene: Vec<SceneSample>,
+}
+
+/// How often motion is sampled for sound, per second.
+pub const MOTION_RATE: u32 = 60;
+/// How long a ball's track runs on after each of its hits, in seconds.
+pub const TRACK_SECONDS: f64 = 12.0;
+
+/// One moment of a ball's track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackSample {
+    pub step: u64,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub radius: f32,
+}
+
+/// One moment of the whole scene's motion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneSample {
+    pub step: u64,
+    /// Balls alive, not counting silent ones (liquid).
+    pub balls: u32,
+    /// Σ ½·(r/20)²·|v|² / 10⁶ over those balls.
+    pub energy: f32,
 }
 
 impl Log {
@@ -108,6 +137,34 @@ impl Log {
         if self.camera.last().is_none_or(|(_, last)| *last != view) {
             self.camera.push((step, view));
         }
+    }
+
+    /// Adds a moment of a ball's track. Samples arrive in step order.
+    pub fn push_track(&mut self, ball: Party, s: TrackSample) {
+        self.tracks.entry(ball).or_default().push(s);
+    }
+
+    /// A ball's track, in step order; empty when nothing was recorded.
+    pub fn track(&self, ball: Party) -> &[TrackSample] {
+        self.tracks.get(&ball).map_or(&[], |t| t.as_slice())
+    }
+
+    /// Adds a moment of the scene's motion.
+    pub fn push_scene(&mut self, s: SceneSample) {
+        self.scene.push(s);
+    }
+
+    pub fn scene_samples(&self) -> &[SceneSample] {
+        &self.scene
+    }
+
+    /// Forgets the motion after `step`, when playback rewinds.
+    pub fn truncate_motion(&mut self, step: u64) {
+        for t in self.tracks.values_mut() {
+            t.truncate(t.partition_point(|s| s.step <= step));
+        }
+        self.tracks.retain(|_, t| !t.is_empty());
+        self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
     }
 
     /// Where the camera looked at `step`: the identity before it was first noted.
@@ -151,6 +208,8 @@ impl Log {
     /// Bytes the log's memory takes, for playback budgets.
     pub fn memory(&self) -> usize {
         self.events.capacity() * std::mem::size_of::<Event>()
+            + self.tracks.values().map(|t| t.capacity() * std::mem::size_of::<TrackSample>()).sum::<usize>()
+            + self.scene.capacity() * std::mem::size_of::<SceneSample>()
     }
 
     /// An FNV-1a hash of every field of every event. Equal logs hash equal on every platform.

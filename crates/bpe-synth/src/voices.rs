@@ -1,9 +1,10 @@
 //! Voices: playing a channel's notes through a program, with a voice limit, stealing, mono and
 //! glide, and a cap across the whole mix.
 
-use crate::{BLOCK, Buf, Ctx, Patch, Program, SILENT};
+use crate::{BLOCK, Buf, Ctx, HitPhysics, Patch, Program, SILENT, SceneSignals, Sources};
 pub use bpe_core::{NoteLength, VoiceSettings};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// A stolen voice fades out over this many frames (5 ms at 48 kHz).
 pub const STEAL_FADE: usize = 240;
@@ -15,7 +16,7 @@ const QUIET_FOR: f32 = 0.05;
 const LONGEST_TAIL: f32 = 10.0;
 
 /// One note for a channel to play.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayNote {
     pub frame: usize,
     pub key: u8,
@@ -25,6 +26,8 @@ pub struct PlayNote {
     pub right: f32,
     /// Where the mix-wide voice cap cuts this note off, if it does.
     pub steal_at: Option<usize>,
+    /// What the hit that played it gives the voice's input blocks.
+    pub physics: Option<Arc<HitPhysics>>,
 }
 
 /// A rendered channel.
@@ -135,7 +138,15 @@ struct Live {
 }
 
 impl Live {
-    fn new(program: &Program, note: &PlayNote, gate: usize, seconds_per_beat: f32, rate: f32, frames: usize) -> Self {
+    fn new(
+        program: &Program,
+        note: &PlayNote,
+        gate: usize,
+        seconds_per_beat: f32,
+        rate: f32,
+        frames: usize,
+        scene: &Option<Arc<SceneSignals>>,
+    ) -> Self {
         let cx = note_ctx(note, rate, seconds_per_beat);
         let longest = gate + (LONGEST_TAIL * rate) as usize;
         let mut len = (frames - note.frame).min(longest);
@@ -145,9 +156,9 @@ impl Live {
         let quiet_needed = (QUIET_FOR * rate) as usize;
         let samples = Vec::with_capacity(len.min(gate + quiet_needed + BLOCK) * 2);
         Live {
-            patch: Some(program.instantiate(&cx)),
+            patch: Some(program.instantiate_with(&cx, &Sources { hit: note.physics.clone(), scene: scene.clone() })),
             cx,
-            note: *note,
+            note: note.clone(),
             gate,
             len,
             quiet: 0,
@@ -252,12 +263,27 @@ pub fn render_channel_on(
     frames: usize,
     threads: usize,
 ) -> ChannelAudio {
+    render_channel_with(program, notes, voices, seconds_per_beat, rate, frames, threads, None)
+}
+
+/// [`render_channel_on`], with input blocks reading `scene` and each note's own physics.
+#[allow(clippy::too_many_arguments)]
+pub fn render_channel_with(
+    program: &Program,
+    notes: &[PlayNote],
+    voices: &VoiceSettings,
+    seconds_per_beat: f32,
+    rate: f32,
+    frames: usize,
+    threads: usize,
+    scene: Option<Arc<SceneSignals>>,
+) -> ChannelAudio {
     let mut order: Vec<&PlayNote> = notes.iter().filter(|n| n.frame < frames).collect();
     order.sort_by_key(|n| n.frame);
     let gate = gate_frames(voices, seconds_per_beat, rate);
     let mut out = ChannelAudio { samples: vec![0.0; frames * 2], bad_samples: false };
     if voices.mono {
-        render_mono(program, &order, voices, gate, seconds_per_beat, rate, &mut out);
+        render_mono(program, &order, voices, gate, seconds_per_beat, rate, &scene, &mut out);
         return out;
     }
     let limit = voices.limit.max(1) as usize;
@@ -282,7 +308,7 @@ pub fn render_channel_on(
             out.bad_samples |= oldest.bad;
             oldest.voice.add_to(&mut out.samples);
         }
-        live.push(Live::new(program, note, gate, seconds_per_beat, rate, frames));
+        live.push(Live::new(program, note, gate, seconds_per_beat, rate, frames, &scene));
     }
     advance_all(&mut live, usize::MAX, threads);
     for v in &live {
@@ -293,6 +319,7 @@ pub fn render_channel_on(
 }
 
 /// One voice for the whole channel. Notes take effect at the start of the block they fall in.
+#[allow(clippy::too_many_arguments)]
 fn render_mono(
     program: &Program,
     notes: &[&PlayNote],
@@ -300,6 +327,7 @@ fn render_mono(
     gate: usize,
     seconds_per_beat: f32,
     rate: f32,
+    scene: &Option<Arc<SceneSignals>>,
     out: &mut ChannelAudio,
 ) {
     let frames = out.samples.len() / 2;
@@ -319,8 +347,10 @@ fn render_mono(
             next += 1;
         }
         if let Some(note) = started {
+            let sources = Sources { hit: note.physics.clone(), scene: scene.clone() };
             match &mut voice {
-                Some((_, cx)) => {
+                Some((patch, cx)) => {
+                    patch.bind(&sources);
                     from = cx.note;
                     glided = 0.0;
                     cx.trigger = voices.retrigger || !cx.gate;
@@ -328,7 +358,7 @@ fn render_mono(
                 }
                 None => {
                     let cx = note_ctx(note, rate, seconds_per_beat);
-                    voice = Some((program.instantiate(&cx), cx));
+                    voice = Some((program.instantiate_with(&cx, &sources), cx));
                     from = note.key as f32;
                     glided = f32::INFINITY;
                 }
@@ -389,9 +419,9 @@ pub fn global_steals(notes: &mut [(usize, PlayNote)], gate_frames: impl Fn(usize
     let mut ends = BTreeSet::<(usize, usize)>::new();
     let mut start_of = vec![0usize; notes.len()];
     for (rank, &i) in order.iter().enumerate() {
-        let (channel, note) = notes[i];
+        let (channel, frame) = (notes[i].0, notes[i].1.frame);
         while let Some(&(end, r)) = ends.first() {
-            if end > note.frame {
+            if end > frame {
                 break;
             }
             ends.pop_first();
@@ -400,13 +430,13 @@ pub fn global_steals(notes: &mut [(usize, PlayNote)], gate_frames: impl Fn(usize
         if sounding.len() >= cap.max(1) {
             let (start, r) = sounding.pop_first().expect("more than none");
             let victim = order[r];
-            notes[victim].1.steal_at = Some(note.frame);
+            notes[victim].1.steal_at = Some(frame);
             let end = start + gate_frames(notes[victim].0) + 48_000;
             ends.remove(&(end, r));
         }
-        start_of[rank] = note.frame;
-        sounding.insert((note.frame, rank));
-        ends.insert((note.frame + gate_frames(channel) + 48_000, rank));
+        start_of[rank] = frame;
+        sounding.insert((frame, rank));
+        ends.insert((frame + gate_frames(channel) + 48_000, rank));
     }
 }
 
@@ -446,7 +476,7 @@ mod tests {
     }
 
     fn note(frame: usize, key: u8) -> PlayNote {
-        PlayNote { frame, key, velocity: 1.0, left: 1.0, right: 1.0, steal_at: None }
+        PlayNote { frame, key, velocity: 1.0, left: 1.0, right: 1.0, steal_at: None, physics: None }
     }
 
     fn seconds(s: f32) -> VoiceSettings {
@@ -536,7 +566,7 @@ mod tests {
             assert!(sounding <= 256, "{sounding} at {f}");
         }
         let program = compile(&sine_patch(0.001, 0.05)).unwrap();
-        let channel: Vec<PlayNote> = notes.iter().filter(|(c, _)| *c == 0).map(|(_, n)| *n).collect();
+        let channel: Vec<PlayNote> = notes.iter().filter(|(c, _)| *c == 0).map(|(_, n)| n.clone()).collect();
         let a = render_channel(&program, &channel, &seconds(0.5), 0.5, 48_000.0, 96_000);
         let b = render_channel(&program, &channel, &seconds(0.5), 0.5, 48_000.0, 96_000);
         assert!(a.samples.iter().zip(&b.samples).all(|(x, y)| x.to_bits() == y.to_bits()));

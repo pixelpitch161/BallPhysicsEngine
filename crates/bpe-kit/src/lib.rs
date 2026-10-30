@@ -53,7 +53,8 @@ pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use music::{
-    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
+    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
+    uses_live_inputs, wants_beats, warp_for,
 };
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
@@ -318,14 +319,24 @@ pub fn mix_scene_cached(
     let warp = warp_for(scene, resolved, log);
     let settings = mix_settings(scene, resolved);
     let video_time = |t| warp.video_time(t);
-    let mut track =
-        bpe_mix::mix_premaster(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
+    let physics = music::physics_inputs(scene, resolved, log, &settings, &video_time);
+    let mut track = bpe_mix::mix_premaster(
+        &settings,
+        resolved,
+        &scene.library,
+        log,
+        &kit.mixes,
+        animation,
+        &video_time,
+        &physics,
+        cache,
+    );
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
     }
     // The master effects and the master run once, over the notes and the song together.
-    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings);
+    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings, &physics.with_levels(&track.levels));
     track.problems.extend(problems);
     track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
     track

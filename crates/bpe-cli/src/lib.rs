@@ -281,6 +281,7 @@ fn export_with(
 
     // The whole run first, for the sounds: every hit is known before the first frame is drawn.
     let mut run = World::build(scene, &resolved, &kit.sims);
+    run.record_tracks = bpe_kit::uses_live_inputs(scene);
     let mut log = Log::default();
     run.advance_to(video.duration as f64, &kit.sims, &mut log);
     let wav = TempFile::new("wav");

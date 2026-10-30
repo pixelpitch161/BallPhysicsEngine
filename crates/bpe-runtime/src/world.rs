@@ -15,7 +15,7 @@ use bpe_core::{
 use glam::Vec2;
 
 use crate::camera::CameraView;
-use crate::events::HASH_OFFSET;
+use crate::events::{HASH_OFFSET, MOTION_RATE, SceneSample, TRACK_SECONDS, TrackSample};
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, RuleCx, SimCx, Sims, ThingState};
 use crate::pose::Pose;
@@ -90,6 +90,11 @@ pub struct World {
     scope: BTreeMap<ThingId, BTreeSet<ThingId>>,
     /// What pulses follow: the beat grid and the song's bands. The scene's sim sets it.
     pub pulse_inputs: Option<Arc<PulseInputs>>,
+    /// Whether to record each ball's track after its hits into the log, for sounds that follow
+    /// balls. The scene's motion is always recorded.
+    pub record_tracks: bool,
+    /// Per thing and ball: the hits seen so far and the step of the latest.
+    last_hit: BTreeMap<ThingId, Vec<(u32, Option<u64>)>>,
     /// The keyframes and pulses that move physics settings, with the resolved scene they are
     /// written into step by step. `None` when nothing physical is animated.
     animated: Option<Animated>,
@@ -144,6 +149,8 @@ impl World {
             modules: BTreeMap::new(),
             scope: BTreeMap::new(),
             pulse_inputs: None,
+            record_tracks: false,
+            last_hit: BTreeMap::new(),
             animated: None,
         };
         // Things that need the walls (a liquid finding its pool) are built in a second pass, so
@@ -461,6 +468,43 @@ impl World {
             self.modules.entry(owner).or_default().insert(SlotId::Rules, slotted);
         }
         self.pending = actions;
+        self.record_motion(log);
+    }
+
+    /// Notes the scene's motion 60 times a second, and each recently hit ball's track when
+    /// asked to. Nothing here changes the physics.
+    fn record_motion(&mut self, log: &mut Log) {
+        let every = (self.steps_per_second / MOTION_RATE).max(1) as u64;
+        let sample = self.step.is_multiple_of(every);
+        let reach = (TRACK_SECONDS * self.steps_per_second as f64) as u64;
+        let (mut balls, mut energy) = (0u32, 0.0f32);
+        for (id, bodies) in &self.bodies {
+            if bodies.silent {
+                continue;
+            }
+            let seen = self.last_hit.entry(*id).or_default();
+            seen.resize(bodies.len(), (0, None));
+            for (i, seen) in seen.iter_mut().enumerate() {
+                let hit_now = bodies.hits[i] > seen.0;
+                if hit_now {
+                    *seen = (bodies.hits[i], Some(self.step));
+                }
+                if !bodies.alive[i] {
+                    continue;
+                }
+                let (v, r) = (bodies.velocity[i], bodies.radius[i]);
+                balls += 1;
+                energy += 0.5 * (r / 20.0).powi(2) * v.length_squared() / 1e6;
+                let recent = seen.1.is_some_and(|at| self.step - at <= reach);
+                if self.record_tracks && (hit_now || (sample && recent)) {
+                    let s = TrackSample { step: self.step, position: bodies.position[i], velocity: v, radius: r };
+                    log.push_track(Party { thing: *id, item: i as u32 }, s);
+                }
+            }
+        }
+        if sample {
+            log.push_scene(SceneSample { step: self.step, balls, energy });
+        }
     }
 
     fn substep(&mut self, sims: &Sims, order: &[ThingId], dt: f32, limits: &Limits, log: &mut Log) {
@@ -849,6 +893,55 @@ mod tests {
 
     fn root_setting(key: &str) -> Address {
         Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: key.into() }
+    }
+
+    fn run_dots(count: u32, seconds: f64, record: bool) -> (World, Log) {
+        let (scene, resolved, sims) = dots_in_ring(count);
+        let mut w = World::build(&scene, &resolved, &sims);
+        w.record_tracks = record;
+        let mut log = Log::default();
+        w.advance_to(seconds, &sims, &mut log);
+        (w, log)
+    }
+
+    #[test]
+    fn tracks_follow_a_ball_for_twelve_seconds_after_a_hit() {
+        let (w, log) = run_dots(1, 20.0, true);
+        let ball = Party { thing: DOTS, item: 0 };
+        let hits: Vec<u64> =
+            log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a == ball).map(|e| e.step).collect();
+        let track = log.track(ball);
+        assert!(!hits.is_empty() && !track.is_empty());
+        assert_eq!(track[0].step, hits[0], "the first sample is on the first hit's step");
+        let every = (w.steps_per_second / crate::MOTION_RATE).max(1) as u64;
+        let last_hit = *hits.last().unwrap();
+        for s in track {
+            assert!(s.step >= hits[0]);
+            assert!(s.step % every == 0 || hits.contains(&s.step), "off the 60 Hz grid: {}", s.step);
+        }
+        let end = track.last().unwrap().step;
+        let limit = last_hit + (crate::TRACK_SECONDS * w.steps_per_second as f64) as u64 + every;
+        assert!(end <= limit.min(w.step), "{end} past {limit}");
+        assert!(track.windows(2).all(|p| p[0].step < p[1].step));
+        let (_, quiet) = run_dots(1, 20.0, false);
+        assert!(quiet.track(ball).is_empty());
+    }
+
+    #[test]
+    fn scene_samples_count_the_balls() {
+        let (_, log) = run_dots(3, 1.0, false);
+        let samples = log.scene_samples();
+        assert!((59..=61).contains(&samples.len()), "{}", samples.len());
+        assert!(samples.iter().all(|s| s.balls == 3));
+        assert!(samples.last().unwrap().energy > 0.0);
+    }
+
+    #[test]
+    fn motion_never_changes_the_hash() {
+        let (_, a) = run_dots(3, 4.0, true);
+        let (_, b) = run_dots(3, 4.0, false);
+        assert_eq!(a.hash(), b.hash());
+        assert!(!a.track(Party { thing: DOTS, item: 0 }).is_empty());
     }
 
     #[test]

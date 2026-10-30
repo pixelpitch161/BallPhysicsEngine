@@ -51,6 +51,7 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
     let Some(instrument) = scene.library.instruments.get(&id) else { return edits };
     let mut i = instrument.clone();
     let own = scene.library.modules.get(&module).map(|m| &m.macros);
+    let channels = crate::follow_menu::channel_names(scene, Some(module));
     ui.push_id(("instrument", module, id), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&i.name).strong());
@@ -86,6 +87,9 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
                         let key = knob.key();
                         let overridden = own.and_then(|m| m.get(&key)).copied();
                         let mut v = overridden.unwrap_or(knob.value);
+                        let kind = graph.node(knob.node).map_or("", |n| n.kind.as_str());
+                        let can_follow = bpe_synth::followable(kind).contains(&knob.param.as_str());
+                        let follows = bpe_synth::followed(graph, knob.node, &knob.param);
                         let name = ui
                             .horizontal(|ui| {
                                 if overridden.is_some() {
@@ -98,37 +102,55 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
                                     response
                                         .on_hover_text("Changed here: this module's own value, not the instrument's.");
                                 }
-                                ui.add(egui::Label::new(&knob.label).sense(Sense::click()))
+                                let label = ui.add(egui::Label::new(&knob.label).sense(Sense::click()));
+                                crate::follow_menu::mark(ui, follows.as_deref());
+                                label
                             })
                             .inner;
-                        if let Some(value) = overridden {
+                        let set_graph = |g: bpe_graph::Graph| {
+                            InstrumentEdit::Set(
+                                id,
+                                Box::new(Instrument {
+                                    source: InstrumentSource::Patch { graph: g },
+                                    ..instrument.clone()
+                                }),
+                            )
+                        };
+                        if can_follow || overridden.is_some() {
                             name.context_menu(|ui| {
-                                if ui
-                                    .button("Reset to instrument")
-                                    .on_hover_text("Follow the instrument again")
-                                    .clicked()
-                                {
-                                    edits.push(InstrumentEdit::Macro(key.clone(), None));
-                                    ui.close();
-                                }
-                                if ui
-                                    .button("Push to instrument")
-                                    .on_hover_text("Give every sound playing this instrument this value")
-                                    .clicked()
-                                {
-                                    let mut g = graph.clone();
-                                    if let Some(n) = g.node_mut(knob.node) {
-                                        n.params.insert(knob.param.clone(), bpe_graph::Param::Number(value));
+                                if let Some(value) = overridden {
+                                    if ui
+                                        .button("Reset to instrument")
+                                        .on_hover_text("Follow the instrument again")
+                                        .clicked()
+                                    {
+                                        edits.push(InstrumentEdit::Macro(key.clone(), None));
+                                        ui.close();
                                     }
-                                    edits.push(InstrumentEdit::Set(
-                                        id,
-                                        Box::new(Instrument {
-                                            source: InstrumentSource::Patch { graph: g },
-                                            ..instrument.clone()
-                                        }),
-                                    ));
-                                    edits.push(InstrumentEdit::Macro(key.clone(), None));
-                                    ui.close();
+                                    if ui
+                                        .button("Push to instrument")
+                                        .on_hover_text("Give every sound playing this instrument this value")
+                                        .clicked()
+                                    {
+                                        let mut g = graph.clone();
+                                        if let Some(n) = g.node_mut(knob.node) {
+                                            n.params.insert(knob.param.clone(), bpe_graph::Param::Number(value));
+                                        }
+                                        edits.push(set_graph(g));
+                                        edits.push(InstrumentEdit::Macro(key.clone(), None));
+                                        ui.close();
+                                    }
+                                }
+                                if can_follow {
+                                    if let Some(with) = crate::follow_menu::menu(ui, true, &channels)
+                                        && let Some(g) = bpe_synth::follow(graph, knob.node, &knob.param, &with)
+                                    {
+                                        edits.push(set_graph(g));
+                                    }
+                                    if follows.is_some() && ui.button("Stop following").clicked() {
+                                        edits.push(set_graph(bpe_synth::unfollow(graph, knob.node, &knob.param)));
+                                        ui.close();
+                                    }
                                 }
                             });
                         }
@@ -148,7 +170,7 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
         let count = bpe_synth::straight_chain(fx).map_or("custom".to_owned(), |c| c.len().to_string());
         egui::CollapsingHeader::new(format!("Instrument effects ({count})")).id_salt("instrument effects").show(
             ui,
-            |ui| match crate::fx_list::show(ui, fx, ("instrument fx", id)) {
+            |ui| match crate::fx_list::show(ui, fx, ("instrument fx", id), &channels) {
                 crate::fx_list::FxEdit::Set(g) => edits.push(InstrumentEdit::Fx(id, g)),
                 crate::fx_list::FxEdit::OpenNodes => edits.push(InstrumentEdit::OpenFx(id)),
                 crate::fx_list::FxEdit::None => {}
@@ -214,4 +236,76 @@ fn slider(ui: &mut Ui, v: &mut f32, min: f32, max: f32, suffix: &str) -> egui::R
     let feel = crate::widgets::number_feel((max - min) as f64, false);
     ui.spacing_mut().slider_width = 100.0;
     ui.add(egui::Slider::new(v, min..=max).step_by(feel.step).max_decimals(feel.decimals).suffix(suffix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    struct State {
+        scene: Scene,
+        module: ModuleId,
+        id: InstrumentId,
+        edits: Vec<InstrumentEdit>,
+    }
+
+    /// The new scene, its sound playing a patch with the filter's cutoff exposed.
+    fn harness() -> Harness<'static, State> {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let id = scene_instrument(&scene).unwrap();
+        let mut graph = bpe_synth::blank_patch();
+        graph.nodes.iter_mut().find(|n| n.kind == "filter").unwrap().exposed.insert("cutoff".into());
+        scene.library.instruments.get_mut(&id).unwrap().source = InstrumentSource::Patch { graph };
+        let module = scene.library.modules.iter().find(|(_, m)| m.slot == SlotId::Sound).map(|(id, _)| *id).unwrap();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(420.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(60)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                |ui, s: &mut State| {
+                    for e in show(ui, &s.scene, s.module, s.id) {
+                        if let InstrumentEdit::Set(i, instrument) = &e {
+                            s.scene.library.instruments.insert(*i, (**instrument).clone());
+                        }
+                        s.edits.push(e);
+                    }
+                },
+                State { scene, module, id, edits: Vec::new() },
+            );
+        h.run();
+        h
+    }
+
+    fn patch(s: &State) -> &bpe_graph::Graph {
+        match &s.scene.library.instruments[&s.id].source {
+            InstrumentSource::Patch { graph } => graph,
+            _ => panic!("a patch"),
+        }
+    }
+
+    fn click_through(h: &mut Harness<'_, State>, path: &[&str]) {
+        h.get_by_role_and_label(egui::accesskit::Role::Label, "Filter Cutoff").click_secondary();
+        h.run();
+        for step in path {
+            h.get_by_label(step).hover();
+            h.run();
+            h.get_by_label(step).click();
+            h.run();
+        }
+    }
+
+    #[test]
+    fn follow_a_macro() {
+        let mut h = harness();
+        click_through(&mut h, &["Follow…", "Live", "Height in the frame"]);
+        assert!(h.state().edits.iter().any(|e| matches!(e, InstrumentEdit::Set(..))));
+        assert!(patch(h.state()).nodes.iter().any(|n| n.kind == "live_input"));
+        h.get_by_label("Follows Height in the frame");
+        click_through(&mut h, &["Stop following"]);
+        assert!(!patch(h.state()).nodes.iter().any(|n| n.kind == "live_input"));
+    }
 }

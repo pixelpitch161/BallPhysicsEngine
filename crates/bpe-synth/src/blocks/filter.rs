@@ -107,6 +107,19 @@ impl Svf {
 }
 
 impl Block for Svf {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "cutoff" => self.cutoff = value.clamp(20.0, 20_000.0),
+            "resonance" => {
+                let r = value.clamp(0.0, 1.0);
+                self.k = std::f32::consts::SQRT_2 * (1.0 - r) + 0.02 * r;
+                // The coefficients depend on k too.
+                self.coeffs.0 = -1.0;
+            }
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {
         self.state = [(0.0, 0.0); 2];
     }

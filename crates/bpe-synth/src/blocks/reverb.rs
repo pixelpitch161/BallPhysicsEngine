@@ -98,6 +98,14 @@ impl Reverb {
 }
 
 impl Block for Reverb {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "mix" => self.mix = value.clamp(0.0, 1.0),
+            "width" => self.width = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         let scale = cx.rate / 44_100.0 * (0.5 + self.size);
         let mut mean_feedback = 0.0;

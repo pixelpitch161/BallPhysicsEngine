@@ -106,7 +106,7 @@ fn native(s: &NoteSound, picker: &mut Picker, h: &Heard, cx: &MixCx) -> Played {
     Played { play, keys, velocity, volume: s.volume, pan: cx.pan_of(h.event, s.stereo_width), candidates }
 }
 
-fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
+fn notes(s: &NoteSound, frame: usize, hit: u64, p: &Played, out: &mut Vec<Note>) {
     let gain = p.velocity * p.velocity.sqrt() * 10f32.powf(p.volume / 20.0);
     let angle = (p.pan + 1.0) * FRAC_PI_4;
     out.extend(p.keys.iter().map(|&key| Note {
@@ -117,6 +117,7 @@ fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
         left: gain * angle.cos(),
         right: gain * angle.sin(),
         channel: 0,
+        hit: Some(hit),
     }));
 }
 
@@ -195,7 +196,7 @@ fn each_note(
         }
         last_note = Some(time);
         let first = out.len();
-        notes(s, frame, &p, out);
+        notes(s, frame, heard.index, &p, out);
         if fade < 1.0 {
             for n in &mut out[first..] {
                 n.left *= fade;

@@ -83,6 +83,7 @@ impl ModuleMix for DrumSoundMix {
                 left: gain * angle.cos(),
                 right: gain * angle.sin(),
                 channel: 0,
+                hit: (e.kind != EventKind::Beat).then(|| (cx.hit_index)(e)),
             });
         }
     }
