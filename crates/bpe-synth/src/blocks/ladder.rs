@@ -10,6 +10,8 @@ pub struct Ladder {
     drive: f32,
     key_track: f32,
     stages: [[f32; 4]; 2],
+    /// The cutoff the step was worked out for, and the step.
+    step: (f32, f32),
 }
 
 impl Ladder {
@@ -20,6 +22,7 @@ impl Ladder {
             drive: 1.0 + k.number("drive", 0.0).clamp(0.0, 1.0) * 9.0,
             key_track: k.number("key_track", 0.0).clamp(0.0, 1.0),
             stages: [[0.0; 4]; 2],
+            step: (-1.0, 0.0),
         }
     }
 }
@@ -38,7 +41,10 @@ impl Block for Ladder {
         let makeup = 1.0 + self.feedback * 0.5;
         for s in 0..BLOCK {
             let hz = cutoff_at(self.cutoff, at(inputs, 1, s, 0.0), self.key_track, cx.note, cx.rate);
-            let g = 1.0 - (-std::f32::consts::TAU * hz / cx.rate).exp();
+            if self.step.0 != hz {
+                self.step = (hz, 1.0 - (-std::f32::consts::TAU * hz / cx.rate).exp());
+            }
+            let g = self.step.1;
             for side in 0..2 {
                 let y = &mut self.stages[side];
                 let x = (input[side][s] * self.drive - self.feedback * y[3]).tanh();
@@ -46,6 +52,7 @@ impl Block for Ladder {
                 y[1] += g * (y[0] - y[1]);
                 y[2] += g * (y[1] - y[2]);
                 y[3] += g * (y[2] - y[3]);
+                *y = y.map(super::filter::flush);
                 outputs[0][side][s] = y[3] * makeup / self.drive.sqrt();
             }
         }

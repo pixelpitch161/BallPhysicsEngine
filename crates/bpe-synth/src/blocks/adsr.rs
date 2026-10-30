@@ -29,6 +29,9 @@ pub struct Adsr {
 #[inline]
 fn bend(x: f32, curve: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
+    if curve == 0.0 {
+        return x;
+    }
     if curve >= 0.0 { x.powf(1.0 + 3.0 * curve) } else { 1.0 - (1.0 - x).powf(1.0 - 3.0 * curve) }
 }
 

@@ -5,7 +5,7 @@
 
 use crate::{Instrument, MixSettings, Note, NoteCache, NoteInstrument, SAMPLE_RATE, mix_notes};
 use bpe_core::{Choice, InstrumentId, InstrumentSource, VoiceSettings};
-use bpe_synth::{PlayNote, Program, global_steals, render_channel};
+use bpe_synth::{PlayNote, Program, global_steals, render_channel_on};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -215,9 +215,13 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     let jobs: Vec<(&GroupKey, &PatchJob)> = programs.iter().filter(|(k, _)| stale(k)).collect();
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
+    // Cores left over when there are fewer channels than cores render one channel's voices
+    // side by side, so re-rendering the one channel an edit changed uses the whole machine.
+    let cores = crate::level::threads();
+    let per_channel = (cores / jobs.len().max(1)).max(1);
     let work = || {
         while let Some(&(key, (program, voices, notes))) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-            let audio = render_channel(program, notes, voices, spb, SAMPLE_RATE as f32, frames);
+            let audio = render_channel_on(program, notes, voices, spb, SAMPLE_RATE as f32, frames, per_channel);
             done.lock().unwrap().push((*key, audio));
         }
     };

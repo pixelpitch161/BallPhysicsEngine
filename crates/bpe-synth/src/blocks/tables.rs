@@ -26,26 +26,35 @@ fn tables() -> &'static Tables {
     TABLES.get_or_init(|| Tables { tables: [build(Shape::Saw), build(Shape::Square), build(Shape::Triangle)] })
 }
 
-/// The table to use for a phase step of `inc` cycles per frame.
+/// The table to use for a phase step of `inc` cycles per frame: the first band whose top is at
+/// or above it, the bands' tops rising by half an octave from [`LOWEST`].
 fn band(inc: f32) -> usize {
-    let mut top = LOWEST;
-    for b in 0..BANDS {
-        if (inc as f64) <= top {
-            return b;
-        }
-        top *= std::f64::consts::SQRT_2;
+    if inc as f64 <= LOWEST {
+        return 0;
     }
-    BANDS - 1
+    let b = (2.0 * (inc as f64 / LOWEST).log2()).ceil() as usize;
+    b.min(BANDS - 1)
+}
+
+/// The table for `shape` at a phase step of `inc` cycles per frame, to [`read`] from.
+#[inline]
+pub fn table(shape: Shape, inc: f32) -> &'static [f32] {
+    &tables().tables[shape as usize][band(inc.abs())]
+}
+
+/// A table's wave at `phase` (0 to 1).
+#[inline]
+pub fn read(t: &[f32], phase: f32) -> f32 {
+    let x = phase.rem_euclid(1.0) * SIZE as f32;
+    let i = (x as usize).min(SIZE - 1);
+    let f = x - i as f32;
+    t[i] + (t[i + 1] - t[i]) * f
 }
 
 /// The wave at `phase` (0 to 1) for an oscillator stepping `inc` cycles per frame.
 #[inline]
 pub fn lookup(shape: Shape, inc: f32, phase: f32) -> f32 {
-    let t = &tables().tables[shape as usize][band(inc.abs())];
-    let x = phase.rem_euclid(1.0) * SIZE as f32;
-    let i = (x as usize).min(SIZE - 1);
-    let f = x - i as f32;
-    t[i] + (t[i + 1] - t[i]) * f
+    read(table(shape, inc), phase)
 }
 
 fn build(shape: Shape) -> Vec<Vec<f32>> {
@@ -122,6 +131,16 @@ fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_picks_the_first_top_at_or_above() {
+        let mut top = LOWEST;
+        for b in 0..BANDS {
+            assert_eq!(band((top * 0.999) as f32), b, "just under band {b}'s top");
+            top *= std::f64::consts::SQRT_2;
+        }
+        assert_eq!(band(0.0), 0);
+    }
 
     #[test]
     fn a_low_saw_table_is_a_ramp() {

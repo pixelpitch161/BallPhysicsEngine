@@ -1,7 +1,7 @@
 //! The oscillator: follows the note's pitch, with band-limited waves, unison, FM and hard sync.
 
 use super::tables::{self, Shape};
-use crate::{BLOCK, Block, Buf, Ctx, Knobs, Rng, at, midi_to_hz, wired};
+use crate::{BLOCK, Block, Buf, Ctx, Knobs, Rng, midi_to_hz, wired};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wave {
@@ -23,6 +23,8 @@ pub struct Osc {
     phases: [f32; 8],
     /// Each unison voice's pitch offset in semitones and its left and right gains.
     voices: [(f32, f32, f32); 8],
+    /// Each unison voice's pitch as a ratio of the note's.
+    ratios: [f32; 8],
     last_sync: f32,
 }
 
@@ -57,20 +59,39 @@ impl Osc {
             free: k.choice("phase", "note") == "free",
             phases: [0.0; 8],
             voices,
+            ratios: voices.map(|(semis, ..)| (semis / 12.0).exp2()),
             last_sync: 0.0,
         }
     }
 
+    /// Each unison voice's phase step and table for a note stepping `base` cycles per frame.
     #[inline]
-    fn shape(&self, phase: f32, inc: f32) -> f32 {
+    fn fill(&self, base: f32, nyquist: f32, incs: &mut [f32; 8], tabs: &mut [&'static [f32]; 8]) {
+        for v in 0..self.unison {
+            incs[v] = (base * self.ratios[v]).min(nyquist);
+            tabs[v] = self.table(incs[v]);
+        }
+    }
+
+    /// The wave table for a phase step of `inc`; a sine needs none.
+    #[inline]
+    fn table(&self, inc: f32) -> &'static [f32] {
+        match self.wave {
+            Wave::Sine => &[],
+            Wave::Triangle => tables::table(Shape::Triangle, inc),
+            Wave::Square => tables::table(Shape::Square, inc),
+            Wave::Saw | Wave::Pulse => tables::table(Shape::Saw, inc),
+        }
+    }
+
+    #[inline]
+    fn shape(&self, table: &[f32], phase: f32) -> f32 {
         match self.wave {
             Wave::Sine => (phase * std::f32::consts::TAU).sin(),
-            Wave::Triangle => tables::lookup(Shape::Triangle, inc, phase),
-            Wave::Saw => tables::lookup(Shape::Saw, inc, phase),
-            Wave::Square => tables::lookup(Shape::Square, inc, phase),
+            Wave::Triangle | Wave::Saw | Wave::Square => tables::read(table, phase),
             Wave::Pulse => {
                 let w = self.width;
-                tables::lookup(Shape::Saw, inc, phase) - tables::lookup(Shape::Saw, inc, phase - w) - (2.0 * w - 1.0)
+                tables::read(table, phase) - tables::read(table, phase - w) - (2.0 * w - 1.0)
             }
         }
     }
@@ -97,9 +118,22 @@ impl Block for Osc {
         let fm_in = wired(inputs, 1);
         let sync_in = wired(inputs, 2);
         let nyquist = 0.49;
+        // Without a pitch input the steps and tables hold for the whole block.
+        let pitch_in = wired(inputs, 0);
+        let note = cx.note + self.offset;
+        let base_at = |s: usize| {
+            let pitch = note + pitch_in.map_or(0.0, |b| b[0][s]);
+            midi_to_hz(pitch.clamp(-60.0, 200.0)) / cx.rate
+        };
+        let mut incs = [0.0f32; 8];
+        let mut tabs: [&[f32]; 8] = [&[]; 8];
+        if pitch_in.is_none() {
+            self.fill(base_at(0), nyquist, &mut incs, &mut tabs);
+        }
         for s in 0..BLOCK {
-            let pitch = cx.note + self.offset + at(inputs, 0, s, 0.0);
-            let base = midi_to_hz(pitch.clamp(-60.0, 200.0)) / cx.rate;
+            if pitch_in.is_some() {
+                self.fill(base_at(s), nyquist, &mut incs, &mut tabs);
+            }
             if let Some(sync) = sync_in {
                 let v = sync[0][s];
                 if self.last_sync <= 0.0 && v > 0.0 {
@@ -110,12 +144,11 @@ impl Block for Osc {
             let fm = fm_in.map_or(0.0, |b| b[0][s] * self.fm / std::f32::consts::TAU);
             let (mut l, mut r) = (0.0, 0.0);
             for v in 0..self.unison {
-                let (semis, gl, gr) = self.voices[v];
-                let inc = (base * (semis / 12.0).exp2()).min(nyquist);
-                let x = self.shape(self.phases[v] + fm, inc);
+                let (_, gl, gr) = self.voices[v];
+                let x = self.shape(tabs[v], self.phases[v] + fm);
                 l += x * gl;
                 r += x * gr;
-                self.phases[v] = (self.phases[v] + inc).fract();
+                self.phases[v] = (self.phases[v] + incs[v]).fract();
             }
             out[0][s] = l;
             out[1][s] = r;

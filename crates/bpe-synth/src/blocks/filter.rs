@@ -29,6 +29,13 @@ pub(crate) fn knee(x: f32) -> f32 {
     if a <= 2.0 { x } else { x.signum() * (2.0 + 2.0 * ((a - 2.0) * 0.5).tanh()) }
 }
 
+/// Zero for a value too small to hear, so a filter ringing down to silence never goes
+/// denormal (which makes the processor tens of times slower).
+#[inline]
+pub(crate) fn flush(x: f32) -> f32 {
+    if x.abs() < 1e-15 { 0.0 } else { x }
+}
+
 /// Clamps a cutoff to what the filter can do at `rate`.
 pub(crate) fn clamp_cutoff(hz: f32, rate: f32) -> f32 {
     if hz.is_finite() { hz.clamp(20.0, rate * 0.45) } else { 20.0 }
@@ -90,8 +97,8 @@ impl Block for Svf {
                 let v3 = v0 - *ic2;
                 let v1 = a1 * *ic1 + a2 * v3;
                 let v2 = *ic2 + a2 * *ic1 + a3 * v3;
-                *ic1 = knee(2.0 * v1 - *ic1);
-                *ic2 = knee(2.0 * v2 - *ic2);
+                *ic1 = flush(knee(2.0 * v1 - *ic1));
+                *ic2 = flush(knee(2.0 * v2 - *ic2));
                 outputs[0][side][s] = knee(match self.mode {
                     Mode::Low => v2,
                     Mode::Band => v1,
@@ -114,6 +121,17 @@ mod tests {
         let out = run(&mut Svf::new(&k), &mut Ctx::default(), 1500, |b, _| vec![Some(sine(hz, 48_000.0, b * BLOCK))]);
         let tail: Vec<f32> = out[48_000..].iter().map(|f| f[0]).collect();
         20.0 * magnitude(&tail, hz as f64, 48_000.0).log10()
+    }
+
+    #[test]
+    fn a_filter_ringing_down_to_silence_reaches_zero() {
+        // Denormal leftovers once slowed every block they passed through.
+        let k = Knobs::default().with("resonance", Param::Number(0.9));
+        let out = run(&mut Svf::new(&k), &mut Ctx::default(), 3000, |b, _| {
+            vec![Some(if b < 10 { sine(440.0, 48_000.0, b * BLOCK) } else { crate::SILENT })]
+        });
+        assert!(out[out.len() - 1000..].iter().all(|f| f[0] == 0.0 || f[0].abs() > 1e-30));
+        assert_eq!(out[out.len() - 1][0], 0.0);
     }
 
     #[test]

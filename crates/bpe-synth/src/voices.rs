@@ -167,6 +167,24 @@ pub fn render_channel(
     rate: f32,
     frames: usize,
 ) -> ChannelAudio {
+    render_channel_on(program, notes, voices, seconds_per_beat, rate, frames, 1)
+}
+
+/// Voices rendered side by side before the voice limit is worked out, at most this many at once.
+const BATCH: usize = 32;
+
+/// [`render_channel`] with up to `threads` voices rendering at once. A voice's sound doesn't
+/// depend on the others, so they render side by side and the voice limit then cuts them in
+/// note order: the result is the same as on one thread.
+pub fn render_channel_on(
+    program: &Program,
+    notes: &[PlayNote],
+    voices: &VoiceSettings,
+    seconds_per_beat: f32,
+    rate: f32,
+    frames: usize,
+    threads: usize,
+) -> ChannelAudio {
     let mut order: Vec<&PlayNote> = notes.iter().filter(|n| n.frame < frames).collect();
     order.sort_by_key(|n| n.frame);
     let gate = gate_frames(voices, seconds_per_beat, rate);
@@ -177,26 +195,70 @@ pub fn render_channel(
     }
     let limit = voices.limit.max(1) as usize;
     let mut pending: Vec<Pending> = Vec::new();
-    for note in order {
-        pending.retain(|p| {
-            let ended = p.end() <= note.frame;
-            if ended {
-                p.add_to(&mut out.samples);
+    for batch in order.chunks(BATCH) {
+        let rendered = render_voices(program, batch, gate, seconds_per_beat, rate, frames, threads);
+        for (note, (voice, bad)) in batch.iter().zip(rendered) {
+            out.bad_samples |= bad;
+            pending.retain(|p| {
+                let ended = p.end() <= note.frame;
+                if ended {
+                    p.add_to(&mut out.samples);
+                }
+                !ended
+            });
+            while pending.len() >= limit {
+                // Voices are pending in start order, so the first is the oldest.
+                let mut oldest = pending.remove(0);
+                oldest.cut(note.frame);
+                oldest.add_to(&mut out.samples);
             }
-            !ended
-        });
-        while pending.len() >= limit {
-            // Voices are pending in start order, so the first is the oldest.
-            let mut oldest = pending.remove(0);
-            oldest.cut(note.frame);
-            oldest.add_to(&mut out.samples);
+            pending.push(voice);
         }
-        pending.push(render_voice(program, note, gate, seconds_per_beat, rate, frames, &mut out.bad_samples));
     }
     for p in &pending {
         p.add_to(&mut out.samples);
     }
     out
+}
+
+/// Each note's voice, and whether it made a bad sample, on up to `threads` threads.
+fn render_voices(
+    program: &Program,
+    notes: &[&PlayNote],
+    gate: usize,
+    seconds_per_beat: f32,
+    rate: f32,
+    frames: usize,
+    threads: usize,
+) -> Vec<(Pending, bool)> {
+    let one = |note: &PlayNote| {
+        let mut bad = false;
+        let voice = render_voice(program, note, gate, seconds_per_beat, rate, frames, &mut bad);
+        (voice, bad)
+    };
+    let threads = threads.clamp(1, notes.len().max(1));
+    if threads == 1 {
+        return notes.iter().map(|n| one(n)).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::with_capacity(notes.len()));
+    let work = || {
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(note) = notes.get(i) else { break };
+            let voice = one(note);
+            done.lock().unwrap_or_else(|e| e.into_inner()).push((i, voice));
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            scope.spawn(work);
+        }
+        work();
+    });
+    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, v)| v).collect()
 }
 
 /// One voice for the whole channel. Notes take effect at the start of the block they fall in.
@@ -433,6 +495,12 @@ mod tests {
         let a = render_channel(&program, &channel, &seconds(0.5), 0.5, 48_000.0, 96_000);
         let b = render_channel(&program, &channel, &seconds(0.5), 0.5, 48_000.0, 96_000);
         assert!(a.samples.iter().zip(&b.samples).all(|(x, y)| x.to_bits() == y.to_bits()));
+        // Voices rendered side by side cut and sum to the very same channel.
+        let mut limited = seconds(0.5);
+        limited.limit = 3;
+        let one = render_channel(&program, &channel, &limited, 0.5, 48_000.0, 96_000);
+        let four = render_channel_on(&program, &channel, &limited, 0.5, 48_000.0, 96_000, 4);
+        assert!(one.samples == four.samples, "the same on four threads");
     }
 
     #[test]

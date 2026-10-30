@@ -39,6 +39,8 @@ pub struct Patch {
     program: Program,
     blocks: Vec<Option<Box<dyn Block>>>,
     regs: Vec<Buf>,
+    /// Where a block writes its outputs before they go to their registers.
+    scratch: [Buf; MAX_PINS],
 }
 
 /// Compiles `graph`, or says in plain sentences what stops it.
@@ -112,7 +114,7 @@ impl Program {
                 Some(b)
             })
             .collect();
-        Patch { program: self.clone(), blocks, regs: vec![SILENT; self.registers] }
+        Patch { program: self.clone(), blocks, regs: vec![SILENT; self.registers], scratch: [SILENT; MAX_PINS] }
     }
 
     /// The same program with every block of `kind` swapped for `by`.
@@ -131,8 +133,11 @@ impl Patch {
     /// Runs one block of the voice into `out`.
     pub fn process(&mut self, cx: &Ctx, out: &mut Buf) {
         for (op, block) in self.program.ops.iter().zip(&mut self.blocks) {
-            let mut outs = [SILENT; MAX_PINS];
             let n = op.outputs.len().min(MAX_PINS);
+            let outs = &mut self.scratch;
+            for o in outs.iter_mut().take(n.max(1)) {
+                *o = SILENT;
+            }
             {
                 let mut ins: [Option<&Buf>; MAX_PINS] = [None; MAX_PINS];
                 for (slot, reg) in ins.iter_mut().zip(&op.inputs) {
