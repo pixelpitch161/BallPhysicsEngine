@@ -6,7 +6,7 @@ pub mod sim;
 
 pub use sim::{SceneSim, SceneState};
 
-use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, Color, ProgressionRef, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
@@ -39,9 +39,9 @@ pub struct SceneSettings {
     /// How much bright things bleed light around them.
     #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse)]
     pub bloom: f32,
-    /// Chord names with how many seconds each lasts, repeating.
-    #[setting(label = "Chords", simple, group = "Sound")]
-    pub chords: String,
+    /// The chord progression sound modules play from unless they pick their own.
+    #[setting(label = "Chords", simple, random, group = "Sound")]
+    pub chords: ProgressionRef,
     /// The video's width in pixels.
     #[setting(label = "Width", range(2, 7680), unit = "px", group = "Video")]
     pub width: u32,
@@ -96,7 +96,7 @@ impl Default for SceneSettings {
             background_top: Color::rgb(0x02, 0x02, 0x2a),
             background_bottom: Color::rgb(0x01, 0x00, 0x06),
             bloom: 0.15,
-            chords: "C 4.2, Dsus4 4, Am 5, C 4, Am 3.1, Dsus4 3".into(),
+            chords: ProgressionRef(None),
             width: 1080,
             height: 1920,
             fps: 60,

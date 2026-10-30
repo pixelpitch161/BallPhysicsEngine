@@ -15,7 +15,10 @@ pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{Color, EditError, ModuleId, Registry, Resolved, Scene, Settings, SlotId, ThingId, Value};
+use bpe_core::{
+    Color, EditError, ModuleId, Progression, ProgressionRef, Registry, Resolved, Scene, SettingValue, Settings, SlotId,
+    ThingId, Value,
+};
 use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
@@ -208,10 +211,13 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     MixSettings {
         duration: root.duration,
         steps_per_second: root.steps_per_second,
-        chords: root.chords,
+        progressions: scene.library.progressions.clone(),
+        scene_chords: root.chords.0,
+        beats: music::chord_beats(&root),
         loudness: root.loudness,
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
+        half_height: root.height as f32 * 0.5,
         tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
     }
 }
@@ -273,6 +279,13 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
     let root = ThingId::ROOT;
+    let chords = scene.add_progression(Progression::starter());
+    scene
+        .things
+        .get_mut(&root)
+        .expect("the root is always there")
+        .params
+        .set("chords", ProgressionRef(Some(chords)).to_value());
     let look = scene.add_module(reg, "look.classic", "Plain look").expect("kit kinds are registered");
     let motion = scene.add_module(reg, "motion.basic", "Default motion").expect("kit kinds are registered");
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
@@ -298,6 +311,27 @@ mod tests {
     use super::*;
     use bpe_core::{Color, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn a_new_scene_owns_a_starter_progression() {
+        let reg = registry();
+        let scene = new_scene(&reg);
+        assert_eq!(scene.library.progressions.len(), 1);
+        let (&id, p) = scene.library.progressions.iter().next().unwrap();
+        assert_eq!(p.name, "Starter");
+        assert_eq!(scene.things[&ThingId::ROOT].params.get("chords"), Some(&Value::Int(id.0 as i64)));
+    }
+
+    #[test]
+    fn mix_settings_carry_progressions_and_beats() {
+        let reg = registry();
+        let scene = new_scene(&reg);
+        let settings = mix_settings(&scene, &resolve(&scene, &reg));
+        assert_eq!(settings.progression(bpe_core::ProgressionRef(None)).name, "Starter");
+        assert!(settings.beats.len() >= 40, "120 bpm over 20 s: {}", settings.beats.len());
+        let missing = bpe_core::ProgressionRef(Some(bpe_core::ProgressionId(99)));
+        assert_eq!(settings.progression(missing).name, "Starter", "a missing one falls back to the scene's");
+    }
 
     #[test]
     fn dice_ranges_are_sensible() {

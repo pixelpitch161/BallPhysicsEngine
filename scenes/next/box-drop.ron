@@ -114,7 +114,56 @@
                 },
             ),
         },
+        progressions: {
+            0: (
+                name: "Starter",
+                key: (
+                    root: 0,
+                    mode: Major,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
     ),
     next_thing: 3,
     next_module: 5,
+    next_progression: 1,
 )

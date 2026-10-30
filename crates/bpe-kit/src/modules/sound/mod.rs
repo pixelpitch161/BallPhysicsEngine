@@ -3,20 +3,41 @@
 pub mod graph;
 pub mod mix;
 
-use bpe_core::{Choice, ModuleKind, SettingDef, Settings, SlotId, Target};
+use bpe_core::{Choice, ModuleKind, ProgressionRef, SettingDef, Settings, SlotId, Target};
 use bpe_mix::Instrument;
+use bpe_mix::PicksFrom;
 
 pub struct NoteSoundKind;
 
-/// Which note of the chord a hit plays.
+/// Which of the allowed notes a hit plays.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum PitchBy {
+pub enum Order {
     #[default]
     Random,
     /// Climbing with how hard the hit was.
     Speed,
     /// Climbing with how often the ball has hit.
     Hits,
+    /// The next note up on every hit, starting again at the bottom.
+    ArpUp,
+    /// The next note down on every hit, starting again at the top.
+    ArpDown,
+    /// Up then down again, without playing the top and bottom twice.
+    ArpUpDown,
+    /// Higher up the frame plays higher.
+    Height,
+}
+
+/// How many notes a hit plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Plays {
+    /// One note.
+    #[default]
+    Single,
+    /// Every note of the chord at once.
+    FullChord,
+    /// Only the chord's bass note.
+    Root,
 }
 
 /// Which side of a hit this sound speaks for.
@@ -44,10 +65,26 @@ pub struct NoteSound {
     /// The highest MIDI note a hit may play.
     #[setting(label = "Highest note", range(0, 127), simple)]
     pub high_note: u32,
-    /// Which note of the chord a hit plays: a random one, climbing with the hit's speed, or
-    /// climbing with how often the ball has hit.
-    #[setting(label = "Note picked by", simple)]
-    pub pitch_by: PitchBy,
+    /// The chord progression these notes follow: Scene defaults' one, or one of their own.
+    #[setting(label = "Chords", simple)]
+    pub chords: ProgressionRef,
+    /// Which of the allowed notes a hit plays: random, by the hit's speed, by the ball's hits,
+    /// an arpeggio, or by how high the hit is.
+    #[setting(label = "Order", simple, random)]
+    pub order: Order,
+    /// One note, the whole chord, or only its bass note.
+    #[setting(label = "Plays")]
+    pub plays: Plays,
+    /// Hits faster than this play the whole chord; slower ones play one note. 0 always plays
+    /// the whole chord.
+    #[setting(label = "Full chord above", range(0, 10000), unit = "px/s", when = "plays=full_chord")]
+    pub full_chord_speed: f32,
+    /// How many octaves the whole chord is spread over.
+    #[setting(label = "Chord spread", range(1, 3), unit = "octaves", when = "plays=full_chord")]
+    pub chord_spread: u32,
+    /// The chord's own notes, those and the rest of the key, or any note of the key.
+    #[setting(label = "Picks from", group = "Notes")]
+    pub picks_from: PicksFrom,
     /// Whether this sounds when its own balls hit something, when something hits it, or both.
     #[setting(label = "Plays when", group = "Which hits")]
     pub plays_when: PlaysWhen,
@@ -81,7 +118,12 @@ impl Default for NoteSound {
             volume: 0.0,
             low_note: 48,
             high_note: 84,
-            pitch_by: PitchBy::Random,
+            chords: ProgressionRef(None),
+            order: Order::Random,
+            plays: Plays::Single,
+            full_chord_speed: 0.0,
+            chord_spread: 1,
+            picks_from: PicksFrom::ChordTones,
             plays_when: PlaysWhen::Hitting,
             sounds_for: Target::Anything,
             min_gap: 0.0,

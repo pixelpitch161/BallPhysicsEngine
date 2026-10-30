@@ -16,7 +16,7 @@ use glam::Vec2;
 
 use crate::graphs::module_graph;
 use crate::modules::look::GradientBy;
-use crate::modules::sound::{PitchBy, PlaysWhen};
+use crate::modules::sound::{Order, PlaysWhen};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
     ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
@@ -584,7 +584,7 @@ fn peg_board(reg: &Registry) -> Scene {
     let peg_sound = NoteSound {
         instrument: Instrument::Marimba,
         plays_when: PlaysWhen::BeingHit,
-        pitch_by: PitchBy::Speed,
+        order: Order::Speed,
         ..NoteSound::default()
     };
     b.own_module(pegs, "sound.notes", "Peg sound", peg_sound.to_params());
@@ -730,7 +730,7 @@ fn pitch_climb(reg: &Registry) -> Scene {
         s.special_bounciness = 0.3;
     });
     b.sound(|s| {
-        s.pitch_by = PitchBy::Hits;
+        s.order = Order::Hits;
         s.instrument = Instrument::Marimba;
     });
     b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
