@@ -2,7 +2,7 @@
 //! Each one simulates exactly like its stage 2 twin, which the golden tests check, since
 //! nothing here touches physics.
 
-use bpe_core::{Color, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
+use bpe_core::{Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
 
 use crate::{
     BallFill, BallShape, BurstPreset, ClassicLook, HitBurst, StreakTrail, StyledLook, TrailBlend, TrailSource,
@@ -90,7 +90,7 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
         width: 0.8,
         brightness: 0.8,
         source: TrailSource::Own,
-        color: Color::rgb(0xff, 0x70, 0x10),
+        colour: Paint { colours: Gradient::solid(Color::rgb(0xff, 0x70, 0x10)), ..StreakTrail::default().colour },
         ..StreakTrail::default()
     };
     own_module(scene, reg, BALLS, "trail.streak", "Lava streak", trail.to_params());

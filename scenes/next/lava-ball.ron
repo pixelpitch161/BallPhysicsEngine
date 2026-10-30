@@ -137,7 +137,15 @@
                 kind: "trail.streak",
                 params: {
                     "brightness": Number(0.800000011920929),
-                    "color": Color("#ff7010"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff7010",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "seconds": Number(0.699999988079071),
                     "source": Choice("own"),
                     "width": Number(0.800000011920929),

@@ -364,6 +364,31 @@ pub fn push_streak(
     color: [f32; 4],
     pixel: f32,
 ) {
+    streak(out, points, half_width, taper, |_| color, pixel);
+}
+
+/// [`push_streak`] with a colour for each point, `colors[i]` at `points[i]`; each fades out along
+/// the streak as a single colour would. A point past the end of `colors` takes the last one.
+pub fn push_streak_colours(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_width: f32,
+    taper: f32,
+    colors: &[[f32; 4]],
+    pixel: f32,
+) {
+    let Some(&last) = colors.last() else { return };
+    streak(out, points, half_width, taper, |i| colors.get(i).copied().unwrap_or(last), pixel);
+}
+
+fn streak(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_width: f32,
+    taper: f32,
+    color_at: impl Fn(usize) -> [f32; 4],
+    pixel: f32,
+) {
     let n = points.len();
     if n < 2 || half_width <= 0.0 {
         return;
@@ -392,6 +417,7 @@ pub fn push_streak(
         let width = half_width * (1.0 - t * taper);
         let reach = width + pixel;
         let fade = (1.0 - t) * (1.0 - t);
+        let color = color_at(i);
         let color = if color[3] < 0.0 {
             [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
         } else {
@@ -436,6 +462,11 @@ pub struct Burst {
     /// Added light rather than covering paint.
     pub additive: bool,
     pub seed: u32,
+    /// The gradient the particles take their colour from, for `follow` 1 and 2.
+    pub paint: PaintGpu,
+    /// 0: every particle is `color`. 1: each runs along `paint` over its life. 2: each takes one
+    /// of `paint`'s stops at random, `paint.scale` of them evenly spaced on a Steps row.
+    pub follow: u32,
 }
 
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.

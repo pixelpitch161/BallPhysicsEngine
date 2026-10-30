@@ -21,7 +21,7 @@ fn pattern_code(inside: Inside) -> f32 {
 }
 
 /// The repeat's number in paint.wgsl.
-fn repeat_code(repeat: Repeat) -> f32 {
+pub(crate) fn repeat_code(repeat: Repeat) -> f32 {
     match repeat {
         Repeat::Clamp => 0.0,
         Repeat::Repeat => 1.0,
