@@ -143,7 +143,7 @@ In `settings.rs` tests, change the `"none"`/`"two"` fixtures to `Value::Gradient
       fn group_write(&self, o: &GroupOpts, p: &mut Params);    // only fields differing from default
   }
   ```
-- Derive: a field `#[setting(paint, label = "Colours", prefix = "fill_", when = "...", follows = "place|start|order", inside)] pub fill: Paint` calls the three methods with a `GroupOpts`. `prefix` may be `""`.
+- Derive (options `inside` and `screen_only` are optional flags): a field `#[setting(paint, label = "Colours", prefix = "fill_", when = "...", follows = "place|start|order", inside)] pub fill: Paint` calls the three methods with a `GroupOpts`. `prefix` may be `""`.
 - Produces in `bpe-kit::paint`:
   ```rust
   #[derive(Choice)] pub enum Follow { #[default] Place, Start, Order, Speed, Hits, Life, Step, Beat, Time, NearestBall, Path }
