@@ -148,14 +148,16 @@ fn default_follow(o: &GroupOpts) -> Follow {
     }
 }
 
-/// The paint a group starts with.
-fn group_default(o: &GroupOpts) -> Paint {
-    Paint { follow: default_follow(o), ..Paint::default() }
+/// The paint a group starts with: the outer struct's own default for the field, with a follow
+/// off the group's list replaced by the list's default.
+fn group_default(o: &GroupOpts, default: &Paint) -> Paint {
+    let follow = if follow_names(o).contains(&default.follow.name()) { default.follow } else { default_follow(o) };
+    Paint { follow, ..default.clone() }
 }
 
 impl SettingGroup for Paint {
-    fn group_defs(o: &GroupOpts) -> Vec<SettingDef> {
-        let d = group_default(o);
+    fn group_defs(o: &GroupOpts, default: &Self) -> Vec<SettingDef> {
+        let d = group_default(o, default);
         let p = o.prefix;
         let (c, f) = (format!("{p}colours"), format!("{p}follow"));
         let (shape, inside) = (format!("{p}shape"), format!("{p}inside"));
@@ -367,7 +369,7 @@ impl SettingGroup for Paint {
         v
     }
 
-    fn group_read(o: &GroupOpts, params: &Params) -> Self {
+    fn group_read(o: &GroupOpts, default: &Self, params: &Params) -> Self {
         let p = o.prefix;
         let get = |key: &str| params.get(&format!("{p}{key}"));
         fn set<T: SettingValue>(to: &mut T, v: Option<&Value>) {
@@ -375,7 +377,7 @@ impl SettingGroup for Paint {
                 *to = x;
             }
         }
-        let mut s = group_default(o);
+        let mut s = group_default(o, default);
         set(&mut s.colours, get("colours"));
         if let Some(Value::Choice(n)) = get("follow")
             && follow_names(o).contains(&n.as_str())
@@ -404,8 +406,8 @@ impl SettingGroup for Paint {
         s
     }
 
-    fn group_write(&self, o: &GroupOpts, params: &mut Params) {
-        let (p, d) = (o.prefix, group_default(o));
+    fn group_write(&self, o: &GroupOpts, default: &Self, params: &mut Params) {
+        let (p, d) = (o.prefix, group_default(o, default));
         let mut put = |key: &str, now: Value, was: Value| {
             if now != was {
                 params.set(&format!("{p}{key}"), now);
@@ -536,18 +538,45 @@ mod tests {
             screen_only: false,
             simple: false,
         };
-        let defs = Paint::group_defs(&o);
+        // The outer default follows Place, which the list leaves out.
+        let outer = Paint::default();
+        let defs = Paint::group_defs(&o, &outer);
         let f = defs.iter().find(|d| d.key == "follow").unwrap();
         assert_eq!(f.default, Value::Choice("life".into()));
-        let read = Paint::group_read(&o, &Params::default());
+        let read = Paint::group_read(&o, &outer, &Params::default());
         assert_eq!(read.follow, Follow::Life);
         let mut p = Params::default();
-        read.group_write(&o, &mut p);
+        read.group_write(&o, &outer, &mut p);
         assert!(p.get("follow").is_none(), "the list's own default is not saved");
         let mut order = read;
         order.follow = Follow::Order;
-        order.group_write(&o, &mut p);
+        order.group_write(&o, &outer, &mut p);
         assert_eq!(p.get("follow"), Some(&Value::Choice("order".into())));
+    }
+
+    #[test]
+    fn the_outer_default_is_the_groups_default() {
+        #[derive(Clone, Debug, PartialEq, Settings)]
+        struct Navy {
+            #[setting(paint, label = "Colours", prefix = "p_", follows = "life|order", inside)]
+            p: Paint,
+        }
+        impl Default for Navy {
+            fn default() -> Self {
+                let colours = Gradient::solid(Color::rgb(0x20, 0x20, 0x40));
+                Self { p: Paint { colours, follow: Follow::Order, inside: Inside::Rings, ..Paint::default() } }
+            }
+        }
+        let d = Navy::default();
+        let colours = Navy::defs().iter().find(|s| s.key == "p_colours").unwrap();
+        assert_eq!(colours.default, Value::Gradient(d.p.colours.clone()));
+        let follow = Navy::defs().iter().find(|s| s.key == "p_follow").unwrap();
+        assert_eq!(follow.default, Value::Choice("order".into()), "an outer follow on the list is kept");
+        assert_eq!(Navy::from_params(&Params::default()), d);
+        assert!(d.to_params().0.is_empty(), "the defaults are not saved");
+        let mut white = d.clone();
+        white.p.colours = Gradient::solid(Color::WHITE);
+        assert_eq!(Navy::from_params(&white.to_params()), white);
     }
 
     #[test]

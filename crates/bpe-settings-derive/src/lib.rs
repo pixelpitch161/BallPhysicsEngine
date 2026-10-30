@@ -154,13 +154,13 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 }
             };
             defs.push(quote! {
-                v.extend(<#ty as ::bpe_core::SettingGroup>::group_defs(&#opts));
+                v.extend(<#ty as ::bpe_core::SettingGroup>::group_defs(&#opts, &d.#ident));
             });
             reads.push(quote! {
-                s.#ident = <#ty as ::bpe_core::SettingGroup>::group_read(&#opts, p);
+                s.#ident = <#ty as ::bpe_core::SettingGroup>::group_read(&#opts, &s.#ident, p);
             });
             writes.push(quote! {
-                ::bpe_core::SettingGroup::group_write(&self.#ident, &#opts, &mut p);
+                ::bpe_core::SettingGroup::group_write(&self.#ident, &#opts, &d.#ident, &mut p);
             });
             continue;
         }

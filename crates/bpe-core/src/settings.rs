@@ -123,13 +123,15 @@ pub struct GroupOpts {
 
 /// A struct of settings that another struct embeds as one field, its keys all starting with a
 /// prefix. Used through `#[setting(paint, ...)]`.
+/// `default` is the field's value in the outer struct's `Default`, so a group's settings
+/// default, read and save against what the outer struct starts with.
 pub trait SettingGroup: Sized + Default {
     /// The group's settings. Keys and conditions are leaked once per outer type.
-    fn group_defs(o: &GroupOpts) -> Vec<SettingDef>;
+    fn group_defs(o: &GroupOpts, default: &Self) -> Vec<SettingDef>;
     /// Fills the group from saved values, using the default for missing or wrong-typed ones.
-    fn group_read(o: &GroupOpts, p: &Params) -> Self;
+    fn group_read(o: &GroupOpts, default: &Self, p: &Params) -> Self;
     /// Saves only the fields that differ from the default.
-    fn group_write(&self, o: &GroupOpts, p: &mut Params);
+    fn group_write(&self, o: &GroupOpts, default: &Self, p: &mut Params);
 }
 
 impl SettingValue for f32 {

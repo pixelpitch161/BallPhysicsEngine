@@ -341,6 +341,15 @@ mod tests {
     }
 
     #[test]
+    fn no_saved_settings_read_as_the_default_look() {
+        assert_eq!(StyledLook::from_params(&bpe_core::Params::default()), StyledLook::default());
+        assert!(StyledLook::default().to_params().0.is_empty(), "the defaults are not saved");
+        // The pattern's own navy is its setting's default too.
+        let pattern = StyledLook::defs().iter().find(|d| d.key == "pattern_colours").unwrap();
+        assert_eq!(pattern.default, bpe_core::Value::Gradient(Gradient::solid(Color::rgb(0x20, 0x20, 0x40))));
+    }
+
+    #[test]
     fn a_fast_ball_stretches_along_its_motion() {
         let look = StyledLook { stretch: 1.0, ..StyledLook::default() };
         let still = instance(&look, BallColours::plain(&look, [1.0; 4]), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.5);

@@ -78,6 +78,14 @@ mod tests {
     use bpe_core::{Color, Gradient, Params, Value};
 
     #[test]
+    fn no_saved_settings_read_as_the_default_look() {
+        use super::ClassicLook;
+        use bpe_core::Settings;
+        assert_eq!(ClassicLook::from_params(&Params::default()), ClassicLook::default());
+        assert!(ClassicLook::default().to_params().0.is_empty(), "the defaults are not saved");
+    }
+
+    #[test]
     fn switching_look_kind_keeps_the_shared_colour_and_glow() {
         let reg = registry();
         let colour = Value::Gradient(Gradient::even(&[Color { r: 12, g: 200, b: 90, a: 255 }, Color::WHITE]));
