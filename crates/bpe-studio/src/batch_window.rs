@@ -287,6 +287,17 @@ fn settings_column(ui: &mut Ui, win: &mut BatchWindow) {
                 .on_hover_text("Move to a folder puts them in a folder called \"rejected\" inside the batch folder");
             ui.end_row();
         });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut win.spec.extras.midi, "MIDI file")
+                .on_hover_text("Also save each video's notes and chords as a .mid next to it");
+            ui.checkbox(&mut win.spec.extras.stems, "Stems")
+                .on_hover_text("Also save each sound, bus and the song as its own WAV in a folder per video");
+            if win.spec.extras.stems {
+                ui.checkbox(&mut win.spec.extras.wet, "Stems include sends")
+                    .on_hover_text("Each sound's stem includes its reverb and delay sends");
+            }
+        });
         ui.add_space(8.0);
         ui.label(RichText::new("Folder").strong());
         ui.add(
@@ -778,5 +789,21 @@ mod tests {
             std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.path().extension().is_some_and(|x| x == "mp4"));
         assert!(video, "a video in the folder");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn batch_offers_midi_and_stems() {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let mut window = BatchWindow::default();
+        window.open_with(&scene, 0.4);
+        let mut h = harness(window);
+        h.get_by_label("MIDI file").click();
+        h.run();
+        h.get_by_label("Stems").click();
+        h.run();
+        h.get_by_label("Stems include sends").click();
+        h.run();
+        assert_eq!(h.state().spec.extras, bpe_kit::Extras { midi: true, stems: true, wet: true });
     }
 }
