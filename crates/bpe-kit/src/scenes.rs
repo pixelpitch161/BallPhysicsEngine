@@ -6,9 +6,9 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId, ModuleKind,
-    MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId,
-    Target, ThingId, Value,
+    Address, Attach, Blend, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
+    ModuleKind, MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue,
+    Settings, SlotId, Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -22,7 +22,7 @@ use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
     BurstSource, ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
     HitBurst, LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
-    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, SwarmLook, SwarmSettings, TextSettings,
+    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, StyledLook, SwarmLook, SwarmSettings, TextSettings,
     TrailSource, new_scene, recipes,
 };
 
@@ -75,6 +75,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.extend(stage6(reg));
     scenes.extend(stage7(reg));
     scenes.push(("Colour paints".into(), colour_demo(reg)));
+    scenes.push(("Blend modes".into(), blend_demo(reg)));
     scenes
 }
 
@@ -270,6 +271,137 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         t.outline = 0.0;
     });
     b.scene.link(reg, caption, SlotId::Look, words).expect("text has a Look slot");
+    b.scene
+}
+
+/// The blend showcase over a background that runs from dark to light: four rows of overlapping
+/// balls (Multiply, Screen, Overlay, Difference), a bar that subtracts, streaks that add, and a
+/// group of styled balls whose hues drift from ball to ball and over time.
+pub fn blend_demo(reg: &Registry) -> Scene {
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut b = Builder::new(reg, "Blend modes");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::ZERO;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x0b1030), hex(0x3a4a8c), hex(0xd9a38c), hex(0xf4ecd8)]),
+            angle: 90.0,
+            span: 1500.0,
+            ..Paint::default()
+        };
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 1000.0;
+        a.height = 1400.0;
+        a.thickness = 8.0;
+    });
+    let rim = ClassicLook { fill: Paint::solid(hex(0xffffff)), ..ClassicLook::default() };
+    b.own_module(ARENA, "look.classic", "Rim look", rim.to_params());
+    // Screen suits the dark top, Multiply the light bottom.
+    let rows = [
+        ("Screen", Blend::Screen, [0x3ee6ff, 0x4d7bff, 0xff3ec8], -170.0),
+        ("Difference", Blend::Difference, [0xffffff, 0xffb82e, 0x3ee6ff], -130.0),
+        ("Overlay", Blend::Overlay, [0xffd23e, 0x3eff9a, 0x3e9bff], 190.0),
+        ("Multiply", Blend::Multiply, [0xff9a3e, 0xff4f7b, 0x8a4dff], 150.0),
+    ];
+    for (i, (name, blend, colours, vx)) in rows.into_iter().enumerate() {
+        let y = -470.0 + 190.0 * i as f32;
+        let id = b.add(
+            "balls",
+            ThingId::ROOT,
+            name,
+            Vec2::new(-190.0, y),
+            BallsSettings {
+                arrangement: Arrangement::Block,
+                columns: 5,
+                rows: 1,
+                spacing: 95.0,
+                radius: 70.0,
+                velocity: Vec2::new(vx, 0.0),
+                ..BallsSettings::default()
+            }
+            .to_params(),
+        );
+        let look = ClassicLook {
+            fill: Paint { colours: Gradient::even(&colours.map(hex)), follow: Follow::Order, ..Paint::default() },
+            blend,
+            ..ClassicLook::default()
+        };
+        b.own_module(id, "look.classic", &format!("{name} look"), look.to_params());
+        let label = b.text(&format!("{name} label"), Vec2::new(0.0, y), |t| {
+            t.text = name.into();
+            t.size = 44.0;
+            t.outline = 4.0;
+            t.outline_paint = Paint::solid(hex(0x000000));
+        });
+        let _ = label;
+    }
+    // A bar that subtracts its colour from what is under it.
+    let bar = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Subtract bar",
+        Vec2::new(0.0, 290.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::Bar;
+            o.length = 800.0;
+            o.thickness = 56.0;
+        }),
+    );
+    let subtract = ClassicLook { fill: Paint::solid(hex(0x66c8ff)), blend: Blend::Subtract, ..ClassicLook::default() };
+    b.own_module(bar, "look.classic", "Subtract look", subtract.to_params());
+    // Streaks that add their light.
+    let comets = b.add(
+        "balls",
+        ThingId::ROOT,
+        "Comets",
+        Vec2::new(0.0, 450.0),
+        BallsSettings {
+            arrangement: Arrangement::Ring,
+            count: 3,
+            ring_radius: 60.0,
+            radius: 14.0,
+            velocity: Vec2::new(520.0, 380.0),
+            ..BallsSettings::default()
+        }
+        .to_params(),
+    );
+    let comet_look = ClassicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..ClassicLook::default() };
+    b.own_module(comets, "look.classic", "Comet look", comet_look.to_params());
+    let streak = StreakTrail {
+        seconds: 0.6,
+        width: 0.8,
+        brightness: 0.9,
+        source: TrailSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0x7cf4ff), hex(0xff3ec8)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        blend: Blend::Add,
+        ..StreakTrail::default()
+    };
+    b.own_module(comets, "trail.streak", "Add streak", streak.to_params());
+    // Styled balls whose hue drifts around one colour.
+    b.balls("Drifters", Vec2::new(-260.0, 600.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 8;
+        s.rows = 2;
+        s.spacing = 52.0;
+        s.radius = 22.0;
+        s.velocity = Vec2::new(160.0, -90.0);
+    });
+    let drift = StyledLook {
+        fill: Paint { colours: Gradient::even(&[hex(0xff7a3e)]), vary_hue: 25.0, wobble: 0.5, ..Paint::default() },
+        ..StyledLook::default()
+    };
+    b.own_module(BALLS, "look.styled", "Drift look", drift.to_params());
+    b.text("Title", Vec2::new(0.0, -640.0 - 150.0), |t| {
+        t.text = "Blend modes".into();
+        t.size = 120.0;
+        t.outline = 6.0;
+        t.outline_paint = Paint::solid(hex(0x05040f));
+    });
     b.scene
 }
 
@@ -1333,7 +1465,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 31);
+        assert_eq!(scenes.len(), 32);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1341,7 +1473,7 @@ mod tests {
             scenes::stage5(&reg),
             scenes::stage6(&reg),
             scenes::stage7(&reg),
-            vec![("Colour paints".into(), scenes::colour_demo(&reg))],
+            vec![("Colour paints".into(), scenes::colour_demo(&reg)), ("Blend modes".into(), scenes::blend_demo(&reg))],
         ]
         .concat()
         .into_iter()
@@ -1358,7 +1490,7 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
-        assert_eq!(names[30..], ["Colour paints"]);
+        assert_eq!(names[30..], ["Colour paints", "Blend modes"]);
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {

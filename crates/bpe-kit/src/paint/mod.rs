@@ -391,7 +391,8 @@ impl SettingGroup for Paint {
             // One paint's variation sits under "Variation"; a prefixed paint (an outline, a
             // pattern) gets its own heading so its rows can't be mistaken for the main one's.
             let heading = if p.is_empty() { "Variation" } else { leak(format!("{} variation", o.label)) };
-            let shown = on("");
+            // Even a one-colour paint can vary, so this ignores the colour count.
+            let shown = o.when;
             let mut vary = |key: &str, label: &'static str, help: &'static str, default: f32, range, unit| {
                 let mut d = num(def(key, label, help, ty(&default), val(&default), shown), range, unit, true, false);
                 d.group = heading;

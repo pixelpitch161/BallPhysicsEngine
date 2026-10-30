@@ -562,7 +562,7 @@ mod tests {
         let state =
             State { inspector: Inspector::default(), panel: NodePanel::default(), scene, kit, resolved, selection };
         let mut h = Harness::builder()
-            .with_size(vec2(1200.0, 1200.0))
+            .with_size(vec2(1200.0, 1700.0))
             .with_step_dt(1.0 / 60.0)
             // Scene defaults' long card takes a few seconds of frames for its grids to settle.
             .with_max_steps(240)
