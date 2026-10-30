@@ -8,10 +8,12 @@
 //! every time.
 
 pub mod audition;
+mod buses;
 mod channels;
 pub mod chords;
 pub mod instruments;
 pub mod level;
+pub mod master;
 pub mod presets;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,11 +21,12 @@ use std::path::Path;
 
 use bpe_core::{
     Animation, Inputs, InstrumentId, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef,
-    Resolved, SlotId, Target, ThingId,
+    Resolved, SlotId, Target, ThingId, Value,
 };
 use bpe_runtime::{Event, Log};
 
 pub use audition::{audition, audition_keys};
+pub use buses::run_master_fx;
 pub use channels::{ChannelCache, InstrumentChoice, VOICE_CAP, instrument_for};
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
@@ -31,6 +34,7 @@ pub use chords::{
 };
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
+pub use master::{ClipMode, MasterReport, MasterSettings, integrated_lufs, master};
 pub use presets::{PRESETS, Preset, moods};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -42,11 +46,17 @@ pub struct Soundtrack {
     /// What went wrong while playing, in plain sentences for the status line: a patch that
     /// doesn't compile, a voice that made bad samples, a sample file that couldn't be read.
     pub problems: Vec<String>,
+    /// What the master stage measured, once the mix is finished.
+    pub report: Option<MasterReport>,
 }
 
 impl Soundtrack {
     pub fn silent(seconds: f32) -> Self {
-        Self { samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2], problems: Vec::new() }
+        Self {
+            samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2],
+            problems: Vec::new(),
+            report: None,
+        }
     }
 
     pub fn frames(&self) -> usize {
@@ -107,8 +117,8 @@ pub struct MixSettings {
     pub scene_chords: Option<ProgressionId>,
     /// The beat grid in video seconds, which chords are laid on.
     pub beats: Vec<f64>,
-    /// Target loudness in dB.
-    pub loudness: f32,
+    /// How the master stage finishes the mix.
+    pub master: MasterSettings,
     pub seed: u64,
     /// Half the video's width, for panning.
     pub half_width: f32,
@@ -124,6 +134,14 @@ pub struct MixSettings {
     pub scene_instrument: Option<InstrumentId>,
     /// Each sound module's own macro values for its instrument, by module id.
     pub macros: BTreeMap<u32, BTreeMap<String, f32>>,
+    /// Each sound module's channel effects and sends, by module id.
+    pub strips: BTreeMap<u32, bpe_core::ChannelStrip>,
+    /// The return buses.
+    pub buses: Vec<bpe_core::Bus>,
+    /// Effects over the whole mix, before the master stage.
+    pub master_fx: bpe_graph::Graph,
+    /// Each sound module's name, by module id, for problems.
+    pub channel_names: BTreeMap<u32, String>,
 }
 
 impl MixSettings {
@@ -293,7 +311,10 @@ pub fn notes_with(
         let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
         let first = notes.len();
         match animation.filter(|_| animated.contains(id)) {
-            None => m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes),
+            None => {
+                m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes);
+                pan_notes(&mut notes[first..], &slot.params);
+            }
             Some(animation) => {
                 let mut copy = resolved.clone();
                 let mut start = 0;
@@ -302,7 +323,10 @@ pub fn notes_with(
                     let end = start + events[start..].partition_point(|e| e.step < first + window);
                     animation.apply(&mut copy, first as f64 / rate as f64, &Inputs::NONE);
                     let params = copy.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound)).map(|s| &s.params);
-                    m.notes_with(params.unwrap_or(&slot.params), graph, *id, &events[start..end], &cx, &mut notes);
+                    let params = params.unwrap_or(&slot.params);
+                    let from = notes.len();
+                    m.notes_with(params, graph, *id, &events[start..end], &cx, &mut notes);
+                    pan_notes(&mut notes[from..], params);
                     start = end;
                 }
             }
@@ -313,6 +337,21 @@ pub fn notes_with(
     }
     notes.retain(|n| n.frame < frames);
     notes
+}
+
+/// Moves notes by their module's Pan setting, from left (-1) to right (1), with constant power
+/// around where each already sits.
+fn pan_notes(notes: &mut [Note], params: &Params) {
+    let pan = match params.get("pan") {
+        Some(Value::Number(p)) if *p != 0.0 => *p as f32,
+        _ => return,
+    };
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    let (l, r) = (angle.cos() * std::f32::consts::SQRT_2, angle.sin() * std::f32::consts::SQRT_2);
+    for n in notes {
+        n.left *= l;
+        n.right *= r;
+    }
 }
 
 /// [`mix`], with the scene's library, keyframed Sound settings and the video's time warp.
@@ -341,23 +380,42 @@ pub fn mix_cached(
     video_time: &dyn Fn(f64) -> f64,
     cache: &mut ChannelCache,
 ) -> Soundtrack {
+    let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, cache);
+    let problems = run_master_fx(&mut track.samples, settings);
+    track.problems.extend(problems);
+    track.report = Some(master(&mut track.samples, &settings.master));
+    track
+}
+
+/// [`mix_cached`] without the master effects and the master stage: channels, sends and buses,
+/// ready for a song to be mixed in before [`run_master_fx`] and [`master`] finish it.
+#[allow(clippy::too_many_arguments)]
+pub fn mix_premaster(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+    cache: &mut ChannelCache,
+) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
     let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
-    if notes.is_empty() {
+    if notes.is_empty() && settings.buses.is_empty() && settings.master_fx.nodes.is_empty() {
         return track;
     }
-    let rendered = channels::render(settings, &notes, track.frames(), cache);
-    track.samples = rendered.samples;
-    track.problems = rendered.problems;
-    normalize_loudness(&mut track.samples, settings.loudness);
-    limit_peaks(&mut track.samples);
+    let frames = track.frames();
+    let (samples, problems, _) = buses::premaster_from_notes(settings, &notes, frames, cache);
+    track.samples = samples;
+    track.problems = problems;
     track
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use bpe_core::{Address, Ease, Owner, Scene, Value, resolve, testkit};
+    use bpe_core::{Address, Ease, Owner, Scene, resolve, testkit};
     use bpe_runtime::{EventKind, Party};
 
     /// Plays middle C on every event, as loud as its "volume" setting says.
@@ -407,7 +465,7 @@ pub(crate) mod tests {
             progressions: Default::default(),
             scene_chords: None,
             beats: Vec::new(),
-            loudness: -14.0,
+            master: MasterSettings::default(),
             seed: 1,
             half_width: 540.0,
             tags: Default::default(),
@@ -416,6 +474,10 @@ pub(crate) mod tests {
             instruments: Default::default(),
             scene_instrument: None,
             macros: Default::default(),
+            strips: Default::default(),
+            buses: Vec::new(),
+            master_fx: Default::default(),
+            channel_names: Default::default(),
         }
     }
 
@@ -456,6 +518,21 @@ pub(crate) mod tests {
         let track = mix_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
         assert_eq!(track.frames(), 5 * 48_000);
         assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
+    }
+
+    #[test]
+    fn pan_moves_a_note() {
+        let (reg, mut scene, _) = plucking_scene();
+        let pluck = *scene.library.modules.keys().next().unwrap();
+        scene.library.modules.get_mut(&pluck).unwrap().params.set("pan", Value::Number(-1.0));
+        let resolved = resolve(&scene, &reg);
+        let mut mixes = Mixes::default();
+        mixes.add(TestPluck);
+        let mut log = Log::default();
+        log.push(hit(240));
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t);
+        assert!(notes[0].right.abs() < 1e-6, "{}", notes[0].right);
+        assert!((notes[0].left - std::f32::consts::SQRT_2).abs() < 1e-4, "{}", notes[0].left);
     }
 
     #[test]

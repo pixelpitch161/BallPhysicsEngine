@@ -27,6 +27,8 @@ pub struct Mixed {
     /// Plain sentences about sounds that couldn't play: a patch that doesn't compile, a voice
     /// that made a bad sample, a sample file that can't be read.
     pub problems: Vec<String>,
+    /// What the master stage measured, for the meters.
+    pub report: Option<bpe_mix::MasterReport>,
 }
 
 pub struct SoundJob {
@@ -41,6 +43,8 @@ pub struct SoundJob {
     pub hits: Vec<f32>,
     /// The beats of the last finished mix, in video seconds.
     pub beats: Vec<f32>,
+    /// The last finished mix's master readings, for the meters.
+    pub report: Option<bpe_mix::MasterReport>,
     /// Each channel's last render, shared by the mixes one after another, so an edit to one
     /// sound re-renders only its channel.
     channels: Arc<Mutex<ChannelCache>>,
@@ -58,6 +62,7 @@ impl Default for SoundJob {
             receiver,
             hits: Vec::new(),
             beats: Vec::new(),
+            report: None,
             channels: Default::default(),
         }
     }
@@ -93,6 +98,7 @@ impl SoundJob {
             if mixed.generation == self.generation {
                 self.hits = mixed.hits.clone();
                 self.beats = mixed.beats.clone();
+                self.report = mixed.report.clone();
                 landed = Some(mixed);
             }
         }
@@ -143,7 +149,15 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) 
         .collect();
     let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
     let mixed = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, cache);
-    Mixed { generation: 0, track: Arc::new(mixed.samples), hits, beats, warp, problems: mixed.problems }
+    Mixed {
+        generation: 0,
+        track: Arc::new(mixed.samples),
+        hits,
+        beats,
+        warp,
+        problems: mixed.problems,
+        report: mixed.report,
+    }
 }
 
 /// Everything the soundtrack depends on: the physics, every Sound module in use, the root's
@@ -169,7 +183,20 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     }
     if let Some(root) = resolved.things.get(&ThingId::ROOT) {
         let s = SceneSettings::from_params(&root.params);
-        mix(&format!("{:?} {:?} {} {:?} {} {}", s.chords, s.loudness, s.seed, s.duration, s.width, s.height));
+        mix(&format!(
+            "{:?} {:?} {} {:?} {} {} {:?} {} {} {} {}",
+            s.chords,
+            s.loudness,
+            s.seed,
+            s.duration,
+            s.width,
+            s.height,
+            s.clipper,
+            s.clip_drive,
+            s.ceiling,
+            s.auto_release,
+            s.release
+        ));
         mix(&format!(
             "{:?} {} {} {} {} {:?} {} {}",
             s.song, s.song_offset, s.song_volume, s.ducking, s.bpm, s.beat_sync, s.subdivisions, s.warp_strength
@@ -182,11 +209,19 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
             bpe_core::InstrumentSource::Patch { graph } => bpe_synth::sound_key(graph),
             built_in => format!("{built_in:?}"),
         };
-        mix(&format!("{id:?} {source} {:?}", i.voices));
+        mix(&format!("{id:?} {source} {:?} {}", i.voices, bpe_synth::sound_key(&i.fx)));
     }
     for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.macros.is_empty()) {
         mix(&format!("{id:?} {:?}", m.macros));
     }
+    // Effects, sends and buses: a bus's name doesn't sound.
+    for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.channel.is_default()) {
+        mix(&format!("{id:?} {} {:?}", bpe_synth::sound_key(&m.channel.inserts), m.channel.sends));
+    }
+    for b in &scene.library.buses {
+        mix(&format!("{:?} {} {}", b.id, b.volume, bpe_synth::sound_key(&b.fx)));
+    }
+    mix(&bpe_synth::sound_key(&scene.library.master_fx));
     let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
         (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
         (Owner::Thing(_), None) => false,
@@ -226,6 +261,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "Patch".into(),
             source: bpe_core::InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
@@ -244,6 +280,33 @@ mod tests {
         }
         scene.set_instrument(id, i).unwrap();
         assert_ne!(print(&scene), before, "unwiring does");
+    }
+
+    #[test]
+    fn a_bus_edit_remixes() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let print = |scene: &Scene| {
+            let resolved = resolve(scene, &kit.registry);
+            sound_fingerprint(scene, &resolved, &kit.sims)
+        };
+        let before = print(&scene);
+        assert_eq!(before, print(&scene), "nothing changed");
+        scene.library.buses[0].volume = -6.0;
+        let bus = print(&scene);
+        assert_ne!(bus, before, "a bus volume");
+        scene.library.master_fx = bpe_synth::chain_graph(&[("width".into(), Default::default(), true)]);
+        let master = print(&scene);
+        assert_ne!(master, bus, "master effects");
+        let sound = *scene.library.modules.iter().find(|(_, m)| m.slot == SlotId::Sound).unwrap().0;
+        let id = scene.library.buses[0].id;
+        scene.library.modules.get_mut(&sound).unwrap().channel.sends.insert(id, -12.0);
+        let send = print(&scene);
+        assert_ne!(send, master, "a send");
+        let pluck = *scene.library.instruments.keys().next().unwrap();
+        scene.library.instruments.get_mut(&pluck).unwrap().fx =
+            bpe_synth::chain_graph(&[("chorus".into(), Default::default(), true)]);
+        assert_ne!(print(&scene), send, "instrument effects");
     }
 
     #[test]
@@ -284,6 +347,7 @@ mod tests {
         let mut graph = bpe_synth::blank_patch();
         graph.nodes.retain(|n| n.kind != "voice_out");
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "Broken".into(),
             source: bpe_core::InstrumentSource::Patch { graph },
             voices: Default::default(),

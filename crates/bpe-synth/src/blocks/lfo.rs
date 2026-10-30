@@ -12,7 +12,7 @@ enum Wave {
 }
 
 /// Beats in one cycle for a sync choice, or `None` for free running in Hz.
-fn sync_beats(choice: &str) -> Option<f32> {
+pub(crate) fn sync_beats(choice: &str) -> Option<f32> {
     Some(match choice {
         "1/1" => 4.0,
         "1/2" => 2.0,

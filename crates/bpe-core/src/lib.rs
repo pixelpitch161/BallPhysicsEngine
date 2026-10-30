@@ -35,7 +35,7 @@ pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use instrument::{Instrument, InstrumentId, InstrumentRef, InstrumentSource, NoteLength, VoiceSettings};
-pub use library::{Library, Module, ModuleGraph};
+pub use library::{Bus, BusId, ChannelStrip, Library, Module, ModuleGraph};
 pub use progression::{
     Chord, Extension, MAX_BEATS, Mode, MusicKey, Progression, ProgressionId, ProgressionRef, Quality,
 };
