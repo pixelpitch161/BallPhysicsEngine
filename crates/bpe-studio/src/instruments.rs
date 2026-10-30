@@ -171,9 +171,10 @@ fn voices(ui: &mut Ui, v: &mut VoiceSettings, patch: bool) -> bool {
     });
     ui.end_row();
     let name = ui.label("Voice limit");
-    let mut limit = v.limit as f32;
-    if slider(ui, &mut limit, 1.0, 64.0, "").labelled_by(name.id).changed() {
-        v.limit = limit.round().clamp(1.0, 64.0) as u16;
+    let mut limit = v.limit.clamp(1, 64);
+    ui.spacing_mut().slider_width = 100.0;
+    if ui.add(egui::Slider::new(&mut limit, 1..=64)).labelled_by(name.id).changed() {
+        v.limit = limit;
         changed = true;
     }
     ui.end_row();

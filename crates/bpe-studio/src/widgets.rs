@@ -792,37 +792,38 @@ fn instrument_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetCh
         },
     };
     let before = *x;
-    let mut response = egui::ComboBox::from_id_salt(("instrument", row)).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(x, -1, "Scene's").on_hover_text("Play through Scene defaults' instrument");
-        ui.label(RichText::new("Built-in").small().color(theme::MUTED));
-        for (i, which) in bpe_mix::Instrument::ALL.iter().enumerate() {
-            if ui.selectable_label(false, which.label()).clicked() {
-                *x = BUILT_IN_BASE - i as i64;
+    let mut response =
+        egui::ComboBox::from_id_salt(("instrument", row)).selected_text(shown).height(480.0).show_ui(ui, |ui| {
+            ui.selectable_value(x, -1, "Scene's").on_hover_text("Play through Scene defaults' instrument");
+            ui.label(RichText::new("Built-in").small().color(theme::MUTED));
+            for (i, which) in bpe_mix::Instrument::ALL.iter().enumerate() {
+                if ui.selectable_label(false, which.label()).clicked() {
+                    *x = BUILT_IN_BASE - i as i64;
+                }
             }
-        }
-        if !choices.instruments.is_empty() {
+            if !choices.instruments.is_empty() {
+                ui.separator();
+                ui.label(RichText::new("In this scene").small().color(theme::MUTED));
+            }
+            for (id, name, users) in &choices.instruments {
+                let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
+                ui.selectable_value(x, id.0 as i64, label);
+            }
             ui.separator();
-            ui.label(RichText::new("In this scene").small().color(theme::MUTED));
-        }
-        for (id, name, users) in &choices.instruments {
-            let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
-            ui.selectable_value(x, id.0 as i64, label);
-        }
-        ui.separator();
-        if ui.button("New patch").on_hover_text("A blank synth patch to build in the node panel").clicked() {
-            *x = NEW_PATCH;
-        }
-        ui.label(RichText::new("Starter patches").small().color(theme::MUTED));
-        for (i, (name, ..)) in bpe_synth::starters().iter().enumerate() {
-            if ui.selectable_label(false, *name).clicked() {
-                *x = STARTER_BASE - i as i64;
+            if ui.button("New patch").on_hover_text("A blank synth patch to build in the node panel").clicked() {
+                *x = NEW_PATCH;
             }
-        }
-        ui.separator();
-        if ui.button("Make unique").on_hover_text("A copy of this instrument that only this sound uses").clicked() {
-            *x = MAKE_UNIQUE_INSTRUMENT;
-        }
-    });
+            ui.label(RichText::new("Starter patches").small().color(theme::MUTED));
+            for (i, (name, ..)) in bpe_synth::starters().iter().enumerate() {
+                if ui.selectable_label(false, *name).clicked() {
+                    *x = STARTER_BASE - i as i64;
+                }
+            }
+            ui.separator();
+            if ui.button("Make unique").on_hover_text("A copy of this instrument that only this sound uses").clicked() {
+                *x = MAKE_UNIQUE_INSTRUMENT;
+            }
+        });
     if *x != before {
         response.response.mark_changed();
     }
