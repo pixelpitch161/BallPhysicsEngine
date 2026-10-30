@@ -431,6 +431,10 @@ mod tests {
             instruments: Default::default(),
             scene_instrument: None,
             macros: Default::default(),
+            strips: Default::default(),
+            buses: Vec::new(),
+            master_fx: Default::default(),
+            channel_names: Default::default(),
         }
     }
 

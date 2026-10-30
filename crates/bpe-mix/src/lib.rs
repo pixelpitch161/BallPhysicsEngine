@@ -8,6 +8,7 @@
 //! every time.
 
 pub mod audition;
+mod buses;
 mod channels;
 pub mod chords;
 pub mod instruments;
@@ -132,6 +133,14 @@ pub struct MixSettings {
     pub scene_instrument: Option<InstrumentId>,
     /// Each sound module's own macro values for its instrument, by module id.
     pub macros: BTreeMap<u32, BTreeMap<String, f32>>,
+    /// Each sound module's channel effects and sends, by module id.
+    pub strips: BTreeMap<u32, bpe_core::ChannelStrip>,
+    /// The return buses.
+    pub buses: Vec<bpe_core::Bus>,
+    /// Effects over the whole mix, before the master stage.
+    pub master_fx: bpe_graph::Graph,
+    /// Each sound module's name, by module id, for problems.
+    pub channel_names: BTreeMap<u32, String>,
 }
 
 impl MixSettings {
@@ -370,15 +379,33 @@ pub fn mix_cached(
     video_time: &dyn Fn(f64) -> f64,
     cache: &mut ChannelCache,
 ) -> Soundtrack {
+    let mut track = mix_premaster(settings, resolved, library, log, mixes, animation, video_time, cache);
+    track.report = Some(master(&mut track.samples, &settings.master));
+    track
+}
+
+/// [`mix_cached`] without the master stage: channels, sends, buses and master effects, ready
+/// for a song to be mixed in before [`master`] finishes it.
+#[allow(clippy::too_many_arguments)]
+pub fn mix_premaster(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+    cache: &mut ChannelCache,
+) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
     let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
-    if notes.is_empty() {
+    if notes.is_empty() && settings.buses.is_empty() && settings.master_fx.nodes.is_empty() {
         return track;
     }
-    let rendered = channels::render(settings, &notes, track.frames(), cache);
-    track.samples = rendered.samples;
-    track.problems = rendered.problems;
-    track.report = Some(master(&mut track.samples, &settings.master));
+    let frames = track.frames();
+    let (samples, problems, _) = buses::premaster_from_notes(settings, &notes, frames, cache);
+    track.samples = samples;
+    track.problems = problems;
     track
 }
 
@@ -444,6 +471,10 @@ pub(crate) mod tests {
             instruments: Default::default(),
             scene_instrument: None,
             macros: Default::default(),
+            strips: Default::default(),
+            buses: Vec::new(),
+            master_fx: Default::default(),
+            channel_names: Default::default(),
         }
     }
 

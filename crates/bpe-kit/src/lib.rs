@@ -250,6 +250,22 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
             .filter(|(_, m)| !m.macros.is_empty())
             .map(|(id, m)| (id.0, m.macros.clone()))
             .collect(),
+        strips: scene
+            .library
+            .modules
+            .iter()
+            .filter(|(_, m)| !m.channel.is_default())
+            .map(|(id, m)| (id.0, m.channel.clone()))
+            .collect(),
+        buses: scene.library.buses.clone(),
+        master_fx: scene.library.master_fx.clone(),
+        channel_names: scene
+            .library
+            .modules
+            .iter()
+            .filter(|(_, m)| m.slot == SlotId::Sound)
+            .map(|(id, m)| (id.0, m.name.clone()))
+            .collect(),
     }
 }
 
