@@ -108,6 +108,12 @@ pub struct Particles {
     layout: wgpu::BindGroupLayout,
     additive: wgpu::RenderPipeline,
     covering: wgpu::RenderPipeline,
+}
+
+/// One frame's bursts on the GPU. The main frame, its overlay and each blend layer keep their
+/// own, since all of them are uploaded before the frame is drawn.
+#[derive(Default)]
+pub(crate) struct BurstList {
     buffer: Option<wgpu::Buffer>,
     group: Option<wgpu::BindGroup>,
     picked: Picked,
@@ -185,44 +191,41 @@ impl Particles {
             additive: make("particles glow", "fs_add", add),
             covering: make("particles cover", "fs_alpha", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             layout,
-            buffer: None,
-            group: None,
-            picked: Picked::default(),
         }
     }
 
-    /// Uploads the frame's bursts.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, picked: Picked) {
-        self.picked = picked;
-        if self.picked.total() == 0 {
+    /// Uploads `picked` into `list`.
+    pub(crate) fn fill(&self, list: &mut BurstList, device: &wgpu::Device, queue: &wgpu::Queue, picked: Picked) {
+        list.picked = picked;
+        if list.picked.total() == 0 {
             return;
         }
-        let bytes: &[u8] = bytemuck::cast_slice(&self.picked.bursts);
+        let bytes: &[u8] = bytemuck::cast_slice(&list.picked.bursts);
         let len = bytes.len() as u64;
         // The buffer only grows, and the bind group is made once per buffer: the shader reads
         // how many bursts are in use from the first one.
-        if self.buffer.as_ref().is_none_or(|b| b.size() < len) {
+        if list.buffer.as_ref().is_none_or(|b| b.size() < len) {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("particle bursts"),
                 size: len.next_power_of_two().max(1024),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            list.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("particles"),
                 layout: &self.layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
             }));
-            self.buffer = Some(buffer);
+            list.buffer = Some(buffer);
         }
-        queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
+        queue.write_buffer(list.buffer.as_ref().unwrap(), 0, bytes);
     }
 
-    /// Draws the prepared bursts; the globals must be bound at group 0 already. `paint` is the
-    /// gradient atlas, bound at group 2.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, paint: &wgpu::BindGroup) {
-        let Some(group) = &self.group else { return };
-        let (additive, covering) = (self.picked.additive, self.picked.covering);
+    /// Draws the bursts uploaded into `list`; the globals must be bound at group 0 already.
+    /// `paint` is the gradient atlas, bound at group 2.
+    pub(crate) fn draw_list(&self, pass: &mut wgpu::RenderPass<'_>, paint: &wgpu::BindGroup, list: &BurstList) {
+        let Some(group) = &list.group else { return };
+        let (additive, covering) = (list.picked.additive, list.picked.covering);
         if additive + covering == 0 {
             return;
         }

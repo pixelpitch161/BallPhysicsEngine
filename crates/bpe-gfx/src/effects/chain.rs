@@ -577,6 +577,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_material_finds_a_thing_drawn_in_a_blend_layer() {
+        let mut frame = two_balls_frame();
+        let b = frame.balls.pop().unwrap();
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0).balls.push(b);
+        frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Picture));
+        let Some(after) = render(&frame) else { return };
+        assert!(green(pixel(&after, B)), "{:?}: the layered ball is in the object picture", pixel(&after, B));
+        assert!(!green(pixel(&after, A)) && !green(pixel(&after, EMPTY)));
+    }
+
+    #[test]
     fn blend_zero_leaves_the_picture_unchanged() {
         let Some(before) = render(&two_balls_frame()) else { return };
         let mut off = two_balls_frame();

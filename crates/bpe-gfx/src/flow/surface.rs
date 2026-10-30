@@ -205,9 +205,10 @@ impl Surface {
     }
 
     /// Records one liquid's surface into `encoder`: splat, blur across and down, then shade
-    /// into the HDR target over what is there. `slot` tells layers of one frame apart;
-    /// `world` is the frame's size in world pixels, seen through `camera`; `paint` holds the
-    /// frame's gradients. A liquid painted by speed splats and blurs its speed alongside.
+    /// into `out` (the HDR picture or a blend layer) over what is there, bending
+    /// `targets.behind`. `slot` tells the liquids of one frame apart; `world` is the frame's
+    /// size in world pixels, seen through `camera`; `paint` holds the frame's gradients. A
+    /// liquid painted by speed splats and blurs its speed alongside.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -221,6 +222,7 @@ impl Surface {
         layer: &LiquidLayer,
         points: PointsBinding,
         paint: &wgpu::BindGroup,
+        out: &wgpu::TextureView,
     ) {
         while self.slots.len() <= slot {
             let uniform = |label| {
@@ -330,7 +332,7 @@ impl Surface {
             pass.draw(0..3, 0..1);
         }
         {
-            let mut pass = begin_pass(encoder, &targets.hdr, "liquid surface", wgpu::LoadOp::Load);
+            let mut pass = begin_pass(encoder, out, "liquid surface", wgpu::LoadOp::Load);
             pass.set_pipeline(&self.composite);
             pass.set_bind_group(0, &from_thickness, &[]);
             pass.set_bind_group(1, paint, &[]);

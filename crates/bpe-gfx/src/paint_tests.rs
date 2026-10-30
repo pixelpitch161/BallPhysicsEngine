@@ -4,7 +4,7 @@ use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance, SoftVertex};
 use bpe_core::{Color, Gradient, Stop, Transition};
 
 /// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
-fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(crate) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
