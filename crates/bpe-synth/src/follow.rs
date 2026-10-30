@@ -40,7 +40,9 @@ pub fn follow(graph: &Graph, node: u32, param: &str, with: &FollowInput) -> Opti
     let (min, max) = p.range;
     let depth = if value <= (min + max) / 2.0 { max - value } else { min - value };
     let at = target.pos;
-    let input = g.add(input_spec, [at[0] - 380.0, at[1] + 160.0]);
+    // Under every block, so the new ones never cover the patch.
+    let y = g.nodes.iter().map(|n| n.pos[1]).fold(at[1], f32::max) + 420.0;
+    let input = g.add(input_spec, [at[0] - 380.0, y]);
     let n = g.node_mut(input)?;
     n.params.insert("input".into(), Param::Choice(def.name.into()));
     n.params.insert("low".into(), Param::Number(def.low));
@@ -48,7 +50,7 @@ pub fn follow(graph: &Graph, node: u32, param: &str, with: &FollowInput) -> Opti
     if !with.channel.is_empty() {
         n.params.insert("channel".into(), Param::Text(with.channel.clone()));
     }
-    let scale = g.add(cat.spec("scale")?, [at[0] - 200.0, at[1] + 160.0]);
+    let scale = g.add(cat.spec("scale")?, [at[0] - 190.0, y]);
     g.node_mut(scale)?.params.insert("scale".into(), Param::Number(depth));
     g.connect(Link { from: (input, 0), to: (scale, 0) }, cat);
     g.connect(Link { from: (scale, 0), to: pin }, cat);
@@ -146,5 +148,16 @@ mod tests {
         let f = follow(&g, amp, "gain", &with).unwrap();
         assert_eq!(followed(&f, amp, "gain").as_deref(), Some("Channel level (Kick)"));
         assert_eq!(crate::uses(&f).channels, ["Kick".to_string()].into());
+    }
+
+    #[test]
+    fn new_blocks_go_under_the_patch() {
+        let g = blank_patch();
+        let filter = g.nodes.iter().find(|n| n.kind == "filter").unwrap().id;
+        let lowest = g.nodes.iter().map(|n| n.pos[1]).fold(f32::MIN, f32::max);
+        let f = follow(&g, filter, "cutoff", &live("height")).unwrap();
+        for n in f.nodes.iter().filter(|n| n.kind == "live_input" || n.kind == "scale") {
+            assert!(n.pos[1] > lowest + 400.0, "{} at {:?}", n.kind, n.pos);
+        }
     }
 }
