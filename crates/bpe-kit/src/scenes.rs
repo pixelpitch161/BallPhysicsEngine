@@ -1159,6 +1159,8 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        let mut scenes = scenes;
+        scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
@@ -1175,7 +1177,9 @@ mod tests {
     #[test]
     fn the_shipped_scene_files_match_the_code() {
         let reg = registry();
-        for (name, scene) in scenes::all(&reg) {
+        let mut shipped = scenes::all(&reg);
+        shipped.push(("Long drop".into(), scenes::long_drop(&reg)));
+        for (name, scene) in shipped {
             let file = format!(
                 "{}/../../scenes/next/{}.ron",
                 env!("CARGO_MANIFEST_DIR"),
