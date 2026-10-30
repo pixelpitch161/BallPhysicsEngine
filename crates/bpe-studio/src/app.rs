@@ -851,6 +851,9 @@ impl eframe::App for Studio {
         if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
             self.panels.nodes.open_at(thing, slot);
         }
+        if let Some(place) = self.panels.inspector.fx_request.take() {
+            self.panels.nodes.open_effects(place);
+        }
         if let Some(id) = self.panels.inspector.patch_request.take() {
             self.panels.nodes.open_patch(id);
         }

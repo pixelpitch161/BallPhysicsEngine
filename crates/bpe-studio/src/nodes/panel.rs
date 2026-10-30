@@ -639,6 +639,9 @@ mod tests {
                     if let Some((thing, slot)) = s.inspector.nodes_request.take() {
                         s.panel.open_at(thing, slot);
                     }
+                    if let Some(place) = s.inspector.fx_request.take() {
+                        s.panel.open_effects(place);
+                    }
                     if let Some(id) = s.inspector.patch_request.take() {
                         s.panel.open_patch(id);
                     }
@@ -828,7 +831,7 @@ mod tests {
         h.state_mut().panel.open_effects(FxPlace::Master);
         h.run();
         assert_eq!(h.state().panel.open, Some(PanelTarget::Effects(FxPlace::Master)));
-        h.get_by_label("Master effects");
+        assert_eq!(h.get_all_by_label("Master effects").count(), 2, "the panel header and the inspector card");
         h.get_by_label("Compiles");
         let kinds: Vec<&str> = h.state().panel.graph().unwrap().nodes.iter().map(|n| n.kind.as_str()).collect();
         assert!(kinds.contains(&"reverb"), "{kinds:?}");
