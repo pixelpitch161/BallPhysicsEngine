@@ -484,10 +484,10 @@ impl World {
             }
             let seen = self.last_hit.entry(*id).or_default();
             seen.resize(bodies.len(), (0, None));
-            for i in 0..bodies.len() {
-                let hit_now = bodies.hits[i] > seen[i].0;
+            for (i, seen) in seen.iter_mut().enumerate() {
+                let hit_now = bodies.hits[i] > seen.0;
                 if hit_now {
-                    seen[i] = (bodies.hits[i], Some(self.step));
+                    *seen = (bodies.hits[i], Some(self.step));
                 }
                 if !bodies.alive[i] {
                     continue;
@@ -495,7 +495,7 @@ impl World {
                 let (v, r) = (bodies.velocity[i], bodies.radius[i]);
                 balls += 1;
                 energy += 0.5 * (r / 20.0).powi(2) * v.length_squared() / 1e6;
-                let recent = seen[i].1.is_some_and(|at| self.step - at <= reach);
+                let recent = seen.1.is_some_and(|at| self.step - at <= reach);
                 if self.record_tracks && (hit_now || (sample && recent)) {
                     let s = TrackSample { step: self.step, position: bodies.position[i], velocity: v, radius: r };
                     log.push_track(Party { thing: *id, item: i as u32 }, s);
