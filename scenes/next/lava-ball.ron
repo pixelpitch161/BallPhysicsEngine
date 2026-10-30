@@ -98,10 +98,26 @@
                 slot: Look,
                 kind: "look.styled",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "color2": Color("#ffbf26"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "glow": Number(0.6000000238418579),
                     "glow_size": Number(1.399999976158142),
+                    "pattern_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffbf26",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             6: (

@@ -129,6 +129,7 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
         glow: 0.0,
         color: [0.0, 0.0, 1.0, 1.0],
         code: [0.0; 4],
+        paint: crate::PaintGpu::default(),
     });
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("streak", &pixels, W, H);

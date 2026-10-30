@@ -6,12 +6,10 @@ use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
-use crate::widgets::{
-    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, TargetChoices, settings_grid, settings_grid_marked,
-};
+use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
 use bpe_core::{
-    Address, Attach, Color, Depth, Gradient, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved,
-    SAME_TIME, Scene, SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
+    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
@@ -92,12 +90,6 @@ enum Edit {
     RollCard(Option<SlotId>),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
-    /// The look's colour list changed: its Colour and Colours settings, at these addresses.
-    Colours {
-        colour: Address,
-        colours: Address,
-        edit: ColoursEdit,
-    },
 }
 
 /// Where an edit to a slot's settings goes for one thing.
@@ -499,9 +491,6 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        if let Some(edit) = out.colours {
-                            edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
-                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
@@ -533,9 +522,6 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        if let Some(edit) = out.colours {
-                            edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
-                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
@@ -719,9 +705,6 @@ pub fn show(
                 None => false,
             },
             Edit::Lock(address, lock) => scene.set_locked(address, lock),
-            Edit::Colours { colour, colours, edit } => {
-                edit_colours(scene, reg, &colour, &colours, edit, time, &mut inspector.keyed_edit)
-            }
             Edit::RollCard(slot) => {
                 use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
                 let scope = Scope::Card { thing: id, slot };
@@ -954,77 +937,6 @@ pub(crate) fn fold_arrow<K: Ord + Copy>(ui: &mut Ui, collapsed: &mut BTreeSet<K>
     open
 }
 
-/// Writes a change to a look's colour list. One colour lives in Colour, several in Colours; when
-/// the list grows from one or shrinks to one, the keys move across too, and when it gains or
-/// loses a colour every key gains or loses it, so the keys stay in step with the list. Changing
-/// a colour keys the whole list at the playhead once it has keys.
-fn edit_colours(
-    scene: &mut Scene,
-    reg: &bpe_core::Registry,
-    colour: &Address,
-    colours: &Address,
-    edit: ColoursEdit,
-    time: f64,
-    keyed: &mut bool,
-) -> bool {
-    let ColoursEdit { list, change } = edit;
-    let Some(&first) = list.first() else { return false };
-    let was_many = matches!(scene.value_at_time(reg, colours, time), Some(Value::Gradient(g)) if g.stops.len() > 1);
-    let reshape = |l: &mut Vec<Color>| match change {
-        ListChange::Add => l.push(*list.last().expect("the list has a colour")),
-        ListChange::Remove(i) if i < l.len() => _ = l.remove(i),
-        _ => {}
-    };
-    match (was_many, list.len() > 1) {
-        (false, false) => set_or_key(scene, reg, colour, Value::Color(first), time, keyed),
-        (false, true) => {
-            // From one colour to several: Colour's keys become the list's, first colour first.
-            if let Some(mut track) = scene.tracks.remove(colour) {
-                for key in &mut track.keys {
-                    if let Value::Color(c) = key.value {
-                        let mut l = vec![c];
-                        l.extend_from_slice(&list[1..]);
-                        key.value = Value::Gradient(Gradient::even(&l));
-                    }
-                }
-                track.range = None;
-                scene.tracks.insert(colours.clone(), track);
-            }
-            scene.set_at(reg, colours, Value::Gradient(Gradient::even(&list))).is_ok()
-        }
-        (true, false) => {
-            // Down to one colour: the list's keys become Colour's, keeping what is left.
-            if let Some(mut track) = scene.tracks.remove(colours) {
-                for key in &mut track.keys {
-                    if let Value::Gradient(g) = &key.value {
-                        let mut l: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
-                        reshape(&mut l);
-                        key.value = Value::Color(l.first().copied().unwrap_or(first));
-                    }
-                }
-                scene.tracks.insert(colour.clone(), track);
-            }
-            let one = scene.set_at(reg, colour, Value::Color(first)).is_ok();
-            one && scene.set_at(reg, colours, Value::Gradient(Gradient::default())).is_ok()
-        }
-        (true, true) => {
-            if let ListChange::Set(_) = change {
-                return set_or_key(scene, reg, colours, Value::Gradient(Gradient::even(&list)), time, keyed);
-            }
-            if let Some(track) = scene.tracks.get_mut(colours) {
-                for key in &mut track.keys {
-                    if let Value::Gradient(g) = &mut key.value {
-                        let mut l: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
-                        reshape(&mut l);
-                        *g = Gradient::even(&l);
-                    }
-                }
-            }
-            scene.set_at(reg, colours, Value::Gradient(Gradient::even(&list))).is_ok()
-        }
-    }
-}
-
 /// The button an inherited card offers to link the module to the thing itself.
 fn change_here(ui: &mut Ui) -> egui::Response {
     ui.button("Change here").on_hover_text("Link the module to this thing, so changes here are its own")
@@ -1132,55 +1044,14 @@ mod tests {
     }
 
     #[test]
-    fn a_balls_colour_and_colours_are_one_list() {
+    fn a_balls_colours_are_one_list() {
         let mut h = harness(Some(ThingId(2)));
         let (module, _) = ball_look(h.state());
         assert!(h.query_by_label("Colour").is_none(), "no separate Colour row");
-        assert_eq!(h.get_all_by_label("Colours").count(), 1);
         h.get_by_label("Add a colour").click();
         h.run();
         let m = &h.state().scene.library.modules[&module];
-        assert!(matches!(m.params.get("gradient"), Some(Value::Gradient(g)) if g.stops.len() == 2), "{:?}", m.params);
-    }
-
-    #[test]
-    fn colour_keys_follow_the_list_as_it_grows_and_shrinks() {
-        let kit = bpe_kit::kit();
-        let reg = &kit.registry;
-        let mut scene = bpe_kit::new_scene(reg);
-        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
-            panic!("the ball's look is linked")
-        };
-        let at = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
-        let (red, blue, green) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Color::rgb(0, 255, 0));
-        scene.set_key(reg, &at(COLOUR), 0.0, Value::Color(red)).unwrap();
-        scene.set_key(reg, &at(COLOUR), 2.0, Value::Color(blue)).unwrap();
-        let mut keyed = false;
-        // A second colour: Colour's keys move to the list, each gaining the new colour.
-        let grow = ColoursEdit { list: vec![red, green], change: ListChange::Add };
-        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), grow, 0.0, &mut keyed));
-        assert!(!scene.keyed(&at(COLOUR)));
-        let keys: Vec<Value> = scene.tracks[&at(COLOURS)].keys.iter().map(|k| k.value.clone()).collect();
-        assert_eq!(
-            keys,
-            [Value::Gradient(Gradient::even(&[red, green])), Value::Gradient(Gradient::even(&[blue, green]))]
-        );
-        // Halfway between keys each colour is halfway too.
-        let Some(Value::Gradient(mid)) = scene.value_at_time(reg, &at(COLOURS), 1.0) else { panic!() };
-        assert_eq!(mid.stops[1].color, green);
-        assert_ne!(mid.stops[0].color, red);
-        // Changing the second colour at 2 s keys the whole list there.
-        let set = ColoursEdit { list: vec![blue, red], change: ListChange::Set(1) };
-        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), set, 2.0, &mut keyed));
-        assert!(keyed);
-        assert_eq!(scene.tracks[&at(COLOURS)].keys[1].value, Value::Gradient(Gradient::even(&[blue, red])));
-        // Back to one colour: the keys return to Colour, keeping the first colour left.
-        let shrink = ColoursEdit { list: vec![red], change: ListChange::Remove(0) };
-        assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), shrink, 0.0, &mut keyed));
-        assert!(!scene.keyed(&at(COLOURS)));
-        let keys: Vec<Value> = scene.tracks[&at(COLOUR)].keys.iter().map(|k| k.value.clone()).collect();
-        assert_eq!(keys, [Value::Color(green), Value::Color(red)]);
-        assert_eq!(scene.value_at(reg, &at(COLOURS)), Some(Value::Gradient(Gradient::default())));
+        assert!(matches!(m.params.get("colours"), Some(Value::Gradient(g)) if g.stops.len() == 2), "{:?}", m.params);
     }
 
     #[test]
@@ -1252,7 +1123,7 @@ mod tests {
         let h = harness(Some(ThingId(1)));
         // The arena's bounce only matters when it takes over; ball-only settings never show.
         assert!(h.query_by_role_and_label(Role::Label, "Takes over").is_some());
-        for ball_only in ["Bounciness", "Grow per hit", "Hits other balls", "Pops after", "Flash", "Colours follow"] {
+        for ball_only in ["Bounciness", "Grow per hit", "Hits other balls", "Pops after", "Flash"] {
             assert!(h.query_by_role_and_label(Role::Label, ball_only).is_none(), "{ball_only} shows on the arena");
         }
         // A circle has a radius but no width or corners.
@@ -1386,7 +1257,7 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
         let m = &s.scene.library.modules[module];
         assert_eq!(m.kind, "look.styled");
-        assert_eq!(m.params.get("color"), classic.get("color"), "{:?}", m.params);
+        assert_eq!(m.params.get("colours"), classic.get("colours"), "{:?}", m.params);
         assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.styled"));
     }
 
@@ -1770,12 +1641,12 @@ mod tests {
         let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
             panic!("the ball's look is linked");
         };
-        let colour = Value::Color(bpe_core::Color { r: 12, g: 200, b: 90, a: 255 });
+        let colour = Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color { r: 12, g: 200, b: 90, a: 255 }));
         let set = |scene: &mut Scene, key: &str, v: Value| {
             let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
             scene.set_at(&reg, &a, v).unwrap();
         };
-        set(&mut scene, "color", colour.clone());
+        set(&mut scene, "colours", colour.clone());
         set(&mut scene, "glow", Value::Number(0.7));
         let mut h = harness_of(scene, Some(ThingId(2)));
         h.get_by_label("Ball look").click();
@@ -1788,7 +1659,7 @@ mod tests {
         assert_ne!(new, module);
         let styled = &h.state().scene.library.modules[&new];
         assert_eq!(styled.kind, "look.styled");
-        assert_eq!(styled.params.get("color"), Some(&colour), "the colour comes along");
+        assert_eq!(styled.params.get("colours"), Some(&colour), "the colour comes along");
         assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
     }
 
@@ -1809,13 +1680,13 @@ mod tests {
         h.get_by_label("Lock when randomizing").click();
         h.run();
         assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
-        let colour = Address { owner: Owner::Module(module), slot: None, key: "color".into() };
+        let colour = Address { owner: Owner::Module(module), slot: None, key: "colours".into() };
         let before = h.state().scene.value_at(&reg, &colour);
         // Neither a whole-scene roll nor this card's die moves the colour this ball shows.
         for (seed, scope) in [(7, Scope::Scene), (8, Scope::Card { thing: ThingId(2), slot: Some(SlotId::Look) })] {
             let mut scene = h.state().scene.clone();
             roll(&mut scene, &reg, &scope, Roll { seed, amount: 1.0 });
-            let shown = Address { owner: Owner::Thing(ThingId(2)), slot: Some(SlotId::Look), key: "color".into() };
+            let shown = Address { owner: Owner::Thing(ThingId(2)), slot: Some(SlotId::Look), key: "colours".into() };
             assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
         }
         // Unlocking from the same row lets it roll again.

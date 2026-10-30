@@ -15,7 +15,7 @@ impl ThingDraw for ObstacleDraw {
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let Some(solids) = cx.world.solids.get(&cx.thing.id) else { return };
         let Some(look) = look_of(cx) else { return };
-        let color = look.color.to_linear();
+        let color = look.first_colour();
         let glow = wall_glow(&look);
         for part in &solids.parts {
             frame.shapes.push(match *part {

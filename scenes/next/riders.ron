@@ -128,7 +128,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "hue_per_hit": Number(12.0),
                 },
             ),

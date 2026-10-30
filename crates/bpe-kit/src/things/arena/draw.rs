@@ -15,8 +15,7 @@ impl ThingDraw for ArenaDraw {
         let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
         let Some(look) = look_of(cx) else { return };
         frame.shapes.push(
-            ShapeInstance::outline(&wall.outline, look.color.to_linear(), wall_glow(&look))
-                .code(thing_code(cx.thing.id)),
+            ShapeInstance::outline(&wall.outline, look.first_colour(), wall_glow(&look)).code(thing_code(cx.thing.id)),
         );
     }
 }

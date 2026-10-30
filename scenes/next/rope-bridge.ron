@@ -133,16 +133,11 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "gradient": Gradient((
+                    "colours": Gradient((
                         stops: [
                             (
                                 at: 0.0,
                                 color: "#3e9bff",
-                            ),
-                            (
-                                at: 1.0,
-                                color: "#ff3ec8",
                             ),
                         ],
                         transition: Smooth,
@@ -155,7 +150,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#e8e8e8"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#e8e8e8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
         },

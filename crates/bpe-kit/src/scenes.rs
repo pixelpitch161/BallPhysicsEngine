@@ -15,8 +15,8 @@ use bpe_vm::{Role, catalog};
 use glam::Vec2;
 
 use crate::graphs::module_graph;
-use crate::modules::look::GradientBy;
 use crate::modules::sound::{PitchBy, PlaysWhen};
+use crate::paint::{Follow, Paint};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
     ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
@@ -236,8 +236,30 @@ impl<'a> Builder<'a> {
         self.set_params(m, s.to_params());
     }
 
+    /// The balls' look in `colours`, from the block's first row to its last as the balls start
+    /// out: follows where each ball started, top to bottom, across the block's height. Balls
+    /// that start in one row (or not in a block) all wear the first colour.
+    fn ball_look_by_row(&mut self, colours: &[Color]) {
+        let thing = &self.scene.things[&BALLS];
+        let s = BallsSettings::from_params(&thing.params);
+        let height = s.rows.saturating_sub(1) as f32 * s.spacing;
+        let fill = if s.arrangement == Arrangement::Block && height > 0.0 {
+            Paint {
+                colours: Gradient::even(colours),
+                follow: Follow::Start,
+                angle: 90.0,
+                centre: thing.transform.position,
+                span: height,
+                ..Paint::default()
+            }
+        } else {
+            Paint::solid(colours.first().copied().unwrap_or(Color::WHITE))
+        };
+        self.ball_look(|l| l.fill = fill);
+    }
+
     fn ball_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
-        let mut s = ClassicLook { color: Color::rgb(0xff, 0x5c, 0xa8), ..ClassicLook::default() };
+        let mut s = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() };
         f(&mut s);
         let m = self.module_of(BALLS, SlotId::Look);
         self.set_params(m, s.to_params());
@@ -383,16 +405,15 @@ fn reel_block(reg: &Registry) -> Scene {
         s.radius = 4.5;
         s.velocity = Vec2::new(-480.0, 265.0);
     });
-    b.ball_look(|l| {
-        l.gradient = Gradient::even(&[
-            Color::rgb(0x3e, 0x9b, 0xff),
-            Color::rgb(0x8a, 0x4d, 0xff),
-            Color::rgb(0xff, 0x3e, 0xc8),
-            Color::rgb(0xff, 0x6a, 0x5c),
-            Color::rgb(0xff, 0xb8, 0x2e),
-        ]);
-    });
-    let arena_look = ClassicLook { color: Color::rgb(0xd8, 0xdc, 0xd0), ..ClassicLook::default() }.to_params();
+    b.ball_look_by_row(&[
+        Color::rgb(0x3e, 0x9b, 0xff),
+        Color::rgb(0x8a, 0x4d, 0xff),
+        Color::rgb(0xff, 0x3e, 0xc8),
+        Color::rgb(0xff, 0x6a, 0x5c),
+        Color::rgb(0xff, 0xb8, 0x2e),
+    ]);
+    let arena_look =
+        ClassicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..ClassicLook::default() }.to_params();
     b.own_module(ARENA, "look.classic", "Arena look", arena_look);
     b.scene
 }
@@ -485,7 +506,7 @@ fn jelly_drop(reg: &Registry) -> Scene {
         s.softness = 0.6;
         s.velocity = Vec2::new(220.0, 0.0);
     });
-    let look = ClassicLook { color: Color::rgb(0xff, 0xb0, 0x20), glow: 0.3, ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0xb0, 0x20)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(jelly, "look.classic", "Jelly look", look.to_params());
     b.scene
 }
@@ -506,7 +527,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.radius = 28.0;
         s.velocity = Vec2::ZERO;
     });
-    b.ball_look(|l| l.gradient = Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]));
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]);
     let rope = b.soft("Rope", Vec2::new(0.0, -100.0), |s| {
         s.shape = SoftShape::Rope;
         s.size = 760.0;
@@ -515,7 +536,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.thickness = 10.0;
         s.pinned = Pinned::BothEnds;
     });
-    let look = ClassicLook { color: Color::rgb(0xe8, 0xe8, 0xe8), ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xe8, 0xe8, 0xe8)), ..ClassicLook::default() };
     b.own_module(rope, "look.classic", "Rope look", look.to_params());
     b.sound(|s| s.instrument = Instrument::Marimba);
     b.scene
@@ -546,7 +567,7 @@ fn cloth_hammock(reg: &Registry) -> Scene {
         s.softness = 0.45;
         s.pinned = Pinned::TopCorners;
     });
-    let look = ClassicLook { color: Color::rgb(0x3e, 0x9b, 0xff), ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0x3e, 0x9b, 0xff)), ..ClassicLook::default() };
     b.own_module(cloth, "look.classic", "Cloth look", look.to_params());
     b.scene
 }
@@ -568,10 +589,7 @@ fn captioned_reel(reg: &Registry) -> Scene {
         s.radius = 7.0;
         s.velocity = Vec2::new(-420.0, 240.0);
     });
-    b.ball_look(|l| {
-        l.gradient =
-            Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
-    });
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
     let hits = b.text("Hit counter", Vec2::new(0.0, -780.0), |t| {
         t.text = "Hits {hits}".into();
         t.font = Font::Anton;
@@ -684,10 +702,16 @@ fn peg_board(reg: &Registry) -> Scene {
     // Only the pegs make a sound.
     b.scene.set_slot_off(BALLS, SlotId::Sound);
     b.ball_look(|l| {
-        l.gradient =
-            Gradient::even(&[Color::rgb(0xff, 0xd1, 0x4a), Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0x6a, 0x8d, 0xff)]);
-        l.gradient_by = GradientBy::Hits;
-        l.gradient_full = 10.0;
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0xd1, 0x4a),
+                Color::rgb(0xff, 0x5c, 0xa8),
+                Color::rgb(0x6a, 0x8d, 0xff),
+            ]),
+            follow: Follow::Hits,
+            span: 10.0,
+            ..Paint::default()
+        };
     });
     b.scene
 }
@@ -721,7 +745,8 @@ fn spinning_bars(reg: &Registry) -> Scene {
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| s.speed_gain = 1.01);
-    let bar_look = ClassicLook { color: Color::rgb(0x7f, 0xe8, 0xff), glow: 0.3, ..ClassicLook::default() };
+    let bar_look =
+        ClassicLook { fill: Paint::solid(Color::rgb(0x7f, 0xe8, 0xff)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(bars, "look.classic", "Bar look", bar_look.to_params());
     b.scene
 }
@@ -752,10 +777,16 @@ fn ball_pit(reg: &Registry) -> Scene {
         s.friction = 0.3;
     });
     b.ball_look(|l| {
-        l.gradient =
-            Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
-        l.gradient_by = GradientBy::Hits;
-        l.gradient_full = 12.0;
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0x3e, 0x9b, 0xff),
+                Color::rgb(0xff, 0x3e, 0xc8),
+                Color::rgb(0xff, 0xb8, 0x2e),
+            ]),
+            follow: Follow::Hits,
+            span: 12.0,
+            ..Paint::default()
+        };
     });
     b.sound(|s| s.min_gap = 0.03);
     b.scene
@@ -987,10 +1018,7 @@ fn fountain(reg: &Registry) -> Scene {
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| s.bounciness = 0.9);
-    b.ball_look(|l| {
-        l.gradient =
-            Gradient::even(&[Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)]);
-    });
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)]);
     let spout = EmitterSettings {
         target: Target::Thing(BALLS),
         rate: 25.0,

@@ -724,6 +724,7 @@ mod tests {
             glow: 0.5,
             color: [1.0, 0.5, 0.2, 1.0],
             code: [0.0; 4],
+            paint: crate::PaintGpu::default(),
         });
         frame.bloom = 0.3;
         frame.time = 1.0;

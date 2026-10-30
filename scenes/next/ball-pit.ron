@@ -116,8 +116,7 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "gradient": Gradient((
+                    "colours": Gradient((
                         stops: [
                             (
                                 at: 0.0,
@@ -134,8 +133,8 @@
                         ],
                         transition: Smooth,
                     )),
-                    "gradient_by": Choice("hits"),
-                    "gradient_full": Number(12.0),
+                    "follow": Choice("hits"),
+                    "span": Number(12.0),
                 },
             ),
         },

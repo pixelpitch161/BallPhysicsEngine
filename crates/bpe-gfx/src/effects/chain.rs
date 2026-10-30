@@ -455,6 +455,7 @@ pub(crate) mod tests {
             glow: 0.0,
             color: [1.0, 0.25, 0.25, 1.0],
             code: [thing_code(ThingId(thing)) + seed * 0.5, seed, 0.0, 0.0],
+            paint: crate::PaintGpu::default(),
         };
         frame.balls.push(ball(A, 2, 0.2));
         frame.balls.push(ball(B, 3, 0.6));

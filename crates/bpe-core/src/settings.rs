@@ -117,6 +117,8 @@ pub struct GroupOpts {
     pub inside: bool,
     /// No `space` setting: positions are always read from the screen.
     pub screen_only: bool,
+    /// The group's main setting shows in the simple view.
+    pub simple: bool,
 }
 
 /// A struct of settings that another struct embeds as one field, its keys all starting with a

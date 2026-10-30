@@ -414,8 +414,9 @@ impl Renderer {
         };
 
         let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-        let ball_attributes =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
+        let ball_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
+        ];
         let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
         let look_attributes = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
@@ -1397,6 +1398,7 @@ mod surface_tests {
             glow: 0.0,
             color: [1.0, 1.0, 1.0, 1.0],
             code: [0.0; 4],
+            paint: crate::PaintGpu::default(),
         });
         let pixels = render(&mut renderer, &device, &queue, &frame);
         let ball = pixel(&pixels, 0.0, 300.0);

@@ -215,6 +215,9 @@ struct BallIn {
     @location(3) color: vec4<f32>,
     // The thing code plus half the seed, the seed, two spare.
     @location(4) code: vec4<f32>,
+    // The gradient painted inside, as `PaintGpu`.
+    @location(5) paint_a: vec4<f32>,
+    @location(6) paint_b: vec4<f32>,
 };
 
 struct BallOut {
@@ -224,6 +227,8 @@ struct BallOut {
     @location(2) radius_px: f32,
     @location(3) glow: f32,
     @location(4) @interpolate(flat) code: vec4<f32>,
+    @location(5) @interpolate(flat) paint_a: vec4<f32>,
+    @location(6) @interpolate(flat) paint_b: vec4<f32>,
 };
 
 @vertex
@@ -236,6 +241,8 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     out.radius_px = b.radius / g.view.z;
     out.glow = b.glow;
     out.code = b.code;
+    out.paint_a = b.paint_a;
+    out.paint_b = b.paint_b;
     return out;
 }
 
@@ -256,7 +263,13 @@ fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
     let r = length(in.local);
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
-    let lit = sphere_light(in.local, in.color.rgb);
+    var base = in.color.rgb;
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row >= 0.0 {
+        // A gradient painted inside takes the place of the ball's colour; the light stays on top.
+        base = paint_colour(paint, in.local, g.view.w).rgb;
+    }
+    let lit = sphere_light(in.local, base);
     let halo_d = max(r - 1.0, 0.0) / 0.8;
     let halo = in.glow * exp(-halo_d * halo_d) * (1.0 - cover);
     if cover <= 0.0 && halo < 1e-4 {

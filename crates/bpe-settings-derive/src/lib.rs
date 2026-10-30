@@ -140,7 +140,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
             let prefix = a.prefix.map(|s| s.value()).unwrap_or_default();
             let follows: Vec<String> =
                 a.follows.map(|s| s.value().split('|').map(|n| n.trim().to_owned()).collect()).unwrap_or_default();
-            let (inside, screen_only) = (a.inside, a.screen_only);
+            let (inside, screen_only, simple) = (a.inside, a.screen_only, a.simple);
             let opts = quote! {
                 ::bpe_core::GroupOpts {
                     prefix: #prefix,
@@ -150,6 +150,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                     follows: &[#(#follows),*],
                     inside: #inside,
                     screen_only: #screen_only,
+                    simple: #simple,
                 }
             };
             defs.push(quote! {

@@ -21,7 +21,7 @@ fn surface_look(cx: &DrawCx) -> Option<LiquidLook> {
     Some(if look.kind == "look.liquid" {
         LiquidLook::from_params(&look.params)
     } else {
-        LiquidLook { color: ClassicLook::from_params(&look.params).color, ..LiquidLook::default() }
+        LiquidLook { color: ClassicLook::from_params(&look.params).fill.colours.first(), ..LiquidLook::default() }
     })
 }
 
@@ -80,7 +80,7 @@ impl ThingDraw for LiquidDraw {
             let points = Points::Cpu(alive.map(|i| bodies.position[i].into()).collect());
             frame.liquids.push(layer(cx, &look, points, bodies.radius.first().copied().unwrap_or(0.0)));
         } else {
-            let color = ClassicLook::from_params(&look.params).color.to_linear();
+            let color = ClassicLook::from_params(&look.params).first_colour();
             let code = bpe_gfx::thing_code(cx.thing.id);
             frame.balls.extend(alive.map(|i| BallInstance {
                 center: bodies.position[i].into(),
@@ -88,6 +88,7 @@ impl ThingDraw for LiquidDraw {
                 glow: 0.0,
                 color,
                 code: [code, 0.0, 0.0, 0.0],
+                paint: bpe_gfx::PaintGpu::default(),
             }));
         }
     }
@@ -104,7 +105,13 @@ mod tests {
     fn pool_with_look(look_kind: &str) -> (Frame, World, bpe_core::ThingId) {
         let (mut scene, _, kit, me) = scene_with("liquid", "Pool", Vec2::ZERO, |p| p.set("count", Value::Int(100)));
         let look = scene.add_module(&kit.registry, look_kind, "Blue").unwrap();
-        scene.library.modules.get_mut(&look).unwrap().params.set("color", Value::Color(Color::rgb(0, 0, 255)));
+        let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        let blue = Color::rgb(0, 0, 255);
+        if look_kind == "look.liquid" {
+            params.set("color", Value::Color(blue));
+        } else {
+            params.set("colours", Value::Gradient(bpe_core::Gradient::solid(blue)));
+        }
         scene.link(&kit.registry, me, SlotId::Look, look).unwrap();
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = World::build(&scene, &resolved, &kit.sims);

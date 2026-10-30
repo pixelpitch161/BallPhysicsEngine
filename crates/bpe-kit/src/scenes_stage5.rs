@@ -5,7 +5,8 @@
 use bpe_core::{Color, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
 
 use crate::{
-    BallFill, BallShape, BurstPreset, HitBurst, StreakTrail, StyledLook, TrailBlend, TrailSource, scenes::stage2,
+    BallFill, BallShape, BurstPreset, ClassicLook, HitBurst, StreakTrail, StyledLook, TrailBlend, TrailSource,
+    paint::Paint, scenes::stage2,
 };
 
 const BALLS: ThingId = ThingId(2);
@@ -51,14 +52,9 @@ fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, nam
 fn style_balls(scene: &mut Scene, reg: &Registry, look: StyledLook) {
     let m = bpe_core::resolve_slot(scene, reg, BALLS, SlotId::Look, &mut Vec::new()).expect("a look").module;
     let old = scene.library.modules[&m].clone();
-    let mut params = look.to_params();
     // Keep the twin's colours.
-    for key in ["color", "gradient"] {
-        if let Some(v) = old.params.get(key) {
-            params.set(key, v.clone());
-        }
-    }
-    own_module(scene, reg, BALLS, "look.styled", &old.name, params);
+    let look = StyledLook { fill: ClassicLook::from_params(&old.params).fill, ..look };
+    own_module(scene, reg, BALLS, "look.styled", &old.name, look.to_params());
     if scene.users_of(m).is_empty() {
         scene.library.modules.remove(&m);
     }
@@ -81,7 +77,12 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
     style_balls(
         scene,
         reg,
-        StyledLook { glow: 0.6, glow_size: 1.4, color2: Color::rgb(0xff, 0xbf, 0x26), ..StyledLook::default() },
+        StyledLook {
+            glow: 0.6,
+            glow_size: 1.4,
+            pattern: Paint::solid(Color::rgb(0xff, 0xbf, 0x26)),
+            ..StyledLook::default()
+        },
     );
     own_module(scene, reg, BALLS, "shader.lava", "Lava", params([number("heat", 1.8), number("scale", 2.0)]));
     let trail = StreakTrail {
@@ -126,11 +127,11 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
         scene,
         reg,
         StyledLook {
-            shape: BallShape::Hexagon,
-            fill: BallFill::Slices,
-            color2: Color::rgb(0x10, 0x10, 0x30),
+            ball_shape: BallShape::Hexagon,
+            finish: BallFill::Slices,
+            pattern: Paint::solid(Color::rgb(0x10, 0x10, 0x30)),
             outline: 2.0,
-            outline_color: Color::rgb(0xff, 0xff, 0xff),
+            outline_paint: Paint::solid(Color::rgb(0xff, 0xff, 0xff)),
             rainbow: 0.15,
             spin: 90.0,
             ..StyledLook::default()
@@ -152,7 +153,7 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
             glow: 1.2,
             glow_size: 1.6,
             outline: 4.0,
-            outline_color: Color::rgb(0x40, 0xff, 0xff),
+            outline_paint: Paint::solid(Color::rgb(0x40, 0xff, 0xff)),
             stretch: 0.6,
             ..StyledLook::default()
         },

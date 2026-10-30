@@ -109,12 +109,28 @@
                 slot: Look,
                 kind: "look.styled",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "color2": Color("#101030"),
-                    "fill": Choice("slices"),
+                    "ball_shape": Choice("hexagon"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "finish": Choice("slices"),
                     "outline": Number(2.0),
+                    "pattern_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#101030",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "rainbow": Number(0.15000000596046448),
-                    "shape": Choice("hexagon"),
                     "spin": Number(90.0),
                 },
             ),

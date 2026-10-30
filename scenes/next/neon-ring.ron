@@ -127,11 +127,36 @@
                 slot: Look,
                 kind: "look.styled",
                 params: {
-                    "color": Color("#ff5ca8"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "glow": Number(1.2000000476837158),
                     "glow_size": Number(1.600000023841858),
                     "outline": Number(4.0),
-                    "outline_color": Color("#40ffff"),
+                    "outline_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#40ffff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "pattern_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#202040",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "stretch": Number(0.6000000238418579),
                 },
             ),

@@ -75,7 +75,7 @@ impl ThingDraw for TextDraw {
         let text = fill(&s.text, &Values { time, duration, hits, balls });
         let faded = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * alpha];
         let style = TextStyle {
-            color: faded(look.color.to_linear()),
+            color: faded(look.first_colour()),
             outline: s.outline,
             outline_color: faded(s.outline_color.to_linear()),
             glow: look.glow,

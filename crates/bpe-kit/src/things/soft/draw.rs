@@ -30,9 +30,8 @@ impl ThingDraw for SoftDraw {
         let Some(st) = cx.world.states.get(&cx.thing.id) else { return };
         let Some(st) = st.as_any().downcast_ref::<SoftState>() else { return };
         let Some(look) = look_of(cx) else { return };
-        // One colour for the whole body: the look's, or the start of its gradient.
-        let color =
-            blend_alpha(if look.gradient.stops.len() < 2 { look.color.to_linear() } else { look.gradient.sample(0.0) });
+        // One colour for the whole body: the start of the look's colours.
+        let color = blend_alpha(look.fill.colours.sample(0.0));
         let w = &st.world;
         match w.shape {
             SoftShape::Jelly => jelly(w, color, look.glow, frame),

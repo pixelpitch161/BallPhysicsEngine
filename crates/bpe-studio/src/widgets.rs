@@ -73,16 +73,6 @@ pub struct GridOutcome {
     pub pulse: Vec<(&'static str, Option<PulseSource>)>,
     /// Settings locked (true) or unlocked against the dice from the row's menu.
     pub locks: Vec<(&'static str, bool)>,
-    /// The colour list was changed: what it holds now and what was done to it.
-    pub colours: Option<ColoursEdit>,
-}
-
-/// An edit to the one colour list a look shows for its Colour and Colours settings.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ColoursEdit {
-    /// The whole list after the edit; one colour means a plain Colour.
-    pub list: Vec<Color>,
-    pub change: ListChange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,10 +85,6 @@ pub enum ListChange {
     Remove(usize),
 }
 
-/// The look keys shown together as one colour list.
-pub const COLOUR: &str = "color";
-pub const COLOURS: &str = "gradient";
-
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
     let text = name.replace('_', " ");
@@ -106,27 +92,17 @@ pub fn pretty(name: &str) -> String {
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-/// One row of a settings grid: a setting, a heading over the group that follows, or a look's
-/// Colour and Colours shown as one list of colours.
+/// One row of a settings grid: a setting, or a heading over the group that follows.
 pub enum Row<'a> {
     Group(&'a str),
     Setting(&'a SettingDef),
-    Colours { colour: &'a SettingDef, colours: &'a SettingDef },
 }
 
 /// The rows a settings grid shows: every setting that `applies`, ungrouped first, then the
-/// groups in the order they appear, each under its heading. A look's Colour and Colours become
-/// one Colours row where Colour was.
+/// groups in the order they appear, each under its heading.
 pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
     let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
-    let find = |key: &str, ty: ValueType| shown.iter().copied().find(|d| d.key == key && d.ty == ty);
-    let merged = find(COLOUR, ValueType::Color).zip(find(COLOURS, ValueType::Gradient));
-    let row = |d: &'a SettingDef| match merged {
-        Some((colour, colours)) if d.key == COLOUR => Some(Row::Colours { colour, colours }),
-        Some(_) if d.key == COLOURS => None,
-        _ => Some(Row::Setting(d)),
-    };
-    let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).filter_map(|d| row(d)).collect();
+    let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).map(|d| Row::Setting(d)).collect();
     let mut groups: Vec<&str> = Vec::new();
     for d in &shown {
         if !d.group.is_empty() && !groups.contains(&d.group) {
@@ -134,7 +110,7 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
         }
     }
     for group in groups {
-        let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).filter_map(|d| row(d)).collect();
+        let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).map(|d| Row::Setting(d)).collect();
         if !members.is_empty() {
             rows.push(Row::Group(group));
             rows.extend(members);
@@ -228,105 +204,10 @@ pub fn settings_grid_marked(
                         RowAction::Lock(lock) => out.locks.push((def.key, lock)),
                     }
                 }
-                Row::Colours { colour, colours } => colours_row(ui, colour, colours, &get, cx, &mut out),
             }
         }
     });
     out
-}
-
-/// A look's Colour and Colours as one row: a list of colours, where one colour is the plain
-/// Colour and two or more spread across the balls. The diamond keys the whole list (or the one
-/// colour), so every colour can change over time.
-fn colours_row(
-    ui: &mut Ui,
-    colour: &SettingDef,
-    colours: &SettingDef,
-    get: &dyn Fn(&str) -> Value,
-    cx: &GridCx,
-    out: &mut GridOutcome,
-) {
-    let list = match get(COLOURS) {
-        Value::Gradient(g) if g.stops.len() > 1 => g.stops.iter().map(|s| s.color).collect(),
-        _ => match get(COLOUR) {
-            Value::Color(c) => vec![c],
-            _ => vec![Color::WHITE],
-        },
-    };
-    // One colour lives in Colour, several in Colours: the diamond, dot and lock follow it.
-    let key = if list.len() > 1 { colours.key } else { colour.key };
-    match (cx.marks)(key) {
-        Some(mark) => match diamond(ui, "Colours", mark) {
-            DiamondClick::None => {}
-            DiamondClick::Toggle => out.toggled_key.push(key),
-            DiamondClick::Pulse(source) => out.pulse.push((key, source)),
-        },
-        None => empty_cell(ui),
-    }
-    let overridden = (cx.overridden)(COLOUR) || (cx.overridden)(COLOURS);
-    let locked = (cx.locked)(key);
-    let help = "One colour for every ball, or several spread across them. Add colours with +, \
-                right-click one to remove it. The diamond keyframes them all at the playhead.";
-    let mut action = RowAction::Nothing;
-    let name = ui
-        .horizontal(|ui| {
-            if overridden {
-                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
-                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
-                response.on_hover_text("Changed here: this thing's own value, not the module's.");
-            }
-            let name = label(ui, "Colours", help);
-            if locked {
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
-                paint_padlock(ui.painter(), rect, theme::MUTED);
-                response.on_hover_text("Locked: the dice leave this setting alone.");
-            }
-            name.context_menu(|ui| {
-                if overridden {
-                    if ui.button("Reset to module").on_hover_text("Follow the module's colours again").clicked() {
-                        action = RowAction::Reset;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Push to module")
-                        .on_hover_text("Give every thing using the module these colours")
-                        .clicked()
-                    {
-                        action = RowAction::Push;
-                        ui.close();
-                    }
-                }
-                if locked {
-                    if ui.button("Unlock").on_hover_text("Let the dice pick the colours again").clicked() {
-                        action = RowAction::Lock(false);
-                        ui.close();
-                    }
-                } else if ui
-                    .button("Lock when randomizing")
-                    .on_hover_text("Keep the colours when the dice roll")
-                    .clicked()
-                {
-                    action = RowAction::Lock(true);
-                    ui.close();
-                }
-            });
-            name
-        })
-        .inner;
-    let mut edited = list.clone();
-    let (_, change) = ui.horizontal(|ui| color_list(ui, &mut edited, name.id, 1)).inner;
-    ui.end_row();
-    match action {
-        RowAction::Reset => out.resets.extend([COLOUR, COLOURS]),
-        RowAction::Push => out.pushes.extend([COLOUR, COLOURS]),
-        RowAction::Lock(lock) => out.locks.extend([(COLOUR, lock), (COLOURS, lock)]),
-        RowAction::Nothing | RowAction::Changed => {}
-    }
-    if let Some(change) = change {
-        out.colours = Some(ColoursEdit { list: edited, change });
-    }
 }
 
 /// What one grid row asks for.
@@ -637,7 +518,8 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
         (ValueType::Gradient, Value::Gradient(g)) => {
             let mut colors: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
-            let (mut response, change) = color_list(ui, &mut colors, name, 0);
+            // Edited as a list of colours spread evenly; a gradient keeps at least one.
+            let (mut response, change) = color_list(ui, &mut colors, name, 1);
             if change.is_some() {
                 *g = Gradient::even(&colors);
                 response.mark_changed();
@@ -951,14 +833,14 @@ mod tests {
     }
 
     #[test]
-    fn a_looks_colour_and_colours_become_one_row() {
+    fn a_looks_colours_are_one_gradient_row() {
         let defs = bpe_kit::modules::look::ClassicLook::defs();
         let rows = rows_for(defs, &|_| true);
-        assert!(matches!(rows[0], Row::Colours { colour, colours } if colour.key == COLOUR && colours.key == COLOURS));
-        assert!(!rows.iter().any(|r| matches!(r, Row::Setting(d) if d.key == COLOUR || d.key == COLOURS)));
-        // Where the list doesn't apply, Colour is a plain colour again.
-        let plain = rows_for(defs, &|d| d.key != COLOURS);
-        assert!(matches!(plain[0], Row::Setting(d) if d.key == COLOUR));
+        let colours: Vec<&SettingDef> =
+            rows.iter().filter_map(|r| if let Row::Setting(d) = r { Some(*d) } else { None }).collect();
+        let colours: Vec<&&SettingDef> = colours.iter().filter(|d| d.ty == ValueType::Gradient).collect();
+        assert_eq!(colours.len(), 1);
+        assert_eq!(colours[0].key, "colours");
     }
 
     #[test]

@@ -119,7 +119,7 @@ fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
     if hits == 0 {
         return stop_colour(p, 0);
     }
-    let instant = p.colours.transition == Transition::Steps || !(p.step_time > 0.0);
+    let instant = p.colours.transition == Transition::Steps || p.step_time <= 0.0 || p.step_time.is_nan();
     let f = if instant { 1.0 } else { finite(since_hit) / p.step_time };
     if f >= 1.0 {
         return stop_colour(p, k);
@@ -199,6 +199,17 @@ pub fn last_hit(
     time: f64,
     steps_per_second: u32,
 ) -> Option<(f64, Option<ThingId>)> {
+    last_hit_at(log, thing, index, time, steps_per_second).map(|(at, other, _)| (at, other))
+}
+
+/// [`last_hit`] with where the hit happened, for reading the colour of what was hit there.
+pub fn last_hit_at(
+    log: &Log,
+    thing: ThingId,
+    index: usize,
+    time: f64,
+    steps_per_second: u32,
+) -> Option<(f64, Option<ThingId>, Vec2)> {
     let now = step_at(if time.is_finite() { time } else { 0.0 }, steps_per_second);
     let events = log.events();
     let upto = events.partition_point(|e| e.step <= now);
@@ -206,9 +217,9 @@ pub fn last_hit(
     events[..upto].iter().rev().filter(|e| e.kind == EventKind::Hit).find_map(|e| {
         let at = seconds(e.step, steps_per_second);
         if (e.a.thing, e.a.item) == me {
-            Some((at, e.b.map(|b| b.thing)))
+            Some((at, e.b.map(|b| b.thing), e.point))
         } else if e.b.is_some_and(|b| (b.thing, b.item) == me) {
-            Some((at, Some(e.a.thing)))
+            Some((at, Some(e.a.thing), e.point))
         } else {
             None
         }
@@ -410,7 +421,8 @@ mod tests {
         let mut log = Log::default();
         log.push(ev(10, EventKind::Hit, (1, 3), Some((9, 0))));
         log.push(ev(20, EventKind::Hit, (1, 4), Some((9, 0))));
-        log.push(ev(30, EventKind::Hit, (2, 0), Some((1, 3)))); // ball 3 was the one hit
+        // Ball 3 was the one hit, here.
+        log.push(Event { point: Vec2::new(7.0, 8.0), ..ev(30, EventKind::Hit, (2, 0), Some((1, 3))) });
         log.push(ev(40, EventKind::Spawn, (1, 3), None));
         log.push(ev(50, EventKind::Hit, (1, 3), None));
         let sps = 10;
@@ -419,5 +431,7 @@ mod tests {
         assert_eq!(last_hit(&log, ThingId(1), 3, 2.5, sps), Some((1.0, Some(ThingId(9)))));
         assert_eq!(last_hit(&log, ThingId(1), 3, 0.5, sps), None);
         assert_eq!(last_hit(&log, ThingId(1), 7, 10.0, sps), None);
+        let (_, _, point) = last_hit_at(&log, ThingId(1), 3, 4.0, sps).unwrap();
+        assert_eq!(point, Vec2::new(7.0, 8.0));
     }
 }

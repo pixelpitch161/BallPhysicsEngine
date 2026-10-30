@@ -109,8 +109,8 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "gradient": Gradient((
+                    "centre": Vec2((37.0, -127.0)),
+                    "colours": Gradient((
                         stops: [
                             (
                                 at: 0.0,
@@ -135,6 +135,8 @@
                         ],
                         transition: Smooth,
                     )),
+                    "follow": Choice("start"),
+                    "span": Number(513.0),
                 },
             ),
             5: (
@@ -143,7 +145,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#d8dcd0"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#d8dcd0",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             6: (

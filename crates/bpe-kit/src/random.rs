@@ -204,10 +204,8 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
             Some(Value::Color(rolled))
         }
         Value::Gradient(g) => {
-            // A single colour means "no gradient", which stays off.
-            if g.stops.len() < 2 {
-                return None;
-            }
+            // As many stops as before, each colour rolled like a colour; the stops between the
+            // ends move too, and the ends stay at 0 and 1.
             let mut rolled = g.clone();
             if amount >= 1.0 {
                 for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
@@ -219,7 +217,17 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
                     stop.color = stop.color.shift_hue(t);
                 }
             }
-            Some(Value::Gradient(rolled))
+            let last = rolled.stops.len().saturating_sub(1);
+            for (i, stop) in rolled.stops.iter_mut().enumerate() {
+                stop.at = if i == 0 {
+                    0.0
+                } else if i == last {
+                    1.0
+                } else {
+                    stop.at + (dice.unit() - stop.at) * amount
+                };
+            }
+            Some(Value::Gradient(rolled.sorted()))
         }
         Value::Vec2([x, y]) => Some(Value::Vec2(roll_vec2([*x, *y], def.dice_range(), def.range, dice, amount))),
         Value::Text(_) | Value::Target(_) => None,
@@ -418,23 +426,26 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        let color = def(&reg, "look.classic", "color");
+        let gradient = def(&reg, "look.classic", "colours");
         let red = Color::rgb(255, 0, 0);
-        let colours = rolls(&color, &Value::Color(red), 1.0, 20);
-        assert_eq!(colours.len(), 20);
-        assert!(colours.iter().any(|v| *v != Value::Color(red)), "a new colour comes up");
-        let gradient = def(&reg, "look.classic", "gradient");
-        let three = Gradient::even(&[red, Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)]);
-        for v in rolls(&gradient, &Value::Gradient(three), 1.0, 20) {
-            match v {
-                Value::Gradient(g) => assert_eq!(g.stops.len(), 3),
-                other => panic!("{other:?}"),
-            }
+        let one = rolls(&gradient, &Value::Gradient(Gradient::solid(red)), 1.0, 20);
+        assert_eq!(one.len(), 20);
+        assert!(one.iter().any(|v| *v != Value::Gradient(Gradient::solid(red))), "a new colour comes up");
+        for v in one {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            assert_eq!(g.stops.len(), 1, "one colour stays one colour");
+            assert_eq!(g.stops[0].at, 0.0);
         }
-        assert!(
-            rolls(&gradient, &Value::Gradient(Gradient::solid(red)), 1.0, 5).is_empty(),
-            "one colour stays one colour"
-        );
+        let three = Gradient::even(&[red, Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)]);
+        let mut middles = std::collections::BTreeSet::new();
+        for v in rolls(&gradient, &Value::Gradient(three), 1.0, 20) {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            assert_eq!(g.stops.len(), 3);
+            assert_eq!((g.stops[0].at, g.stops[2].at), (0.0, 1.0), "the ends stay at the ends");
+            assert!(g.stops.windows(2).all(|w| w[0].at <= w[1].at), "in order");
+            middles.insert(g.stops[1].at.to_bits());
+        }
+        assert!(middles.len() > 1, "the stop between moves");
     }
 
     #[test]
@@ -491,7 +502,7 @@ mod tests {
             assert!((value - dark).abs() < 0.02, "a dark background stays dark: {c:?}");
             assert_eq!(c.a, 200, "and keeps its transparency");
         }
-        let gradient = def(&reg, "look.classic", "gradient");
+        let gradient = def(&reg, "look.classic", "colours");
         let list = [Color { r: 20, g: 20, b: 60, a: 128 }, Color::rgb(255, 200, 0)];
         for v in rolls(&gradient, &Value::Gradient(Gradient::even(&list)), 1.0, 30) {
             let Value::Gradient(new) = v else { panic!("{v:?}") };
@@ -611,7 +622,7 @@ mod tests {
         let bloom = own(ThingId::ROOT, "bloom");
         scene.set_key(&reg, &bloom, 1.0, Value::Number(0.7)).unwrap();
         scene.things.get_mut(&b).unwrap().slots.insert(SlotId::Motion, bpe_core::SlotLink::Inherit);
-        let neon_colour = Address { owner: Owner::Module(neon), slot: None, key: "color".into() };
+        let neon_colour = Address { owner: Owner::Module(neon), slot: None, key: "colours".into() };
         let before = scene.clone();
 
         let rolled = roll(&mut scene, &reg, &Scope::Scene, Roll { seed: 5, amount: 1.0 });

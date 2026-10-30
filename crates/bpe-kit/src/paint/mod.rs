@@ -9,7 +9,9 @@ use bpe_core::{
 use glam::Vec2;
 
 pub mod eval;
-pub use eval::{Inputs, beats_at, colour_at, last_hit, offset};
+pub mod gpu;
+pub use eval::{Inputs, beats_at, colour_at, last_hit, last_hit_at, offset};
+pub use gpu::paint_gpu;
 
 /// What the colours follow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -107,6 +109,13 @@ impl Default for Paint {
     }
 }
 
+impl Paint {
+    /// One colour everywhere, the rest as a new paint has it.
+    pub fn solid(c: bpe_core::Color) -> Self {
+        Self { colours: Gradient::solid(c), ..Self::default() }
+    }
+}
+
 /// Keeps a string for the rest of the program. Called once per outer type, because the
 /// derived `defs()` runs once.
 fn leak(s: String) -> &'static str {
@@ -193,6 +202,9 @@ impl SettingGroup for Paint {
         );
         colours.flags.keyframe = true;
         colours.flags.random = true;
+        if o.simple {
+            colours.depth = Depth::Simple;
+        }
         v.push(colours);
 
         let mut follow = def(
@@ -522,6 +534,7 @@ mod tests {
             follows: &["life", "order"],
             inside: false,
             screen_only: false,
+            simple: false,
         };
         let defs = Paint::group_defs(&o);
         let f = defs.iter().find(|d| d.key == "follow").unwrap();

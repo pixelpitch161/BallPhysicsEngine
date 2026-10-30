@@ -51,6 +51,8 @@ pub struct BallInstance {
     pub color: [f32; 4],
     /// The thing code plus half the seed (see [`thing_code`]), the seed, then two spare.
     pub code: [f32; 4],
+    /// A gradient painted inside the lit ball in place of its colour, when its row is not -1.
+    pub paint: PaintGpu,
 }
 
 /// A ball with its own style: a shape, a fill, an outline and a halo.
@@ -757,7 +759,7 @@ mod tests {
                 Some(Value::Number(r)) => *r as f32,
                 _ => 0.0,
             };
-            frame.balls.push(BallInstance { center: [1.0, 2.0], radius, glow: 0.0, color: [1.0; 4], code: [0.0; 4] });
+            frame.balls.push(BallInstance { center: [1.0, 2.0], radius, color: [1.0; 4], ..BallInstance::default() });
             frame.flashes.push(FlashInstance { center: [0.0; 2], size: 1.0, color: [1.0; 4] });
         }
     }
@@ -955,7 +957,7 @@ mod tests {
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
         assert_eq!(std::mem::size_of::<LookInstance>(), 160);
-        assert_eq!(std::mem::size_of::<BallInstance>(), 48);
+        assert_eq!(std::mem::size_of::<BallInstance>(), 80);
     }
 
     #[test]
