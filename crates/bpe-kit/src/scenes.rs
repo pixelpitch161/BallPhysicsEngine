@@ -6,9 +6,9 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Choice, Color, Ease, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId, ModuleKind, MusicKey,
-    Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId, Target,
-    ThingId, Value,
+    Address, Attach, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId, ModuleKind,
+    MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue, Settings, SlotId,
+    Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -16,13 +16,14 @@ use bpe_vm::{Role, catalog};
 use glam::Vec2;
 
 use crate::graphs::module_graph;
-use crate::modules::look::GradientBy;
 use crate::modules::sound::{Order, PlaysWhen};
+use crate::paint::{Follow, Inside, Paint, PlaceShape, Repeat};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
-    ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
-    LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind,
-    SceneSettings, SoftSettings, SoftShape, SwarmColors, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
+    BurstSource, ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
+    HitBurst, LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
+    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, SwarmLook, SwarmSettings, TextSettings,
+    TrailSource, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -73,6 +74,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.extend(stage5(reg));
     scenes.extend(stage6(reg));
     scenes.extend(stage7(reg));
+    scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes
 }
 
@@ -165,6 +167,109 @@ pub fn long_drop(reg: &Registry) -> Scene {
         ..crate::CameraSettings::default()
     };
     b.add("camera", ThingId::ROOT, "Camera", Vec2::ZERO, camera.to_params());
+    b.scene
+}
+
+/// The colour showcase: a block of balls painted by where they are at an angle with rings of the
+/// same gradient inside each one, a ring whose colours run round its path, streaks and sparks
+/// that change colour over their life, and a background glowing from the centre.
+pub fn colour_demo(reg: &Registry) -> Scene {
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut b = Builder::new(reg, "Colour paints");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 700.0);
+        s.bloom = 0.35;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x2b1458), hex(0x140a33), hex(0x05040f)]),
+            shape: PlaceShape::Centre,
+            span: 1150.0,
+            ..Paint::default()
+        };
+    });
+    b.arena(|a| {
+        a.radius = 470.0;
+        a.thickness = 12.0;
+    });
+    let neon = [hex(0xff3ec8), hex(0xffb82e), hex(0x3ee6ff), hex(0x8a4dff), hex(0xff3ec8)];
+    let ring = ClassicLook {
+        fill: Paint {
+            colours: Gradient::even(&neon),
+            follow: Follow::Path,
+            repeat: Repeat::Repeat,
+            scroll: 0.12,
+            ..Paint::default()
+        },
+        glow: 0.7,
+        ..ClassicLook::default()
+    };
+    b.own_module(ARENA, "look.classic", "Ring look", ring.to_params());
+    b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 8;
+        s.rows = 8;
+        s.spacing = 46.0;
+        s.radius = 19.0;
+        s.velocity = Vec2::new(-420.0, 220.0);
+    });
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[hex(0xffd23e), hex(0xff6a5c), hex(0xff3ec8), hex(0x8a4dff), hex(0x3e9bff)]),
+            angle: 45.0,
+            span: 700.0,
+            repeat: Repeat::Mirror,
+            inside: Inside::Rings,
+            inside_scale: 1.2,
+            inside_scroll: 0.25,
+            ..Paint::default()
+        };
+        l.glow = 0.3;
+    });
+    let streak = StreakTrail {
+        seconds: 0.35,
+        width: 0.55,
+        brightness: 0.45,
+        source: TrailSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0x7cf4ff), hex(0x8a4dff), hex(0x2b1458)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        ..StreakTrail::default()
+    };
+    b.own_module(BALLS, "trail.streak", "Life streak", streak.to_params());
+    let sparks = HitBurst {
+        count: 6,
+        speed: 360.0,
+        size: 3.0,
+        life: 0.55,
+        least_speed: 160.0,
+        source: BurstSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0xffd23e), hex(0xff6a2e), hex(0xc8104a)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        ..HitBurst::default()
+    };
+    b.own_module(BALLS, "particles.burst", "Life sparks", sparks.to_params());
+    let title = b.text("Title", Vec2::new(0.0, -740.0), |t| {
+        t.text = "Colour paints".into();
+        t.size = 130.0;
+        t.outline = 6.0;
+        t.outline_paint = Paint::solid(hex(0x05040f));
+    });
+    let title_look = ClassicLook {
+        fill: Paint { colours: Gradient::even(&neon[..4]), follow: Follow::Order, ..Paint::default() },
+        glow: 0.0,
+        ..ClassicLook::default()
+    };
+    let words = b.own_module(title, "look.classic", "Title look", title_look.to_params());
+    let caption = b.text("Caption", Vec2::new(0.0, 700.0), |t| {
+        t.text = "place  path  life  centre".into();
+        t.size = 56.0;
+        t.outline = 0.0;
+    });
+    b.scene.link(reg, caption, SlotId::Look, words).expect("text has a Look slot");
     b.scene
 }
 
@@ -282,8 +387,30 @@ impl<'a> Builder<'a> {
         self.set_params(m, s.to_params());
     }
 
+    /// The balls' look in `colours`, from the block's first row to its last as the balls start
+    /// out: follows where each ball started, top to bottom, across the block's height. Balls
+    /// that start in one row (or not in a block) all wear the first colour.
+    fn ball_look_by_row(&mut self, colours: &[Color]) {
+        let thing = &self.scene.things[&BALLS];
+        let s = BallsSettings::from_params(&thing.params);
+        let height = s.rows.saturating_sub(1) as f32 * s.spacing;
+        let fill = if s.arrangement == Arrangement::Block && height > 0.0 {
+            Paint {
+                colours: Gradient::even(colours),
+                follow: Follow::Start,
+                angle: 90.0,
+                centre: thing.transform.position,
+                span: height,
+                ..Paint::default()
+            }
+        } else {
+            Paint::solid(colours.first().copied().unwrap_or(Color::WHITE))
+        };
+        self.ball_look(|l| l.fill = fill);
+    }
+
     fn ball_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
-        let mut s = ClassicLook { color: Color::rgb(0xff, 0x5c, 0xa8), ..ClassicLook::default() };
+        let mut s = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() };
         f(&mut s);
         let m = self.module_of(BALLS, SlotId::Look);
         self.set_params(m, s.to_params());
@@ -429,16 +556,15 @@ fn reel_block(reg: &Registry) -> Scene {
         s.radius = 4.5;
         s.velocity = Vec2::new(-480.0, 265.0);
     });
-    b.ball_look(|l| {
-        l.gradient = vec![
-            Color::rgb(0x3e, 0x9b, 0xff),
-            Color::rgb(0x8a, 0x4d, 0xff),
-            Color::rgb(0xff, 0x3e, 0xc8),
-            Color::rgb(0xff, 0x6a, 0x5c),
-            Color::rgb(0xff, 0xb8, 0x2e),
-        ];
-    });
-    let arena_look = ClassicLook { color: Color::rgb(0xd8, 0xdc, 0xd0), ..ClassicLook::default() }.to_params();
+    b.ball_look_by_row(&[
+        Color::rgb(0x3e, 0x9b, 0xff),
+        Color::rgb(0x8a, 0x4d, 0xff),
+        Color::rgb(0xff, 0x3e, 0xc8),
+        Color::rgb(0xff, 0x6a, 0x5c),
+        Color::rgb(0xff, 0xb8, 0x2e),
+    ]);
+    let arena_look =
+        ClassicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..ClassicLook::default() }.to_params();
     b.own_module(ARENA, "look.classic", "Arena look", arena_look);
     b.scene
 }
@@ -532,7 +658,7 @@ fn jelly_drop(reg: &Registry) -> Scene {
         s.softness = 0.6;
         s.velocity = Vec2::new(220.0, 0.0);
     });
-    let look = ClassicLook { color: Color::rgb(0xff, 0xb0, 0x20), glow: 0.3, ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0xb0, 0x20)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(jelly, "look.classic", "Jelly look", look.to_params());
     b.scene
 }
@@ -553,7 +679,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.radius = 28.0;
         s.velocity = Vec2::ZERO;
     });
-    b.ball_look(|l| l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]);
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]);
     let rope = b.soft("Rope", Vec2::new(0.0, -100.0), |s| {
         s.shape = SoftShape::Rope;
         s.size = 760.0;
@@ -562,7 +688,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.thickness = 10.0;
         s.pinned = Pinned::BothEnds;
     });
-    let look = ClassicLook { color: Color::rgb(0xe8, 0xe8, 0xe8), ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xe8, 0xe8, 0xe8)), ..ClassicLook::default() };
     b.own_module(rope, "look.classic", "Rope look", look.to_params());
     let marimba = b.built_in(Instrument::Marimba);
     b.sound(|s| s.instrument = marimba);
@@ -594,7 +720,7 @@ fn cloth_hammock(reg: &Registry) -> Scene {
         s.softness = 0.45;
         s.pinned = Pinned::TopCorners;
     });
-    let look = ClassicLook { color: Color::rgb(0x3e, 0x9b, 0xff), ..ClassicLook::default() };
+    let look = ClassicLook { fill: Paint::solid(Color::rgb(0x3e, 0x9b, 0xff)), ..ClassicLook::default() };
     b.own_module(cloth, "look.classic", "Cloth look", look.to_params());
     b.scene
 }
@@ -616,9 +742,7 @@ fn captioned_reel(reg: &Registry) -> Scene {
         s.radius = 7.0;
         s.velocity = Vec2::new(-420.0, 240.0);
     });
-    b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)];
-    });
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
     let hits = b.text("Hit counter", Vec2::new(0.0, -780.0), |t| {
         t.text = "Hits {hits}".into();
         t.font = Font::Anton;
@@ -732,9 +856,16 @@ fn peg_board(reg: &Registry) -> Scene {
     // Only the pegs make a sound.
     b.scene.set_slot_off(BALLS, SlotId::Sound);
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0xff, 0xd1, 0x4a), Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0x6a, 0x8d, 0xff)];
-        l.gradient_by = GradientBy::Hits;
-        l.gradient_full = 10.0;
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0xd1, 0x4a),
+                Color::rgb(0xff, 0x5c, 0xa8),
+                Color::rgb(0x6a, 0x8d, 0xff),
+            ]),
+            follow: Follow::Hits,
+            span: 10.0,
+            ..Paint::default()
+        };
     });
     b.scene
 }
@@ -768,7 +899,8 @@ fn spinning_bars(reg: &Registry) -> Scene {
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| s.speed_gain = 1.01);
-    let bar_look = ClassicLook { color: Color::rgb(0x7f, 0xe8, 0xff), glow: 0.3, ..ClassicLook::default() };
+    let bar_look =
+        ClassicLook { fill: Paint::solid(Color::rgb(0x7f, 0xe8, 0xff)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(bars, "look.classic", "Bar look", bar_look.to_params());
     b.scene
 }
@@ -799,9 +931,16 @@ fn ball_pit(reg: &Registry) -> Scene {
         s.friction = 0.3;
     });
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)];
-        l.gradient_by = GradientBy::Hits;
-        l.gradient_full = 12.0;
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0x3e, 0x9b, 0xff),
+                Color::rgb(0xff, 0x3e, 0xc8),
+                Color::rgb(0xff, 0xb8, 0x2e),
+            ]),
+            follow: Follow::Hits,
+            span: 12.0,
+            ..Paint::default()
+        };
     });
     b.sound(|s| s.min_gap = 0.03);
     b.scene
@@ -1036,9 +1175,7 @@ fn fountain(reg: &Registry) -> Scene {
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| s.bounciness = 0.9);
-    b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)];
-    });
+    b.ball_look_by_row(&[Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)]);
     let spout = EmitterSettings {
         target: Target::Thing(BALLS),
         rate: 25.0,
@@ -1152,8 +1289,17 @@ fn fireflies(reg: &Registry) -> Scene {
     let swarm = SwarmSettings { count: 20_000, ..SwarmSettings::default() };
     let swarm = b.add("swarm", ThingId::ROOT, "Fireflies", Vec2::ZERO, swarm.to_params());
     let look = SwarmLook {
-        colors_by: SwarmColors::Gradient,
-        colors: vec![Color::rgb(0xff, 0xe0, 0x66), Color::rgb(0x8a, 0xff, 0x80), Color::rgb(0x40, 0xc8, 0xff)],
+        colours: Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0xe0, 0x66),
+                Color::rgb(0x8a, 0xff, 0x80),
+                Color::rgb(0x40, 0xc8, 0xff),
+            ]),
+            follow: Follow::Order,
+            // Its flocking's top speed, should it follow speed.
+            span: Flocking::default().top_speed,
+            ..Paint::default()
+        },
         ..SwarmLook::default()
     };
     let m = b.module_of(swarm, SlotId::Look);
@@ -1187,7 +1333,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 30);
+        assert_eq!(scenes.len(), 31);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1195,6 +1341,7 @@ mod tests {
             scenes::stage5(&reg),
             scenes::stage6(&reg),
             scenes::stage7(&reg),
+            vec![("Colour paints".into(), scenes::colour_demo(&reg))],
         ]
         .concat()
         .into_iter()
@@ -1210,7 +1357,8 @@ mod tests {
         );
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
-        assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        assert_eq!(names[30..], ["Colour paints"]);
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {

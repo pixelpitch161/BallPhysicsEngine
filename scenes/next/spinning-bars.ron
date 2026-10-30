@@ -196,7 +196,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             5: (
@@ -205,7 +213,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#7fe8ff"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#7fe8ff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "glow": Number(0.30000001192092896),
                 },
             ),

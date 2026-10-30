@@ -5,6 +5,7 @@ pub mod gizmo;
 pub mod graphs;
 pub mod modules;
 pub mod music;
+pub mod paint;
 pub mod random;
 pub mod rng;
 pub mod scenes;
@@ -23,6 +24,7 @@ use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
 use glam::Vec2;
+use paint::Paint;
 
 pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
 pub use graphs::{graph_problems, resolve_scene, role_of};
@@ -33,7 +35,7 @@ pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
 pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
 pub use modules::look::{ClassicLook, ClassicLookKind};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
-pub use modules::look_swarm::{SwarmColors, SwarmLook, SwarmLookKind};
+pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
@@ -202,7 +204,7 @@ pub fn flow_source<'a>(
         .filter(|(_, r)| r.kind == "balls")
         .filter_map(|(id, r)| {
             let look = r.slots.get(&SlotId::Look)?;
-            (look.kind == "look.classic").then(|| (*id, ClassicLook::from_params(&look.params).color.to_linear()))
+            (look.kind == "look.classic").then(|| (*id, ClassicLook::from_params(&look.params).first_colour()))
         })
         .collect();
     FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
@@ -351,7 +353,7 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let ball = scene.add_thing(reg, "balls", root).expect("kit kinds are registered");
     let ball_look = scene.add_module(reg, "look.classic", "Ball look").expect("kit kinds are registered");
     scene.library.modules.get_mut(&ball_look).expect("just added").params =
-        ClassicLook { color: Color::rgb(0xff, 0x5c, 0xa8), ..ClassicLook::default() }.to_params();
+        ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() }.to_params();
     scene.link(reg, ball, SlotId::Look, ball_look).expect("balls have a look slot");
     let thing = scene.things.get_mut(&ball).expect("just added");
     thing.name = "Ball".into();
@@ -494,7 +496,8 @@ mod tests {
         let res = bpe_core::resolve(&s, &reg);
         assert!(res.problems.is_empty(), "{:?}", res.problems);
         let ball = &res.things[&ThingId(2)];
-        assert_eq!(ball.slots[&SlotId::Look].params.get("color"), Some(&Value::Color(Color::rgb(0xff, 0x5c, 0xa8))));
+        let pink = bpe_core::Gradient::solid(Color::rgb(0xff, 0x5c, 0xa8));
+        assert_eq!(ball.slots[&SlotId::Look].params.get("colours"), Some(&Value::Gradient(pink)));
         assert_eq!(ball.slots[&SlotId::Bounce].from, ThingId::ROOT);
         assert_eq!(ball.slots[&SlotId::Motion].from, ThingId::ROOT);
         assert_eq!(ball.slots[&SlotId::Sound].from, ThingId::ROOT);

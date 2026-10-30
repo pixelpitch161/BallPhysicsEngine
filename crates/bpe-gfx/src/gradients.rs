@@ -1,0 +1,280 @@
+//! Gradients on the GPU: every gradient a frame paints with is baked into one row of a texture,
+//! and an instance names its row in a [`PaintGpu`] to paint the gradient inside itself.
+
+use std::collections::BTreeMap;
+
+use bpe_core::Gradient;
+use bytemuck::{Pod, Zeroable};
+
+/// Samples in one baked row, the first at 0 and the last at 1.
+pub const ATLAS_WIDTH: usize = 256;
+/// The atlas texture is at least this many rows tall.
+const MIN_HEIGHT: usize = 8;
+
+/// The gradients of one frame, each baked once into its own row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradientAtlas {
+    rows: Vec<[[f32; 4]; ATLAS_WIDTH]>,
+    /// Each gradient's hash to its row.
+    index: BTreeMap<u64, u32>,
+}
+
+impl GradientAtlas {
+    /// The row `g` is baked into, baking it into a new row the first time it is seen.
+    pub fn row(&mut self, g: &Gradient) -> u32 {
+        let key = hash(g);
+        if let Some(&row) = self.index.get(&key) {
+            return row;
+        }
+        let mut baked = [[0.0; 4]; ATLAS_WIDTH];
+        baked.copy_from_slice(&g.bake(ATLAS_WIDTH));
+        let row = self.rows.len() as u32;
+        self.rows.push(baked);
+        self.index.insert(key, row);
+        row
+    }
+
+    /// The row holding exactly `baked`, copying it into a new row unless one already matches:
+    /// for moving instances painted from another frame's atlas into this one.
+    pub fn adopt(&mut self, baked: &[[f32; 4]; ATLAS_WIDTH]) -> u32 {
+        if let Some(row) = self.rows.iter().position(|r| r == baked) {
+            return row as u32;
+        }
+        self.rows.push(*baked);
+        (self.rows.len() - 1) as u32
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.rows.clear();
+        self.index.clear();
+    }
+
+    /// The baked rows in order, linear light.
+    pub fn rows(&self) -> &[[[f32; 4]; ATLAS_WIDTH]] {
+        &self.rows
+    }
+}
+
+/// FNV-1a over the stops' places and colours and the transition.
+fn hash(g: &Gradient) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for s in &g.stops {
+        eat(&s.at.to_bits().to_le_bytes());
+        eat(&[s.color.r, s.color.g, s.color.b, s.color.a]);
+    }
+    eat(&[g.transition as u8]);
+    h
+}
+
+/// paint.wgsl, reading the atlas from bind group `group`.
+pub(crate) fn paint_wgsl(group: u32) -> String {
+    include_str!("shaders/paint.wgsl").replace("PAINT_GROUP", &group.to_string())
+}
+
+/// The bind group layout paint.wgsl reads the atlas through: the texture and its sampler, read
+/// in vertex shaders too, so things that colour their vertices can paint.
+pub(crate) fn paint_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    use wgpu::ShaderStages as S;
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("paint layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: S::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: S::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+/// How many rows the texture needs for `len` gradients: a power of two, at least 8, but no
+/// taller than `max` (the device's largest texture side).
+pub(crate) fn atlas_height(len: usize, max: usize) -> usize {
+    len.next_power_of_two().max(MIN_HEIGHT).min(max)
+}
+
+/// How many of `len` gradients fit in a texture at most `max` rows tall. paint.wgsl paints any
+/// row past the last with the last one.
+pub(crate) fn uploaded_rows(len: usize, max: usize) -> usize {
+    len.min(max)
+}
+
+/// The rows as half floats, ready for an `Rgba16Float` texture.
+pub(crate) fn half_texels(rows: &[[[f32; 4]; ATLAS_WIDTH]]) -> Vec<u8> {
+    rows.iter().flatten().flatten().flat_map(|&c| f16_bits(c).to_le_bytes()).collect()
+}
+
+/// `x` as an IEEE half float, rounded to the nearest (ties to even). Too big is infinity.
+fn f16_bits(x: f32) -> u16 {
+    let bits = x.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x7f_ffff;
+    if exponent == 0xff {
+        return sign | 0x7c00 | if mantissa != 0 { 0x200 } else { 0 };
+    }
+    // Drops the low `shift` bits of `m`, rounding to the nearest and ties to even.
+    let round = |m: u32, shift: u32| {
+        let kept = m >> shift;
+        let rest = m & ((1 << shift) - 1);
+        let half = 1 << (shift - 1);
+        if rest > half || (rest == half && kept & 1 == 1) { kept + 1 } else { kept }
+    };
+    let e = exponent - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        // Subnormal, or too small for even that.
+        if e < -10 {
+            return sign;
+        }
+        return sign | round(mantissa | 0x80_0000, (14 - e) as u32) as u16;
+    }
+    // A carry out of the mantissa steps the exponent up, which is still the right half.
+    sign | round(((e as u32) << 23) | mantissa, 13) as u16
+}
+
+/// How an instance paints a gradient inside itself. Matches `struct PaintGpu` in paint.wgsl.
+#[repr(C)]
+#[derive(Pod, Zeroable, Clone, Copy, Debug, PartialEq)]
+pub struct PaintGpu {
+    /// The gradient's atlas row; -1 paints nothing and the instance keeps its own colours.
+    pub row: f32,
+    /// Where along the gradient the pattern is centred (a path starts), 0 to 1.
+    pub t0: f32,
+    /// 0 none (the colour at `t0`), 1 stripes, 2 rings, 3 sweep.
+    pub pattern: f32,
+    /// 1 picks the nearest baked colour instead of blending neighbours.
+    pub steps: f32,
+    /// The stripes' direction in degrees, from +x towards +y.
+    pub angle: f32,
+    /// Stripes: gradients across the shape; rings: from its centre out; sweep: round it.
+    pub scale: f32,
+    /// Gradients per second the pattern moves along.
+    pub scroll: f32,
+    /// 0 clamp, 1 repeat, 2 mirror.
+    pub repeat: f32,
+}
+
+impl Default for PaintGpu {
+    fn default() -> Self {
+        Self { row: -1.0, t0: 0.0, pattern: 0.0, steps: 0.0, angle: 0.0, scale: 1.0, scroll: 0.0, repeat: 0.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bpe_core::{Color, Stop, Transition};
+
+    fn two(a: Color, b: Color, transition: Transition) -> Gradient {
+        Gradient { stops: vec![Stop { at: 0.0, color: a }, Stop { at: 1.0, color: b }], transition }
+    }
+
+    #[test]
+    fn same_gradient_gets_the_same_row() {
+        let mut atlas = GradientAtlas::default();
+        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth);
+        let a = atlas.row(&red_blue);
+        let b = atlas.row(&two(Color::rgb(0, 255, 0), Color::rgb(0, 0, 255), Transition::Smooth));
+        assert_eq!((a, b), (0, 1));
+        assert_eq!(atlas.row(&red_blue.clone()), a);
+        // The transition is part of the gradient.
+        assert_eq!(atlas.row(&Gradient { transition: Transition::Steps, ..red_blue }), 2);
+        assert_eq!(atlas.len(), 3);
+        atlas.clear();
+        assert_eq!(atlas.len(), 0);
+        assert_eq!(atlas, GradientAtlas::default());
+    }
+
+    #[test]
+    fn adopting_a_row_reuses_a_matching_one() {
+        let mut from = GradientAtlas::default();
+        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth);
+        let green = two(Color::rgb(0, 255, 0), Color::rgb(0, 255, 0), Transition::Smooth);
+        let (rb, g) = (from.row(&red_blue), from.row(&green));
+        let mut into = GradientAtlas::default();
+        into.row(&green);
+        assert_eq!(into.adopt(&from.rows()[rb as usize]), 1);
+        assert_eq!(into.adopt(&from.rows()[g as usize]), 0);
+        assert_eq!(into.adopt(&from.rows()[rb as usize]), 1);
+        assert_eq!(into.len(), 2);
+        // The adopted row holds the same colours.
+        assert_eq!(into.rows()[1], from.rows()[rb as usize]);
+    }
+
+    #[test]
+    fn atlas_grows_past_its_first_height() {
+        let mut atlas = GradientAtlas::default();
+        let gradients: Vec<Gradient> =
+            (0..20).map(|i| two(Color::rgb(i * 10, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth)).collect();
+        let rows: Vec<u32> = gradients.iter().map(|g| atlas.row(g)).collect();
+        assert_eq!(rows, (0..20).collect::<Vec<u32>>());
+        assert_eq!(atlas.len(), 20);
+        assert_eq!(atlas.rows()[0].to_vec(), gradients[0].bake(ATLAS_WIDTH));
+        assert_eq!(atlas.rows()[19].to_vec(), gradients[19].bake(ATLAS_WIDTH));
+        assert_eq!(atlas_height(atlas.len(), 8192), 32);
+        assert_eq!(atlas_height(0, 8192), 8);
+        assert_eq!(atlas_height(8, 8192), 8);
+        assert_eq!(atlas_height(9, 8192), 16);
+    }
+
+    #[test]
+    fn the_atlas_stops_growing_at_the_device_s_largest_texture() {
+        assert_eq!(atlas_height(5000, 8192), 8192);
+        assert_eq!(atlas_height(9000, 8192), 8192);
+        // A limit that is not a power of two is still a limit.
+        assert_eq!(atlas_height(3000, 2048 + 100), 2148);
+        assert_eq!(atlas_height(0, 4), 4);
+        // Only the rows that fit are uploaded; the shader paints later rows with the last one.
+        assert_eq!(uploaded_rows(9000, 8192), 8192);
+        assert_eq!(uploaded_rows(20, 8192), 20);
+    }
+
+    #[test]
+    fn half_floats_round_to_the_nearest() {
+        assert_eq!(f16_bits(0.0), 0);
+        assert_eq!(f16_bits(1.0), 0x3c00);
+        assert_eq!(f16_bits(0.5), 0x3800);
+        assert_eq!(f16_bits(-2.0), 0xc000);
+        assert_eq!(f16_bits(65504.0), 0x7bff);
+        assert_eq!(f16_bits(1e9), 0x7c00);
+        // The smallest subnormal half.
+        assert_eq!(f16_bits(2f32.powi(-24)), 1);
+        // 1 + 2^-11 is halfway between two halves and rounds to the even one.
+        assert_eq!(f16_bits(1.0 + 2f32.powi(-11)), 0x3c00);
+        assert_eq!(f16_bits(1.0 + 3.0 * 2f32.powi(-11)), 0x3c02);
+    }
+
+    #[test]
+    fn a_new_paint_paints_nothing() {
+        assert_eq!(PaintGpu::default().row, -1.0);
+        assert_eq!(std::mem::size_of::<PaintGpu>(), 32);
+    }
+}

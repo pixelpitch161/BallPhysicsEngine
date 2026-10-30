@@ -4,12 +4,14 @@
 
 struct Globals {
     view: vec4<f32>,
-    bg_top: vec4<f32>,
-    bg_bottom: vec4<f32>,
+    // The background paint: atlas row, start, scroll, repeat.
+    bg_paint: vec4<f32>,
+    // The background place: direction, span, centre xy.
+    bg_place: vec4<f32>,
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y, z: world heights it spans
+    // x: background on screen, y: how its place runs, z: steps
     bg: vec4<f32>,
 };
 
@@ -25,8 +27,12 @@ struct Burst {
     motion: vec4<f32>,
     // gravity, drag
     more: vec4<f32>,
-    // x: shape, y: seed
+    // x: shape, y: seed, z: follow (0 the colour above, 1 the paint over each particle's life,
+    // 2 one of the paint's stops at random)
     ids: vec4<u32>,
+    // The paint, as `PaintGpu`'s fields in order.
+    paint_a: vec4<f32>,
+    paint_b: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -114,6 +120,25 @@ fn hidden() -> Out {
     out.info = vec4<f32>(1.0, 1.0, 0.0, 0.0);
     out.kind = 0u;
     return out;
+}
+
+// The linear-light colour particle `k` of `burst` takes from its paint, `t` of the way through
+// its life: along the gradient by its age, or one of the stops at random (`scale` of them, evenly
+// spaced on a Steps row). A colour with alpha 0 but some light adds its light (alpha -1), as
+// `blend_alpha` does on the CPU.
+fn particle_colour(burst: Burst, k: u32, t: f32) -> vec4<f32> {
+    let p = paint_from(burst.paint_a, burst.paint_b);
+    var along = t;
+    if burst.ids.z == 2u {
+        let n = max(floor(p.scale), 1.0);
+        let stop = min(floor(hash2(burst.ids.y ^ 0x68e31da4u, k) * n), n - 1.0);
+        along = stop / max(n - 1.0, 1.0);
+    }
+    var c = paint_along(p, along, 0.0);
+    if c.a == 0.0 && any(c.rgb > vec3<f32>(0.0)) {
+        c.a = -1.0;
+    }
+    return c;
 }
 
 @vertex
@@ -218,6 +243,10 @@ fn vs_particle(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     out.pos = to_clip(p + offset);
     out.local = corner;
     out.color = vec4<f32>(burst.color.rgb, burst.color.a * fade);
+    if burst.ids.z != 0u {
+        let c = particle_colour(burst, k, t);
+        out.color = vec4<f32>(c.rgb, c.a * fade);
+    }
     out.info = vec4<f32>(t, scale, shade, ring);
     out.kind = kind;
     return out;

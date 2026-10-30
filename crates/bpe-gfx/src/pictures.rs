@@ -1,6 +1,6 @@
 //! Picture tests for the stage 5 passes: styled balls, trails and particles, on the software GPU.
 
-use crate::{Frame, LookInstance, Renderer, headless_device};
+use crate::{Frame, LookInstance, PaintGpu, Renderer, headless_device};
 use glam::Vec2;
 
 /// Renders `frame` at `w` by `h`, or `None` without a GPU.
@@ -53,6 +53,7 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
         look: [0.0, 0.0, 1.0, 0.0],
         stretch: [1.0, 0.0, 1.0, 1.0],
         extent: [0.8, 3.0, 0.0, 0.0],
+        paint: PaintGpu::default(),
     }
 }
 
@@ -128,6 +129,7 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
         glow: 0.0,
         color: [0.0, 0.0, 1.0, 1.0],
         code: [0.0; 4],
+        paint: crate::PaintGpu::default(),
     });
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("streak", &pixels, W, H);
@@ -147,7 +149,8 @@ fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
     assert!(outside[0] < 20, "dark past the margin: {outside:?}");
     assert!(ball[2] > 100 && ball[0] < 80, "the ball covers the streak: {ball:?}");
     // A covering streak hides the background instead of adding to it.
-    let mut covering = Frame { bloom: 0.0, background_top: [1.0; 4], background_bottom: [1.0; 4], ..Frame::default() };
+    let mut covering = Frame { bloom: 0.0, ..Frame::default() };
+    covering.background.row = covering.gradients.row(&bpe_core::Gradient::solid(bpe_core::Color::WHITE));
     push_streak(&mut covering.trails, &points, 24.0, 0.0, [0.0, 0.0, 0.0, 1.0], 1.0);
     let pixels = render_sized(&covering, W, H).unwrap();
     let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -20.0));
@@ -175,6 +178,8 @@ fn a_burst_of_sparks_flies_the_way_its_normal_points_and_dies_after_its_life() {
         shape: 0,
         additive: true,
         seed: 3,
+        paint: crate::PaintGpu::default(),
+        follow: 0,
     });
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("sparks", &pixels, W, H);

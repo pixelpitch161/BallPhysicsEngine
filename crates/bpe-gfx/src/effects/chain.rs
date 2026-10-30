@@ -448,13 +448,17 @@ pub(crate) mod tests {
     pub(crate) fn two_balls_frame() -> Frame {
         let mut frame = Frame { bloom: 0.0, ..Frame::default() };
         let wall = Outline::Box { center: Vec2::ZERO, half: Vec2::new(500.0, 450.0), angle: 0.0, thickness: 24.0 };
-        frame.shapes.push(ShapeInstance::outline(&wall, [1.0, 1.0, 1.0, 1.0], 0.0).code(thing_code(ThingId(1))));
+        frame.shapes.push(
+            ShapeInstance::outline(&wall, crate::PaintGpu::default(), [1.0, 1.0, 1.0, 1.0], 0.0)
+                .code(thing_code(ThingId(1))),
+        );
         let ball = |center: Vec2, thing: u32, seed: f32| BallInstance {
             center: center.into(),
             radius: 70.0,
             glow: 0.0,
             color: [1.0, 0.25, 0.25, 1.0],
             code: [thing_code(ThingId(thing)) + seed * 0.5, seed, 0.0, 0.0],
+            paint: crate::PaintGpu::default(),
         };
         frame.balls.push(ball(A, 2, 0.2));
         frame.balls.push(ball(B, 3, 0.6));

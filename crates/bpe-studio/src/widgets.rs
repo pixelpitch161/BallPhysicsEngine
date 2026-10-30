@@ -8,6 +8,7 @@ use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
 
+use crate::gradient_bar::gradient_bar_named;
 use crate::theme;
 
 /// What a Target setting can point at: the scene's things, tags and kinds, by name.
@@ -112,6 +113,8 @@ pub struct GridCx<'a> {
     pub locked: &'a dyn Fn(&str) -> bool,
     /// Whether the setting does anything here; rows that don't are left out.
     pub applies: &'a dyn Fn(&SettingDef) -> bool,
+    /// Which group headings are folded shut. With none, headings have no fold arrow.
+    pub folded: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -127,31 +130,9 @@ pub struct GridOutcome {
     pub pulse: Vec<(&'static str, Option<PulseSource>)>,
     /// Settings locked (true) or unlocked against the dice from the row's menu.
     pub locks: Vec<(&'static str, bool)>,
-    /// The colour list was changed: what it holds now and what was done to it.
-    pub colours: Option<ColoursEdit>,
+    /// Groups folded shut (true) or opened from their heading's arrow.
+    pub folds: Vec<(&'static str, bool)>,
 }
-
-/// An edit to the one colour list a look shows for its Colour and Colours settings.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ColoursEdit {
-    /// The whole list after the edit; one colour means a plain Colour.
-    pub list: Vec<Color>,
-    pub change: ListChange,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ListChange {
-    /// Colour `i` changed.
-    Set(usize),
-    /// A colour was added at the end.
-    Add,
-    /// Colour `i` was taken out.
-    Remove(usize),
-}
-
-/// The look keys shown together as one colour list.
-pub const COLOUR: &str = "color";
-pub const COLOURS: &str = "gradient";
 
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
@@ -160,27 +141,17 @@ pub fn pretty(name: &str) -> String {
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-/// One row of a settings grid: a setting, a heading over the group that follows, or a look's
-/// Colour and Colours shown as one list of colours.
+/// One row of a settings grid: a setting, or a heading over the group that follows.
 pub enum Row<'a> {
-    Group(&'a str),
+    Group(&'static str),
     Setting(&'a SettingDef),
-    Colours { colour: &'a SettingDef, colours: &'a SettingDef },
 }
 
 /// The rows a settings grid shows: every setting that `applies`, ungrouped first, then the
-/// groups in the order they appear, each under its heading. A look's Colour and Colours become
-/// one Colours row where Colour was.
+/// groups in the order they appear, each under its heading.
 pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
     let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
-    let find = |key: &str, ty: ValueType| shown.iter().copied().find(|d| d.key == key && d.ty == ty);
-    let merged = find(COLOUR, ValueType::Color).zip(find(COLOURS, ValueType::Colors));
-    let row = |d: &'a SettingDef| match merged {
-        Some((colour, colours)) if d.key == COLOUR => Some(Row::Colours { colour, colours }),
-        Some(_) if d.key == COLOURS => None,
-        _ => Some(Row::Setting(d)),
-    };
-    let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).filter_map(|d| row(d)).collect();
+    let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).map(|d| Row::Setting(d)).collect();
     let mut groups: Vec<&str> = Vec::new();
     for d in &shown {
         if !d.group.is_empty() && !groups.contains(&d.group) {
@@ -188,7 +159,7 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
         }
     }
     for group in groups {
-        let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).filter_map(|d| row(d)).collect();
+        let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).map(|d| Row::Setting(d)).collect();
         if !members.is_empty() {
             rows.push(Row::Group(group));
             rows.extend(members);
@@ -235,6 +206,7 @@ pub fn settings_grid(
         marks: &|_| None,
         locked: &|_| false,
         applies,
+        folded: None,
     };
     settings_grid_marked(ui, id, defs, get, &cx).changes
 }
@@ -252,14 +224,27 @@ pub fn settings_grid_marked(
 ) -> GridOutcome {
     let mut out = GridOutcome::default();
     egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
+        // Whether the group the rows are in is folded shut.
+        let mut shut = false;
         for row in rows_for(defs, cx.applies) {
             match row {
                 Row::Group(group) => {
                     empty_cell(ui);
+                    shut = cx.folded.is_some_and(|folded| folded(group));
+                    let heading = RichText::new(group).strong().color(theme::MUTED);
                     // A grid can't take spacing, so the heading carries its own air above.
-                    ui.add(egui::Label::new(RichText::new(format!("\n{group}")).strong().color(theme::MUTED)));
+                    ui.vertical(|ui| {
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if cx.folded.is_some() && fold_toggle(ui, !shut, group) {
+                                out.folds.push((group, !shut));
+                            }
+                            ui.add(egui::Label::new(heading));
+                        });
+                    });
                     ui.end_row();
                 }
+                Row::Setting(def) if shut && !def.group.is_empty() => {}
                 Row::Setting(def) => {
                     match (cx.marks)(def.key) {
                         Some(mark) => match diamond(ui, def.label, mark) {
@@ -282,105 +267,10 @@ pub fn settings_grid_marked(
                         RowAction::Lock(lock) => out.locks.push((def.key, lock)),
                     }
                 }
-                Row::Colours { colour, colours } => colours_row(ui, colour, colours, &get, cx, &mut out),
             }
         }
     });
     out
-}
-
-/// A look's Colour and Colours as one row: a list of colours, where one colour is the plain
-/// Colour and two or more spread across the balls. The diamond keys the whole list (or the one
-/// colour), so every colour can change over time.
-fn colours_row(
-    ui: &mut Ui,
-    colour: &SettingDef,
-    colours: &SettingDef,
-    get: &dyn Fn(&str) -> Value,
-    cx: &GridCx,
-    out: &mut GridOutcome,
-) {
-    let list = match get(COLOURS) {
-        Value::Colors(list) if !list.is_empty() => list,
-        _ => match get(COLOUR) {
-            Value::Color(c) => vec![c],
-            _ => vec![Color::WHITE],
-        },
-    };
-    // One colour lives in Colour, several in Colours: the diamond, dot and lock follow it.
-    let key = if list.len() > 1 { colours.key } else { colour.key };
-    match (cx.marks)(key) {
-        Some(mark) => match diamond(ui, "Colours", mark) {
-            DiamondClick::None => {}
-            DiamondClick::Toggle => out.toggled_key.push(key),
-            DiamondClick::Pulse(source) => out.pulse.push((key, source)),
-        },
-        None => empty_cell(ui),
-    }
-    let overridden = (cx.overridden)(COLOUR) || (cx.overridden)(COLOURS);
-    let locked = (cx.locked)(key);
-    let help = "One colour for every ball, or several spread across them. Add colours with +, \
-                right-click one to remove it. The diamond keyframes them all at the playhead.";
-    let mut action = RowAction::Nothing;
-    let name = ui
-        .horizontal(|ui| {
-            if overridden {
-                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
-                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
-                response.on_hover_text("Changed here: this thing's own value, not the module's.");
-            }
-            let name = label(ui, "Colours", help);
-            if locked {
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
-                paint_padlock(ui.painter(), rect, theme::MUTED);
-                response.on_hover_text("Locked: the dice leave this setting alone.");
-            }
-            name.context_menu(|ui| {
-                if overridden {
-                    if ui.button("Reset to module").on_hover_text("Follow the module's colours again").clicked() {
-                        action = RowAction::Reset;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Push to module")
-                        .on_hover_text("Give every thing using the module these colours")
-                        .clicked()
-                    {
-                        action = RowAction::Push;
-                        ui.close();
-                    }
-                }
-                if locked {
-                    if ui.button("Unlock").on_hover_text("Let the dice pick the colours again").clicked() {
-                        action = RowAction::Lock(false);
-                        ui.close();
-                    }
-                } else if ui
-                    .button("Lock when randomizing")
-                    .on_hover_text("Keep the colours when the dice roll")
-                    .clicked()
-                {
-                    action = RowAction::Lock(true);
-                    ui.close();
-                }
-            });
-            name
-        })
-        .inner;
-    let mut edited = list.clone();
-    let (_, change) = ui.horizontal(|ui| color_list(ui, &mut edited, name.id, 1)).inner;
-    ui.end_row();
-    match action {
-        RowAction::Reset => out.resets.extend([COLOUR, COLOURS]),
-        RowAction::Push => out.pushes.extend([COLOUR, COLOURS]),
-        RowAction::Lock(lock) => out.locks.extend([(COLOUR, lock), (COLOURS, lock)]),
-        RowAction::Nothing | RowAction::Changed => {}
-    }
-    if let Some(change) = change {
-        out.colours = Some(ColoursEdit { list: edited, change });
-    }
 }
 
 /// What one grid row asks for.
@@ -395,6 +285,20 @@ pub enum RowAction {
     Push,
     /// Lock (true) or unlock the setting against the dice.
     Lock(bool),
+}
+
+/// The arrow that folds a card or a group of settings away (pointing right) and back (pointing
+/// down), named "Hide {title}" or "Show {title}". True when clicked.
+pub fn fold_toggle(ui: &mut Ui, open: bool, title: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::click());
+    let name = if open { format!("Hide {title}") } else { format!("Show {title}") };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+    let response = response.on_hover_text(if open { "Hide these settings" } else { "Show these settings" });
+    // The collapsing header's own triangle, pointing down when open.
+    let mut icon = response.clone();
+    icon.rect = rect;
+    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &icon);
+    response.clicked()
 }
 
 /// The diamond column's cell for a row without a diamond.
@@ -544,7 +448,9 @@ pub fn setting(
             r
         })
         .inner;
-    if resettable(&name, value, &fallback) || resettable(&response, value, &fallback) {
+    // A gradient bar's clicks add and pick stops, so only its label resets it.
+    let gradient = def.ty == ValueType::Gradient;
+    if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
         changed = true;
     }
     ui.end_row();
@@ -693,12 +599,10 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
             x | y
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
-        (ValueType::Colors, Value::Colors(colors)) => {
-            let (mut response, change) = color_list(ui, colors, name, 0);
-            if change.is_some() {
-                response.mark_changed();
-            }
-            response
+        (ValueType::Gradient, Value::Gradient(g)) => {
+            let id = ui.make_persistent_id(("gradient", def.key));
+            // The bar and its handles carry their own names, after the setting's.
+            gradient_bar_named(ui, id, g, def.label)
         }
         (ValueType::Choice(names), Value::Choice(current)) => {
             let mut response = egui::ComboBox::from_id_salt(def.key).selected_text(pretty(current)).show_ui(ui, |ui| {
@@ -890,7 +794,7 @@ fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices) -> Respon
 
 /// egui keeps an additive colour as premultiplied with no alpha. Built unmultiplied, no alpha
 /// turns it into plain transparent black, so "Additive" would undo itself on the next frame.
-fn picker_color(c: Color) -> Color32 {
+pub(crate) fn picker_color(c: Color) -> Color32 {
     if c.is_additive() {
         Color32::from_rgba_premultiplied(c.r, c.g, c.b, 0)
     } else {
@@ -900,59 +804,18 @@ fn picker_color(c: Color) -> Color32 {
 
 /// The picker's colour as a scene colour. An additive one comes back as its colour with no
 /// alpha, which is how `Color` keeps it.
-fn scene_color(c: Color32) -> Color {
+pub(crate) fn scene_color(c: Color32) -> Color {
     let [r, g, b, a] = c.to_srgba_unmultiplied();
     Color { r, g, b, a }
 }
 
-fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
+pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
     let mut c = picker_color(*value);
     let response = egui::color_picker::color_edit_button_srgba(ui, &mut c, Alpha::BlendOrAdditive);
     if response.changed() {
         *value = scene_color(c);
     }
     response
-}
-
-/// A row of colour buttons with an add button. Right-click a colour to remove it, as long as
-/// more than `fewest` stay. What was done comes back, if anything.
-fn color_list(ui: &mut Ui, colors: &mut Vec<Color>, name: egui::Id, fewest: usize) -> (Response, Option<ListChange>) {
-    let mut change = None;
-    let response = ui.horizontal_wrapped(|ui| {
-        let mut remove = None;
-        let removable = colors.len() > fewest;
-        for (i, c) in colors.iter_mut().enumerate() {
-            ui.push_id(i, |ui| {
-                let hint = if removable { "Click to change. Right-click to remove." } else { "Click to change." };
-                let response = color_button(ui, c).labelled_by(name).on_hover_text(hint);
-                if response.changed() {
-                    change = Some(ListChange::Set(i));
-                }
-                if removable {
-                    // The colour picker's popup already has the button's default popup id, so a
-                    // plain context menu would share it: its close-on-click would shut the picker
-                    // as it opens, and a right-click would open the picker instead.
-                    egui::Popup::context_menu(&response).id(response.id.with("remove colour")).show(|ui| {
-                        if ui.button("Remove colour").clicked() {
-                            remove = Some(i);
-                            ui.close();
-                        }
-                    });
-                }
-            });
-        }
-        if let Some(i) = remove {
-            colors.remove(i);
-            change = Some(ListChange::Remove(i));
-        }
-        let add = ui.button("+").on_hover_text("Add a colour. Right-click a colour to remove it.");
-        add.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add a colour"));
-        if add.clicked() {
-            colors.push(colors.last().copied().unwrap_or(Color::WHITE));
-            change = Some(ListChange::Add);
-        }
-    });
-    (response.response, change)
 }
 
 #[cfg(test)]
@@ -985,48 +848,159 @@ mod tests {
         assert_eq!(pretty(""), "");
     }
 
-    #[test]
-    fn every_colour_in_a_list_opens_its_picker_on_a_click() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::{
-            Harness,
-            kittest::{NodeT, Queryable},
-        };
-        let three = vec![Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)];
-        for i in 0..3 {
-            let mut h = Harness::builder().with_size(egui::vec2(600.0, 600.0)).allow_missing_glyphs().build_ui_state(
-                |ui, colors: &mut Vec<Color>| {
-                    let name = ui.label("Colours").id;
-                    color_list(ui, colors, name, 1);
-                },
-                three.clone(),
-            );
+    mod bar {
+        use crate::gradient_bar::gradient_bar;
+        use bpe_core::{Color, Gradient, Stop};
+        use eframe::egui::{self, Modifiers, PointerButton};
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 };
+        const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
+        const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 };
+
+        fn harness(g: Gradient) -> Harness<'static, Gradient> {
+            let mut h = Harness::builder()
+                .with_size(egui::vec2(420.0, 2600.0))
+                .allow_missing_glyphs()
+                .with_context_setup(crate::theme::apply)
+                .build_ui_state(
+                    |ui, g: &mut Gradient| {
+                        let id = ui.make_persistent_id("bar");
+                        gradient_bar(ui, id, g);
+                    },
+                    g,
+                );
             h.run();
-            assert!(h.query_by_label_contains("Additive").is_none());
-            let swatches: Vec<_> =
-                h.query_all_by_label("Colours").filter(|n| n.accesskit_node().role() != Role::Label).collect();
-            assert_eq!(swatches.len(), 3);
-            swatches[i].click();
-            h.run();
-            assert!(h.query_by_label_contains("Additive").is_some(), "colour {i} opens no picker");
+            h
         }
-        // A right-click offers to remove the colour instead of opening the picker.
-        let mut h = Harness::builder().with_size(egui::vec2(600.0, 600.0)).allow_missing_glyphs().build_ui_state(
-            |ui, colors: &mut Vec<Color>| {
-                let name = ui.label("Colours").id;
-                color_list(ui, colors, name, 1);
-            },
-            three,
-        );
-        h.run();
-        let second =
-            h.query_all_by_label("Colours").filter(|n| n.accesskit_node().role() != Role::Label).nth(1).unwrap();
-        second.click_secondary();
-        h.run();
-        assert!(h.query_by_label_contains("Additive").is_none());
-        h.get_by_label("Remove colour").click();
-        h.run();
-        assert_eq!(h.state().len(), 2);
+
+        fn press(h: &mut Harness<'_, Gradient>, pos: egui::Pos2, button: PointerButton, pressed: bool) {
+            h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        }
+
+        /// Presses at `from`, moves to `to` and lets go there.
+        fn drag(h: &mut Harness<'_, Gradient>, from: egui::Pos2, to: egui::Pos2) {
+            h.hover_at(from);
+            press(h, from, PointerButton::Primary, true);
+            h.step();
+            h.event(egui::Event::PointerMoved(from + (to - from) * 0.5));
+            h.step();
+            h.event(egui::Event::PointerMoved(to));
+            h.step();
+            press(h, to, PointerButton::Primary, false);
+            h.run();
+        }
+
+        fn bar_rect(h: &Harness<'_, Gradient>) -> egui::Rect {
+            h.get_by_label("Colours bar").rect()
+        }
+
+        fn ats(g: &Gradient) -> Vec<f32> {
+            g.stops.iter().map(|s| s.at).collect()
+        }
+
+        #[test]
+        fn clicking_the_bar_adds_a_stop() {
+            let two = Gradient::even(&[RED, BLUE]);
+            let mut h = harness(two.clone());
+            let bar = bar_rect(&h);
+            assert!(bar.height() >= 18.0 && bar.width() >= 200.0, "{bar:?}");
+            let at = egui::pos2(bar.left() + bar.width() * 0.25, bar.center().y);
+            h.hover_at(at);
+            press(&mut h, at, PointerButton::Primary, true);
+            h.step();
+            press(&mut h, at, PointerButton::Primary, false);
+            h.run();
+            let g = h.state();
+            assert_eq!(g.stops.len(), 3, "{g:?}");
+            assert!((g.stops[1].at - 0.25).abs() < 0.01, "{g:?}");
+            assert_eq!(g.stops[1].color, Color::from_linear(two.sample(g.stops[1].at)), "the sampled colour");
+            assert_eq!(g.transition, two.transition);
+        }
+
+        #[test]
+        fn dragging_a_handle_moves_its_stop() {
+            let mut h = harness(Gradient::even(&[RED, GREEN, BLUE]));
+            let bar = bar_rect(&h);
+            // Red, the first stop, dragged past green: the list re-sorts and red's handle,
+            // now the second, keeps the focus.
+            let from = h.get_by_label("Colours stop 1").rect().center();
+            drag(&mut h, from, egui::pos2(bar.left() + bar.width() * 0.75, from.y));
+            let g = h.state().clone();
+            assert_eq!(g.stops.iter().map(|s| s.color).collect::<Vec<_>>(), [GREEN, RED, BLUE], "{g:?}");
+            assert!((g.stops[1].at - 0.75).abs() < 0.02, "{g:?}");
+            assert_eq!(g.stops[0].at, 0.5);
+            assert!(h.get_by_label("Colours stop 2").is_focused(), "the dragged handle keeps the focus");
+            // Past the end it stops at the end.
+            let from = h.get_by_label("Colours stop 1").rect().center();
+            drag(&mut h, from, egui::pos2(bar.left() - 60.0, from.y));
+            assert_eq!(ats(h.state()), [0.0, 0.75, 1.0]);
+            // Dragged well below the bar, it comes off.
+            let from = h.get_by_label("Colours stop 2").rect().center();
+            drag(&mut h, from, egui::pos2(from.x, bar.bottom() + 60.0));
+            assert_eq!(h.state().stops.iter().map(|s| s.color).collect::<Vec<_>>(), [GREEN, BLUE]);
+            // A little below, it stays.
+            let from = h.get_by_label("Colours stop 2").rect().center();
+            drag(&mut h, from, egui::pos2(from.x - 20.0, bar.bottom() + 20.0));
+            assert_eq!(h.state().stops.len(), 2);
+        }
+
+        #[test]
+        fn right_click_remove_keeps_at_least_one() {
+            let mut h = harness(Gradient::even(&[RED, BLUE]));
+            h.get_by_label("Colours stop 2").click_secondary();
+            h.run();
+            assert!(h.query_by_label_contains("Additive").is_none(), "a right-click opens no picker");
+            h.get_by_label("Remove").click();
+            h.run();
+            assert_eq!(h.state().stops, [Stop { at: 0.0, color: RED }]);
+            // The last colour has no handle to take off, only its swatch.
+            assert!(h.query_by_label("Colours stop 1").is_none());
+            assert!(h.query_by_label("Remove").is_none());
+            // Dragging the last stop of two off the bar leaves one.
+            h.state_mut().stops.push(Stop { at: 1.0, color: BLUE });
+            h.run();
+            let bar = bar_rect(&h);
+            let from = h.get_by_label("Colours stop 1").rect().center();
+            drag(&mut h, from, egui::pos2(from.x, bar.bottom() + 60.0));
+            assert_eq!(h.state().stops, [Stop { at: 1.0, color: BLUE }]);
+        }
+
+        #[test]
+        fn one_stop_shows_a_swatch_and_plus() {
+            let mut h = harness(Gradient::solid(RED));
+            assert!(h.query_by_label("Colours bar").is_none(), "no bar for one colour");
+            h.get_by_label("Colours colour").click();
+            h.run();
+            assert!(h.query_by_label_contains("Additive").is_some(), "the swatch opens the picker");
+            h.key_press(egui::Key::Escape);
+            h.run();
+            h.get_by_label("Add a colour").click();
+            h.run();
+            assert_eq!(h.state().stops, [Stop { at: 0.0, color: RED }, Stop { at: 1.0, color: Color::WHITE }]);
+            assert!(h.query_by_label("Colours bar").is_some());
+        }
+
+        #[test]
+        fn colour_handle_opens_on_left_click() {
+            let mut h = harness(Gradient::even(&[RED, BLUE]));
+            assert!(h.query_by_label_contains("Additive").is_none());
+            h.get_by_label("Colours stop 2").click();
+            h.run();
+            assert!(h.query_by_label_contains("Additive").is_some(), "a click opens the picker");
+            assert!(h.query_by_label("Remove").is_none());
+            assert_eq!(h.state().stops.len(), 2, "a click on a handle adds nothing");
+        }
+
+        #[test]
+        fn the_transition_menu_picks_how_stops_blend() {
+            let mut h = harness(Gradient::even(&[RED, BLUE]));
+            h.get_by_label("Colours transition").click();
+            h.run();
+            h.get_by_label("Steps").click();
+            h.run();
+            assert_eq!(h.state().transition, bpe_core::Transition::Steps);
+        }
     }
 
     #[test]
@@ -1057,6 +1031,7 @@ mod tests {
                     marks: &marks,
                     locked: &|_| false,
                     applies: &|_| true,
+                    folded: None,
                 };
                 let got = settings_grid_marked(
                     ui,
@@ -1107,14 +1082,14 @@ mod tests {
     }
 
     #[test]
-    fn a_looks_colour_and_colours_become_one_row() {
+    fn a_looks_colours_are_one_gradient_row() {
         let defs = bpe_kit::modules::look::ClassicLook::defs();
         let rows = rows_for(defs, &|_| true);
-        assert!(matches!(rows[0], Row::Colours { colour, colours } if colour.key == COLOUR && colours.key == COLOURS));
-        assert!(!rows.iter().any(|r| matches!(r, Row::Setting(d) if d.key == COLOUR || d.key == COLOURS)));
-        // Where the list doesn't apply, Colour is a plain colour again.
-        let plain = rows_for(defs, &|d| d.key != COLOURS);
-        assert!(matches!(plain[0], Row::Setting(d) if d.key == COLOUR));
+        let colours: Vec<&SettingDef> =
+            rows.iter().filter_map(|r| if let Row::Setting(d) = r { Some(*d) } else { None }).collect();
+        let colours: Vec<&&SettingDef> = colours.iter().filter(|d| d.ty == ValueType::Gradient).collect();
+        assert_eq!(colours.len(), 1);
+        assert_eq!(colours[0].key, "colours");
     }
 
     #[test]

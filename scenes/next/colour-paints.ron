@@ -1,0 +1,436 @@
+(
+    format: 2,
+    name: "Colour paints",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "background_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#2b1458",
+                        ),
+                        (
+                            at: 0.5,
+                            color: "#140a33",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#05040f",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "background_shape": Choice("centre"),
+                "background_span": Number(1150.0),
+                "bloom": Number(0.3499999940395355),
+                "chords": Int(0),
+                "gravity": Vec2((0.0, 700.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "radius": Number(470.0),
+                "thickness": Number(12.0),
+            },
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Block",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-20.0, -170.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(8),
+                "radius": Number(19.0),
+                "rows": Int(8),
+                "spacing": Number(46.0),
+                "velocity": Vec2((-420.0, 220.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Trail: Linked(
+                    module: 6,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+                Particles: Linked(
+                    module: 7,
+                ),
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Title",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -740.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(6.0),
+                "outline_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#05040f",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "size": Number(130.0),
+                "text": Text("Colour paints"),
+            },
+            slots: {
+                Look: Linked(
+                    module: 8,
+                ),
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Caption",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 700.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(0.0),
+                "size": Number(56.0),
+                "text": Text("place  path  life  centre"),
+            },
+            slots: {
+                Look: Linked(
+                    module: 8,
+                ),
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Int(0),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "angle": Number(45.0),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffd23e",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#ff6a5c",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#3e9bff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "glow": Number(0.30000001192092896),
+                    "inside": Choice("rings"),
+                    "inside_scale": Number(1.2000000476837158),
+                    "inside_scroll": Number(0.25),
+                    "repeat": Choice("mirror"),
+                    "span": Number(700.0),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Ring look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#ffb82e",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#3ee6ff",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ff3ec8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("path"),
+                    "glow": Number(0.699999988079071),
+                    "repeat": Choice("repeat"),
+                    "scroll": Number(0.11999999731779099),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Life streak",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "brightness": Number(0.44999998807907104),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffffff",
+                            ),
+                            (
+                                at: 0.33333334,
+                                color: "#7cf4ff",
+                            ),
+                            (
+                                at: 0.6666667,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#2b1458",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "seconds": Number(0.3499999940395355),
+                    "source": Choice("own"),
+                    "width": Number(0.550000011920929),
+                },
+            ),
+            7: (
+                id: 7,
+                name: "Life sparks",
+                slot: Particles,
+                kind: "particles.burst",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffffff",
+                            ),
+                            (
+                                at: 0.33333334,
+                                color: "#ffd23e",
+                            ),
+                            (
+                                at: 0.6666667,
+                                color: "#ff6a2e",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#c8104a",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "count": Int(6),
+                    "least_speed": Number(160.0),
+                    "life": Number(0.550000011920929),
+                    "size": Number(3.0),
+                    "source": Choice("own"),
+                    "speed": Number(360.0),
+                },
+            ),
+            8: (
+                id: 8,
+                name: "Title look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.33333334,
+                                color: "#ffb82e",
+                            ),
+                            (
+                                at: 0.6666667,
+                                color: "#3ee6ff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#8a4dff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                    "glow": Number(0.0),
+                },
+            ),
+        },
+        progressions: {
+            0: (
+                name: "Starter",
+                key: (
+                    root: 0,
+                    mode: Major,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
+    ),
+    next_thing: 5,
+    next_module: 9,
+    next_progression: 1,
+    next_instrument: 1,
+)

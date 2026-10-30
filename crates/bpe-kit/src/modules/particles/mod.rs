@@ -4,6 +4,8 @@ pub mod draw;
 
 use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 
+use crate::paint::{Follow, Paint};
+
 pub struct HitBurstKind;
 
 /// What a burst is made of.
@@ -43,7 +45,7 @@ pub enum BurstSource {
     /// The colour of the ball that hit.
     #[default]
     Ball,
-    /// The burst's own Colour setting.
+    /// The burst's own Colours.
     Own,
 }
 
@@ -74,12 +76,19 @@ pub struct HitBurst {
     /// How long the particles last.
     #[setting(label = "Life", range(0.05, 3), unit = "s", simple, keyframe, random)]
     pub life: f32,
-    /// The colour of the ball that hit, or the Colour below.
+    /// The colour of the ball that hit, or the Colours below.
     #[setting(label = "Colour from", simple, random)]
     pub source: BurstSource,
-    /// The particles' colour when the burst has its own.
-    #[setting(label = "Colour", when = "source=own", keyframe, random)]
-    pub color: Color,
+    /// The particles' own colours: over each one's life, a stop picked at random for each, or
+    /// by where, how fast or when the hit was.
+    #[setting(
+        paint,
+        label = "Colours",
+        prefix = "",
+        when = "source=own",
+        follows = "life|order|place|speed|time|beat"
+    )]
+    pub colour: Paint,
     /// How wide the burst fans out from the direction of the bounce.
     #[setting(label = "Spread", range(0, 360), unit = "°", keyframe, random)]
     pub spread: f32,
@@ -109,7 +118,7 @@ impl Default for HitBurst {
             size: 2.5,
             life: 0.6,
             source: BurstSource::Ball,
-            color: Color::WHITE,
+            colour: Paint { follow: Follow::Life, ..Paint::solid(Color::WHITE) },
             spread: 140.0,
             gravity: 300.0,
             drag: 2.0,

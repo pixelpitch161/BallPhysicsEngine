@@ -9,6 +9,8 @@ pub use fill::{Values, fill};
 use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
 use bpe_gfx::text::{FontFace, TextAlign};
 
+use crate::paint::Paint;
+
 pub struct TextKind;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -85,8 +87,19 @@ pub struct TextSettings {
     pub align: Align,
     #[setting(label = "Outline", range(0, 20), unit = "px", keyframe)]
     pub outline: f32,
-    #[setting(label = "Outline colour", when = "outline", keyframe)]
-    pub outline_color: Color,
+    /// The outline's colours, painted letter by letter like the fill.
+    #[setting(
+        paint,
+        label = "Outline colours",
+        prefix = "outline_",
+        when = "outline",
+        follows = "place|order|beat|time"
+    )]
+    pub outline_paint: Paint,
+    /// On, each letter takes its own colour (by its order, or its own place) and its own inside
+    /// pattern; off, the whole text is painted as one.
+    #[setting(label = "Colours per letter")]
+    pub paint_per_letter: bool,
     /// The text shrinks to fit this much of the video's width; 0 lets it be any width.
     #[setting(label = "Fits in", range(0, 1))]
     pub max_width: f32,
@@ -107,7 +120,8 @@ impl Default for TextSettings {
             appear_seconds: 0.4,
             align: Align::Center,
             outline: 4.0,
-            outline_color: Color::rgb(0, 0, 0),
+            outline_paint: Paint::solid(Color::rgb(0, 0, 0)),
+            paint_per_letter: true,
             max_width: 0.9,
             jump: 0.0,
         }

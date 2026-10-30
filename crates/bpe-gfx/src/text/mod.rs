@@ -14,6 +14,7 @@ pub use atlas::{Atlas, glyphs};
 use atlas::{RASTER_PX, SPREAD};
 
 use crate::frame::{GlyphInstance, blend_alpha};
+use crate::gradients::PaintGpu;
 
 /// The built-in fonts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -172,7 +173,15 @@ pub fn layout_text(
                 let x = pen + slot.offset[0] * unit;
                 let top = baseline - (slot.offset[1] + slot.size[1]) * unit;
                 let rect = [x, top, x + slot.size[0] * unit, baseline - slot.offset[1] * unit];
-                out.push(GlyphInstance { rect, uv: slot.uv, color, outline_color, params });
+                out.push(GlyphInstance {
+                    rect,
+                    uv: slot.uv,
+                    color,
+                    outline_color,
+                    params,
+                    paint: PaintGpu::default(),
+                    local: rect,
+                });
             }
             pen += advance;
         }

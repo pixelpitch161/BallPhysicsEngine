@@ -146,12 +146,26 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "gradient": Colors([
-                        "#3e9bff",
-                        "#ff3ec8",
-                        "#ffb82e",
-                    ]),
+                    "centre": Vec2((30.0, -120.0)),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3e9bff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ffb82e",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("start"),
+                    "span": Number(390.0),
                 },
             ),
         },

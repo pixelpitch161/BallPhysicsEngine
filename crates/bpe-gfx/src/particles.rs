@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::HDR_FORMAT;
 use crate::frame::Burst;
+use crate::gradients::PaintGpu;
 
 /// Most bursts drawn in one frame. Beyond this the oldest are left out.
 pub const MAX_BURSTS: usize = 400;
@@ -28,8 +29,12 @@ pub struct BurstGpu {
     pub motion: [f32; 4],
     /// Gravity, drag.
     pub more: [f32; 4],
-    /// Shape, seed.
+    /// Shape, seed, follow (0 the colour above, 1 the paint over each particle's life, 2 one of
+    /// the paint's stops at random).
     pub ids: [u32; 4],
+    /// The paint, as `PaintGpu`'s fields in order.
+    pub paint_a: [f32; 4],
+    pub paint_b: [f32; 4],
 }
 
 /// The bursts of one frame in draw order: glowing ones first, then covering ones, each oldest
@@ -70,13 +75,18 @@ pub fn pick(bursts: &[Burst], time: f32) -> Picked {
     for (group, list) in lists.into_iter().enumerate() {
         let before = first;
         for (b, count) in list.into_iter().rev() {
+            // A paint with no row has nothing to paint with: the burst keeps its own colour.
+            let (p, follow) =
+                if b.follow == 0 || b.paint.row < 0.0 { (PaintGpu::default(), 0) } else { (b.paint, b.follow.min(2)) };
             picked.bursts.push(BurstGpu {
                 place: [b.origin[0], b.origin[1], b.normal[0], b.normal[1]],
                 timing: [time - b.time, first as f32, count as f32, 0.0],
                 color: b.color,
                 motion: [b.speed.max(0.0), b.spread.clamp(0.0, 360.0).to_radians(), b.size.max(0.0), b.life],
                 more: [b.gravity, b.drag.max(0.0), 0.0, 0.0],
-                ids: [b.shape.min(5), b.seed, 0, 0],
+                ids: [b.shape.min(5), b.seed, follow, 0],
+                paint_a: [p.row, p.t0, p.pattern, p.steps],
+                paint_b: [p.angle, p.scale, p.scroll, p.repeat],
             });
             first += count;
         }
@@ -104,7 +114,11 @@ pub struct Particles {
 }
 
 impl Particles {
-    pub fn new(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        globals_layout: &wgpu::BindGroupLayout,
+        paint_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("particles layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -120,12 +134,14 @@ impl Particles {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("particles"),
-            bind_group_layouts: &[Some(globals_layout), Some(&layout)],
+            bind_group_layouts: &[Some(globals_layout), Some(&layout), Some(paint_layout)],
             immediate_size: 0,
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particles"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particles.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [crate::gradients::paint_wgsl(2).as_str(), include_str!("shaders/particles.wgsl")].concat().into(),
+            ),
         });
         let make = |label, fs, blend| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -202,14 +218,16 @@ impl Particles {
         queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
     }
 
-    /// Draws the prepared bursts; the globals must be bound at group 0 already.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Draws the prepared bursts; the globals must be bound at group 0 already. `paint` is the
+    /// gradient atlas, bound at group 2.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, paint: &wgpu::BindGroup) {
         let Some(group) = &self.group else { return };
         let (additive, covering) = (self.picked.additive, self.picked.covering);
         if additive + covering == 0 {
             return;
         }
         pass.set_bind_group(1, group, &[]);
+        pass.set_bind_group(2, paint, &[]);
         if additive > 0 {
             pass.set_pipeline(&self.additive);
             pass.draw(0..4, 0..additive);
@@ -241,6 +259,8 @@ mod tests {
             shape: 0,
             additive,
             seed: 7,
+            paint: crate::PaintGpu::default(),
+            follow: 0,
         }
     }
 
@@ -262,6 +282,19 @@ mod tests {
         assert_eq!(p.bursts[0].place, [0.0, 0.0, 0.0, -1.0]);
         assert!((p.bursts[0].motion[1] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert!(pick(&bursts, 3.0).bursts.is_empty());
+    }
+
+    #[test]
+    fn pick_hands_the_paint_over_only_with_a_row() {
+        let paint = PaintGpu { row: 3.0, t0: 0.25, steps: 1.0, scale: 4.0, repeat: 2.0, ..PaintGpu::default() };
+        let painted = Burst { paint, follow: 2, ..burst(0.4, 4, true) };
+        let rowless = Burst { paint: PaintGpu::default(), follow: 1, ..burst(0.5, 4, true) };
+        let p = pick(&[painted, rowless], 1.0);
+        assert_eq!(p.bursts[0].ids[2], 2);
+        assert_eq!(p.bursts[0].paint_a, [3.0, 0.25, 0.0, 1.0]);
+        assert_eq!(p.bursts[0].paint_b, [0.0, 4.0, 0.0, 2.0]);
+        // Nothing to paint with: its own colour.
+        assert_eq!(p.bursts[1].ids[2], 0);
     }
 
     #[test]

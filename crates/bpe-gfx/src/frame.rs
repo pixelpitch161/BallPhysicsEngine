@@ -8,6 +8,8 @@ use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
+use crate::gradients::{GradientAtlas, PaintGpu};
+
 /// Hits older than this no longer count towards [`hit_strength`].
 const HIT_WINDOW: f64 = 0.3;
 /// A hit's strength fades by e every this many seconds.
@@ -49,6 +51,8 @@ pub struct BallInstance {
     pub color: [f32; 4],
     /// The thing code plus half the seed (see [`thing_code`]), the seed, then two spare.
     pub code: [f32; 4],
+    /// A gradient painted inside the lit ball in place of its colour, when its row is not -1.
+    pub paint: PaintGpu,
 }
 
 /// A ball with its own style: a shape, a fill, an outline and a halo.
@@ -72,6 +76,8 @@ pub struct LookInstance {
     pub stretch: [f32; 4],
     /// Glow size as a fraction of the radius, the thing code, two spare.
     pub extent: [f32; 4],
+    /// A gradient painted inside the fill in place of its colours, when its row is not -1.
+    pub paint: PaintGpu,
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
@@ -88,10 +94,15 @@ pub struct ShapeInstance {
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
     pub color: [f32; 4],
+    /// A gradient painted on the line in place of its colour, when its row is not -1: an inside
+    /// pattern across the shape's bounding box, or (pattern 4, Path) along the outline. The glow
+    /// keeps `color`.
+    pub paint: PaintGpu,
 }
 
 impl ShapeInstance {
-    pub fn outline(outline: &Outline, color: [f32; 4], glow: f32) -> Self {
+    /// A closed wall's outline, painted with `paint` (row -1 for plain `color`).
+    pub fn outline(outline: &Outline, paint: PaintGpu, color: [f32; 4], glow: f32) -> Self {
         let color = blend_alpha(color);
         match *outline {
             Outline::Ring { center, radius, sides, angle, thickness } => Self {
@@ -99,18 +110,21 @@ impl ShapeInstance {
                 b: [radius, sides as f32, 0.0, 0.0],
                 c: [0.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
             Outline::Box { center, half, angle, thickness } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [half.x, half.y, 0.0, 0.0],
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
             Outline::Rounded { center, half, corner, angle, thickness } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [half.x, half.y, corner, 0.0],
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
         }
     }
@@ -124,6 +138,7 @@ impl ShapeInstance {
             b: [along.length() * 0.5, 0.0, 0.0, 0.0],
             c: [2.0, half_width, glow, 0.0],
             color: blend_alpha(color),
+            paint: PaintGpu::default(),
         }
     }
 
@@ -134,12 +149,19 @@ impl ShapeInstance {
             b: [radius, 0.0, 0.0, 0.0],
             c: [0.0, radius, glow, 0.0],
             color: blend_alpha(color),
+            paint: PaintGpu::default(),
         }
     }
 
     /// Marks the shape as belonging to a thing, so an effect can paint just that thing.
     pub fn code(mut self, code: f32) -> Self {
         self.c[3] = code;
+        self
+    }
+
+    /// Paints a gradient on the shape in place of its colour (see [`ShapeInstance::paint`]).
+    pub fn painted(mut self, paint: PaintGpu) -> Self {
+        self.paint = paint;
         self
     }
 }
@@ -167,8 +189,17 @@ pub struct LiquidLayer {
     pub points: Points,
     /// Particle radius in world pixels.
     pub radius: f32,
-    /// Linear light.
+    /// Linear light: the whole liquid's colour when `follow` is 0.
     pub color: [f32; 4],
+    /// 0: the liquid is `color`. 1: each pixel takes `paint` at its place along a direction,
+    /// 2: at its distance from a centre (see `paint_place`). 3: at the mean speed of the
+    /// particles under it, over `paint_place`'s span.
+    pub follow: u32,
+    /// The gradient the liquid is painted from when `follow` is not 0; only its row, start,
+    /// steps and repeat are read.
+    pub paint: PaintGpu,
+    /// Where a place runs in world pixels: the direction in degrees, the span, the centre.
+    pub paint_place: [f32; 4],
     /// How much of what is behind shows through, 0 to 1.
     pub clarity: f32,
     /// How much the surface bends what is behind it.
@@ -184,8 +215,8 @@ pub struct LiquidLayer {
 /// Where a liquid's particles come from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Points {
-    /// Positions simulated on the CPU, one per particle.
-    Cpu(Vec<[f32; 2]>),
+    /// Positions and velocities simulated on the CPU, one per particle.
+    Cpu(Vec<[f32; 4]>),
     /// A liquid the renderer simulates itself.
     Gpu(GpuLiquid),
 }
@@ -238,10 +269,20 @@ pub struct SwarmLook {
     /// Point size in world pixels.
     pub size: f32,
     pub brightness: f32,
-    /// 0 colours by speed, 1 by the nearest ball, 2 along the gradient.
-    pub colors_by: u32,
-    /// Linear light, the stops of the gradient or the speed ramp.
-    pub colors: Vec<[f32; 4]>,
+    /// What picks a point's place along `paint`: 0 its speed over `place`'s span, 1 the nearest
+    /// ball (the ball's colour, not the paint), 2 a place at random for each point, 3 its place
+    /// along a direction, 4 its distance from a centre (both from `place`). 5 paints every point
+    /// `color`.
+    pub follow: u32,
+    /// The gradient the points take their colour from; only its row, start, steps and repeat
+    /// are read.
+    pub paint: PaintGpu,
+    /// Where a place runs in world pixels: the direction in degrees, the span, the centre. The
+    /// span is also the speed that reaches the end of the colours.
+    pub place: [f32; 4],
+    /// Linear light: every point's colour for follow 5, and a point's colour before it has a
+    /// nearest ball.
+    pub color: [f32; 4],
 }
 
 /// How a swarm moves. Each field matches a setting of the Flocking module.
@@ -290,6 +331,12 @@ pub struct SoftVertex {
     pub _pad: f32,
     /// Linear light. A negative alpha is additive (see [`blend_alpha`]).
     pub color: [f32; 4],
+    /// A gradient painted across the body in place of its colour, when its row is not -1. Every
+    /// corner of one body carries the same paint.
+    pub paint: PaintGpu,
+    /// Where the corner is in the body's bounding box, -1 to 1 each way from its centre: the
+    /// space the paint's inside pattern is drawn in.
+    pub local: [f32; 2],
 }
 
 /// One glyph of text, drawn from the signed-distance atlas.
@@ -306,6 +353,11 @@ pub struct GlyphInstance {
     /// Outline width in world units, glow strength, world units per distance unit (how far one
     /// full step of the atlas value is in the world), unused.
     pub params: [f32; 4],
+    /// A gradient painted inside the fill in place of its colour, when its row is not -1.
+    pub paint: PaintGpu,
+    /// The world rectangle the paint's inside pattern spans, -1 to 1 across it: the glyph's own
+    /// `rect` when each letter is painted on its own, or the whole text's.
+    pub local: [f32; 4],
 }
 
 /// One corner of a trail strip.
@@ -329,6 +381,31 @@ pub fn push_streak(
     half_width: f32,
     taper: f32,
     color: [f32; 4],
+    pixel: f32,
+) {
+    streak(out, points, half_width, taper, |_| color, pixel);
+}
+
+/// [`push_streak`] with a colour for each point, `colors[i]` at `points[i]`; each fades out along
+/// the streak as a single colour would. A point past the end of `colors` takes the last one.
+pub fn push_streak_colours(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_width: f32,
+    taper: f32,
+    colors: &[[f32; 4]],
+    pixel: f32,
+) {
+    let Some(&last) = colors.last() else { return };
+    streak(out, points, half_width, taper, |i| colors.get(i).copied().unwrap_or(last), pixel);
+}
+
+fn streak(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_width: f32,
+    taper: f32,
+    color_at: impl Fn(usize) -> [f32; 4],
     pixel: f32,
 ) {
     let n = points.len();
@@ -359,6 +436,7 @@ pub fn push_streak(
         let width = half_width * (1.0 - t * taper);
         let reach = width + pixel;
         let fade = (1.0 - t) * (1.0 - t);
+        let color = color_at(i);
         let color = if color[3] < 0.0 {
             [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
         } else {
@@ -403,6 +481,11 @@ pub struct Burst {
     /// Added light rather than covering paint.
     pub additive: bool,
     pub seed: u32,
+    /// The gradient the particles take their colour from, for `follow` 1 and 2.
+    pub paint: PaintGpu,
+    /// 0: every particle is `color`. 1: each runs along `paint` over its life. 2: each takes one
+    /// of `paint`'s stops at random, `paint.scale` of them evenly spaced on a Steps row.
+    pub follow: u32,
 }
 
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.
@@ -454,6 +537,46 @@ pub fn blend_alpha(c: [f32; 4]) -> [f32; 4] {
     if c[3] == 0.0 && (c[0] > 0.0 || c[1] > 0.0 || c[2] > 0.0) { [c[0], c[1], c[2], -1.0] } else { c }
 }
 
+/// How the background pass paints: one gradient of the frame's atlas, its place measured on the
+/// screen or in the world (see `Frame::background_on_screen`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackgroundPaint {
+    /// The gradient's atlas row; `u32::MAX` paints black.
+    pub row: u32,
+    /// How the place runs: the direction in degrees, the span, and the centre xy.
+    pub place: [f32; 4],
+    /// Where along the gradient the paint starts, 0 to 1 (a Time or Beat paint gives its whole
+    /// place here).
+    pub t0: f32,
+    /// Gradients per second the place slides along.
+    pub scroll: f32,
+    /// 0 clamp, 1 repeat, 2 mirror.
+    pub repeat: f32,
+    /// 0 paints the colour at `t0` everywhere, 1 works the place out along the direction, 2
+    /// outward from the centre.
+    pub mode: f32,
+    /// 1 picks the nearest baked colour instead of blending neighbours.
+    pub steps: f32,
+    /// A plain two-colour blend (linear light) the shader mixes itself, exactly, instead of
+    /// reading the baked row, whose half floats are a hair off for very dark colours.
+    pub ends: Option<[[f32; 4]; 2]>,
+}
+
+impl Default for BackgroundPaint {
+    fn default() -> Self {
+        Self {
+            row: u32::MAX,
+            place: [90.0, 1920.0, 0.0, 0.0],
+            t0: 0.0,
+            scroll: 0.0,
+            repeat: 0.0,
+            mode: 0.0,
+            steps: 0.0,
+            ends: None,
+        }
+    }
+}
+
 /// Everything the renderer needs for one frame: the picture's globals and the instance lists.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -462,8 +585,8 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub time: f32,
-    pub background_top: [f32; 4],
-    pub background_bottom: [f32; 4],
+    /// The colours behind everything, painted by the background pass.
+    pub background: BackgroundPaint,
     pub bloom: f32,
     pub exposure: f32,
     pub shapes: Vec<ShapeInstance>,
@@ -481,12 +604,13 @@ pub struct Frame {
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
+    /// The gradients the instances paint with, one atlas row each.
+    pub gradients: GradientAtlas,
     /// What the camera shows: everything above is drawn through it.
     pub camera: CameraView,
-    /// The background gradient stays still on the screen; off, it is painted across the world
-    /// between `background_span`'s two heights.
+    /// The background's place is measured on the screen, still while the camera moves; off, it
+    /// is measured in the world and moves with the camera.
     pub background_on_screen: bool,
-    pub background_span: [f32; 2],
     /// Things stuck to the screen, drawn after the main lists with no camera. Its own camera,
     /// background and overlay are unused.
     pub overlay: Option<Box<Frame>>,
@@ -501,8 +625,7 @@ impl Default for Frame {
             width: 1080,
             height: 1920,
             time: 0.0,
-            background_top: [0.0, 0.0, 0.0, 1.0],
-            background_bottom: [0.0, 0.0, 0.0, 1.0],
+            background: BackgroundPaint::default(),
             bloom: 0.0,
             exposure: 1.0,
             shapes: Vec::new(),
@@ -517,9 +640,9 @@ impl Default for Frame {
             bursts: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
+            gradients: GradientAtlas::default(),
             camera: CameraView::default(),
             background_on_screen: true,
-            background_span: [-960.0, 960.0],
             overlay: None,
             video: (1080, 1920),
         }
@@ -527,7 +650,7 @@ impl Default for Frame {
 }
 
 impl Frame {
-    /// Empties the instance lists and keeps the globals.
+    /// Empties the instance lists and the gradients and keeps the globals.
     pub fn clear(&mut self) {
         self.shapes.clear();
         self.balls.clear();
@@ -541,6 +664,8 @@ impl Frame {
         self.bursts.clear();
         self.hits.clear();
         self.effects.clear();
+        self.gradients.clear();
+        self.background = BackgroundPaint::default();
         self.camera = CameraView::default();
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
@@ -554,6 +679,26 @@ impl Frame {
         let overlay = self.overlay.get_or_insert_with(Box::default);
         (overlay.width, overlay.height, overlay.time, overlay.video) = (width, height, time, video);
         overlay
+    }
+
+    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
+    /// stuck things work on the whole picture like everyone else's, and the overlay only holds
+    /// what is drawn as shapes.
+    pub fn lift_overlay_extras(&mut self) {
+        let Some(o) = self.overlay.as_deref_mut() else { return };
+        let (effects, mut bursts, hits) =
+            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        // A burst names its gradient by the overlay's atlas row: give it the same row here.
+        for b in &mut bursts {
+            if b.paint.row >= 0.0
+                && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
+            {
+                b.paint.row = self.gradients.adopt(baked) as f32;
+            }
+        }
+        self.effects.extend(effects);
+        self.bursts.extend(bursts);
+        self.hits.extend(hits);
     }
 
     /// Whether the overlay has anything to draw.
@@ -709,15 +854,7 @@ pub fn build_frame_at(
         }
     }
     frame.camera = world.camera;
-    // Shader effects, hit particles and hit marks of stuck things work on the whole picture
-    // like everyone else's: the overlay only holds what is drawn as shapes.
-    if let Some(o) = frame.overlay.as_deref_mut() {
-        let (effects, bursts, hits) =
-            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        frame.effects.extend(effects);
-        frame.bursts.extend(bursts);
-        frame.hits.extend(hits);
-    }
+    frame.lift_overlay_extras();
 }
 
 #[cfg(test)]
@@ -749,7 +886,7 @@ mod tests {
                 Some(Value::Number(r)) => *r as f32,
                 _ => 0.0,
             };
-            frame.balls.push(BallInstance { center: [1.0, 2.0], radius, glow: 0.0, color: [1.0; 4], code: [0.0; 4] });
+            frame.balls.push(BallInstance { center: [1.0, 2.0], radius, color: [1.0; 4], ..BallInstance::default() });
             frame.flashes.push(FlashInstance { center: [0.0; 2], size: 1.0, color: [1.0; 4] });
         }
     }
@@ -875,8 +1012,8 @@ mod tests {
         frame.glyphs.push(GlyphInstance::default());
         frame.clear();
         assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
-        assert_eq!(std::mem::size_of::<SoftVertex>(), 32);
-        assert_eq!(std::mem::size_of::<GlyphInstance>(), 80);
+        assert_eq!(std::mem::size_of::<SoftVertex>(), 72);
+        assert_eq!(std::mem::size_of::<GlyphInstance>(), 128);
     }
 
     #[test]
@@ -946,8 +1083,8 @@ mod tests {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 128);
-        assert_eq!(std::mem::size_of::<BallInstance>(), 48);
+        assert_eq!(std::mem::size_of::<LookInstance>(), 160);
+        assert_eq!(std::mem::size_of::<BallInstance>(), 80);
     }
 
     #[test]
@@ -955,12 +1092,12 @@ mod tests {
         use bpe_runtime::Outline;
         let ring =
             Outline::Ring { center: glam::Vec2::new(1.0, 2.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 4.0 };
-        let s = ShapeInstance::outline(&ring, [1.0, 0.5, 0.0, 1.0], 0.1);
+        let s = ShapeInstance::outline(&ring, PaintGpu::default(), [1.0, 0.5, 0.0, 1.0], 0.1);
         assert_eq!(s.a, [1.0, 2.0, 0.3, 0.0]);
         assert_eq!(s.b, [50.0, 6.0, 0.0, 0.0]);
         assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
         let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
-        assert_eq!(ShapeInstance::outline(&b, [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(ShapeInstance::outline(&b, PaintGpu::default(), [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
         let r = Outline::Rounded {
             center: glam::Vec2::ZERO,
             half: glam::Vec2::new(30.0, 40.0),
@@ -968,7 +1105,7 @@ mod tests {
             angle: 0.1,
             thickness: 2.0,
         };
-        let s = ShapeInstance::outline(&r, [1.0; 4], 0.0);
+        let s = ShapeInstance::outline(&r, PaintGpu::default(), [1.0; 4], 0.0);
         assert_eq!((s.c[0], s.b), (1.0, [30.0, 40.0, 10.0, 0.0]));
         let cap = ShapeInstance::capsule(glam::Vec2::new(-10.0, 0.0), glam::Vec2::new(10.0, 0.0), 3.0, [1.0; 4], 0.2);
         assert_eq!((cap.c[0], cap.c[1], cap.c[2], cap.b[0]), (2.0, 3.0, 0.2, 10.0));
@@ -993,9 +1130,12 @@ mod flow_tests {
         let mut frame = Frame::default();
         frame.liquids.push(LiquidLayer {
             thing: ThingId(1),
-            points: Points::Cpu(vec![[0.0, 0.0]]),
+            points: Points::Cpu(vec![[0.0; 4]]),
             radius: 3.0,
             color: [0.0, 0.5, 1.0, 1.0],
+            follow: 0,
+            paint: PaintGpu::default(),
+            paint_place: [0.0; 4],
             clarity: 0.45,
             refraction: 0.5,
             highlight: 0.8,
@@ -1009,7 +1149,14 @@ mod flow_tests {
             center: [0.0; 2],
             seed: 1,
             release_seconds: 0.0,
-            look: SwarmLook { size: 1.0, brightness: 0.2, colors_by: 2, colors: vec![[1.0; 4]] },
+            look: SwarmLook {
+                size: 1.0,
+                brightness: 0.2,
+                follow: 0,
+                paint: PaintGpu::default(),
+                place: [0.0; 4],
+                color: [1.0; 4],
+            },
             motion: Flock::default(),
         });
         let copy = frame.clone();

@@ -127,12 +127,15 @@
                 slot: Look,
                 kind: "look.classic",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "gradient": Colors([
-                        "#3ed8ff",
-                        "#8a4dff",
-                        "#ff5ca8",
-                    ]),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3ed8ff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
         },

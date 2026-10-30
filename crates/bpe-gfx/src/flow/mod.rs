@@ -340,10 +340,16 @@ impl FlowLayers {
 
     /// Draws the frame's swarms into the scene pass, after the walls and before everything
     /// in front of them.
-    pub(crate) fn draw_swarms(&self, pass: &mut wgpu::RenderPass<'_>, globals: &wgpu::BindGroup, frame: &Frame) {
+    pub(crate) fn draw_swarms(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        paint: &wgpu::BindGroup,
+        frame: &Frame,
+    ) {
         for l in &frame.swarms {
             if let Some(Layer::Swarm(s)) = self.layers.get(&l.thing) {
-                s.draw(&self.pipelines.swarm, pass, globals);
+                s.draw(&self.pipelines.swarm, pass, globals, paint);
             }
         }
     }
@@ -516,6 +522,9 @@ mod tests {
             }),
             radius: 3.0,
             color: [0.1, 0.5, 1.0, 1.0],
+            follow: 0,
+            paint: crate::PaintGpu::default(),
+            paint_place: [0.0; 4],
             clarity: 0.45,
             refraction: 0.5,
             highlight: 0.8,
@@ -540,7 +549,15 @@ mod tests {
             center: [0.0; 2],
             seed: 1,
             release_seconds: 0.0,
-            look: SwarmLook { size: 1.5, brightness: 0.25, colors_by: 0, colors: vec![[1.0; 4]] },
+            look: SwarmLook {
+                size: 1.5,
+                brightness: 0.25,
+                follow: 0,
+                paint: crate::PaintGpu::default(),
+                // The top speed below reaches the end of the colours.
+                place: [0.0, 260.0, 0.0, 0.0],
+                color: [1.0; 4],
+            },
             motion: Flock {
                 top_speed: 260.0,
                 drag: 0.6,
@@ -724,6 +741,7 @@ mod tests {
             glow: 0.5,
             color: [1.0, 0.5, 0.2, 1.0],
             code: [0.0; 4],
+            paint: crate::PaintGpu::default(),
         });
         frame.bloom = 0.3;
         frame.time = 1.0;
@@ -887,8 +905,8 @@ mod tests {
         flow.step_to(&device, &queue, 1.0, &source);
         assert_eq!(flow.step(), 120);
         frame.swarms[0].look.brightness = 0.9;
-        frame.swarms[0].look.colors_by = 2;
-        frame.swarms[0].look.colors = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+        frame.swarms[0].look.follow = 2;
+        frame.swarms[0].look.color = [1.0, 0.0, 0.0, 1.0];
         flow.prepare(&device, &queue, &frame, &source);
         assert_eq!((flow.step(), flow.steps_run()), (120, 120));
         frame.swarms[0].motion.flow = 2.0;
@@ -984,5 +1002,130 @@ mod tests {
         // Every kept checkpoint sits on the interval, so seeking back still finds one.
         flow.step_to(&device, &queue, 10.0, &source);
         assert_eq!(flow.step(), 1200);
+    }
+
+    /// A gradient of `colours`, evenly spaced and smooth, baked into `frame`'s atlas.
+    fn paint_of(frame: &mut Frame, colours: &[bpe_core::Color]) -> crate::PaintGpu {
+        let row = frame.gradients.row(&bpe_core::Gradient::even(colours));
+        crate::PaintGpu { row: row as f32, ..crate::PaintGpu::default() }
+    }
+
+    #[test]
+    fn liquid_place_paints_top_and_bottom() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = box_sims();
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let blue_red = [bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)];
+        let mut pool = gpu_pool(ThingId(1), 12_000);
+        // Green, so a surface that ignores its paint fails.
+        pool.color = [0.0, 1.0, 0.0, 1.0];
+        pool.clarity = 0.0;
+        pool.follow = 1;
+        pool.paint = paint_of(&mut frame, &blue_red);
+        // Straight down, from the top of the pool (y 210) to its floor (y 700).
+        pool.paint_place = [90.0, 490.0, 0.0, 455.0];
+        frame.liquids.push(pool);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 3,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        renderer.render_with_flow(&device, &queue, &frame, &source);
+        let pixels = renderer.read_output(&device, &queue).unwrap();
+        // Four world pixels per output pixel, the world's centre in the picture's centre.
+        let at = |x: f32, y: f32| {
+            let i = ((((y / 4.0) as u32 + 240) * 270 + (x / 4.0) as u32 + 135) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        let (top, bottom) = (at(0.0, 300.0), at(0.0, 650.0));
+        assert!(top[1] < 60 && bottom[1] < 60, "{top:?} {bottom:?}: green is the liquid's own colour");
+        assert!(top[2] > top[0], "{top:?}: the top is bluer");
+        assert!(bottom[0] > bottom[2], "{bottom:?}: the floor is redder");
+        assert!(top[2] > bottom[2] && bottom[0] > top[0], "{top:?} {bottom:?}");
+    }
+
+    #[test]
+    fn swarm_speed_uses_the_gradient() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame { time: 0.5, bloom: 0.0, ..Frame::default() };
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 20_000;
+        // Dim enough that piled-up points do not burn to white.
+        layer.look.brightness = 0.15;
+        layer.look.size = 2.0;
+        // Blue, so a swarm that ignores its paint fails.
+        layer.look.color = [0.0, 0.0, 1.0, 1.0];
+        layer.look.follow = 0;
+        layer.look.paint = paint_of(&mut frame, &[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0)]);
+        frame.swarms.push(layer);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        renderer.render_with_flow(&device, &queue, &frame, &source);
+        let pixels = renderer.read_output(&device, &queue).unwrap();
+        let lit: Vec<&[u8]> = pixels.chunks(4).filter(|p| p[0] > 60 || p[1] > 60 || p[2] > 60).collect();
+        assert!(lit.len() > 500, "{}", lit.len());
+        let blue: Vec<_> = lit.iter().filter(|p| p[2] >= 40).take(10).collect();
+        assert!(blue.is_empty(), "no blue: the gradient runs red to green: {blue:?} of {}", lit.len());
+        // Slow points are redder, fast ones greener: both show.
+        assert!(lit.iter().any(|p| p[0] > p[1] + 40), "some slow red points");
+        assert!(lit.iter().any(|p| p[1] > p[0] + 40), "some fast green points");
+    }
+
+    #[test]
+    fn swarm_speed_runs_over_the_span() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut renderer = Renderer::new(&device, 270, 480);
+        // How many lit pixels are mostly red (slow) and mostly green (fast) with this span.
+        let mut tally = |span: f32| {
+            let mut frame = Frame { time: 0.5, bloom: 0.0, ..Frame::default() };
+            let mut layer = swarm_layer(ThingId(1));
+            layer.count = 20_000;
+            layer.look.brightness = 0.15;
+            layer.look.size = 2.0;
+            layer.look.paint =
+                paint_of(&mut frame, &[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0)]);
+            layer.look.place = [0.0, span, 0.0, 0.0];
+            frame.swarms.push(layer);
+            renderer.render_with_flow(&device, &queue, &frame, &source);
+            let pixels = renderer.read_output(&device, &queue).unwrap();
+            let lit: Vec<&[u8]> = pixels.chunks(4).filter(|p| p[0] > 60 || p[1] > 60).collect();
+            let red = lit.iter().filter(|p| p[0] as i32 > p[1] as i32 + 40).count();
+            let green = lit.iter().filter(|p| p[1] as i32 > p[0] as i32 + 40).count();
+            (red, green, lit.len())
+        };
+        let (red, green, lit) = tally(130.0);
+        assert!(red > 50 && green > 50, "{red} red, {green} green of {lit}");
+        // Twice the span halves every point's place: more red, less green.
+        let (red2, green2, _) = tally(260.0);
+        assert!(red2 > red && green2 < green, "{red} -> {red2} red, {green} -> {green2} green");
+        // Far past the fastest point, everything is the first colour; far below it, the last.
+        let (_, green_far, lit_far) = tally(1e6);
+        assert_eq!(green_far, 0, "{lit_far} lit");
+        let (red_near, _, lit_near) = tally(1.0);
+        assert_eq!(red_near, 0, "{lit_near} lit");
     }
 }

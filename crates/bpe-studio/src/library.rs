@@ -77,8 +77,6 @@ enum Action {
     Delete(ModuleId),
     SelectUsers(ModuleId),
     Set(ModuleId, &'static str, bpe_core::Value),
-    /// A look's colour list: one colour goes in Colour, several in Colours.
-    Colours(ModuleId, Vec<bpe_core::Color>),
     Lock(ModuleId, &'static str, bool),
     SavePreset(ModuleId),
     /// A preset by its place in the list.
@@ -163,20 +161,6 @@ pub fn show(
             Err(e) => out.message = Some(e.to_string()),
         },
         Some(Action::SelectUsers(m)) => out.select = Some(scene.users_of(m)),
-        Some(Action::Colours(m, list)) => {
-            let at = |key: &str| Address { owner: Owner::Module(m), slot: None, key: key.into() };
-            let (colour, colours) = match &list[..] {
-                [one] => (*one, Vec::new()),
-                _ => (list[0], list),
-            };
-            let result = scene
-                .set_at(reg, &at(crate::widgets::COLOUR), bpe_core::Value::Color(colour))
-                .and_then(|()| scene.set_at(reg, &at(crate::widgets::COLOURS), bpe_core::Value::Colors(colours)));
-            match result {
-                Ok(()) => out.edited = true,
-                Err(e) => out.message = Some(e.to_string()),
-            }
-        }
         Some(Action::Set(m, key, value)) => {
             let a = Address { owner: Owner::Module(m), slot: None, key: key.into() };
             match scene.set_at(reg, &a, value) {
@@ -459,11 +443,9 @@ fn details(
         marks: &|_| None,
         locked: &locked,
         applies: &applies,
+        folded: None,
     };
     let out = settings_grid_marked(ui, ("library", id), kind.settings(), get, &cx);
-    if let Some(edit) = out.colours {
-        *action = Some(Action::Colours(id, edit.list));
-    }
     if let Some((key, lock)) = out.locks.into_iter().next() {
         *action = Some(Action::Lock(id, key, lock));
     }

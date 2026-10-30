@@ -10,25 +10,34 @@ struct Params {
     steer: vec4<f32>,
     // x: ball reach, y: wall avoidance, z: gravity scale, w: grid cell size
     more: vec4<f32>,
-    // x: colour mode (0 speed, 1 nearest ball, 2 gradient), y: colour stops, z: start (0 fill, 1 centre, 2 ring)
+    // x: colour follow (0 speed, 1 nearest ball, 2 random, 3 place along a direction, 4 distance
+    // from a centre, 5 one colour), z: start (0 fill, 1 centre, 2 ring)
     look: vec4<u32>,
     // xy: swarm centre, z: half size of the area a Fill start covers, w: point size (drawing)
     arena: vec4<f32>,
     // x: brightness (drawing), y: seconds the release from the centre takes (0: all at once)
     draw: vec4<f32>,
-    colors: array<vec4<f32>, 6>,
+    // The one colour, and a point's colour before it has a nearest ball.
+    color: vec4<f32>,
+    // The paint, as `PaintGpu`'s fields in order.
+    paint_a: vec4<f32>,
+    paint_b: vec4<f32>,
+    // x: direction in degrees, y: span (also of a speed), zw: centre
+    place: vec4<f32>,
 };
 
 // Matches `Globals` in lib.rs.
 struct Globals {
     // x, y: 2 / frame size, z: world size of one output pixel, w: time
     view: vec4<f32>,
-    bg_top: vec4<f32>,
-    bg_bottom: vec4<f32>,
+    // The background paint: atlas row, start, scroll, repeat.
+    bg_paint: vec4<f32>,
+    // The background place: direction, span, centre xy.
+    bg_place: vec4<f32>,
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y, z: world heights it spans
+    // x: background on screen, y: how its place runs, z: steps
     bg: vec4<f32>,
 };
 
@@ -48,12 +57,9 @@ fn draw_rand(i: u32, k: u32) -> f32 {
     return f32(h >> 8u) / 16777216.0;
 }
 
-fn draw_gradient(t: f32) -> vec4<f32> {
-    let stops = max(draw_params.look.y, 1u);
-    let x = clamp(t, 0.0, 1.0) * f32(stops - 1u);
-    let a = u32(floor(x));
-    let b = min(a + 1u, stops - 1u);
-    return mix(draw_params.colors[a], draw_params.colors[b], fract(x));
+// The colour of the paint `along` it (0 to 1 is one gradient), after its start and repeat.
+fn draw_gradient(along: f32) -> vec4<f32> {
+    return paint_along(paint_from(draw_params.paint_a, draw_params.paint_b), along, 0.0);
 }
 
 struct PointOut {
@@ -68,16 +74,27 @@ fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     let point = draw_points[ii];
     let p = point.xy;
     var color: vec4<f32>;
+    let place = draw_params.place;
     switch draw_params.look.x {
         case 0u: {
-            color = draw_gradient(length(point.zw) / max(draw_params.motion.x, 1.0));
+            color = draw_gradient(length(point.zw) / max(place.y, 1e-3));
         }
         case 1u: {
             let tint = draw_tints[ii];
             color = vec4<f32>(unpack2x16float(tint.x), unpack2x16float(tint.y));
         }
-        default: {
+        case 2u: {
             color = draw_gradient(draw_rand(ii, 42u));
+        }
+        case 3u: {
+            let a = radians(place.x);
+            color = draw_gradient(dot(p - place.zw, vec2<f32>(cos(a), sin(a))) / max(place.y, 1e-3) + 0.5);
+        }
+        case 4u: {
+            color = draw_gradient(length(p - place.zw) / max(place.y, 1e-3));
+        }
+        default: {
+            color = draw_params.color;
         }
     }
     let px = g.view.z;

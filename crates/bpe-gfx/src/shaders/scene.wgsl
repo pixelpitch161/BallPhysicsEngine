@@ -4,14 +4,18 @@
 struct Globals {
     // x: 2 / video width, y: 2 / video height, z: world units per output pixel, w: time
     view: vec4<f32>,
-    bg_top: vec4<f32>,
-    bg_bottom: vec4<f32>,
+    // The background paint: atlas row, start, scroll, repeat.
+    bg_paint: vec4<f32>,
+    // The background place: direction, span, centre xy.
+    bg_place: vec4<f32>,
     // x: bloom strength, y: exposure
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y, z: world heights it spans
+    // x: background on screen, y: how its place runs, z: steps, w: 1 to mix the two colours below
     bg: vec4<f32>,
+    bg_from: vec4<f32>,
+    bg_to: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -69,14 +73,32 @@ fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
-    // `in.world` is in screen units here; painted across the world, the gradient runs between
-    // two world heights instead.
-    var t = clamp(in.world.y * g.view.y * 0.5 + 0.5, 0.0, 1.0);
-    if g.bg.x == 0.0 {
-        let y = screen_to_world(in.world).y;
-        t = clamp((y - g.bg.y) / max(g.bg.z - g.bg.y, 1.0), 0.0, 1.0);
+    if g.bg_paint.x < 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    return vec4<f32>(mix(g.bg_top.rgb, g.bg_bottom.rgb, t), 1.0);
+    // `in.world` is in screen units here; the place is measured there, or in the world.
+    var along = 0.0;
+    if g.bg.y > 0.5 {
+        var at = in.world;
+        if g.bg.x == 0.0 {
+            at = screen_to_world(in.world);
+        }
+        let d = at - g.bg_place.zw;
+        let span = max(g.bg_place.y, 0.001);
+        if g.bg.y < 1.5 {
+            let a = radians(g.bg_place.x);
+            along = dot(d, vec2<f32>(cos(a), sin(a))) / span + 0.5;
+        } else {
+            along = length(d) / span;
+        }
+    }
+    if g.bg.w > 0.5 {
+        // A plain blend of two colours, mixed here without the atlas's half floats.
+        let t = paint_wrap(along + g.bg_paint.y + g.view.w * g.bg_paint.z, g.bg_paint.w);
+        return vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0);
+    }
+    let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w);
+    return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
 }
 
 // ---- Walls (instanced quads with a distance function) ----
@@ -94,6 +116,9 @@ struct ShapeIn {
     // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
+    // The gradient painted on the line, as `PaintGpu`.
+    @location(4) paint_a: vec4<f32>,
+    @location(5) paint_b: vec4<f32>,
 };
 
 struct ShapeOut {
@@ -103,6 +128,8 @@ struct ShapeOut {
     @location(2) @interpolate(flat) b: vec4<f32>,
     @location(3) @interpolate(flat) c: vec4<f32>,
     @location(4) @interpolate(flat) color: vec4<f32>,
+    @location(5) @interpolate(flat) paint_a: vec4<f32>,
+    @location(6) @interpolate(flat) paint_b: vec4<f32>,
 };
 
 @vertex
@@ -126,6 +153,8 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
     out.b = s.b;
     out.c = s.c;
     out.color = s.color;
+    out.paint_a = s.paint_a;
+    out.paint_b = s.paint_b;
     return out;
 }
 
@@ -189,6 +218,49 @@ fn shape_distance(in: ShapeOut) -> f32 {
     return segment_distance(local, vec2<f32>(-in.b.x, 0.0), vec2<f32>(in.b.x, 0.0));
 }
 
+// How far round a shape's line a pixel is, 0 to 1, for a gradient painted along it. A ring or
+// polygon goes clockwise round its centre from its own angle; a box clockwise round its edge from
+// the top-left corner (rounded corners counted as square); a capsule from one end to the other.
+fn shape_path(in: ShapeOut) -> f32 {
+    let local = rotate(in.world - in.a.xy, -in.a.z);
+    if in.c.x < 0.5 {
+        return fract(atan2(local.y, local.x) / TAU);
+    }
+    let half = max(in.b.xy, vec2<f32>(1e-3));
+    if in.c.x < 1.5 {
+        let p = clamp(local, -half, half);
+        let q = abs(local) - half;
+        // The perimeter walked so far: top, right, bottom, left.
+        var walked = 0.0;
+        if q.y >= q.x {
+            if local.y < 0.0 {
+                walked = p.x + half.x;
+            } else {
+                walked = 2.0 * half.x + 2.0 * half.y + (half.x - p.x);
+            }
+        } else if local.x > 0.0 {
+            walked = 2.0 * half.x + (p.y + half.y);
+        } else {
+            walked = 4.0 * half.x + 2.0 * half.y + (half.y - p.y);
+        }
+        return fract(walked / (4.0 * (half.x + half.y)));
+    }
+    return clamp((local.x + in.b.x) / (2.0 * half.x), 0.0, 1.0);
+}
+
+// A pixel's place across a shape's bounding box, -1 to 1 each way, turned with the shape: what
+// an inside pattern paints across.
+fn shape_local(in: ShapeOut) -> vec2<f32> {
+    var half = vec2<f32>(in.b.x);
+    if in.c.x > 1.5 {
+        half = vec2<f32>(in.b.x, 0.0);
+    } else if in.c.x > 0.5 {
+        half = in.b.xy;
+    }
+    half = max(half + vec2<f32>(in.c.y), vec2<f32>(1e-3));
+    return rotate(in.world - in.a.xy, -in.a.z) / half;
+}
+
 @fragment
 fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     let px = g.view.z;
@@ -201,7 +273,18 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     if cover <= 0.0 && glow < 1e-4 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row < 0.0 {
+        return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
+    }
+    // A gradient painted on the line takes the place of its colour; the glow keeps the colour.
+    var line = vec3<f32>(0.0);
+    if paint.pattern > 3.5 {
+        line = paint_pattern(paint, shape_path(in) * paint.scale, g.view.w).rgb;
+    } else {
+        line = paint_colour(paint, shape_local(in), g.view.w).rgb;
+    }
+    return vec4<f32>(line * cover + in.color.rgb * glow, covering(cover, in.color.a));
 }
 
 // ---- Balls (instanced quads, shaded like small spheres with a soft halo) ----
@@ -215,6 +298,9 @@ struct BallIn {
     @location(3) color: vec4<f32>,
     // The thing code plus half the seed, the seed, two spare.
     @location(4) code: vec4<f32>,
+    // The gradient painted inside, as `PaintGpu`.
+    @location(5) paint_a: vec4<f32>,
+    @location(6) paint_b: vec4<f32>,
 };
 
 struct BallOut {
@@ -224,6 +310,8 @@ struct BallOut {
     @location(2) radius_px: f32,
     @location(3) glow: f32,
     @location(4) @interpolate(flat) code: vec4<f32>,
+    @location(5) @interpolate(flat) paint_a: vec4<f32>,
+    @location(6) @interpolate(flat) paint_b: vec4<f32>,
 };
 
 @vertex
@@ -236,6 +324,8 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     out.radius_px = b.radius / g.view.z;
     out.glow = b.glow;
     out.code = b.code;
+    out.paint_a = b.paint_a;
+    out.paint_b = b.paint_b;
     return out;
 }
 
@@ -256,7 +346,13 @@ fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
     let r = length(in.local);
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
-    let lit = sphere_light(in.local, in.color.rgb);
+    var base = in.color.rgb;
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row >= 0.0 {
+        // A gradient painted inside takes the place of the ball's colour; the light stays on top.
+        base = paint_colour(paint, in.local, g.view.w).rgb;
+    }
+    let lit = sphere_light(in.local, base);
     let halo_d = max(r - 1.0, 0.0) / 0.8;
     let halo = in.glow * exp(-halo_d * halo_d) * (1.0 - cover);
     if cover <= 0.0 && halo < 1e-4 {
@@ -309,12 +405,20 @@ struct SoftIn {
     @location(1) inside: f32,
     @location(2) pad: f32,
     @location(3) color: vec4<f32>,
+    // The gradient painted across the body, as `PaintGpu`; the same at every corner.
+    @location(4) paint_a: vec4<f32>,
+    @location(5) paint_b: vec4<f32>,
+    // Where the corner is in the body's bounding box, -1 to 1.
+    @location(6) local: vec2<f32>,
 };
 
 struct SoftOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) inside: f32,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) paint_a: vec4<f32>,
+    @location(3) @interpolate(flat) paint_b: vec4<f32>,
+    @location(4) local: vec2<f32>,
 };
 
 @vertex
@@ -323,6 +427,9 @@ fn vs_soft(v: SoftIn) -> SoftOut {
     out.pos = to_clip(v.position);
     out.inside = v.inside;
     out.color = v.color;
+    out.paint_a = v.paint_a;
+    out.paint_b = v.paint_b;
+    out.local = v.local;
     return out;
 }
 
@@ -333,5 +440,11 @@ fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
     if a <= 0.0 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row < 0.0 {
+        return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
+    }
+    // A gradient painted across the body takes the place of its colours.
+    let rgb = paint_colour(paint, in.local, g.view.w).rgb;
+    return vec4<f32>(rgb * a, covering(a, in.color.a));
 }

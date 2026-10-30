@@ -7,6 +7,9 @@
 pub mod effects;
 pub mod flow;
 mod frame;
+mod gradients;
+#[cfg(test)]
+mod paint_tests;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
@@ -15,10 +18,12 @@ pub mod text;
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, HitMark,
-    LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, thing_code,
+    BackgroundPaint, BallInstance, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame, GlyphInstance,
+    GpuLiquid, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer,
+    SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak,
+    push_streak_colours, thing_code,
 };
+pub use gradients::{ATLAS_WIDTH, GradientAtlas, PaintGpu};
 pub use text::Atlas;
 pub use wgpu;
 
@@ -35,13 +40,19 @@ const BLOOM_LEVELS: usize = 6;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Globals {
     view: [f32; 4],
-    bg_top: [f32; 4],
-    bg_bottom: [f32; 4],
+    /// The background paint: atlas row (below 0 paints black), start, scroll, repeat.
+    bg_paint: [f32; 4],
+    /// The background's place: direction in degrees, span, centre xy.
+    bg_place: [f32; 4],
     post: [f32; 4],
     /// The camera: centre xy, zoom, turn in radians.
     camera: [f32; 4],
-    /// x: 1 when the background stays on the screen, y, z: the world heights it spans otherwise.
+    /// x: 1 when the background stays on the screen, y: how its place runs (0 none, 1 direction,
+    /// 2 centre), z: 1 for hard steps, w: 1 to mix `bg_from` and `bg_to`.
     bg: [f32; 4],
+    /// The two colours of a plain blend the background mixes itself (`bg.w` is 1 then).
+    bg_from: [f32; 4],
+    bg_to: [f32; 4],
 }
 
 impl Globals {
@@ -52,16 +63,23 @@ impl Globals {
         let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
         Self {
             view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
-            bg_top: frame.background_top,
-            bg_bottom: frame.background_bottom,
+            bg_paint: [
+                if frame.background.row == u32::MAX { -1.0 } else { frame.background.row as f32 },
+                frame.background.t0,
+                frame.background.scroll,
+                frame.background.repeat,
+            ],
+            bg_place: frame.background.place,
             post: [frame.bloom, frame.exposure, 0.0, 0.0],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
-                frame.background_span[0],
-                frame.background_span[1],
-                0.0,
+                frame.background.mode,
+                frame.background.steps,
+                if frame.background.ends.is_some() { 1.0 } else { 0.0 },
             ],
+            bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
+            bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
         }
     }
 }
@@ -78,6 +96,10 @@ struct Targets {
     /// Half-size liquid thickness pictures: the splat target and the blur's scratch.
     thickness: wgpu::TextureView,
     blur: wgpu::TextureView,
+    /// The same size: the particles' speed over the paint's span, times their thickness, and
+    /// the blur's scratch for it.
+    speed: wgpu::TextureView,
+    speed_blur: wgpu::TextureView,
     thickness_size: (u32, u32),
     /// The object picture, made the first time an effect needs it.
     object: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -88,6 +110,70 @@ struct Targets {
     down_sources: Vec<wgpu::BindGroup>,
     up_sources: Vec<wgpu::BindGroup>,
     composite: wgpu::BindGroup,
+}
+
+/// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows.
+struct PaintTexture {
+    texture: wgpu::Texture,
+    rows: usize,
+    group: wgpu::BindGroup,
+}
+
+impl PaintTexture {
+    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, rows: usize) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient atlas"),
+            size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gradient atlas"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        Self { texture, rows, group }
+    }
+
+    /// Uploads `atlas`, making the texture taller first if its gradients do not fit.
+    fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        atlas: &GradientAtlas,
+    ) {
+        let max = device.limits().max_texture_dimension_2d as usize;
+        if atlas.len() > max {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!("{} gradients in one frame; past {max} they reuse the last one", atlas.len());
+            });
+        }
+        let rows = gradients::uploaded_rows(atlas.len(), max);
+        if rows > self.rows {
+            *self = Self::new(device, layout, sampler, gradients::atlas_height(rows, max));
+        }
+        if rows == 0 {
+            return;
+        }
+        let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
+        queue.write_texture(
+            self.texture.as_image_copy(),
+            &gradients::half_texels(&atlas.rows()[..rows]),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
+        );
+    }
 }
 
 /// The glyph atlas on the GPU, remade when the atlas grows or changes.
@@ -108,6 +194,9 @@ pub struct Renderer {
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
+    /// The gradient atlas: bound at group 1 of the scene passes and group 2 of the glyphs and
+    /// particles.
+    paint_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
@@ -134,6 +223,9 @@ pub struct Renderer {
     flash_buffer: GrowableBuffer,
     glyph_buffer: GrowableBuffer,
     atlas: Option<AtlasTexture>,
+    paint: PaintTexture,
+    /// The overlay frame's own gradients: its instances name rows of its own atlas.
+    overlay_paint: PaintTexture,
     targets: Targets,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
@@ -183,6 +275,7 @@ impl Renderer {
             label: Some("scene shader"),
             source: wgpu::ShaderSource::Wgsl(
                 [
+                    gradients::paint_wgsl(1).as_str(),
                     include_str!("shaders/scene.wgsl"),
                     include_str!("shaders/object.wgsl"),
                     include_str!("shaders/ball_look.wgsl"),
@@ -199,7 +292,9 @@ impl Renderer {
         });
         let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glyph shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [gradients::paint_wgsl(2).as_str(), include_str!("shaders/glyph.wgsl")].concat().into(),
+            ),
         });
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -266,6 +361,7 @@ impl Renderer {
             label: Some("atlas layout"),
             entries: &[texture_entry(0), sampler_entry],
         });
+        let paint_layout = gradients::paint_layout(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("linear clamp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -275,7 +371,7 @@ impl Renderer {
 
         let scene_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout)],
             immediate_size: 0,
         });
         let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -290,7 +386,7 @@ impl Renderer {
         });
         let glyph_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("glyph pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout), Some(&paint_layout)],
             immediate_size: 0,
         });
 
@@ -336,18 +432,24 @@ impl Renderer {
             })
         };
 
-        let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-        let ball_attributes =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4];
+        let shape_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4
+        ];
+        let ball_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
+        ];
         let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
         let look_attributes = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
+            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
         ];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
-        let soft_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
+        let soft_attributes = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x2
+        ];
         let glyph_attributes = wgpu::vertex_attr_array![
-            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4, 7 => Float32x4
         ];
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,
@@ -521,6 +623,10 @@ impl Renderer {
         );
 
         let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
+        let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
+        let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
+        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
+        let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
         Self {
             globals,
             globals_group,
@@ -530,6 +636,7 @@ impl Renderer {
             post_layout,
             composite_layout,
             atlas_layout,
+            paint_layout,
             sampler,
             background,
             trail,
@@ -543,7 +650,7 @@ impl Renderer {
             ball_object,
             look_object,
             chain: effects::chain::Chain::new(device),
-            particles: particles::Particles::new(device, &globals_layout),
+            particles,
             downsample,
             upsample,
             composite,
@@ -555,6 +662,8 @@ impl Renderer {
             flash_buffer: GrowableBuffer::new("flash instances"),
             glyph_buffer: GrowableBuffer::new("glyph instances"),
             atlas: None,
+            paint,
+            overlay_paint,
             targets,
             surface: flow::surface::Surface::new(device),
             flow: None,
@@ -676,6 +785,10 @@ impl Renderer {
             self.sync_atlas(device, queue);
         }
         self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
+        self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
+        if let Some(o) = overlay {
+            self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
+        }
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
         if wants_objects {
@@ -687,6 +800,7 @@ impl Renderer {
             let mut pass =
                 begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
             if !frame.trails.is_empty() {
@@ -706,7 +820,7 @@ impl Renderer {
                 pass.draw(0..soft_vertices as u32, 0..1);
             }
             if let Some(flow) = &self.flow {
-                flow.draw_swarms(&mut pass, &self.globals_group, frame);
+                flow.draw_swarms(&mut pass, &self.globals_group, &self.paint.group, frame);
             }
         }
         if !frame.liquids.is_empty() {
@@ -732,6 +846,7 @@ impl Renderer {
                         &frame.camera,
                         layer,
                         points,
+                        &self.paint.group,
                     );
                 }
             }
@@ -739,6 +854,7 @@ impl Renderer {
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             if !frame.balls.is_empty() {
                 pass.set_pipeline(&self.ball);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
@@ -754,6 +870,7 @@ impl Renderer {
             let view = &self.targets.object.as_ref().expect("made above").1;
             let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             if !frame.shapes.is_empty() {
                 pass.set_pipeline(&self.shape_object);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
@@ -786,13 +903,15 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             if !frame.flashes.is_empty() {
                 pass.set_pipeline(&self.flash);
+                pass.set_bind_group(1, &self.paint.group, &[]);
                 pass.set_vertex_buffer(0, self.flash_buffer.slice());
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
-            self.particles.draw(&mut pass);
+            self.particles.draw(&mut pass, &self.paint.group);
             if let (false, Some(atlas)) = (frame.glyphs.is_empty(), &self.atlas) {
                 pass.set_pipeline(&self.glyph);
                 pass.set_bind_group(1, &atlas.group, &[]);
+                pass.set_bind_group(2, &self.paint.group, &[]);
                 pass.set_vertex_buffer(0, self.glyph_buffer.slice());
                 pass.draw(0..4, 0..frame.glyphs.len() as u32);
             }
@@ -850,6 +969,7 @@ impl Renderer {
         let b = &self.overlay;
         let mut pass = begin_pass(encoder, &self.targets.hdr, "stuck to the screen", wgpu::LoadOp::Load);
         pass.set_bind_group(0, &self.screen_globals_group, &[]);
+        pass.set_bind_group(1, &self.overlay_paint.group, &[]);
         if !o.trails.is_empty() {
             pass.set_pipeline(&self.trail);
             pass.set_vertex_buffer(0, b.trails.slice());
@@ -884,6 +1004,7 @@ impl Renderer {
         if let (false, Some(atlas)) = (o.glyphs.is_empty(), &self.atlas) {
             pass.set_pipeline(&self.glyph);
             pass.set_bind_group(1, &atlas.group, &[]);
+            pass.set_bind_group(2, &self.overlay_paint.group, &[]);
             pass.set_vertex_buffer(0, b.glyphs.slice());
             pass.draw(0..4, 0..o.glyphs.len() as u32);
         }
@@ -974,6 +1095,11 @@ impl Targets {
                 .create_view(&Default::default());
         let blur = texture("liquid blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
             .create_view(&Default::default());
+        let speed = texture("liquid speed", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+            .create_view(&Default::default());
+        let speed_blur =
+            texture("liquid speed blur", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
+                .create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)
             .map(|level| {
                 let shift = level as u32 + 1;
@@ -1014,6 +1140,8 @@ impl Targets {
             behind_view,
             thickness,
             blur,
+            speed,
+            speed_blur,
             thickness_size,
             object: None,
             bloom,
@@ -1238,6 +1366,8 @@ mod surface_tests {
                 points.push([
                     center[0] - 100.0 + spacing * 0.5 + col as f32 * spacing + shift,
                     center[1] - 100.0 + spacing * 0.5 + row as f32 * spacing * 0.866,
+                    0.0,
+                    0.0,
                 ]);
             }
         }
@@ -1246,6 +1376,9 @@ mod surface_tests {
             points: Points::Cpu(points),
             radius: spacing * 0.5,
             color: [0.1, 0.3, 1.0, 1.0],
+            follow: 0,
+            paint: PaintGpu::default(),
+            paint_place: [0.0; 4],
             clarity,
             refraction,
             highlight: 0.8,
@@ -1311,13 +1444,66 @@ mod surface_tests {
     }
 
     #[test]
+    fn liquid_speed_paints_the_fast_block() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let row = frame
+            .gradients
+            .row(&bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)]));
+        // A still block on the left and one racing at 1000 px/s on the right, one liquid.
+        let mut liquid = block([-200.0, 300.0], 0.0, 0.0);
+        let Points::Cpu(still) = &liquid.points else { unreachable!() };
+        let fast = still.iter().map(|p| [p[0] + 400.0, p[1], 1000.0 * 0.6, 1000.0 * 0.8]);
+        let all: Vec<_> = still.iter().copied().chain(fast).collect();
+        liquid.points = Points::Cpu(all);
+        // Green, so a surface that ignores its paint fails.
+        liquid.color = [0.0, 1.0, 0.0, 1.0];
+        liquid.follow = 3;
+        liquid.paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
+        liquid.paint_place = [0.0, 1000.0, 0.0, 0.0];
+        frame.liquids.push(liquid);
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let (slow, fast) = (pixel(&pixels, -200.0, 300.0), pixel(&pixels, 200.0, 300.0));
+        assert!(slow[1] < 60 && fast[1] < 60, "{slow:?} {fast:?}: green is the liquid's own colour");
+        assert!(slow[2] > 120 && slow[0] < 60, "{slow:?}: the still block is the first stop");
+        assert!(fast[0] > 120 && fast[2] < 60, "{fast:?}: the fast block is the last stop");
+    }
+
+    #[test]
+    fn liquid_place_is_measured_in_the_world_through_the_camera() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let row = frame
+            .gradients
+            .row(&bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)]));
+        let mut liquid = block([0.0, 300.0], 0.0, 0.0);
+        liquid.color = [0.0, 1.0, 0.0, 1.0];
+        liquid.follow = 1;
+        liquid.paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
+        // Left to right across the block: blue on its left, red on its right.
+        liquid.paint_place = [0.0, 200.0, 0.0, 300.0];
+        frame.liquids.push(liquid);
+        // Turned a quarter round and zoomed in on the block: its left is at the screen's bottom.
+        let turn = std::f32::consts::FRAC_PI_2;
+        frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(0.0, 300.0), zoom: 2.0, turn };
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        // World x -60 and 60, a fifth of the way in from each end.
+        let (world_left, world_right) = (pixel(&pixels, 0.0, 120.0), pixel(&pixels, 0.0, -120.0));
+        assert!(world_left[1] < 60 && world_right[1] < 60, "{world_left:?} {world_right:?}: no own green");
+        assert!(world_left[2] > world_left[0] + 60, "{world_left:?}: the world's left is blue");
+        assert!(world_right[0] > world_right[2] + 60, "{world_right:?}: the world's right is red");
+    }
+
+    #[test]
     fn the_surface_sits_behind_the_balls_and_in_front_of_the_wall() {
         let Some((device, queue)) = gpu() else { return };
         let mut renderer = Renderer::new(&device, W, H);
         let ring =
             Outline::Ring { center: glam::Vec2::new(0.0, 300.0), radius: 60.0, sides: 0, angle: 0.0, thickness: 12.0 };
         let mut frame = Frame::default();
-        frame.shapes.push(ShapeInstance::outline(&ring, [1.0, 1.0, 1.0, 1.0], 0.0));
+        frame.shapes.push(ShapeInstance::outline(&ring, PaintGpu::default(), [1.0, 1.0, 1.0, 1.0], 0.0));
         let plain = render(&mut renderer, &device, &queue, &frame);
         let wall_before = pixel(&plain, 60.0, 300.0);
         assert!(wall_before[0] > 150, "{wall_before:?}: the wall is white");
@@ -1328,6 +1514,7 @@ mod surface_tests {
             glow: 0.0,
             color: [1.0, 1.0, 1.0, 1.0],
             code: [0.0; 4],
+            paint: crate::PaintGpu::default(),
         });
         let pixels = render(&mut renderer, &device, &queue, &frame);
         let ball = pixel(&pixels, 0.0, 300.0);

@@ -1,7 +1,7 @@
 //! The settings schema: one description of each setting drives the inspector, keyframes, dice,
 //! locks and pulses.
 
-use crate::{Color, Params, Target, Value, ValueType};
+use crate::{Color, Gradient, Params, Target, Value, ValueType};
 
 /// Whether a setting shows in a module's first, short view or only under More.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +100,40 @@ pub trait Settings: Sized + Default {
     fn to_params(&self) -> Params;
 }
 
+/// How a struct of settings is embedded in another one, as `#[setting(paint, ...)]` says.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupOpts {
+    /// Put before every key of the group, such as `outline_`. May be empty.
+    pub prefix: &'static str,
+    /// The group's own name, shown on its main setting.
+    pub label: &'static str,
+    /// The heading the inspector groups the settings under.
+    pub group: &'static str,
+    /// The embedding field's own condition, which every setting of the group also needs.
+    pub when: &'static str,
+    /// The names of the choices the group may offer.
+    pub follows: &'static [&'static str],
+    /// Whether the group has its inside pattern settings.
+    pub inside: bool,
+    /// No `space` setting: positions are always read from the screen.
+    pub screen_only: bool,
+    /// The group's main setting shows in the simple view.
+    pub simple: bool,
+}
+
+/// A struct of settings that another struct embeds as one field, its keys all starting with a
+/// prefix. Used through `#[setting(paint, ...)]`.
+/// `default` is the field's value in the outer struct's `Default`, so a group's settings
+/// default, read and save against what the outer struct starts with.
+pub trait SettingGroup: Sized + Default {
+    /// The group's settings. Keys and conditions are leaked once per outer type.
+    fn group_defs(o: &GroupOpts, default: &Self) -> Vec<SettingDef>;
+    /// Fills the group from saved values, using the default for missing or wrong-typed ones.
+    fn group_read(o: &GroupOpts, default: &Self, p: &Params) -> Self;
+    /// Saves only the fields that differ from the default.
+    fn group_write(&self, o: &GroupOpts, default: &Self, p: &mut Params);
+}
+
 impl SettingValue for f32 {
     fn value_type() -> ValueType {
         ValueType::Number
@@ -196,15 +230,15 @@ impl SettingValue for Color {
     }
 }
 
-impl SettingValue for Vec<Color> {
+impl SettingValue for Gradient {
     fn value_type() -> ValueType {
-        ValueType::Colors
+        ValueType::Gradient
     }
     fn to_value(&self) -> Value {
-        Value::Colors(self.clone())
+        Value::Gradient(self.clone())
     }
     fn from_value(v: &Value) -> Option<Self> {
-        if let Value::Colors(x) = v { Some(x.clone()) } else { None }
+        if let Value::Gradient(x) = v { Some(x.clone()) } else { None }
     }
 }
 
@@ -277,14 +311,14 @@ fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value
     names.into_iter().any(|n| n == name) == wanted
 }
 
-/// A setting counts as on when it is true, not zero, or not empty.
+/// A setting counts as on when it is true, not zero, not empty, or a gradient with more than one stop.
 fn is_on(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
         Value::Number(x) => *x != 0.0,
         Value::Int(x) => *x != 0,
         Value::Text(t) => !t.trim().is_empty(),
-        Value::Colors(c) => !c.is_empty(),
+        Value::Gradient(g) => g.stops.len() > 1,
         _ => true,
     }
 }
@@ -292,7 +326,7 @@ fn is_on(v: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::applies;
-    use crate::{Color, Value};
+    use crate::{Color, Gradient, Value};
 
     fn get(key: &str) -> Option<Value> {
         match key {
@@ -300,8 +334,8 @@ mod tests {
             "on" => Some(Value::Bool(true)),
             "off" => Some(Value::Bool(false)),
             "zero" => Some(Value::Number(0.0)),
-            "none" => Some(Value::Colors(Vec::new())),
-            "two" => Some(Value::Colors(vec![Color::WHITE, Color::WHITE])),
+            "none" => Some(Value::Gradient(Gradient::solid(Color::WHITE))),
+            "two" => Some(Value::Gradient(Gradient::even(&[Color::WHITE, Color::WHITE]))),
             _ => None,
         }
     }

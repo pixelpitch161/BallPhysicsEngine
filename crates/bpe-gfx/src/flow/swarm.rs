@@ -9,7 +9,8 @@ use crate::frame::{Flock, SwarmLayer, SwarmStart};
 
 /// Size of a flocking grid cell in world pixels.
 pub const CELL: f32 = 24.0;
-const MAX_STOPS: usize = 6;
+/// The swarm's look.follow when every point is the one colour.
+const ONE_COLOUR: u32 = 5;
 
 /// Matches `struct Params` in swarm.wgsl and swarm_draw.wgsl.
 #[repr(C)]
@@ -22,17 +23,25 @@ struct SwarmParams {
     look: [u32; 4],
     arena: [f32; 4],
     draw: [f32; 4],
-    colors: [[f32; 4]; MAX_STOPS],
+    color: [f32; 4],
+    /// The paint, as `PaintGpu`'s fields in order.
+    paint_a: [f32; 4],
+    paint_b: [f32; 4],
+    /// Direction in degrees, span, centre.
+    place: [f32; 4],
 }
 
 impl SwarmParams {
     fn new(layer: &SwarmLayer, cells: (u32, u32), arena_size: f32) -> Self {
         let m = &layer.motion;
-        let mut colors = [[1.0; 4]; MAX_STOPS];
-        let stops = layer.look.colors.len().clamp(1, MAX_STOPS);
-        for (slot, c) in colors.iter_mut().zip(&layer.look.colors) {
-            *slot = *c;
-        }
+        let p = &layer.look.paint;
+        // With no row there is nothing to paint with: every point (but those near a ball) takes
+        // the one colour.
+        let follow = match layer.look.follow.min(ONE_COLOUR) {
+            1 => 1,
+            _ if p.row < 0.0 => ONE_COLOUR,
+            f => f,
+        };
         let start = match layer.start {
             SwarmStart::Fill => 0,
             SwarmStart::Centre => 1,
@@ -43,10 +52,13 @@ impl SwarmParams {
             motion: [m.top_speed.max(1.0), m.drag.max(0.0), m.flow.max(0.0), m.swirl_size.max(1.0)],
             steer: [m.swirl_speed.max(0.0), m.flock.max(0.0), m.separation.max(0.0), m.attraction],
             more: [m.reach.max(0.0), m.avoid_walls.max(0.0), m.gravity_scale, CELL],
-            look: [layer.look.colors_by.min(2), stops as u32, start, 0],
+            look: [follow, 0, start, 0],
             arena: [layer.center[0], layer.center[1], arena_size.max(1.0), layer.look.size.max(0.0)],
             draw: [layer.look.brightness.max(0.0), layer.release_seconds.max(0.0), 0.0, 0.0],
-            colors,
+            color: layer.look.color,
+            paint_a: [p.row, p.t0, p.pattern, p.steps],
+            paint_b: [p.angle, p.scale, p.scroll, p.repeat],
+            place: layer.look.place,
         }
     }
 }
@@ -128,12 +140,17 @@ impl SwarmPipelines {
             ],
         });
         let globals = util::globals_layout(device);
+        let paint = crate::gradients::paint_layout(device);
         let draw_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("swarm draw"),
-            bind_group_layouts: &[Some(&globals), Some(&draw_layout)],
+            bind_group_layouts: &[Some(&globals), Some(&draw_layout), Some(&paint)],
             immediate_size: 0,
         });
-        let draw_module = util::shader(device, "swarm draw", &[include_str!("../shaders/flow/swarm_draw.wgsl")]);
+        let draw_module = util::shader(
+            device,
+            "swarm draw",
+            &[&crate::gradients::paint_wgsl(2), include_str!("../shaders/flow/swarm_draw.wgsl")],
+        );
         let draw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("swarm draw"),
             layout: Some(&draw_pipeline_layout),
@@ -299,13 +316,21 @@ impl SwarmGpu {
         vec![&self.points, &self.tints]
     }
 
-    pub fn draw(&self, pipelines: &SwarmPipelines, pass: &mut wgpu::RenderPass<'_>, globals: &wgpu::BindGroup) {
+    /// Draws the points, reading the frame's gradients from `paint`.
+    pub fn draw(
+        &self,
+        pipelines: &SwarmPipelines,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        paint: &wgpu::BindGroup,
+    ) {
         if self.sim.count == 0 || self.last.draw[0] <= 0.0 {
             return;
         }
         pass.set_pipeline(&pipelines.draw);
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, &self.draw_group, &[]);
+        pass.set_bind_group(2, paint, &[]);
         pass.draw(0..4, 0..self.sim.count);
     }
 

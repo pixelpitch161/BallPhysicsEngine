@@ -2,13 +2,16 @@
 
 use bpe_core::{Color, ModuleKind, SettingDef, Settings, SlotId};
 
+use crate::paint::Paint;
+
 pub struct LiquidLookKind;
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LiquidLook {
-    /// The liquid's colour.
-    #[setting(label = "Colour", simple, keyframe, random)]
-    pub color: Color,
+    /// The liquid's colours: by place (how deep or high), by how fast it flows there, or over
+    /// time or the beat.
+    #[setting(paint, label = "Colours", prefix = "", follows = "place|speed|time|beat", simple)]
+    pub colour: Paint,
     /// How see-through it is.
     #[setting(label = "Clarity", range(0, 1), simple, keyframe, random)]
     pub clarity: f32,
@@ -29,7 +32,7 @@ pub struct LiquidLook {
 impl Default for LiquidLook {
     fn default() -> Self {
         Self {
-            color: Color::rgb(0x2e, 0x8c, 0xff),
+            colour: Paint::solid(Color::rgb(0x2e, 0x8c, 0xff)),
             clarity: 0.45,
             refraction: 0.5,
             highlight: 0.8,

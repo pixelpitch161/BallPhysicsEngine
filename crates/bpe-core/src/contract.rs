@@ -73,7 +73,7 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
         if d.flags.keyframe
             && !matches!(
                 d.ty,
-                ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color | ValueType::Colors
+                ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color | ValueType::Gradient
             )
         {
             fail(d.key, format!("a {:?} setting can't be keyframed", d.ty));

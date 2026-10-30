@@ -104,10 +104,26 @@
                 slot: Look,
                 kind: "look.styled",
                 params: {
-                    "color": Color("#ff5ca8"),
-                    "color2": Color("#ffbf26"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "glow": Number(0.6000000238418579),
                     "glow_size": Number(1.399999976158142),
+                    "pattern_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffbf26",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             6: (
@@ -127,7 +143,15 @@
                 kind: "trail.streak",
                 params: {
                     "brightness": Number(0.800000011920929),
-                    "color": Color("#ff7010"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff7010",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "seconds": Number(0.699999988079071),
                     "source": Choice("own"),
                     "width": Number(0.800000011920929),
