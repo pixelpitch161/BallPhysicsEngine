@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 bpe-core.workspace = true
 bpe-runtime.workspace = true
+bpe-synth.workspace = true
+bpe-graph.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 hound.workspace = true

@@ -85,6 +85,9 @@ pub enum PinType {
     Text,
     /// A value for every pixel, in shader graphs.
     Field,
+    /// A stream of samples, in synth patches. Numbers and sound wire into each other: sound read
+    /// as a number is its average over the block, and a number used as sound is held.
+    Audio,
 }
 
 impl PinType {
@@ -94,7 +97,12 @@ impl PinType {
         self == from
             || matches!(
                 (self, from),
-                (Field, Number | Vector | Color) | (Number, Bool) | (Bool, Number) | (Text, Number)
+                (Field, Number | Vector | Color)
+                    | (Number, Bool)
+                    | (Bool, Number)
+                    | (Text, Number)
+                    | (Audio, Number)
+                    | (Number, Audio)
             )
     }
 
@@ -109,6 +117,7 @@ impl PinType {
             PinType::Ball => "ball",
             PinType::Text => "text",
             PinType::Field => "picture",
+            PinType::Audio => "sound",
         }
     }
 }
@@ -564,6 +573,14 @@ pub fn order(graph: &Graph) -> Result<Vec<u32>, Cycle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_and_number_pins_connect_both_ways() {
+        assert!(PinType::Audio.accepts(PinType::Number));
+        assert!(PinType::Number.accepts(PinType::Audio));
+        assert!(!PinType::Audio.accepts(PinType::Color));
+        assert_eq!(PinType::Audio.name(), "sound");
+    }
 
     fn catalog() -> SpecList {
         let t = PinType::Trigger;

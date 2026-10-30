@@ -1,0 +1,11 @@
+[package]
+name = "bpe-synth"
+description = "Synth patches for Ball Studio: DSP blocks, the patch catalog and compiler, and voices"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bpe-graph.workspace = true
+bpe-core.workspace = true
+hound.workspace = true

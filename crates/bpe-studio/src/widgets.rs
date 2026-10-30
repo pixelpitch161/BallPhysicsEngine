@@ -1,8 +1,8 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
 use bpe_core::{
-    Color, ProgressionId, ProgressionRef, PulseSource, Registry, Scene, SettingDef, SettingValue, Target, ThingId,
-    Value, ValueType,
+    Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ProgressionId, ProgressionRef, PulseSource, Registry,
+    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType,
 };
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
@@ -26,12 +26,25 @@ pub struct TargetChoices {
     pub scene_chords: Option<ProgressionId>,
     /// Leave out "Scene's" from Chords menus: on Scene defaults itself.
     pub hide_scenes: bool,
+    /// Instruments as (id, name, how many settings use it), in library order.
+    pub instruments: Vec<(InstrumentId, String, usize)>,
+    /// The instrument Scene defaults' sound plays through.
+    pub scene_instrument: Option<InstrumentId>,
 }
 
 /// A Chords row's pick of "New progression": the inspector adds one and points the setting at it.
 pub const NEW_PROGRESSION: i64 = -2;
 /// A Chords row's pick of "Make unique": the inspector copies the progression the row shows.
 pub const MAKE_UNIQUE: i64 = -3;
+/// An Instrument row's pick of "New patch": the inspector adds a blank patch.
+pub const NEW_PATCH: i64 = -4;
+/// An Instrument row's pick of "Make unique": the inspector copies the instrument it shows.
+pub const MAKE_UNIQUE_INSTRUMENT: i64 = -5;
+/// An Instrument row's pick of built-in number `i` is `BUILT_IN_BASE - i`: the inspector finds
+/// or adds a library instrument playing it.
+pub const BUILT_IN_BASE: i64 = -100;
+/// An Instrument row's pick of starter patch number `i` is `STARTER_BASE - i`.
+pub const STARTER_BASE: i64 = -200;
 
 impl TargetChoices {
     pub fn from_scene(scene: &Scene, reg: &Registry) -> TargetChoices {
@@ -52,6 +65,12 @@ impl TargetChoices {
             .and_then(|t| t.params.get("chords"))
             .and_then(ProgressionRef::from_value)
             .and_then(|r| r.0);
+        let instruments = scene
+            .library
+            .instruments
+            .iter()
+            .map(|(id, i)| (*id, i.name.clone(), scene.instrument_users(reg, *id).len()))
+            .collect();
         TargetChoices {
             things,
             tags: tags.into_iter().collect(),
@@ -59,6 +78,8 @@ impl TargetChoices {
             progressions,
             scene_chords,
             hide_scenes: false,
+            instruments,
+            scene_instrument: crate::instruments::scene_instrument(scene),
         }
     }
 }
@@ -615,6 +636,7 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
         (ValueType::Progression, Value::Int(x)) => progression_picker(ui, name, x, choices).labelled_by(name),
+        (ValueType::Instrument, Value::Int(x)) => instrument_picker(ui, name, x, choices).labelled_by(name),
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(theme::WARNING)),
     }
 }
@@ -655,6 +677,66 @@ fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetC
         response.response.mark_changed();
     }
     response.response
+}
+
+/// A menu naming the instrument a sound plays: Scene defaults' one, the built-in sounds, the
+/// library's instruments, a new patch, a starter patch, or a copy of the one shown. Marked
+/// changed when something is picked; the picks the inspector has to make come back as
+/// [`NEW_PATCH`], [`MAKE_UNIQUE_INSTRUMENT`], or offsets from [`BUILT_IN_BASE`] and
+/// [`STARTER_BASE`].
+fn instrument_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetChoices) -> Response {
+    let name_of = |id: InstrumentId| {
+        choices.instruments.iter().find(|(i, ..)| *i == id).map_or("missing".to_owned(), |(_, n, _)| n.clone())
+    };
+    let shown = match InstrumentRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
+        Some(id) if choices.instruments.iter().any(|(i, ..)| *i == id) => name_of(id),
+        _ => match choices.scene_instrument {
+            Some(id) => format!("Scene's ({})", name_of(id)),
+            None => "Scene's".to_owned(),
+        },
+    };
+    let before = *x;
+    let mut response =
+        egui::ComboBox::from_id_salt(("instrument", row)).selected_text(shown).height(480.0).show_ui(ui, |ui| {
+            ui.selectable_value(x, -1, "Scene's").on_hover_text("Play through Scene defaults' instrument");
+            ui.label(RichText::new("Built-in").small().color(theme::MUTED));
+            for (i, which) in bpe_mix::Instrument::ALL.iter().enumerate() {
+                if ui.selectable_label(false, which.label()).clicked() {
+                    *x = BUILT_IN_BASE - i as i64;
+                }
+            }
+            if !choices.instruments.is_empty() {
+                ui.separator();
+                ui.label(RichText::new("In this scene").small().color(theme::MUTED));
+            }
+            for (id, name, users) in &choices.instruments {
+                let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
+                ui.selectable_value(x, id.0 as i64, label);
+            }
+            ui.separator();
+            if ui.button("New patch").on_hover_text("A blank synth patch to build in the node panel").clicked() {
+                *x = NEW_PATCH;
+            }
+            ui.label(RichText::new("Starter patches").small().color(theme::MUTED));
+            for (i, (name, ..)) in bpe_synth::starters().iter().enumerate() {
+                if ui.selectable_label(false, *name).clicked() {
+                    *x = STARTER_BASE - i as i64;
+                }
+            }
+            ui.separator();
+            if ui.button("Make unique").on_hover_text("A copy of this instrument that only this sound uses").clicked() {
+                *x = MAKE_UNIQUE_INSTRUMENT;
+            }
+        });
+    if *x != before {
+        response.response.mark_changed();
+    }
+    response.response
+}
+
+/// Whether library instrument `i` plays the built-in `which`.
+pub fn plays_built_in(i: &bpe_core::Instrument, which: bpe_mix::Instrument) -> bool {
+    matches!(&i.source, InstrumentSource::BuiltIn { which: w, .. } if w == Choice::name(which))
 }
 
 /// A menu naming the target, with Anything, Itself and the scene's things, tags and kinds to

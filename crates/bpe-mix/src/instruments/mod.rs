@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use bpe_core::Choice;
 
-use crate::Note;
-
 /// A built-in instrument.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Choice)]
 pub enum Instrument {
@@ -141,11 +139,12 @@ impl NoteCache {
         self.notes.entry(s).or_insert_with(|| Arc::new(render_slot(s))).clone()
     }
 
-    /// Renders every note in `wanted` that isn't cached yet, on all cores.
-    pub fn prepare(&mut self, wanted: &[Note]) {
+    /// Renders every note in `wanted` (instrument, key, velocity, decay, brightness) that isn't
+    /// cached yet, on all cores.
+    pub fn prepare(&mut self, wanted: impl IntoIterator<Item = (Instrument, u8, f32, f32, f32)>) {
         let mut missing: Vec<Slot> = wanted
-            .iter()
-            .map(|n| slot(n.instrument, n.key, n.velocity, n.decay, n.brightness))
+            .into_iter()
+            .map(|(i, key, velocity, decay, brightness)| slot(i, key, velocity, decay, brightness))
             .filter(|s| !self.notes.contains_key(s))
             .collect();
         missing.sort_unstable();

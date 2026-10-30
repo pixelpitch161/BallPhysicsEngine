@@ -2,10 +2,13 @@
 //! into a soundtrack.
 //!
 //! Each Sound module turns the events of the things that use it into [`Note`]s; the mixer
-//! renders every note once, adds them up in a fixed order, sets the level and limits the peaks.
-//! The same log and settings give the same samples every time.
+//! plays each module's notes as its own channel through the module's instrument (cached
+//! one-shot notes for built-ins, voices for synth patches), adds the channels up in a fixed
+//! order, sets the level and limits the peaks. The same log and settings give the same samples
+//! every time.
 
 pub mod audition;
+mod channels;
 pub mod chords;
 pub mod instruments;
 pub mod level;
@@ -15,12 +18,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bpe_core::{
-    Animation, Inputs, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef, Resolved, SlotId,
-    Target, ThingId,
+    Animation, Inputs, InstrumentId, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef,
+    Resolved, SlotId, Target, ThingId,
 };
 use bpe_runtime::{Event, Log};
 
-pub use audition::audition;
+pub use audition::{audition, audition_keys};
+pub use channels::{ChannelCache, InstrumentChoice, VOICE_CAP, instrument_for};
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
     numeral, parse_chord, scale, voicing,
@@ -35,11 +39,14 @@ pub const SAMPLE_RATE: u32 = 48_000;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Soundtrack {
     pub samples: Vec<f32>,
+    /// What went wrong while playing, in plain sentences for the status line: a patch that
+    /// doesn't compile, a voice that made bad samples, a sample file that couldn't be read.
+    pub problems: Vec<String>,
 }
 
 impl Soundtrack {
     pub fn silent(seconds: f32) -> Self {
-        Self { samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2] }
+        Self { samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2], problems: Vec::new() }
     }
 
     pub fn frames(&self) -> usize {
@@ -62,22 +69,31 @@ impl Soundtrack {
     }
 }
 
+/// What a note plays through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteInstrument {
+    /// A library instrument, or Scene defaults' one for `None`.
+    Library(Option<InstrumentId>),
+    /// A built-in sound with its usual knobs, such as the drum machine's kit.
+    BuiltIn(Instrument),
+}
+
 /// One note to play.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
     /// The frame it starts on.
     pub frame: usize,
-    pub instrument: Instrument,
+    pub instrument: NoteInstrument,
     /// MIDI key.
     pub key: u8,
     /// How hard it is played, 0 to 1.
     pub velocity: f32,
-    /// Gains per channel.
+    /// Gains per side.
     pub left: f32,
     pub right: f32,
-    /// The pluck's decay in seconds and brightness; other instruments ignore them.
-    pub decay: f32,
-    pub brightness: f32,
+    /// The sound module that played it (its id), which is the channel it renders in. The mixer
+    /// sets it; modules leave it at 0.
+    pub channel: u32,
 }
 
 /// What the whole mix needs from the scene.
@@ -102,6 +118,12 @@ pub struct MixSettings {
     pub off_shot_fade: f32,
     /// Half the video's height, for the shot's shape.
     pub half_height: f32,
+    /// Every instrument in the scene's library.
+    pub instruments: BTreeMap<InstrumentId, bpe_core::Instrument>,
+    /// The one Scene defaults' sound plays through; modules set to "Scene's" use it.
+    pub scene_instrument: Option<InstrumentId>,
+    /// Each sound module's own macro values for its instrument, by module id.
+    pub macros: BTreeMap<u32, BTreeMap<String, f32>>,
 }
 
 impl MixSettings {
@@ -112,6 +134,16 @@ impl MixSettings {
         r.0.and_then(|id| self.progressions.get(&id))
             .or_else(|| self.scene_chords.and_then(|id| self.progressions.get(&id)))
             .unwrap_or(&STARTER)
+    }
+
+    /// Seconds per beat: the middle gap of the beat grid, or half a second without one.
+    pub fn seconds_per_beat(&self) -> f32 {
+        let mut gaps: Vec<f64> = self.beats.windows(2).map(|w| w[1] - w[0]).filter(|g| *g > 1e-3).collect();
+        if gaps.is_empty() {
+            return 0.5;
+        }
+        gaps.sort_by(f64::total_cmp);
+        gaps[gaps.len() / 2] as f32
     }
 }
 
@@ -211,7 +243,8 @@ impl Mixes {
 }
 
 /// The soundtrack of a run: every thing's Sound module turns its events into notes, in thing
-/// order; the notes are rendered once each, added up, levelled and limited.
+/// order; each module's notes play as a channel, and the channels are added up, levelled and
+/// limited.
 pub fn mix(settings: &MixSettings, resolved: &Resolved, log: &Log, mixes: &Mixes) -> Soundtrack {
     mix_with(settings, resolved, &Library::default(), log, mixes, None, &|t| t)
 }
@@ -258,6 +291,7 @@ pub fn notes_with(
             continue;
         }
         let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
+        let first = notes.len();
         match animation.filter(|_| animated.contains(id)) {
             None => m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes),
             Some(animation) => {
@@ -272,6 +306,9 @@ pub fn notes_with(
                     start = end;
                 }
             }
+        }
+        for n in &mut notes[first..] {
+            n.channel = slot.module.0;
         }
     }
     notes.retain(|n| n.frame < frames);
@@ -289,28 +326,36 @@ pub fn mix_with(
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
 ) -> Soundtrack {
+    mix_cached(settings, resolved, library, log, mixes, animation, video_time, &mut ChannelCache::default())
+}
+
+/// [`mix_with`], rendering only the channels that changed since the mix that filled `cache`.
+#[allow(clippy::too_many_arguments)]
+pub fn mix_cached(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+    cache: &mut ChannelCache,
+) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
     let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
     if notes.is_empty() {
         return track;
     }
-    let mut cache = NoteCache::default();
-    cache.prepare(&notes);
-    let placed: Vec<(Note, std::sync::Arc<Vec<f32>>)> = notes
-        .into_iter()
-        .map(|n| {
-            let wave = cache.get(n.instrument, n.key, n.velocity, n.decay, n.brightness);
-            (n, wave)
-        })
-        .collect();
-    mix_notes(&mut track.samples, &placed, |(n, wave)| (n.frame, wave.as_slice(), n.left, n.right, 0));
+    let rendered = channels::render(settings, &notes, track.frames(), cache);
+    track.samples = rendered.samples;
+    track.problems = rendered.problems;
     normalize_loudness(&mut track.samples, settings.loudness);
     limit_peaks(&mut track.samples);
     track
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bpe_core::{Address, Ease, Owner, Scene, Value, resolve, testkit};
     use bpe_runtime::{EventKind, Party};
@@ -332,13 +377,12 @@ mod tests {
                 let frame = (time * SAMPLE_RATE as f64).round() as usize;
                 out.push(Note {
                     frame,
-                    instrument: Instrument::Pluck,
+                    instrument: NoteInstrument::BuiltIn(Instrument::Pluck),
                     key: 60,
                     velocity: 1.0,
                     left: gain,
                     right: gain,
-                    decay: 0.3,
-                    brightness: 0.5,
+                    channel: 0,
                 });
             }
         }
@@ -356,7 +400,7 @@ mod tests {
         }
     }
 
-    fn settings() -> MixSettings {
+    pub(crate) fn settings() -> MixSettings {
         MixSettings {
             duration: 5.0,
             steps_per_second: 240,
@@ -369,6 +413,9 @@ mod tests {
             tags: Default::default(),
             off_shot_fade: 0.0,
             half_height: 960.0,
+            instruments: Default::default(),
+            scene_instrument: None,
+            macros: Default::default(),
         }
     }
 
@@ -399,6 +446,8 @@ mod tests {
         let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].frame, notes[1].frame), (48_000, 144_000));
+        let pluck = *scene.library.modules.keys().next().unwrap();
+        assert!(notes.iter().all(|n| n.channel == pluck.0), "notes play in their module's channel");
         assert!((notes[0].left - 10f32.powf(-10.0 / 20.0)).abs() < 1e-3, "{}", notes[0].left);
         assert!((notes[1].left - 10f32.powf(-30.0 / 20.0)).abs() < 1e-3, "{}", notes[1].left);
         // Without the animation both play at the setting's own value.

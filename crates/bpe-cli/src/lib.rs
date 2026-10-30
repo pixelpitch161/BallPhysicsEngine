@@ -272,7 +272,11 @@ fn export_with(
     let mut log = Log::default();
     run.advance_to(video.duration as f64, &kit.sims, &mut log);
     let wav = TempFile::new("wav");
-    mix_scene(scene, &resolved, &log, kit).write_wav(&wav.0)?;
+    let track = mix_scene(scene, &resolved, &log, kit);
+    for problem in &track.problems {
+        eprintln!("sound: {problem}");
+    }
+    track.write_wav(&wav.0)?;
     // Beat sync by time warp: each frame shows the moment of the run the warp puts there.
     let warp = bpe_kit::warp_for(scene, &resolved, &log);
 

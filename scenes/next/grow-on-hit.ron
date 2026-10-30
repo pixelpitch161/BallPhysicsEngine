@@ -94,6 +94,9 @@
                 name: "Default sound",
                 slot: Sound,
                 kind: "sound.notes",
+                params: {
+                    "instrument": Int(0),
+                },
             ),
             4: (
                 id: 4,
@@ -242,8 +245,28 @@
                 ],
             ),
         },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
     ),
     next_thing: 3,
     next_module: 6,
     next_progression: 1,
+    next_instrument: 1,
 )

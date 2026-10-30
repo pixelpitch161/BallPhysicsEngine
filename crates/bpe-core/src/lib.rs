@@ -14,6 +14,7 @@ pub mod color;
 pub mod contract;
 pub mod edit;
 pub mod ids;
+pub mod instrument;
 pub mod library;
 pub mod progression;
 pub mod registry;
@@ -33,6 +34,7 @@ pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
+pub use instrument::{Instrument, InstrumentId, InstrumentRef, InstrumentSource, NoteLength, VoiceSettings};
 pub use library::{Library, Module, ModuleGraph};
 pub use progression::{
     Chord, Extension, MAX_BEATS, Mode, MusicKey, Progression, ProgressionId, ProgressionRef, Quality,

@@ -3,10 +3,10 @@
 
 use crate::rng::Rng;
 use bpe_core::{
-    Address, Color, ModuleId, Owner, ProgressionId, ProgressionRef, Registry, Scene, SettingDef, SettingValue, SlotId,
-    SlotLink, ThingId, Value, ValueType,
+    Address, Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ModuleId, Owner, ProgressionId,
+    ProgressionRef, Registry, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Value, ValueType,
 };
-use bpe_mix::{PRESETS, Preset};
+use bpe_mix::{Instrument, PRESETS, Preset};
 
 /// What one throw of the dice covers.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +42,7 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
     let mut rolled = Rolled::default();
     let addresses = addresses(scene, reg, scope);
     roll_progressions(scene, reg, &addresses, roll, &mut rolled);
+    roll_instruments(scene, reg, &addresses, roll, &mut rolled);
     for a in addresses {
         if held(scene, &a) || scene.tracks.contains_key(&a) {
             continue;
@@ -97,6 +98,54 @@ fn roll_progressions(scene: &mut Scene, reg: &Registry, addresses: &[Address], r
         p.key.mode = preset.mode;
         p.chords = preset.chords(p.key.root);
         if scene.set_progression(id, p).is_ok() {
+            rolled.changed.push(a.clone());
+        }
+    }
+}
+
+/// Rolls the Instrument settings in the scope: with a chance of `amount`, each one picks a
+/// built-in sound or one of the scene's library instruments. A built-in it picks joins the
+/// library the first time. A setting on "Scene's" and a locked one stay as they are.
+fn roll_instruments(scene: &mut Scene, reg: &Registry, addresses: &[Address], roll: Roll, rolled: &mut Rolled) {
+    let amount = roll.amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    for a in addresses {
+        if held(scene, a) || scene.def_at(reg, a).is_none_or(|d| d.ty != ValueType::Instrument || !d.flags.random) {
+            continue;
+        }
+        let Some(InstrumentRef(Some(current))) = scene.value_at(reg, a).and_then(|v| InstrumentRef::from_value(&v))
+        else {
+            continue;
+        };
+        let mut dice = Rng::new(roll.seed, salt(a));
+        if dice.unit() >= amount {
+            continue;
+        }
+        // The built-ins (not the drum kit) and the scene's patches.
+        let built_ins: Vec<Instrument> = Instrument::ALL.iter().copied().filter(|i| *i != Instrument::Drums).collect();
+        let patches: Vec<InstrumentId> = scene
+            .library
+            .instruments
+            .iter()
+            .filter(|(_, i)| matches!(i.source, InstrumentSource::Patch { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        let pick = dice.next_u32() as usize % (built_ins.len() + patches.len());
+        let id = match built_ins.get(pick) {
+            Some(&which) => {
+                let found = scene.library.instruments.iter().find(
+                    |(_, i)| matches!(&i.source, InstrumentSource::BuiltIn { which: w, .. } if w == which.name()),
+                );
+                match found {
+                    Some((&id, _)) => id,
+                    None => scene.add_instrument(crate::built_in_instrument(which)),
+                }
+            }
+            None => patches[pick - built_ins.len()],
+        };
+        if id != current && scene.set_at(reg, a, InstrumentRef(Some(id)).to_value()).is_ok() {
             rolled.changed.push(a.clone());
         }
     }
@@ -447,6 +496,29 @@ mod tests {
     }
 
     #[test]
+    fn rolling_picks_an_instrument_and_respects_locks() {
+        let reg = registry();
+        let sound = |scene: &Scene| *scene.library.modules.iter().find(|(_, m)| m.kind == "sound.notes").unwrap().0;
+        let mut scene = new_scene(&reg);
+        let a = Address { owner: Owner::Module(sound(&scene)), slot: None, key: "instrument".into() };
+        let before = scene.value_at(&reg, &a);
+        let changed = (0..20).any(|seed| {
+            let mut s = scene.clone();
+            roll(&mut s, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
+            let after = s.value_at(&reg, &a);
+            let id = after.as_ref().and_then(InstrumentRef::from_value).and_then(|r| r.0);
+            assert!(id.is_some_and(|id| s.library.instruments.contains_key(&id)), "points into the library");
+            after != before
+        });
+        assert!(changed, "some roll picks another instrument");
+        scene.set_locked(a.clone(), true);
+        for seed in 0..20 {
+            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
+        }
+        assert_eq!(scene.value_at(&reg, &a), before);
+    }
+
+    #[test]
     fn a_locked_chords_setting_keeps_its_progression() {
         let reg = registry();
         let mut scene = new_scene(&reg);
@@ -631,11 +703,11 @@ mod tests {
             assert!(rolls(&d, &first, 0.75, 200).is_empty(), "{kind}.{key} stays put at three quarters");
             assert!(rolls(&d, &first, 1.0, 50).iter().any(|v| *v != first), "{kind}.{key} changes at All new");
         }
-        let instrument = def(&reg, "sound.notes", "instrument");
-        assert!(!instrument.flags.structural);
-        let ValueType::Choice(names) = instrument.ty else { panic!("instrument is a choice") };
+        let order = def(&reg, "sound.notes", "order");
+        assert!(!order.flags.structural);
+        let ValueType::Choice(names) = order.ty else { panic!("order is a choice") };
         let first = Value::Choice(names[0].into());
-        assert!(rolls(&instrument, &first, 0.5, 50).iter().any(|v| *v != first), "other choices change half way");
+        assert!(rolls(&order, &first, 0.5, 50).iter().any(|v| *v != first), "other choices change half way");
     }
 
     #[test]

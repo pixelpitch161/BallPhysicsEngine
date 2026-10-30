@@ -66,11 +66,18 @@ pub struct Pluck {
     pub target: Target,
     #[setting(label = "Chords")]
     pub chords: crate::ProgressionRef,
+    #[setting(label = "Instrument")]
+    pub instrument: crate::InstrumentRef,
 }
 
 impl Default for Pluck {
     fn default() -> Self {
-        Self { volume: 0.0, target: Target::Anything, chords: crate::ProgressionRef(None) }
+        Self {
+            volume: 0.0,
+            target: Target::Anything,
+            chords: crate::ProgressionRef(None),
+            instrument: crate::InstrumentRef(None),
+        }
     }
 }
 

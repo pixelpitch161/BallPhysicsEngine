@@ -325,6 +325,7 @@ dependencies = [
  "bpe-runtime",
  "bpe-scene",
  "bpe-sim",
+ "bpe-synth",
  "bpe-vm",
  "glam",
  "hound",
@@ -339,7 +340,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bpe-core",
+ "bpe-graph",
  "bpe-runtime",
+ "bpe-synth",
  "glam",
  "hound",
 ]
@@ -429,6 +432,7 @@ dependencies = [
  "bpe-kit",
  "bpe-mix",
  "bpe-runtime",
+ "bpe-synth",
  "bpe-vm",
  "cpal",
  "eframe",
@@ -437,6 +441,15 @@ dependencies = [
  "glam",
  "rfd",
  "ron",
+]
+
+[[package]]
+name = "bpe-synth"
+version = "0.1.0"
+dependencies = [
+ "bpe-core",
+ "bpe-graph",
+ "hound",
 ]
 
 [[package]]

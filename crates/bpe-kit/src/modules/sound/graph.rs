@@ -71,11 +71,6 @@ pub fn template() -> Graph {
     b.wire((stereo_width, 0), (pan, 1));
     b.wire((pan, 0), (output, 4));
 
-    let decay = b.setting(def("decay"), [1080.0, 860.0]);
-    b.wire((decay, 0), (output, 5));
-    let brightness = b.setting(def("brightness"), [1080.0, 1020.0]);
-    b.wire((brightness, 0), (output, 6));
-
     b.setting(def("low_note"), [40.0, 860.0]);
     b.setting(def("high_note"), [40.0, 1020.0]);
     b.finish()

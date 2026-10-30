@@ -1,6 +1,6 @@
 //! The scene's library of modules, which things link to and share.
 
-use crate::{KindId, ModuleId, Params, Progression, ProgressionId, SlotId};
+use crate::{Instrument, InstrumentId, KindId, ModuleId, Params, Progression, ProgressionId, SlotId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +31,9 @@ pub struct Module {
     pub params: Params,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph: Option<ModuleGraph>,
+    /// This module's own values for its instrument's macros, keyed "<node>.<param>".
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub macros: BTreeMap<String, f32>,
 }
 
 /// Every module and chord progression in a scene, by id.
@@ -41,4 +44,7 @@ pub struct Library {
     /// Chord progressions that sound modules and Scene defaults point at.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub progressions: BTreeMap<ProgressionId, Progression>,
+    /// Instruments that sound modules play through.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub instruments: BTreeMap<InstrumentId, Instrument>,
 }

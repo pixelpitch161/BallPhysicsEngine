@@ -111,7 +111,7 @@
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
-                    "instrument": Choice("marimba"),
+                    "instrument": Int(1),
                 },
             ),
             5: (
@@ -238,8 +238,42 @@
                 ],
             ),
         },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+            1: (
+                name: "Marimba",
+                source: BuiltIn(
+                    which: "marimba",
+                    knobs: {},
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
     ),
     next_thing: 3,
     next_module: 10,
     next_progression: 1,
+    next_instrument: 2,
 )

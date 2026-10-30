@@ -17,8 +17,8 @@ pub mod things;
 use std::sync::Arc;
 
 use bpe_core::{
-    Color, EditError, ModuleId, Progression, ProgressionRef, Registry, Resolved, Scene, SettingValue, Settings, SlotId,
-    ThingId, Value,
+    Color, EditError, InstrumentRef, ModuleId, Progression, ProgressionRef, Registry, Resolved, Scene, SettingValue,
+    Settings, SlotId, ThingId, Value,
 };
 use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
@@ -225,19 +225,59 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
         off_shot_fade: root.off_shot_fade.max(0.0),
         half_height: root.height as f32 * 0.5,
+        instruments: scene.library.instruments.clone(),
+        scene_instrument: resolved
+            .things
+            .get(&ThingId::ROOT)
+            .and_then(|r| r.slots.get(&SlotId::Sound))
+            .and_then(|s| s.params.get("instrument"))
+            .and_then(InstrumentRef::from_value)
+            .and_then(|r| r.0),
+        macros: scene
+            .library
+            .modules
+            .iter()
+            .filter(|(_, m)| !m.macros.is_empty())
+            .map(|(id, m)| (id.0, m.macros.clone()))
+            .collect(),
+    }
+}
+
+/// A library instrument that plays the built-in `which`, named after it. The pluck gets the
+/// decay and brightness it always had.
+pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
+    let knobs = match which {
+        bpe_mix::Instrument::Pluck => [("decay".to_string(), 0.9), ("brightness".to_string(), 0.5)].into(),
+        _ => Default::default(),
+    };
+    bpe_core::Instrument {
+        name: which.label().into(),
+        source: bpe_core::InstrumentSource::BuiltIn { which: bpe_core::Choice::name(which).into(), knobs },
+        voices: Default::default(),
     }
 }
 
 /// The soundtrack of a finished run of `scene`: its keyframed sound settings followed, its
 /// notes placed through the beat sync's time warp, and its song mixed in underneath.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
+    mix_scene_cached(scene, resolved, log, kit, &mut bpe_mix::ChannelCache::default())
+}
+
+/// [`mix_scene`], rendering only the channels that changed since the mix that filled `cache`.
+pub fn mix_scene_cached(
+    scene: &Scene,
+    resolved: &Resolved,
+    log: &Log,
+    kit: &Kit,
+    cache: &mut bpe_mix::ChannelCache,
+) -> Soundtrack {
     let animation = bpe_core::Animation::new(scene, resolved);
     let animation = (!animation.is_empty()).then_some(&animation);
     let warp = warp_for(scene, resolved, log);
+    let settings = mix_settings(scene, resolved);
+    let video_time = |t| warp.video_time(t);
     let mut track =
-        bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, &scene.library, log, &kit.mixes, animation, &|t| {
-            warp.video_time(t)
-        });
+        bpe_mix::mix_cached(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
@@ -297,6 +337,14 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let motion = scene.add_module(reg, "motion.basic", "Default motion").expect("kit kinds are registered");
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
     let sound = scene.add_module(reg, "sound.notes", "Default sound").expect("kit kinds are registered");
+    let pluck = scene.add_instrument(built_in_instrument(bpe_mix::Instrument::Pluck));
+    scene
+        .library
+        .modules
+        .get_mut(&sound)
+        .expect("just added")
+        .params
+        .set("instrument", InstrumentRef(Some(pluck)).to_value());
     for (slot, m) in [(SlotId::Look, look), (SlotId::Motion, motion), (SlotId::Bounce, bounce), (SlotId::Sound, sound)]
     {
         scene.link(reg, root, slot, m).expect("the root has every slot");
@@ -350,6 +398,20 @@ mod tests {
         let (&id, p) = scene.library.progressions.iter().next().unwrap();
         assert_eq!(p.name, "Starter");
         assert_eq!(scene.things[&ThingId::ROOT].params.get("chords"), Some(&Value::Int(id.0 as i64)));
+    }
+
+    #[test]
+    fn a_new_scene_plays_its_library_pluck() {
+        let reg = registry();
+        let scene = new_scene(&reg);
+        let settings = mix_settings(&scene, &resolve(&scene, &reg));
+        let (&id, pluck) = scene.library.instruments.iter().next().unwrap();
+        assert_eq!(pluck.name, "Pluck");
+        assert_eq!(settings.scene_instrument, Some(id));
+        assert_eq!(
+            bpe_mix::instrument_for(&settings, None, 0),
+            bpe_mix::InstrumentChoice::BuiltIn { which: bpe_mix::Instrument::Pluck, decay: 0.9, brightness: 0.5 }
+        );
     }
 
     #[test]

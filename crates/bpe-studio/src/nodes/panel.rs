@@ -1,9 +1,12 @@
 //! The node panel: slides up under the preview and shows one module's graph, the Nodes depth
-//! of a card in the inspector.
+//! of a card in the inspector, or one synth patch from the library.
 
 use super::editor::{Editor, LiveView};
 use crate::theme;
-use bpe_core::{Module, ModuleGraph, ModuleId, ModuleKind, Params, Resolved, Scene, SlotId, SlotLink, ThingId};
+use bpe_core::{
+    InstrumentId, InstrumentSource, Module, ModuleGraph, ModuleId, ModuleKind, Params, Resolved, Scene, SlotId,
+    SlotLink, ThingId,
+};
 use bpe_graph::Graph;
 use bpe_kit::graphs::{bind, compile_module, is_custom, module_graph, role_of, settings_from_graph};
 use bpe_kit::{Kit, RulesState};
@@ -15,10 +18,71 @@ use std::collections::BTreeMap;
 const GLOW: f32 = 0.4;
 
 pub struct NodePanel {
-    /// The thing and slot whose graph is shown, when the panel is open.
-    pub open: Option<(ThingId, SlotId)>,
+    /// What the panel shows, when it is open.
+    pub open: Option<PanelTarget>,
     pub(super) editor: Editor,
     shown: Option<Shown>,
+    patch: Option<ShownPatch>,
+}
+
+/// What the node panel can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelTarget {
+    /// The graph of the module a thing's slot holds.
+    Slot(ThingId, SlotId),
+    /// A synth patch in the library.
+    Patch(InstrumentId),
+}
+
+/// A patch on the canvas: a working copy, and the stored graph it was copied from, to notice an
+/// undo from outside the panel.
+struct ShownPatch {
+    id: InstrumentId,
+    graph: Graph,
+    stored: Graph,
+    status: Result<(), String>,
+    node_errors: BTreeMap<u32, String>,
+}
+
+impl ShownPatch {
+    fn load(id: InstrumentId, graph: &Graph) -> Self {
+        let (status, node_errors) = check_patch(graph);
+        Self { id, graph: graph.clone(), stored: graph.clone(), status, node_errors }
+    }
+}
+
+/// Why a patch doesn't compile, as its first problem, and its problems by block.
+fn check_patch(graph: &Graph) -> (Result<(), String>, BTreeMap<u32, String>) {
+    match bpe_synth::compile(graph) {
+        Ok(_) => (Ok(()), BTreeMap::new()),
+        Err(problems) => {
+            let mut node_errors = BTreeMap::new();
+            for p in &problems {
+                if let Some(node) = p.node {
+                    node_errors.entry(node).or_insert_with(|| p.message.clone());
+                }
+            }
+            let first = problems.first().map_or_else(|| "Doesn't compile".to_owned(), |p| p.message.clone());
+            (Err(first), node_errors)
+        }
+    }
+}
+
+/// A patch's problems on its blocks; patches don't fire, so nothing glows.
+struct PatchErrors<'a>(&'a BTreeMap<u32, String>);
+
+impl LiveView for PatchErrors<'_> {
+    fn flash(&self, _node: u32) -> f32 {
+        0.0
+    }
+
+    fn badge(&self, _node: u32) -> Option<String> {
+        None
+    }
+
+    fn error(&self, node: u32) -> Option<String> {
+        self.0.get(&node).cloned()
+    }
 }
 
 /// The graph on the canvas: a working copy of the module's, with its settings bound to the
@@ -38,7 +102,7 @@ struct Shown {
 
 impl Default for NodePanel {
     fn default() -> Self {
-        Self { open: None, editor: Editor::new("panel"), shown: None }
+        Self { open: None, editor: Editor::new("panel"), shown: None, patch: None }
     }
 }
 
@@ -214,22 +278,123 @@ impl LiveView for Flashes {
 impl NodePanel {
     /// Opens the panel on a thing's slot. The view starts fitted to that graph.
     pub fn open_at(&mut self, thing: ThingId, slot: SlotId) {
-        if self.open != Some((thing, slot)) {
+        if self.open != Some(PanelTarget::Slot(thing, slot)) {
             self.editor = Editor::new((thing.0, slot as u8));
             self.shown = None;
+            self.patch = None;
         }
-        self.open = Some((thing, slot));
+        self.open = Some(PanelTarget::Slot(thing, slot));
+    }
+
+    /// Opens the panel on a synth patch in the library.
+    pub fn open_patch(&mut self, id: InstrumentId) {
+        if self.open != Some(PanelTarget::Patch(id)) {
+            self.editor = Editor::new(("patch", id.0));
+            self.shown = None;
+            self.patch = None;
+        }
+        self.open = Some(PanelTarget::Patch(id));
+    }
+
+    /// The thing and slot shown, when the panel shows a slot's graph.
+    pub fn slot_open(&self) -> Option<(ThingId, SlotId)> {
+        match self.open {
+            Some(PanelTarget::Slot(thing, slot)) => Some((thing, slot)),
+            _ => None,
+        }
     }
 
     pub fn close(&mut self) {
         self.open = None;
         self.shown = None;
+        self.patch = None;
     }
 
     /// The graph on the canvas, when the panel is open.
     #[cfg(test)]
     pub fn graph(&self) -> Option<&Graph> {
-        self.shown.as_ref().map(|s| &s.graph)
+        match self.open {
+            Some(PanelTarget::Patch(_)) => self.patch.as_ref().map(|s| &s.graph),
+            _ => self.shown.as_ref().map(|s| &s.graph),
+        }
+    }
+
+    /// The patch view: the instrument's graph edited with the synth's blocks, written back to
+    /// the library on every change.
+    fn show_patch(&mut self, ui: &mut Ui, scene: &mut Scene, kit: &Kit, id: InstrumentId) -> bool {
+        let Some(instrument) = scene.library.instruments.get(&id) else {
+            self.close();
+            return false;
+        };
+        let InstrumentSource::Patch { graph } = &instrument.source else {
+            self.close();
+            return false;
+        };
+        if self.patch.as_ref().is_none_or(|p| p.id != id || &p.stored != graph) {
+            self.editor.selection.clear();
+            self.patch = Some(ShownPatch::load(id, graph));
+        }
+        let name = instrument.name.clone();
+        let users = scene.instrument_users(&kit.registry, id).len();
+        let Self { editor, patch, .. } = self;
+        let shown = patch.as_mut().expect("loaded above");
+        let mut close = false;
+        let mut changed = false;
+        egui::Panel::bottom("nodes")
+            .resizable(true)
+            .default_size(300.0)
+            .min_size(160.0)
+            .max_size(800.0)
+            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Instrument › {name}")).strong());
+                    let used = match users {
+                        0 => "used by nothing".to_owned(),
+                        1 => "used by 1".to_owned(),
+                        n => format!("used by {n}"),
+                    };
+                    ui.label(RichText::new(used).color(theme::MUTED))
+                        .on_hover_text("Editing this patch changes every sound that plays it.");
+                    match &shown.status {
+                        Ok(()) => _ = ui.label(RichText::new("Compiles").color(theme::MUTED)),
+                        Err(message) => {
+                            ui.label(RichText::new(message.as_str()).color(theme::ERROR))
+                                .on_hover_text("Until this is fixed, the patch plays nothing.");
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").on_hover_text("Hide the node panel").clicked() {
+                            close = true;
+                        }
+                        if ui.button("Fit").on_hover_text("Bring the whole graph into view").clicked() {
+                            editor.refit();
+                        }
+                        if ui
+                            .button("Add block…")
+                            .on_hover_text("Search for a block to add (or double-click the canvas)")
+                            .clicked()
+                        {
+                            editor.open_palette();
+                        }
+                    });
+                });
+                let live = PatchErrors(&shown.node_errors);
+                let outcome = editor.show(ui, &mut shown.graph, bpe_synth::catalog(), Some(&live), scene);
+                changed = outcome.changed;
+            });
+        if changed {
+            let mut i = scene.library.instruments[&id].clone();
+            i.source = InstrumentSource::Patch { graph: shown.graph.clone() };
+            changed = scene.set_instrument(id, i).is_ok();
+            shown.stored = shown.graph.clone();
+            (shown.status, shown.node_errors) = check_patch(&shown.graph);
+        }
+        if close {
+            self.close();
+        }
+        changed
     }
 
     /// Draws the panel along the bottom of `ui` when it is open. True when the scene changed.
@@ -242,7 +407,11 @@ impl NodePanel {
         resolved: &Resolved,
         world: Option<&World>,
     ) -> bool {
-        let Some((thing, slot)) = self.open else { return false };
+        let (thing, slot) = match self.open {
+            None => return false,
+            Some(PanelTarget::Patch(id)) => return self.show_patch(ui, scene, kit, id),
+            Some(PanelTarget::Slot(thing, slot)) => (thing, slot),
+        };
         let reg = &kit.registry;
         // The panel closes on its own when there is nothing left to show: the thing went, the
         // slot was switched off, or its module has no graph to edit.
@@ -361,7 +530,7 @@ mod tests {
     use super::*;
     use crate::inspector::{self, Inspector};
     use crate::selection::Selection;
-    use bpe_core::{ModuleId, Resolved, Scene, SlotId, ThingId};
+    use bpe_core::{ModuleId, Resolved, Scene, SettingValue, SlotId, ThingId};
     use bpe_graph::Catalog;
     use bpe_kit::graphs::{compile_module, module_graph};
     use bpe_kit::{Kit, resolve_scene};
@@ -395,13 +564,14 @@ mod tests {
         let mut h = Harness::builder()
             .with_size(vec2(1200.0, 1000.0))
             .with_step_dt(1.0 / 60.0)
-            .with_max_steps(120)
+            // Scene defaults' long card takes a few seconds of frames for its grids to settle.
+            .with_max_steps(240)
             .allow_missing_glyphs()
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
                     let mut changed = s.panel.show(ui, &mut s.scene, &s.kit, &s.resolved, None);
-                    s.inspector.nodes_open = s.panel.open;
+                    s.inspector.nodes_open = s.panel.slot_open();
                     egui::Panel::right("inspector").default_size(420.0).show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         changed |=
@@ -409,6 +579,9 @@ mod tests {
                     });
                     if let Some((thing, slot)) = s.inspector.nodes_request.take() {
                         s.panel.open_at(thing, slot);
+                    }
+                    if let Some(id) = s.inspector.patch_request.take() {
+                        s.panel.open_patch(id);
                     }
                     if changed {
                         s.resolved = resolve_scene(&s.scene, &s.kit.registry);
@@ -461,7 +634,7 @@ mod tests {
         let mut h = harness(new_scene(), Some(ThingId(2)));
         assert!(h.query_by_label_contains("›").is_none(), "closed until asked");
         open_ball_bounce(&mut h);
-        assert_eq!(h.state().panel.open, Some((ThingId(2), SlotId::Bounce)));
+        assert_eq!(h.state().panel.open, Some(PanelTarget::Slot(ThingId(2), SlotId::Bounce)));
         h.get_by_label("Ball › Bounce");
         h.get_by_label("Default bounce");
         h.get_by_label("Compiles");
@@ -495,7 +668,7 @@ mod tests {
         h.run();
         let s = h.state();
         assert!(s.scene.library.modules[&DEFAULT_BOUNCE].graph.is_none());
-        assert_eq!(s.panel.open, Some((ThingId(2), SlotId::Bounce)), "the panel stays open");
+        assert_eq!(s.panel.open, Some(PanelTarget::Slot(ThingId(2), SlotId::Bounce)), "the panel stays open");
         assert!(s.panel.graph().unwrap().nodes.iter().any(|n| n.kind == "reflect"), "on the fresh template");
     }
 
@@ -522,6 +695,123 @@ mod tests {
         open_ball_bounce(&mut h);
         assert!(h.query_by_label("Compiles").is_none());
         h.get_by_label(&message);
+    }
+
+    /// A scene whose Scene defaults sound plays the blank patch.
+    fn patch_scene() -> (Scene, bpe_core::InstrumentId) {
+        let mut scene = new_scene();
+        let id = scene.add_instrument(bpe_core::Instrument {
+            name: "Test patch".into(),
+            source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
+            voices: Default::default(),
+        });
+        let bpe_core::SlotLink::Linked { module, .. } = scene.things[&ThingId::ROOT].slots[&SlotId::Sound] else {
+            panic!("Scene defaults links a sound")
+        };
+        scene
+            .library
+            .modules
+            .get_mut(&module)
+            .unwrap()
+            .params
+            .set("instrument", bpe_core::InstrumentRef(Some(id)).to_value());
+        (scene, id)
+    }
+
+    fn open_patch(h: &mut Harness<'_, State>) {
+        h.get_by_label("Edit patch").scroll_to_me();
+        h.run();
+        h.get_by_label("Edit patch").click();
+        h.run();
+    }
+
+    fn stored_patch(h: &Harness<'_, State>, id: bpe_core::InstrumentId) -> Graph {
+        match &h.state().scene.library.instruments[&id].source {
+            InstrumentSource::Patch { graph } => graph.clone(),
+            InstrumentSource::BuiltIn { .. } => panic!("a patch"),
+        }
+    }
+
+    fn block(h: &Harness<'_, State>, kind: &str) -> u32 {
+        h.state().panel.graph().unwrap().nodes.iter().find(|n| n.kind == kind).unwrap().id
+    }
+
+    fn drag(h: &mut Harness<'_, State>, from: Pos2, to: Pos2) {
+        h.hover_at(from);
+        h.step();
+        h.event(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+        for i in 1..=8 {
+            h.hover_at(from + (to - from) * (i as f32 / 8.0));
+            h.step();
+        }
+        h.event(Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+        h.run();
+    }
+
+    #[test]
+    fn edit_patch_opens_the_patch_in_the_panel() {
+        let (scene, id) = patch_scene();
+        let mut h = harness(scene, Some(ThingId::ROOT));
+        open_patch(&mut h);
+        assert_eq!(h.state().panel.open, Some(PanelTarget::Patch(id)));
+        assert_eq!(h.state().inspector.nodes_open, None, "no card's Nodes switch is lit");
+        h.get_by_label("Instrument › Test patch");
+        h.get_by_label("used by 1");
+        h.get_by_label("Compiles");
+        assert_eq!(h.state().panel.graph().unwrap().nodes.len(), 5);
+    }
+
+    #[test]
+    fn wiring_blocks_in_the_panel_changes_the_instrument() {
+        let (scene, id) = patch_scene();
+        let mut h = harness(scene, Some(ThingId::ROOT));
+        open_patch(&mut h);
+        let (env, filter) = (block(&h, "adsr"), block(&h, "filter"));
+        let pin = |h: &Harness<'_, State>, node: u32, pin: u8, output: bool| {
+            let s = h.state();
+            let graph = s.panel.graph().unwrap();
+            s.panel.editor.pin_screen_pos(
+                graph,
+                bpe_synth::catalog(),
+                super::super::editor::PinRef { node, pin, output },
+            )
+        };
+        let (from, to) = (pin(&h, env, 0, true), pin(&h, filter, 1, false));
+        drag(&mut h, from, to);
+        let g = stored_patch(&h, id);
+        assert!(g.links.iter().any(|l| l.from == (env, 0) && l.to == (filter, 1)), "{:?}", g.links);
+        // An undo from outside puts the old patch back, and the panel follows it.
+        let mut i = h.state().scene.library.instruments[&id].clone();
+        i.source = InstrumentSource::Patch { graph: bpe_synth::blank_patch() };
+        h.state_mut().scene.set_instrument(id, i).unwrap();
+        h.run();
+        assert_eq!(h.state().panel.graph().unwrap().links.len(), 4);
+    }
+
+    #[test]
+    fn removing_voice_out_shows_the_error() {
+        let (scene, id) = patch_scene();
+        let mut h = harness(scene, Some(ThingId::ROOT));
+        open_patch(&mut h);
+        let out = block(&h, "voice_out");
+        let at = h.state().panel.editor.node_screen_pos(h.state().panel.graph().unwrap(), bpe_synth::catalog(), out);
+        click(&mut h, at);
+        key(&mut h, Key::Delete);
+        assert!(stored_patch(&h, id).node(out).is_none());
+        assert!(h.query_by_label("Compiles").is_none());
+        h.get_by_label("Add a Voice out block");
     }
 
     #[test]
