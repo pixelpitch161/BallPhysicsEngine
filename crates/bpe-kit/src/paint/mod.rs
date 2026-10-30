@@ -10,6 +10,8 @@ use glam::Vec2;
 
 pub mod eval;
 pub mod gpu;
+pub mod harmony;
+pub mod palettes;
 pub mod vary;
 pub use eval::{Inputs, beats_at, colour_at, hits_on, last_hit, last_hit_at, offset};
 pub use gpu::{background_gpu, paint_gpu};
