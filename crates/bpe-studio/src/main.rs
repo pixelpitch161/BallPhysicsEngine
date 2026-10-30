@@ -10,6 +10,7 @@ mod chords;
 mod dice;
 mod explorer;
 mod export_window;
+mod fx_list;
 mod gradient_bar;
 mod grid;
 mod history;

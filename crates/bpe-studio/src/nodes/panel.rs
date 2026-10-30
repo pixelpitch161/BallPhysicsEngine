@@ -2,6 +2,7 @@
 //! of a card in the inspector, or one synth patch from the library.
 
 use super::editor::{Editor, LiveView};
+use crate::fx_list::FxPlace;
 use crate::theme;
 use bpe_core::{
     InstrumentId, InstrumentSource, Module, ModuleGraph, ModuleId, ModuleKind, Params, Resolved, Scene, SlotId,
@@ -32,12 +33,14 @@ pub enum PanelTarget {
     Slot(ThingId, SlotId),
     /// A synth patch in the library.
     Patch(InstrumentId),
+    /// An effects graph: an instrument's, a channel's, a bus's or the master's.
+    Effects(FxPlace),
 }
 
-/// A patch on the canvas: a working copy, and the stored graph it was copied from, to notice an
-/// undo from outside the panel.
+/// A patch or effects graph on the canvas: a working copy, and the stored graph it was copied
+/// from, to notice an undo from outside the panel.
 struct ShownPatch {
-    id: InstrumentId,
+    target: PanelTarget,
     graph: Graph,
     stored: Graph,
     status: Result<(), String>,
@@ -45,15 +48,36 @@ struct ShownPatch {
 }
 
 impl ShownPatch {
-    fn load(id: InstrumentId, graph: &Graph) -> Self {
-        let (status, node_errors) = check_patch(graph);
-        Self { id, graph: graph.clone(), stored: graph.clone(), status, node_errors }
+    fn load(target: PanelTarget, graph: &Graph) -> Self {
+        let (status, node_errors) = check_patch(target, graph);
+        Self { target, graph: graph.clone(), stored: graph.clone(), status, node_errors }
     }
 }
 
-/// Why a patch doesn't compile, as its first problem, and its problems by block.
-fn check_patch(graph: &Graph) -> (Result<(), String>, BTreeMap<u32, String>) {
-    match bpe_synth::compile(graph) {
+/// The blocks an effects graph may use: the effects, the shaping blocks, the maths and the
+/// free-running modulators, with In and Out.
+fn effects_catalog() -> &'static bpe_graph::SpecList {
+    static CATALOG: std::sync::OnceLock<bpe_graph::SpecList> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let keep = |s: &bpe_graph::NodeSpec| match s.category.as_str() {
+            "Effects" | "Shaping" | "Maths" => true,
+            "Modulators" => matches!(s.kind.as_str(), "lfo" | "follower"),
+            _ => matches!(s.kind.as_str(), "fx_in" | "fx_out"),
+        };
+        let specs = bpe_synth::catalog().specs.iter().filter(|s| keep(s)).cloned().collect();
+        bpe_graph::SpecList { specs, cycles: false }
+    })
+}
+
+/// Why a patch or effects graph doesn't compile, as its first problem, and its problems by
+/// block. An empty effects graph passes the sound through, so it compiles.
+fn check_patch(target: PanelTarget, graph: &Graph) -> (Result<(), String>, BTreeMap<u32, String>) {
+    let compiled = match target {
+        PanelTarget::Effects(_) if graph.nodes.is_empty() => Ok(()),
+        PanelTarget::Effects(_) => bpe_synth::compile_effects(graph).map(drop),
+        _ => bpe_synth::compile(graph).map(drop),
+    };
+    match compiled {
         Ok(_) => (Ok(()), BTreeMap::new()),
         Err(problems) => {
             let mut node_errors = BTreeMap::new();
@@ -296,6 +320,16 @@ impl NodePanel {
         self.open = Some(PanelTarget::Patch(id));
     }
 
+    /// Opens the panel on an effects graph.
+    pub fn open_effects(&mut self, place: FxPlace) {
+        if self.open != Some(PanelTarget::Effects(place)) {
+            self.editor = Editor::new(("effects", place));
+            self.shown = None;
+            self.patch = None;
+        }
+        self.open = Some(PanelTarget::Effects(place));
+    }
+
     /// The thing and slot shown, when the panel shows a slot's graph.
     pub fn slot_open(&self) -> Option<(ThingId, SlotId)> {
         match self.open {
@@ -314,28 +348,47 @@ impl NodePanel {
     #[cfg(test)]
     pub fn graph(&self) -> Option<&Graph> {
         match self.open {
-            Some(PanelTarget::Patch(_)) => self.patch.as_ref().map(|s| &s.graph),
+            Some(PanelTarget::Patch(_) | PanelTarget::Effects(_)) => self.patch.as_ref().map(|s| &s.graph),
             _ => self.shown.as_ref().map(|s| &s.graph),
         }
     }
 
-    /// The patch view: the instrument's graph edited with the synth's blocks, written back to
-    /// the library on every change.
-    fn show_patch(&mut self, ui: &mut Ui, scene: &mut Scene, kit: &Kit, id: InstrumentId) -> bool {
-        let Some(instrument) = scene.library.instruments.get(&id) else {
+    /// The patch or effects view: the graph edited with the synth's blocks, written back to the
+    /// library on every change.
+    fn show_patch(&mut self, ui: &mut Ui, scene: &mut Scene, kit: &Kit, target: PanelTarget) -> bool {
+        let found = match target {
+            PanelTarget::Patch(id) => scene.library.instruments.get(&id).and_then(|i| match &i.source {
+                InstrumentSource::Patch { graph } => Some(graph),
+                InstrumentSource::BuiltIn { .. } => None,
+            }),
+            PanelTarget::Effects(place) => place.graph(scene),
+            PanelTarget::Slot(..) => None,
+        };
+        let Some(graph) = found else {
             self.close();
             return false;
         };
-        let InstrumentSource::Patch { graph } = &instrument.source else {
-            self.close();
-            return false;
-        };
-        if self.patch.as_ref().is_none_or(|p| p.id != id || &p.stored != graph) {
+        if self.patch.as_ref().is_none_or(|p| p.target != target || &p.stored != graph) {
             self.editor.selection.clear();
-            self.patch = Some(ShownPatch::load(id, graph));
+            self.patch = Some(ShownPatch::load(target, graph));
         }
-        let name = instrument.name.clone();
-        let users = scene.instrument_users(&kit.registry, id).len();
+        let (title, used) = match target {
+            PanelTarget::Patch(id) => {
+                let users = scene.instrument_users(&kit.registry, id).len();
+                let used = match users {
+                    0 => "used by nothing".to_owned(),
+                    1 => "used by 1".to_owned(),
+                    n => format!("used by {n}"),
+                };
+                (format!("Instrument › {}", scene.library.instruments[&id].name), Some(used))
+            }
+            PanelTarget::Effects(place) => (format!("{} effects", place.label(scene)), None),
+            PanelTarget::Slot(..) => unreachable!("slots are shown by show"),
+        };
+        let catalog: &dyn bpe_graph::Catalog = match target {
+            PanelTarget::Effects(_) => effects_catalog(),
+            _ => bpe_synth::catalog(),
+        };
         let Self { editor, patch, .. } = self;
         let shown = patch.as_mut().expect("loaded above");
         let mut close = false;
@@ -349,19 +402,17 @@ impl NodePanel {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Instrument › {name}")).strong());
-                    let used = match users {
-                        0 => "used by nothing".to_owned(),
-                        1 => "used by 1".to_owned(),
-                        n => format!("used by {n}"),
-                    };
-                    ui.label(RichText::new(used).color(theme::MUTED))
-                        .on_hover_text("Editing this patch changes every sound that plays it.");
+                    ui.label(RichText::new(title.as_str()).strong());
+                    if let Some(used) = &used {
+                        ui.label(RichText::new(used.as_str()).color(theme::MUTED))
+                            .on_hover_text("Editing this patch changes every sound that plays it.");
+                    }
                     match &shown.status {
                         Ok(()) => _ = ui.label(RichText::new("Compiles").color(theme::MUTED)),
                         Err(message) => {
-                            ui.label(RichText::new(message.as_str()).color(theme::ERROR))
-                                .on_hover_text("Until this is fixed, the patch plays nothing.");
+                            ui.label(RichText::new(message.as_str()).color(theme::ERROR)).on_hover_text(
+                                "Until this is fixed, the patch plays nothing (effects pass the sound through).",
+                            );
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -381,15 +432,21 @@ impl NodePanel {
                     });
                 });
                 let live = PatchErrors(&shown.node_errors);
-                let outcome = editor.show(ui, &mut shown.graph, bpe_synth::catalog(), Some(&live), scene);
+                let outcome = editor.show(ui, &mut shown.graph, catalog, Some(&live), scene);
                 changed = outcome.changed;
             });
         if changed {
-            let mut i = scene.library.instruments[&id].clone();
-            i.source = InstrumentSource::Patch { graph: shown.graph.clone() };
-            changed = scene.set_instrument(id, i).is_ok();
+            changed = match target {
+                PanelTarget::Patch(id) => {
+                    let mut i = scene.library.instruments[&id].clone();
+                    i.source = InstrumentSource::Patch { graph: shown.graph.clone() };
+                    scene.set_instrument(id, i).is_ok()
+                }
+                PanelTarget::Effects(place) => place.set(scene, shown.graph.clone()),
+                PanelTarget::Slot(..) => false,
+            };
             shown.stored = shown.graph.clone();
-            (shown.status, shown.node_errors) = check_patch(&shown.graph);
+            (shown.status, shown.node_errors) = check_patch(target, &shown.graph);
         }
         if close {
             self.close();
@@ -409,7 +466,9 @@ impl NodePanel {
     ) -> bool {
         let (thing, slot) = match self.open {
             None => return false,
-            Some(PanelTarget::Patch(id)) => return self.show_patch(ui, scene, kit, id),
+            Some(target @ (PanelTarget::Patch(_) | PanelTarget::Effects(_))) => {
+                return self.show_patch(ui, scene, kit, target);
+            }
             Some(PanelTarget::Slot(thing, slot)) => (thing, slot),
         };
         let reg = &kit.registry;
@@ -759,6 +818,28 @@ mod tests {
         });
         h.step();
         h.run();
+    }
+
+    #[test]
+    fn panel_opens_effects() {
+        let mut scene = new_scene();
+        scene.library.master_fx = bpe_synth::chain_graph(&[("reverb".into(), Default::default(), true)]);
+        let mut h = harness(scene, Some(ThingId::ROOT));
+        h.state_mut().panel.open_effects(FxPlace::Master);
+        h.run();
+        assert_eq!(h.state().panel.open, Some(PanelTarget::Effects(FxPlace::Master)));
+        h.get_by_label("Master effects");
+        h.get_by_label("Compiles");
+        let kinds: Vec<&str> = h.state().panel.graph().unwrap().nodes.iter().map(|n| n.kind.as_str()).collect();
+        assert!(kinds.contains(&"reverb"), "{kinds:?}");
+        // An edit on the canvas is written back to the master's effects.
+        let reverb = block(&h, "reverb");
+        let at =
+            h.state().panel.editor.node_screen_pos(h.state().panel.graph().unwrap(), super::effects_catalog(), reverb);
+        click(&mut h, at);
+        key(&mut h, Key::Delete);
+        assert!(h.state().scene.library.master_fx.nodes.iter().all(|n| n.kind != "reverb"));
+        assert!(super::effects_catalog().spec("note").is_none(), "no notes in effects");
     }
 
     #[test]
