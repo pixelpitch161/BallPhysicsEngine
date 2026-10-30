@@ -1014,7 +1014,7 @@ mod tests {
         assert_eq!(all.iter().filter(|r| matches!(r, Row::Setting(_))).count(), defs.len());
         let headings: Vec<&str> =
             all.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Sound", "Video", "Song", "Beat"]);
+        assert_eq!(headings, ["Sound", "Video", "Song", "Beat", "Camera sound"]);
         // A group whose settings all drop out loses its heading too.
         let no_song = rows_for(defs, &|d| d.group != "Song");
         assert!(!no_song.iter().any(|r| matches!(r, Row::Group("Song"))));

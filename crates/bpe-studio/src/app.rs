@@ -106,6 +106,12 @@ pub struct Studio {
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
+    /// What the preview shows: the video's shot, or the whole world.
+    pub preview_mode: crate::preview::PreviewMode,
+    /// Where the World view looks.
+    pub world_nav: crate::preview::WorldNav,
+    /// The world point at the middle of the preview, where new things are added.
+    pub view_centre: glam::Vec2,
     /// Remember grid changes in the settings folder (off without a window, in tests).
     persist_grid: bool,
     /// The soundtrack no longer matches the scene.
@@ -143,8 +149,9 @@ impl Studio {
         match scene_path {
             Some(path) => _ = studio.open_path(&path),
             None => {
-                if let Some(path) = settings::last_scene() {
-                    studio.open_path(&path);
+                let opened = settings::last_scene().is_some_and(|path| studio.open_path(&path));
+                if !opened {
+                    studio.new_scene();
                 }
                 studio.show_start();
             }
@@ -180,6 +187,9 @@ impl Studio {
             confirm: None,
             panels: Panels::default(),
             grid: Grid::default(),
+            preview_mode: Default::default(),
+            world_nav: Default::default(),
+            view_centre: glam::Vec2::ZERO,
             persist_grid: false,
             sound_dirty: true,
             audio: None,
@@ -216,6 +226,21 @@ impl Studio {
 
     /// Records the edit that turned `before` into the scene as it is now, unless nothing
     /// changed, and brings the simulation and sound along.
+    /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
+    /// the screen goes in the middle of the picture, which is where the camera isn't.
+    pub fn place_added(&mut self, id: ThingId) {
+        let stuck = self
+            .scene
+            .things
+            .get(&id)
+            .is_some_and(|t| self.kit.registry.thing(&t.kind).is_some_and(|k| t.sticks_to_screen(k)));
+        if let Some(thing) = self.scene.things.get_mut(&id)
+            && !thing.rides()
+        {
+            thing.transform.position = if stuck { glam::Vec2::ZERO } else { self.view_centre.round() };
+        }
+    }
+
     pub fn after_edit(&mut self, before: Scene) {
         self.edited(before, false);
     }
@@ -248,7 +273,10 @@ impl Studio {
         self.revision += 1;
     }
 
-    pub fn replace_scene(&mut self, scene: Scene, path: Option<PathBuf>) {
+    pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
+        // Every scene the editor holds has a camera; an older file gets one at the identity, so
+        // it looks and sounds as it always did.
+        bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
         self.saved = scene.clone();
         self.scene = scene;
         self.path = path;
@@ -297,7 +325,7 @@ impl Studio {
     }
 
     pub fn new_scene(&mut self) {
-        self.replace_scene(bpe_kit::new_scene(&self.kit.registry), None);
+        self.replace_scene(bpe_kit::new_studio_scene(&self.kit.registry), None);
         self.status = "Started a new scene.".into();
     }
 
@@ -783,6 +811,9 @@ impl eframe::App for Studio {
         if let Some(message) = tree.message {
             self.status = message;
         }
+        if let Some(id) = tree.added {
+            self.place_added(id);
+        }
         if tree.removed.is_some() {
             // Deleting is always its own undo step.
             self.recorded = true;
@@ -839,9 +870,12 @@ impl eframe::App for Studio {
             self.set_playing(false);
         }
         if outcome.drag_started {
-            // Dragging lays the scene out, so show where everything starts.
+            // Dragging lays the scene out, so show where everything starts. The camera stays at
+            // the playhead, so a keyed shot gets its key where it is being looked at.
             self.set_playing(false);
-            self.seek(0.0);
+            if !outcome.drag_camera {
+                self.seek(0.0);
+            }
         }
         if let Some(id) = outcome.selected {
             self.selection.set(id);
@@ -929,6 +963,18 @@ mod tests {
     use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
     use std::time::Duration;
+
+    #[test]
+    fn a_new_caption_lands_in_the_middle_of_the_picture() {
+        let mut studio = Studio::headless();
+        studio.view_centre = glam::Vec2::new(5000.0, -300.0);
+        let text = studio.scene.add_thing(&studio.kit.registry, "text", ThingId::ROOT).unwrap();
+        let balls = studio.scene.add_thing(&studio.kit.registry, "balls", ThingId::ROOT).unwrap();
+        studio.place_added(text);
+        studio.place_added(balls);
+        assert_eq!(studio.scene.things[&text].transform.position, glam::Vec2::ZERO);
+        assert_eq!(studio.scene.things[&balls].transform.position, glam::Vec2::new(5000.0, -300.0));
+    }
 
     #[test]
     fn opening_an_old_scene_reports_it_and_keeps_the_current_one() {

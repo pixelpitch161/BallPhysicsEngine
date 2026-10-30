@@ -49,6 +49,10 @@ pub struct SceneSettings {
     #[setting(label = "Height", range(2, 7680), unit = "px", group = "Video")]
     pub height: u32,
     /// Frames per second.
+    /// Keep the background still on the screen while the camera moves; off paints it across
+    /// the world instead.
+    #[setting(label = "Background stays on screen", group = "Video")]
+    pub background_on_screen: bool,
     #[setting(label = "Frame rate", range(1, 240), unit = "fps", group = "Video")]
     pub fps: u32,
     /// How many times a second the physics moves everything.
@@ -86,6 +90,10 @@ pub struct SceneSettings {
     /// How much faster or slower than real time the video may run between hits.
     #[setting(label = "Stretch", range(0, 0.9), group = "Beat")]
     pub warp_strength: f32,
+    /// How far past the edge of the shot a hit fades to silence, in shot widths; 0 plays every
+    /// hit at full volume wherever it is.
+    #[setting(label = "Off-shot fade", range(0, 5), unit = "shot widths", group = "Camera sound")]
+    pub off_shot_fade: f32,
 }
 
 impl Default for SceneSettings {
@@ -112,6 +120,8 @@ impl Default for SceneSettings {
             beat_sync: BeatSync::Off,
             subdivisions: 1,
             warp_strength: 0.5,
+            background_on_screen: true,
+            off_shot_fade: 0.0,
         }
     }
 }

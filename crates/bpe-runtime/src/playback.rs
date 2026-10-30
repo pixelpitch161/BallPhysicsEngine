@@ -81,6 +81,7 @@ impl Playback {
             let (world, len) = &self.checkpoints[index];
             self.world = world.clone();
             self.log.truncate(*len);
+            self.log.truncate_camera(self.world.step);
         }
         let started = budget.map(|_| Instant::now());
         while self.world.step < target {

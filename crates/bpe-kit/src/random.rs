@@ -55,6 +55,7 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
             rolled.changed.push(a);
         }
     }
+    fit_to_camera(scene, reg, &rolled);
     rolled
 }
 
@@ -97,6 +98,29 @@ fn roll_progressions(scene: &mut Scene, reg: &Registry, addresses: &[Address], r
         p.chords = preset.chords(p.key.root);
         if scene.set_progression(id, p).is_ok() {
             rolled.changed.push(a.clone());
+        }
+    }
+}
+
+/// Arena sizes the dice picked, made to fit the camera's shot: the dice ranges suit a shot at
+/// Zoom 1, so a zoomed-out camera gets bigger arenas and a zoomed-in one smaller.
+fn fit_to_camera(scene: &mut Scene, reg: &Registry, rolled: &Rolled) {
+    let Some(camera) = crate::camera_of(scene) else { return };
+    let zoom = match scene.value_at(reg, &Address { owner: Owner::Thing(camera), slot: None, key: "zoom".into() }) {
+        Some(Value::Number(z)) if z > 0.0 => z,
+        _ => return,
+    };
+    if zoom == 1.0 {
+        return;
+    }
+    for a in &rolled.changed {
+        let Owner::Thing(id) = a.owner else { continue };
+        let is_arena = scene.things.get(&id).is_some_and(|t| t.kind == "arena");
+        if !is_arena || a.slot.is_some() || !matches!(a.key.as_str(), "radius" | "width" | "height") {
+            continue;
+        }
+        if let Some(Value::Number(v)) = scene.value_at(reg, a) {
+            let _ = scene.set_at(reg, a, Value::Number(v / zoom));
         }
     }
 }
@@ -741,5 +765,22 @@ mod tests {
         assert_ne!(fresh_seed(), 0);
         assert_eq!(salt(&own(a, "radius")), salt(&own(a, "radius")));
         assert_ne!(salt(&own(a, "radius")), salt(&own(a, "count")));
+    }
+
+    #[test]
+    fn dice_fit_the_starting_shot() {
+        let reg = crate::registry();
+        let mut scene = crate::new_studio_scene(&reg);
+        let cam = crate::camera_of(&scene).unwrap();
+        scene.things.get_mut(&cam).unwrap().params.set("zoom", Value::Number(2.0));
+        for seed in 0..50 {
+            let mut rolled = scene.clone();
+            roll(&mut rolled, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
+            let Some(Value::Number(radius)) = rolled.things[&ThingId(1)].params.get("radius").cloned() else {
+                continue;
+            };
+            // The dice roll 150 to 500 for a shot at Zoom 1; at Zoom 2 the shot is half as wide.
+            assert!(radius <= 250.0 + 1e-3, "seed {seed}: radius {radius}");
+        }
     }
 }

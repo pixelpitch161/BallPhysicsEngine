@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{EventKind, Log, Outline, World};
+use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -481,6 +481,18 @@ pub struct Frame {
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
+    /// What the camera shows: everything above is drawn through it.
+    pub camera: CameraView,
+    /// The background gradient stays still on the screen; off, it is painted across the world
+    /// between `background_span`'s two heights.
+    pub background_on_screen: bool,
+    pub background_span: [f32; 2],
+    /// Things stuck to the screen, drawn after the main lists with no camera. Its own camera,
+    /// background and overlay are unused.
+    pub overlay: Option<Box<Frame>>,
+    /// The scene's video size. Usually `width` by `height`; the editor's World view draws a
+    /// picture of another shape, and the GPU layers keep stepping in the video's.
+    pub video: (u32, u32),
 }
 
 impl Default for Frame {
@@ -505,6 +517,11 @@ impl Default for Frame {
             bursts: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
+            camera: CameraView::default(),
+            background_on_screen: true,
+            background_span: [-960.0, 960.0],
+            overlay: None,
+            video: (1080, 1920),
         }
     }
 }
@@ -524,8 +541,50 @@ impl Frame {
         self.bursts.clear();
         self.hits.clear();
         self.effects.clear();
+        self.camera = CameraView::default();
+        if let Some(overlay) = &mut self.overlay {
+            overlay.clear();
+        }
+    }
+
+    /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
+    /// moment.
+    pub fn overlay_mut(&mut self) -> &mut Frame {
+        let (width, height, time, video) = (self.width, self.height, self.time, self.video);
+        let overlay = self.overlay.get_or_insert_with(Box::default);
+        (overlay.width, overlay.height, overlay.time, overlay.video) = (width, height, time, video);
+        overlay
+    }
+
+    /// Whether the overlay has anything to draw.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.as_ref().is_some_and(|o| {
+            !(o.shapes.is_empty()
+                && o.balls.is_empty()
+                && o.flashes.is_empty()
+                && o.soft.is_empty()
+                && o.glyphs.is_empty()
+                && o.looks.is_empty()
+                && o.trails.is_empty())
+        })
+    }
+
+    /// Drops balls, looks and flashes the camera can't see, so a big world draws only what is
+    /// near the shot.
+    pub fn cull(&mut self) {
+        if self.camera.is_identity() {
+            return;
+        }
+        let (camera, video) = (self.camera, Vec2::new(self.width as f32, self.height as f32));
+        let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
+        self.balls.retain(|b| sees(b.center, b.radius * 2.0));
+        self.looks.retain(|l| sees(l.center, l.radius * 2.0));
+        self.flashes.retain(|f| sees(f.center, f.size));
     }
 }
+
+/// World units past the edge of the shot that are still drawn, for glows and halos.
+const CULL_MARGIN: f32 = 64.0;
 
 /// What a thing's drawing part can read.
 pub struct DrawCx<'a> {
@@ -637,15 +696,27 @@ pub fn build_frame_at(
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, frame);
+        let into = if r.screen { frame.overlay_mut() } else { &mut *frame };
+        d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, into);
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         for slot in SlotId::ALL {
             let Some(s) = r.slots.get(&slot) else { continue };
             let Some(d) = draws.module(&s.kind) else { continue };
-            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, slot, frame);
+            let into = if r.screen { frame.overlay_mut() } else { &mut *frame };
+            d.draw(&DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time }, slot, into);
         }
+    }
+    frame.camera = world.camera;
+    // Shader effects, hit particles and hit marks of stuck things work on the whole picture
+    // like everyone else's: the overlay only holds what is drawn as shapes.
+    if let Some(o) = frame.overlay.as_deref_mut() {
+        let (effects, bursts, hits) =
+            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        frame.effects.extend(effects);
+        frame.bursts.extend(bursts);
+        frame.hits.extend(hits);
     }
 }
 

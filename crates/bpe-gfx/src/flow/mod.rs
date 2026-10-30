@@ -276,7 +276,7 @@ impl FlowLayers {
             self.layers.clear();
             return;
         }
-        let same = self.driver.as_ref().is_some_and(|d| d.key == source.key && d.video == (frame.width, frame.height))
+        let same = self.driver.as_ref().is_some_and(|d| d.key == source.key && d.video == frame.video)
             && self.layers.keys().eq(wanted.iter())
             && frame.swarms.iter().all(|l| match self.layers.get(&l.thing) {
                 Some(Layer::Swarm(s)) => *s.sim() == SwarmSim::of(l),
@@ -300,7 +300,7 @@ impl FlowLayers {
     /// Builds the private world afresh and every layer at step 0.
     fn restart(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
         let world = World::build(source.scene, source.resolved, source.sims);
-        let video = (frame.width, frame.height);
+        let video = frame.video;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow start") });
         let wall = first_wall(&world);
         match &wall {
@@ -776,6 +776,58 @@ mod tests {
         let moving = points.iter().filter(|p| p[2] != 0.0 || p[3] != 0.0).count();
         assert!(moving > 19_000, "{moving} moving");
         assert_eq!(run(), points, "a second run is the same");
+    }
+
+    #[test]
+    fn swarm_physics_ignores_camera() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let run = |camera: bpe_runtime::CameraView| {
+            let mut frame = Frame { camera, ..Frame::default() };
+            let mut layer = swarm_layer(ThingId(1));
+            layer.count = 2_000;
+            frame.swarms.push(layer);
+            let mut flow = FlowLayers::new(&device);
+            flow.prepare(&device, &queue, &frame, &source);
+            assert!(flow.step_to(&device, &queue, 0.5, &source).caught_up);
+            flow.swarm(ThingId(1)).unwrap().read_points(&device, &queue)
+        };
+        let moved = bpe_runtime::CameraView { center: Vec2::new(400.0, -300.0), zoom: 1.7, turn: 0.3 };
+        assert_eq!(run(bpe_runtime::CameraView::default()), run(moved));
+    }
+
+    #[test]
+    fn a_wider_picture_keeps_the_layers() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut frame = Frame::default();
+        frame.swarms.push(swarm_layer(ThingId(1)));
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        assert!(flow.step_to(&device, &queue, 0.5, &source).caught_up);
+        let stepped = flow.step();
+        // The World view draws a picture the panel's shape; the video, and so the layers, stay.
+        frame.width = 2400;
+        flow.prepare(&device, &queue, &frame, &source);
+        assert_eq!(flow.step(), stepped, "the layers started over");
     }
 
     #[test]

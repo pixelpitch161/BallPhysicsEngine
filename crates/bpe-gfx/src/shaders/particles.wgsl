@@ -7,6 +7,10 @@ struct Globals {
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
     post: vec4<f32>,
+    // centre xy, zoom, turn
+    camera: vec4<f32>,
+    // x: background on screen, y, z: world heights it spans
+    bg: vec4<f32>,
 };
 
 // One burst. Matches `BurstGpu` in particles.rs.
@@ -48,8 +52,22 @@ struct Out {
     @location(3) @interpolate(flat) kind: u32,
 };
 
+// The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
+// (centre 0, zoom 1, turn 0) the point is unchanged, exactly.
+fn to_screen(p: vec2<f32>) -> vec2<f32> {
+    let c = g.camera;
+    var d = p - c.xy;
+    if c.w != 0.0 {
+        let s = sin(-c.w);
+        let k = cos(-c.w);
+        d = vec2<f32>(d.x * k - d.y * s, d.x * s + d.y * k);
+    }
+    return d * c.z;
+}
+
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
-    return vec4<f32>(p.x * g.view.x, -p.y * g.view.y, 0.0, 1.0);
+    let q = to_screen(p);
+    return vec4<f32>(q.x * g.view.x, -q.y * g.view.y, 0.0, 1.0);
 }
 
 fn quad_corner(i: u32) -> vec2<f32> {

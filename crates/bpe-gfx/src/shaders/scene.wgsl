@@ -8,12 +8,30 @@ struct Globals {
     bg_bottom: vec4<f32>,
     // x: bloom strength, y: exposure
     post: vec4<f32>,
+    // centre xy, zoom, turn
+    camera: vec4<f32>,
+    // x: background on screen, y, z: world heights it spans
+    bg: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 
+// The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
+// (centre 0, zoom 1, turn 0) the point is unchanged, exactly.
+fn to_screen(p: vec2<f32>) -> vec2<f32> {
+    let c = g.camera;
+    var d = p - c.xy;
+    if c.w != 0.0 {
+        let s = sin(-c.w);
+        let k = cos(-c.w);
+        d = vec2<f32>(d.x * k - d.y * s, d.x * s + d.y * k);
+    }
+    return d * c.z;
+}
+
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
-    return vec4<f32>(p.x * g.view.x, -p.y * g.view.y, 0.0, 1.0);
+    let q = to_screen(p);
+    return vec4<f32>(q.x * g.view.x, -q.y * g.view.y, 0.0, 1.0);
 }
 
 fn quad_corner(i: u32) -> vec2<f32> {
@@ -37,9 +55,27 @@ fn vs_background(@builtin(vertex_index) i: u32) -> BgOut {
     return out;
 }
 
+// The world point under a screen point: `to_screen` backwards.
+fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
+    let c = g.camera;
+    var d = q / c.z;
+    if c.w != 0.0 {
+        let s = sin(c.w);
+        let k = cos(c.w);
+        d = vec2<f32>(d.x * k - d.y * s, d.x * s + d.y * k);
+    }
+    return d + c.xy;
+}
+
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
-    let t = clamp(in.world.y * g.view.y * 0.5 + 0.5, 0.0, 1.0);
+    // `in.world` is in screen units here; painted across the world, the gradient runs between
+    // two world heights instead.
+    var t = clamp(in.world.y * g.view.y * 0.5 + 0.5, 0.0, 1.0);
+    if g.bg.x == 0.0 {
+        let y = screen_to_world(in.world).y;
+        t = clamp((y - g.bg.y) / max(g.bg.z - g.bg.y, 1.0), 0.0, 1.0);
+    }
     return vec4<f32>(mix(g.bg_top.rgb, g.bg_bottom.rgb, t), 1.0);
 }
 

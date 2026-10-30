@@ -29,6 +29,8 @@ pub enum EditError {
     MissingProgression(ProgressionId),
     /// These settings still point at the progression.
     ProgressionInUse(Vec<Address>),
+    /// A scene has only one of these.
+    OnlyOne(KindId),
 }
 
 impl fmt::Display for EditError {
@@ -53,6 +55,7 @@ impl fmt::Display for EditError {
             EditError::ProgressionInUse(users) => {
                 write!(f, "{} settings still use this chord progression", users.len())
             }
+            EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
         }
     }
 }
@@ -63,6 +66,9 @@ impl Scene {
     /// Adds a thing of `kind` as the last child of `parent`.
     pub fn add_thing(&mut self, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
         let k = reg.thing(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        if k.single() && self.things.values().any(|t| t.kind == kind) {
+            return Err(EditError::OnlyOne(kind.into()));
+        }
         if !self.things.contains_key(&parent) {
             return Err(EditError::Missing(parent));
         }

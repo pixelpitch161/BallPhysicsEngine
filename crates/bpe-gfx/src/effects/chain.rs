@@ -335,7 +335,9 @@ fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
         let strength = (hit.speed / FULL_HIT_SPEED).clamp(0.0, 1.5);
         energy += strength * (-6.0 * age).exp();
         if i < MAX_HITS {
-            let uv = [hit.point[0] / frame.width.max(1) as f32 + 0.5, hit.point[1] / frame.height.max(1) as f32 + 0.5];
+            // Where the hit is in the picture, through the camera.
+            let at = frame.camera.to_screen(glam::Vec2::from(hit.point));
+            let uv = [at.x / frame.width.max(1) as f32 + 0.5, at.y / frame.height.max(1) as f32 + 0.5];
             base.hits[i] = [uv[0], uv[1], age, strength];
             base.hit_colors[i] = hit.color;
         }
@@ -524,6 +526,23 @@ pub(crate) mod tests {
         assert_eq!(fx.audio[0], fx.pulse);
         assert_eq!(fx.scale, 0.25);
         assert_eq!(base_uniform(&Frame::default(), 270, 480).pulse, 0.0);
+    }
+
+    #[test]
+    fn hit_effect_follows_camera() {
+        let mut frame = Frame { time: 1.0, ..Frame::default() };
+        frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(300.0, 0.0), zoom: 1.0, turn: 0.0 };
+        frame.hits.push(HitMark {
+            thing: ThingId(2),
+            other: None,
+            point: [300.0, 0.0],
+            normal: [0.0, -1.0],
+            time: 0.95,
+            speed: 600.0,
+            color: [1.0; 4],
+        });
+        let fx = base_uniform(&frame, 270, 480);
+        assert_eq!(fx.hits[0][..2], [0.5, 0.5], "a hit at the camera's centre is mid-picture");
     }
 
     #[test]

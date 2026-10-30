@@ -110,7 +110,7 @@ fn native(s: &NoteSound, picker: &mut Picker, h: &Heard, cx: &MixCx) -> Played {
         keys,
         velocity,
         volume: s.volume,
-        pan: (h.event.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width,
+        pan: cx.pan_of(h.event, s.stereo_width),
         decay: s.decay,
         brightness: s.brightness,
         candidates,
@@ -200,8 +200,20 @@ fn each_note(
         let heard = Heard { event: e, time, index: (cx.hit_index)(e), count };
         let n = native(s, &mut picker, &heard, cx);
         let Some(p) = play(&heard, n) else { continue };
+        // Hits away from the camera's shot fade out.
+        let fade = cx.gain_of(e);
+        if fade <= 0.0 {
+            continue;
+        }
         last_note = Some(time);
+        let first = out.len();
         notes(s, frame, &p, out);
+        if fade < 1.0 {
+            for n in &mut out[first..] {
+                n.left *= fade;
+                n.right *= fade;
+            }
+        }
     }
 }
 
@@ -424,6 +436,7 @@ mod tests {
             seed: 1,
             half_width: 540.0,
             half_height: 960.0,
+            off_shot_fade: 0.0,
             tags: Default::default(),
         }
     }
@@ -626,5 +639,49 @@ mod tests {
         let mut log = Log::default();
         log.push(hit(240, 0.0, 500.0));
         assert!(mix_scene(&scene, &resolved, &log, &kit).samples.iter().all(|&s| s == 0.0));
+    }
+
+    /// The (left, right) gains of the note one hit at world x makes, with the camera at
+    /// `camera` and Off-shot fade `fade`; silence when it plays none.
+    fn heard_at(x: f32, camera: bpe_runtime::CameraView, fade: f32) -> (f32, f32) {
+        let kit = kit();
+        let scene = new_scene(&kit.registry);
+        let resolved = resolve(&scene, &kit.registry);
+        let mut log = Log::default();
+        log.push_camera(0, camera);
+        log.push(hit(240, x, 900.0));
+        let mut settings = crate::mix_settings(&scene, &resolved);
+        settings.off_shot_fade = fade;
+        let cx = test_cx(&settings, &log);
+        let params = &resolved.things[&ThingId(2)].slots[&SlotId::Sound].params;
+        let mut notes = Vec::new();
+        NoteSoundMix.notes(params, ThingId(2), log.events(), &cx, &mut notes);
+        notes.pop().map_or((0.0, 0.0), |n| (n.left, n.right))
+    }
+
+    #[test]
+    fn off_shot_hits_fade() {
+        let still = bpe_runtime::CameraView::default();
+        // Constant-power panning: the loudness is the same wherever the note sits.
+        let loud = |(l, r): (f32, f32)| (l * l + r * r).sqrt();
+        let near = heard_at(0.0, still, 1.5);
+        let far = heard_at(1500.0, still, 1.5);
+        assert!(loud(far) > 0.0 && loud(far) < loud(near), "{far:?} vs {near:?}");
+        assert_eq!(loud(heard_at(30_000.0, still, 1.5)), 0.0);
+        let off = heard_at(3000.0, still, 0.0);
+        let centred = bpe_runtime::CameraView { center: glam::Vec2::new(3000.0, 0.0), ..still };
+        assert!(
+            (loud(off) - loud(heard_at(3000.0, centred, 1.5))).abs() < 1e-5,
+            "fade off, or in the shot: full volume"
+        );
+    }
+
+    #[test]
+    fn pan_uses_screen_position() {
+        let centred = bpe_runtime::CameraView { center: glam::Vec2::new(2000.0, 0.0), zoom: 1.0, turn: 0.0 };
+        let (l, r) = heard_at(2000.0, centred, 0.0);
+        assert!((l - r).abs() < 1e-4, "{l} {r}");
+        let (l, r) = heard_at(2000.0, bpe_runtime::CameraView::default(), 0.0);
+        assert!(r > l, "off to the right of the shot: {l} {r}");
     }
 }

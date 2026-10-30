@@ -323,6 +323,7 @@ fn export_with(
         let time = warp.sim_time(video_time);
         world.advance_to(time, &kit.sims, &mut log);
         build_frame_at(scene, &resolved, &world, &log, time, video_time, &kit.draws, &mut frame);
+        frame.cull();
         while !renderer.render_with_flow(device, queue, &frame, &source).caught_up {}
         let ready = match readback.push(device, queue, &renderer) {
             Ok(ready) => ready,

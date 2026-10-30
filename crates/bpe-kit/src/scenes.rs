@@ -76,13 +76,95 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
 }
 
 /// The scenes the Start window offers, in order: a spread of what the editor can do.
-pub const STARTERS: [&str; 8] =
-    ["Reel block", "Lava ball", "Spinning hexagon", "Peg board", "Deep pool", "Fireflies", "Jelly drop", "Drum beat"];
+pub const STARTERS: [&str; 9] = [
+    "Reel block",
+    "Lava ball",
+    "Spinning hexagon",
+    "Peg board",
+    "Long drop",
+    "Deep pool",
+    "Fireflies",
+    "Jelly drop",
+    "Drum beat",
+];
 
-/// The [`STARTERS`], each with its name.
+/// The [`STARTERS`], each with its name. Long drop is not in [`all`], so the golden tests keep
+/// the scenes they had.
 pub fn starters(reg: &Registry) -> Vec<(String, Scene)> {
     let mut all = all(reg);
+    all.push(("Long drop".into(), long_drop(reg)));
     STARTERS.iter().filter_map(|name| all.iter().position(|(n, _)| n == name).map(|i| all.swap_remove(i))).collect()
+}
+
+/// The camera scene: a peg course four screens tall, with the camera following the ball down,
+/// punching in on hits and staying inside the course.
+pub fn long_drop(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Long drop");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 900.0);
+        s.off_shot_fade = 1.5;
+    });
+    // The course runs from just above the first screen to the bottom of the fourth.
+    let course = Vec2::new(0.0, 2880.0);
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 1000.0;
+        a.height = 7680.0;
+        a.corner = 60.0;
+    });
+    b.scene.things.get_mut(&ARENA).expect("arena").transform.position = course;
+    let pegs = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Pegs",
+        course + Vec2::new(0.0, 200.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::PegGrid;
+            o.columns = 8;
+            o.rows = 60;
+            o.spacing = 115.0;
+            o.radius = 10.0;
+            o.stagger = true;
+        }),
+    );
+    b.tag(pegs, "pegs");
+    let peg_sound = NoteSound {
+        instrument: Instrument::Marimba,
+        plays_when: PlaysWhen::BeingHit,
+        order: Order::Speed,
+        ..NoteSound::default()
+    };
+    b.own_module(pegs, "sound.notes", "Peg sound", peg_sound.to_params());
+    b.balls("Ball", Vec2::new(30.0, -820.0), |s| {
+        s.radius = 22.0;
+        s.velocity = Vec2::new(60.0, 0.0);
+    });
+    b.scene.set_slot_off(BALLS, SlotId::Sound);
+    let bumpy = BasicBounce { bounciness: 0.55, ..BasicBounce::default() };
+    b.own_module(BALLS, "bounce.basic", "Bumpy", bumpy.to_params());
+    b.text("Title", Vec2::new(0.0, -780.0), |t| {
+        t.text = "Long drop".into();
+        t.font = Font::Anton;
+        t.size = 110.0;
+        t.outline = 6.0;
+    });
+    let camera = crate::CameraSettings {
+        position: Vec2::new(0.0, -480.0),
+        follow: true,
+        follow_target: Target::Thing(BALLS),
+        smoothness: 0.5,
+        look_ahead: 0.2,
+        slack: 0.05,
+        punch: 0.12,
+        punch_recovery: 0.25,
+        hits_from: Target::Thing(BALLS),
+        stay_inside: true,
+        box_size: Vec2::new(1080.0, 7680.0 + 120.0),
+        box_centre: course,
+        ..crate::CameraSettings::default()
+    };
+    b.add("camera", ThingId::ROOT, "Camera", Vec2::ZERO, camera.to_params());
+    b.scene
 }
 
 /// A ready-made rule's builder, by its menu name.
@@ -1034,11 +1116,12 @@ mod tests {
     use crate::{registry, scenes};
 
     #[test]
-    fn starters_are_eight_named_scenes_from_the_collection() {
+    fn starters_are_nine_named_scenes_from_the_collection() {
         let reg = registry();
         let starters = scenes::starters(&reg);
-        assert_eq!(starters.len(), 8);
-        let all: std::collections::BTreeMap<String, bpe_core::Scene> = scenes::all(&reg).into_iter().collect();
+        assert_eq!(starters.len(), 9);
+        let mut all: std::collections::BTreeMap<String, bpe_core::Scene> = scenes::all(&reg).into_iter().collect();
+        all.insert("Long drop".into(), scenes::long_drop(&reg));
         let mut names = std::collections::BTreeSet::new();
         for (name, scene) in &starters {
             assert_eq!(all.get(name), Some(scene), "{name} is one of the shipped scenes");
@@ -1076,6 +1159,8 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        let mut scenes = scenes;
+        scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
@@ -1092,7 +1177,9 @@ mod tests {
     #[test]
     fn the_shipped_scene_files_match_the_code() {
         let reg = registry();
-        for (name, scene) in scenes::all(&reg) {
+        let mut shipped = scenes::all(&reg);
+        shipped.push(("Long drop".into(), scenes::long_drop(&reg)));
+        for (name, scene) in shipped {
             let file = format!(
                 "{}/../../scenes/next/{}.ron",
                 env!("CARGO_MANIFEST_DIR"),
@@ -1105,5 +1192,29 @@ mod tests {
                 "{name}: scenes/next is stale, run with BPE_BLESS=1"
             );
         }
+    }
+
+    #[test]
+    fn long_drop_keeps_the_ball_in_shot() {
+        let kit = crate::kit();
+        let scene = scenes::long_drop(&kit.registry);
+        let resolved = crate::resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut log = bpe_runtime::Log::default();
+        let mut lowest = f32::MIN;
+        for i in 1..=200 {
+            world.advance_to(i as f64 * 0.1, &kit.sims, &mut log);
+            let bodies = &world.bodies[&bpe_core::ThingId(2)];
+            let p = bodies.position[0];
+            lowest = lowest.max(p.y);
+            assert!(
+                world.camera.sees(world.video, p, -bodies.radius[0]),
+                "at {:.1} s the ball at {p:?} left {:?}",
+                i as f64 * 0.1,
+                world.camera
+            );
+        }
+        assert!(lowest > 2000.0, "the ball got down the course: {lowest}");
     }
 }
