@@ -1256,7 +1256,7 @@ mod tests {
         }
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 2600.0))
+            .with_size(egui::vec2(420.0, 3000.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()

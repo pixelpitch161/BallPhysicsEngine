@@ -4,7 +4,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bpe_core::{Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_gfx::{LookInstance, PaintGpu, blend_alpha};
 use glam::Vec2;
 
@@ -187,6 +187,12 @@ pub struct StyledLook {
     /// How long the flash lasts.
     #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s", group = "Flash")]
     pub flash_seconds: f32,
+    /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for StyledLook {
@@ -212,6 +218,8 @@ impl Default for StyledLook {
             flash: 0.4,
             flash_size: 26.0,
             flash_seconds: 0.25,
+            blend: Blend::Normal,
+            blend_amount: 1.0,
         }
     }
 }

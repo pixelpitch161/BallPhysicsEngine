@@ -2,7 +2,7 @@
 
 pub mod draw;
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 
 use crate::paint::{Follow, Paint};
 
@@ -16,14 +16,6 @@ pub enum TrailSource {
     Ball,
     /// The trail's own Colours.
     Own,
-}
-
-/// Whether a trail adds its light or paints over what is behind it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum TrailBlend {
-    #[default]
-    Add,
-    Cover,
 }
 
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -51,12 +43,16 @@ pub struct StreakTrail {
         simple
     )]
     pub colour: Paint,
-    /// Add: the streak glows and adds its light. Cover: it paints over what is behind it.
-    #[setting(label = "Blend", simple, random)]
-    pub blend: TrailBlend,
     /// How much the streak narrows towards its tail: 0 keeps its width, 1 ends in a point.
     #[setting(label = "Taper", range(0, 1), keyframe, random)]
     pub taper: f32,
+    /// How the streak mixes with what is under it: Add glows and adds its light, Normal paints
+    /// over it, the others mix with it.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if the streak weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for StreakTrail {
@@ -67,8 +63,9 @@ impl Default for StreakTrail {
             brightness: 0.5,
             source: TrailSource::Ball,
             colour: Paint { follow: Follow::Life, ..Paint::solid(Color::WHITE) },
-            blend: TrailBlend::Add,
             taper: 1.0,
+            blend: Blend::Add,
+            blend_amount: 1.0,
         }
     }
 }

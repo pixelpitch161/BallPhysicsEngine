@@ -1,10 +1,10 @@
 //! Drawing streaks from the runtime's position history.
 
-use bpe_core::{Settings, SlotId};
+use bpe_core::{Blend, Settings, SlotId};
 use bpe_gfx::{DrawCx, Frame, ModuleDraw, push_streak, push_streak_colours};
 use glam::Vec2;
 
-use super::{StreakTrail, TrailBlend, TrailSource};
+use super::{StreakTrail, TrailSource};
 use crate::paint::{Follow, Inputs, beats_at, colour_at};
 use crate::things::balls::draw::ball_colors;
 
@@ -57,14 +57,21 @@ impl ModuleDraw for StreakDraw {
     }
 }
 
-/// The streak's colour from `base` (linear light) at its brightness: covering with the brightness
-/// as opacity, or adding that much light. An additive colour glows whatever the blend says.
+/// The streak's colour from `base` (linear light) at its brightness, faded by the blend amount:
+/// covering with the brightness as opacity, or adding that much light. An additive colour glows
+/// whatever the blend says. Blends other than Normal and Add are mixed in later, so here they
+/// cover at full amount.
 fn shade(trail: &StreakTrail, base: [f32; 4]) -> [f32; 4] {
     let k = trail.brightness;
-    match trail.blend {
-        TrailBlend::Cover if base[3] > 0.0 => [base[0], base[1], base[2], (base[3] * k).min(1.0)],
-        _ => [base[0] * k, base[1] * k, base[2] * k, -1.0],
+    let amount = match trail.blend {
+        Blend::Normal | Blend::Add => trail.blend_amount.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    if trail.blend != Blend::Add && base[3] > 0.0 {
+        return [base[0], base[1], base[2], (base[3] * k).min(1.0) * amount];
     }
+    let k = k * amount;
+    [base[0] * k, base[1] * k, base[2] * k, -1.0]
 }
 
 /// What the streak's own Colours read at each of its points, this frame.
@@ -163,7 +170,7 @@ mod tests {
         // Its own colour, covering, at the brightness as opacity.
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
-        m.params.set("blend", Value::Choice("cover".into()));
+        m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(0, 255, 0))));
         let resolved = bpe_core::resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 2.0, &kit.draws, &mut frame);
@@ -180,6 +187,23 @@ mod tests {
     }
 
     #[test]
+    fn the_blend_amount_fades_a_normal_streak_and_dims_an_added_one() {
+        use super::{StreakTrail, shade};
+        use bpe_core::Blend;
+        assert_eq!(StreakTrail::default().blend, Blend::Add);
+        assert_eq!(StreakTrail::default().blend_amount, 1.0);
+        let base = [0.8, 0.4, 0.2, 1.0];
+        let trail =
+            |blend, blend_amount| StreakTrail { brightness: 0.5, blend, blend_amount, ..StreakTrail::default() };
+        assert_eq!(shade(&trail(Blend::Normal, 1.0), base), [0.8, 0.4, 0.2, 0.5]);
+        assert_eq!(shade(&trail(Blend::Normal, 0.5), base), [0.8, 0.4, 0.2, 0.25]);
+        assert_eq!(shade(&trail(Blend::Add, 1.0), base), [0.4, 0.2, 0.1, -1.0]);
+        assert_eq!(shade(&trail(Blend::Add, 0.5), base), [0.2, 0.1, 0.05, -1.0]);
+        // An additive colour glows whatever the blend says, still at the amount.
+        assert_eq!(shade(&trail(Blend::Normal, 0.5), [0.8, 0.4, 0.2, 0.0]), [0.2, 0.1, 0.05, -1.0]);
+    }
+
+    #[test]
     fn trail_life_runs_head_to_tail() {
         let reg = registry();
         let mut scene = new_scene(&reg);
@@ -188,7 +212,7 @@ mod tests {
         let (red, blue) = (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255));
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
-        m.params.set("blend", Value::Choice("cover".into()));
+        m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, blue])));
         m.params.set("follow", Value::Choice("life".into()));
         let resolved = bpe_core::resolve(&scene, &reg);

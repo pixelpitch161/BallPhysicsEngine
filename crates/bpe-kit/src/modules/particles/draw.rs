@@ -1,6 +1,6 @@
 //! Turning a thing's recent hits into bursts.
 
-use bpe_core::{Gradient, Settings, SlotId, ThingId, Transition};
+use bpe_core::{Blend, Gradient, Settings, SlotId, ThingId, Transition};
 use bpe_gfx::{Burst, DrawCx, Frame, GradientAtlas, HitMark, ModuleDraw, PaintGpu};
 
 use super::{BurstSource, HitBurst};
@@ -131,7 +131,7 @@ pub fn burst_of(burst: &HitBurst, mark: &HitMark, own: &OwnColours, thing: Thing
         origin: mark.point,
         normal: mark.normal,
         time: mark.time,
-        color: bpe_gfx::blend_alpha(color),
+        color: faded(burst, bpe_gfx::blend_alpha(color)),
         count: burst.count.max(0) as u32,
         speed: burst.speed.max(0.0) * strength,
         spread: burst.spread,
@@ -144,6 +144,17 @@ pub fn burst_of(burst: &HitBurst, mark: &HitMark, own: &OwnColours, thing: Thing
         seed: seed_of(thing, mark),
         paint: PaintGpu::default(),
         follow: 0,
+    }
+}
+
+/// `color` faded by the blend amount: added light dimmed, a covering colour made see-through.
+/// Blends other than Normal and Add are mixed in later, so they keep the whole colour here.
+fn faded(burst: &HitBurst, color: [f32; 4]) -> [f32; 4] {
+    let amount = burst.blend_amount.clamp(0.0, 1.0);
+    match burst.blend {
+        Blend::Add => [color[0] * amount, color[1] * amount, color[2] * amount, color[3]],
+        Blend::Normal => [color[0], color[1], color[2], color[3] * amount],
+        _ => color,
     }
 }
 
@@ -208,6 +219,7 @@ mod tests {
         let module = scene.library.modules.get_mut(&m).unwrap();
         module.params.set("source", Value::Choice("own".into()));
         module.params.set("preset", Value::Choice("smoke".into()));
+        module.params.set("blend", Value::Choice("normal".into()));
         module.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(0, 0, 255))));
         let resolved = resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
@@ -218,6 +230,38 @@ mod tests {
         let resolved = resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
         assert!(frame.bursts.is_empty());
+    }
+
+    #[test]
+    fn the_blend_says_whether_bursts_add_and_the_amount_scales_them() {
+        assert_eq!(super::super::HitBurst::default().blend, bpe_core::Blend::Add);
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let m = scene.add_module(&reg, "particles.burst", "Smoke").unwrap();
+        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        params.set("preset", Value::Choice("smoke".into()));
+        params.set("life", Value::Number(2.0));
+        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        let kit = kit();
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
+        playback.seek(4.0);
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        let mut frame = Frame::default();
+        let mut draw = |blend: &str, amount: f64| {
+            let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+            params.set("blend", Value::Choice(blend.into()));
+            params.set("blend_amount", Value::Number(amount));
+            let resolved = resolve(&scene, &reg);
+            assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+            build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
+            assert!(!frame.bursts.is_empty());
+            (frame.bursts[0].additive, frame.bursts[0].color)
+        };
+        // Smoke used to cover on its own; now the Blend alone decides.
+        assert_eq!(draw("add", 1.0), (true, pink));
+        assert_eq!(draw("add", 0.5), (true, [pink[0] * 0.5, pink[1] * 0.5, pink[2] * 0.5, 1.0]));
+        assert_eq!(draw("normal", 1.0), (false, pink));
+        assert_eq!(draw("normal", 0.5), (false, [pink[0], pink[1], pink[2], 0.5]));
     }
 
     #[test]

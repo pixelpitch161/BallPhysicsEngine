@@ -1,6 +1,6 @@
 //! The liquid surface look: a coloured, lit, see-through body with a smoothed edge.
 
-use bpe_core::{Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Color, ModuleKind, SettingDef, Settings, SlotId};
 
 use crate::paint::Paint;
 
@@ -27,6 +27,12 @@ pub struct LiquidLook {
     /// Light the liquid gives off.
     #[setting(label = "Glow", range(0, 2), keyframe, pulse)]
     pub glow: f32,
+    /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for LiquidLook {
@@ -38,6 +44,8 @@ impl Default for LiquidLook {
             highlight: 0.8,
             smoothing: 6.0,
             glow: 0.1,
+            blend: Blend::Normal,
+            blend_amount: 1.0,
         }
     }
 }
