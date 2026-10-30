@@ -13,6 +13,9 @@ pub struct Bodies {
     /// Where the ball was before the current substep moved it, so a hit on a solid can sweep the
     /// path it really took, whatever a wall did to it since.
     pub start: Vec<Vec2>,
+    /// Where the ball first appeared, for colours that follow the start. Set once in `push`;
+    /// it is not part of the physics fingerprint or the golden logs.
+    pub spawn: Vec<Vec2>,
     pub alive: Vec<bool>,
     /// How many times the ball has hit something.
     pub hits: Vec<u32>,
@@ -33,6 +36,7 @@ impl Bodies {
         self.radius.push(radius);
         self.previous.push(position);
         self.start.push(position);
+        self.spawn.push(position);
         self.alive.push(true);
         self.hits.push(0);
         self.tint.push([0.0; 4]);
@@ -53,7 +57,7 @@ impl Bodies {
 
     /// Bytes the table takes, for playback budgets.
     pub fn memory(&self) -> usize {
-        self.position.capacity() * std::mem::size_of::<Vec2>() * 4
+        self.position.capacity() * std::mem::size_of::<Vec2>() * 5
             + self.radius.capacity() * std::mem::size_of::<f32>()
             + self.alive.capacity()
             + self.hits.capacity() * std::mem::size_of::<u32>()
@@ -74,6 +78,9 @@ mod tests {
         assert_eq!(bodies.len(), 2);
         assert_eq!(bodies.previous[0], Vec2::new(1.0, 2.0));
         assert_eq!(bodies.radius[0], 5.0);
+        assert_eq!(bodies.spawn[0], Vec2::new(1.0, 2.0));
+        bodies.position[0] = Vec2::ZERO;
+        assert_eq!(bodies.spawn[0], Vec2::new(1.0, 2.0), "spawn stays where the ball began");
         assert!(bodies.alive[1]);
         assert_eq!(bodies.hits[1], 0);
         assert_eq!(bodies.tint[1], [0.0; 4]);

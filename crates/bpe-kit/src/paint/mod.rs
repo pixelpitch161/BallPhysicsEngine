@@ -8,6 +8,9 @@ use bpe_core::{
 };
 use glam::Vec2;
 
+pub mod eval;
+pub use eval::{Inputs, beats_at, colour_at, last_hit, offset};
+
 /// What the colours follow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Follow {
