@@ -161,7 +161,6 @@ pub struct FlowLayers {
     checkpoint_bytes: u64,
 }
 
-/// The wall the layers keep out of: the first closed wall in id order.
 /// The frame's swarms, then those of its blend layers: all of them are stepped here.
 fn all_swarms(frame: &Frame) -> impl Iterator<Item = &SwarmLayer> + Clone {
     frame.swarms.iter().chain(frame.layers.iter().flat_map(|l| &l.frame.swarms))
@@ -172,6 +171,7 @@ fn all_liquids(frame: &Frame) -> impl Iterator<Item = &LiquidLayer> + Clone {
     frame.liquids.iter().chain(frame.layers.iter().flat_map(|l| &l.frame.liquids))
 }
 
+/// The wall the layers keep out of: the first closed wall in id order.
 fn first_wall(world: &World) -> Option<Outline> {
     world.walls.values().next().map(|w| w.outline)
 }

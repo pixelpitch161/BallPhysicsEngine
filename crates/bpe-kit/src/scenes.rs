@@ -328,13 +328,12 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             ..ClassicLook::default()
         };
         b.own_module(id, "look.classic", &format!("{name} look"), look.to_params());
-        let label = b.text(&format!("{name} label"), Vec2::new(0.0, y), |t| {
+        b.text(&format!("{name} label"), Vec2::new(0.0, y), |t| {
             t.text = name.into();
             t.size = 44.0;
             t.outline = 4.0;
             t.outline_paint = Paint::solid(hex(0x000000));
         });
-        let _ = label;
     }
     // A bar that subtracts its colour from what is under it.
     let bar = b.add(

@@ -388,9 +388,9 @@ fn draw_picture(
         );
         // The World view looks through its own camera at a picture the panel's shape, and
         // things stuck to the screen belong to the video, not the world, so they are left out.
+        // Blend layers move with the frame.
         if let Some((camera, (w, h))) = look {
-            frame.camera = camera;
-            (frame.width, frame.height) = (w, h);
+            frame.set_view(camera, (w, h));
             frame.overlay = None;
         }
         frame.cull();

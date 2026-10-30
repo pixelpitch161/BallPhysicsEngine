@@ -267,3 +267,54 @@ fn a_liquid_in_a_layer_draws_into_it() {
     assert!(got[2] > 100 && got[2] > got[0] + 40, "{got:?}: the layered liquid shows blue");
     assert_eq!(at(&plain, N / 2, N / 2)[2], 0);
 }
+
+/// A square block of liquid points 30 world pixels across, centred on `at`.
+fn liquid_block(at: [f32; 2], clarity: f32) -> LiquidLayer {
+    let mut points = Vec::new();
+    for row in 0..16 {
+        for col in 0..16 {
+            points.push([at[0] - 15.0 + col as f32 * 2.0, at[1] - 15.0 + row as f32 * 2.0, 0.0, 0.0]);
+        }
+    }
+    LiquidLayer {
+        thing: ThingId(1),
+        points: Points::Cpu(points),
+        radius: 1.0,
+        color: [0.1, 0.3, 1.0, 1.0],
+        follow: 0,
+        paint: PaintGpu::default(),
+        paint_place: [0.0; 4],
+        clarity,
+        refraction: 0.0,
+        highlight: 0.0,
+        smoothing: 1.0,
+        glow: 0.0,
+    }
+}
+
+#[test]
+fn a_layered_liquid_is_placed_through_the_frames_camera() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    // The layer was made through the camera the video had when the frame was built...
+    let mut frame = with_layer(flat([0.0; 3]), Blend::Screen, 1.0, Vec::new());
+    frame.layers[0].frame.liquids.push(liquid_block([200.0, 0.0], 0.0));
+    // ...and the editor's World view then looks at the liquid through its own camera.
+    frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(200.0, 0.0), zoom: 1.0, turn: 0.0 };
+    let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
+    assert!(got[2] > 100 && got[2] > got[0] + 40, "{got:?}: the liquid shows where the frame's camera looks");
+}
+
+#[test]
+fn a_clear_liquid_added_in_a_layer_does_not_add_the_picture_to_itself() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let grey = flat([0.2; 3]);
+    let plain = at(&render(&mut renderer, &device, &queue, &grey), N / 2, N / 2);
+    for blend in [Blend::Add, Blend::Difference, Blend::Screen] {
+        let mut frame = with_layer(grey.clone(), blend, 1.0, Vec::new());
+        frame.layers[0].frame.liquids.push(liquid_block([0.0, 0.0], 1.0));
+        let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
+        assert!(close(got, plain), "{blend:?}: {got:?} vs {plain:?}: a fully clear liquid adds nothing of its own");
+    }
+}

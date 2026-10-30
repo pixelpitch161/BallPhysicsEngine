@@ -47,7 +47,8 @@ pub struct StreakTrail {
     #[setting(label = "Taper", range(0, 1), keyframe, random)]
     pub taper: f32,
     /// How the streak mixes with what is under it: Add glows and adds its light, Normal paints
-    /// over it, the others mix with it.
+    /// over it, the others mix with it. With the others, everything with the same Blend and
+    /// amount is mixed in once, as one picture, so where streaks overlap they do not stack.
     #[setting(label = "Blend", group = "Blending")]
     pub blend: Blend,
     /// How much of the blend shows: 0 is as if the streak weren't there, 1 is the whole blend.

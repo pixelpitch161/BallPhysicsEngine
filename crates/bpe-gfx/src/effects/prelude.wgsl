@@ -32,6 +32,9 @@ struct Fx {
     // What the effect changes: 0 the whole picture, else one thing's code (its id plus one).
     // Outside that thing the picture is left as it was.
     apply_to: f32,
+    // 1 when the picture is a blend layer (premultiplied, its alpha how much the layer covers),
+    // else 0.
+    in_layer: f32,
     // The hit pulse three times over and 0 (bass, mid, treble and beat phase once there is
     // music).
     audio: vec4<f32>,

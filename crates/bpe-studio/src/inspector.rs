@@ -2246,6 +2246,7 @@ mod tests {
         assert!(h.query_by_label("Locked when randomizing").is_none());
         assert!(h.state().scene.locks.is_empty(), "{:?}", h.state().scene.locks);
     }
+
     #[test]
     fn look_card_shows_blending_and_variation() {
         let mut h = harness(Some(ThingId(2)));
@@ -2257,5 +2258,4 @@ mod tests {
         assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
     }
-
 }

@@ -39,7 +39,8 @@ impl Blend {
             Some(Value::Int(x)) => (*x as f32).clamp(0.0, 1.0),
             _ => 1.0,
         };
-        (blend, amount)
+        // -0 becomes 0, so the two never make different layers.
+        (blend, amount + 0.0)
     }
 
     /// The blend's number in the composite shader.
@@ -74,6 +75,8 @@ mod tests {
         assert_eq!(Blend::from_params(&Params::default()), (Blend::Normal, 1.0));
         p.set("blend_amount", Value::Number(-0.5));
         assert_eq!(Blend::from_params(&p).1, 0.0);
+        p.set("blend_amount", Value::Number(-0.0));
+        assert_eq!(Blend::from_params(&p).1.to_bits(), 0.0f32.to_bits(), "-0 reads as 0");
         p.set("blend_amount", Value::Number(0.25));
         assert_eq!(Blend::from_params(&p).1, 0.25);
         p.set("blend", Value::Choice("no_such_blend".into()));

@@ -28,6 +28,9 @@ pub struct LiquidLook {
     #[setting(label = "Glow", range(0, 2), keyframe, pulse)]
     pub glow: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
+    /// parts overlap they do not stack. Mixed any other way than Normal at full amount, the
+    /// liquid does not bend what is under it: the clear part shows it as it is.
     #[setting(label = "Blend", group = "Blending")]
     pub blend: Blend,
     /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.

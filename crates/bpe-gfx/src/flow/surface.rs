@@ -93,6 +93,8 @@ pub struct Surface {
     splat_speed: wgpu::RenderPipeline,
     blur_speed: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    /// The shading for a liquid in a blend layer: its own light only.
+    composite_layer: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     slots: Vec<Slot>,
 }
@@ -193,6 +195,15 @@ impl Surface {
                 Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 TriangleList,
             ),
+            composite_layer: make(
+                "liquid composite in a layer",
+                &composite_layout,
+                "vs_full",
+                "fs_composite_layer",
+                &[HDR_FORMAT],
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                TriangleList,
+            ),
             layout,
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("liquid linear"),
@@ -208,7 +219,9 @@ impl Surface {
     /// into `out` (the HDR picture or a blend layer) over what is there, bending
     /// `targets.behind`. `slot` tells the liquids of one frame apart; `world` is the frame's
     /// size in world pixels, seen through `camera`; `paint` holds the frame's gradients. A
-    /// liquid painted by speed splats and blurs its speed alongside.
+    /// liquid painted by speed splats and blurs its speed alongside. `in_layer` shades only the
+    /// liquid's own light (colour, shine, rim) at its cover, without the picture under it: a
+    /// blend layer's composite mixes that in, and bending it in as well would mix it twice.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -223,6 +236,7 @@ impl Surface {
         points: PointsBinding,
         paint: &wgpu::BindGroup,
         out: &wgpu::TextureView,
+        in_layer: bool,
     ) {
         while self.slots.len() <= slot {
             let uniform = |label| {
@@ -333,7 +347,7 @@ impl Surface {
         }
         {
             let mut pass = begin_pass(encoder, out, "liquid surface", wgpu::LoadOp::Load);
-            pass.set_pipeline(&self.composite);
+            pass.set_pipeline(if in_layer { &self.composite_layer } else { &self.composite });
             pass.set_bind_group(0, &from_thickness, &[]);
             pass.set_bind_group(1, paint, &[]);
             pass.draw(0..3, 0..1);

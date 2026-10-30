@@ -90,7 +90,8 @@ pub struct HitBurst {
     #[setting(label = "Least speed", range(0, 2000), unit = "px/s")]
     pub least_speed: f32,
     /// How the particles mix with what is under them: Add glows and adds their light, Normal
-    /// paints over it, the others mix with it.
+    /// paints over it, the others mix with it. With the others, everything with the same Blend
+    /// and amount is mixed in once, as one picture, so where particles overlap they do not stack.
     #[setting(label = "Blend", group = "Blending")]
     pub blend: Blend,
     /// How much of the blend shows: 0 is as if the particles weren't there, 1 is the whole blend.

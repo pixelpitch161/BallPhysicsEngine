@@ -388,4 +388,3 @@ mod tests {
         assert!(a.vary != b.vary && a.vary[0].abs() <= 60.0 / 360.0, "{:?} {:?}", a.vary, b.vary);
     }
 }
-

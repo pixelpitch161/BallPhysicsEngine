@@ -704,6 +704,8 @@ impl Frame {
         if !layered(blend, amount) {
             return self;
         }
+        // -0 and 0 are one amount (their bits differ).
+        let amount = amount + 0.0;
         let i = match self.layers.iter().position(|l| l.blend == blend && l.amount.to_bits() == amount.to_bits()) {
             Some(i) => i,
             None => {
@@ -717,6 +719,15 @@ impl Frame {
         (f.width, f.height, f.time, f.video, f.camera) = (width, height, time, video, camera);
         (f.bloom, f.exposure, f.background_on_screen) = (bloom, exposure, on_screen);
         f
+    }
+
+    /// Whether this frame's own lists (not its layers') draw the thing with `code` (see
+    /// [`thing_code`]) into the object picture: a wall, a ball or a styled ball of it.
+    pub(crate) fn draws_thing(&self, code: f32) -> bool {
+        let is = |c: f32| (c.floor() - code).abs() < 0.5;
+        self.balls.iter().any(|b| is(b.code[0]))
+            || self.looks.iter().any(|l| is(l.extent[1]))
+            || self.shapes.iter().any(|s| is(s.c[3]))
     }
 
     /// Whether none of the lists the picture is drawn from has anything in them.
@@ -788,19 +799,39 @@ impl Frame {
         })
     }
 
+    /// Looks at the frame through `camera` on a picture `size` world pixels across, its blend
+    /// layers with it. Things stuck to the screen take the new size and keep no camera.
+    pub fn set_view(&mut self, camera: CameraView, size: (u32, u32)) {
+        self.camera = camera;
+        (self.width, self.height) = size;
+        for l in &mut self.layers {
+            l.frame.set_view(camera, size);
+        }
+        if let Some(o) = &mut self.overlay {
+            let camera = o.camera;
+            o.set_view(camera, size);
+        }
+    }
+
     /// Drops balls, looks and flashes the camera can't see, so a big world draws only what is
-    /// near the shot.
+    /// near the shot. Blend layers are culled through this frame's camera and size, whatever
+    /// their own say.
     pub fn cull(&mut self) {
-        if self.camera.is_identity() {
+        let (camera, size) = (self.camera, (self.width, self.height));
+        self.cull_through(camera, size);
+    }
+
+    fn cull_through(&mut self, camera: CameraView, (width, height): (u32, u32)) {
+        if camera.is_identity() {
             return;
         }
-        let (camera, video) = (self.camera, Vec2::new(self.width as f32, self.height as f32));
+        let video = Vec2::new(width as f32, height as f32);
         let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
         self.flashes.retain(|f| sees(f.center, f.size));
         for l in &mut self.layers {
-            l.frame.cull();
+            l.frame.cull_through(camera, (width, height));
         }
     }
 }
@@ -1214,6 +1245,49 @@ mod tests {
         layer.balls.push(BallInstance { center: [5000.0, 0.0], radius: 5.0, ..BallInstance::default() });
         frame.cull();
         assert_eq!(frame.layers[0].frame.balls.len(), 1, "what the camera can't see is dropped in layers too");
+    }
+
+    #[test]
+    fn a_layer_is_culled_through_the_frames_camera_after_the_view_changes() {
+        use bpe_core::Blend;
+        // Built through a camera zoomed in on the middle of the video...
+        let mut frame = Frame::default();
+        frame.camera.zoom = 4.0;
+        let layer = frame.layer_mut(Blend::Screen, 1.0);
+        layer.balls.push(BallInstance { center: [2000.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        layer.balls.push(BallInstance { center: [90_000.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        // ...then looked at by the editor's World view, zoomed far out, on a wider picture.
+        frame.camera = CameraView { center: Vec2::ZERO, zoom: 0.1, turn: 0.0 };
+        (frame.width, frame.height) = (2000, 1000);
+        frame.cull();
+        let kept: Vec<[f32; 2]> = frame.layers[0].frame.balls.iter().map(|b| b.center).collect();
+        assert_eq!(kept, [[2000.0, 0.0]], "the layer is culled through the frame's own view");
+    }
+
+    #[test]
+    fn minus_zero_and_zero_amounts_share_a_layer() {
+        use bpe_core::Blend;
+        let mut frame = Frame::default();
+        frame.layer_mut(Blend::Screen, -0.0).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 0.0).balls.push(BallInstance::default());
+        assert_eq!(frame.layers.len(), 1);
+        assert_eq!(frame.layers[0].amount.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn set_view_moves_the_layers_with_the_frame() {
+        use bpe_core::Blend;
+        let mut frame = Frame::default();
+        frame.layer_mut(Blend::Screen, 1.0).balls.push(BallInstance::default());
+        frame.overlay_mut().layer_mut(Blend::Add, 0.5).balls.push(BallInstance::default());
+        let camera = CameraView { center: Vec2::new(10.0, 20.0), zoom: 0.5, turn: 0.25 };
+        frame.set_view(camera, (300, 200));
+        let l = &frame.layers[0].frame;
+        assert_eq!((l.camera, l.width, l.height), (camera, 300, 200));
+        let o = frame.overlay.as_deref().unwrap();
+        assert_eq!((o.width, o.height, o.camera), (300, 200, CameraView::default()), "stuck things keep no camera");
+        let ol = &o.layers[0].frame;
+        assert_eq!((ol.width, ol.height, ol.camera), (300, 200, CameraView::default()));
     }
 
     #[test]

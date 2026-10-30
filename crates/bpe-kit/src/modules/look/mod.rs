@@ -39,6 +39,8 @@ pub struct ClassicLook {
     #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s")]
     pub flash_seconds: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
+    /// parts overlap they do not stack.
     #[setting(label = "Blend", group = "Blending")]
     pub blend: Blend,
     /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.

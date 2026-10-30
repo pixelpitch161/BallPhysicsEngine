@@ -97,8 +97,9 @@ struct Targets {
     /// copies the picture under it here too, for its liquids and for the composite to read.
     behind: wgpu::Texture,
     behind_view: wgpu::TextureView,
-    /// What the things of one blend layer draw into, before it is mixed into the HDR image.
-    layer: wgpu::TextureView,
+    /// What the things of one blend layer draw into, before it is mixed into the HDR image;
+    /// made the first time a frame has a layer.
+    layer: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Half-size liquid thickness pictures: the splat target and the blur's scratch.
     thickness: wgpu::TextureView,
     blur: wgpu::TextureView,
@@ -277,10 +278,18 @@ impl FrameBuffers {
 
 /// How one frame's things are drawn: through which globals, from which gradient atlas, and
 /// whether its liquids and swarms are drawn (the overlay has none).
+#[derive(Clone)]
 struct Through {
     globals: wgpu::BindGroup,
     paint: wgpu::BindGroup,
     world: bool,
+    /// The camera and picture size the world is seen through: the main frame's, which a blend
+    /// layer's own copies may lag behind (the editor's World view sets them after building).
+    camera: CameraView,
+    size: (u32, u32),
+    /// Drawing into a blend layer: liquids there hold only their own light and leave the
+    /// picture under them out, as the composite mixes that in.
+    layer: bool,
 }
 
 impl Renderer {
@@ -809,13 +818,23 @@ impl Renderer {
             self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
         }
 
+        if !layers.is_empty() {
+            self.targets.ensure_layer(device);
+        }
         let wants_objects = effects::chain::Chain::wants_objects(frame);
         if wants_objects {
             self.targets.ensure_object(device);
         }
         self.chain.begin_frame();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        let world = Through { globals: self.globals_group.clone(), paint: self.paint.group.clone(), world: true };
+        let world = Through {
+            globals: self.globals_group.clone(),
+            paint: self.paint.group.clone(),
+            world: true,
+            camera: frame.camera,
+            size: (frame.width, frame.height),
+            layer: false,
+        };
         {
             let mut pass =
                 begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
@@ -830,7 +849,7 @@ impl Renderer {
         }
         let mut liquid_slot = 0;
         let hdr = self.targets.hdr.clone();
-        self.draw_liquids(device, queue, &mut encoder, frame, &hdr, &mut liquid_slot);
+        self.draw_liquids(device, queue, &mut encoder, frame, &world, &hdr, &mut liquid_slot);
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
@@ -855,6 +874,7 @@ impl Renderer {
             &mut encoder,
             Stage::Things,
             frame,
+            effects::chain::Canvas::Main,
             &self.targets.hdr_texture,
             &self.targets.hdr,
             object_view.as_ref(),
@@ -865,8 +885,10 @@ impl Renderer {
             self.draw_front(&mut pass, frame, &self.buffers, &world);
         }
         let mut slot = 0;
-        for (l, b) in frame.layers.iter().zip(&layer_buffers) {
-            self.draw_layer(device, queue, &mut encoder, l, b, &world, slot, &mut liquid_slot);
+        let world_layer = Through { layer: true, ..world.clone() };
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate() {
+            let effects = Some((frame, i, object_view.as_ref()));
+            self.draw_layer(device, queue, &mut encoder, l, b, &world_layer, slot, &mut liquid_slot, effects);
             slot += 1;
         }
         if let Some(o) = overlay {
@@ -874,12 +896,16 @@ impl Renderer {
                 globals: self.screen_globals_group.clone(),
                 paint: self.overlay_paint.group.clone(),
                 world: false,
+                camera: CameraView::default(),
+                size: (frame.width, frame.height),
+                layer: false,
             };
             let buffers = std::mem::take(&mut self.overlay);
             self.draw_things(device, queue, &mut encoder, o, &buffers, &screen, &hdr, &mut liquid_slot);
             self.overlay = buffers;
+            let screen_layer = Through { layer: true, ..screen.clone() };
             for (l, b) in o.layers.iter().zip(&layer_buffers[frame.layers.len()..]) {
-                self.draw_layer(device, queue, &mut encoder, l, b, &screen, slot, &mut liquid_slot);
+                self.draw_layer(device, queue, &mut encoder, l, b, &screen_layer, slot, &mut liquid_slot, None);
                 slot += 1;
             }
         }
@@ -890,6 +916,7 @@ impl Renderer {
             &mut encoder,
             Stage::Picture,
             frame,
+            effects::chain::Canvas::Main,
             &self.targets.hdr_texture,
             &self.targets.hdr,
             object_view.as_ref(),
@@ -962,14 +989,17 @@ impl Renderer {
         }
     }
 
-    /// Each of `f`'s liquids, shaded into `out` over what is there, bending `behind`.
-    /// `slot` counts the liquids drawn so far this frame.
+    /// Each of `f`'s liquids, shaded into `out` over what is there, bending `behind` (in a blend
+    /// layer, only their own light), seen through `through`'s camera. `slot` counts the liquids
+    /// drawn so far this frame.
+    #[allow(clippy::too_many_arguments)]
     fn draw_liquids(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         f: &Frame,
+        through: &Through,
         out: &wgpu::TextureView,
         slot: &mut usize,
     ) {
@@ -979,19 +1009,19 @@ impl Renderer {
                 Points::Gpu(_) => self.flow.as_ref().and_then(|flow| flow.gpu_points(layer.thing)),
             };
             if let Some(points) = points {
-                let world = (f.width, f.height);
                 self.surface.draw(
                     device,
                     queue,
                     encoder,
                     &self.targets,
                     *slot,
-                    world,
-                    &f.camera,
+                    through.size,
+                    &through.camera,
                     layer,
                     points,
                     &self.paint.group,
                     out,
+                    through.layer,
                 );
             }
             *slot += 1;
@@ -1071,7 +1101,7 @@ impl Renderer {
             self.draw_back(&mut pass, f, b, through);
         }
         if through.world {
-            self.draw_liquids(device, queue, encoder, f, view, liquid_slot);
+            self.draw_liquids(device, queue, encoder, f, through, view, liquid_slot);
         }
         let mut pass = begin_pass(encoder, view, "things in front", wgpu::LoadOp::Load);
         pass.set_bind_group(0, &through.globals, &[]);
@@ -1080,8 +1110,10 @@ impl Renderer {
         self.draw_front(&mut pass, f, b, through);
     }
 
-    /// Draws one blend layer's things into the layer picture, then mixes it into the HDR
-    /// picture over a copy of what is there. `slot` counts the layers mixed so far this frame.
+    /// Draws one blend layer's things into the layer picture, runs the effects on those things
+    /// that belong to it (`effects`: the main frame, the layer's index in it and the object
+    /// picture), then mixes it into the HDR picture over a copy of what is there. `slot` counts
+    /// the layers mixed so far this frame.
     #[allow(clippy::too_many_arguments)]
     fn draw_layer(
         &mut self,
@@ -1093,12 +1125,17 @@ impl Renderer {
         through: &Through,
         slot: usize,
         liquid_slot: &mut usize,
+        effects: Option<(&Frame, usize, Option<&wgpu::TextureView>)>,
     ) {
         // The picture under the layer: what its liquids bend and what the composite mixes with.
         self.copy_under(encoder);
-        drop(begin_pass(encoder, &self.targets.layer, "blend layer", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
-        let layer = self.targets.layer.clone();
+        let (texture, layer) = self.targets.layer.clone().expect("made before the frame is drawn");
+        drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
         self.draw_things(device, queue, encoder, &l.frame, b, through, &layer, liquid_slot);
+        if let Some((frame, index, objects)) = effects {
+            let on = effects::chain::Canvas::Layer(index);
+            self.chain.run(device, queue, encoder, Stage::Things, frame, on, &texture, &layer, objects);
+        }
         self.blend.composite(
             device,
             queue,
@@ -1107,7 +1144,7 @@ impl Renderer {
             l.blend,
             l.amount,
             &self.targets.behind_view,
-            &self.targets.layer,
+            &layer,
             &self.targets.hdr,
         );
     }
@@ -1191,8 +1228,6 @@ impl Targets {
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let behind_view = behind.create_view(&Default::default());
-        let layer =
-            texture("blend layer", width, height, HDR_FORMAT, render_and_sample).create_view(&Default::default());
         let thickness_size = ((width / 2).max(1), (height / 2).max(1));
         let thickness =
             texture("liquid thickness", thickness_size.0, thickness_size.1, THICKNESS_FORMAT, render_and_sample)
@@ -1242,7 +1277,7 @@ impl Targets {
             hdr,
             behind,
             behind_view,
-            layer,
+            layer: None,
             thickness,
             blur,
             speed,
@@ -1255,6 +1290,28 @@ impl Targets {
             down_sources,
             up_sources,
             composite,
+        }
+    }
+
+    /// Makes the blend layer picture if it is missing. Effects on layered things run over it in
+    /// place, so it copies like the HDR picture.
+    fn ensure_layer(&mut self, device: &wgpu::Device) {
+        if self.layer.is_none() {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("blend layer"),
+                size: wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            self.layer = Some((texture, view));
         }
     }
 
