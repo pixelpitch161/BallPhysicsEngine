@@ -8,7 +8,8 @@
 //! when they are made, and the runtime, the renderer and the mixer only read them.
 
 use crate::{
-    Address, Color, EditError, Owner, Registry, Resolved, Scene, SettingDef, SlotId, SlotLink, ThingId, Value,
+    Address, Color, EditError, Gradient, Owner, Registry, Resolved, Scene, SettingDef, SlotId, SlotLink, Stop, ThingId,
+    Value,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -227,8 +228,8 @@ fn clamp_to(v: Value, range: Option<(f64, f64)>) -> Value {
 
 impl Value {
     /// `t` of the way from this value to `other`: numbers and points move straight, colours
-    /// blend in linear light (lists of colours one by one, when they are as long), anything
-    /// else switches over at the end.
+    /// blend in linear light (gradients stop by stop, when they have as many stops, otherwise they
+    /// switch over halfway), anything else switches over at the end.
     pub fn lerp(&self, other: &Value, t: f32) -> Value {
         let t64 = t as f64;
         match (self, other) {
@@ -236,9 +237,17 @@ impl Value {
             (Value::Int(a), Value::Int(b)) => Value::Int((*a as f64 + (*b - *a) as f64 * t64).round() as i64),
             (Value::Vec2(a), Value::Vec2(b)) => Value::Vec2([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
             (Value::Color(a), Value::Color(b)) => Value::Color(Color::mix(*a, *b, t)),
-            (Value::Colors(a), Value::Colors(b)) if a.len() == b.len() => {
-                Value::Colors(a.iter().zip(b).map(|(a, b)| Color::mix(*a, *b, t)).collect())
+            (Value::Gradient(a), Value::Gradient(b)) if a.stops.len() == b.stops.len() => {
+                let stops = a
+                    .stops
+                    .iter()
+                    .zip(&b.stops)
+                    .map(|(a, b)| Stop { at: a.at + (b.at - a.at) * t, color: Color::mix(a.color, b.color, t) })
+                    .collect();
+                Value::Gradient(Gradient { stops, transition: if t < 0.5 { a.transition } else { b.transition } })
             }
+            (Value::Gradient(a), Value::Gradient(_)) if t < 0.5 => Value::Gradient(a.clone()),
+            (Value::Gradient(_), Value::Gradient(b)) => Value::Gradient(b.clone()),
             _ => {
                 if t < 1.0 {
                     self.clone()
@@ -639,7 +648,33 @@ fn lands_on(scene: &Scene, resolved: &Resolved, a: &Address) -> Vec<(ThingId, Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModuleId, resolve, testkit};
+    use crate::{ModuleId, Transition, resolve, testkit};
+
+    const RED: Color = Color::rgb(255, 0, 0);
+    const BLUE: Color = Color::rgb(0, 0, 255);
+
+    fn gradient(stops: &[(f32, Color)]) -> Value {
+        let stops = stops.iter().map(|&(at, color)| Stop { at, color }).collect();
+        Value::Gradient(Gradient { stops, transition: Transition::Smooth })
+    }
+
+    #[test]
+    fn lerp_blends_gradients_stop_by_stop() {
+        let a = gradient(&[(0.0, RED), (1.0, BLUE)]);
+        let b = gradient(&[(0.2, BLUE), (1.0, RED)]);
+        let Value::Gradient(mid) = a.lerp(&b, 0.5) else { panic!() };
+        assert!((mid.stops[0].at - 0.1).abs() < 1e-6);
+        assert_eq!(mid.stops[0].color, Color::mix(RED, BLUE, 0.5));
+        assert_eq!(mid.stops[1].at, 1.0);
+    }
+
+    #[test]
+    fn lerp_with_different_counts_jumps_at_half() {
+        let a = gradient(&[(0.0, RED), (1.0, BLUE)]);
+        let b = gradient(&[(0.0, RED), (0.5, BLUE), (1.0, RED)]);
+        assert_eq!(a.lerp(&b, 0.49), a);
+        assert_eq!(a.lerp(&b, 0.5), b);
+    }
 
     fn key(v: f64) -> Value {
         Value::Number(v)

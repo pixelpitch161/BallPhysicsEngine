@@ -1,6 +1,6 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
+use bpe_core::{Color, Gradient, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
@@ -120,7 +120,7 @@ pub enum Row<'a> {
 pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
     let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
     let find = |key: &str, ty: ValueType| shown.iter().copied().find(|d| d.key == key && d.ty == ty);
-    let merged = find(COLOUR, ValueType::Color).zip(find(COLOURS, ValueType::Colors));
+    let merged = find(COLOUR, ValueType::Color).zip(find(COLOURS, ValueType::Gradient));
     let row = |d: &'a SettingDef| match merged {
         Some((colour, colours)) if d.key == COLOUR => Some(Row::Colours { colour, colours }),
         Some(_) if d.key == COLOURS => None,
@@ -247,7 +247,7 @@ fn colours_row(
     out: &mut GridOutcome,
 ) {
     let list = match get(COLOURS) {
-        Value::Colors(list) if !list.is_empty() => list,
+        Value::Gradient(g) if g.stops.len() > 1 => g.stops.iter().map(|s| s.color).collect(),
         _ => match get(COLOUR) {
             Value::Color(c) => vec![c],
             _ => vec![Color::WHITE],
@@ -635,9 +635,11 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
             x | y
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
-        (ValueType::Colors, Value::Colors(colors)) => {
-            let (mut response, change) = color_list(ui, colors, name, 0);
+        (ValueType::Gradient, Value::Gradient(g)) => {
+            let mut colors: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
+            let (mut response, change) = color_list(ui, &mut colors, name, 0);
             if change.is_some() {
+                *g = Gradient::even(&colors);
                 response.mark_changed();
             }
             response

@@ -28,7 +28,7 @@ pub use address::{Address, Owner};
 pub use animation::{
     Animation, Bands, Ease, Inputs, Key, Pulse, PulseInputs, PulseSource, SAME_TIME, Track, pulse_strength,
 };
-pub use color::Color;
+pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};

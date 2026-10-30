@@ -1,6 +1,6 @@
 //! Glowing dots: how a swarm is drawn, as tiny additive points of light.
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct SwarmLookKind;
 
@@ -28,7 +28,7 @@ pub struct SwarmLook {
     pub colors_by: SwarmColors,
     /// The colours to pick from.
     #[setting(label = "Colours", simple, random)]
-    pub colors: Vec<Color>,
+    pub colors: Gradient,
 }
 
 impl Default for SwarmLook {
@@ -37,7 +37,11 @@ impl Default for SwarmLook {
             size: 1.5,
             brightness: 0.25,
             colors_by: SwarmColors::Speed,
-            colors: vec![Color::rgb(0x20, 0x40, 0xff), Color::rgb(0x2e, 0xd8, 0xe6), Color::rgb(0xff, 0xf2, 0xc0)],
+            colors: Gradient::even(&[
+                Color::rgb(0x20, 0x40, 0xff),
+                Color::rgb(0x2e, 0xd8, 0xe6),
+                Color::rgb(0xff, 0xf2, 0xc0),
+            ]),
         }
     }
 }

@@ -6,8 +6,8 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Color, Ease, ModuleGraph, ModuleId, ModuleKind, Owner, Params, PulseSource, Registry, Scene,
-    Settings, SlotId, Target, ThingId, Value,
+    Address, Attach, Color, Ease, Gradient, ModuleGraph, ModuleId, ModuleKind, Owner, Params, PulseSource, Registry,
+    Scene, Settings, SlotId, Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -302,13 +302,13 @@ fn reel_block(reg: &Registry) -> Scene {
         s.velocity = Vec2::new(-480.0, 265.0);
     });
     b.ball_look(|l| {
-        l.gradient = vec![
+        l.gradient = Gradient::even(&[
             Color::rgb(0x3e, 0x9b, 0xff),
             Color::rgb(0x8a, 0x4d, 0xff),
             Color::rgb(0xff, 0x3e, 0xc8),
             Color::rgb(0xff, 0x6a, 0x5c),
             Color::rgb(0xff, 0xb8, 0x2e),
-        ];
+        ]);
     });
     let arena_look = ClassicLook { color: Color::rgb(0xd8, 0xdc, 0xd0), ..ClassicLook::default() }.to_params();
     b.own_module(ARENA, "look.classic", "Arena look", arena_look);
@@ -424,7 +424,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.radius = 28.0;
         s.velocity = Vec2::ZERO;
     });
-    b.ball_look(|l| l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]);
+    b.ball_look(|l| l.gradient = Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8)]));
     let rope = b.soft("Rope", Vec2::new(0.0, -100.0), |s| {
         s.shape = SoftShape::Rope;
         s.size = 760.0;
@@ -487,7 +487,8 @@ fn captioned_reel(reg: &Registry) -> Scene {
         s.velocity = Vec2::new(-420.0, 240.0);
     });
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)];
+        l.gradient =
+            Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
     });
     let hits = b.text("Hit counter", Vec2::new(0.0, -780.0), |t| {
         t.text = "Hits {hits}".into();
@@ -601,7 +602,8 @@ fn peg_board(reg: &Registry) -> Scene {
     // Only the pegs make a sound.
     b.scene.set_slot_off(BALLS, SlotId::Sound);
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0xff, 0xd1, 0x4a), Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0x6a, 0x8d, 0xff)];
+        l.gradient =
+            Gradient::even(&[Color::rgb(0xff, 0xd1, 0x4a), Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0x6a, 0x8d, 0xff)]);
         l.gradient_by = GradientBy::Hits;
         l.gradient_full = 10.0;
     });
@@ -668,7 +670,8 @@ fn ball_pit(reg: &Registry) -> Scene {
         s.friction = 0.3;
     });
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)];
+        l.gradient =
+            Gradient::even(&[Color::rgb(0x3e, 0x9b, 0xff), Color::rgb(0xff, 0x3e, 0xc8), Color::rgb(0xff, 0xb8, 0x2e)]);
         l.gradient_by = GradientBy::Hits;
         l.gradient_full = 12.0;
     });
@@ -903,7 +906,8 @@ fn fountain(reg: &Registry) -> Scene {
     });
     b.bounce(|s| s.bounciness = 0.9);
     b.ball_look(|l| {
-        l.gradient = vec![Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)];
+        l.gradient =
+            Gradient::even(&[Color::rgb(0x3e, 0xd8, 0xff), Color::rgb(0x8a, 0x4d, 0xff), Color::rgb(0xff, 0x5c, 0xa8)]);
     });
     let spout = EmitterSettings {
         target: Target::Thing(BALLS),
@@ -1019,7 +1023,11 @@ fn fireflies(reg: &Registry) -> Scene {
     let swarm = b.add("swarm", ThingId::ROOT, "Fireflies", Vec2::ZERO, swarm.to_params());
     let look = SwarmLook {
         colors_by: SwarmColors::Gradient,
-        colors: vec![Color::rgb(0xff, 0xe0, 0x66), Color::rgb(0x8a, 0xff, 0x80), Color::rgb(0x40, 0xc8, 0xff)],
+        colors: Gradient::even(&[
+            Color::rgb(0xff, 0xe0, 0x66),
+            Color::rgb(0x8a, 0xff, 0x80),
+            Color::rgb(0x40, 0xc8, 0xff),
+        ]),
         ..SwarmLook::default()
     };
     let m = b.module_of(swarm, SlotId::Look);

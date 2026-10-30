@@ -24,7 +24,7 @@ pub fn colors<'a>(
     let count = bodies.len();
     let full = look.gradient_full.max(1e-3);
     move |i| {
-        let base = if look.gradient.is_empty() {
+        let base = if look.gradient.stops.len() < 2 {
             plain
         } else {
             let t = match look.gradient_by {
@@ -34,7 +34,7 @@ pub fn colors<'a>(
                 GradientBy::Speed => bodies.velocity.get(i).map_or(0.0, |v| v.length() / full),
                 GradientBy::Hits => bodies.hits.get(i).map_or(0.0, |h| *h as f32 / full),
             };
-            Color::sample_gradient(&look.gradient, t.clamp(0.0, 1.0))
+            look.gradient.sample(t.clamp(0.0, 1.0))
         };
         let hits = bodies.hits.get(i).copied().unwrap_or(0);
         if look.hue_per_hit == 0.0 || hits == 0 {

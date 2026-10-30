@@ -7,7 +7,7 @@ use crate::presets::{self, Preset};
 use crate::settings;
 use crate::theme;
 use crate::widgets::{GridCx, TargetChoices, settings_grid_marked};
-use bpe_core::{Address, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
+use bpe_core::{Address, EditError, Gradient, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Key, RichText, Sense, Ui};
 
@@ -165,13 +165,11 @@ pub fn show(
         Some(Action::SelectUsers(m)) => out.select = Some(scene.users_of(m)),
         Some(Action::Colours(m, list)) => {
             let at = |key: &str| Address { owner: Owner::Module(m), slot: None, key: key.into() };
-            let (colour, colours) = match &list[..] {
-                [one] => (*one, Vec::new()),
-                _ => (list[0], list),
-            };
+            let colour = list[0];
+            let colours = if list.len() > 1 { Gradient::even(&list) } else { Gradient::default() };
             let result = scene
                 .set_at(reg, &at(crate::widgets::COLOUR), bpe_core::Value::Color(colour))
-                .and_then(|()| scene.set_at(reg, &at(crate::widgets::COLOURS), bpe_core::Value::Colors(colours)));
+                .and_then(|()| scene.set_at(reg, &at(crate::widgets::COLOURS), bpe_core::Value::Gradient(colours)));
             match result {
                 Ok(()) => out.edited = true,
                 Err(e) => out.message = Some(e.to_string()),

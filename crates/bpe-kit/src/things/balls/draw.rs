@@ -253,7 +253,10 @@ mod tests {
         let look = scene.library.modules.get_mut(&m).unwrap();
         look.params.set(
             "gradient",
-            bpe_core::Value::Colors(vec![bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]),
+            bpe_core::Value::Gradient(bpe_core::Gradient::even(&[
+                bpe_core::Color::rgb(255, 0, 0),
+                bpe_core::Color::rgb(0, 0, 255),
+            ])),
         );
         look.params.set("gradient_by", bpe_core::Value::Choice("hits".into()));
         look.params.set("gradient_full", bpe_core::Value::Number(2.0));
@@ -328,7 +331,10 @@ mod tests {
             bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
         scene.library.modules.get_mut(&m).unwrap().params.set(
             "gradient",
-            bpe_core::Value::Colors(vec![bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]),
+            bpe_core::Value::Gradient(bpe_core::Gradient::even(&[
+                bpe_core::Color::rgb(255, 0, 0),
+                bpe_core::Color::rgb(0, 0, 255),
+            ])),
         );
         let _ = resolved;
         let resolved = bpe_core::resolve(&scene, &kit.registry);

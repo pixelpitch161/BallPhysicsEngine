@@ -808,11 +808,13 @@ impl Hasher {
                 self.f32(*y);
             }
             Value::Color(c) => self.bytes(&[4, c.r, c.g, c.b, c.a]),
-            Value::Colors(cs) => {
+            Value::Gradient(g) => {
                 self.bytes(&[5]);
-                for c in cs {
-                    self.bytes(&[c.r, c.g, c.b, c.a]);
+                for s in &g.stops {
+                    self.f32(s.at);
+                    self.bytes(&[s.color.r, s.color.g, s.color.b, s.color.a]);
                 }
+                self.bytes(&[g.transition as u8]);
             }
             Value::Choice(s) | Value::Text(s) => {
                 self.bytes(&[6]);

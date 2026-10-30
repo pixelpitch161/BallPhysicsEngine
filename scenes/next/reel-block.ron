@@ -106,13 +106,31 @@
                 kind: "look.classic",
                 params: {
                     "color": Color("#ff5ca8"),
-                    "gradient": Colors([
-                        "#3e9bff",
-                        "#8a4dff",
-                        "#ff3ec8",
-                        "#ff6a5c",
-                        "#ffb82e",
-                    ]),
+                    "gradient": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3e9bff",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#ff6a5c",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ffb82e",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             5: (

@@ -4,7 +4,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_gfx::{LookInstance, blend_alpha};
 use glam::Vec2;
 
@@ -141,9 +141,9 @@ pub struct StyledLook {
     /// Full turns around the colour wheel per second, so the ball cycles through the rainbow.
     #[setting(label = "Rainbow", when = "thing=balls", range(-2, 2), unit = "turns/s", group = "Light", keyframe, random)]
     pub rainbow: f32,
-    /// Spread across the balls from the first row to the last; empty uses Colour.
+    /// Spread across the balls from the first row to the last; a single colour uses Colour.
     #[setting(label = "Colours", when = "thing=balls", group = "Light", keyframe, random)]
-    pub gradient: Vec<Color>,
+    pub gradient: Gradient,
     /// What spreads the Colours across the balls: the row they start in, their order, how fast
     /// they go, or how often they have hit.
     #[setting(label = "Colours follow", when = "thing=balls and gradient", group = "Light")]
@@ -199,7 +199,7 @@ impl Default for StyledLook {
             glow_size: 0.8,
             opacity: 1.0,
             rainbow: 0.0,
-            gradient: Vec::new(),
+            gradient: Gradient::default(),
             gradient_by: GradientBy::Row,
             gradient_full: 1000.0,
             hue_per_hit: 0.0,

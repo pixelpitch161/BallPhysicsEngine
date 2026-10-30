@@ -122,11 +122,23 @@
                 slot: Look,
                 kind: "look.swarm",
                 params: {
-                    "colors": Colors([
-                        "#ffe066",
-                        "#8aff80",
-                        "#40c8ff",
-                    ]),
+                    "colors": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffe066",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#8aff80",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#40c8ff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                     "colors_by": Choice("gradient"),
                 },
             ),

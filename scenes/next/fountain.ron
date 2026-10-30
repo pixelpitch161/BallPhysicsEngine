@@ -122,11 +122,23 @@
                 kind: "look.classic",
                 params: {
                     "color": Color("#ff5ca8"),
-                    "gradient": Colors([
-                        "#3ed8ff",
-                        "#8a4dff",
-                        "#ff5ca8",
-                    ]),
+                    "gradient": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3ed8ff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
         },

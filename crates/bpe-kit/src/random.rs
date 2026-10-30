@@ -179,17 +179,23 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
             let rolled = if amount >= 1.0 { like(palette(dice, 1)[0], *c) } else { c.shift_hue(turn(dice, amount)) };
             Some(Value::Color(rolled))
         }
-        Value::Colors(list) => {
-            if list.is_empty() {
+        Value::Gradient(g) => {
+            // A single colour means "no gradient", which stays off.
+            if g.stops.len() < 2 {
                 return None;
             }
+            let mut rolled = g.clone();
             if amount >= 1.0 {
-                return Some(Value::Colors(
-                    palette(dice, list.len()).into_iter().zip(list).map(|(n, c)| like(n, *c)).collect(),
-                ));
+                for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
+                    stop.color = like(new, stop.color);
+                }
+            } else {
+                let t = turn(dice, amount);
+                for stop in &mut rolled.stops {
+                    stop.color = stop.color.shift_hue(t);
+                }
             }
-            let t = turn(dice, amount);
-            Some(Value::Colors(list.iter().map(|c| c.shift_hue(t)).collect()))
+            Some(Value::Gradient(rolled))
         }
         Value::Vec2([x, y]) => Some(Value::Vec2(roll_vec2([*x, *y], def.dice_range(), def.range, dice, amount))),
         Value::Text(_) | Value::Target(_) => None,
@@ -328,7 +334,7 @@ pub fn fresh_seed() -> u32 {
 mod tests {
     use super::*;
     use crate::{add_thing, new_scene, registry};
-    use bpe_core::{Owner, SlotId, ThingId, Value, ValueType};
+    use bpe_core::{Gradient, Owner, SlotId, ThingId, Value, ValueType};
 
     fn def(reg: &bpe_core::Registry, kind: &str, key: &str) -> SettingDef {
         let defs = reg.thing(kind).map(|k| k.settings()).or_else(|| reg.module(kind).map(|k| k.settings()));
@@ -394,14 +400,17 @@ mod tests {
         assert_eq!(colours.len(), 20);
         assert!(colours.iter().any(|v| *v != Value::Color(red)), "a new colour comes up");
         let gradient = def(&reg, "look.classic", "gradient");
-        let three = vec![red, Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)];
-        for v in rolls(&gradient, &Value::Colors(three.clone()), 1.0, 20) {
+        let three = Gradient::even(&[red, Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)]);
+        for v in rolls(&gradient, &Value::Gradient(three), 1.0, 20) {
             match v {
-                Value::Colors(list) => assert_eq!(list.len(), 3),
+                Value::Gradient(g) => assert_eq!(g.stops.len(), 3),
                 other => panic!("{other:?}"),
             }
         }
-        assert!(rolls(&gradient, &Value::Colors(Vec::new()), 1.0, 5).is_empty(), "no colours stay no colours");
+        assert!(
+            rolls(&gradient, &Value::Gradient(Gradient::solid(red)), 1.0, 5).is_empty(),
+            "one colour stays one colour"
+        );
     }
 
     #[test]
@@ -459,11 +468,11 @@ mod tests {
             assert_eq!(c.a, 200, "and keeps its transparency");
         }
         let gradient = def(&reg, "look.classic", "gradient");
-        let list = vec![Color { r: 20, g: 20, b: 60, a: 128 }, Color::rgb(255, 200, 0)];
-        for v in rolls(&gradient, &Value::Colors(list.clone()), 1.0, 30) {
-            let Value::Colors(new) = v else { panic!("{v:?}") };
-            assert_eq!(new.len(), 2);
-            for (c, was) in new.iter().zip(&list) {
+        let list = [Color { r: 20, g: 20, b: 60, a: 128 }, Color::rgb(255, 200, 0)];
+        for v in rolls(&gradient, &Value::Gradient(Gradient::even(&list)), 1.0, 30) {
+            let Value::Gradient(new) = v else { panic!("{v:?}") };
+            assert_eq!(new.stops.len(), 2);
+            for (c, was) in new.stops.iter().map(|s| &s.color).zip(&list) {
                 assert!((c.to_hsv().2 - was.to_hsv().2).abs() < 0.02, "{c:?} keeps the brightness of {was:?}");
                 assert_eq!(c.a, was.a, "{c:?} keeps the transparency of {was:?}");
             }

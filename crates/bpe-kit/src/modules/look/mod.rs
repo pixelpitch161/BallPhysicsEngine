@@ -3,7 +3,7 @@
 pub mod draw;
 pub mod styled;
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
 
 pub struct ClassicLookKind;
 
@@ -32,9 +32,9 @@ pub struct ClassicLook {
     /// How bright the flash on each hit is.
     #[setting(label = "Flash", when = "thing=balls", range(0, 3), simple, keyframe, random)]
     pub flash: f32,
-    /// Spread across the balls from the first row to the last; empty uses Colour.
+    /// Spread across the balls from the first row to the last; a single colour uses Colour.
     #[setting(label = "Colours", when = "thing=balls", keyframe, random)]
-    pub gradient: Vec<Color>,
+    pub gradient: Gradient,
     /// What spreads the Colours across the balls: the row they start in, their order, how fast
     /// they go, or how often they have hit.
     #[setting(label = "Colours follow", when = "thing=balls and gradient", group = "Colours")]
@@ -65,7 +65,7 @@ impl Default for ClassicLook {
             color: Color::WHITE,
             glow: 0.12,
             flash: 0.4,
-            gradient: Vec::new(),
+            gradient: Gradient::default(),
             gradient_by: GradientBy::Row,
             gradient_full: 1000.0,
             hue_per_hit: 0.0,

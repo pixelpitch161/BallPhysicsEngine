@@ -1,6 +1,6 @@
 //! Setting values, their types, and sparse maps of them.
 
-use crate::{Color, Target};
+use crate::{Color, Gradient, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ pub enum Value {
     Bool(bool),
     Vec2([f32; 2]),
     Color(Color),
-    Colors(Vec<Color>),
+    Gradient(Gradient),
     /// One name from a fixed list.
     Choice(String),
     Text(String),
@@ -28,7 +28,7 @@ pub enum ValueType {
     Bool,
     Vec2,
     Color,
-    Colors,
+    Gradient,
     /// One of these names.
     Choice(&'static [&'static str]),
     Text,
@@ -45,7 +45,7 @@ impl ValueType {
             (ValueType::Int, Value::Int(_))
             | (ValueType::Bool, Value::Bool(_))
             | (ValueType::Color, Value::Color(_))
-            | (ValueType::Colors, Value::Colors(_))
+            | (ValueType::Gradient, Value::Gradient(_))
             | (ValueType::Text, Value::Text(_))
             | (ValueType::Target, Value::Target(_)) => true,
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),

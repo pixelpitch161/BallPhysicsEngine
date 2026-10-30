@@ -46,7 +46,7 @@ impl ThingDraw for SwarmDraw {
                     SwarmColors::NearestBall => 1,
                     SwarmColors::Gradient => 2,
                 },
-                colors: look.colors.iter().map(|c| c.to_linear()).collect(),
+                colors: look.colors.stops.iter().map(|s| s.color.to_linear()).collect(),
             },
             motion: Flock {
                 top_speed: motion.top_speed,

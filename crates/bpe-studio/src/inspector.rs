@@ -10,8 +10,8 @@ use crate::widgets::{
     COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, TargetChoices, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
-    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, Gradient, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved,
+    SAME_TIME, Scene, SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
@@ -952,7 +952,7 @@ fn edit_colours(
 ) -> bool {
     let ColoursEdit { list, change } = edit;
     let Some(&first) = list.first() else { return false };
-    let was_many = matches!(scene.value_at_time(reg, colours, time), Some(Value::Colors(l)) if !l.is_empty());
+    let was_many = matches!(scene.value_at_time(reg, colours, time), Some(Value::Gradient(g)) if g.stops.len() > 1);
     let reshape = |l: &mut Vec<Color>| match change {
         ListChange::Add => l.push(*list.last().expect("the list has a colour")),
         ListChange::Remove(i) if i < l.len() => _ = l.remove(i),
@@ -967,20 +967,20 @@ fn edit_colours(
                     if let Value::Color(c) = key.value {
                         let mut l = vec![c];
                         l.extend_from_slice(&list[1..]);
-                        key.value = Value::Colors(l);
+                        key.value = Value::Gradient(Gradient::even(&l));
                     }
                 }
                 track.range = None;
                 scene.tracks.insert(colours.clone(), track);
             }
-            scene.set_at(reg, colours, Value::Colors(list)).is_ok()
+            scene.set_at(reg, colours, Value::Gradient(Gradient::even(&list))).is_ok()
         }
         (true, false) => {
             // Down to one colour: the list's keys become Colour's, keeping what is left.
             if let Some(mut track) = scene.tracks.remove(colours) {
                 for key in &mut track.keys {
-                    if let Value::Colors(l) = &key.value {
-                        let mut l = l.clone();
+                    if let Value::Gradient(g) = &key.value {
+                        let mut l: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
                         reshape(&mut l);
                         key.value = Value::Color(l.first().copied().unwrap_or(first));
                     }
@@ -988,20 +988,22 @@ fn edit_colours(
                 scene.tracks.insert(colour.clone(), track);
             }
             let one = scene.set_at(reg, colour, Value::Color(first)).is_ok();
-            one && scene.set_at(reg, colours, Value::Colors(Vec::new())).is_ok()
+            one && scene.set_at(reg, colours, Value::Gradient(Gradient::default())).is_ok()
         }
         (true, true) => {
             if let ListChange::Set(_) = change {
-                return set_or_key(scene, reg, colours, Value::Colors(list), time, keyed);
+                return set_or_key(scene, reg, colours, Value::Gradient(Gradient::even(&list)), time, keyed);
             }
             if let Some(track) = scene.tracks.get_mut(colours) {
                 for key in &mut track.keys {
-                    if let Value::Colors(l) = &mut key.value {
-                        reshape(l);
+                    if let Value::Gradient(g) = &mut key.value {
+                        let mut l: Vec<Color> = g.stops.iter().map(|s| s.color).collect();
+                        reshape(&mut l);
+                        *g = Gradient::even(&l);
                     }
                 }
             }
-            scene.set_at(reg, colours, Value::Colors(list)).is_ok()
+            scene.set_at(reg, colours, Value::Gradient(Gradient::even(&list))).is_ok()
         }
     }
 }
@@ -1121,7 +1123,7 @@ mod tests {
         h.get_by_label("Add a colour").click();
         h.run();
         let m = &h.state().scene.library.modules[&module];
-        assert!(matches!(m.params.get("gradient"), Some(Value::Colors(l)) if l.len() == 2), "{:?}", m.params);
+        assert!(matches!(m.params.get("gradient"), Some(Value::Gradient(g)) if g.stops.len() == 2), "{:?}", m.params);
     }
 
     #[test]
@@ -1142,23 +1144,26 @@ mod tests {
         assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), grow, 0.0, &mut keyed));
         assert!(!scene.keyed(&at(COLOUR)));
         let keys: Vec<Value> = scene.tracks[&at(COLOURS)].keys.iter().map(|k| k.value.clone()).collect();
-        assert_eq!(keys, [Value::Colors(vec![red, green]), Value::Colors(vec![blue, green])]);
+        assert_eq!(
+            keys,
+            [Value::Gradient(Gradient::even(&[red, green])), Value::Gradient(Gradient::even(&[blue, green]))]
+        );
         // Halfway between keys each colour is halfway too.
-        let Some(Value::Colors(mid)) = scene.value_at_time(reg, &at(COLOURS), 1.0) else { panic!() };
-        assert_eq!(mid[1], green);
-        assert_ne!(mid[0], red);
+        let Some(Value::Gradient(mid)) = scene.value_at_time(reg, &at(COLOURS), 1.0) else { panic!() };
+        assert_eq!(mid.stops[1].color, green);
+        assert_ne!(mid.stops[0].color, red);
         // Changing the second colour at 2 s keys the whole list there.
         let set = ColoursEdit { list: vec![blue, red], change: ListChange::Set(1) };
         assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), set, 2.0, &mut keyed));
         assert!(keyed);
-        assert_eq!(scene.tracks[&at(COLOURS)].keys[1].value, Value::Colors(vec![blue, red]));
+        assert_eq!(scene.tracks[&at(COLOURS)].keys[1].value, Value::Gradient(Gradient::even(&[blue, red])));
         // Back to one colour: the keys return to Colour, keeping the first colour left.
         let shrink = ColoursEdit { list: vec![red], change: ListChange::Remove(0) };
         assert!(edit_colours(&mut scene, reg, &at(COLOUR), &at(COLOURS), shrink, 0.0, &mut keyed));
         assert!(!scene.keyed(&at(COLOURS)));
         let keys: Vec<Value> = scene.tracks[&at(COLOUR)].keys.iter().map(|k| k.value.clone()).collect();
         assert_eq!(keys, [Value::Color(green), Value::Color(red)]);
-        assert_eq!(scene.value_at(reg, &at(COLOURS)), Some(Value::Colors(Vec::new())));
+        assert_eq!(scene.value_at(reg, &at(COLOURS)), Some(Value::Gradient(Gradient::default())));
     }
 
     #[test]

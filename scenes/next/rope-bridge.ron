@@ -134,10 +134,19 @@
                 kind: "look.classic",
                 params: {
                     "color": Color("#ff5ca8"),
-                    "gradient": Colors([
-                        "#3e9bff",
-                        "#ff3ec8",
-                    ]),
+                    "gradient": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3e9bff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ff3ec8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
                 },
             ),
             5: (
