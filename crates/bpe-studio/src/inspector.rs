@@ -7,11 +7,12 @@ use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
-    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, TargetChoices, settings_grid, settings_grid_marked,
+    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, MAKE_UNIQUE, NEW_PROGRESSION, TargetChoices,
+    settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
-    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, ProgressionRef, PulseSource, Resolved,
+    SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
@@ -226,8 +227,9 @@ pub fn show(
                 mark_for(scene, def, &own(key), time, physics)
             };
             let locked = |key: &str| scene.is_locked(&own(key));
+            let own_choices = TargetChoices { hide_scenes: id == ThingId::ROOT, ..choices.clone() };
             let cx = GridCx {
-                choices: &choices,
+                choices: &own_choices,
                 overridden: &|_| false,
                 inherited: &|_| None,
                 marks: &marks,
@@ -582,6 +584,7 @@ pub fn show(
 
     let mut changed = false;
     for edit in edits {
+        let edit = make_picked_progression(scene, reg, id, time, edit);
         let ok = match edit {
             Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
@@ -893,6 +896,36 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
         (ValueType::Vec2, _) => Value::Vec2([0.0, 100.0]),
         (ValueType::Color, _) => Value::Color(Color::WHITE),
         _ => Value::Number(quarter),
+    }
+}
+
+/// A Chords row's "New progression" or "Make unique" becomes a pick of a progression made for
+/// it: a starter, or a copy of the one the row shows (Scene defaults' when it follows that).
+fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
+    let (slot, key, value) = match &edit {
+        Edit::SetKind(key, value) => (None, *key, value),
+        Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
+        _ => return edit,
+    };
+    let Value::Int(pick @ (NEW_PROGRESSION | MAKE_UNIQUE)) = *value else { return edit };
+    let made =
+        if pick == NEW_PROGRESSION {
+            Some(scene.add_progression(bpe_core::Progression {
+                name: "New chords".into(),
+                ..bpe_core::Progression::starter()
+            }))
+        } else {
+            let here = Address { owner: Owner::Thing(id), slot, key: key.into() };
+            let root = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "chords".into() };
+            let shown = |a: &Address| {
+                scene.value_at_time(reg, a, time).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0)
+            };
+            shown(&here).or_else(|| shown(&root)).and_then(|p| scene.copy_progression(p).ok())
+        };
+    let value = made.map_or(Value::Int(-1), |p| ProgressionRef(Some(p)).to_value());
+    match slot {
+        None => Edit::SetKind(key, value),
+        Some(slot) => Edit::SetSlot(slot, key, value),
     }
 }
 
@@ -1642,6 +1675,56 @@ mod tests {
         let s = h.state();
         let m = s.scene.library.modules.values().find(|m| m.name == "Own bounce").unwrap();
         assert_eq!(m.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
+    }
+
+    fn chords_combos(h: &Harness<'_, State>) -> Vec<egui::Rect> {
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").map(|n| n.rect()).collect()
+    }
+
+    #[test]
+    fn a_chords_setting_has_a_progression_picker() {
+        let h = harness(Some(ThingId::ROOT));
+        assert_eq!(chords_combos(&h).len(), 2, "Scene defaults' own and its sound module's");
+        let shown: Vec<String> = h
+            .query_all_by_role_and_label(Role::ComboBox, "Chords")
+            .map(|n| n.accesskit_node().value().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(shown, ["Starter", "Scene's (Starter)"], "Scene defaults' own, then the module following it");
+    }
+
+    #[test]
+    fn scenes_is_offered_on_modules_not_on_scene_defaults() {
+        let mut h = harness(Some(ThingId::ROOT));
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").next().unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Scene's").is_none());
+        assert!(h.query_by_label("New progression").is_some());
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Scene's").is_some());
+    }
+
+    #[test]
+    fn make_unique_gives_the_module_its_own_progression() {
+        let mut h = harness(Some(ThingId(2)));
+        let m = {
+            let s = h.state_mut();
+            let m = s.scene.add_module(&s.kit.registry, "sound.notes", "Own sound").unwrap();
+            s.scene.link(&s.kit.registry, ThingId(2), SlotId::Sound, m).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            m
+        };
+        h.run();
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").next().unwrap().click();
+        h.run();
+        h.get_by_label("Make unique").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.progressions.len(), 2);
+        let copy = s.scene.library.progressions.iter().find(|(_, p)| p.name == "Starter copy").unwrap().0;
+        assert_eq!(s.scene.library.modules[&m].params.get("chords"), Some(&Value::Int(copy.0 as i64)));
     }
 
     /// Stores the module's template as its own graph, so it runs through the compiled path.
