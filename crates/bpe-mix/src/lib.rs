@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bpe_core::{
-    Animation, Inputs, InstrumentId, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef,
+    Animation, BusId, Inputs, InstrumentId, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef,
     Resolved, SlotId, Target, ThingId, Value,
 };
 use bpe_runtime::{Event, Log};
@@ -33,7 +33,7 @@ pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
     numeral, parse_chord, scale, voicing,
 };
-pub use export::{TICKS_PER_QUARTER, gate_seconds, midi_file};
+pub use export::{Stem, TICKS_PER_QUARTER, gate_seconds, midi_file, stem_file_names, stems, write_wav24};
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
 pub use master::{ClipMode, MasterReport, MasterSettings, integrated_lufs, master};
@@ -52,6 +52,10 @@ pub struct Soundtrack {
     pub report: Option<MasterReport>,
     /// The channel levels the master effects read, by channel name, in dBFS per block.
     pub levels: BTreeMap<String, std::sync::Arc<Vec<f32>>>,
+    /// Each channel after its inserts, by module id: what stems are made from.
+    pub channels: BTreeMap<u32, std::sync::Arc<Vec<f32>>>,
+    /// Each bus something sends to, after its effects and before its volume.
+    pub buses: Vec<(BusId, std::sync::Arc<Vec<f32>>)>,
 }
 
 impl Soundtrack {
@@ -61,6 +65,8 @@ impl Soundtrack {
             problems: Vec::new(),
             report: None,
             levels: BTreeMap::new(),
+            channels: BTreeMap::new(),
+            buses: Vec::new(),
         }
     }
 
@@ -451,6 +457,8 @@ pub fn mix_premaster(
     track.samples = p.samples;
     track.problems = p.problems;
     track.levels = p.levels;
+    track.channels = p.channels;
+    track.buses = p.buses;
     track
 }
 

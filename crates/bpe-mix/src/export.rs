@@ -1,12 +1,18 @@
 //! Exports beside the video: the played notes and the chords as a MIDI file, and each channel,
 //! bus and the song as its own WAV stem.
 
+use crate::buses::{add, db_to_gain, fx_ctx, run_fx};
 use crate::chords::{ChordClock, chord_name, voicing};
-use crate::{Instrument, InstrumentChoice, MixSettings, Note, NoteInstrument, SAMPLE_RATE, instrument_for};
+use crate::{
+    Instrument, InstrumentChoice, MixSettings, Note, NoteInstrument, PhysicsInputs, SAMPLE_RATE, Soundtrack,
+    instrument_for,
+};
 use bpe_core::ProgressionRef;
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 /// MIDI ticks per quarter note.
 pub const TICKS_PER_QUARTER: u16 = 960;
@@ -166,6 +172,82 @@ pub fn midi_file(settings: &MixSettings, notes: &[Note], names: &BTreeMap<u32, S
     bytes
 }
 
+/// One stem: a name for its file and interleaved stereo at [`SAMPLE_RATE`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stem {
+    pub name: String,
+    pub samples: Vec<f32>,
+}
+
+/// The mix's parts before the master stage: each channel after its inserts and volume (named
+/// after its sound module), then each bus after its effects and volume ("<name> bus"). With
+/// `wet`, a channel's stem also holds its sends, each run alone through its bus.
+pub fn stems(settings: &MixSettings, track: &Soundtrack, physics: &PhysicsInputs, wet: bool) -> Vec<Stem> {
+    let frames = track.frames();
+    let fit = |s: &[f32]| {
+        let mut v = s.to_vec();
+        v.resize(frames * 2, 0.0);
+        v
+    };
+    let scene = Arc::new(physics.with_levels(&track.levels).scene);
+    let cx = fx_ctx(settings);
+    let mut out = Vec::new();
+    for (ch, samples) in &track.channels {
+        let mut mine = fit(samples);
+        if wet && let Some(strip) = settings.strips.get(ch) {
+            for bus in &settings.buses {
+                let Some(&db) = strip.sends.get(&bus.id) else { continue };
+                let mut send = vec![0.0; frames * 2];
+                add(&mut send, samples, db_to_gain(db));
+                if !bus.fx.nodes.is_empty() {
+                    run_fx(&bus.fx, &mut send, cx, &scene);
+                }
+                add(&mut mine, &send, db_to_gain(bus.volume));
+            }
+        }
+        let name = settings.channel_names.get(ch).cloned().unwrap_or_else(|| format!("Channel {ch}"));
+        out.push(Stem { name, samples: mine });
+    }
+    for (id, samples) in &track.buses {
+        let Some(bus) = settings.buses.iter().find(|b| b.id == *id) else { continue };
+        let mut v = vec![0.0; frames * 2];
+        add(&mut v, samples, db_to_gain(bus.volume));
+        out.push(Stem { name: format!("{} bus", bus.name), samples: v });
+    }
+    out
+}
+
+/// A name that is safe as a file name on every system.
+fn safe(name: &str) -> String {
+    let cleaned: String =
+        name.chars().map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '_' }).collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() { "Stem".into() } else { trimmed.to_string() }
+}
+
+/// The stems' file names: "NN name.wav", numbered in order so equal names never collide.
+pub fn stem_file_names(stems: &[Stem]) -> Vec<String> {
+    stems.iter().enumerate().map(|(i, s)| format!("{:02} {}.wav", i + 1, safe(&s.name))).collect()
+}
+
+/// Writes interleaved stereo as a 48 kHz 24-bit WAV.
+pub fn write_wav24(path: &Path, samples: &[f32]) -> anyhow::Result<()> {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: SAMPLE_RATE,
+        bits_per_sample: 24,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)?;
+    const FULL: f32 = 8_388_607.0;
+    for &s in samples {
+        let v = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+        writer.write_sample((v * FULL).round() as i32)?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +368,111 @@ mod tests {
             _ => None,
         });
         assert_eq!(tempo, Some(500_000));
+    }
+
+    fn plucks(channel: u32, key: u8) -> Vec<Note> {
+        (0..8)
+            .map(|i| at(i as f64 * 0.3, key + i as u8, 0.8, channel, NoteInstrument::BuiltIn(Instrument::Pluck)))
+            .collect()
+    }
+
+    fn chain(kind: &str, knobs: &[(&str, f32)]) -> bpe_graph::Graph {
+        let knobs: BTreeMap<String, bpe_graph::Param> =
+            knobs.iter().map(|(k, v)| (k.to_string(), bpe_graph::Param::Number(*v))).collect();
+        bpe_synth::chain_graph(&[(kind.into(), knobs, true)])
+    }
+
+    /// Two channels, channel 1 with a drive insert and a -6 dB send to a reverb bus at -3 dB.
+    fn two_channels() -> (MixSettings, Soundtrack) {
+        let mut s = settings();
+        s.duration = 3.0;
+        s.buses = vec![bpe_core::Bus {
+            id: bpe_core::BusId(0),
+            name: "Reverb".into(),
+            volume: -3.0,
+            fx: chain("reverb", &[("mix", 1.0)]),
+        }];
+        s.strips.insert(
+            1,
+            bpe_core::ChannelStrip {
+                inserts: chain("drive", &[("amount", 0.5)]),
+                sends: [(bpe_core::BusId(0), -6.0)].into(),
+                ..Default::default()
+            },
+        );
+        s.channel_names.insert(1, "Lead".into());
+        s.channel_names.insert(2, "Lead".into());
+        let mut notes = plucks(1, 60);
+        notes.extend(plucks(2, 48));
+        notes.sort_by_key(|n| n.frame);
+        let mut track = Soundtrack::silent(s.duration);
+        let p = crate::buses::premaster_from_notes(
+            &s,
+            &notes,
+            track.frames(),
+            &mut Default::default(),
+            &Default::default(),
+        );
+        track.samples = p.samples;
+        track.channels = p.channels;
+        track.buses = p.buses;
+        (s, track)
+    }
+
+    fn sum(stems: &[&Stem]) -> Vec<f32> {
+        let mut out = vec![0.0; stems[0].samples.len()];
+        for s in stems {
+            add(&mut out, &s.samples, 1.0);
+        }
+        out
+    }
+
+    fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn stems_sum_to_the_premaster() {
+        let (s, track) = two_channels();
+        let stems = stems(&s, &track, &PhysicsInputs::default(), false);
+        let names: Vec<&str> = stems.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Lead", "Lead", "Reverb bus"]);
+        assert!(stems.iter().all(|s| s.samples.iter().any(|v| v.abs() > 1e-4)), "every stem sounds");
+        assert!(max_diff(&sum(&stems.iter().collect::<Vec<_>>()), &track.samples) < 1e-5);
+    }
+
+    #[test]
+    fn wet_stems_hold_their_sends() {
+        let (s, track) = two_channels();
+        let dry = stems(&s, &track, &PhysicsInputs::default(), false);
+        let wet = stems(&s, &track, &PhysicsInputs::default(), true);
+        // Channel 1 is the only one sending, so its wet extra is the whole bus stem.
+        let extra: Vec<f32> = wet[0].samples.iter().zip(&dry[0].samples).map(|(w, d)| w - d).collect();
+        assert!(max_diff(&extra, &dry[2].samples) < 1e-5);
+        assert_eq!(wet[1], dry[1], "channel 2 sends nothing");
+    }
+
+    #[test]
+    fn same_names_keep_both_stems() {
+        let (s, track) = two_channels();
+        let names = stem_file_names(&stems(&s, &track, &PhysicsInputs::default(), false));
+        assert_eq!(names, ["01 Lead.wav", "02 Lead.wav", "03 Reverb bus.wav"]);
+        assert_eq!(stem_file_names(&[Stem { name: "a/b:c?".into(), samples: vec![] }]), ["01 a_b_c_.wav"]);
+    }
+
+    #[test]
+    fn wav24_round_trips() {
+        let dir = std::env::temp_dir().join(format!("bpe-wav24-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.wav");
+        let samples: Vec<f32> = (0..2000).map(|i| ((i as f32) * 0.01).sin() * 0.9).collect();
+        write_wav24(&path, &samples).unwrap();
+        let mut r = hound::WavReader::open(&path).unwrap();
+        let spec = r.spec();
+        assert_eq!((spec.channels, spec.sample_rate, spec.bits_per_sample), (2, 48_000, 24));
+        let back: Vec<f32> = r.samples::<i32>().map(|v| v.unwrap() as f32 / 8_388_607.0).collect();
+        assert!(max_diff(&back, &samples) <= 1.0 / 8_388_607.0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
