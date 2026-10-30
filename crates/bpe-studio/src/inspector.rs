@@ -6,7 +6,7 @@ use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
-use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid, settings_grid_marked};
+use crate::widgets::{GridCx, KeyMark, TargetChoices, fold_toggle, settings_grid, settings_grid_marked};
 use bpe_core::{
     Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
     SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
@@ -18,8 +18,9 @@ use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub struct Inspector {
-    /// The cards folded shut, by thing: its kind's settings (`None`) and each slot.
-    pub collapsed: BTreeSet<(ThingId, Option<SlotId>)>,
+    /// What is folded shut, by thing: its kind's settings card (`None`) and each slot's card
+    /// (the group `""`), and groups of settings inside them by their heading.
+    pub collapsed: BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
     /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
     /// pauses so a drag doesn't leave a key on every frame.
     pub keyed_edit: bool,
@@ -210,7 +211,7 @@ pub fn show(
             let title = format!("{} settings", kind.name());
             let open = ui
                 .horizontal_wrapped(|ui| {
-                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, None), &title);
+                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
                     ui.label(RichText::new(&title).strong());
                     ui.add_space(8.0);
                     if dice_button(ui, "Randomize these settings").clicked() {
@@ -233,6 +234,7 @@ pub fn show(
                 mark_for(scene, def, &own(key), time, physics)
             };
             let locked = |key: &str| scene.is_locked(&own(key));
+            let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, None, group));
             let cx = GridCx {
                 choices: &choices,
                 overridden: &|_| false,
@@ -240,8 +242,10 @@ pub fn show(
                 marks: &marks,
                 locked: &locked,
                 applies: &applies,
+                folded: Some(&folded),
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
+            fold_groups(&mut inspector.collapsed, (id, None), &out.folds);
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -280,7 +284,7 @@ pub fn show(
                 };
                 let open = ui
                     .horizontal_wrapped(|ui| {
-                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot)), slot.name());
+                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), slot.name());
                         ui.label(RichText::new(slot.name()).strong());
                         // The picker: a button that reads the slot's state and drops down the choices.
                         ui.menu_button(state, |ui| {
@@ -482,6 +486,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_module(k), time))
                         };
+                        let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, Some(slot), group));
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &|_| false,
@@ -489,8 +494,10 @@ pub fn show(
                             marks: &marks,
                             locked: &locked,
                             applies: &applies,
+                            folded: Some(&folded),
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        fold_groups(&mut inspector.collapsed, (id, Some(slot)), &out.folds);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
@@ -513,6 +520,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_thing(k), time))
                         };
+                        let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, Some(slot), group));
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &overridden,
@@ -520,8 +528,10 @@ pub fn show(
                             marks: &marks,
                             locked: &locked,
                             applies: &applies,
+                            folded: Some(&folded),
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        fold_groups(&mut inspector.collapsed, (id, Some(slot)), &out.folds);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
@@ -918,15 +928,7 @@ pub(crate) fn nodes_button(ui: &mut Ui, nodes: NodesSwitch) -> bool {
 /// while the card is open.
 pub(crate) fn fold_arrow<K: Ord + Copy>(ui: &mut Ui, collapsed: &mut BTreeSet<K>, key: K, title: &str) -> bool {
     let open = !collapsed.contains(&key);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-    let name = if open { format!("Hide {title}") } else { format!("Show {title}") };
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-    let response = response.on_hover_text(if open { "Hide these settings" } else { "Show these settings" });
-    // The collapsing header's own triangle, pointing down when open.
-    let mut icon = response.clone();
-    icon.rect = rect;
-    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &icon);
-    if response.clicked() {
+    if fold_toggle(ui, open, title) {
         if open {
             collapsed.insert(key);
         } else {
@@ -935,6 +937,21 @@ pub(crate) fn fold_arrow<K: Ord + Copy>(ui: &mut Ui, collapsed: &mut BTreeSet<K>
         return !open;
     }
     open
+}
+
+/// Folds shut or opens the groups of a card's settings, as their headings' arrows asked.
+fn fold_groups(
+    collapsed: &mut BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
+    (id, slot): (ThingId, Option<SlotId>),
+    folds: &[(&'static str, bool)],
+) {
+    for &(group, shut) in folds {
+        if shut {
+            collapsed.insert((id, slot, group));
+        } else {
+            collapsed.remove(&(id, slot, group));
+        }
+    }
 }
 
 /// The button an inherited card offers to link the module to the thing itself.
@@ -1055,6 +1072,44 @@ mod tests {
     }
 
     #[test]
+    fn keyed_gradient_edit_writes_a_key() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        let colours = Address { owner: Owner::Module(module), slot: None, key: "colours".into() };
+        let red_blue = bpe_core::Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
+        h.state_mut()
+            .scene
+            .set_key(&bpe_kit::kit().registry, &colours, 0.0, Value::Gradient(red_blue.clone()))
+            .unwrap();
+        h.state_mut().time = 1.0;
+        h.run();
+        h.get_by_label("Colours bar").click();
+        h.run();
+        let s = h.state();
+        let keys = &s.scene.tracks[&colours].keys;
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert_eq!(keys[0].value, Value::Gradient(red_blue), "the first key is left alone");
+        assert_eq!(keys[1].time, 1.0);
+        let Value::Gradient(g) = &keys[1].value else { panic!("{:?}", keys[1].value) };
+        assert_eq!(g.stops.len(), 3, "the key holds the whole new gradient: {g:?}");
+        assert!((g.stops[1].at - 0.5).abs() < 0.01, "{g:?}");
+        assert!(s.inspector.keyed_edit);
+    }
+
+    #[test]
+    fn a_paint_folds_under_its_heading() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.query_by_label("Add a colour").is_some());
+        h.get_by_label("Hide Colours").click();
+        h.run();
+        assert!(h.query_by_label("Add a colour").is_none(), "the paint's rows fold away");
+        assert!(h.query_by_role_and_label(Role::Label, "Glow").is_some(), "rows outside the group stay");
+        h.get_by_label("Show Colours").click();
+        h.run();
+        assert!(h.query_by_label("Add a colour").is_some());
+    }
+
+    #[test]
     fn a_setting_can_be_locked_from_its_menu_and_shows_a_padlock() {
         let mut h = harness(Some(ThingId(2)));
         let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
@@ -1112,7 +1167,7 @@ mod tests {
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_none());
         assert!(h.get_all_by_role(Role::Slider).count() < before);
-        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None)));
+        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None, "")));
         h.get_by_label("Show Balls settings").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
@@ -1663,6 +1718,11 @@ mod tests {
         assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
     }
 
+    /// The Colours row's name, after the Colours heading over it.
+    fn colours_row<'h>(h: &'h Harness<'_, State>) -> egui_kittest::Node<'h> {
+        h.get_all_by_role_and_label(Role::Label, "Colours").last().expect("a Colours row")
+    }
+
     #[test]
     fn a_padlock_on_a_shared_card_holds_when_the_dice_roll() {
         use bpe_kit::random::{Roll, Scope, roll};
@@ -1675,7 +1735,7 @@ mod tests {
         let other = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
         scene.link(&reg, other, SlotId::Look, module).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_role_and_label(Role::Label, "Colours").click_secondary();
+        colours_row(&h).click_secondary();
         h.run();
         h.get_by_label("Lock when randomizing").click();
         h.run();
@@ -1690,7 +1750,7 @@ mod tests {
             assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
         }
         // Unlocking from the same row lets it roll again.
-        h.get_by_role_and_label(Role::Label, "Colours").click_secondary();
+        colours_row(&h).click_secondary();
         h.run();
         h.get_by_label("Unlock").click();
         h.run();

@@ -205,7 +205,7 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         }
         Value::Gradient(g) => {
             // As many stops as before, each colour rolled like a colour; the stops between the
-            // ends move too, and the ends stay at 0 and 1.
+            // ends head for an even spread, give or take a tenth, and the ends stay at 0 and 1.
             let mut rolled = g.clone();
             if amount >= 1.0 {
                 for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
@@ -224,7 +224,9 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
                 } else if i == last {
                     1.0
                 } else {
-                    stop.at + (dice.unit() - stop.at) * amount
+                    let even = i as f32 / last as f32;
+                    let goal = (even + (dice.unit() * 2.0 - 1.0) * 0.1).clamp(0.0, 1.0);
+                    stop.at + (goal - stop.at) * amount
                 };
             }
             Some(Value::Gradient(rolled.sorted()))
@@ -446,6 +448,55 @@ mod tests {
             middles.insert(g.stops[1].at.to_bits());
         }
         assert!(middles.len() > 1, "the stop between moves");
+    }
+
+    #[test]
+    fn gradient_dice_keep_stop_count_and_sorted_stops() {
+        let reg = registry();
+        let gradient = def(&reg, "look.classic", "colours");
+        let four = Gradient {
+            stops: [0.0, 0.05, 0.1, 1.0]
+                .iter()
+                .map(|&at| bpe_core::Stop { at, color: Color::rgb(200, 40, 40) })
+                .collect(),
+            transition: bpe_core::Transition::Eased,
+        };
+        let mut colours = std::collections::BTreeSet::new();
+        for v in rolls(&gradient, &Value::Gradient(four), 1.0, 50) {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            assert_eq!(g.stops.len(), 4, "the stop count stays");
+            assert_eq!(g.transition, bpe_core::Transition::Eased, "the blend stays");
+            assert!(g.stops.windows(2).all(|w| w[0].at <= w[1].at), "in order: {g:?}");
+            assert_eq!((g.stops[0].at, g.stops[3].at), (0.0, 1.0), "the ends stay at the ends");
+            for (i, s) in g.stops.iter().enumerate() {
+                let even = i as f32 / 3.0;
+                assert!((s.at - even).abs() <= 0.1 + 1e-6, "stop {i} at {} is near {even}", s.at);
+            }
+            colours.insert(g.stops[1].color.to_hex());
+        }
+        assert!(colours.len() > 10, "new colours come up");
+        // What the colours follow, their angle, span and scroll roll inside their dice ranges.
+        for key in ["angle", "span", "scroll"] {
+            let d = def(&reg, "look.classic", key);
+            let (lo, hi) = d.dice_range().unwrap_or_else(|| panic!("{key} has a dice range"));
+            let now = d.default.clone();
+            let rolled = rolls(&d, &now, 1.0, 50);
+            assert_eq!(rolled.len(), 50, "{key} rolls");
+            for v in rolled {
+                let Value::Number(x) = v else { panic!("{key}: {v:?}") };
+                assert!((lo..=hi).contains(&x), "{key} {x} inside {lo}..{hi}");
+            }
+        }
+        let follow = def(&reg, "look.classic", "follow");
+        let ValueType::Choice(names) = follow.ty else { panic!("follow is a choice") };
+        let picked: std::collections::BTreeSet<String> = rolls(&follow, &follow.default, 1.0, 50)
+            .into_iter()
+            .map(|v| match v {
+                Value::Choice(n) => n,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert!(picked.len() > 1 && picked.iter().all(|n| names.contains(&n.as_str())), "{picked:?}");
     }
 
     #[test]

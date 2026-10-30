@@ -9,6 +9,7 @@ mod batch_window;
 mod dice;
 mod explorer;
 mod export_window;
+mod gradient_bar;
 mod grid;
 mod history;
 mod inspector;

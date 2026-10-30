@@ -443,6 +443,7 @@ fn details(
         marks: &|_| None,
         locked: &locked,
         applies: &applies,
+        folded: None,
     };
     let out = settings_grid_marked(ui, ("library", id), kind.settings(), get, &cx);
     if let Some((key, lock)) = out.locks.into_iter().next() {
