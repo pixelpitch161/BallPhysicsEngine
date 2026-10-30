@@ -58,7 +58,8 @@ pub struct MasterReport {
 impl MasterReport {
     /// The meter readings at `seconds` into the track: (short-term LUFS, gain reduction dB).
     pub fn at(&self, seconds: f64) -> (f32, f32) {
-        let i = (seconds.max(0.0) / METER_STEP as f64) as usize;
+        // A hair over, so a time on a step (1.0 s, at a step of 0.1 s) reads that step.
+        let i = (seconds.max(0.0) / METER_STEP as f64 + 1e-6) as usize;
         let pick = |v: &[f32], none: f32| v.get(i.min(v.len().saturating_sub(1))).copied().unwrap_or(none);
         (pick(&self.short_term, SILENCE_LUFS), pick(&self.reduction, 0.0))
     }

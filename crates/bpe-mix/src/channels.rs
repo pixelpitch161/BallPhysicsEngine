@@ -469,23 +469,42 @@ mod tests {
         let notes: Vec<Note> = (0..2_000)
             .map(|i| note(i * (frames - 48_000) / 2_000, 40 + (i * 7 % 36) as u8, [3, 7][i % 2], played))
             .collect();
+        // Each channel has a reverb and a delay insert, and sends to both starter buses.
+        let fx = |kind: &str| (kind.to_owned(), Default::default(), true);
+        let inserts = bpe_synth::chain_graph(&[fx("reverb"), fx("delay")]);
+        let (reverb, delay) = (bpe_core::BusId(0), bpe_core::BusId(1));
+        s.buses = vec![
+            bpe_core::Bus { id: reverb, name: "Reverb".into(), volume: 0.0, fx: bpe_synth::chain_graph(&[fx("reverb")]) },
+            bpe_core::Bus { id: delay, name: "Delay".into(), volume: 0.0, fx: bpe_synth::chain_graph(&[fx("delay")]) },
+        ];
+        for channel in [3, 7] {
+            let sends = [(reverb, -12.0), (delay, -12.0)].into();
+            s.strips.insert(channel, bpe_core::ChannelStrip { inserts: inserts.clone(), sends });
+        }
         let mut cache = ChannelCache::default();
+        let full = |s: &MixSettings, cache: &mut ChannelCache| {
+            let (mut mix, _, _) = crate::buses::premaster_from_notes(s, &notes, frames, cache);
+            crate::master(&mut mix, &s.master);
+        };
         let started = Instant::now();
-        let first = render(&s, &notes, frames, &mut cache);
+        full(&s, &mut cache);
         let took = started.elapsed().as_secs_f32();
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f32;
         let budget = 4.0 * 8.0 / cores;
-        println!("a busy minute: {took:.2} s on {cores} cores (budget {budget:.2} s)");
-        assert_eq!(first.fresh, 2);
+        println!("a busy minute with effects: {took:.2} s on {cores} cores (budget {budget:.2} s)");
         assert!(took < budget, "{took:.2} s");
-        // One macro on one of the two channels re-renders only that one.
+        // One macro on one of the two channels re-renders only that one; the buses and the
+        // master run again.
         s.macros.insert(7, [(format!("{filter}.cutoff"), 900.0)].into());
         let started = Instant::now();
         let again = render(&s, &notes, frames, &mut cache);
-        let took = started.elapsed().as_secs_f32();
-        println!("one macro changed: {took:.2} s");
         assert_eq!(again.fresh, 1);
-        assert!(took < 1.0, "{took:.2} s");
+        s.macros.insert(7, [(format!("{filter}.cutoff"), 1_200.0)].into());
+        let started_full = Instant::now();
+        full(&s, &mut cache);
+        let took = started_full.elapsed().as_secs_f32();
+        println!("one macro changed: {took:.2} s (channel only {:.2} s)", started.elapsed().as_secs_f32() - took);
+        assert!(took < 1.0 * 8.0 / cores.min(8.0), "{took:.2} s");
     }
 
     #[test]

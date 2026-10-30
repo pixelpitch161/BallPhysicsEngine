@@ -229,16 +229,28 @@ pub fn export_video(
     scene: &Scene,
     kit: &Kit,
     options: &ExportOptions,
-    mut progress: impl FnMut(u32, u32) -> bool,
+    progress: impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<Encoder> {
+    export_video_reporting(device, queue, scene, kit, options, progress).map(|(encoder, _)| encoder)
+}
+
+/// [`export_video`], with what the master stage measured of the soundtrack too.
+pub fn export_video_reporting(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    kit: &Kit,
+    options: &ExportOptions,
+    mut progress: impl FnMut(u32, u32) -> bool,
+) -> anyhow::Result<(Encoder, Option<bpe_mix::MasterReport>)> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_with(device, queue, scene, kit, options, encoder, &mut progress) {
         Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
-            export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
+            let report = export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
-            Ok(Encoder::Cpu)
+            Ok((Encoder::Cpu, report))
         }
-        result => result.map(|()| encoder),
+        result => result.map(|report| (encoder, report)),
     }
 }
 
@@ -256,7 +268,7 @@ fn export_with(
     options: &ExportOptions,
     encoder: Encoder,
     progress: &mut impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<bpe_mix::MasterReport>> {
     let (resolved, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
@@ -379,7 +391,7 @@ fn export_with(
         let _ = std::fs::remove_file(&output);
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
-    Ok(())
+    Ok(track.report)
 }
 
 /// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put

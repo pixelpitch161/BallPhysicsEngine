@@ -27,6 +27,8 @@ pub struct Mixed {
     /// Plain sentences about sounds that couldn't play: a patch that doesn't compile, a voice
     /// that made a bad sample, a sample file that can't be read.
     pub problems: Vec<String>,
+    /// What the master stage measured, for the meters.
+    pub report: Option<bpe_mix::MasterReport>,
 }
 
 pub struct SoundJob {
@@ -41,6 +43,8 @@ pub struct SoundJob {
     pub hits: Vec<f32>,
     /// The beats of the last finished mix, in video seconds.
     pub beats: Vec<f32>,
+    /// The last finished mix's master readings, for the meters.
+    pub report: Option<bpe_mix::MasterReport>,
     /// Each channel's last render, shared by the mixes one after another, so an edit to one
     /// sound re-renders only its channel.
     channels: Arc<Mutex<ChannelCache>>,
@@ -58,6 +62,7 @@ impl Default for SoundJob {
             receiver,
             hits: Vec::new(),
             beats: Vec::new(),
+            report: None,
             channels: Default::default(),
         }
     }
@@ -93,6 +98,7 @@ impl SoundJob {
             if mixed.generation == self.generation {
                 self.hits = mixed.hits.clone();
                 self.beats = mixed.beats.clone();
+                self.report = mixed.report.clone();
                 landed = Some(mixed);
             }
         }
@@ -143,7 +149,15 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) 
         .collect();
     let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
     let mixed = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, cache);
-    Mixed { generation: 0, track: Arc::new(mixed.samples), hits, beats, warp, problems: mixed.problems }
+    Mixed {
+        generation: 0,
+        track: Arc::new(mixed.samples),
+        hits,
+        beats,
+        warp,
+        problems: mixed.problems,
+        report: mixed.report,
+    }
 }
 
 /// Everything the soundtrack depends on: the physics, every Sound module in use, the root's
