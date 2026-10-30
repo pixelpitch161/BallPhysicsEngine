@@ -299,7 +299,7 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         }
         Value::Color(c) => {
             let rolled = if amount >= 1.0 { like(palette(dice, 1)[0], *c) } else { c.shift_hue(turn(dice, amount)) };
-            Some(Value::Color(rolled))
+            Some(Value::Color(covering(rolled)))
         }
         Value::Gradient(g) => {
             // As many stops as before, each colour rolled like a colour; the stops between the
@@ -308,12 +308,12 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
             let mut rolled = g.clone();
             if amount >= 1.0 {
                 for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
-                    stop.color = like(new, stop.color);
+                    stop.color = covering(like(new, stop.color));
                 }
             } else {
                 let t = turn(dice, amount);
                 for stop in &mut rolled.stops {
-                    stop.color = stop.color.shift_hue(t);
+                    stop.color = covering(stop.color.shift_hue(t));
                 }
             }
             let last = rolled.stops.len().saturating_sub(1);
@@ -342,6 +342,12 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
 /// certain at "All new", so a roll keeps a peg board a peg board unless asked for everything new.
 fn structural_chance(amount: f32) -> f32 {
     ((amount - 0.75) / 0.25).clamp(0.0, 1.0)
+}
+
+/// The colour, made to cover if it was an additive one: light now comes from a module's Blend
+/// setting, so the dice never roll the colour picker's old "Additive".
+fn covering(c: Color) -> Color {
+    if c.is_additive() { Color { a: 255, ..c } } else { c }
 }
 
 /// `new`'s hue and saturation with `old`'s brightness and transparency, so a dark background
@@ -727,6 +733,25 @@ mod tests {
             let gap = number(&scene, "obstacle", "spacing") - 2.0 * number(&scene, "obstacle", "radius");
             let ball = 2.0 * number(&scene, "balls", "radius");
             assert!(gap > ball, "seed {seed}: pegs {gap:.0} px apart jam balls {ball:.0} px wide");
+        }
+    }
+
+    #[test]
+    fn rolls_never_make_additive_colours() {
+        let reg = registry();
+        let glow = Color::additive(255, 136, 0);
+        let top = def(&reg, "scene", "background_colours");
+        let gradient = def(&reg, "look.classic", "colours");
+        for amount in [0.3, 1.0] {
+            for v in rolls(&top, &Value::Color(glow), amount, 20) {
+                let Value::Color(c) = v else { panic!("{v:?}") };
+                assert!(!c.is_additive(), "amount {amount}: {c:?}");
+            }
+            let list = Gradient::even(&[glow, Color::additive(0, 255, 0)]);
+            for v in rolls(&gradient, &Value::Gradient(list), amount, 20) {
+                let Value::Gradient(g) = v else { panic!("{v:?}") };
+                assert!(g.stops.iter().all(|s| !s.color.is_additive()), "amount {amount}: {g:?}");
+            }
         }
     }
 

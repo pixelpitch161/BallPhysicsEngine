@@ -1375,6 +1375,36 @@ mod tests {
     }
 
     #[test]
+    fn no_built_in_scene_uses_additive_colours() {
+        use bpe_core::Value;
+        fn additive(v: &Value) -> bool {
+            match v {
+                Value::Color(c) => c.is_additive(),
+                Value::Gradient(g) => g.stops.iter().any(|s| s.color.is_additive()),
+                _ => false,
+            }
+        }
+        let reg = registry();
+        let mut all = scenes::all(&reg);
+        all.push(("Long drop".into(), scenes::long_drop(&reg)));
+        for (name, scene) in &all {
+            let mut values: Vec<(String, &Value)> = Vec::new();
+            for (id, m) in &scene.library.modules {
+                values.extend(m.params.0.iter().map(|(k, v)| (format!("module {id:?} {k}"), v)));
+            }
+            for (id, t) in &scene.things {
+                values.extend(t.params.0.iter().map(|(k, v)| (format!("thing {id:?} {k}"), v)));
+            }
+            for (a, track) in &scene.tracks {
+                values.extend(track.keys.iter().map(|k| (format!("track {a:?}"), &k.value)));
+            }
+            for (at, v) in values {
+                assert!(!additive(v), "{name}: {at} is an additive colour, use Blend Add instead");
+            }
+        }
+    }
+
+    #[test]
     fn the_shipped_scene_files_match_the_code() {
         let reg = registry();
         let mut shipped = scenes::all(&reg);
