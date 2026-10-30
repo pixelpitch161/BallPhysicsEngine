@@ -150,6 +150,10 @@ fn specs() -> Vec<NodeSpec> {
             .param(n("value", "Value", 0.5, 0.0, 1.0))
             .param(n("min", "Min", 0.0, -10_000.0, 10_000.0))
             .param(n("max", "Max", 1.0, -10_000.0, 10_000.0)),
+        NodeSpec::new("fx_in", "In", "Output", "The sound coming into the effects.").output(audio("out")),
+        NodeSpec::new("fx_out", "Out", "Output", "The sound the effects give back. Effects have exactly one.")
+            .input(audio("left").required())
+            .input(audio("right").help("Leave empty to keep the left's stereo")),
         NodeSpec::new("voice_out", "Voice out", "Output", "What the voice sounds like. A patch has exactly one.")
             .input(audio("left").required())
             .input(audio("right").help("Leave empty to send the left to both sides")),
@@ -177,7 +181,9 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "pitch_to_hz" => Box::new(PitchToHz),
         "note" => Box::new(NoteIn),
         "macro" => Box::new(Macro::new(k)),
-        "voice_out" => Box::new(VoiceOut),
+        "voice_out" | "fx_out" => Box::new(VoiceOut),
+        // Never run: the program fills its register with the incoming sound.
+        "fx_in" => Box::new(Mix::new(k)),
         #[cfg(test)]
         "nan" => Box::new(testing::Nan),
         _ => return None,
