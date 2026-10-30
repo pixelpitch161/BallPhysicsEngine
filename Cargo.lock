@@ -440,6 +440,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe-synth"
+version = "0.1.0"
+dependencies = [
+ "bpe-graph",
+ "hound",
+]
+
+[[package]]
 name = "bpe-vm"
 version = "0.1.0"
 dependencies = [
