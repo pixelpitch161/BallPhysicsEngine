@@ -339,7 +339,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bpe-core",
+ "bpe-graph",
  "bpe-runtime",
+ "bpe-synth",
  "glam",
  "hound",
 ]
@@ -443,6 +445,7 @@ dependencies = [
 name = "bpe-synth"
 version = "0.1.0"
 dependencies = [
+ "bpe-core",
  "bpe-graph",
  "hound",
 ]

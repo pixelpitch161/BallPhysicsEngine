@@ -62,6 +62,11 @@ fn resolve(settings: &MixSettings, n: &Note) -> InstrumentChoice {
     }
 }
 
+/// A channel and the instrument some of its notes play through.
+type GroupKey = (u32, NoteInstrument);
+/// A compiled patch, how it plays notes, and the notes it plays.
+type PatchJob = (Program, VoiceSettings, Vec<PlayNote>);
+
 /// The notes of one channel that share an instrument.
 struct Group<'a> {
     choice: InstrumentChoice,
@@ -76,7 +81,7 @@ pub(crate) struct Rendered {
 
 /// Plays every note through its channel's instrument into `frames` frames of interleaved stereo.
 pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> Rendered {
-    let mut groups: BTreeMap<(u32, NoteInstrument), Group> = BTreeMap::new();
+    let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
     for n in notes.iter().filter(|n| n.frame < frames) {
         groups
             .entry((n.channel, n.instrument))
@@ -88,7 +93,7 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
     let spb = settings.seconds_per_beat();
 
     // Compile the patches, and pick the voices the mix-wide cap steals.
-    let mut programs: BTreeMap<(u32, NoteInstrument), (Program, VoiceSettings, Vec<PlayNote>)> = BTreeMap::new();
+    let mut programs: BTreeMap<GroupKey, PatchJob> = BTreeMap::new();
     let mut capped: Vec<(usize, PlayNote)> = Vec::new();
     let mut gates: Vec<usize> = Vec::new();
     for (key, g) in &groups {
@@ -107,7 +112,7 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
         }
     }
     global_steals(&mut capped, |i| gates[i], VOICE_CAP);
-    let keys: Vec<(u32, NoteInstrument)> = programs.keys().copied().collect();
+    let keys: Vec<GroupKey> = programs.keys().copied().collect();
     for (index, note) in capped {
         if let Some((_, _, notes)) = programs.get_mut(&keys[index]) {
             notes.push(note);
@@ -122,7 +127,7 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
         }
         InstrumentChoice::Patch { .. } => Vec::new(),
     }));
-    let mut channels: BTreeMap<(u32, NoteInstrument), Vec<f32>> = BTreeMap::new();
+    let mut channels: BTreeMap<GroupKey, Vec<f32>> = BTreeMap::new();
     for (key, g) in &groups {
         let InstrumentChoice::BuiltIn { which, decay, brightness } = g.choice else { continue };
         let placed: Vec<(&Note, Arc<Vec<f32>>)> =
@@ -133,7 +138,7 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
     }
 
     // Patch channels, side by side on all cores.
-    let jobs: Vec<(&(u32, NoteInstrument), &(Program, VoiceSettings, Vec<PlayNote>))> = programs.iter().collect();
+    let jobs: Vec<(&GroupKey, &PatchJob)> = programs.iter().collect();
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
     let work = || {
