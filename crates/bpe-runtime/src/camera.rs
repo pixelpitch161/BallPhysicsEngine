@@ -2,9 +2,6 @@
 
 use glam::Vec2;
 
-/// World units across the shot at Zoom 1: the width of the video the scenes were made for.
-pub const SHOT_WIDTH: f32 = 1080.0;
-
 /// The camera's shot at one moment. The default is the identity: the world as the video,
 /// centred on the origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,30 +40,31 @@ impl CameraView {
         rotate(screen / self.zoom, self.turn) + self.center
     }
 
-    /// Half the shot's size in world units, unturned; `aspect` is the video's height / width.
-    pub fn shot_half(&self, aspect: f32) -> Vec2 {
-        Vec2::new(SHOT_WIDTH * 0.5, SHOT_WIDTH * 0.5 * aspect) / self.zoom
+    /// Half the shot's size in world units, unturned. `video` is the scene's video size, which
+    /// is how much of the world the shot covers at Zoom 1.
+    pub fn shot_half(&self, video: Vec2) -> Vec2 {
+        video * 0.5 / self.zoom
     }
 
     /// Half the size of the axis-aligned box around the turned shot.
-    pub fn shot_bounds_half(&self, aspect: f32) -> Vec2 {
-        let h = self.shot_half(aspect);
+    pub fn shot_bounds_half(&self, video: Vec2) -> Vec2 {
+        let h = self.shot_half(video);
         let (s, c) = self.turn.sin_cos();
         Vec2::new(h.x * c.abs() + h.y * s.abs(), h.x * s.abs() + h.y * c.abs())
     }
 
     /// Whether a round thing at `center` might be in the shot. Never false for something seen;
     /// may be true for something just outside a turned shot's corner.
-    pub fn sees(&self, aspect: f32, center: Vec2, radius: f32) -> bool {
+    pub fn sees(&self, video: Vec2, center: Vec2, radius: f32) -> bool {
         let d = (center - self.center).abs();
-        let h = self.shot_bounds_half(aspect);
+        let h = self.shot_bounds_half(video);
         d.x <= h.x + radius && d.y <= h.y + radius
     }
 
     /// How far a world point is outside the turned shot, in world units; 0 inside.
-    pub fn distance_outside(&self, aspect: f32, world: Vec2) -> f32 {
+    pub fn distance_outside(&self, video: Vec2, world: Vec2) -> f32 {
         let local = rotate(world - self.center, -self.turn).abs();
-        (local - self.shot_half(aspect)).max(Vec2::ZERO).length()
+        (local - self.shot_half(video)).max(Vec2::ZERO).length()
     }
 }
 
@@ -101,15 +99,15 @@ mod tests {
     #[test]
     fn sees_culls() {
         let v = CameraView::default();
-        let aspect = 1920.0 / 1080.0;
-        assert!(v.sees(aspect, Vec2::ZERO, 10.0));
-        assert!(!v.sees(aspect, Vec2::new(5000.0, 0.0), 10.0));
+        let video = Vec2::new(1080.0, 1920.0);
+        assert!(v.sees(video, Vec2::ZERO, 10.0));
+        assert!(!v.sees(video, Vec2::new(5000.0, 0.0), 10.0));
     }
 
     #[test]
     fn distance_outside_is_zero_inside() {
         let v = CameraView { center: Vec2::new(1000.0, 0.0), zoom: 1.0, turn: 0.0 };
-        assert_eq!(v.distance_outside(1920.0 / 1080.0, Vec2::new(1000.0, 0.0)), 0.0);
-        assert!((v.distance_outside(1920.0 / 1080.0, Vec2::new(1640.0, 0.0)) - 100.0).abs() < 1e-3);
+        assert_eq!(v.distance_outside(Vec2::new(1080.0, 1920.0), Vec2::new(1000.0, 0.0)), 0.0);
+        assert!((v.distance_outside(Vec2::new(1080.0, 1920.0), Vec2::new(1640.0, 0.0)) - 100.0).abs() < 1e-3);
     }
 }

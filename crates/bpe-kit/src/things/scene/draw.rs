@@ -23,20 +23,20 @@ impl ThingDraw for SceneDraw {
         frame.exposure = s.exposure;
         frame.time = cx.time as f32;
         frame.background_on_screen = s.background_on_screen;
-        frame.background_span = background_span(cx.scene, s.height as f32 / s.width.max(1) as f32);
+        frame.background_span = background_span(cx.scene, s.height.max(2) as f32 * 0.5);
     }
 }
 
 /// The world heights the background spans when it is painted across the world: the camera's
 /// world box, or one shot's height around where the camera is set.
-fn background_span(scene: &bpe_core::Resolved, aspect: f32) -> [f32; 2] {
+fn background_span(scene: &bpe_core::Resolved, half_height: f32) -> [f32; 2] {
     let camera = scene.things.values().find(|r| r.kind == "camera").map(|r| CameraSettings::from_params(&r.params));
     match camera {
         Some(c) if c.stay_inside => [c.box_centre.y - c.box_size.y.abs() * 0.5, c.box_centre.y + c.box_size.y.abs() * 0.5],
         Some(c) => {
-            let half = 540.0 * aspect / c.zoom.max(0.01);
+            let half = half_height / c.zoom.max(0.01);
             [c.position.y - half, c.position.y + half]
         }
-        None => [-540.0 * aspect, 540.0 * aspect],
+        None => [-half_height, half_height],
     }
 }

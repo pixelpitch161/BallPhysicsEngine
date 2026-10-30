@@ -571,8 +571,8 @@ impl Frame {
         if self.camera.is_identity() {
             return;
         }
-        let (camera, aspect) = (self.camera, self.height as f32 / self.width.max(1) as f32);
-        let sees = |c: [f32; 2], r: f32| camera.sees(aspect, Vec2::from(c), r + CULL_MARGIN);
+        let (camera, video) = (self.camera, Vec2::new(self.width as f32, self.height as f32));
+        let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
         self.flashes.retain(|f| sees(f.center, f.size));

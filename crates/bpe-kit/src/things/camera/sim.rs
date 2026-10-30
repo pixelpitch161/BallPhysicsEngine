@@ -3,7 +3,7 @@
 //! scrubbed run gives the same shot as one played straight through.
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, Log, SHOT_WIDTH, ThingSim, World, state, state_mut};
+use bpe_runtime::{CameraView, EventKind, Log, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
 use super::CameraSettings;
@@ -82,9 +82,9 @@ fn keyed(s: &CameraSettings) -> CameraView {
 }
 
 /// Moves `c` so the turned shot stays inside the box; centres it on an axis where it can't fit.
-fn clamp_to_box(mut view: CameraView, aspect: f32, s: &CameraSettings) -> CameraView {
+fn clamp_to_box(mut view: CameraView, video: Vec2, s: &CameraSettings) -> CameraView {
     let half_box = s.box_size.abs() * 0.5;
-    let shot = view.shot_bounds_half(aspect);
+    let shot = view.shot_bounds_half(video);
     for axis in 0..2 {
         let room = half_box[axis] - shot[axis];
         view.center[axis] = if room <= 0.0 {
@@ -105,7 +105,7 @@ impl ThingSim for CameraSim {
         let settings = CameraSettings::from_params(&resolved.params);
         let mut view = keyed(&settings);
         if settings.stay_inside {
-            view = clamp_to_box(view, world.aspect, &settings);
+            view = clamp_to_box(view, world.video, &settings);
         }
         let st = CameraState { pos: settings.position, vel: Vec2::ZERO, zoom: view.zoom, trauma: 0.0, punch: 0.0, settings };
         world.camera = view;
@@ -121,7 +121,7 @@ impl ThingSim for CameraSim {
 
     fn after_step(&self, me: ThingId, world: &mut World, log: &mut Log) {
         let dt = world.dt();
-        let aspect = world.aspect;
+        let video = world.video;
         let mut st = state::<CameraState>(world.states[&me].as_ref()).clone();
         let s = st.settings.clone();
         let key = keyed(&s);
@@ -133,7 +133,7 @@ impl ThingSim for CameraSim {
                 Some((middle, velocity, half)) => {
                     let mut goal = middle + velocity * s.look_ahead;
                     // Slack: the target roams the middle of the shot without moving the camera.
-                    let slack = key.shot_half(aspect) * s.slack;
+                    let slack = key.shot_half(video) * s.slack;
                     let d = goal - st.pos;
                     goal = st.pos + Vec2::new(
                         d.x.signum() * (d.x.abs() - slack.x).max(0.0),
@@ -150,7 +150,7 @@ impl ThingSim for CameraSim {
                     }
                     if s.fit_all {
                         let need = (half + s.fit_margin).max(Vec2::splat(1.0));
-                        let fit = (SHOT_WIDTH * 0.5 / need.x).min(SHOT_WIDTH * 0.5 * aspect / need.y);
+                        let fit = (video.x * 0.5 / need.x).min(video.y * 0.5 / need.y);
                         let goal_zoom = key.zoom.min(fit);
                         st.zoom += (goal_zoom - st.zoom) * (1.0 - (-omega * dt).exp());
                         view.zoom = st.zoom;
@@ -200,7 +200,7 @@ impl ThingSim for CameraSim {
         }
 
         if s.stay_inside {
-            view = clamp_to_box(view, aspect, &s);
+            view = clamp_to_box(view, video, &s);
         }
         world.camera = view;
         log.push_camera(world.step, view);
@@ -231,8 +231,8 @@ mod tests {
         scene.things.get_mut(&crate::testing::ARENA).unwrap().enabled = false;
     }
 
-    fn aspect() -> f32 {
-        1920.0 / 1080.0
+    fn video() -> Vec2 {
+        Vec2::new(1080.0, 1920.0)
     }
 
     #[test]
@@ -313,7 +313,7 @@ mod tests {
         let (world, _) = run(&scene, &resolved, &kit, 3.0);
         for bodies in world.bodies.values().filter(|b| !b.silent) {
             for i in 0..bodies.len() {
-                assert!(world.camera.sees(aspect(), bodies.position[i], -bodies.radius[i]), "{:?}", world.camera);
+                assert!(world.camera.sees(video(), bodies.position[i], -bodies.radius[i]), "{:?}", world.camera);
             }
         }
     }
@@ -427,7 +427,7 @@ mod tests {
         for i in 1..=60 {
             world.advance_to(i as f64 * 0.1, &kit.sims, &mut log);
             let v = world.camera;
-            let half = v.shot_bounds_half(aspect());
+            let half = v.shot_bounds_half(video());
             assert!((v.center.abs() + half).cmple(Vec2::new(1000.0, 2000.0) + 1e-2).all(), "{v:?}");
         }
     }
