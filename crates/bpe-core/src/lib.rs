@@ -34,7 +34,9 @@ pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, ModuleGraph};
-pub use progression::{Chord, Extension, Mode, MusicKey, Progression, ProgressionId, ProgressionRef, Quality};
+pub use progression::{
+    Chord, Extension, MAX_BEATS, Mode, MusicKey, Progression, ProgressionId, ProgressionRef, Quality,
+};
 pub use registry::{ModuleKind, Registry, ThingKind};
 pub use resolve::{
     Broken, Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve, resolve_slot, resolve_with,

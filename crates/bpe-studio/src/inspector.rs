@@ -2,6 +2,7 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
+use crate::chords::{self, ChordUi};
 use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
@@ -11,13 +12,14 @@ use crate::widgets::{
     settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, ProgressionRef, PulseSource, Resolved,
-    SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,
+    ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId,
+    Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct Inspector {
@@ -32,6 +34,8 @@ pub struct Inspector {
     pub nodes_request: Option<(ThingId, SlotId)>,
     /// What the node panel shows, so that card's switch shows Nodes as chosen.
     pub nodes_open: Option<(ThingId, SlotId)>,
+    /// Each progression's chord editor: the picked chord, the presets list.
+    pub chord_ui: BTreeMap<ProgressionId, ChordUi>,
 }
 
 /// A card's Nodes button.
@@ -93,6 +97,8 @@ enum Edit {
     RollCard(Option<SlotId>),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
+    /// A chord editor changed a progression in the library.
+    Progression(ProgressionId, Progression),
     /// The look's colour list changed: its Colour and Colours settings, at these addresses.
     Colours {
         colour: Address,
@@ -252,6 +258,7 @@ pub fn show(
                 applies: &applies,
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
+            chord_editor(ui, &mut inspector.chord_ui, scene, kind.settings(), &get, &mut edits);
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -501,6 +508,7 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits);
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
                         }
@@ -535,6 +543,7 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits);
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
                         }
@@ -602,6 +611,7 @@ pub fn show(
         let edit = make_picked_progression(scene, reg, id, time, edit);
         let ok = match edit {
             Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
+            Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -913,6 +923,34 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
         (ValueType::Vec2, _) => Value::Vec2([0.0, 100.0]),
         (ValueType::Color, _) => Value::Color(Color::WHITE),
         _ => Value::Number(quarter),
+    }
+}
+
+/// Under a card with a Chords setting: the chord editor for the progression it picks, or a line
+/// saying it follows Scene defaults' chords.
+fn chord_editor(
+    ui: &mut Ui,
+    chord_ui: &mut BTreeMap<ProgressionId, ChordUi>,
+    scene: &Scene,
+    defs: &[SettingDef],
+    get: &dyn Fn(&str) -> Value,
+    edits: &mut Vec<Edit>,
+) {
+    for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
+        let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
+        let Some((pid, p)) = picked.and_then(|pid| scene.library.progressions.get(&pid).map(|p| (pid, p))) else {
+            ui.label(
+                RichText::new("Plays Scene defaults' chords. Pick Make unique to give it its own.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+            continue;
+        };
+        let mut p = p.clone();
+        let out = ui.push_id(("chords", pid), |ui| chords::show(ui, &mut p, chord_ui.entry(pid).or_default())).inner;
+        if out.changed {
+            edits.push(Edit::Progression(pid, p));
+        }
     }
 }
 
@@ -1721,6 +1759,21 @@ mod tests {
         h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap().click();
         h.run();
         assert!(h.query_by_label("Scene's").is_some());
+    }
+
+    #[test]
+    fn the_chord_editor_edits_the_picked_progression() {
+        let mut h = harness(Some(ThingId::ROOT));
+        assert_eq!(h.query_all_by_label("Chord lane").count(), 1, "only Scene defaults picks its own");
+        assert!(h.query_by_label_contains("Plays Scene defaults' chords").is_some(), "its sound module follows it");
+        let node = h.get_by_label("IV\nF");
+        node.scroll_to_me();
+        h.run();
+        h.get_by_label("IV\nF").click();
+        h.run();
+        let p = &h.state().scene.library.progressions[&ProgressionId(0)];
+        assert_eq!(p.chords.len(), 7);
+        assert_eq!(p.chords[6].root, 5);
     }
 
     #[test]
