@@ -66,7 +66,7 @@ pub struct NoteSound {
     #[setting(label = "Highest note", range(0, 127), simple)]
     pub high_note: u32,
     /// The chord progression these notes follow: Scene defaults' one, or one of their own.
-    #[setting(label = "Chords", simple)]
+    #[setting(label = "Chords", simple, random)]
     pub chords: ProgressionRef,
     /// Which of the allowed notes a hit plays: random, by the hit's speed, by the ball's hits,
     /// an arpeggio, or by how high the hit is.
