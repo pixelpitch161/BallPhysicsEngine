@@ -312,6 +312,12 @@ pub struct SoftVertex {
     pub _pad: f32,
     /// Linear light. A negative alpha is additive (see [`blend_alpha`]).
     pub color: [f32; 4],
+    /// A gradient painted across the body in place of its colour, when its row is not -1. Every
+    /// corner of one body carries the same paint.
+    pub paint: PaintGpu,
+    /// Where the corner is in the body's bounding box, -1 to 1 each way from its centre: the
+    /// space the paint's inside pattern is drawn in.
+    pub local: [f32; 2],
 }
 
 /// One glyph of text, drawn from the signed-distance atlas.
@@ -328,6 +334,11 @@ pub struct GlyphInstance {
     /// Outline width in world units, glow strength, world units per distance unit (how far one
     /// full step of the atlas value is in the world), unused.
     pub params: [f32; 4],
+    /// A gradient painted inside the fill in place of its colour, when its row is not -1.
+    pub paint: PaintGpu,
+    /// The world rectangle the paint's inside pattern spans, -1 to 1 across it: the glyph's own
+    /// `rect` when each letter is painted on its own, or the whole text's.
+    pub local: [f32; 4],
 }
 
 /// One corner of a trail strip.
@@ -901,8 +912,8 @@ mod tests {
         frame.glyphs.push(GlyphInstance::default());
         frame.clear();
         assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
-        assert_eq!(std::mem::size_of::<SoftVertex>(), 32);
-        assert_eq!(std::mem::size_of::<GlyphInstance>(), 80);
+        assert_eq!(std::mem::size_of::<SoftVertex>(), 72);
+        assert_eq!(std::mem::size_of::<GlyphInstance>(), 128);
     }
 
     #[test]

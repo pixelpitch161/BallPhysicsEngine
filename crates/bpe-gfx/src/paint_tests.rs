@@ -1,6 +1,6 @@
 //! Picture tests for gradient paint inside shapes, on the software GPU.
 
-use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance};
+use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance, SoftVertex};
 use bpe_core::{Color, Gradient, Stop, Transition};
 
 /// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
@@ -163,4 +163,71 @@ fn box_path_runs_clockwise_from_the_top_left() {
     let bottom = at(cx, cy + 200);
     assert!(top[0] > top[2] && top[1] < 60, "{top:?}: an eighth of the way round, mostly red");
     assert!(bottom[2] > bottom[0] && bottom[1] < 60, "{bottom:?}: five eighths of the way round, mostly blue");
+}
+
+#[test]
+fn a_soft_body_paints_stripes_across_its_box() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let row = frame.gradients.row(&red_blue_steps());
+    let paint = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    // A square 400 across each way, as two triangles, its corners at the box's corners.
+    let corner = |x: f32, y: f32| SoftVertex {
+        position: [x * 400.0, y * 400.0],
+        inside: 1000.0,
+        _pad: 0.0,
+        // Green, so a body that ignores its paint fails.
+        color: [0.0, 1.0, 0.0, 1.0],
+        paint,
+        local: [x, y],
+    };
+    frame.soft.extend_from_slice(&[
+        corner(-1.0, -1.0),
+        corner(1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, 1.0),
+    ]);
+    assert_two_halves("paint-soft-stripes", &frame);
+}
+
+#[test]
+fn a_glyph_paints_stripes_across_its_box() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    // Text is stuck to the screen, so it draws in the overlay, from the overlay's atlas.
+    let o = frame.overlay_mut();
+    let row = o.gradients.row(&red_blue_steps());
+    let style = crate::text::TextStyle { color: [0.0, 1.0, 0.0, 1.0], ..crate::text::TextStyle::default() };
+    let (face, align) = (crate::text::FontFace::Anton, crate::text::TextAlign::Center);
+    crate::text::layout_text("H", face, 1200.0, glam::Vec2::ZERO, align, 0.0, usize::MAX, &style, &mut o.glyphs);
+    assert_eq!(o.glyphs.len(), 1);
+    let g = &mut o.glyphs[0];
+    g.paint = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    let rect = g.rect;
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, W, H);
+    renderer.render(&device, &queue, &frame);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    crate::pictures::save("paint-glyph-stripes", &pixels, W, H);
+    // The box's centre line on the output; the letter's ink either side of it, 4 pixels left out.
+    let line = W as f32 / 2.0 + (rect[0] + rect[2]) * 0.25;
+    let (mut left, mut right) = (0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            let i = (y * W + x) as usize * 4;
+            let p = &pixels[i..i + 4];
+            if p[0] as u32 + p[1] as u32 + p[2] as u32 <= 200 {
+                continue;
+            }
+            let from_line = x as f32 + 0.5 - line;
+            if from_line < -4.0 {
+                assert!(p[0] > 150 && p[1] < 60 && p[2] < 60, "({x}, {y}) {p:?}: red left of the line");
+                left += 1;
+            } else if from_line > 4.0 {
+                assert!(p[2] > 150 && p[0] < 60 && p[1] < 60, "({x}, {y}) {p:?}: blue right of the line");
+                right += 1;
+            }
+        }
+    }
+    assert!(left > 1000 && right > 1000, "{left} {right}: the letter shows both sides");
 }

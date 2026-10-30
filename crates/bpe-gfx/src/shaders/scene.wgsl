@@ -383,12 +383,20 @@ struct SoftIn {
     @location(1) inside: f32,
     @location(2) pad: f32,
     @location(3) color: vec4<f32>,
+    // The gradient painted across the body, as `PaintGpu`; the same at every corner.
+    @location(4) paint_a: vec4<f32>,
+    @location(5) paint_b: vec4<f32>,
+    // Where the corner is in the body's bounding box, -1 to 1.
+    @location(6) local: vec2<f32>,
 };
 
 struct SoftOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) inside: f32,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) paint_a: vec4<f32>,
+    @location(3) @interpolate(flat) paint_b: vec4<f32>,
+    @location(4) local: vec2<f32>,
 };
 
 @vertex
@@ -397,6 +405,9 @@ fn vs_soft(v: SoftIn) -> SoftOut {
     out.pos = to_clip(v.position);
     out.inside = v.inside;
     out.color = v.color;
+    out.paint_a = v.paint_a;
+    out.paint_b = v.paint_b;
+    out.local = v.local;
     return out;
 }
 
@@ -407,5 +418,11 @@ fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
     if a <= 0.0 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row < 0.0 {
+        return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
+    }
+    // A gradient painted across the body takes the place of its colours.
+    let rgb = paint_colour(paint, in.local, g.view.w).rgb;
+    return vec4<f32>(rgb * a, covering(a, in.color.a));
 }
