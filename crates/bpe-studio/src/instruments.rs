@@ -152,23 +152,22 @@ fn voices(ui: &mut Ui, v: &mut VoiceSettings, patch: bool) -> bool {
     let mut changed = false;
     let name = ui.label("Note length");
     ui.horizontal(|ui| {
-        let beats = matches!(v.note_length, NoteLength::Beats(_));
-        let (mut amount, unit) = match v.note_length {
-            NoteLength::Beats(b) => (b, " beats"),
-            NoteLength::Seconds(s) => (s, " s"),
+        let (mut amount, beats) = match v.note_length {
+            NoteLength::Beats(b) => (b, true),
+            NoteLength::Seconds(s) => (s, false),
         };
-        if slider(ui, &mut amount, 0.05, 16.0, unit).labelled_by(name.id).changed() {
+        changed |= slider(ui, &mut amount, 0.05, 16.0, "").labelled_by(name.id).changed();
+        // One small button names the unit and switches it.
+        let unit = if beats { "beats" } else { "secs" };
+        let hover =
+            if beats { "Held for beats of the tempo; click for seconds" } else { "Held for seconds; click for beats" };
+        let beats = if ui.small_button(unit).on_hover_text(hover).clicked() {
             changed = true;
-        }
-        let mut in_beats = beats;
-        if ui.selectable_label(in_beats, "Beats").on_hover_text("Hold each note for beats of the tempo").clicked() {
-            in_beats = true;
-        }
-        if ui.selectable_label(!in_beats, "Secs").on_hover_text("Hold each note for seconds").clicked() {
-            in_beats = false;
-        }
-        changed |= in_beats != beats;
-        v.note_length = if in_beats { NoteLength::Beats(amount) } else { NoteLength::Seconds(amount) };
+            !beats
+        } else {
+            beats
+        };
+        v.note_length = if beats { NoteLength::Beats(amount) } else { NoteLength::Seconds(amount) };
     });
     ui.end_row();
     let name = ui.label("Voice limit");
@@ -198,6 +197,6 @@ fn voices(ui: &mut Ui, v: &mut VoiceSettings, patch: bool) -> bool {
 /// A narrow slider with its number, so the section fits the panel.
 fn slider(ui: &mut Ui, v: &mut f32, min: f32, max: f32, suffix: &str) -> egui::Response {
     let feel = crate::widgets::number_feel((max - min) as f64, false);
-    ui.spacing_mut().slider_width = 110.0;
+    ui.spacing_mut().slider_width = 100.0;
     ui.add(egui::Slider::new(v, min..=max).step_by(feel.step).max_decimals(feel.decimals).suffix(suffix))
 }

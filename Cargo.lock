@@ -431,6 +431,7 @@ dependencies = [
  "bpe-kit",
  "bpe-mix",
  "bpe-runtime",
+ "bpe-synth",
  "bpe-vm",
  "cpal",
  "eframe",

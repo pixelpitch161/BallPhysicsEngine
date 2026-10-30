@@ -2039,6 +2039,21 @@ mod tests {
     }
 
     #[test]
+    fn a_patch_section_fits_the_panel() {
+        let mut h = harness(Some(ThingId::ROOT));
+        open_instrument_menu(&mut h);
+        let name = bpe_synth::starters()[0].0;
+        h.get_by_label(name).scroll_to_me();
+        h.run();
+        h.get_by_label(name).click();
+        h.run();
+        h.get_by_role_and_label(Role::Slider, "Note length");
+        for n in h.get_all_by_role(Role::SpinButton) {
+            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
+        }
+    }
+
+    #[test]
     fn pluck_knobs_show_for_the_built_in_pluck() {
         let h = harness(Some(ThingId::ROOT));
         let decay = h.get_by_role_and_label(Role::Slider, "Decay");
