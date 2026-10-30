@@ -56,6 +56,7 @@ pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
@@ -90,6 +91,7 @@ pub fn sims() -> Sims {
     s.add_thing(SoftSim);
     s.add_thing(FolderSim);
     s.add_thing(ObstacleSim);
+    s.add_thing(CameraSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(RulesSim);

@@ -1,5 +1,6 @@
 //! Camera: what the video shows of the world, where it looks, how close, and how it moves.
 
+pub mod sim;
 
 
 use bpe_core::{KindId, SettingDef, Settings, SlotId, Target, ThingKind};
