@@ -705,7 +705,6 @@ pub fn build_frame_at(
         }
     }
     frame.camera = world.camera;
-    frame.cull();
 }
 
 #[cfg(test)]

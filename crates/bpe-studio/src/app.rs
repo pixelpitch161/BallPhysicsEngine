@@ -106,6 +106,12 @@ pub struct Studio {
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
     pub grid: Grid,
+    /// What the preview shows: the video's shot, or the whole world.
+    pub preview_mode: crate::preview::PreviewMode,
+    /// Where the World view looks.
+    pub world_nav: crate::preview::WorldNav,
+    /// The world point at the middle of the preview, where new things are added.
+    pub view_centre: glam::Vec2,
     /// Remember grid changes in the settings folder (off without a window, in tests).
     persist_grid: bool,
     /// The soundtrack no longer matches the scene.
@@ -181,6 +187,9 @@ impl Studio {
             confirm: None,
             panels: Panels::default(),
             grid: Grid::default(),
+            preview_mode: Default::default(),
+            world_nav: Default::default(),
+            view_centre: glam::Vec2::ZERO,
             persist_grid: false,
             sound_dirty: true,
             audio: None,
@@ -787,6 +796,13 @@ impl eframe::App for Studio {
         if let Some(message) = tree.message {
             self.status = message;
         }
+        // A new thing goes in the middle of whatever the preview is looking at.
+        if let Some(id) = tree.added
+            && let Some(thing) = self.scene.things.get_mut(&id)
+            && !thing.rides()
+        {
+            thing.transform.position = self.view_centre.round();
+        }
         if tree.removed.is_some() {
             // Deleting is always its own undo step.
             self.recorded = true;
@@ -843,9 +859,12 @@ impl eframe::App for Studio {
             self.set_playing(false);
         }
         if outcome.drag_started {
-            // Dragging lays the scene out, so show where everything starts.
+            // Dragging lays the scene out, so show where everything starts. The camera stays at
+            // the playhead, so a keyed shot gets its key where it is being looked at.
             self.set_playing(false);
-            self.seek(0.0);
+            if !outcome.drag_camera {
+                self.seek(0.0);
+            }
         }
         if let Some(id) = outcome.selected {
             self.selection.set(id);

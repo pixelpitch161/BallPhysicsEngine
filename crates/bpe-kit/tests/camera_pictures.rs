@@ -122,6 +122,8 @@ fn culled_ball_is_not_in_frame() {
     let playback = Playback::new(&scene, &resolved, kit.sims.clone());
     let mut frame = Frame::default();
     build_frame(&scene, &resolved, playback.world(), playback.log(), 0.0, &kit.draws, &mut frame);
+    assert!(!frame.balls.is_empty(), "everything is built; culling is the caller's choice");
+    frame.cull();
     assert!(frame.balls.is_empty() && frame.looks.is_empty(), "{:?}", frame.balls);
 }
 

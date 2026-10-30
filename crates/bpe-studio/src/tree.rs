@@ -28,6 +28,8 @@ pub struct TreeOutcome {
     pub removed: Option<ThingId>,
     /// A word for the status line about something that was refused.
     pub message: Option<String>,
+    /// The thing the add menu just added.
+    pub added: Option<ThingId>,
 }
 
 /// Where a dragged row is let go over another row.
@@ -226,6 +228,7 @@ pub fn show(
             if let Ok(id) = bpe_kit::add_thing(scene, reg, kind, parent) {
                 selection.set(id);
                 out.edited = true;
+                out.added = Some(id);
             }
         }
         Some(Action::Folder(ids)) => match scene.make_folder(reg, &ids) {
@@ -901,6 +904,7 @@ mod tests {
         resolved: Resolved,
         selection: Selection,
         messages: Vec<String>,
+        added: Vec<ThingId>,
     }
 
     fn harness() -> Harness<'static, State> {
@@ -914,6 +918,7 @@ mod tests {
             resolved,
             selection: Selection::default(),
             messages: Vec::new(),
+            added: Vec::new(),
         };
         let mut h = Harness::builder()
             .with_size(egui::vec2(260.0, 600.0))
@@ -929,6 +934,7 @@ mod tests {
                         s.resolved = resolve(&s.scene, &s.kit.registry);
                     }
                     s.messages.extend(out.message);
+                    s.added.extend(out.added);
                 },
                 state,
             );
@@ -1347,5 +1353,15 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Camera").is_none() || h.query_all_by_label("Camera").count() == 1);
         assert!(duplicate(&mut h.state_mut().scene, &bpe_kit::registry(), cam).is_none());
+    }
+
+    #[test]
+    fn the_add_menu_says_what_it_added() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Obstacle").click();
+        h.run();
+        assert_eq!(h.state().added, [ThingId(3)]);
     }
 }
