@@ -58,6 +58,8 @@ fn note_ctx(note: &PlayNote, rate: f32, seconds_per_beat: f32) -> Ctx {
 
 /// Runs one block, replacing bad samples. Returns the block, its peak and whether it was bad.
 fn run_block(patch: &mut Patch, cx: &Ctx) -> (Buf, f32, bool) {
+    #[cfg(test)]
+    BLOCKS_RUN.with(|n| n.set(n.get() + 1));
     let mut buf = SILENT;
     patch.process(cx, &mut buf);
     let mut peak = 0.0f32;
@@ -72,6 +74,12 @@ fn run_block(patch: &mut Patch, cx: &Ctx) -> (Buf, f32, bool) {
         }
     }
     (buf, peak, bad)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Blocks run on this thread, to check that voices the limit steals stop rendering.
+    static BLOCKS_RUN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A voice's rendered sound, waiting to be added to the channel until no later note can steal it.
@@ -109,53 +117,115 @@ impl Pending {
     }
 }
 
-/// Renders one note as its own voice, up to `frames` and no further than its steal point.
-fn render_voice(
-    program: &Program,
-    note: &PlayNote,
+/// A voice being rendered a stretch at a time: far enough to know whether it has ended by the
+/// next note, and no further, so a voice the limit steals never renders the tail it won't play.
+struct Live {
+    patch: Option<Patch>,
+    cx: Ctx,
+    note: PlayNote,
     gate: usize,
-    seconds_per_beat: f32,
-    rate: f32,
-    frames: usize,
-    bad: &mut bool,
-) -> Pending {
-    let mut cx = note_ctx(note, rate, seconds_per_beat);
-    let mut patch = program.instantiate(&cx);
-    let longest = gate + (LONGEST_TAIL * rate) as usize;
-    let mut len = (frames - note.frame).min(longest);
-    if let Some(at) = note.steal_at {
-        len = len.min(at.saturating_sub(note.frame) + STEAL_FADE);
+    /// The most frames it can play: to the video's end, its longest tail or its global steal.
+    len: usize,
+    quiet: usize,
+    quiet_needed: usize,
+    voice: Pending,
+    /// Frames rendered so far.
+    done: usize,
+    bad: bool,
+}
+
+impl Live {
+    fn new(program: &Program, note: &PlayNote, gate: usize, seconds_per_beat: f32, rate: f32, frames: usize) -> Self {
+        let cx = note_ctx(note, rate, seconds_per_beat);
+        let longest = gate + (LONGEST_TAIL * rate) as usize;
+        let mut len = (frames - note.frame).min(longest);
+        if let Some(at) = note.steal_at {
+            len = len.min(at.saturating_sub(note.frame) + STEAL_FADE);
+        }
+        let quiet_needed = (QUIET_FOR * rate) as usize;
+        let samples = Vec::with_capacity(len.min(gate + quiet_needed + BLOCK) * 2);
+        Live {
+            patch: Some(program.instantiate(&cx)),
+            cx,
+            note: *note,
+            gate,
+            len,
+            quiet: 0,
+            quiet_needed,
+            voice: Pending { start: note.frame, samples },
+            done: 0,
+            bad: false,
+        }
     }
-    let quiet_needed = (QUIET_FOR * rate) as usize;
-    let mut quiet = 0;
-    let mut samples = Vec::with_capacity(len.min(gate + quiet_needed + BLOCK) * 2);
-    let mut done = 0;
-    while done < len {
-        cx.gate = done < gate;
-        let (buf, peak, was_bad) = run_block(&mut patch, &cx);
-        let take = BLOCK.min(len - done);
-        for s in 0..take {
-            samples.push(buf[0][s] * note.left);
-            samples.push(buf[1][s] * note.right);
-        }
-        done += take;
-        if was_bad {
-            *bad = true;
-            break;
-        }
-        if !cx.gate {
-            quiet = if peak < QUIET { quiet + BLOCK } else { 0 };
-            if quiet >= quiet_needed {
+
+    fn finished(&self) -> bool {
+        self.patch.is_none()
+    }
+
+    /// Renders on until the voice has played up to the channel's frame `to`, or has ended.
+    fn advance_to(&mut self, to: usize) {
+        let want = to.saturating_sub(self.note.frame);
+        while let Some(patch) = &mut self.patch {
+            if self.done >= self.len {
+                self.end();
                 break;
             }
+            if self.done >= want {
+                break;
+            }
+            self.cx.gate = self.done < self.gate;
+            let (buf, peak, was_bad) = run_block(patch, &self.cx);
+            let take = BLOCK.min(self.len - self.done);
+            for s in 0..take {
+                self.voice.samples.push(buf[0][s] * self.note.left);
+                self.voice.samples.push(buf[1][s] * self.note.right);
+            }
+            self.done += take;
+            if was_bad {
+                self.bad = true;
+                self.end();
+                break;
+            }
+            if !self.cx.gate {
+                self.quiet = if peak < QUIET { self.quiet + BLOCK } else { 0 };
+                if self.quiet >= self.quiet_needed {
+                    self.end();
+                    break;
+                }
+            }
+            self.cx.advance();
         }
-        cx.advance();
     }
-    let mut voice = Pending { start: note.frame, samples };
-    if let Some(at) = note.steal_at {
-        voice.cut(at);
+
+    /// Stops rendering, and cuts the voice where the mix-wide cap steals it.
+    fn end(&mut self) {
+        if self.patch.take().is_some()
+            && let Some(at) = self.note.steal_at
+        {
+            self.voice.cut(at);
+        }
     }
-    voice
+}
+
+/// Advances every voice to the channel's frame `to`, side by side on up to `threads` threads.
+fn advance_all(live: &mut [Live], to: usize, threads: usize) {
+    let busy = live.iter().filter(|v| !v.finished()).count();
+    if threads <= 1 || busy < 2 {
+        for v in live.iter_mut() {
+            v.advance_to(to);
+        }
+        return;
+    }
+    let per = live.len().div_ceil(threads.min(busy));
+    std::thread::scope(|scope| {
+        for chunk in live.chunks_mut(per) {
+            scope.spawn(move || {
+                for v in chunk {
+                    v.advance_to(to);
+                }
+            });
+        }
+    });
 }
 
 /// Plays `notes` through `program` for `frames` frames. Notes are played in frame order.
@@ -170,12 +240,9 @@ pub fn render_channel(
     render_channel_on(program, notes, voices, seconds_per_beat, rate, frames, 1)
 }
 
-/// Voices rendered side by side before the voice limit is worked out, at most this many at once.
-const BATCH: usize = 32;
-
 /// [`render_channel`] with up to `threads` voices rendering at once. A voice's sound doesn't
-/// depend on the others, so they render side by side and the voice limit then cuts them in
-/// note order: the result is the same as on one thread.
+/// depend on the others, so the sounding voices render side by side between notes: the result
+/// is the same as on one thread.
 pub fn render_channel_on(
     program: &Program,
     notes: &[PlayNote],
@@ -194,71 +261,35 @@ pub fn render_channel_on(
         return out;
     }
     let limit = voices.limit.max(1) as usize;
-    let mut pending: Vec<Pending> = Vec::new();
-    for batch in order.chunks(BATCH) {
-        let rendered = render_voices(program, batch, gate, seconds_per_beat, rate, frames, threads);
-        for (note, (voice, bad)) in batch.iter().zip(rendered) {
-            out.bad_samples |= bad;
-            pending.retain(|p| {
-                let ended = p.end() <= note.frame;
-                if ended {
-                    p.add_to(&mut out.samples);
-                }
-                !ended
-            });
-            while pending.len() >= limit {
-                // Voices are pending in start order, so the first is the oldest.
-                let mut oldest = pending.remove(0);
-                oldest.cut(note.frame);
-                oldest.add_to(&mut out.samples);
+    let mut live: Vec<Live> = Vec::new();
+    for note in order {
+        // The sounding voices render up to this note, so it's known which have ended.
+        advance_all(&mut live, note.frame, threads);
+        live.retain_mut(|v| {
+            let ended = v.finished() && v.voice.end() <= note.frame;
+            if ended {
+                out.bad_samples |= v.bad;
+                v.voice.add_to(&mut out.samples);
             }
-            pending.push(voice);
+            !ended
+        });
+        while live.len() >= limit {
+            // Voices are live in start order, so the first is the oldest.
+            let mut oldest = live.remove(0);
+            oldest.advance_to(note.frame + STEAL_FADE);
+            oldest.end();
+            oldest.voice.cut(note.frame);
+            out.bad_samples |= oldest.bad;
+            oldest.voice.add_to(&mut out.samples);
         }
+        live.push(Live::new(program, note, gate, seconds_per_beat, rate, frames));
     }
-    for p in &pending {
-        p.add_to(&mut out.samples);
+    advance_all(&mut live, usize::MAX, threads);
+    for v in &live {
+        out.bad_samples |= v.bad;
+        v.voice.add_to(&mut out.samples);
     }
     out
-}
-
-/// Each note's voice, and whether it made a bad sample, on up to `threads` threads.
-fn render_voices(
-    program: &Program,
-    notes: &[&PlayNote],
-    gate: usize,
-    seconds_per_beat: f32,
-    rate: f32,
-    frames: usize,
-    threads: usize,
-) -> Vec<(Pending, bool)> {
-    let one = |note: &PlayNote| {
-        let mut bad = false;
-        let voice = render_voice(program, note, gate, seconds_per_beat, rate, frames, &mut bad);
-        (voice, bad)
-    };
-    let threads = threads.clamp(1, notes.len().max(1));
-    if threads == 1 {
-        return notes.iter().map(|n| one(n)).collect();
-    }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(Vec::with_capacity(notes.len()));
-    let work = || {
-        loop {
-            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let Some(note) = notes.get(i) else { break };
-            let voice = one(note);
-            done.lock().unwrap_or_else(|e| e.into_inner()).push((i, voice));
-        }
-    };
-    std::thread::scope(|scope| {
-        for _ in 1..threads {
-            scope.spawn(work);
-        }
-        work();
-    });
-    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
-    done.sort_by_key(|(i, _)| *i);
-    done.into_iter().map(|(_, v)| v).collect()
 }
 
 /// One voice for the whole channel. Notes take effect at the start of the block they fall in.
@@ -420,6 +451,20 @@ mod tests {
 
     fn seconds(s: f32) -> VoiceSettings {
         VoiceSettings { note_length: NoteLength::Seconds(s), ..VoiceSettings::default() }
+    }
+
+    #[test]
+    fn a_stolen_voice_stops_rendering() {
+        // Ten-second tails, a note every 50 ms and room for two: each voice lives about two
+        // notes, so rendering every tail in full would be a hundred times the work.
+        let program = compile(&sine_patch(0.001, 10.0)).unwrap();
+        let notes: Vec<PlayNote> = (0..200).map(|i| note(i * 2_400, 60 + (i % 12) as u8)).collect();
+        let mut two = seconds(0.1);
+        two.limit = 2;
+        BLOCKS_RUN.with(|n| n.set(0));
+        render_channel(&program, &notes, &two, 0.5, 48_000.0, 200 * 2_400 + 48_000);
+        let blocks = BLOCKS_RUN.with(|n| n.get());
+        assert!(blocks < 30_000, "{blocks} blocks");
     }
 
     #[test]

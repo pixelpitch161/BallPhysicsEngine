@@ -439,6 +439,9 @@ impl Studio {
         }
         if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit) {
             self.warp = mixed.warp;
+            if !mixed.problems.is_empty() {
+                self.status = format!("Sound: {}", mixed.problems.join(" · "));
+            }
             if let Some(audio) = &self.audio {
                 audio.set_track(mixed.track);
                 if self.playing {

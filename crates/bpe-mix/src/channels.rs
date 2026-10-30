@@ -120,7 +120,11 @@ fn built_in_fingerprint(choice: &InstrumentChoice, notes: &[&Note], frames: usiz
 /// What a patch channel's render depends on; the graph already carries the module's macros.
 fn patch_fingerprint(choice: &InstrumentChoice, notes: &[PlayNote], spb: f32, frames: usize) -> u64 {
     let mut h = DefaultHasher::new();
-    format!("{choice:?}").hash(&mut h);
+    // Only what sounds: moving a block or renaming the patch keeps the render.
+    if let InstrumentChoice::Patch { graph, voices, .. } = choice {
+        bpe_synth::sound_key(graph).hash(&mut h);
+        format!("{voices:?}").hash(&mut h);
+    }
     (spb.to_bits(), frames).hash(&mut h);
     for n in notes {
         hash_note(&mut h, n.frame, n.key, n.velocity, n.left, n.right);
@@ -335,6 +339,21 @@ mod tests {
         notes.retain(|n| n.channel == 3);
         render(&s, &notes, 96_000, &mut cache);
         assert_eq!(cache.0.len(), 1);
+    }
+
+    #[test]
+    fn moving_a_block_keeps_the_cached_channel() {
+        let (mut s, notes) = two_channels();
+        let mut cache = ChannelCache::default();
+        render(&s, &notes, 96_000, &mut cache);
+        if let Some(LibraryInstrument { source: InstrumentSource::Patch { graph }, name, .. }) =
+            s.instruments.get_mut(&InstrumentId(0))
+        {
+            graph.nodes[0].pos = [500.0, 500.0];
+            graph.notes.push(bpe_graph::Note { text: "hi".into(), ..Default::default() });
+            *name = "Renamed".into();
+        }
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 0);
     }
 
     #[test]

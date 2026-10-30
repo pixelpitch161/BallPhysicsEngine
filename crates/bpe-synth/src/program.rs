@@ -162,6 +162,13 @@ impl Patch {
     }
 }
 
+/// Everything about a patch graph that changes how it sounds, as text to hash: its blocks,
+/// knobs, exposed macros and wires, but not where blocks sit, its notes or its name.
+pub fn sound_key(graph: &Graph) -> String {
+    let nodes: Vec<_> = graph.nodes.iter().map(|n| (n.id, &n.kind, &n.params, n.enabled, &n.exposed)).collect();
+    format!("{:?} {:?} {}", nodes, graph.links, graph.enabled)
+}
+
 /// One exposed knob of a patch, shown on the module card as a slider.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MacroKnob {
