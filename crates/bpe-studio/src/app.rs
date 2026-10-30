@@ -5,6 +5,7 @@ use crate::batch_window::{self, BatchWindow};
 use crate::dice::RandomizeWindow;
 use crate::explorer::{self, Explorer};
 use crate::export_window::ExportWindow;
+use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::library::LibraryWindow;
@@ -103,6 +104,10 @@ pub struct Studio {
     pub shader_problem: Option<String>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
+    /// The editor's grid over the preview and whether drags snap to it.
+    pub grid: Grid,
+    /// Remember grid changes in the settings folder (off without a window, in tests).
+    persist_grid: bool,
     /// The soundtrack no longer matches the scene.
     pub sound_dirty: bool,
     /// The speakers, when there are any.
@@ -133,6 +138,8 @@ impl Studio {
         }
         studio.panels.explorer.weights = settings::load_weights();
         studio.panels.explorer.persist = true;
+        studio.grid = Grid::load();
+        studio.persist_grid = true;
         match scene_path {
             Some(path) => _ = studio.open_path(&path),
             None => {
@@ -172,6 +179,8 @@ impl Studio {
             shader_problem: None,
             confirm: None,
             panels: Panels::default(),
+            grid: Grid::default(),
+            persist_grid: false,
             sound_dirty: true,
             audio: None,
             audio_error: None,
@@ -608,7 +617,9 @@ impl Studio {
                 self.clicked = Some(ToolbarClick::Batch);
             }
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(200.0).hint_text("Scene name"))
+            self.grid_controls(ui);
+            ui.separator();
+            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(150.0).hint_text("Scene name"))
                 .on_hover_text("The scene's name. Exported videos are named after it.");
             let saved_label = match (&self.path, self.unsaved()) {
                 (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
@@ -632,6 +643,32 @@ impl Studio {
                 }
             });
         });
+    }
+
+    /// The grid buttons: show the lines, snap drags to them, and the size of one square.
+    fn grid_controls(&mut self, ui: &mut egui::Ui) {
+        let before = self.grid;
+        let grid = ui
+            .add(egui::Button::selectable(self.grid.show, "Grid"))
+            .on_hover_text("Show grid lines over the preview. They never show in the video.");
+        if grid.clicked() {
+            self.grid.show = !self.grid.show;
+        }
+        if ui
+            .add(egui::Button::selectable(self.grid.snap, "Snap"))
+            .on_hover_text("Drags land on the grid: moving, resizing the arena and aiming. Hold Alt to place freely.")
+            .clicked()
+        {
+            self.grid.snap = !self.grid.snap;
+        }
+        ui.add(
+            egui::DragValue::new(&mut self.grid.spacing).range(grid::SPACING).speed(1.0).max_decimals(0).suffix(" px"),
+        )
+        .labelled_by(grid.id)
+        .on_hover_text("The size of one grid square, in video pixels");
+        if self.grid != before && self.persist_grid {
+            self.grid.save();
+        }
     }
 
     fn status_line(&mut self, ui: &mut egui::Ui) {
