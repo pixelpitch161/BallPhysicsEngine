@@ -14,7 +14,7 @@ pub struct SwarmLook {
     /// How much light each point gives.
     #[setting(label = "Brightness", range(0, 2), simple, keyframe, random, pulse)]
     pub brightness: f32,
-    /// The points' colours: slow points take the first and points at the top speed the last;
+    /// The points' colours: slow points take the first and points at the span's speed the last;
     /// or each takes the colour of the ball nearest to it, a place along the colours at random
     /// (Order), its place, or the time or the beat.
     #[setting(paint, label = "Colours", prefix = "", follows = "speed|nearest_ball|place|order|time|beat", simple)]
@@ -33,6 +33,8 @@ impl Default for SwarmLook {
                     Color::rgb(0xff, 0xf2, 0xc0),
                 ]),
                 follow: Follow::Speed,
+                // The default flocking's top speed: the fastest points take the last colour.
+                span: 260.0,
                 ..Paint::default()
             },
         }

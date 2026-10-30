@@ -63,7 +63,8 @@ fn vs_splat(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     q = q * c.z;
     out.pos = vec4<f32>(q.x * surface.view.x, -q.y * surface.view.y, 0.0, 1.0);
     out.local = corner;
-    out.speed = length(particles[ii].zw) / max(surface.place.y, 1e-3);
+    // Capped, so the weighted sum cannot overflow a half float however small the span.
+    out.speed = min(length(particles[ii].zw) / max(surface.place.y, 1e-3), 64.0);
     return out;
 }
 

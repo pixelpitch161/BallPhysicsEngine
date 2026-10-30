@@ -1139,6 +1139,8 @@ fn fireflies(reg: &Registry) -> Scene {
                 Color::rgb(0x40, 0xc8, 0xff),
             ]),
             follow: Follow::Order,
+            // Its flocking's top speed, should it follow speed.
+            span: Flocking::default().top_speed,
             ..Paint::default()
         },
         ..SwarmLook::default()

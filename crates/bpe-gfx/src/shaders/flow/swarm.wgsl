@@ -26,7 +26,7 @@ struct Params {
     // The paint, as `PaintGpu`'s fields in order.
     paint_a: vec4<f32>,
     paint_b: vec4<f32>,
-    // x: direction in degrees, y: span, zw: centre
+    // x: direction in degrees, y: span (also of a speed), zw: centre
     place: vec4<f32>,
 };
 

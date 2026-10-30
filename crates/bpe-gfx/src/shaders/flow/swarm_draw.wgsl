@@ -22,7 +22,7 @@ struct Params {
     // The paint, as `PaintGpu`'s fields in order.
     paint_a: vec4<f32>,
     paint_b: vec4<f32>,
-    // x: direction in degrees, y: span, zw: centre
+    // x: direction in degrees, y: span (also of a speed), zw: centre
     place: vec4<f32>,
 };
 
@@ -75,7 +75,7 @@ fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     let place = draw_params.place;
     switch draw_params.look.x {
         case 0u: {
-            color = draw_gradient(length(point.zw) / max(draw_params.motion.x, 1.0));
+            color = draw_gradient(length(point.zw) / max(place.y, 1e-3));
         }
         case 1u: {
             let tint = draw_tints[ii];

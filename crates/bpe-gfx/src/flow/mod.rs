@@ -554,7 +554,8 @@ mod tests {
                 brightness: 0.25,
                 follow: 0,
                 paint: crate::PaintGpu::default(),
-                place: [0.0; 4],
+                // The top speed below reaches the end of the colours.
+                place: [0.0, 260.0, 0.0, 0.0],
                 color: [1.0; 4],
             },
             motion: Flock {
@@ -1082,5 +1083,49 @@ mod tests {
         // Slow points are redder, fast ones greener: both show.
         assert!(lit.iter().any(|p| p[0] > p[1] + 40), "some slow red points");
         assert!(lit.iter().any(|p| p[1] > p[0] + 40), "some fast green points");
+    }
+
+    #[test]
+    fn swarm_speed_runs_over_the_span() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut renderer = Renderer::new(&device, 270, 480);
+        // How many lit pixels are mostly red (slow) and mostly green (fast) with this span.
+        let mut tally = |span: f32| {
+            let mut frame = Frame { time: 0.5, bloom: 0.0, ..Frame::default() };
+            let mut layer = swarm_layer(ThingId(1));
+            layer.count = 20_000;
+            layer.look.brightness = 0.15;
+            layer.look.size = 2.0;
+            layer.look.paint =
+                paint_of(&mut frame, &[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0)]);
+            layer.look.place = [0.0, span, 0.0, 0.0];
+            frame.swarms.push(layer);
+            renderer.render_with_flow(&device, &queue, &frame, &source);
+            let pixels = renderer.read_output(&device, &queue).unwrap();
+            let lit: Vec<&[u8]> = pixels.chunks(4).filter(|p| p[0] > 60 || p[1] > 60).collect();
+            let red = lit.iter().filter(|p| p[0] as i32 > p[1] as i32 + 40).count();
+            let green = lit.iter().filter(|p| p[1] as i32 > p[0] as i32 + 40).count();
+            (red, green, lit.len())
+        };
+        let (red, green, lit) = tally(130.0);
+        assert!(red > 50 && green > 50, "{red} red, {green} green of {lit}");
+        // Twice the span halves every point's place: more red, less green.
+        let (red2, green2, _) = tally(260.0);
+        assert!(red2 > red && green2 < green, "{red} -> {red2} red, {green} -> {green2} green");
+        // Far past the fastest point, everything is the first colour; far below it, the last.
+        let (_, green_far, lit_far) = tally(1e6);
+        assert_eq!(green_far, 0, "{lit_far} lit");
+        let (red_near, _, lit_near) = tally(1.0);
+        assert_eq!(red_near, 0, "{lit_near} lit");
     }
 }

@@ -269,7 +269,7 @@ pub struct SwarmLook {
     /// Point size in world pixels.
     pub size: f32,
     pub brightness: f32,
-    /// What picks a point's place along `paint`: 0 its speed over the top speed, 1 the nearest
+    /// What picks a point's place along `paint`: 0 its speed over `place`'s span, 1 the nearest
     /// ball (the ball's colour, not the paint), 2 a place at random for each point, 3 its place
     /// along a direction, 4 its distance from a centre (both from `place`). 5 paints every point
     /// `color`.
@@ -277,7 +277,8 @@ pub struct SwarmLook {
     /// The gradient the points take their colour from; only its row, start, steps and repeat
     /// are read.
     pub paint: PaintGpu,
-    /// Where a place runs in world pixels: the direction in degrees, the span, the centre.
+    /// Where a place runs in world pixels: the direction in degrees, the span, the centre. The
+    /// span is also the speed that reaches the end of the colours.
     pub place: [f32; 4],
     /// Linear light: every point's colour for follow 5, and a point's colour before it has a
     /// nearest ball.

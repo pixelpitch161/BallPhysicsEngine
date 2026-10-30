@@ -13,7 +13,8 @@ use crate::paint::{Follow, Inputs, Paint, PlaceShape, beats_at, colour_at};
 /// `SwarmLook::follow` for every point in one colour.
 const ONE_COLOUR: u32 = 5;
 
-/// How the swarm's points are painted with `p`: its follow, paint, place and one colour. Speed,
+/// How the swarm's points are painted with `p`: its follow, paint, place and one colour. Speed
+/// (over the paint's span),
 /// order and place are worked out per point on the GPU and the nearest ball by the swarm's
 /// step; a single stop, the time and the beat give every point one colour, worked out here.
 fn swarm_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, PaintGpu, [f32; 4], [f32; 4]) {
@@ -28,7 +29,11 @@ fn swarm_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, Paint
     }
     let mut along = |follow| (follow, along_gpu(p, time, atlas), place_in_world(p, &cx.world.camera), first);
     match p.follow {
-        Follow::Speed => along(0),
+        // A speed's span is never measured on the screen.
+        Follow::Speed => {
+            let span = if p.span.is_finite() { p.span.max(1e-3) } else { 1e-3 };
+            (0, along_gpu(p, time, atlas), [0.0, span, 0.0, 0.0], first)
+        }
         Follow::Order => along(2),
         Follow::Place if p.shape == PlaceShape::Centre => along(4),
         Follow::Place => along(3),
@@ -143,11 +148,12 @@ mod tests {
         };
         let two = Gradient::even(&[red, blue]);
         let follow = |frame: &Frame| frame.swarms[0].look.follow;
-        assert_eq!(follow(&draw("speed", two.clone())), 0);
+        let frame = draw("speed", two.clone());
+        assert_eq!((follow(&frame), frame.swarms[0].look.place[1]), (0, 260.0), "the speed of the last colour");
         assert_eq!(follow(&draw("order", two.clone())), 2);
         let frame = draw("place", two.clone());
         assert_eq!(follow(&frame), 4, "a place measured from a centre");
-        assert_eq!(frame.swarms[0].look.place, [90.0, 1920.0, 10.0, 20.0]);
+        assert_eq!(frame.swarms[0].look.place, [90.0, 260.0, 10.0, 20.0]);
         let frame = draw("nearest_ball", two.clone());
         assert_eq!((follow(&frame), frame.swarms[0].look.color), (1, red.to_linear()));
         assert!(frame.gradients.is_empty(), "the nearest ball paints with the ball's colour");
