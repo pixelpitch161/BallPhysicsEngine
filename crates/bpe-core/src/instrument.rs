@@ -17,11 +17,24 @@ pub struct Instrument {
     pub name: String,
     pub source: InstrumentSource,
     pub voices: VoiceSettings,
+    /// Its own effects, run once over all its voices on a channel. No blocks passes the sound
+    /// through.
+    #[serde(skip_serializing_if = "no_blocks")]
+    pub fx: bpe_graph::Graph,
+}
+
+fn no_blocks(g: &bpe_graph::Graph) -> bool {
+    g.nodes.is_empty()
 }
 
 impl Default for Instrument {
     fn default() -> Self {
-        Self { name: "Pluck".into(), source: InstrumentSource::default(), voices: VoiceSettings::default() }
+        Self {
+            name: "Pluck".into(),
+            source: InstrumentSource::default(),
+            voices: VoiceSettings::default(),
+            fx: bpe_graph::Graph::default(),
+        }
     }
 }
 
@@ -128,6 +141,7 @@ mod tests {
             name: "Bell".into(),
             source: InstrumentSource::Patch { graph },
             voices: VoiceSettings { note_length: NoteLength::Seconds(0.5), mono: true, ..VoiceSettings::default() },
+            fx: bpe_graph::Graph::default(),
         };
         let text = ron::to_string(&i).unwrap();
         assert_eq!(ron::from_str::<Instrument>(&text).unwrap(), i);

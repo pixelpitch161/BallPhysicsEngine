@@ -58,6 +58,9 @@ pub struct NoteSound {
     /// How loud these notes are.
     #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
+    /// Where the channel sits from left (-1) to right (1), on top of each hit's own place.
+    #[setting(label = "Pan", range(-1, 1), keyframe)]
+    pub pan: f32,
     /// The lowest MIDI note a hit may play.
     #[setting(label = "Lowest note", range(0, 127), simple)]
     pub low_note: u32,
@@ -109,6 +112,7 @@ impl Default for NoteSound {
         Self {
             instrument: InstrumentRef(None),
             volume: 0.0,
+            pan: 0.0,
             low_note: 48,
             high_note: 84,
             chords: ProgressionRef(None),

@@ -33,7 +33,7 @@ pub fn choice(scene: &Scene, id: Option<InstrumentId>, module: Option<ModuleId>)
 #[derive(Debug, Clone, PartialEq)]
 pub enum InstrumentEdit {
     /// The library instrument changed: its knobs, voices or patch.
-    Set(InstrumentId, Instrument),
+    Set(InstrumentId, Box<Instrument>),
     /// The module's own value for a macro, or `None` to follow the instrument again.
     Macro(String, Option<f32>),
     /// "Edit patch" was pressed: the node panel should open on this patch.
@@ -118,10 +118,10 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
                                     }
                                     edits.push(InstrumentEdit::Set(
                                         id,
-                                        Instrument {
+                                        Box::new(Instrument {
                                             source: InstrumentSource::Patch { graph: g },
                                             ..instrument.clone()
-                                        },
+                                        }),
                                     ));
                                     edits.push(InstrumentEdit::Macro(key.clone(), None));
                                     ui.close();
@@ -138,7 +138,7 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
             changed |= voices(ui, &mut i.voices, matches!(i.source, InstrumentSource::Patch { .. }));
         });
         if changed {
-            edits.push(InstrumentEdit::Set(id, i));
+            edits.push(InstrumentEdit::Set(id, Box::new(i)));
         }
     });
     edits

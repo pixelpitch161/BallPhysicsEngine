@@ -300,6 +300,7 @@ mod tests {
             name: name.into(),
             source: InstrumentSource::Patch { graph },
             voices: VoiceSettings { note_length: NoteLength::Seconds(0.2), ..VoiceSettings::default() },
+            fx: bpe_graph::Graph::default(),
         }
     }
 

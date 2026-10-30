@@ -19,7 +19,7 @@ use std::path::Path;
 
 use bpe_core::{
     Animation, Inputs, InstrumentId, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef,
-    Resolved, SlotId, Target, ThingId,
+    Resolved, SlotId, Target, ThingId, Value,
 };
 use bpe_runtime::{Event, Log};
 
@@ -293,7 +293,10 @@ pub fn notes_with(
         let graph = library.modules.get(&slot.module).and_then(|m| m.graph.as_ref());
         let first = notes.len();
         match animation.filter(|_| animated.contains(id)) {
-            None => m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes),
+            None => {
+                m.notes_with(&slot.params, graph, *id, &events, &cx, &mut notes);
+                pan_notes(&mut notes[first..], &slot.params);
+            }
             Some(animation) => {
                 let mut copy = resolved.clone();
                 let mut start = 0;
@@ -302,7 +305,10 @@ pub fn notes_with(
                     let end = start + events[start..].partition_point(|e| e.step < first + window);
                     animation.apply(&mut copy, first as f64 / rate as f64, &Inputs::NONE);
                     let params = copy.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound)).map(|s| &s.params);
-                    m.notes_with(params.unwrap_or(&slot.params), graph, *id, &events[start..end], &cx, &mut notes);
+                    let params = params.unwrap_or(&slot.params);
+                    let from = notes.len();
+                    m.notes_with(params, graph, *id, &events[start..end], &cx, &mut notes);
+                    pan_notes(&mut notes[from..], params);
                     start = end;
                 }
             }
@@ -313,6 +319,21 @@ pub fn notes_with(
     }
     notes.retain(|n| n.frame < frames);
     notes
+}
+
+/// Moves notes by their module's Pan setting, from left (-1) to right (1), with constant power
+/// around where each already sits.
+fn pan_notes(notes: &mut [Note], params: &Params) {
+    let pan = match params.get("pan") {
+        Some(Value::Number(p)) if *p != 0.0 => *p as f32,
+        _ => return,
+    };
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    let (l, r) = (angle.cos() * std::f32::consts::SQRT_2, angle.sin() * std::f32::consts::SQRT_2);
+    for n in notes {
+        n.left *= l;
+        n.right *= r;
+    }
 }
 
 /// [`mix`], with the scene's library, keyframed Sound settings and the video's time warp.
@@ -357,7 +378,7 @@ pub fn mix_cached(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use bpe_core::{Address, Ease, Owner, Scene, Value, resolve, testkit};
+    use bpe_core::{Address, Ease, Owner, Scene, resolve, testkit};
     use bpe_runtime::{EventKind, Party};
 
     /// Plays middle C on every event, as loud as its "volume" setting says.
@@ -456,6 +477,21 @@ pub(crate) mod tests {
         let track = mix_with(&settings(), &resolved, &Library::default(), &log, &mixes, Some(&animation), &|t| t);
         assert_eq!(track.frames(), 5 * 48_000);
         assert!(track.samples[48_000 * 2..49_000 * 2].iter().any(|s| s.abs() > 0.0));
+    }
+
+    #[test]
+    fn pan_moves_a_note() {
+        let (reg, mut scene, _) = plucking_scene();
+        let pluck = *scene.library.modules.keys().next().unwrap();
+        scene.library.modules.get_mut(&pluck).unwrap().params.set("pan", Value::Number(-1.0));
+        let resolved = resolve(&scene, &reg);
+        let mut mixes = Mixes::default();
+        mixes.add(TestPluck);
+        let mut log = Log::default();
+        log.push(hit(240));
+        let notes = notes_with(&settings(), &resolved, &Library::default(), &log, &mixes, None, &|t| t);
+        assert!(notes[0].right.abs() < 1e-6, "{}", notes[0].right);
+        assert!((notes[0].left - std::f32::consts::SQRT_2).abs() < 1e-4, "{}", notes[0].left);
     }
 
     #[test]

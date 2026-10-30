@@ -20,6 +20,9 @@ pub struct MelodySound {
     pub instrument: InstrumentRef,
     #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
+    /// Where the channel sits from left (-1) to right (1), on top of each hit's own place.
+    #[setting(label = "Pan", range(-1, 1), keyframe)]
+    pub pan: f32,
     /// Semitones up or down.
     #[setting(label = "Transpose", range(-24, 24), unit = "semitones", simple)]
     pub transpose: i32,
@@ -49,6 +52,7 @@ impl Default for MelodySound {
             file: "builtin:twinkle".into(),
             instrument: InstrumentRef(None),
             volume: 0.0,
+            pan: 0.0,
             transpose: 0,
             track: 0,
             chords: true,

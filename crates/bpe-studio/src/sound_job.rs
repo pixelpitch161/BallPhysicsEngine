@@ -226,6 +226,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "Patch".into(),
             source: bpe_core::InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
@@ -284,6 +285,7 @@ mod tests {
         let mut graph = bpe_synth::blank_patch();
         graph.nodes.retain(|n| n.kind != "voice_out");
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "Broken".into(),
             source: bpe_core::InstrumentSource::Patch { graph },
             voices: Default::default(),

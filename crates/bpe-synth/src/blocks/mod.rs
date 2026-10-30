@@ -25,7 +25,7 @@ pub use chorus::Chorus;
 pub use crush::Bitcrush;
 pub use delay::Delay;
 pub use drive::Drive;
-pub use dynamics::{Clipper, Compressor, Limiter, Oversampler4, TruePeakLimiter, true_peak};
+pub use dynamics::{Clipper, Compressor, Limiter, OVERSAMPLE_DELAY, Oversampler4, TruePeakLimiter, true_peak};
 pub use eq::Equaliser;
 pub use filter::Svf;
 pub use ladder::Ladder;

@@ -1035,7 +1035,7 @@ fn instrument_section(
         };
         for edit in crate::instruments::show(ui, scene, module, iid) {
             match edit {
-                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, instrument)),
+                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, *instrument)),
                 InstrumentEdit::Macro(key, value) => edits.push(Edit::Macro(module, key, value)),
                 InstrumentEdit::EditPatch(i) => *patch_request = Some(i),
             }
@@ -1118,6 +1118,7 @@ fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: Thing
     let starters = || bpe_synth::starters();
     let made = match pick {
         NEW_PATCH => Some(scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "New patch".into(),
             source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
@@ -1135,6 +1136,7 @@ fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: Thing
             let all = starters();
             all.into_iter().nth((STARTER_BASE - p) as usize).map(|(name, graph, voices)| {
                 scene.add_instrument(bpe_core::Instrument {
+                    fx: Default::default(),
                     name: name.into(),
                     source: InstrumentSource::Patch { graph },
                     voices,
@@ -1864,6 +1866,9 @@ mod tests {
         assert!(h.query_by_label("New progression").is_some());
         h.key_press(egui::Key::Escape);
         h.run();
+        let module_chords = h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap();
+        module_chords.scroll_to_me();
+        h.run();
         h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap().click();
         h.run();
         assert!(h.query_by_label("Scene's").is_some());
@@ -1986,6 +1991,7 @@ mod tests {
         let (name, graph, voices) = bpe_synth::starters().into_iter().next().unwrap();
         let knob = bpe_synth::macros(&graph).into_iter().next().expect("a starter has macros");
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: name.into(),
             source: InstrumentSource::Patch { graph },
             voices,

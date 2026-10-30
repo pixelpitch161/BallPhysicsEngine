@@ -23,6 +23,17 @@ pub enum BeatSync {
     Warp,
 }
 
+/// The master stage's clipper.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Clip {
+    #[default]
+    Off,
+    /// Rounds the peaks off.
+    Soft,
+    /// Cuts the peaks flat.
+    Hard,
+}
+
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SceneSettings {
     /// How long the video runs.
@@ -59,9 +70,25 @@ pub struct SceneSettings {
     /// How bright the whole picture is.
     #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse)]
     pub exposure: f32,
-    /// How loud the finished soundtrack is.
-    #[setting(label = "Loudness", range(-30, -6), unit = "dB", group = "Sound")]
+    /// How loud the finished soundtrack is, measured as real loudness (LUFS). -14 is the usual
+    /// level for TikTok, Reels and Shorts.
+    #[setting(label = "Loudness", range(-30, -6), unit = "LUFS", group = "Master")]
     pub loudness: f32,
+    /// Shaves the peaks off before the limiter, for a louder, harder sound.
+    #[setting(label = "Clipper", group = "Master")]
+    pub clipper: Clip,
+    /// How hard the clipper is pushed.
+    #[setting(label = "Clipper drive", range(0, 24), unit = "dB", when = "clipper=soft|hard", group = "Master")]
+    pub clip_drive: f32,
+    /// The loudest the soundtrack ever gets, between samples too.
+    #[setting(label = "Ceiling", range(-6, 0), unit = "dBTP", group = "Master")]
+    pub ceiling: f32,
+    /// Lets the limiter recover slower on dense music and faster on sparse hits.
+    #[setting(label = "Auto release", group = "Master")]
+    pub auto_release: bool,
+    /// How fast the limiter recovers.
+    #[setting(label = "Release", range(10, 1000), unit = "ms", when = "!auto_release", group = "Master")]
+    pub release: f32,
     /// Which of the chord's notes each hit picks. Change it for a different tune.
     #[setting(label = "Seed", range(0, 1000000), group = "Sound", random)]
     pub seed: u32,
@@ -111,6 +138,11 @@ impl Default for SceneSettings {
             steps_per_second: 240,
             exposure: 1.0,
             loudness: -14.0,
+            clipper: Clip::Off,
+            clip_drive: 0.0,
+            ceiling: -1.0,
+            auto_release: true,
+            release: 100.0,
             seed: 1,
             song: String::new(),
             song_offset: 0.0,

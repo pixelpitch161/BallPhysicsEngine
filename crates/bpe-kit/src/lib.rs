@@ -243,6 +243,22 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     }
 }
 
+/// The two return buses a new scene starts with: "Reverb" and a quarter-note ping-pong "Delay",
+/// each fully wet.
+pub fn add_starter_buses(library: &mut bpe_core::Library) {
+    use bpe_graph::Param;
+    let wet = |kind: &str, extra: &[(&str, Param)]| {
+        let mut knobs: std::collections::BTreeMap<String, Param> = [("mix".to_string(), Param::Number(1.0))].into();
+        knobs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        bpe_synth::chain_graph(&[(kind.to_string(), knobs, true)])
+    };
+    library.add_bus("Reverb", wet("reverb", &[]));
+    library.add_bus(
+        "Delay",
+        wet("delay", &[("time_mode", Param::Choice("1/4".into())), ("ping_pong", Param::Bool(true))]),
+    );
+}
+
 /// A library instrument that plays the built-in `which`, named after it. The pluck gets the
 /// decay and brightness it always had.
 pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
@@ -253,7 +269,7 @@ pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
     bpe_core::Instrument {
         name: which.label().into(),
         source: bpe_core::InstrumentSource::BuiltIn { which: bpe_core::Choice::name(which).into(), knobs },
-        voices: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -338,6 +354,7 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
     let sound = scene.add_module(reg, "sound.notes", "Default sound").expect("kit kinds are registered");
     let pluck = scene.add_instrument(built_in_instrument(bpe_mix::Instrument::Pluck));
+    add_starter_buses(&mut scene.library);
     scene
         .library
         .modules
@@ -389,6 +406,18 @@ mod tests {
     use super::*;
     use bpe_core::{Color, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn new_scenes_have_reverb_and_delay_buses() {
+        let scene = new_scene(&registry());
+        let names: Vec<&str> = scene.library.buses.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Reverb", "Delay"]);
+        let kinds = |g: &bpe_graph::Graph| -> Vec<String> {
+            bpe_synth::straight_chain(g).unwrap().iter().map(|id| g.node(*id).unwrap().kind.clone()).collect()
+        };
+        assert_eq!(kinds(&scene.library.buses[0].fx), ["reverb"]);
+        assert_eq!(kinds(&scene.library.buses[1].fx), ["delay"]);
+    }
 
     #[test]
     fn a_new_scene_owns_a_starter_progression() {

@@ -701,6 +701,7 @@ mod tests {
     fn patch_scene() -> (Scene, bpe_core::InstrumentId) {
         let mut scene = new_scene();
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "Test patch".into(),
             source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
