@@ -48,7 +48,8 @@ pub fn compile(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
     let outs: Vec<u32> = graph.nodes.iter().filter(|n| n.kind == "voice_out").map(|n| n.id).collect();
     if outs.len() != 1 {
         let message = if outs.is_empty() { "Add a Voice out block" } else { "Use only one Voice out block" };
-        problems.push(Diagnostic { node: outs.get(1).copied(), link: None, message: message.into() });
+        // First, since it's the one to fix first.
+        problems.insert(0, Diagnostic { node: outs.get(1).copied(), link: None, message: message.into() });
     }
     if !problems.is_empty() {
         return Err(problems);
