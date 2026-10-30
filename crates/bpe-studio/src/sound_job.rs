@@ -137,6 +137,7 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) 
     let settings =
         resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     let mut world = World::build(scene, resolved, &kit.sims);
+    world.record_tracks = bpe_kit::uses_live_inputs(scene);
     let mut log = Log::default();
     world.advance_to(settings.duration.max(0.0) as f64, &kit.sims, &mut log);
     let rate = world.steps_per_second;

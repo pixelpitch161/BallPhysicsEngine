@@ -2,6 +2,7 @@
 //! beat sync by time warp.
 
 pub mod beats;
+pub mod physics;
 pub mod song_mix;
 pub mod warp;
 
@@ -13,6 +14,7 @@ use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_music::AudioFeatures;
 use bpe_runtime::{EventKind, Log};
 
+pub use physics::{physics_inputs, uses_live_inputs};
 pub use beats::{DEFAULT_BPM, bands_of, beat_grid, distance_to_beat, on_beat_share, subdivided};
 pub use song_mix::mix_in;
 pub use warp::TimeWarp;

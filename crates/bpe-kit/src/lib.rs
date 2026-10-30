@@ -53,7 +53,7 @@ pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
 pub use music::{
-    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
+    Song, SongState, TimeWarp, beats_for, physics_inputs, uses_live_inputs, forget_song, load_song, load_song_in_background, wants_beats, warp_for,
 };
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
@@ -318,7 +318,7 @@ pub fn mix_scene_cached(
     let warp = warp_for(scene, resolved, log);
     let settings = mix_settings(scene, resolved);
     let video_time = |t| warp.video_time(t);
-    let physics = bpe_mix::PhysicsInputs::default();
+    let physics = music::physics_inputs(scene, resolved, log, &settings, &video_time);
     let mut track = bpe_mix::mix_premaster(
         &settings,
         resolved,
