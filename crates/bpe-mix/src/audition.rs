@@ -11,8 +11,23 @@ const RING: f64 = 0.25;
 /// The chords one after another from the start, each held for its beats: interleaved stereo at
 /// [`SAMPLE_RATE`]. Each chord is voiced from C3 up to C5, with its bass doubled an octave down.
 pub fn audition(chords: &[Chord], instrument: &InstrumentChoice, seconds_per_beat: f64) -> Vec<f32> {
+    let steps: Vec<(Vec<u8>, f64)> = chords
+        .iter()
+        .map(|c| {
+            let mut keys = voicing(c, 48, 72, 1);
+            if let Some(&bass) = keys.first() {
+                keys.push(bass.saturating_sub(12));
+            }
+            (keys, c.beats as f64 * seconds_per_beat)
+        })
+        .collect();
+    audition_keys(&steps, instrument, seconds_per_beat)
+}
+
+/// Each step's keys sounded together for its seconds, one step after another from the start.
+pub fn audition_keys(steps: &[(Vec<u8>, f64)], instrument: &InstrumentChoice, seconds_per_beat: f64) -> Vec<f32> {
     let rate = SAMPLE_RATE as f64;
-    let total: f64 = chords.iter().map(|c| c.beats as f64 * seconds_per_beat).sum();
+    let total: f64 = steps.iter().map(|(_, length)| length).sum();
     let len = ((total + RING) * rate).ceil() as usize;
     let mut out = vec![0.0f32; len * 2];
     let program = match instrument {
@@ -20,12 +35,8 @@ pub fn audition(chords: &[Chord], instrument: &InstrumentChoice, seconds_per_bea
         InstrumentChoice::BuiltIn { .. } => None,
     };
     let mut start = 0.0;
-    for c in chords {
-        let length = c.beats as f64 * seconds_per_beat;
-        let mut keys = voicing(c, 48, 72, 1);
-        if let Some(&bass) = keys.first() {
-            keys.push(bass.saturating_sub(12));
-        }
+    for (keys, length) in steps {
+        let length = *length;
         let from = (start * rate) as usize;
         let frames = ((length + RING) * rate) as usize;
         let fade = (RING * rate) as usize;
@@ -39,7 +50,7 @@ pub fn audition(chords: &[Chord], instrument: &InstrumentChoice, seconds_per_bea
         };
         match (instrument, &program) {
             (InstrumentChoice::BuiltIn { which, decay, brightness }, _) => {
-                for &key in &keys {
+                for &key in keys {
                     let wave = which.render(key, 0.7, *decay, *brightness);
                     for (i, s) in wave.iter().take(frames).enumerate() {
                         if !place(&mut out, i, *s, *s) {
@@ -81,6 +92,22 @@ mod tests {
         let chords =
             [Chord::new(0, Quality::Major, Extension::Triad, 1), Chord::new(7, Quality::Major, Extension::Triad, 1)];
         audition(&chords, instrument, 0.5)
+    }
+
+    #[test]
+    fn one_key_sounds_at_its_pitch() {
+        // A4 through a plain patch: the clip crosses zero about 440 times a second.
+        let patch = InstrumentChoice::Patch {
+            name: "Patch".into(),
+            graph: bpe_synth::blank_patch(),
+            voices: VoiceSettings::default(),
+        };
+        let clip = audition_keys(&[(vec![69], 0.5)], &patch, 0.5);
+        let rate = SAMPLE_RATE as usize;
+        let left: Vec<f32> = clip.iter().step_by(2).copied().collect();
+        let window = &left[rate / 10..rate / 10 + rate / 5];
+        let crossings = window.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32 * 5.0;
+        assert!((crossings - 440.0).abs() < 30.0, "{crossings} Hz");
     }
 
     #[test]

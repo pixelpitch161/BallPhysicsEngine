@@ -41,6 +41,8 @@ pub struct Inspector {
     pub clip: Option<ChordClip>,
     /// A card's "Edit patch" was pressed: the node panel should open on this patch.
     pub patch_request: Option<InstrumentId>,
+    /// The keyboard strip's octave, once one is shown (C4 at first).
+    pub octave: Option<i8>,
 }
 
 /// A card's Nodes button.
@@ -526,7 +528,20 @@ pub fn show(
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
-                        instrument_section(ui, scene, defs, &get, module, &mut edits, &mut inspector.patch_request);
+                        let octave = inspector.octave.get_or_insert(4);
+                        if let Some(key) = instrument_section(
+                            ui,
+                            scene,
+                            defs,
+                            &get,
+                            module,
+                            &mut edits,
+                            &mut inspector.patch_request,
+                            octave,
+                        ) {
+                            let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
+                            inspector.clip = Some(ChordClip { key: Some(key), ..clip });
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
                         }
@@ -564,7 +579,20 @@ pub fn show(
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
-                        instrument_section(ui, scene, defs, &get, module, &mut edits, &mut inspector.patch_request);
+                        let octave = inspector.octave.get_or_insert(4);
+                        if let Some(key) = instrument_section(
+                            ui,
+                            scene,
+                            defs,
+                            &get,
+                            module,
+                            &mut edits,
+                            &mut inspector.patch_request,
+                            octave,
+                        ) {
+                            let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
+                            inspector.clip = Some(ChordClip { key: Some(key), ..clip });
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
                         }
@@ -986,7 +1014,9 @@ fn chord_editor(
 }
 
 /// Under a card with an Instrument setting: the section for the instrument it picks, or a line
-/// saying it plays Scene defaults' one.
+/// saying it plays Scene defaults' one, then the keyboard strip to hear it. A key pressed on the
+/// strip comes back.
+#[allow(clippy::too_many_arguments)]
 fn instrument_section(
     ui: &mut Ui,
     scene: &Scene,
@@ -995,7 +1025,9 @@ fn instrument_section(
     module: ModuleId,
     edits: &mut Vec<Edit>,
     patch_request: &mut Option<InstrumentId>,
-) {
+    octave: &mut i8,
+) -> Option<u8> {
+    let mut played = None;
     for def in defs.iter().filter(|d| d.ty == ValueType::Instrument) {
         let picked = InstrumentRef::from_value(&get(def.key)).and_then(|r| r.0);
         let Some(iid) = picked.filter(|i| scene.library.instruments.contains_key(i)) else {
@@ -1014,6 +1046,11 @@ fn instrument_section(
             }
         }
     }
+    if defs.iter().any(|d| d.ty == ValueType::Instrument) {
+        ui.add_space(4.0);
+        played = crate::keyboard::show(ui, octave);
+    }
+    played
 }
 
 /// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
@@ -1027,6 +1064,7 @@ fn chord_clip(
     let id = get("instrument").and_then(|v| InstrumentRef::from_value(&v)).and_then(|r| r.0);
     ChordClip {
         chords,
+        key: None,
         instrument: crate::instruments::choice(scene, id, module),
         seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
     }
@@ -2051,6 +2089,32 @@ mod tests {
         for n in h.get_all_by_role(Role::SpinButton) {
             assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
         }
+    }
+
+    #[test]
+    fn chord_play_uses_a_patch_instrument() {
+        let mut h = harness(Some(ThingId::ROOT));
+        open_instrument_menu(&mut h);
+        let name = bpe_synth::starters()[0].0;
+        h.get_by_label(name).scroll_to_me();
+        h.run();
+        h.get_by_label(name).click();
+        h.run();
+        // A key on the strip plays that one note through the patch.
+        h.get_by_role_and_label(Role::Button, "C4").click();
+        h.run();
+        let clip = h.state_mut().inspector.clip.take().expect("a note to hear");
+        assert_eq!(clip.key, Some(60));
+        assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
+        assert!(clip.render().iter().any(|s| s.abs() > 1e-3), "the patch sounds");
+        // A chord from the lane plays through it too.
+        h.get_by_label("IV\nF").scroll_to_me();
+        h.run();
+        h.get_by_label("IV\nF").click();
+        h.run();
+        let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
+        assert_eq!(clip.key, None);
+        assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
     }
 
     #[test]

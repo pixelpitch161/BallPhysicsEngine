@@ -45,10 +45,12 @@ pub enum Audition {
     All,
 }
 
-/// Chords to hear through a sound module's instrument.
+/// Chords, or one key of the keyboard strip, to hear through a sound module's instrument.
 #[derive(Clone, Debug)]
 pub struct ChordClip {
     pub chords: Vec<Chord>,
+    /// A single key held for a beat, played instead of the chords.
+    pub key: Option<u8>,
     pub instrument: bpe_mix::InstrumentChoice,
     pub seconds_per_beat: f64,
 }
@@ -56,7 +58,12 @@ pub struct ChordClip {
 impl ChordClip {
     /// The clip's samples: interleaved stereo at the mixer's rate.
     pub fn render(&self) -> Vec<f32> {
-        bpe_mix::audition(&self.chords, &self.instrument, self.seconds_per_beat)
+        match self.key {
+            Some(key) => {
+                bpe_mix::audition_keys(&[(vec![key], self.seconds_per_beat)], &self.instrument, self.seconds_per_beat)
+            }
+            None => bpe_mix::audition(&self.chords, &self.instrument, self.seconds_per_beat),
+        }
     }
 }
 

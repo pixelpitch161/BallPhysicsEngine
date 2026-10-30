@@ -23,7 +23,7 @@ use bpe_core::{
 };
 use bpe_runtime::{Event, Log};
 
-pub use audition::audition;
+pub use audition::{audition, audition_keys};
 pub use channels::{InstrumentChoice, VOICE_CAP, instrument_for};
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,

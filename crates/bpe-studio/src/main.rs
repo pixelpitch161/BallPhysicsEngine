@@ -14,6 +14,7 @@ mod grid;
 mod history;
 mod inspector;
 mod instruments;
+mod keyboard;
 mod library;
 mod nodes;
 mod presets;
