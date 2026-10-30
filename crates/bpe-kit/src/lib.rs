@@ -76,7 +76,7 @@ pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::{SceneSim, SceneState};
-pub use things::scene::{BeatSync, SceneKind, SceneSettings};
+pub use things::scene::{BeatSync, Clip, SceneKind, SceneSettings};
 pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
 pub use things::swarm::draw::SwarmDraw;
 pub use things::swarm::sim::{SwarmSim, SwarmState};
@@ -219,7 +219,17 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         progressions: scene.library.progressions.clone(),
         scene_chords: root.chords.0,
         beats: music::chord_beats(&root),
-        loudness: root.loudness,
+        master: bpe_mix::MasterSettings {
+            loudness: root.loudness,
+            clipper: match root.clipper {
+                Clip::Off => bpe_mix::ClipMode::Off,
+                Clip::Soft => bpe_mix::ClipMode::Soft,
+                Clip::Hard => bpe_mix::ClipMode::Hard,
+            },
+            drive_db: root.clip_drive,
+            ceiling_db: root.ceiling,
+            release_ms: (!root.auto_release).then_some(root.release),
+        },
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
         tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),

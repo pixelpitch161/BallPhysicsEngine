@@ -12,6 +12,7 @@ mod channels;
 pub mod chords;
 pub mod instruments;
 pub mod level;
+pub mod master;
 pub mod presets;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +32,7 @@ pub use chords::{
 };
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
+pub use master::{ClipMode, MasterReport, MasterSettings, integrated_lufs, master};
 pub use presets::{PRESETS, Preset, moods};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -42,11 +44,17 @@ pub struct Soundtrack {
     /// What went wrong while playing, in plain sentences for the status line: a patch that
     /// doesn't compile, a voice that made bad samples, a sample file that couldn't be read.
     pub problems: Vec<String>,
+    /// What the master stage measured, once the mix is finished.
+    pub report: Option<MasterReport>,
 }
 
 impl Soundtrack {
     pub fn silent(seconds: f32) -> Self {
-        Self { samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2], problems: Vec::new() }
+        Self {
+            samples: vec![0.0; (seconds.max(0.0) * SAMPLE_RATE as f32) as usize * 2],
+            problems: Vec::new(),
+            report: None,
+        }
     }
 
     pub fn frames(&self) -> usize {
@@ -107,8 +115,8 @@ pub struct MixSettings {
     pub scene_chords: Option<ProgressionId>,
     /// The beat grid in video seconds, which chords are laid on.
     pub beats: Vec<f64>,
-    /// Target loudness in dB.
-    pub loudness: f32,
+    /// How the master stage finishes the mix.
+    pub master: MasterSettings,
     pub seed: u64,
     /// Half the video's width, for panning.
     pub half_width: f32,
@@ -370,8 +378,7 @@ pub fn mix_cached(
     let rendered = channels::render(settings, &notes, track.frames(), cache);
     track.samples = rendered.samples;
     track.problems = rendered.problems;
-    normalize_loudness(&mut track.samples, settings.loudness);
-    limit_peaks(&mut track.samples);
+    track.report = Some(master(&mut track.samples, &settings.master));
     track
 }
 
@@ -428,7 +435,7 @@ pub(crate) mod tests {
             progressions: Default::default(),
             scene_chords: None,
             beats: Vec::new(),
-            loudness: -14.0,
+            master: MasterSettings::default(),
             seed: 1,
             half_width: 540.0,
             tags: Default::default(),

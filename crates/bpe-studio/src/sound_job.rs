@@ -169,7 +169,20 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     }
     if let Some(root) = resolved.things.get(&ThingId::ROOT) {
         let s = SceneSettings::from_params(&root.params);
-        mix(&format!("{:?} {:?} {} {:?} {} {}", s.chords, s.loudness, s.seed, s.duration, s.width, s.height));
+        mix(&format!(
+            "{:?} {:?} {} {:?} {} {} {:?} {} {} {} {}",
+            s.chords,
+            s.loudness,
+            s.seed,
+            s.duration,
+            s.width,
+            s.height,
+            s.clipper,
+            s.clip_drive,
+            s.ceiling,
+            s.auto_release,
+            s.release
+        ));
         mix(&format!(
             "{:?} {} {} {} {} {:?} {} {}",
             s.song, s.song_offset, s.song_volume, s.ducking, s.bpm, s.beat_sync, s.subdivisions, s.warp_strength

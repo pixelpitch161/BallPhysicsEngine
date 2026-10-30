@@ -344,7 +344,10 @@ mod tests {
         let own = resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
         scene.library.modules.get_mut(&own).unwrap().params.set("plays_when", Value::Choice("both".into()));
         let resolved = resolve(&scene, &kit.registry);
-        assert!(mix_scene(&scene, &resolved, &log, &kit).samples == plain.samples, "one note, not two");
+        // The same note, now on the ball's own channel: equal but for rounding in the loudness gain.
+        let one = mix_scene(&scene, &resolved, &log, &kit);
+        let diff = one.samples.iter().zip(&plain.samples).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(diff < 1e-6, "one note, not two ({diff})");
     }
 
     fn test_cx<'a>(settings: &'a MixSettings, log: &'a Log) -> MixCx<'a> {
@@ -419,7 +422,7 @@ mod tests {
             progressions: [(ProgressionId(0), p)].into(),
             scene_chords: Some(ProgressionId(0)),
             beats: (0..60).map(|b| b as f64 * 0.5).collect(),
-            loudness: -14.0,
+            master: Default::default(),
             seed: 1,
             half_width: 540.0,
             half_height: 960.0,
