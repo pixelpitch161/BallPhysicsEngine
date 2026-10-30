@@ -1,7 +1,65 @@
 //! Instruments: library items that sound modules play notes through, either one of the
 //! built-in sounds or a synth patch. This is only the saved data; bpe-synth and bpe-mix play it.
 
+use crate::{SettingValue, Value, ValueType};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// One instrument in a scene's library. Never reused within a scene.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InstrumentId(pub u32);
+
+/// What sound modules play their notes through.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Instrument {
+    pub name: String,
+    pub source: InstrumentSource,
+    pub voices: VoiceSettings,
+}
+
+impl Default for Instrument {
+    fn default() -> Self {
+        Self { name: "Pluck".into(), source: InstrumentSource::default(), voices: VoiceSettings::default() }
+    }
+}
+
+/// Where an instrument's sound comes from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum InstrumentSource {
+    /// One of the built-in sounds, by its snake_case name (`pluck`, `marimba`...), with its knobs
+    /// (the pluck has `decay` and `brightness`).
+    BuiltIn { which: String, knobs: BTreeMap<String, f32> },
+    /// A synth patch: a graph of the synth catalog's blocks.
+    Patch { graph: bpe_graph::Graph },
+}
+
+impl Default for InstrumentSource {
+    fn default() -> Self {
+        InstrumentSource::BuiltIn { which: "pluck".into(), knobs: BTreeMap::new() }
+    }
+}
+
+/// A setting that points at an instrument in the library, or at Scene defaults' instrument.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InstrumentRef(pub Option<InstrumentId>);
+
+impl SettingValue for InstrumentRef {
+    fn value_type() -> ValueType {
+        ValueType::Instrument
+    }
+    fn to_value(&self) -> Value {
+        Value::Int(self.0.map_or(-1, |id| id.0 as i64))
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Int(-1) => Some(InstrumentRef(None)),
+            Value::Int(x) => u32::try_from(*x).ok().map(|id| InstrumentRef(Some(InstrumentId(id)))),
+            _ => None,
+        }
+    }
+}
 
 /// How long a note's gate stays open.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,5 +103,33 @@ pub struct VoiceSettings {
 impl Default for VoiceSettings {
     fn default() -> Self {
         Self { note_length: NoteLength::default(), limit: 16, mono: false, glide: 0.1, retrigger: true }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_instrument_ref_round_trips() {
+        assert_eq!(InstrumentRef(None).to_value(), Value::Int(-1));
+        assert_eq!(InstrumentRef::from_value(&Value::Int(4)), Some(InstrumentRef(Some(InstrumentId(4)))));
+        assert_eq!(InstrumentRef::from_value(&Value::Int(-1)), Some(InstrumentRef(None)));
+        assert_eq!(InstrumentRef::from_value(&Value::Int(-3)), None);
+        assert!(ValueType::Instrument.accepts(&Value::Int(2)));
+        assert!(!ValueType::Instrument.accepts(&Value::Number(2.0)));
+    }
+
+    #[test]
+    fn an_instrument_saves_and_loads() {
+        let mut graph = bpe_graph::Graph::new("Patch");
+        graph.nodes.push(bpe_graph::Node { id: 1, kind: "osc".into(), ..Default::default() });
+        let i = Instrument {
+            name: "Bell".into(),
+            source: InstrumentSource::Patch { graph },
+            voices: VoiceSettings { note_length: NoteLength::Seconds(0.5), mono: true, ..VoiceSettings::default() },
+        };
+        let text = ron::to_string(&i).unwrap();
+        assert_eq!(ron::from_str::<Instrument>(&text).unwrap(), i);
     }
 }

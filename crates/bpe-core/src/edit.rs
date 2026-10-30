@@ -2,8 +2,8 @@
 //! nothing.
 
 use crate::{
-    Address, Attach, KindId, Module, ModuleId, Owner, Params, Progression, ProgressionId, ProgressionRef, Registry,
-    Scene, SettingValue, SlotId, SlotLink, Thing, ThingId, Value, ValueType,
+    Address, Attach, Instrument, InstrumentId, InstrumentRef, KindId, Module, ModuleId, Owner, Params, Progression,
+    ProgressionId, ProgressionRef, Registry, Scene, SettingValue, SlotId, SlotLink, Thing, ThingId, Value, ValueType,
 };
 use glam::Vec2;
 use std::collections::BTreeSet;
@@ -29,6 +29,9 @@ pub enum EditError {
     MissingProgression(ProgressionId),
     /// These settings still point at the progression.
     ProgressionInUse(Vec<Address>),
+    MissingInstrument(InstrumentId),
+    /// These settings still point at the instrument.
+    InstrumentInUse(Vec<Address>),
     /// A scene has only one of these.
     OnlyOne(KindId),
 }
@@ -55,6 +58,9 @@ impl fmt::Display for EditError {
             EditError::ProgressionInUse(users) => {
                 write!(f, "{} settings still use this chord progression", users.len())
             }
+            EditError::MissingInstrument(_) => write!(f, "That instrument isn't in the library any more"),
+            EditError::InstrumentInUse(users) if users.len() == 1 => write!(f, "One sound still uses this instrument"),
+            EditError::InstrumentInUse(users) => write!(f, "{} sounds still use this instrument", users.len()),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
         }
     }
@@ -409,11 +415,15 @@ impl Scene {
     /// Every setting that points at progression `id`: things' own settings, their slot
     /// changes and library modules'.
     pub fn progression_users(&self, reg: &Registry, id: ProgressionId) -> Vec<Address> {
-        let wanted = ProgressionRef(Some(id)).to_value();
+        self.settings_set_to(reg, ValueType::Progression, &ProgressionRef(Some(id)).to_value())
+    }
+
+    /// Every setting of type `ty` that is set to `wanted`.
+    fn settings_set_to(&self, reg: &Registry, ty: ValueType, wanted: &Value) -> Vec<Address> {
         let mut out = Vec::new();
         let mut look = |owner: Owner, slot: Option<SlotId>, params: &Params, defs: &[crate::SettingDef]| {
-            for d in defs.iter().filter(|d| d.ty == ValueType::Progression) {
-                if params.get(d.key) == Some(&wanted) {
+            for d in defs.iter().filter(|d| d.ty == ty) {
+                if params.get(d.key) == Some(wanted) {
                     out.push(Address { owner, slot, key: d.key.into() });
                 }
             }
@@ -452,6 +462,64 @@ impl Scene {
     }
 }
 
+impl Scene {
+    /// Adds an instrument to the library.
+    pub fn add_instrument(&mut self, i: Instrument) -> InstrumentId {
+        let id = InstrumentId(self.next_instrument);
+        self.next_instrument += 1;
+        self.library.instruments.insert(id, i);
+        id
+    }
+
+    /// Replaces an instrument.
+    pub fn set_instrument(&mut self, id: InstrumentId, i: Instrument) -> Result<(), EditError> {
+        let slot = self.library.instruments.get_mut(&id).ok_or(EditError::MissingInstrument(id))?;
+        *slot = i;
+        Ok(())
+    }
+
+    /// Adds a copy of an instrument, named "<name> copy".
+    pub fn copy_instrument(&mut self, id: InstrumentId) -> Result<InstrumentId, EditError> {
+        let source = self.library.instruments.get(&id).ok_or(EditError::MissingInstrument(id))?;
+        let copy = Instrument { name: format!("{} copy", source.name), ..source.clone() };
+        Ok(self.add_instrument(copy))
+    }
+
+    /// Every setting that points at instrument `id`.
+    pub fn instrument_users(&self, reg: &Registry, id: InstrumentId) -> Vec<Address> {
+        self.settings_set_to(reg, ValueType::Instrument, &InstrumentRef(Some(id)).to_value())
+    }
+
+    /// Removes an instrument no setting points at any more.
+    pub fn remove_instrument(&mut self, reg: &Registry, id: InstrumentId) -> Result<(), EditError> {
+        if !self.library.instruments.contains_key(&id) {
+            return Err(EditError::MissingInstrument(id));
+        }
+        let users = self.instrument_users(reg, id);
+        if !users.is_empty() {
+            return Err(EditError::InstrumentInUse(users));
+        }
+        self.library.instruments.remove(&id);
+        Ok(())
+    }
+
+    /// Sets a module's own value for one of its instrument's macros, or with `None` goes back to
+    /// the instrument's.
+    pub fn set_macro(&mut self, module: ModuleId, key: &str, value: Option<f32>) -> Result<(), EditError> {
+        let m = self.library.modules.get_mut(&module).ok_or(EditError::MissingModule(module))?;
+        match value {
+            Some(v) if v.is_finite() => {
+                m.macros.insert(key.into(), v);
+            }
+            Some(_) => return Err(EditError::WrongType),
+            None => {
+                m.macros.remove(key);
+            }
+        }
+        Ok(())
+    }
+}
+
 fn clamped(mut p: Progression) -> Progression {
     p.key.root %= 12;
     p.chords = p.chords.into_iter().map(|c| c.clamp()).collect();
@@ -472,6 +540,42 @@ mod tests {
         assert_eq!(copy, ProgressionId(2));
         assert_eq!(s.library.progressions[&copy].name, "Starter copy");
         assert_eq!(s.copy_progression(ProgressionId(9)), Err(EditError::MissingProgression(ProgressionId(9))));
+    }
+
+    #[test]
+    fn copying_an_instrument_names_it_copy() {
+        let mut s = Scene::default();
+        let a = s.add_instrument(Instrument::default());
+        let copy = s.copy_instrument(a).unwrap();
+        assert_eq!(copy, InstrumentId(1));
+        assert_eq!(s.library.instruments[&copy].name, "Pluck copy");
+        assert_eq!(s.copy_instrument(InstrumentId(7)), Err(EditError::MissingInstrument(InstrumentId(7))));
+    }
+
+    #[test]
+    fn an_instrument_in_use_cannot_be_removed() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let i = s.add_instrument(Instrument::default());
+        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
+        let a = Address { owner: Owner::Module(m), slot: None, key: "instrument".into() };
+        s.set_at(&r, &a, InstrumentRef(Some(i)).to_value()).unwrap();
+        assert_eq!(s.remove_instrument(&r, i), Err(EditError::InstrumentInUse(vec![a.clone()])));
+        s.set_at(&r, &a, Value::Int(-1)).unwrap();
+        assert_eq!(s.remove_instrument(&r, i), Ok(()));
+        assert!(s.library.instruments.is_empty());
+    }
+
+    #[test]
+    fn a_macro_override_is_set_and_cleared() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
+        s.set_macro(m, "3.cutoff", Some(500.0)).unwrap();
+        assert_eq!(s.library.modules[&m].macros["3.cutoff"], 500.0);
+        assert_eq!(s.set_macro(m, "3.cutoff", Some(f32::NAN)), Err(EditError::WrongType));
+        s.set_macro(m, "3.cutoff", None).unwrap();
+        assert!(s.library.modules[&m].macros.is_empty());
     }
 
     #[test]
