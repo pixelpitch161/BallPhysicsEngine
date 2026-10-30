@@ -297,7 +297,7 @@
   - During playback in World mode, draw the next 2 s of `log.camera_at` centres as a faint polyline. This uses the playback log's camera track, and is drawn only for steps already simulated.
   - The world box is a dashed rectangle when `stay_inside` is on. Outside the shot, a 25% black wash is drawn in World mode.
   - New things are added at `view.to_world(rect.center())`.
-  - Grid and snap from the parallel thread: if it has merged, its grid draws through `View` in both modes. If not, leave a `// grid: draw through View` note at the grid hook and say so in the report.
+  - Grid and snap (merged in #45, `crates/bpe-studio/src/grid.rs`): `Grid::draw(painter, rect, centre, scale)` takes a world origin on screen and a scale with no turn. Call it with `centre = view.to_screen(Vec2::ZERO)` and `scale = view.scale * camera.zoom`. In Camera view with a turned camera, hide the grid lines but keep snapping (snapping is in world units through `snap_point`, so it is unaffected). Add a test, `grid_snaps_in_world_view`: dragging in World view at zoom 0.2 lands on grid steps.
 - The copy is "World units: at Zoom 1 the shot is 1080 across."
 
 - [ ] **Step 1: Write the failing tests** in `preview.rs` tests:
