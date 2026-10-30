@@ -124,3 +124,19 @@ fn culled_ball_is_not_in_frame() {
     build_frame(&scene, &resolved, playback.world(), playback.log(), 0.0, &kit.draws, &mut frame);
     assert!(frame.balls.is_empty() && frame.looks.is_empty(), "{:?}", frame.balls);
 }
+
+#[test]
+fn zero_fade_mix_is_unchanged() {
+    let kit = kit();
+    for (name, scene) in scenes::all(&kit.registry) {
+        let mut with = scene.clone();
+        ensure_camera(&mut with, &kit.registry);
+        let mix = |s: &Scene| {
+            let resolved = bpe_kit::resolve_scene(s, &kit.registry);
+            let mut playback = Playback::new(s, &resolved, kit.sims.clone());
+            playback.seek(6.0);
+            bpe_kit::mix_scene(s, &resolved, playback.log(), &kit).samples
+        };
+        assert!(mix(&scene) == mix(&with), "{name}: a camera at rest changed the sound");
+    }
+}

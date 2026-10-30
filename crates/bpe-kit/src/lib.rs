@@ -216,6 +216,8 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
         tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
+        off_shot_fade: root.off_shot_fade.max(0.0),
+        aspect: root.height.max(1) as f32 / root.width.max(1) as f32,
     }
 }
 

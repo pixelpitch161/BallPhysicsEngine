@@ -49,8 +49,12 @@ impl ModuleMix for DrumSoundMix {
                         other => other.key().unwrap_or(42),
                     };
                     let velocity = 0.4 + 0.6 * share;
-                    let gain = (0.5 + 0.5 * share) * hit_gain;
-                    let pan = (e.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width;
+                    let fade = cx.gain_of(e);
+                    if fade <= 0.0 {
+                        continue;
+                    }
+                    let gain = (0.5 + 0.5 * share) * hit_gain * fade;
+                    let pan = cx.pan_of(e, s.stereo_width);
                     (key, velocity, gain, pan)
                 }
                 EventKind::Beat => {
