@@ -7,6 +7,7 @@ use crate::{Instrument, MixSettings, Note, NoteCache, NoteInstrument, SAMPLE_RAT
 use bpe_core::{Choice, InstrumentId, InstrumentSource, VoiceSettings};
 use bpe_synth::{PlayNote, Program, global_steals, render_channel};
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -77,10 +78,60 @@ struct Group<'a> {
 pub(crate) struct Rendered {
     pub samples: Vec<f32>,
     pub problems: Vec<String>,
+    /// How many channels were rendered rather than taken from the cache.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fresh: usize,
 }
 
-/// Plays every note through its channel's instrument into `frames` frames of interleaved stereo.
-pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> Rendered {
+/// Each channel's last render, kept between mixes so an edit re-renders only the channels it
+/// changed. A channel is keyed by its module and instrument, and the render is kept with a
+/// fingerprint of everything it was made from: its notes (after the mix-wide voice cap), its
+/// instrument with the module's macros, the voice settings, the tempo and the length.
+#[derive(Default)]
+pub struct ChannelCache(BTreeMap<GroupKey, CachedChannel>);
+
+struct CachedChannel {
+    fingerprint: u64,
+    samples: Arc<Vec<f32>>,
+    bad_samples: bool,
+}
+
+impl ChannelCache {
+    fn take(&self, key: &GroupKey, fingerprint: u64) -> Option<(Arc<Vec<f32>>, bool)> {
+        self.0.get(key).filter(|c| c.fingerprint == fingerprint).map(|c| (c.samples.clone(), c.bad_samples))
+    }
+}
+
+fn hash_note(h: &mut DefaultHasher, frame: usize, key: u8, velocity: f32, left: f32, right: f32) {
+    (frame, key, velocity.to_bits(), left.to_bits(), right.to_bits()).hash(h);
+}
+
+/// What a built-in channel's render depends on.
+fn built_in_fingerprint(choice: &InstrumentChoice, notes: &[&Note], frames: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    format!("{choice:?}").hash(&mut h);
+    frames.hash(&mut h);
+    for n in notes {
+        hash_note(&mut h, n.frame, n.key, n.velocity, n.left, n.right);
+    }
+    h.finish()
+}
+
+/// What a patch channel's render depends on; the graph already carries the module's macros.
+fn patch_fingerprint(choice: &InstrumentChoice, notes: &[PlayNote], spb: f32, frames: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    format!("{choice:?}").hash(&mut h);
+    (spb.to_bits(), frames).hash(&mut h);
+    for n in notes {
+        hash_note(&mut h, n.frame, n.key, n.velocity, n.left, n.right);
+        n.steal_at.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Plays every note through its channel's instrument into `frames` frames of interleaved stereo,
+/// taking channels that haven't changed from `cache` and keeping the new ones there.
+pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cache: &mut ChannelCache) -> Rendered {
     let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
     for n in notes.iter().filter(|n| n.frame < frames) {
         groups
@@ -119,26 +170,49 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
         }
     }
 
-    // Built-in channels: one-shot notes from the cache.
-    let mut cache = NoteCache::default();
-    cache.prepare(groups.values().flat_map(|g| match g.choice {
+    // What each channel is made from; the ones the cache already holds aren't rendered again.
+    let mut fingerprints: BTreeMap<GroupKey, u64> = BTreeMap::new();
+    for (key, g) in &groups {
+        let fingerprint = match (&g.choice, programs.get(key)) {
+            (InstrumentChoice::BuiltIn { .. }, _) => built_in_fingerprint(&g.choice, &g.notes, frames),
+            (InstrumentChoice::Patch { .. }, Some((_, _, notes))) => patch_fingerprint(&g.choice, notes, spb, frames),
+            (InstrumentChoice::Patch { .. }, None) => continue,
+        };
+        fingerprints.insert(*key, fingerprint);
+    }
+    let mut channels: BTreeMap<GroupKey, Arc<Vec<f32>>> = BTreeMap::new();
+    let mut bad: BTreeSet<GroupKey> = BTreeSet::new();
+    for (key, &fingerprint) in &fingerprints {
+        if let Some((samples, bad_samples)) = cache.take(key, fingerprint) {
+            channels.insert(*key, samples);
+            if bad_samples {
+                bad.insert(*key);
+            }
+        }
+    }
+    let fresh_before = channels.len();
+
+    // Built-in channels: one-shot notes from the note cache.
+    let stale = |key: &GroupKey| !channels.contains_key(key);
+    let mut notes_cache = NoteCache::default();
+    notes_cache.prepare(groups.iter().filter(|(k, _)| stale(k)).flat_map(|(_, g)| match g.choice {
         InstrumentChoice::BuiltIn { which, decay, brightness } => {
             g.notes.iter().map(|n| (which, n.key, n.velocity, decay, brightness)).collect()
         }
         InstrumentChoice::Patch { .. } => Vec::new(),
     }));
-    let mut channels: BTreeMap<GroupKey, Vec<f32>> = BTreeMap::new();
-    for (key, g) in &groups {
+    let mut rendered: Vec<(GroupKey, Vec<f32>, bool)> = Vec::new();
+    for (key, g) in groups.iter().filter(|(k, _)| stale(k)) {
         let InstrumentChoice::BuiltIn { which, decay, brightness } = g.choice else { continue };
         let placed: Vec<(&Note, Arc<Vec<f32>>)> =
-            g.notes.iter().map(|n| (*n, cache.get(which, n.key, n.velocity, decay, brightness))).collect();
+            g.notes.iter().map(|n| (*n, notes_cache.get(which, n.key, n.velocity, decay, brightness))).collect();
         let mut samples = vec![0.0; frames * 2];
         mix_notes(&mut samples, &placed, |(n, wave)| (n.frame, wave.as_slice(), n.left, n.right, 0));
-        channels.insert(*key, samples);
+        rendered.push((*key, samples, false));
     }
 
     // Patch channels, side by side on all cores.
-    let jobs: Vec<(&GroupKey, &PatchJob)> = programs.iter().collect();
+    let jobs: Vec<(&GroupKey, &PatchJob)> = programs.iter().filter(|(k, _)| stale(k)).collect();
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
     let work = || {
@@ -153,13 +227,23 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
         }
         work();
     });
-    for (key, audio) in done.into_inner().unwrap() {
-        if audio.bad_samples
-            && let InstrumentChoice::Patch { name, .. } = &groups[&key].choice
-        {
+    rendered.extend(done.into_inner().unwrap().into_iter().map(|(key, audio)| (key, audio.samples, audio.bad_samples)));
+    let fresh = rendered.len();
+    debug_assert_eq!(fresh + fresh_before, fingerprints.len());
+    for (key, samples, bad_samples) in rendered {
+        let samples = Arc::new(samples);
+        if bad_samples {
+            bad.insert(key);
+        }
+        cache.0.insert(key, CachedChannel { fingerprint: fingerprints[&key], samples: samples.clone(), bad_samples });
+        channels.insert(key, samples);
+    }
+    // Channels gone from the mix leave the cache.
+    cache.0.retain(|key, _| fingerprints.contains_key(key));
+    for key in &bad {
+        if let InstrumentChoice::Patch { name, .. } = &groups[key].choice {
             problems.insert(format!("{name} made a bad sample and was stopped"));
         }
-        channels.insert(key, audio.samples);
     }
 
     for g in groups.values() {
@@ -169,11 +253,11 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize) -> R
     }
     let mut samples = vec![0.0; frames * 2];
     for channel in channels.values() {
-        for (o, s) in samples.iter_mut().zip(channel) {
+        for (o, s) in samples.iter_mut().zip(channel.iter()) {
             *o += s;
         }
     }
-    Rendered { samples, problems: problems.into_iter().collect() }
+    Rendered { samples, problems: problems.into_iter().collect(), fresh }
 }
 
 fn play_note(n: &Note) -> PlayNote {
@@ -224,12 +308,95 @@ mod tests {
     }
 
     #[test]
+    fn changing_one_channel_re_renders_only_that_channel() {
+        let (mut s, mut notes) = two_channels();
+        let mut cache = ChannelCache::default();
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 2);
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 0, "nothing changed");
+        // A louder pluck note touches only the pluck channel.
+        notes[0].left *= 0.5;
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 1);
+        // A macro on the patch module re-renders the patch channel only.
+        let knob = bpe_synth::macros(&bpe_synth::starters()[0].1);
+        s.instruments.insert(InstrumentId(0), patch("Saw", bpe_synth::starters()[0].1.clone()));
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 1);
+        s.macros.insert(7, [(knob[0].key(), knob[0].min)].into());
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 1);
+        // So do its voice settings.
+        if let Some(i) = s.instruments.get_mut(&InstrumentId(0)) {
+            i.voices.limit = 2;
+        }
+        assert_eq!(render(&s, &notes, 96_000, &mut cache).fresh, 1);
+        // A channel that leaves the mix leaves the cache.
+        notes.retain(|n| n.channel == 3);
+        render(&s, &notes, 96_000, &mut cache);
+        assert_eq!(cache.0.len(), 1);
+    }
+
+    #[test]
+    fn cached_and_uncached_mixes_match() {
+        let (s, mut notes) = two_channels();
+        let mut cache = ChannelCache::default();
+        render(&s, &notes, 96_000, &mut cache);
+        notes[1].velocity = 0.3;
+        let cached = render(&s, &notes, 96_000, &mut cache);
+        let fresh = render(&s, &notes, 96_000, &mut ChannelCache::default());
+        assert_eq!(cached.fresh, 1);
+        assert!(cached.samples == fresh.samples, "bit for bit");
+        assert_eq!(cached.problems, fresh.problems);
+    }
+
+    /// Run by hand in release: `cargo test -p bpe-mix --release -- --ignored a_busy_minute`.
+    #[test]
+    #[ignore]
+    fn a_busy_minute_renders_quickly() {
+        use bpe_graph::Catalog;
+        use std::time::Instant;
+        // Three unison saws through a filter, with one envelope on the amp and one on the cutoff.
+        let cat = bpe_synth::catalog();
+        let mut graph = bpe_synth::blank_patch();
+        let id = |g: &bpe_graph::Graph, kind: &str| g.nodes.iter().find(|n| n.kind == kind).unwrap().id;
+        let (osc, filter) = (id(&graph, "osc"), id(&graph, "filter"));
+        graph.node_mut(osc).unwrap().params.insert("unison".into(), bpe_graph::Param::Number(3.0));
+        graph.node_mut(filter).unwrap().exposed.insert("cutoff".into());
+        let sweep = graph.add(cat.spec("adsr").unwrap(), [360.0, 320.0]);
+        graph.connect(bpe_graph::Link { from: (sweep, 0), to: (filter, 1) }, cat);
+        let mut s = settings();
+        s.duration = 60.0;
+        let mut i = patch("Busy", graph);
+        i.voices.note_length = NoteLength::Seconds(0.4);
+        s.instruments.insert(InstrumentId(0), i);
+        let frames = 60 * SAMPLE_RATE as usize;
+        let played = NoteInstrument::Library(Some(InstrumentId(0)));
+        let notes: Vec<Note> = (0..2_000)
+            .map(|i| note(i * (frames - 48_000) / 2_000, 40 + (i * 7 % 36) as u8, [3, 7][i % 2], played))
+            .collect();
+        let mut cache = ChannelCache::default();
+        let started = Instant::now();
+        let first = render(&s, &notes, frames, &mut cache);
+        let took = started.elapsed().as_secs_f32();
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f32;
+        let budget = 4.0 * 8.0 / cores;
+        println!("a busy minute: {took:.2} s on {cores} cores (budget {budget:.2} s)");
+        assert_eq!(first.fresh, 2);
+        assert!(took < budget, "{took:.2} s");
+        // One macro on one of the two channels re-renders only that one.
+        s.macros.insert(7, [(format!("{filter}.cutoff"), 900.0)].into());
+        let started = Instant::now();
+        let again = render(&s, &notes, frames, &mut cache);
+        let took = started.elapsed().as_secs_f32();
+        println!("one macro changed: {took:.2} s");
+        assert_eq!(again.fresh, 1);
+        assert!(took < 1.0, "{took:.2} s");
+    }
+
+    #[test]
     fn each_module_renders_as_its_own_channel_and_sums_in_order() {
         let (s, notes) = two_channels();
-        let both = render(&s, &notes, 96_000);
+        let both = render(&s, &notes, 96_000, &mut ChannelCache::default());
         let only = |c: u32| {
             let mine: Vec<Note> = notes.iter().filter(|n| n.channel == c).cloned().collect();
-            render(&s, &mine, 96_000).samples
+            render(&s, &mine, 96_000, &mut ChannelCache::default()).samples
         };
         let (a, b) = (only(3), only(7));
         assert!(a.iter().any(|v| v.abs() > 0.01) && b.iter().any(|v| v.abs() > 0.01));
@@ -247,9 +414,9 @@ mod tests {
         s.instruments.insert(InstrumentId(1), patch("Broken", broken));
         let good = [note(0, 60, 1, NoteInstrument::Library(Some(InstrumentId(0))))];
         let bad = [note(0, 60, 2, NoteInstrument::Library(Some(InstrumentId(1))))];
-        let out = render(&s, &good, 48_000);
+        let out = render(&s, &good, 48_000, &mut ChannelCache::default());
         assert!(out.samples.iter().any(|v| v.abs() > 0.01) && out.problems.is_empty());
-        let out = render(&s, &bad, 48_000);
+        let out = render(&s, &bad, 48_000, &mut ChannelCache::default());
         assert!(out.samples.iter().all(|v| *v == 0.0));
         assert_eq!(out.problems, ["Broken: the patch doesn't compile (Add a Voice out block)"]);
     }
@@ -286,7 +453,7 @@ mod tests {
         let notes: Vec<Note> = (0..30)
             .map(|i| note(i * 3_000, 50 + (i % 12) as u8, (i % 3) as u32, NoteInstrument::BuiltIn(Instrument::Marimba)))
             .collect();
-        let new = render(&s, &notes, 96_000).samples;
+        let new = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
         // The old way: every note into one track.
         let mut cache = NoteCache::default();
         let placed: Vec<(&Note, Arc<Vec<f32>>)> =
@@ -299,8 +466,8 @@ mod tests {
     #[test]
     fn the_mix_is_the_same_twice() {
         let (s, notes) = two_channels();
-        let a = render(&s, &notes, 96_000).samples;
-        let b = render(&s, &notes, 96_000).samples;
+        let a = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
+        let b = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
 }

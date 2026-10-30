@@ -3,10 +3,11 @@
 
 use bpe_core::{Owner, Resolved, Scene, Settings, SlotId, ThingId};
 use bpe_kit::{Kit, SceneSettings, TimeWarp};
+use bpe_mix::ChannelCache;
 use bpe_runtime::{EventKind, Log, Sims, World, fingerprint};
 use eframe::egui;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long after the last sound-changing edit the mix starts.
@@ -37,6 +38,9 @@ pub struct SoundJob {
     pub hits: Vec<f32>,
     /// The beats of the last finished mix, in video seconds.
     pub beats: Vec<f32>,
+    /// Each channel's last render, shared by the mixes one after another, so an edit to one
+    /// sound re-renders only its channel.
+    channels: Arc<Mutex<ChannelCache>>,
 }
 
 impl Default for SoundJob {
@@ -51,6 +55,7 @@ impl Default for SoundJob {
             receiver,
             hits: Vec::new(),
             beats: Vec::new(),
+            channels: Default::default(),
         }
     }
 }
@@ -93,10 +98,19 @@ impl SoundJob {
             self.dirty_since = None;
             self.running = true;
             self.generation += 1;
-            let (generation, scene, resolved, kit, sender, ctx) =
-                (self.generation, scene.clone(), resolved.clone(), kit.clone(), self.sender.clone(), ctx.clone());
+            let (generation, scene, resolved, kit, sender, ctx, channels) = (
+                self.generation,
+                scene.clone(),
+                resolved.clone(),
+                kit.clone(),
+                self.sender.clone(),
+                ctx.clone(),
+                self.channels.clone(),
+            );
             std::thread::spawn(move || {
-                let mut mixed = mix(&scene, &resolved, &kit);
+                // One mix runs at a time, so the lock is never waited on.
+                let mut cache = channels.lock().unwrap_or_else(|e| e.into_inner());
+                let mut mixed = mix(&scene, &resolved, &kit, &mut cache);
                 mixed.generation = generation;
                 let _ = sender.send(mixed);
                 ctx.request_repaint();
@@ -110,7 +124,7 @@ impl SoundJob {
 
 /// Runs the whole scene and mixes it: the track, when every hit and beat happens in the video,
 /// and the time warp the video plays through.
-fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Mixed {
+fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) -> Mixed {
     let settings =
         resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     let mut world = World::build(scene, resolved, &kit.sims);
@@ -125,7 +139,7 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Mixed {
         .map(|e| warp.video_time(e.time(rate)) as f32)
         .collect();
     let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
-    let track = bpe_kit::mix_scene(scene, resolved, &log, kit).samples;
+    let track = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, cache).samples;
     Mixed { generation: 0, track: Arc::new(track), hits, beats, warp }
 }
 
@@ -231,7 +245,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit);
+        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
         let duration = SceneSettings::default().duration;
         assert_eq!(mixed.track.len(), (duration * bpe_mix::SAMPLE_RATE as f32) as usize * 2);
         assert!(!mixed.hits.is_empty());
@@ -244,7 +258,7 @@ mod tests {
         scene.set_at(&kit.registry, &bpm, Value::Number(120.0)).unwrap();
         scene.set_at(&kit.registry, &sync, Value::Choice("warp".into())).unwrap();
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit);
+        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
         assert_eq!(mixed.beats.len(), 42);
         assert!(!mixed.warp.is_identity());
     }

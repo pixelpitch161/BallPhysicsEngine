@@ -258,13 +258,24 @@ pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
 /// The soundtrack of a finished run of `scene`: its keyframed sound settings followed, its
 /// notes placed through the beat sync's time warp, and its song mixed in underneath.
 pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
+    mix_scene_cached(scene, resolved, log, kit, &mut bpe_mix::ChannelCache::default())
+}
+
+/// [`mix_scene`], rendering only the channels that changed since the mix that filled `cache`.
+pub fn mix_scene_cached(
+    scene: &Scene,
+    resolved: &Resolved,
+    log: &Log,
+    kit: &Kit,
+    cache: &mut bpe_mix::ChannelCache,
+) -> Soundtrack {
     let animation = bpe_core::Animation::new(scene, resolved);
     let animation = (!animation.is_empty()).then_some(&animation);
     let warp = warp_for(scene, resolved, log);
+    let settings = mix_settings(scene, resolved);
+    let video_time = |t| warp.video_time(t);
     let mut track =
-        bpe_mix::mix_with(&mix_settings(scene, resolved), resolved, &scene.library, log, &kit.mixes, animation, &|t| {
-            warp.video_time(t)
-        });
+        bpe_mix::mix_cached(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);

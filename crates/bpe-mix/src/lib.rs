@@ -24,7 +24,7 @@ use bpe_core::{
 use bpe_runtime::{Event, Log};
 
 pub use audition::{audition, audition_keys};
-pub use channels::{InstrumentChoice, VOICE_CAP, instrument_for};
+pub use channels::{ChannelCache, InstrumentChoice, VOICE_CAP, instrument_for};
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
     numeral, parse_chord, scale, voicing,
@@ -326,12 +326,27 @@ pub fn mix_with(
     animation: Option<&Animation>,
     video_time: &dyn Fn(f64) -> f64,
 ) -> Soundtrack {
+    mix_cached(settings, resolved, library, log, mixes, animation, video_time, &mut ChannelCache::default())
+}
+
+/// [`mix_with`], rendering only the channels that changed since the mix that filled `cache`.
+#[allow(clippy::too_many_arguments)]
+pub fn mix_cached(
+    settings: &MixSettings,
+    resolved: &Resolved,
+    library: &Library,
+    log: &Log,
+    mixes: &Mixes,
+    animation: Option<&Animation>,
+    video_time: &dyn Fn(f64) -> f64,
+    cache: &mut ChannelCache,
+) -> Soundtrack {
     let mut track = Soundtrack::silent(settings.duration);
     let notes = notes_with(settings, resolved, library, log, mixes, animation, video_time);
     if notes.is_empty() {
         return track;
     }
-    let rendered = channels::render(settings, &notes, track.frames());
+    let rendered = channels::render(settings, &notes, track.frames(), cache);
     track.samples = rendered.samples;
     track.problems = rendered.problems;
     normalize_loudness(&mut track.samples, settings.loudness);
