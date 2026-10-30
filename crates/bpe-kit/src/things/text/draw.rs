@@ -116,7 +116,9 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame_at(&scene, &resolved, &world, &Log::default(), time, video_time, &kit.draws, &mut frame);
-        frame.glyphs.len()
+        // Text sticks to the screen, so it draws into the overlay.
+        assert!(frame.glyphs.is_empty());
+        frame.overlay.map_or(0, |o| o.glyphs.len())
     }
 
     #[test]
