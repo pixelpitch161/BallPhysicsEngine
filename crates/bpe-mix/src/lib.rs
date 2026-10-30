@@ -8,6 +8,7 @@
 pub mod chords;
 pub mod instruments;
 pub mod level;
+pub mod presets;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -15,9 +16,13 @@ use std::path::Path;
 use bpe_core::{Animation, Inputs, Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
 use bpe_runtime::{Event, Log};
 
-pub use chords::{Chords, pitch_classes};
+pub use chords::{
+    ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
+    numeral, parse_chord, scale, voicing,
+};
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
+pub use presets::{PRESETS, Preset, moods};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 
