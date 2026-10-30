@@ -35,6 +35,12 @@ struct FieldAttrs {
     random: bool,
     pulse: bool,
     structural: bool,
+    /// The field is a group of settings (such as `Paint`) that expands to several prefixed ones.
+    paint: bool,
+    prefix: Option<LitStr>,
+    follows: Option<LitStr>,
+    inside: bool,
+    screen_only: bool,
 }
 
 /// The `(min, max)` after an option such as `range`.
@@ -76,6 +82,16 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.pulse = true;
             } else if p.is_ident("structural") {
                 a.structural = true;
+            } else if p.is_ident("paint") {
+                a.paint = true;
+            } else if p.is_ident("prefix") {
+                a.prefix = Some(meta.value()?.parse()?);
+            } else if p.is_ident("follows") {
+                a.follows = Some(meta.value()?.parse()?);
+            } else if p.is_ident("inside") {
+                a.inside = true;
+            } else if p.is_ident("screen_only") {
+                a.screen_only = true;
             } else {
                 return Err(meta.error("unknown setting option"));
             }
@@ -120,6 +136,33 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         let unit = a.unit.map(|s| s.value()).unwrap_or_default();
         let group = a.group.map(|s| s.value()).unwrap_or_default();
         let when = a.when.map(|s| s.value()).unwrap_or_default();
+        if a.paint {
+            let prefix = a.prefix.map(|s| s.value()).unwrap_or_default();
+            let follows: Vec<String> =
+                a.follows.map(|s| s.value().split('|').map(|n| n.trim().to_owned()).collect()).unwrap_or_default();
+            let (inside, screen_only) = (a.inside, a.screen_only);
+            let opts = quote! {
+                ::bpe_core::GroupOpts {
+                    prefix: #prefix,
+                    label: #label,
+                    group: #group,
+                    when: #when,
+                    follows: &[#(#follows),*],
+                    inside: #inside,
+                    screen_only: #screen_only,
+                }
+            };
+            defs.push(quote! {
+                v.extend(<#ty as ::bpe_core::SettingGroup>::group_defs(&#opts));
+            });
+            reads.push(quote! {
+                s.#ident = <#ty as ::bpe_core::SettingGroup>::group_read(&#opts, p);
+            });
+            writes.push(quote! {
+                ::bpe_core::SettingGroup::group_write(&self.#ident, &#opts, &mut p);
+            });
+            continue;
+        }
         let help = help(field);
         let span = |r: Option<(Expr, Expr)>| match r {
             Some((min, max)) => quote!(::std::option::Option::Some(((#min) as f64, (#max) as f64))),
@@ -129,7 +172,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
         let (keyframe, random, pulse, structural) = (a.keyframe, a.random, a.pulse, a.structural);
         defs.push(quote! {
-            ::bpe_core::SettingDef {
+            v.push(::bpe_core::SettingDef {
                 key: #key,
                 label: #label,
                 help: #help,
@@ -142,7 +185,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 depth: #depth,
                 flags: ::bpe_core::Flags { keyframe: #keyframe, random: #random, pulse: #pulse, structural: #structural },
                 when: #when,
-            }
+            });
         });
         reads.push(quote! {
             if let ::std::option::Option::Some(v) =
@@ -165,7 +208,17 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                     ::std::sync::OnceLock::new();
                 DEFS.get_or_init(|| {
                     let d = <Self as ::std::default::Default>::default();
-                    ::std::vec![#(#defs),*]
+                    let mut v: ::std::vec::Vec<::bpe_core::SettingDef> = ::std::vec::Vec::new();
+                    #(#defs)*
+                    let mut keys = ::std::collections::BTreeSet::new();
+                    for def in &v {
+                        ::std::debug_assert!(
+                            keys.insert(def.key),
+                            "two settings share the key \"{}\"",
+                            def.key
+                        );
+                    }
+                    v
                 })
             }
 

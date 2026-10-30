@@ -100,6 +100,36 @@ pub trait Settings: Sized + Default {
     fn to_params(&self) -> Params;
 }
 
+/// How a struct of settings is embedded in another one, as `#[setting(paint, ...)]` says.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupOpts {
+    /// Put before every key of the group, such as `outline_`. May be empty.
+    pub prefix: &'static str,
+    /// The group's own name, shown on its main setting.
+    pub label: &'static str,
+    /// The heading the inspector groups the settings under.
+    pub group: &'static str,
+    /// The embedding field's own condition, which every setting of the group also needs.
+    pub when: &'static str,
+    /// The names of the choices the group may offer.
+    pub follows: &'static [&'static str],
+    /// Whether the group has its inside pattern settings.
+    pub inside: bool,
+    /// No `space` setting: positions are always read from the screen.
+    pub screen_only: bool,
+}
+
+/// A struct of settings that another struct embeds as one field, its keys all starting with a
+/// prefix. Used through `#[setting(paint, ...)]`.
+pub trait SettingGroup: Sized + Default {
+    /// The group's settings. Keys and conditions are leaked once per outer type.
+    fn group_defs(o: &GroupOpts) -> Vec<SettingDef>;
+    /// Fills the group from saved values, using the default for missing or wrong-typed ones.
+    fn group_read(o: &GroupOpts, p: &Params) -> Self;
+    /// Saves only the fields that differ from the default.
+    fn group_write(&self, o: &GroupOpts, p: &mut Params);
+}
+
 impl SettingValue for f32 {
     fn value_type() -> ValueType {
         ValueType::Number

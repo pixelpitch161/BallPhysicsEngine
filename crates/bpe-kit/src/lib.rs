@@ -5,6 +5,7 @@ pub mod gizmo;
 pub mod graphs;
 pub mod modules;
 pub mod music;
+pub mod paint;
 pub mod random;
 pub mod rng;
 pub mod scenes;

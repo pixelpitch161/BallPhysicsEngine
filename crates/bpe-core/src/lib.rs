@@ -39,7 +39,7 @@ pub use resolve::{
 };
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, SlotLink, Target, Thing, Transform};
-pub use settings::{Choice, Depth, Flags, SettingDef, SettingValue, Settings};
+pub use settings::{Choice, Depth, Flags, GroupOpts, SettingDef, SettingGroup, SettingValue, Settings};
 pub use value::{Params, Value, ValueType};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.
