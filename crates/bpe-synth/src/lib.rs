@@ -10,6 +10,11 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod blocks;
+mod catalog;
+mod program;
+
+pub use catalog::catalog;
+pub use program::{MacroKnob, Patch, Program, blank_patch, compile, macros, with_macros};
 
 use bpe_graph::Param;
 use std::collections::BTreeMap;
