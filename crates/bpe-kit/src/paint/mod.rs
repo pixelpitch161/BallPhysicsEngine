@@ -123,9 +123,27 @@ fn follow_names(o: &GroupOpts) -> &'static [&'static str] {
     if o.follows.is_empty() { Follow::NAMES } else { o.follows }
 }
 
+/// What a group follows when nothing is saved: Place, or the first listed name when the list
+/// leaves Place out.
+fn default_follow(o: &GroupOpts) -> Follow {
+    for n in follow_names(o) {
+        debug_assert!(Follow::from_name(n).is_some(), "\"{n}\" is not something colours can follow");
+    }
+    if follow_names(o).contains(&"place") {
+        Follow::Place
+    } else {
+        Follow::from_name(follow_names(o)[0]).unwrap_or_default()
+    }
+}
+
+/// The paint a group starts with.
+fn group_default(o: &GroupOpts) -> Paint {
+    Paint { follow: default_follow(o), ..Paint::default() }
+}
+
 impl SettingGroup for Paint {
     fn group_defs(o: &GroupOpts) -> Vec<SettingDef> {
-        let d = Paint::default();
+        let d = group_default(o);
         let p = o.prefix;
         let (c, f) = (format!("{p}colours"), format!("{p}follow"));
         let (shape, inside) = (format!("{p}shape"), format!("{p}inside"));
@@ -342,7 +360,7 @@ impl SettingGroup for Paint {
                 *to = x;
             }
         }
-        let mut s = Paint::default();
+        let mut s = group_default(o);
         set(&mut s.colours, get("colours"));
         if let Some(Value::Choice(n)) = get("follow")
             && follow_names(o).contains(&n.as_str())
@@ -372,7 +390,7 @@ impl SettingGroup for Paint {
     }
 
     fn group_write(&self, o: &GroupOpts, params: &mut Params) {
-        let (p, d) = (o.prefix, Paint::default());
+        let (p, d) = (o.prefix, group_default(o));
         let mut put = |key: &str, now: Value, was: Value| {
             if now != was {
                 params.set(&format!("{p}{key}"), now);
@@ -487,5 +505,30 @@ mod tests {
                 assert!(defs.iter().any(|o| o.key == key), "{}: \"{key}\" is not a setting", d.key);
             }
         }
+    }
+
+    #[test]
+    fn a_follows_list_without_place_defaults_to_its_first_name() {
+        let o = GroupOpts {
+            prefix: "",
+            label: "Colours",
+            group: "",
+            when: "",
+            follows: &["life", "order"],
+            inside: false,
+            screen_only: false,
+        };
+        let defs = Paint::group_defs(&o);
+        let f = defs.iter().find(|d| d.key == "follow").unwrap();
+        assert_eq!(f.default, Value::Choice("life".into()));
+        let read = Paint::group_read(&o, &Params::default());
+        assert_eq!(read.follow, Follow::Life);
+        let mut p = Params::default();
+        read.group_write(&o, &mut p);
+        assert!(p.get("follow").is_none(), "the list's own default is not saved");
+        let mut order = read;
+        order.follow = Follow::Order;
+        order.group_write(&o, &mut p);
+        assert_eq!(p.get("follow"), Some(&Value::Choice("order".into())));
     }
 }
