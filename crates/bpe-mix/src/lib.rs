@@ -5,19 +5,29 @@
 //! renders every note once, adds them up in a fixed order, sets the level and limits the peaks.
 //! The same log and settings give the same samples every time.
 
+pub mod audition;
 pub mod chords;
 pub mod instruments;
 pub mod level;
+pub mod presets;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use bpe_core::{Animation, Inputs, Library, ModuleGraph, Params, Resolved, SlotId, Target, ThingId};
+use bpe_core::{
+    Animation, Inputs, Library, ModuleGraph, Params, Progression, ProgressionId, ProgressionRef, Resolved, SlotId,
+    Target, ThingId,
+};
 use bpe_runtime::{Event, Log};
 
-pub use chords::{Chords, pitch_classes};
+pub use audition::audition;
+pub use chords::{
+    ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
+    numeral, parse_chord, scale, voicing,
+};
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
+pub use presets::{PRESETS, Preset, moods};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 
@@ -75,8 +85,12 @@ pub struct Note {
 pub struct MixSettings {
     pub duration: f32,
     pub steps_per_second: u32,
-    /// The chord text, parsed by each module with its own note range.
-    pub chords: String,
+    /// Every chord progression in the scene's library.
+    pub progressions: BTreeMap<ProgressionId, Progression>,
+    /// The one Scene defaults points at; modules set to "Scene's" use it.
+    pub scene_chords: Option<ProgressionId>,
+    /// The beat grid in video seconds, which chords are laid on.
+    pub beats: Vec<f64>,
     /// Target loudness in dB.
     pub loudness: f32,
     pub seed: u64,
@@ -88,6 +102,17 @@ pub struct MixSettings {
     pub off_shot_fade: f32,
     /// Half the video's height, for the shot's shape.
     pub half_height: f32,
+}
+
+impl MixSettings {
+    /// The progression a setting points at: that one when it is in the library, else Scene
+    /// defaults' one, else the starter.
+    pub fn progression(&self, r: ProgressionRef) -> &Progression {
+        static STARTER: std::sync::LazyLock<Progression> = std::sync::LazyLock::new(Progression::starter);
+        r.0.and_then(|id| self.progressions.get(&id))
+            .or_else(|| self.scene_chords.and_then(|id| self.progressions.get(&id)))
+            .unwrap_or(&STARTER)
+    }
 }
 
 /// What a Sound module can read while turning events into notes.
@@ -335,7 +360,9 @@ mod tests {
         MixSettings {
             duration: 5.0,
             steps_per_second: 240,
-            chords: String::new(),
+            progressions: Default::default(),
+            scene_chords: None,
+            beats: Vec::new(),
             loudness: -14.0,
             seed: 1,
             half_width: 540.0,

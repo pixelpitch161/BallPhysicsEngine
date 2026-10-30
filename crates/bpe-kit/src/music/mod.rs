@@ -117,6 +117,13 @@ pub fn beats_for(s: &SceneSettings) -> Vec<f64> {
     beat_grid(s.bpm, song.as_ref().map(|song| &song.features), s.song_offset, s.duration as f64)
 }
 
+/// The beats chords are laid on: the scene's beat grid, or a steady 120 bpm when the scene has
+/// no beat of its own.
+pub fn chord_beats(s: &SceneSettings) -> Vec<f64> {
+    let beats = beats_for(s);
+    if beats.is_empty() { beat_grid(0.0, None, 0.0, s.duration as f64) } else { beats }
+}
+
 /// The root's settings as resolved.
 pub fn root_settings(resolved: &Resolved) -> SceneSettings {
     resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default()

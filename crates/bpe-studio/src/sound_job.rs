@@ -152,12 +152,13 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     }
     if let Some(root) = resolved.things.get(&ThingId::ROOT) {
         let s = SceneSettings::from_params(&root.params);
-        mix(&format!("{:?} {:?} {} {:?} {}", s.chords, s.loudness, s.seed, s.duration, s.width));
+        mix(&format!("{:?} {:?} {} {:?} {} {}", s.chords, s.loudness, s.seed, s.duration, s.width, s.height));
         mix(&format!(
             "{:?} {} {} {} {} {:?} {} {}",
             s.song, s.song_offset, s.song_volume, s.ducking, s.bpm, s.beat_sync, s.subdivisions, s.warp_strength
         ));
     }
+    mix(&format!("{:?}", scene.library.progressions));
     let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
         (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
         (Owner::Thing(_), None) => false,
@@ -207,8 +208,9 @@ mod tests {
         scene.set_at(&kit.registry, &gravity, Value::Vec2([0.0, 10.0])).unwrap();
         let moved = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
         assert_ne!(moved, after);
-        let chords = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "chords".into() };
-        scene.set_at(&kit.registry, &chords, Value::Text("Am 4".into())).unwrap();
+        let (&id, _) = scene.library.progressions.iter().next().unwrap();
+        let am = bpe_core::Chord::new(9, bpe_core::Quality::Minor, bpe_core::Extension::Triad, 4);
+        scene.set_progression(id, bpe_core::Progression { chords: vec![am], ..Default::default() }).unwrap();
         assert_ne!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), moved);
     }
 

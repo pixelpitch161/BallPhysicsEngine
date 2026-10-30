@@ -6,6 +6,7 @@
 mod app;
 mod audio_out;
 mod batch_window;
+mod chords;
 mod dice;
 mod explorer;
 mod export_window;

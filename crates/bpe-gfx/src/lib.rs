@@ -889,7 +889,7 @@ impl Renderer {
             &self.targets.hdr,
             object_view,
         );
-        if !frame.flashes.is_empty() || !frame.bursts.is_empty() {
+        if !frame.flashes.is_empty() || !frame.bursts.is_empty() || !frame.glyphs.is_empty() {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             if !frame.flashes.is_empty() {
@@ -1387,6 +1387,31 @@ mod surface_tests {
     fn render(renderer: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) -> Vec<u8> {
         renderer.render(device, queue, frame);
         renderer.read_output(device, queue).unwrap()
+    }
+
+    #[test]
+    fn world_text_draws_without_flashes_or_bursts() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        let style = text::TextStyle { color: [1.0, 1.0, 1.0, 1.0], outline: 0.0, outline_color: [0.0; 4], glow: 0.0 };
+        let anchor = glam::Vec2::new(0.0, 0.0);
+        text::layout_text(
+            "HELLO",
+            text::FontFace::Anton,
+            200.0,
+            anchor,
+            text::TextAlign::Center,
+            0.0,
+            usize::MAX,
+            &style,
+            &mut frame.glyphs,
+        );
+        assert!(!frame.glyphs.is_empty());
+        assert!(frame.flashes.is_empty() && frame.bursts.is_empty());
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        let lit = pixels.chunks(4).filter(|p| p[0] > 150 && p[1] > 150 && p[2] > 150).count();
+        assert!(lit > 100, "{lit} lit pixels: world text shows on a frame with no flashes or bursts");
     }
 
     #[test]

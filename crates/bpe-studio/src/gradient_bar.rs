@@ -37,7 +37,7 @@ pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &st
     }
     let mut changed = false;
     let inner = ui.vertical(|ui| {
-        let width = (ui.available_width() - MENU_WIDTH - ui.spacing().item_spacing.x).max(120.0);
+        let width = (ui.available_width() - MENU_WIDTH - ui.spacing().item_spacing.x).max(64.0);
         let (bar, mut response) = ui
             .horizontal(|ui| {
                 let (bar, response) = ui.allocate_exact_size(Vec2::new(width, BAR_HEIGHT), Sense::click());

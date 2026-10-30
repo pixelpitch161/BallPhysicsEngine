@@ -840,6 +840,11 @@ impl eframe::App for Studio {
                     time,
                 )
             });
+        if let Some(clip) = self.panels.inspector.clip.take()
+            && let Some(audio) = &self.audio
+        {
+            audio.play_clip_with(move || clip.render());
+        }
         if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
             self.panels.nodes.open_at(thing, slot);
         }

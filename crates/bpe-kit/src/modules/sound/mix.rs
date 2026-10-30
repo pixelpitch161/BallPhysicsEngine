@@ -5,12 +5,12 @@
 use std::collections::BTreeMap;
 use std::f32::consts::FRAC_PI_4;
 
-use bpe_core::{ModuleGraph, Params, Settings, SlotId, ThingId};
-use bpe_mix::{Chords, MixCx, ModuleMix, Note, SAMPLE_RATE, mix64};
+use bpe_core::{ModuleGraph, MusicKey, Params, Settings, SlotId, ThingId};
+use bpe_mix::{ChordClock, MixCx, ModuleMix, Note, SAMPLE_RATE, candidates, mix64, voicing};
 use bpe_runtime::{Event, EventKind, Party};
 use bpe_vm::{Ball, Host, Program, Val, Vm};
 
-use super::{NoteSound, PitchBy, PlaysWhen};
+use super::{NoteSound, Order, Plays, PlaysWhen};
 use crate::graphs::{bind, compile_module};
 
 pub struct NoteSoundMix;
@@ -18,12 +18,15 @@ pub struct NoteSoundMix;
 /// What one hit plays: the native answer, and what the compiled path starts from.
 struct Played {
     play: bool,
-    key: u8,
+    /// Every note it plays at once, lowest first.
+    keys: Vec<u8>,
     velocity: f32,
     volume: f32,
     pan: f32,
     decay: f32,
     brightness: f32,
+    /// The notes it could have picked from, for a graph asking for a chord note.
+    candidates: Vec<u8>,
 }
 
 /// One event this sound speaks for, with what the mixer knows about it.
@@ -36,46 +39,97 @@ struct Heard<'a> {
     count: u32,
 }
 
-/// The native answer for one hit: whether it is loud enough, which note of the chord it plays
-/// (at random, climbing with the hit's speed or with the ball's hits) and how.
-fn native(s: &NoteSound, chords: &Chords, h: &Heard, cx: &MixCx) -> Played {
+/// Where this sound is in its progression and its arpeggio.
+struct Picker {
+    clock: ChordClock,
+    key: MusicKey,
+    /// Notes the arpeggio has played since the chord changed.
+    arp: usize,
+    /// The chord step the arpeggio started on.
+    step: Option<u64>,
+}
+
+impl Picker {
+    fn new(s: &NoteSound, cx: &MixCx) -> Picker {
+        let p = cx.settings.progression(s.chords);
+        Picker { clock: ChordClock::new(p, &cx.settings.beats), key: p.key, arp: 0, step: None }
+    }
+}
+
+/// The native answer for one hit: whether it is loud enough, and which notes of the chord
+/// playing at its video time it plays.
+fn native(s: &NoteSound, picker: &mut Picker, h: &Heard, cx: &MixCx) -> Played {
     let span = (s.loudest_hit - s.quietest_hit).max(1.0);
-    let velocity = ((h.event.speed - s.quietest_hit) / span).clamp(0.0, 1.0);
-    let candidates = chords.notes_at(h.time);
-    let key = if candidates.is_empty() {
-        0
+    let mut velocity = ((h.event.speed - s.quietest_hit) / span).clamp(0.0, 1.0);
+    let video = (cx.video_time)(h.time);
+    let step = picker.clock.step(video);
+    if picker.step != Some(step) {
+        picker.step = Some(step);
+        picker.arp = 0;
+    }
+    let chord = *picker.clock.at(video).1;
+    let (low, high) = (s.low_note.min(127) as u8, s.high_note.min(127) as u8);
+    let candidates = candidates(&chord, picker.key, s.picks_from, low, high);
+    let loud = h.event.speed >= s.quietest_hit;
+    let full = s.plays == Plays::FullChord && (s.full_chord_speed <= 0.0 || h.event.speed >= s.full_chord_speed);
+    let keys = if full {
+        velocity *= 0.8;
+        voicing(&chord, low, high, s.chord_spread.clamp(1, 3) as u8)
+    } else if s.plays == Plays::Root {
+        let bass = bpe_mix::chords::bass_note(&chord);
+        (low.min(high)..=low.max(high)).find(|k| k % 12 == bass).into_iter().collect()
+    } else if candidates.is_empty() {
+        Vec::new()
     } else {
-        let pick = match s.pitch_by {
-            PitchBy::Random => mix64(cx.settings.seed ^ h.index) as usize % candidates.len(),
-            PitchBy::Speed => (velocity * (candidates.len() - 1) as f32).round() as usize,
-            PitchBy::Hits => (h.count.max(1) as usize - 1) % candidates.len(),
+        let n = candidates.len();
+        let arp = picker.arp;
+        let pick = match s.order {
+            Order::Random => mix64(cx.settings.seed ^ h.index) as usize % n,
+            Order::Speed => (velocity * (n - 1) as f32).round() as usize,
+            Order::Hits => (h.count.max(1) as usize - 1) % n,
+            Order::ArpUp => arp % n,
+            Order::ArpDown => n - 1 - arp % n,
+            Order::ArpUpDown if n == 1 => 0,
+            Order::ArpUpDown => {
+                let p = arp % (2 * n - 2);
+                if p < n { p } else { 2 * n - 2 - p }
+            }
+            Order::Height => {
+                let up = (1.0 - h.event.point.y / cx.settings.half_height.max(1.0)) * 0.5;
+                (up.clamp(0.0, 1.0) * (n - 1) as f32).round() as usize
+            }
         };
-        candidates[pick]
+        vec![candidates[pick.min(n - 1)]]
     };
+    let play = loud && !keys.is_empty();
+    if play {
+        picker.arp += 1;
+    }
     Played {
-        play: h.event.speed >= s.quietest_hit && !candidates.is_empty(),
-        key,
+        play,
+        keys,
         velocity,
         volume: s.volume,
         pan: cx.pan_of(h.event, s.stereo_width),
         decay: s.decay,
         brightness: s.brightness,
+        candidates,
     }
 }
 
-fn note(s: &NoteSound, frame: usize, p: &Played) -> Note {
+fn notes(s: &NoteSound, frame: usize, p: &Played, out: &mut Vec<Note>) {
     let gain = p.velocity * p.velocity.sqrt() * 10f32.powf(p.volume / 20.0);
     let angle = (p.pan + 1.0) * FRAC_PI_4;
-    Note {
+    out.extend(p.keys.iter().map(|&key| Note {
         frame,
         instrument: s.instrument,
-        key: p.key,
+        key,
         velocity: p.velocity,
         left: gain * angle.cos(),
         right: gain * angle.sin(),
         decay: p.decay,
         brightness: p.brightness,
-    }
+    }));
 }
 
 /// Walks the events this sound speaks for, in order: the hits "Plays when" and "Only hits
@@ -90,7 +144,7 @@ fn each_note(
     mut play: impl FnMut(&Heard, Played) -> Option<Played>,
     out: &mut Vec<Note>,
 ) {
-    let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
+    let mut picker = Picker::new(s, cx);
     let rate = cx.settings.steps_per_second.max(1);
     // How often each ball has hit, as far as this thing has seen.
     let mut hits: BTreeMap<Party, u32> = BTreeMap::new();
@@ -144,7 +198,7 @@ fn each_note(
             continue;
         }
         let heard = Heard { event: e, time, index: (cx.hit_index)(e), count };
-        let n = native(s, &chords, &heard, cx);
+        let n = native(s, &mut picker, &heard, cx);
         let Some(p) = play(&heard, n) else { continue };
         // Hits away from the camera's shot fade out.
         let fade = cx.gain_of(e);
@@ -152,21 +206,21 @@ fn each_note(
             continue;
         }
         last_note = Some(time);
-        let mut n = note(s, frame, &p);
+        let first = out.len();
+        notes(s, frame, &p, out);
         if fade < 1.0 {
-            n.left *= fade;
-            n.right *= fade;
+            for n in &mut out[first..] {
+                n.left *= fade;
+                n.right *= fade;
+            }
         }
-        out.push(n);
     }
 }
 
 /// A sound graph's view of the chords, for one hit.
 struct SoundHost<'a> {
-    chords: &'a Chords,
+    candidates: &'a [u8],
     seed: u64,
-    /// The hit's time, kept exact so the chord is the one the native path hears.
-    time: f64,
 }
 
 impl Host for SoundHost<'_> {
@@ -175,8 +229,8 @@ impl Host for SoundHost<'_> {
     }
 
     fn chord_note(&self, _time: f32, index: u64) -> Option<f32> {
-        let candidates = self.chords.notes_at(self.time);
-        (!candidates.is_empty()).then(|| candidates[mix64(self.seed ^ index) as usize % candidates.len()] as f32)
+        let c = self.candidates;
+        (!c.is_empty()).then(|| c[mix64(self.seed ^ index) as usize % c.len()] as f32)
     }
 }
 
@@ -208,7 +262,6 @@ impl ModuleMix for NoteSoundMix {
     ) {
         let Some(program) = Self::compiled(params, graph) else { return self.notes(params, thing, events, cx, out) };
         let s = NoteSound::from_params(params);
-        let chords = Chords::parse(&cx.settings.chords, s.low_note.min(127) as u8, s.high_note.min(127) as u8);
         let half_width = cx.settings.half_width.max(1.0);
         each_note(
             &s,
@@ -217,7 +270,7 @@ impl ModuleMix for NoteSoundMix {
             cx,
             |h, n| {
                 let e = h.event;
-                let host = SoundHost { chords: &chords, seed: cx.settings.seed, time: h.time };
+                let host = SoundHost { candidates: &n.candidates, seed: cx.settings.seed };
                 let inputs = [
                     Val::Ball(Some(Ball { thing: e.a.thing, item: e.a.item })),
                     Val::Number(e.speed),
@@ -228,14 +281,27 @@ impl ModuleMix for NoteSoundMix {
                     Val::Number(h.count as f32),
                 ];
                 let o = Vm::eval(&program, &host, h.time as f32, &inputs, h.index);
+                let first = n.keys.first().copied().unwrap_or(0);
+                let key = o.number(1, first as f32).round().clamp(0.0, 127.0) as i32;
+                let keys: Vec<u8> = if n.keys.is_empty() {
+                    vec![key as u8]
+                } else {
+                    n.keys
+                        .iter()
+                        .map(|&k| k as i32 + key - first as i32)
+                        .filter(|k| (0..=127).contains(k))
+                        .map(|k| k as u8)
+                        .collect()
+                };
                 o.boolean(0, n.play).then(|| Played {
                     play: true,
-                    key: o.number(1, n.key as f32).round().clamp(0.0, 127.0) as u8,
+                    keys,
                     velocity: o.number(2, n.velocity).clamp(0.0, 1.0),
                     volume: o.number(3, n.volume).clamp(-80.0, 24.0),
                     pan: o.number(4, n.pan).clamp(-1.0, 1.0),
                     decay: o.number(5, n.decay).clamp(0.01, 30.0),
                     brightness: o.number(6, n.brightness).clamp(0.0, 1.0),
+                    candidates: n.candidates.clone(),
                 })
             },
             out,
@@ -245,9 +311,13 @@ impl ModuleMix for NoteSoundMix {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{NoteSound, Order, Plays};
     use super::NoteSoundMix;
     use crate::{kit, mix_scene, new_scene};
-    use bpe_core::{SlotId, Target, ThingId, Value, resolve, resolve_slot};
+    use bpe_core::{
+        Chord, Extension, Progression, ProgressionId, ProgressionRef, Quality, Settings, SlotId, Target, ThingId,
+        Value, resolve, resolve_slot,
+    };
     use bpe_mix::{MixCx, MixSettings, ModuleMix};
     use bpe_runtime::{Event, EventKind, Log, Party};
     use glam::Vec2;
@@ -308,7 +378,7 @@ mod tests {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
         let m = resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
-        scene.library.modules.get_mut(&m).unwrap().params.set("pitch_by", Value::Choice("hits".into()));
+        scene.library.modules.get_mut(&m).unwrap().params.set("order", Value::Choice("hits".into()));
         scene.library.modules.get_mut(&m).unwrap().params.set("low_note", Value::Int(60));
         scene.library.modules.get_mut(&m).unwrap().params.set("high_note", Value::Int(72));
         let resolved = resolve(&scene, &kit.registry);
@@ -325,7 +395,7 @@ mod tests {
         let keys: Vec<u8> = notes.iter().map(|n| n.key).collect();
         assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
         // By speed: a soft hit plays the lowest note, a hard one the highest.
-        scene.library.modules.get_mut(&m).unwrap().params.set("pitch_by", Value::Choice("speed".into()));
+        scene.library.modules.get_mut(&m).unwrap().params.set("order", Value::Choice("speed".into()));
         let resolved = resolve(&scene, &kit.registry);
         let params = &resolved.things[&ThingId(2)].slots[&SlotId::Sound].params;
         let mut soft_hard = Log::default();
@@ -342,6 +412,161 @@ mod tests {
         NoteSoundMix.notes(params, ThingId(2), log.events(), &cx, &mut few);
         assert_eq!(few.len(), 2, "1.0 s, (2.0 s dropped), 3.0 s");
         assert_eq!((few[0].frame, few[1].frame), (48_000, 144_000));
+    }
+
+    fn progression(chords: &[(u8, Quality, Extension, Option<u8>, u16)]) -> Progression {
+        Progression {
+            chords: chords
+                .iter()
+                .map(|&(root, q, e, bass, beats)| Chord { bass, ..Chord::new(root, q, e, beats) })
+                .collect(),
+            ..Progression::default()
+        }
+    }
+
+    /// Mix settings holding `p` as Scene defaults' progression, on a beat every half second.
+    fn with_chords(p: Progression) -> MixSettings {
+        MixSettings {
+            duration: 20.0,
+            steps_per_second: 240,
+            progressions: [(ProgressionId(0), p)].into(),
+            scene_chords: Some(ProgressionId(0)),
+            beats: (0..60).map(|b| b as f64 * 0.5).collect(),
+            loudness: -14.0,
+            seed: 1,
+            half_width: 540.0,
+            half_height: 960.0,
+            off_shot_fade: 0.0,
+            tags: Default::default(),
+        }
+    }
+
+    fn keys_of(s: &NoteSound, settings: &MixSettings, log: &Log) -> Vec<Vec<u8>> {
+        let cx = test_cx(settings, log);
+        let mut notes = Vec::new();
+        NoteSoundMix.notes(&s.to_params(), ThingId(2), log.events(), &cx, &mut notes);
+        let mut by_frame: Vec<(usize, Vec<u8>)> = Vec::new();
+        for n in notes {
+            match by_frame.last_mut() {
+                Some((f, keys)) if *f == n.frame => keys.push(n.key),
+                _ => by_frame.push((n.frame, vec![n.key])),
+            }
+        }
+        by_frame.into_iter().map(|(_, k)| k).collect()
+    }
+
+    /// Hits at these seconds (240 steps a second).
+    fn hits_at(times: &[f64], speed: f32) -> Log {
+        let mut log = Log::default();
+        for &t in times {
+            log.push(hit((t * 240.0).round() as u64, 0.0, speed));
+        }
+        log
+    }
+
+    fn c_triad(beats: u16) -> (u8, Quality, Extension, Option<u8>, u16) {
+        (0, Quality::Major, Extension::Triad, None, beats)
+    }
+
+    #[test]
+    fn notes_follow_the_chord_on_the_video_clock() {
+        let settings = with_chords(progression(&[
+            (9, Quality::Minor, Extension::Triad, None, 4),
+            (5, Quality::Major, Extension::Triad, None, 4),
+        ]));
+        let log = hits_at(&[2.1], 500.0);
+        let s = NoteSound::default();
+        let straight = keys_of(&s, &settings, &log);
+        assert!([5, 9, 0].contains(&(straight[0][0] % 12)), "F chord at 2.1 s: {straight:?}");
+        fn early(t: f64) -> f64 {
+            t - 1.1
+        }
+        let cx = MixCx { video_time: &early, ..test_cx(&settings, &log) };
+        let mut notes = Vec::new();
+        NoteSoundMix.notes(&s.to_params(), ThingId(2), log.events(), &cx, &mut notes);
+        assert!([9, 0, 4].contains(&(notes[0].key % 12)), "Am at video time 1.0 s: {}", notes[0].key);
+    }
+
+    #[test]
+    fn a_module_can_use_its_own_progression() {
+        let mut settings = with_chords(progression(&[(9, Quality::Minor, Extension::Triad, None, 4)]));
+        settings.progressions.insert(ProgressionId(1), progression(&[(6, Quality::Major, Extension::Triad, None, 4)]));
+        let log = hits_at(&[1.0, 2.0, 3.0, 4.0], 500.0);
+        let scene_s = keys_of(&NoteSound::default(), &settings, &log);
+        let own = NoteSound { chords: ProgressionRef(Some(ProgressionId(1))), ..NoteSound::default() };
+        let own_s = keys_of(&own, &settings, &log);
+        assert!(scene_s.iter().flatten().all(|k| [9, 0, 4].contains(&(k % 12))), "{scene_s:?}");
+        assert!(own_s.iter().flatten().all(|k| [6, 10, 1].contains(&(k % 12))), "{own_s:?}");
+        let missing = NoteSound { chords: ProgressionRef(Some(ProgressionId(7))), ..NoteSound::default() };
+        assert_eq!(keys_of(&missing, &settings, &log), scene_s, "a missing progression plays the scene's");
+    }
+
+    fn arp(order: Order, low: u32, high: u32) -> NoteSound {
+        NoteSound { order, low_note: low, high_note: high, ..NoteSound::default() }
+    }
+
+    #[test]
+    fn arp_up_climbs_and_wraps() {
+        let settings = with_chords(progression(&[c_triad(64)]));
+        let log = hits_at(&[0.1, 0.2, 0.3, 0.4, 0.5], 500.0);
+        let keys: Vec<u8> = keys_of(&arp(Order::ArpUp, 60, 67), &settings, &log).concat();
+        assert_eq!(keys, [60, 64, 67, 60, 64]);
+        let down: Vec<u8> = keys_of(&arp(Order::ArpDown, 60, 67), &settings, &log).concat();
+        assert_eq!(down, [67, 64, 60, 67, 64]);
+    }
+
+    #[test]
+    fn arp_up_down_bounces_without_repeating_ends() {
+        let settings = with_chords(progression(&[c_triad(64)]));
+        let log = hits_at(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 500.0);
+        let keys: Vec<u8> = keys_of(&arp(Order::ArpUpDown, 60, 67), &settings, &log).concat();
+        assert_eq!(keys, [60, 64, 67, 64, 60, 64]);
+    }
+
+    #[test]
+    fn the_arp_restarts_on_a_new_chord() {
+        let settings = with_chords(progression(&[c_triad(1), (5, Quality::Major, Extension::Triad, None, 1)]));
+        let log = hits_at(&[0.1, 0.3, 0.6], 500.0);
+        let keys: Vec<u8> = keys_of(&arp(Order::ArpUp, 60, 72), &settings, &log).concat();
+        assert_eq!(keys, [60, 64, 60], "F's lowest note in range is C again (60)");
+    }
+
+    #[test]
+    fn root_only_plays_the_bass_note() {
+        let settings = with_chords(progression(&[(0, Quality::Major, Extension::Maj7, Some(4), 8)]));
+        let s = NoteSound { plays: Plays::Root, low_note: 36, high_note: 60, ..NoteSound::default() };
+        assert_eq!(keys_of(&s, &settings, &hits_at(&[1.0], 500.0)), [vec![40]]);
+    }
+
+    #[test]
+    fn full_chord_above_a_speed() {
+        let settings = with_chords(progression(&[c_triad(64)]));
+        let s = NoteSound {
+            plays: Plays::FullChord,
+            full_chord_speed: 500.0,
+            low_note: 48,
+            high_note: 84,
+            ..NoteSound::default()
+        };
+        assert_eq!(keys_of(&s, &settings, &hits_at(&[1.0], 400.0))[0].len(), 1);
+        assert_eq!(keys_of(&s, &settings, &hits_at(&[1.0], 600.0)), [vec![48, 52, 55]]);
+    }
+
+    #[test]
+    fn full_chord_in_a_tiny_range_is_silent_when_nothing_fits() {
+        let settings = with_chords(progression(&[c_triad(64)]));
+        let s = NoteSound { plays: Plays::FullChord, low_note: 61, high_note: 62, ..NoteSound::default() };
+        assert!(keys_of(&s, &settings, &hits_at(&[1.0], 600.0)).is_empty());
+    }
+
+    #[test]
+    fn height_order_gives_high_notes_at_the_top() {
+        let settings = with_chords(progression(&[c_triad(64)]));
+        let s = arp(Order::Height, 60, 72);
+        let mut log = Log::default();
+        log.push(Event { point: Vec2::new(0.0, -960.0), ..hit(240, 0.0, 500.0) });
+        log.push(Event { point: Vec2::new(0.0, 960.0), ..hit(480, 0.0, 500.0) });
+        assert_eq!(keys_of(&s, &settings, &log), [vec![72], vec![60]]);
     }
 
     fn hit(step: u64, x: f32, speed: f32) -> Event {
