@@ -112,44 +112,87 @@ fn resample(points: &[(f64, [f32; 4])], start: f64, rate: f64, until: f64) -> Ve
     out
 }
 
+/// A ball's live values on the video clock at [`MOTION_RATE`], from `start` video seconds.
+struct Series {
+    samples: Arc<Vec<[f32; 4]>>,
+    start: f64,
+    key: u64,
+}
+
+/// What working out the hits shares from one hit to the next.
+struct Run<'a> {
+    resolved: &'a Resolved,
+    log: &'a Log,
+    settings: &'a MixSettings,
+    video_time: &'a dyn Fn(f64) -> f64,
+    /// Whether some patch reads live inputs, so hits need tracks.
+    live: bool,
+    hits_so_far: BTreeMap<Party, u32>,
+    born: BTreeMap<Party, u64>,
+    fills: BTreeMap<ThingId, Option<(crate::paint::Paint, bool)>>,
+    series: BTreeMap<Party, Option<Series>>,
+}
+
+impl Run<'_> {
+    /// The ball's whole recorded track, on the video clock, built once per ball.
+    fn series(&mut self, ball: Party, screen: bool) -> Option<&Series> {
+        let (log, settings, video_time) = (self.log, self.settings, self.video_time);
+        self.series
+            .entry(ball)
+            .or_insert_with(|| {
+                let sps = settings.steps_per_second.max(1) as f64;
+                let points: Vec<(f64, [f32; 4])> = log
+                    .track(ball)
+                    .iter()
+                    .map(|s| (video_time(s.step as f64 / sps), live_values(s, log, settings, screen)))
+                    .collect();
+                let start = points.first()?.0;
+                let track = Track::new(MOTION_RATE as f32, resample(&points, start, MOTION_RATE as f64, f64::INFINITY));
+                Some(Series { samples: track.samples, start, key: track.key })
+            })
+            .as_ref()
+    }
+}
+
 /// Every Hit and Note event's values, by its place in the log.
-fn hit_values(resolved: &Resolved, log: &Log, settings: &MixSettings) -> BTreeMap<u64, Arc<HitPhysics>> {
-    let sps = settings.steps_per_second.max(1);
-    let track_steps = (TRACK_SECONDS * sps as f64).round() as u64;
-    let mut hits_so_far: BTreeMap<Party, u32> = BTreeMap::new();
-    let mut born: BTreeMap<Party, u64> = BTreeMap::new();
-    let mut fills = BTreeMap::new();
+fn hit_values(
+    resolved: &Resolved,
+    log: &Log,
+    settings: &MixSettings,
+    video_time: &dyn Fn(f64) -> f64,
+    live: bool,
+) -> BTreeMap<u64, Arc<HitPhysics>> {
+    let mut run = Run {
+        resolved,
+        log,
+        settings,
+        video_time,
+        live,
+        hits_so_far: BTreeMap::new(),
+        born: BTreeMap::new(),
+        fills: BTreeMap::new(),
+        series: BTreeMap::new(),
+    };
     let mut out = BTreeMap::new();
     for (i, e) in log.events().iter().enumerate() {
         match e.kind {
             EventKind::Spawn => {
-                born.insert(e.a, e.step);
+                run.born.insert(e.a, e.step);
                 continue;
             }
-            EventKind::Hit => *hits_so_far.entry(e.a).or_default() += 1,
+            EventKind::Hit => *run.hits_so_far.entry(e.a).or_default() += 1,
             EventKind::Note => {}
             _ => continue,
         }
-        out.insert(
-            i as u64,
-            Arc::new(one_hit(e, resolved, log, settings, &hits_so_far, &born, &mut fills, track_steps)),
-        );
+        out.insert(i as u64, Arc::new(one_hit(e, &mut run)));
     }
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn one_hit(
-    e: &Event,
-    resolved: &Resolved,
-    log: &Log,
-    settings: &MixSettings,
-    hits_so_far: &BTreeMap<Party, u32>,
-    born: &BTreeMap<Party, u64>,
-    fills: &mut BTreeMap<ThingId, Option<(crate::paint::Paint, bool)>>,
-    track_steps: u64,
-) -> HitPhysics {
+fn one_hit(e: &Event, run: &mut Run) -> HitPhysics {
+    let (resolved, log, settings) = (run.resolved, run.log, run.settings);
     let sps = settings.steps_per_second.max(1);
+    let fills = &mut run.fills;
     let fill = fills.entry(e.a.thing).or_insert_with(|| fill_of(resolved, e.a.thing));
     let screen =
         fill.as_ref().map(|f| f.1).unwrap_or_else(|| resolved.things.get(&e.a.thing).is_some_and(|r| r.screen));
@@ -158,7 +201,7 @@ fn one_hit(
     let at_hit = track.get(from).filter(|s| s.step == e.step);
     let place = if screen { e.point } else { log.camera_at(e.step).to_screen(e.point) };
     let (height, left_right) = in_frame(place, settings);
-    let hits = hits_so_far.get(&e.a).copied().unwrap_or(0);
+    let hits = run.hits_so_far.get(&e.a).copied().unwrap_or(0);
     let time = e.time(sps);
     let speed = at_hit.map_or(e.speed, |s| s.velocity.length());
     let (hue, brightness) = match fill {
@@ -182,7 +225,7 @@ fn one_hit(
         let r = resolved.things.get(&e.a.thing).filter(|r| r.kind.as_str() == "balls")?;
         Some(crate::things::balls::BallsSettings::from_params(&r.params).radius)
     });
-    let age = time - born.get(&e.a).map_or(0.0, |s| *s as f64 / sps as f64);
+    let age = time - run.born.get(&e.a).map_or(0.0, |s| *s as f64 / sps as f64);
     let mut values = [0.0; 11];
     values[0] = e.speed;
     values[1] = at_hit.map_or(0.0, |s| angle(s.velocity, e.normal));
@@ -195,15 +238,15 @@ fn one_hit(
     values[9] = hits as f32;
     values[10] = age as f32;
     let tags = e.b.and_then(|b| settings.tags.get(&b.thing)).map(|t| t.iter().cloned().collect()).unwrap_or_default();
-    let end = e.step + track_steps;
-    let points: Vec<(f64, [f32; 4])> = track[from..]
-        .iter()
-        .take_while(|s| s.step <= end)
-        .map(|s| (s.step as f64 / sps as f64, live_values(s, log, settings, screen)))
-        .collect();
-    let track = (!points.is_empty()).then(|| {
-        let samples = resample(&points, time, MOTION_RATE as f64, time + TRACK_SECONDS);
-        Arc::new(Track { rate: MOTION_RATE as f32, samples })
+    let has_track = run.live && from < track.len();
+    let video_time = run.video_time;
+    let track = has_track.then(|| run.series(e.a, screen)).flatten().map(|series| {
+        let rate = MOTION_RATE as f64;
+        let at = video_time(time);
+        let until = video_time(time + TRACK_SECONDS);
+        let start = ((at - series.start) * rate).round().max(0.0) as usize;
+        let len = ((until - at).max(0.0) * rate).ceil() as usize + 1;
+        Arc::new(Track { rate: rate as f32, samples: series.samples.clone(), start, len, key: series.key })
     });
     HitPhysics { values, tags, track }
 }
@@ -275,7 +318,11 @@ pub fn physics_inputs(
     settings: &MixSettings,
     video_time: &dyn Fn(f64) -> f64,
 ) -> PhysicsInputs {
-    let hits = if uses_hit_inputs(scene) { hit_values(resolved, log, settings) } else { BTreeMap::new() };
+    let hits = if uses_hit_inputs(scene) {
+        hit_values(resolved, log, settings, video_time, uses_live_inputs(scene))
+    } else {
+        BTreeMap::new()
+    };
     let signals = scene_series(resolved, log, settings, video_time);
     let n = signals.chords.len();
     let scene_progression = settings.progression(ProgressionRef(None));
@@ -337,7 +384,7 @@ mod tests {
         let track = p.hits[&(i as u64)].track.clone().unwrap();
         let sps = settings.steps_per_second as f64;
         let gap = ((next.step - first.step) as f64 / sps * 60.0) as usize;
-        let heights: Vec<f32> = track.samples[..gap.min(track.samples.len())].iter().map(|s| s[1]).collect();
+        let heights: Vec<f32> = (0..gap.min(track.len)).map(|k| track.at(k as f32 / 60.0)[1]).collect();
         let top = heights.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         assert!(heights[top] > heights[heights.len() - 1] + 0.05, "it moves: {heights:?}");
         for w in heights[top..].windows(2) {
@@ -409,5 +456,50 @@ mod tests {
         assert!(uses_live_inputs(&with_input("live_input", "speed")));
         assert!(!uses_live_inputs(&with_input("hit_input", "speed")));
         assert!(!uses_live_inputs(&with_input("scene_input", "balls")));
+    }
+
+    /// A ball moving up at 100 px/s, sampled every run step for 3 s, hit at step 0 and 60.
+    fn rising_log(sps: u64) -> Log {
+        let mut log = hand_log(&[(0, Vec2::ZERO, Vec2::Y, 100.0), (sps, Vec2::ZERO, Vec2::Y, 100.0)]);
+        let ball = Party { thing: BALLS, item: 0 };
+        for step in 0..=3 * sps {
+            let t = step as f32 / sps as f32;
+            let position = Vec2::new(0.0, -100.0 * t);
+            log.push_track(ball, TrackSample { step, position, velocity: Vec2::new(0.0, -100.0), radius: 20.0 });
+        }
+        log
+    }
+
+    #[test]
+    fn tracks_run_on_the_video_clock() {
+        let kit = kit();
+        let scene = with_input("live_input", "height");
+        let resolved = resolve(&scene, &kit.registry);
+        let settings = mix_settings(&scene, &resolved);
+        let sps = settings.steps_per_second as u64;
+        let log = rising_log(sps);
+        // The video runs at half speed: one run second lasts two video seconds.
+        let slow = |t: f64| 2.0 * t;
+        let p = physics_inputs(&scene, &resolved, &log, &settings, &slow);
+        let track = p.hits[&0].track.clone().unwrap();
+        let at = |s: f32| track.at(s)[1];
+        let per_px = 1.0 / (2.0 * settings.half_height);
+        // One video second after the hit is half a run second: 50 px higher.
+        assert!((at(1.0) - at(0.0) - 50.0 * per_px).abs() < 1e-3, "{} {}", at(0.0), at(1.0));
+    }
+
+    #[test]
+    fn hits_share_one_series() {
+        let kit = kit();
+        let scene = with_input("live_input", "height");
+        let resolved = resolve(&scene, &kit.registry);
+        let settings = mix_settings(&scene, &resolved);
+        let log = rising_log(settings.steps_per_second as u64);
+        let p = physics_inputs(&scene, &resolved, &log, &settings, &same);
+        let (a, b) = (p.hits[&0].track.clone().unwrap(), p.hits[&1].track.clone().unwrap());
+        assert!(Arc::ptr_eq(&a.samples, &b.samples));
+        assert_eq!(b.start, 60);
+        // The second hit's window starts where the ball was then.
+        assert!((b.at(0.0)[1] - a.at(1.0)[1]).abs() < 1e-4);
     }
 }

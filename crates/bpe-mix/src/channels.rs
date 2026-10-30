@@ -619,7 +619,7 @@ mod tests {
         let s = one_patch(g, 1.2);
         let saw = NoteInstrument::Library(Some(InstrumentId(0)));
         let samples: Vec<[f32; 4]> = (0..=60).map(|i| [0.0, 1.0 - i as f32 / 60.0, 0.5, 0.0]).collect();
-        let track = bpe_synth::Track { rate: 60.0, samples };
+        let track = bpe_synth::Track::new(60.0, samples);
         let mut physics = PhysicsInputs::default();
         physics.hits.insert(0, hit_with(&[], Some(track)));
         let notes = vec![Note { hit: Some(0), ..note(0, 48, 7, saw) }];

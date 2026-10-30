@@ -37,6 +37,12 @@ pub struct PhysicsIn {
     /// The value read once at the hit.
     fixed: f32,
     smoothed: Option<f32>,
+    /// `since_on` when the current note's track started: a mono voice keeps its clock across
+    /// notes, so a note bound to a running voice reads its track from here.
+    track_start: f32,
+    /// Bound since the last block while already running: the next block sets `track_start`.
+    rebound: bool,
+    running: bool,
 }
 
 impl PhysicsIn {
@@ -66,6 +72,9 @@ impl PhysicsIn {
             sources: Sources::default(),
             fixed: 0.0,
             smoothed: None,
+            track_start: 0.0,
+            rebound: false,
+            running: false,
         }
     }
 
@@ -73,7 +82,8 @@ impl PhysicsIn {
         match self.reads {
             Reads::Hit => self.fixed,
             Reads::Live => {
-                self.sources.hit.as_ref().and_then(|h| h.track.as_ref()).map_or(0.0, |t| t.at(cx.since_on)[self.index])
+                let since = cx.since_on - self.track_start;
+                self.sources.hit.as_ref().and_then(|h| h.track.as_ref()).map_or(0.0, |t| t.at(since)[self.index])
             }
             Reads::Scene => self.sources.scene.as_ref().map_or(0.0, |s| s.value(&self.input, &self.channel, cx.time)),
         }
@@ -93,6 +103,9 @@ impl PhysicsIn {
 impl Block for PhysicsIn {
     fn reset(&mut self, _cx: &Ctx) {
         self.smoothed = None;
+        self.track_start = 0.0;
+        self.rebound = false;
+        self.running = false;
     }
 
     fn bind(&mut self, sources: &Sources) {
@@ -103,9 +116,14 @@ impl Block for PhysicsIn {
             None => 0.0,
         };
         self.smoothed = None;
+        self.rebound = self.running;
     }
 
     fn process(&mut self, cx: &Ctx, _inputs: &[Option<&Buf>], outputs: &mut [Buf]) {
+        if std::mem::take(&mut self.rebound) {
+            self.track_start = cx.since_on;
+        }
+        self.running = true;
         let target = self.map(self.raw(cx));
         let v = match self.smoothed {
             Some(last) if self.smoothing > 0.0 => {
@@ -187,7 +205,7 @@ mod tests {
     fn live_input_follows_the_track_and_holds_the_last_value() {
         let track = |heights: &[f32]| {
             let samples = heights.iter().map(|&h| [0.0, h, 0.0, 0.0]).collect();
-            let h = HitPhysics { track: Some(Arc::new(Track { rate: 60.0, samples })), ..HitPhysics::default() };
+            let h = HitPhysics { track: Some(Arc::new(Track::new(60.0, samples))), ..HitPhysics::default() };
             Sources { hit: Some(Arc::new(h)), scene: None }
         };
         let falling = track(&[1.0, 0.5, 0.0]);
@@ -238,5 +256,22 @@ mod tests {
         };
         assert_eq!(with("Kick"), 1.0);
         assert_eq!(with("Snare"), 0.0);
+    }
+
+    #[test]
+    fn a_rebound_live_input_reads_from_the_new_note() {
+        // A mono voice keeps its clock across notes; the new note's track starts at its own hit.
+        let track = |h: f32| {
+            let samples = vec![[0.0, h, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]];
+            let h = HitPhysics { track: Some(Arc::new(Track::new(1.0, samples))), ..HitPhysics::default() };
+            Sources { hit: Some(Arc::new(h)), scene: None }
+        };
+        let mut b = PhysicsIn::new(Reads::Live, &knobs("height", 0.0, 1.0));
+        let mut cx = Ctx::default();
+        b.reset(&cx);
+        b.bind(&track(1.0));
+        read(&mut b, &mut cx, 3000);
+        b.bind(&track(0.8));
+        assert!((read(&mut b, &mut cx, 1) - 0.8).abs() < 1e-3, "reads the new track from its start");
     }
 }

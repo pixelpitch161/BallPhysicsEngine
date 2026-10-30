@@ -80,27 +80,50 @@ fn hash_f32s(h: &mut DefaultHasher, values: &[f32]) {
     }
 }
 
-/// A ball's live values after a hit, sampled evenly from the moment the note starts.
+/// A ball's live values after a hit: a window of the ball's whole series, sampled evenly from
+/// the moment the note starts. Every hit of a ball shares the one series.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Track {
     /// Samples per second.
     pub rate: f32,
-    /// [`LIVE_INPUTS`] order; sample `i` is `i / rate` seconds after the note starts.
-    pub samples: Vec<[f32; 4]>,
+    /// [`LIVE_INPUTS`] order, for the whole ball.
+    pub samples: Arc<Vec<[f32; 4]>>,
+    /// Where this note's window starts in `samples`; sample `start + i` is `i / rate` seconds
+    /// after the note starts.
+    pub start: usize,
+    /// How many samples the window holds.
+    pub len: usize,
+    /// A hash of the whole series, so the window's key needn't read every sample.
+    pub key: u64,
 }
 
 impl Track {
+    /// A track that is all of `samples`.
+    pub fn new(rate: f32, samples: Vec<[f32; 4]>) -> Self {
+        let mut h = DefaultHasher::new();
+        for v in &samples {
+            hash_f32s(&mut h, v);
+        }
+        Self { rate, len: samples.len(), samples: Arc::new(samples), start: 0, key: h.finish() }
+    }
+
+    fn window(&self) -> &[[f32; 4]] {
+        let start = self.start.min(self.samples.len());
+        &self.samples[start..(start + self.len).min(self.samples.len())]
+    }
+
     /// The values `seconds` after the note started, blended between samples. The last sample
-    /// holds once the recording ends; an empty track is all zeros.
+    /// holds once the window ends; an empty track is all zeros.
     pub fn at(&self, seconds: f32) -> [f32; 4] {
-        let Some(last) = self.samples.last() else { return [0.0; 4] };
+        let w = self.window();
+        let Some(last) = w.last() else { return [0.0; 4] };
         let x = (seconds.max(0.0) * self.rate.max(1e-6)).min(f32::MAX);
         let i = x.floor() as usize;
-        if !x.is_finite() || i + 1 >= self.samples.len() {
+        if !x.is_finite() || i + 1 >= w.len() {
             return *last;
         }
         let f = x - i as f32;
-        let (a, b) = (self.samples[i], self.samples[i + 1]);
+        let (a, b) = (w[i], w[i + 1]);
         std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f)
     }
 }
@@ -122,10 +145,7 @@ impl HitPhysics {
         hash_f32s(&mut h, &self.values);
         self.tags.hash(&mut h);
         if let Some(t) = &self.track {
-            t.rate.to_bits().hash(&mut h);
-            for s in &t.samples {
-                hash_f32s(&mut h, s);
-            }
+            (t.rate.to_bits(), t.start, t.len, t.key).hash(&mut h);
         }
         h.finish()
     }
