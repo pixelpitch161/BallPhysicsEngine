@@ -474,7 +474,12 @@ mod tests {
         let inserts = bpe_synth::chain_graph(&[fx("reverb"), fx("delay")]);
         let (reverb, delay) = (bpe_core::BusId(0), bpe_core::BusId(1));
         s.buses = vec![
-            bpe_core::Bus { id: reverb, name: "Reverb".into(), volume: 0.0, fx: bpe_synth::chain_graph(&[fx("reverb")]) },
+            bpe_core::Bus {
+                id: reverb,
+                name: "Reverb".into(),
+                volume: 0.0,
+                fx: bpe_synth::chain_graph(&[fx("reverb")]),
+            },
             bpe_core::Bus { id: delay, name: "Delay".into(), volume: 0.0, fx: bpe_synth::chain_graph(&[fx("delay")]) },
         ];
         for channel in [3, 7] {

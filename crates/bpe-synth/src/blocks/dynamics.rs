@@ -34,12 +34,60 @@ fn taps() -> &'static [f32; TAPS] {
     })
 }
 
+/// Input frames each phase of the 4x filter reaches back over.
+const PHASE: usize = TAPS / 4 + 1;
+
+/// The filter split into its four phases: phase `p` takes taps `p`, `p + 4`, `p + 8`...
+fn phases() -> &'static [[f32; PHASE]; 4] {
+    static PHASES: OnceLock<[[f32; PHASE]; 4]> = OnceLock::new();
+    PHASES.get_or_init(|| {
+        let h = taps();
+        let mut out = [[0.0; PHASE]; 4];
+        for (p, phase) in out.iter_mut().enumerate() {
+            for (k, t) in phase.iter_mut().enumerate() {
+                *t = h.get(p + 4 * k).copied().unwrap_or(0.0);
+            }
+        }
+        out
+    })
+}
+
+/// The filter scaled by a quarter, for coming back down.
+fn down_taps() -> &'static [f32; TAPS] {
+    static DOWN: OnceLock<[f32; TAPS]> = OnceLock::new();
+    DOWN.get_or_init(|| taps().map(|t| t * 0.25))
+}
+
+/// A history of the last `N` samples, newest first, held twice over so it reads as one slice.
+#[derive(Clone, Debug)]
+struct History<const N: usize> {
+    buf: Vec<f32>,
+    pos: usize,
+}
+
+impl<const N: usize> History<N> {
+    fn new() -> Self {
+        Self { buf: vec![0.0; 2 * N], pos: 0 }
+    }
+
+    fn push(&mut self, x: f32) {
+        self.pos = (self.pos + N - 1) % N;
+        self.buf[self.pos] = x;
+        self.buf[self.pos + N] = x;
+    }
+
+    /// Newest first.
+    fn slice(&self) -> &[f32] {
+        &self.buf[self.pos..self.pos + N]
+    }
+}
+
 /// Four times the sample rate and back, for clipping without aliasing and for finding the
 /// peaks between samples.
 #[derive(Clone, Debug)]
 pub struct Oversampler4 {
-    up: VecDeque<f32>,
-    down: VecDeque<f32>,
+    up: History<PHASE>,
+    down: History<TAPS>,
 }
 
 impl Default for Oversampler4 {
@@ -50,35 +98,22 @@ impl Default for Oversampler4 {
 
 impl Oversampler4 {
     pub fn new() -> Self {
-        Self { up: VecDeque::from(vec![0.0; TAPS / 4 + 1]), down: VecDeque::from(vec![0.0; TAPS]) }
+        Self { up: History::new(), down: History::new() }
     }
 
     /// The four samples at 4x for the next sample in.
     pub fn up(&mut self, x: f32) -> [f32; 4] {
-        self.up.pop_back();
-        self.up.push_front(x);
-        let h = taps();
-        let mut out = [0.0; 4];
-        for (p, o) in out.iter_mut().enumerate() {
-            let mut acc = 0.0;
-            for (k, &v) in self.up.iter().enumerate() {
-                if let Some(&t) = h.get(p + 4 * k) {
-                    acc += t * v;
-                }
-            }
-            *o = acc;
-        }
-        out
+        self.up.push(x);
+        let window = self.up.slice();
+        phases().map(|phase| phase.iter().zip(window).map(|(t, v)| t * v).sum())
     }
 
     /// The next sample out, from four samples at 4x.
     pub fn down(&mut self, x: [f32; 4]) -> f32 {
         for v in x {
-            self.down.pop_back();
-            self.down.push_front(v);
+            self.down.push(v);
         }
-        let h = taps();
-        self.down.iter().zip(h.iter()).map(|(v, t)| v * t * 0.25).sum()
+        self.down.slice().iter().zip(down_taps().iter()).map(|(v, t)| v * t).sum()
     }
 }
 
@@ -120,6 +155,8 @@ struct LimiterCore {
     needed: VecDeque<(usize, f32)>,
     /// Sliding minimums waiting to be averaged, and their sum.
     mins: VecDeque<f32>,
+    /// The same minimums as a sliding minimum: increasing from the front, by frame.
+    mins_low: VecDeque<(usize, f32)>,
     sum: f64,
     count: usize,
     gain: f32,
@@ -140,6 +177,7 @@ impl LimiterCore {
             audio: VecDeque::new(),
             needed: VecDeque::new(),
             mins: VecDeque::new(),
+            mins_low: VecDeque::new(),
             sum: 0.0,
             count: 0,
             gain: 1.0,
@@ -177,6 +215,13 @@ impl LimiterCore {
         if self.mins.len() > self.lookahead + 1 {
             self.sum -= self.mins.pop_front().unwrap_or(1.0) as f64;
         }
+        while self.mins_low.back().is_some_and(|&(_, v)| v >= min) {
+            self.mins_low.pop_back();
+        }
+        self.mins_low.push_back((at, min));
+        while self.mins_low.front().is_some_and(|&(i, _)| i + self.lookahead < at) {
+            self.mins_low.pop_front();
+        }
         let target = (self.sum / self.mins.len() as f64) as f32;
         let target = target.min(*self.mins.back().unwrap_or(&1.0)).min(self.window_min());
         let release = self.release.unwrap_or_else(|| {
@@ -197,7 +242,7 @@ impl LimiterCore {
 
     /// The smallest of the minimums still being averaged.
     fn window_min(&self) -> f32 {
-        self.mins.iter().copied().fold(1.0, f32::min)
+        self.mins_low.front().map_or(1.0, |&(_, v)| v.min(1.0))
     }
 }
 

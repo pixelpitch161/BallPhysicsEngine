@@ -24,7 +24,10 @@ impl Comb {
         let out = self.line[self.pos];
         self.store = flush(out * (1.0 - self.damp) + self.store * self.damp);
         self.line[self.pos] = flush(knee(x + self.store * self.feedback));
-        self.pos = (self.pos + 1) % self.line.len();
+        self.pos += 1;
+        if self.pos == self.line.len() {
+            self.pos = 0;
+        }
         out
     }
 }
@@ -40,14 +43,23 @@ struct Allpass {
 }
 
 impl Allpass {
-    fn tick(&mut self, x: f32, time: f64) -> f32 {
+    /// Where the wobble is at `time`, from -1 to 1.
+    fn wobble_at(&self, time: f64) -> f32 {
+        (std::f32::consts::TAU * ((time * self.wobble.0 as f64).fract() as f32 + self.wobble.1)).sin()
+    }
+
+    fn tick(&mut self, x: f32, wobble: f32) -> f32 {
         let len = self.line.len();
-        let wobble = (std::f32::consts::TAU * ((time * self.wobble.0 as f64).fract() as f32 + self.wobble.1)).sin();
         let at = (self.pos as f32 - self.length - wobble).rem_euclid(len as f32);
-        let (i, frac) = (at.floor() as usize % len, at.fract());
-        let delayed = self.line[i] * (1.0 - frac) + self.line[(i + 1) % len] * frac;
+        let (i, frac) = (at as usize, at.fract());
+        let i = if i >= len { i - len } else { i };
+        let next = if i + 1 == len { 0 } else { i + 1 };
+        let delayed = self.line[i] * (1.0 - frac) + self.line[next] * frac;
         self.line[self.pos] = flush(x + delayed * 0.5);
-        self.pos = (self.pos + 1) % len;
+        self.pos += 1;
+        if self.pos == len {
+            self.pos = 0;
+        }
         delayed - x
     }
 }
@@ -129,8 +141,13 @@ impl Block for Reverb {
         let input = wired(inputs, 0).copied().unwrap_or(crate::SILENT);
         let (wet1, wet2) = (self.width * 0.5 + 0.5, (1.0 - self.width) * 0.5);
         let pre_len = self.pre[0].len();
+        // The wobbles are slow: worked out at the block's ends and slid between.
+        let end = cx.time + BLOCK as f64 / cx.rate as f64;
+        let wobbles: [Vec<(f32, f32)>; 2] = std::array::from_fn(|side| {
+            self.allpasses[side].iter().map(|ap| (ap.wobble_at(cx.time), ap.wobble_at(end))).collect()
+        });
         for s in 0..BLOCK {
-            let time = cx.time + s as f64 / cx.rate as f64;
+            let along = s as f32 / BLOCK as f32;
             let mut wet = [0.0f32; 2];
             for side in 0..2 {
                 let delayed = if pre_len > 1 {
@@ -145,8 +162,8 @@ impl Block for Reverb {
                 for comb in &mut self.combs[side] {
                     sum += comb.tick(x);
                 }
-                for ap in &mut self.allpasses[side] {
-                    sum = ap.tick(sum, time);
+                for (ap, &(from, to)) in self.allpasses[side].iter_mut().zip(&wobbles[side]) {
+                    sum = ap.tick(sum, from + (to - from) * along);
                 }
                 wet[side] = sum * 3.0;
             }
