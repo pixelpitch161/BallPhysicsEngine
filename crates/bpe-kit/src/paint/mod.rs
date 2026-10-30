@@ -132,7 +132,7 @@ fn default_follow(o: &GroupOpts) -> Follow {
     if follow_names(o).contains(&"place") {
         Follow::Place
     } else {
-        Follow::from_name(follow_names(o)[0]).unwrap_or_default()
+        follow_names(o).iter().find_map(|n| Follow::from_name(n)).unwrap_or_default()
     }
 }
 
@@ -397,7 +397,9 @@ impl SettingGroup for Paint {
             }
         };
         put("colours", val(&self.colours), val(&d.colours));
-        put("follow", val(&self.follow), val(&d.follow));
+        // Never save a follow the list doesn't offer; it would read back as the default anyway.
+        let follow = if follow_names(o).contains(&self.follow.name()) { self.follow } else { d.follow };
+        put("follow", val(&follow), val(&d.follow));
         put("shape", val(&self.shape), val(&d.shape));
         put("angle", val(&self.angle), val(&d.angle));
         put("centre", val(&self.centre), val(&d.centre));
@@ -530,5 +532,21 @@ mod tests {
         order.follow = Follow::Order;
         order.group_write(&o, &mut p);
         assert_eq!(p.get("follow"), Some(&Value::Choice("order".into())));
+    }
+
+    #[test]
+    fn a_list_without_place_round_trips_the_outer_default() {
+        #[derive(Clone, Debug, PartialEq, Default, Settings)]
+        struct Trail {
+            #[setting(paint, label = "Colours", prefix = "", follows = "life|order")]
+            fill: Paint,
+        }
+        let t = Trail::default();
+        let p = t.to_params();
+        assert!(p.get("follow").is_none(), "nothing off the list is written");
+        assert_eq!(Trail::from_params(&p).fill.follow, Follow::Life);
+        let mut t = t;
+        t.fill.follow = Follow::Order;
+        assert_eq!(Trail::from_params(&t.to_params()).fill.follow, Follow::Order);
     }
 }
