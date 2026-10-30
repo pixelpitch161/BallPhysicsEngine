@@ -325,6 +325,7 @@ dependencies = [
  "bpe-runtime",
  "bpe-scene",
  "bpe-sim",
+ "bpe-synth",
  "bpe-vm",
  "glam",
  "hound",

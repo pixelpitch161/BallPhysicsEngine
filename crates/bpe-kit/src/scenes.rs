@@ -222,6 +222,20 @@ impl<'a> Builder<'a> {
         InstrumentRef(Some(self.scene.add_instrument(crate::built_in_instrument(which))))
     }
 
+    /// The library's copy of the starter patch `name`, added the first time it's asked for.
+    fn starter(&mut self, name: &str) -> InstrumentRef {
+        if let Some((&id, _)) = self.scene.library.instruments.iter().find(|(_, i)| i.name == name) {
+            return InstrumentRef(Some(id));
+        }
+        let (name, graph, voices) =
+            bpe_synth::starters().into_iter().find(|(n, ..)| *n == name).expect("a starter patch of that name");
+        InstrumentRef(Some(self.scene.add_instrument(bpe_core::Instrument {
+            name: name.into(),
+            source: InstrumentSource::Patch { graph },
+            voices,
+        })))
+    }
+
     /// Scene defaults' chords become the preset `name`, in the key on `root`.
     fn chords(&mut self, name: &str, root: u8) {
         let preset = bpe_mix::PRESETS.iter().find(|p| p.name == name).expect("a known preset");
@@ -659,7 +673,7 @@ fn drum_beat(reg: &Registry) -> Scene {
     b.own_module(ThingId::ROOT, "sound.drums", "Drum machine", drums.to_params());
     let melody = MelodySound {
         file: "builtin:twinkle".into(),
-        instrument: b.built_in(Instrument::Marimba),
+        instrument: b.starter("Warm pad"),
         volume: -2.0,
         ..MelodySound::default()
     };
@@ -846,10 +860,10 @@ fn pitch_climb(reg: &Registry) -> Scene {
         s.special_target = Target::Tag("soft".into());
         s.special_bounciness = 0.3;
     });
-    let marimba = b.built_in(Instrument::Marimba);
+    let bell = b.starter("Glass FM bell");
     b.sound(|s| {
         s.order = Order::Hits;
-        s.instrument = marimba;
+        s.instrument = bell;
     });
     b.chords("Dreamy loop", 9);
     b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
