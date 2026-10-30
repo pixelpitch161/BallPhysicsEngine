@@ -104,7 +104,11 @@ pub struct Particles {
 }
 
 impl Particles {
-    pub fn new(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        globals_layout: &wgpu::BindGroupLayout,
+        paint_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("particles layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -120,12 +124,14 @@ impl Particles {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("particles"),
-            bind_group_layouts: &[Some(globals_layout), Some(&layout)],
+            bind_group_layouts: &[Some(globals_layout), Some(&layout), Some(paint_layout)],
             immediate_size: 0,
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particles"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particles.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [crate::gradients::paint_wgsl(2).as_str(), include_str!("shaders/particles.wgsl")].concat().into(),
+            ),
         });
         let make = |label, fs, blend| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -202,14 +208,16 @@ impl Particles {
         queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
     }
 
-    /// Draws the prepared bursts; the globals must be bound at group 0 already.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Draws the prepared bursts; the globals must be bound at group 0 already. `paint` is the
+    /// gradient atlas, bound at group 2.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, paint: &wgpu::BindGroup) {
         let Some(group) = &self.group else { return };
         let (additive, covering) = (self.picked.additive, self.picked.covering);
         if additive + covering == 0 {
             return;
         }
         pass.set_bind_group(1, group, &[]);
+        pass.set_bind_group(2, paint, &[]);
         if additive > 0 {
             pass.set_pipeline(&self.additive);
             pass.draw(0..4, 0..additive);

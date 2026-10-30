@@ -7,6 +7,9 @@
 pub mod effects;
 pub mod flow;
 mod frame;
+mod gradients;
+#[cfg(test)]
+mod paint_tests;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
@@ -19,6 +22,7 @@ pub use frame::{
     LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart,
     ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, thing_code,
 };
+pub use gradients::{ATLAS_WIDTH, GradientAtlas, PaintGpu};
 pub use text::Atlas;
 pub use wgpu;
 
@@ -75,6 +79,38 @@ struct Targets {
     composite: wgpu::BindGroup,
 }
 
+/// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows.
+struct PaintTexture {
+    texture: wgpu::Texture,
+    rows: usize,
+    group: wgpu::BindGroup,
+}
+
+impl PaintTexture {
+    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, rows: usize) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient atlas"),
+            size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gradient atlas"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        Self { texture, rows, group }
+    }
+}
+
 /// The glyph atlas on the GPU, remade when the atlas grows or changes.
 struct AtlasTexture {
     size: u32,
@@ -88,6 +124,9 @@ pub struct Renderer {
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
+    /// The gradient atlas: bound at group 1 of the scene passes and group 2 of the glyphs and
+    /// particles.
+    paint_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
@@ -114,6 +153,7 @@ pub struct Renderer {
     flash_buffer: GrowableBuffer,
     glyph_buffer: GrowableBuffer,
     atlas: Option<AtlasTexture>,
+    paint: PaintTexture,
     targets: Targets,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
@@ -126,6 +166,7 @@ impl Renderer {
             label: Some("scene shader"),
             source: wgpu::ShaderSource::Wgsl(
                 [
+                    gradients::paint_wgsl(1).as_str(),
                     include_str!("shaders/scene.wgsl"),
                     include_str!("shaders/object.wgsl"),
                     include_str!("shaders/ball_look.wgsl"),
@@ -142,7 +183,9 @@ impl Renderer {
         });
         let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glyph shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [gradients::paint_wgsl(2).as_str(), include_str!("shaders/glyph.wgsl")].concat().into(),
+            ),
         });
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -198,6 +241,14 @@ impl Renderer {
             label: Some("atlas layout"),
             entries: &[texture_entry(0), sampler_entry],
         });
+        // Read in vertex shaders too, so things that colour their vertices can paint.
+        let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("paint layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..texture_entry(0) },
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..sampler_entry },
+            ],
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("linear clamp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -207,7 +258,7 @@ impl Renderer {
 
         let scene_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout)],
             immediate_size: 0,
         });
         let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -222,7 +273,7 @@ impl Renderer {
         });
         let glyph_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("glyph pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout), Some(&paint_layout)],
             immediate_size: 0,
         });
 
@@ -274,7 +325,7 @@ impl Renderer {
         let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
         let look_attributes = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4
+            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
         ];
         let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
         let soft_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4];
@@ -453,12 +504,15 @@ impl Renderer {
         );
 
         let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
+        let paint = PaintTexture::new(device, &paint_layout, &sampler, gradients::atlas_height(0));
+        let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
         Self {
             globals,
             globals_group,
             post_layout,
             composite_layout,
             atlas_layout,
+            paint_layout,
             sampler,
             background,
             trail,
@@ -472,7 +526,7 @@ impl Renderer {
             ball_object,
             look_object,
             chain: effects::chain::Chain::new(device),
-            particles: particles::Particles::new(device, &globals_layout),
+            particles,
             downsample,
             upsample,
             composite,
@@ -484,6 +538,7 @@ impl Renderer {
             flash_buffer: GrowableBuffer::new("flash instances"),
             glyph_buffer: GrowableBuffer::new("glyph instances"),
             atlas: None,
+            paint,
             targets,
             surface: flow::surface::Surface::new(device),
             flow: None,
@@ -523,6 +578,24 @@ impl Renderer {
             ],
         });
         self.atlas = Some(AtlasTexture { size: atlas.size, generation: atlas.generation, group });
+    }
+
+    /// Uploads the frame's gradients, making the texture taller first if they do not fit.
+    fn sync_gradients(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, atlas: &GradientAtlas) {
+        if atlas.len() > self.paint.rows {
+            let rows = gradients::atlas_height(atlas.len());
+            self.paint = PaintTexture::new(device, &self.paint_layout, &self.sampler, rows);
+        }
+        if atlas.is_empty() {
+            return;
+        }
+        let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
+        queue.write_texture(
+            self.paint.texture.as_image_copy(),
+            &gradients::half_texels(atlas.rows()),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: atlas.len() as u32, depth_or_array_layers: 1 },
+        );
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -591,6 +664,7 @@ impl Renderer {
             self.sync_atlas(device, queue);
         }
         self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
+        self.sync_gradients(device, queue, &frame.gradients);
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
         if wants_objects {
@@ -602,6 +676,7 @@ impl Renderer {
             let mut pass =
                 begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
             if !frame.trails.is_empty() {
@@ -644,6 +719,7 @@ impl Renderer {
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             if !frame.balls.is_empty() {
                 pass.set_pipeline(&self.ball);
                 pass.set_vertex_buffer(0, self.ball_buffer.slice());
@@ -659,6 +735,7 @@ impl Renderer {
             let view = &self.targets.object.as_ref().expect("made above").1;
             let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             if !frame.shapes.is_empty() {
                 pass.set_pipeline(&self.shape_object);
                 pass.set_vertex_buffer(0, self.shape_buffer.slice());
@@ -691,13 +768,15 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             if !frame.flashes.is_empty() {
                 pass.set_pipeline(&self.flash);
+                pass.set_bind_group(1, &self.paint.group, &[]);
                 pass.set_vertex_buffer(0, self.flash_buffer.slice());
                 pass.draw(0..4, 0..frame.flashes.len() as u32);
             }
-            self.particles.draw(&mut pass);
+            self.particles.draw(&mut pass, &self.paint.group);
             if let (false, Some(atlas)) = (frame.glyphs.is_empty(), &self.atlas) {
                 pass.set_pipeline(&self.glyph);
                 pass.set_bind_group(1, &atlas.group, &[]);
+                pass.set_bind_group(2, &self.paint.group, &[]);
                 pass.set_vertex_buffer(0, self.glyph_buffer.slice());
                 pass.draw(0..4, 0..frame.glyphs.len() as u32);
             }

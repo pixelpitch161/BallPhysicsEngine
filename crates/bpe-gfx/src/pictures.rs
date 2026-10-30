@@ -1,6 +1,6 @@
 //! Picture tests for the stage 5 passes: styled balls, trails and particles, on the software GPU.
 
-use crate::{Frame, LookInstance, Renderer, headless_device};
+use crate::{Frame, LookInstance, PaintGpu, Renderer, headless_device};
 use glam::Vec2;
 
 /// Renders `frame` at `w` by `h`, or `None` without a GPU.
@@ -53,6 +53,7 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
         look: [0.0, 0.0, 1.0, 0.0],
         stretch: [1.0, 0.0, 1.0, 1.0],
         extent: [0.8, 3.0, 0.0, 0.0],
+        paint: PaintGpu::default(),
     }
 }
 

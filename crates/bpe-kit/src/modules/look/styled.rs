@@ -5,7 +5,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::{Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
-use bpe_gfx::{LookInstance, blend_alpha};
+use bpe_gfx::{LookInstance, PaintGpu, blend_alpha};
 use glam::Vec2;
 
 use super::GradientBy;
@@ -285,6 +285,7 @@ pub fn instance(
         look: [look.outline.max(0.0), look.glow.max(0.0), look.opacity.clamp(0.0, 1.0), angle],
         stretch: [dir.x, dir.y, along, across],
         extent: [look.glow_size.max(0.05), code, 0.0, 0.0],
+        paint: PaintGpu::default(),
     }
 }
 

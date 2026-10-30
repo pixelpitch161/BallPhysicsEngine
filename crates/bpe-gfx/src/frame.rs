@@ -8,6 +8,8 @@ use bpe_runtime::{EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
+use crate::gradients::{GradientAtlas, PaintGpu};
+
 /// Hits older than this no longer count towards [`hit_strength`].
 const HIT_WINDOW: f64 = 0.3;
 /// A hit's strength fades by e every this many seconds.
@@ -72,6 +74,8 @@ pub struct LookInstance {
     pub stretch: [f32; 4],
     /// Glow size as a fraction of the radius, the thing code, two spare.
     pub extent: [f32; 4],
+    /// A gradient painted inside the fill in place of its colours, when its row is not -1.
+    pub paint: PaintGpu,
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
@@ -481,6 +485,8 @@ pub struct Frame {
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
+    /// The gradients the instances paint with, one atlas row each.
+    pub gradients: GradientAtlas,
 }
 
 impl Default for Frame {
@@ -505,12 +511,13 @@ impl Default for Frame {
             bursts: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
+            gradients: GradientAtlas::default(),
         }
     }
 }
 
 impl Frame {
-    /// Empties the instance lists and keeps the globals.
+    /// Empties the instance lists and the gradients and keeps the globals.
     pub fn clear(&mut self) {
         self.shapes.clear();
         self.balls.clear();
@@ -524,6 +531,7 @@ impl Frame {
         self.bursts.clear();
         self.hits.clear();
         self.effects.clear();
+        self.gradients.clear();
     }
 }
 
@@ -875,7 +883,7 @@ mod tests {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 128);
+        assert_eq!(std::mem::size_of::<LookInstance>(), 160);
         assert_eq!(std::mem::size_of::<BallInstance>(), 48);
     }
 
