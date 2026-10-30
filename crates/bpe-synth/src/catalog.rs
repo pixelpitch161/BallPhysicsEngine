@@ -50,6 +50,20 @@ fn specs() -> Vec<NodeSpec> {
         NodeSpec::new("noise", "Noise", "Sources", "Hiss: white is bright, pink is softer.")
             .output(audio("out"))
             .param(choice("colour", "Colour", &["white", "pink"], "white")),
+        NodeSpec::new(
+            "sampler",
+            "Sampler",
+            "Sources",
+            "Plays a WAV file at the note's pitch, or the nearest of a folder of notes.",
+        )
+        .output(audio("out"))
+        .param(
+            ParamSpec::new("file", "File or folder", Param::Text(String::new()))
+                .help("A WAV file, or a folder of WAVs named by note such as C4.wav"),
+        )
+        .param(n("root", "Root note", 60.0, 0.0, 127.0).help("The note a single file was recorded at; 60 is middle C"))
+        .param(n("start", "Start", 0.0, 0.0, 1.0))
+        .param(flag("loop", "Loop", false)),
         NodeSpec::new("filter", "Filter", "Shaping", "Takes away highs, lows or a band.")
             .input(audio("in").required())
             .input(number("cutoff_mod").help("Octaves up or down from the cutoff"))
@@ -147,6 +161,7 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
     Some(match kind {
         "osc" => Box::new(Osc::new(k)),
         "noise" => Box::new(Noise::new(k)),
+        "sampler" => Box::new(Sampler::new(k)),
         "filter" => Box::new(Svf::new(k)),
         "ladder" => Box::new(Ladder::new(k)),
         "drive" => Box::new(Drive::new(k)),

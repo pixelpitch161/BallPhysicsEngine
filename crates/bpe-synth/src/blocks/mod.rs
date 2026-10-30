@@ -9,6 +9,7 @@ pub mod lfo;
 pub mod maths;
 pub mod noise;
 pub mod osc;
+pub mod sampler;
 pub mod tables;
 
 pub use adsr::Adsr;
@@ -20,6 +21,7 @@ pub use lfo::{Hold, Lfo};
 pub use maths::{Arith, Crossfade, Macro, Mix, NoteIn, PitchToHz, Scale, VoiceOut};
 pub use noise::Noise;
 pub use osc::Osc;
+pub use sampler::{Sampler, missing_samples};
 
 #[cfg(test)]
 mod tests {
