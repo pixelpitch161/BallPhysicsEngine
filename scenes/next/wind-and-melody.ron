@@ -388,7 +388,7 @@
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
-                    "instrument": Choice("marimba"),
+                    "instrument": Int(1),
                 },
                 graph: Some((
                     graph: (
@@ -587,34 +587,6 @@
                             (
                                 id: 17,
                                 kind: "setting",
-                                pos: (1080.0, 860.0),
-                                params: {
-                                    "key": Text("decay"),
-                                    "label": Text("Decay"),
-                                    "max": Number(5.0),
-                                    "min": Number(0.05),
-                                    "value": Number(0.9),
-                                },
-                                enabled: true,
-                                exposed: [],
-                            ),
-                            (
-                                id: 18,
-                                kind: "setting",
-                                pos: (1080.0, 1020.0),
-                                params: {
-                                    "key": Text("brightness"),
-                                    "label": Text("Brightness"),
-                                    "max": Number(1.0),
-                                    "min": Number(0.0),
-                                    "value": Number(0.5),
-                                },
-                                enabled: true,
-                                exposed: [],
-                            ),
-                            (
-                                id: 19,
-                                kind: "setting",
                                 pos: (40.0, 860.0),
                                 params: {
                                     "key": Text("low_note"),
@@ -627,7 +599,7 @@
                                 exposed: [],
                             ),
                             (
-                                id: 20,
+                                id: 18,
                                 kind: "setting",
                                 pos: (40.0, 1020.0),
                                 params: {
@@ -641,7 +613,7 @@
                                 exposed: [],
                             ),
                             (
-                                id: 21,
+                                id: 19,
                                 kind: "math",
                                 pos: (820.0, 360.0),
                                 params: {
@@ -653,7 +625,7 @@
                                 exposed: [],
                             ),
                             (
-                                id: 22,
+                                id: 20,
                                 kind: "math",
                                 pos: (1080.0, 360.0),
                                 params: {
@@ -747,23 +719,15 @@
                                 to: (2, 4),
                             ),
                             (
-                                from: (17, 0),
-                                to: (2, 5),
-                            ),
-                            (
-                                from: (18, 0),
-                                to: (2, 6),
-                            ),
-                            (
                                 from: (1, 6),
-                                to: (21, 0),
+                                to: (19, 0),
                             ),
                             (
-                                from: (21, 0),
-                                to: (22, 1),
+                                from: (19, 0),
+                                to: (20, 1),
                             ),
                             (
-                                from: (22, 0),
+                                from: (20, 0),
                                 to: (2, 1),
                             ),
                         ],
@@ -774,8 +738,8 @@
                     custom: true,
                     simple: [
                         (13, "value"),
-                        (19, "value"),
-                        (20, "value"),
+                        (17, "value"),
+                        (18, "value"),
                     ],
                 )),
             ),
@@ -837,8 +801,42 @@
                 ],
             ),
         },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+            1: (
+                name: "Marimba",
+                source: BuiltIn(
+                    which: "marimba",
+                    knobs: {},
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
     ),
     next_thing: 3,
     next_module: 5,
     next_progression: 1,
+    next_instrument: 2,
 )

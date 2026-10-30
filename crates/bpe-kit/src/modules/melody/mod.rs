@@ -5,8 +5,7 @@ pub mod mix;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
-use bpe_mix::Instrument;
+use bpe_core::{InstrumentRef, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_music::midi::MidiFile;
 
 pub struct MelodySoundKind;
@@ -18,7 +17,7 @@ pub struct MelodySound {
     #[setting(label = "Tune", unit = "file", simple)]
     pub file: String,
     #[setting(label = "Instrument", simple, random)]
-    pub instrument: Instrument,
+    pub instrument: InstrumentRef,
     #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
     /// Semitones up or down.
@@ -48,7 +47,7 @@ impl Default for MelodySound {
     fn default() -> Self {
         Self {
             file: "builtin:twinkle".into(),
-            instrument: Instrument::ElectricPiano,
+            instrument: InstrumentRef(None),
             volume: 0.0,
             transpose: 0,
             track: 0,

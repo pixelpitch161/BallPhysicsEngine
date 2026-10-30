@@ -23,7 +23,7 @@ pub enum InstrumentChoice {
 impl InstrumentChoice {
     /// The built-in pluck with its usual knobs, which anything falls back to.
     pub fn pluck() -> Self {
-        InstrumentChoice::BuiltIn { which: Instrument::Pluck, decay: 0.3, brightness: 0.5 }
+        InstrumentChoice::BuiltIn { which: Instrument::Pluck, decay: 0.9, brightness: 0.5 }
     }
 
     /// A library instrument as it plays, with a module's own `macros` applied to a patch.
@@ -31,7 +31,7 @@ impl InstrumentChoice {
         match &i.source {
             InstrumentSource::BuiltIn { which, knobs } => InstrumentChoice::BuiltIn {
                 which: Instrument::from_name(which).unwrap_or_default(),
-                decay: knobs.get("decay").copied().unwrap_or(0.3),
+                decay: knobs.get("decay").copied().unwrap_or(0.9),
                 brightness: knobs.get("brightness").copied().unwrap_or(0.5),
             },
             InstrumentSource::Patch { graph } => InstrumentChoice::Patch {
@@ -57,7 +57,7 @@ pub fn instrument_for(settings: &MixSettings, id: Option<InstrumentId>, channel:
 /// What a group of notes plays through.
 fn resolve(settings: &MixSettings, n: &Note) -> InstrumentChoice {
     match n.instrument {
-        NoteInstrument::BuiltIn(which) => InstrumentChoice::BuiltIn { which, decay: 0.3, brightness: 0.5 },
+        NoteInstrument::BuiltIn(which) => InstrumentChoice::BuiltIn { which, decay: 0.9, brightness: 0.5 },
         NoteInstrument::Library(id) => instrument_for(settings, id, n.channel),
     }
 }
@@ -290,7 +290,7 @@ mod tests {
         // The old way: every note into one track.
         let mut cache = NoteCache::default();
         let placed: Vec<(&Note, Arc<Vec<f32>>)> =
-            notes.iter().map(|n| (n, cache.get(Instrument::Marimba, n.key, n.velocity, 0.3, 0.5))).collect();
+            notes.iter().map(|n| (n, cache.get(Instrument::Marimba, n.key, n.velocity, 0.9, 0.5))).collect();
         let mut old = vec![0.0; 96_000 * 2];
         mix_notes(&mut old, &placed, |(n, wave)| (n.frame, wave.as_slice(), n.left, n.right, 0));
         assert!(new.iter().zip(&old).all(|(a, b)| (a - b).abs() < 1e-6));

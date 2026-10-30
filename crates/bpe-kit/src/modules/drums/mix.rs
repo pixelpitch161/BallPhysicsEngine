@@ -3,7 +3,7 @@
 use std::f32::consts::FRAC_PI_4;
 
 use bpe_core::{Params, Settings, ThingId};
-use bpe_mix::{Instrument, MixCx, ModuleMix, Note, SAMPLE_RATE};
+use bpe_mix::{Instrument, MixCx, ModuleMix, Note, NoteInstrument, SAMPLE_RATE};
 use bpe_runtime::{Event, EventKind};
 
 use super::{DrumSound, Piece};
@@ -77,13 +77,12 @@ impl ModuleMix for DrumSoundMix {
             let angle = (pan + 1.0) * FRAC_PI_4;
             out.push(Note {
                 frame,
-                instrument: Instrument::Drums,
+                instrument: NoteInstrument::BuiltIn(Instrument::Drums),
                 key,
                 velocity,
                 left: gain * angle.cos(),
                 right: gain * angle.sin(),
-                decay: 0.0,
-                brightness: 0.0,
+                channel: 0,
             });
         }
     }
@@ -133,7 +132,7 @@ mod tests {
         );
         let keys: Vec<(usize, u8)> = notes.iter().map(|n| (n.frame, n.key)).collect();
         assert_eq!(keys, [(200, 36), (144_000, 36), (48_000, 42), (96_000, 36)], "root's beats first, then the ball");
-        assert!(notes.iter().all(|n| n.instrument == Instrument::Drums));
+        assert!(notes.iter().all(|n| n.instrument == NoteInstrument::BuiltIn(Instrument::Drums)));
         assert!((notes[0].left - notes[0].right).abs() < 1e-6, "beats are centred");
         assert!(notes[2].velocity < notes[3].velocity);
         // Auto beats alternate a kick on the one with hi-hats.

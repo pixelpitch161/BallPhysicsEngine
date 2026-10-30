@@ -159,6 +159,10 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
         ));
     }
     mix(&format!("{:?}", scene.library.progressions));
+    mix(&format!("{:?}", scene.library.instruments));
+    for (id, m) in scene.library.modules.iter().filter(|(_, m)| !m.macros.is_empty()) {
+        mix(&format!("{id:?} {:?}", m.macros));
+    }
     let sound_setting = |a: &bpe_core::Address| match (a.owner, a.slot) {
         (Owner::Thing(_), Some(slot)) => slot == SlotId::Sound,
         (Owner::Thing(_), None) => false,
@@ -211,7 +215,15 @@ mod tests {
         let (&id, _) = scene.library.progressions.iter().next().unwrap();
         let am = bpe_core::Chord::new(9, bpe_core::Quality::Minor, bpe_core::Extension::Triad, 4);
         scene.set_progression(id, bpe_core::Progression { chords: vec![am], ..Default::default() }).unwrap();
-        assert_ne!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), moved);
+        let chords = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        assert_ne!(chords, moved);
+        // And so do the instrument and a module's own macro values.
+        let (&pluck, i) = scene.library.instruments.iter().next().unwrap();
+        scene.set_instrument(pluck, bpe_core::Instrument { name: "Renamed".into(), ..i.clone() }).unwrap();
+        let renamed = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        assert_ne!(renamed, chords);
+        scene.set_macro(sound, "1.cutoff", Some(400.0)).unwrap();
+        assert_ne!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), renamed);
     }
 
     #[test]

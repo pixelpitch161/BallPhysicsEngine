@@ -97,7 +97,10 @@ impl PinType {
         self == from
             || matches!(
                 (self, from),
-                (Field, Number | Vector | Color) | (Number, Bool) | (Bool, Number) | (Text, Number)
+                (Field, Number | Vector | Color)
+                    | (Number, Bool)
+                    | (Bool, Number)
+                    | (Text, Number)
                     | (Audio, Number)
                     | (Number, Audio)
             )

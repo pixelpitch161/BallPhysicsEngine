@@ -8,7 +8,7 @@ mod presets;
 
 use crate::theme;
 use bpe_core::{Chord, Mode, MusicKey, Progression};
-use bpe_mix::{Function, Instrument, function, note_name};
+use bpe_mix::{Function, function, note_name};
 use eframe::egui::{self, Color32, Rect, RichText, Ui};
 
 /// What one progression's editor remembers between frames.
@@ -49,16 +49,14 @@ pub enum Audition {
 #[derive(Clone, Debug)]
 pub struct ChordClip {
     pub chords: Vec<Chord>,
-    pub instrument: Instrument,
-    pub decay: f32,
-    pub brightness: f32,
+    pub instrument: bpe_mix::InstrumentChoice,
     pub seconds_per_beat: f64,
 }
 
 impl ChordClip {
     /// The clip's samples: interleaved stereo at the mixer's rate.
     pub fn render(&self) -> Vec<f32> {
-        bpe_mix::audition(&self.chords, self.instrument, self.seconds_per_beat, self.decay, self.brightness)
+        bpe_mix::audition(&self.chords, &self.instrument, self.seconds_per_beat)
     }
 }
 

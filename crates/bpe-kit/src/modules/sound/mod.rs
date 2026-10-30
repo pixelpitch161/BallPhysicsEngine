@@ -3,8 +3,7 @@
 pub mod graph;
 pub mod mix;
 
-use bpe_core::{Choice, ModuleKind, ProgressionRef, SettingDef, Settings, SlotId, Target};
-use bpe_mix::Instrument;
+use bpe_core::{Choice, InstrumentRef, ModuleKind, ProgressionRef, SettingDef, Settings, SlotId, Target};
 use bpe_mix::PicksFrom;
 
 pub struct NoteSoundKind;
@@ -53,9 +52,9 @@ pub enum PlaysWhen {
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct NoteSound {
-    /// What plays the note.
+    /// What plays the notes: an instrument in the library, or Scene defaults' one.
     #[setting(label = "Instrument", simple, random)]
-    pub instrument: Instrument,
+    pub instrument: InstrumentRef,
     /// How loud these notes are.
     #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
@@ -103,18 +102,12 @@ pub struct NoteSound {
     /// How far left and right notes spread, following where the hit was.
     #[setting(label = "Stereo width", range(0, 1))]
     pub stereo_width: f32,
-    /// Pluck only.
-    #[setting(label = "Decay", range(0.05, 5), unit = "s")]
-    pub decay: f32,
-    /// Pluck only.
-    #[setting(label = "Brightness", range(0, 1))]
-    pub brightness: f32,
 }
 
 impl Default for NoteSound {
     fn default() -> Self {
         Self {
-            instrument: Instrument::Pluck,
+            instrument: InstrumentRef(None),
             volume: 0.0,
             low_note: 48,
             high_note: 84,
@@ -130,8 +123,6 @@ impl Default for NoteSound {
             quietest_hit: 20.0,
             loudest_hit: 600.0,
             stereo_width: 0.6,
-            decay: 0.9,
-            brightness: 0.5,
         }
     }
 }

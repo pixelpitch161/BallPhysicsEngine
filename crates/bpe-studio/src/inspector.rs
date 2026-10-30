@@ -12,13 +12,12 @@ use crate::widgets::{
     settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Chord, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,
-    ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId,
-    Transform, Value, ValueType,
+    Address, Attach, Chord, Color, Depth, InstrumentRef, ModuleGraph, ModuleId, ModuleKind, Owner, Progression,
+    ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink,
+    ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
-use bpe_mix::Instrument;
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -264,7 +263,9 @@ pub fn show(
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
             if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, kind.settings(), &get, &mut edits) {
                 let sound = resolved.things.get(&ThingId::ROOT).and_then(|r| r.slots.get(&SlotId::Sound));
-                inspector.clip = Some(chord_clip(heard, bpm, &|k| sound.and_then(|r| r.params.get(k).cloned())));
+                let module = sound.map(|r| r.module);
+                inspector.clip =
+                    Some(chord_clip(heard, bpm, scene, module, &|k| sound.and_then(|r| r.params.get(k).cloned())));
             }
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
@@ -516,7 +517,7 @@ pub fn show(
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
-                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                            inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
@@ -553,7 +554,7 @@ pub fn show(
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
-                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                            inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
@@ -973,16 +974,17 @@ fn chord_editor(
 }
 
 /// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
-fn chord_clip(chords: Vec<Chord>, bpm: f32, get: &dyn Fn(&str) -> Option<Value>) -> ChordClip {
-    let number = |key: &str, or: f32| match get(key) {
-        Some(Value::Number(x)) => x as f32,
-        _ => or,
-    };
+fn chord_clip(
+    chords: Vec<Chord>,
+    bpm: f32,
+    scene: &Scene,
+    module: Option<ModuleId>,
+    get: &dyn Fn(&str) -> Option<Value>,
+) -> ChordClip {
+    let id = get("instrument").and_then(|v| InstrumentRef::from_value(&v)).and_then(|r| r.0);
     ChordClip {
         chords,
-        instrument: get("instrument").and_then(|v| Instrument::from_value(&v)).unwrap_or_default(),
-        decay: number("decay", 0.6),
-        brightness: number("brightness", 0.5),
+        instrument: crate::instruments::choice(scene, id, module),
         seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
     }
 }
