@@ -28,6 +28,15 @@ impl Ladder {
 }
 
 impl Block for Ladder {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "cutoff" => self.cutoff = value.clamp(20.0, 20_000.0),
+            "resonance" => self.feedback = value.clamp(0.0, 1.0) * 3.95,
+            "drive" => self.drive = 1.0 + value.clamp(0.0, 1.0) * 9.0,
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {
         self.stages = [[0.0; 4]; 2];
     }

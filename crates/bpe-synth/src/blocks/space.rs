@@ -14,6 +14,12 @@ impl Width {
 }
 
 impl Block for Width {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        if name == "width" {
+            self.width = value.clamp(0.0, 2.0);
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {}
 
     fn process(&mut self, _cx: &Ctx, inputs: &[Option<&Buf>], outputs: &mut [Buf]) {

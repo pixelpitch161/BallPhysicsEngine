@@ -24,6 +24,15 @@ impl Bitcrush {
 }
 
 impl Block for Bitcrush {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "bits" => self.levels = (value.clamp(1.0, 16.0).round() - 1.0).exp2(),
+            "downsample" => self.hold = value.clamp(1.0, 32.0).round() as u32,
+            "mix" => self.mix = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {
         self.count = 0;
         self.held = [0.0; 2];

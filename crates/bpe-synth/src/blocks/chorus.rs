@@ -15,6 +15,7 @@ pub struct Chorus {
     /// Equal-power dry and wet levels; the voices add up as unrelated sounds.
     dry: f32,
     wet: f32,
+    mix: f32,
 }
 
 impl Chorus {
@@ -30,11 +31,26 @@ impl Chorus {
             pos: 0,
             dry: angle.cos(),
             wet: angle.sin() / (voices as f32).sqrt(),
+            mix,
         }
     }
 }
 
 impl Block for Chorus {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "rate" => self.rate = value.clamp(0.01, 10.0),
+            "depth" => self.depth = value.clamp(0.0, 10.0) / 1_000.0,
+            "mix" => {
+                self.mix = value.clamp(0.0, 1.0);
+                let angle = self.mix * std::f32::consts::FRAC_PI_2;
+                self.dry = angle.cos();
+                self.wet = angle.sin() / (self.voices as f32).sqrt();
+            }
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         let frames = ((CENTRE + self.depth) * cx.rate) as usize + 4;
         self.lines = [vec![0.0; frames], vec![0.0; frames]];

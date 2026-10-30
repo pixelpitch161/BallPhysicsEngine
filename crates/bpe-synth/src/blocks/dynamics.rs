@@ -389,6 +389,14 @@ impl Compressor {
 }
 
 impl Block for Compressor {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "threshold" => self.threshold = value.clamp(-60.0, 0.0),
+            "makeup" => self.makeup = value.clamp(-24.0, 24.0),
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {
         self.level = 0.0;
         self.reduction = 0.0;

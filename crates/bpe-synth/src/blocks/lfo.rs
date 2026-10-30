@@ -67,6 +67,12 @@ impl Lfo {
 }
 
 impl Block for Lfo {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        if name == "rate" {
+            self.knobs.0.insert("rate".into(), bpe_graph::Param::Number(value.clamp(0.01, 50.0)));
+        }
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         self.rng = Rng::new(cx.seed ^ 0x1F0);
         self.held = self.rng.next();

@@ -42,7 +42,41 @@ fn input_block(kind: &str, title: &str, help: &str, table: &[InputDef], smoothin
 /// Every block a patch can use.
 pub fn catalog() -> &'static SpecList {
     static CATALOG: OnceLock<SpecList> = OnceLock::new();
-    CATALOG.get_or_init(|| SpecList { specs: specs(), cycles: false })
+    CATALOG.get_or_init(|| {
+        let specs = specs()
+            .into_iter()
+            .map(|spec| {
+                let kind = spec.kind.clone();
+                followable(&kind).iter().fold(spec, |spec, knob| {
+                    spec.input(number(knob).help("Added to the knob while something is wired in"))
+                })
+            })
+            .collect();
+        SpecList { specs, cycles: false }
+    })
+}
+
+/// The knobs of a block kind that can move while it plays, each with an input pin after the
+/// block's own inputs: what Follow… can wire into.
+pub fn followable(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "osc" => &["semitones", "cents", "width", "detune", "fm"],
+        "filter" => &["cutoff", "resonance"],
+        "ladder" => &["cutoff", "resonance", "drive"],
+        "drive" => &["amount", "tone", "mix"],
+        "amp" => &["gain"],
+        "eq" => &["low_gain", "mid_gain", "high_gain"],
+        "bitcrush" => &["bits", "downsample", "mix"],
+        "delay" => &["feedback", "mix"],
+        "chorus" => &["rate", "depth", "mix"],
+        "reverb" => &["mix", "width"],
+        "width" => &["width"],
+        "compressor" => &["threshold", "makeup"],
+        "crossfade" => &["mix"],
+        "lfo" => &["rate"],
+        "macro" => &["value"],
+        _ => &[],
+    }
 }
 
 fn specs() -> Vec<NodeSpec> {
@@ -244,11 +278,23 @@ fn specs() -> Vec<NodeSpec> {
             .output(number("velocity"))
             .output(number("gate"))
             .output(number("time")),
-        input_block("hit_input", "At the hit", "A value from the hit that started the note, fixed for the voice.", HIT_INPUTS, 0.0)
-            .param(ParamSpec::new("tag", "Tag", Param::Text(String::new())).help("For Hit thing's tag: 1 when the thing hit has this tag")),
+        input_block(
+            "hit_input",
+            "At the hit",
+            "A value from the hit that started the note, fixed for the voice.",
+            HIT_INPUTS,
+            0.0,
+        )
+        .param(
+            ParamSpec::new("tag", "Tag", Param::Text(String::new()))
+                .help("For Hit thing's tag: 1 when the thing hit has this tag"),
+        ),
         input_block("live_input", "Live", "The ball's value while the note sounds.", LIVE_INPUTS, 30.0),
         input_block("scene_input", "Scene", "A value from the whole scene, on the video's clock.", SCENE_INPUTS, 30.0)
-            .param(ParamSpec::new("channel", "Channel", Param::Text(String::new())).help("For Channel level: the sound module to listen to")),
+            .param(
+                ParamSpec::new("channel", "Channel", Param::Text(String::new()))
+                    .help("For Channel level: the sound module to listen to"),
+            ),
         NodeSpec::new("macro", "Macro", "Inputs", "A value to show on the card: Show on the card to expose it.")
             .output(number("out"))
             .param(n("value", "Value", 0.5, 0.0, 1.0))

@@ -13,6 +13,12 @@ impl Amp {
 }
 
 impl Block for Amp {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        if name == "gain" {
+            self.gain = (value.clamp(-60.0, 12.0) / 20.0 * std::f32::consts::LN_10).exp();
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {}
 
     fn process(&mut self, _cx: &Ctx, inputs: &[Option<&Buf>], outputs: &mut [Buf]) {

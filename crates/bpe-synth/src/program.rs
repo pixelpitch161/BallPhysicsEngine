@@ -25,6 +25,21 @@ struct Op {
     enabled: bool,
     /// An effects graph's In: its register holds the sound coming in, set before each block.
     input: bool,
+    /// Knobs moved by wires into their knob pins.
+    mods: Vec<KnobMod>,
+}
+
+/// A knob a wire adds to while the block runs.
+#[derive(Clone, Debug)]
+struct KnobMod {
+    name: String,
+    register: usize,
+    /// The knob's own value, which the wire adds to.
+    base: f32,
+    min: f32,
+    max: f32,
+    /// Where the voice keeps the value it last applied.
+    slot: usize,
 }
 
 /// A compiled patch: blocks in running order, wired through registers.
@@ -36,6 +51,8 @@ pub struct Program {
     out: usize,
     /// An effects graph's In register, when it has one.
     input: Option<usize>,
+    /// Knob mods across all blocks.
+    mod_slots: usize,
 }
 
 /// One voice's running copy of a program.
@@ -43,6 +60,8 @@ pub struct Patch {
     program: Program,
     blocks: Vec<Option<Box<dyn Block>>>,
     regs: Vec<Buf>,
+    /// The value each knob mod last set, as bits; NaN before the first.
+    applied: Vec<u32>,
     /// Where a block writes its outputs before they go to their registers.
     scratch: [Buf; MAX_PINS],
 }
@@ -140,6 +159,7 @@ fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
     for &Link { from, to } in &graph.links {
         wire.entry(to).or_insert(from);
     }
+    let mut mod_slots = 0;
     let ops = sequence
         .iter()
         .map(|&id| {
@@ -148,12 +168,32 @@ fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
             let mut knobs = Knobs(spec.params.iter().map(|p| (p.name.clone(), p.default.clone())).collect());
             knobs.0.extend(node.params.iter().map(|(k, v)| (k.clone(), v.clone())));
             let pins = if is_end(&node.kind) { 1 } else { spec.outputs.len() };
+            let followable = crate::followable(&node.kind);
+            let own = spec.inputs.len() - followable.len();
+            let from = |pin: usize| wire.get(&(id, pin as u8)).and_then(|from| register.get(from).copied());
+            let mods = followable
+                .iter()
+                .enumerate()
+                .filter_map(|(i, name)| {
+                    let register = from(own + i)?;
+                    let range = spec.param_spec(name).map_or((f32::MIN, f32::MAX), |p| p.range);
+                    let slot = mod_slots;
+                    mod_slots += 1;
+                    Some(KnobMod {
+                        name: name.to_string(),
+                        register,
+                        base: knobs.number(name, 0.0),
+                        min: range.0,
+                        max: range.1,
+                        slot,
+                    })
+                })
+                .collect();
             Op {
                 kind: node.kind.clone(),
+                inputs: (0..own).map(from).collect(),
+                mods,
                 knobs,
-                inputs: (0..spec.inputs.len())
-                    .map(|pin| wire.get(&(id, pin as u8)).and_then(|from| register.get(from).copied()))
-                    .collect(),
                 outputs: (0..pins).map(|pin| register[&(id, pin as u8)]).collect(),
                 enabled: node.enabled || is_end(&node.kind) || node.kind == "fx_in",
                 input: node.kind == "fx_in",
@@ -161,7 +201,7 @@ fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
         })
         .collect();
     let input = ins.first().map(|&id| register[&(id, 0)]);
-    Ok(Program { ops, registers, out: register[&(outs[0], 0)], input })
+    Ok(Program { ops, registers, out: register[&(outs[0], 0)], input, mod_slots })
 }
 
 impl Program {
@@ -182,7 +222,13 @@ impl Program {
                 Some(b)
             })
             .collect();
-        Patch { program: self.clone(), blocks, regs: vec![SILENT; self.registers], scratch: [SILENT; MAX_PINS] }
+        Patch {
+            program: self.clone(),
+            blocks,
+            regs: vec![SILENT; self.registers],
+            applied: vec![f32::NAN.to_bits(); self.mod_slots],
+            scratch: [SILENT; MAX_PINS],
+        }
     }
 
     /// Runs an effects program over interleaved stereo `audio` in place, a block at a time from
@@ -229,6 +275,17 @@ impl Patch {
         for (op, block) in self.program.ops.iter().zip(&mut self.blocks) {
             if op.input {
                 continue;
+            }
+            if let Some(b) = block {
+                for m in &op.mods {
+                    let wired = &self.regs[m.register][0];
+                    let add = wired.iter().sum::<f32>() / BLOCK as f32;
+                    let v = if add.is_finite() { (m.base + add).clamp(m.min, m.max) } else { m.base };
+                    if self.applied[m.slot] != v.to_bits() {
+                        self.applied[m.slot] = v.to_bits();
+                        b.set_knob(&m.name, v);
+                    }
+                }
             }
             let n = op.outputs.len().min(MAX_PINS);
             let outs = &mut self.scratch;
@@ -481,6 +538,103 @@ mod tests {
         node.params.insert("channel".into(), Param::Text("Kick".into()));
         let expected = crate::Uses { hit: false, live: true, scene: true, channels: ["Kick".to_string()].into() };
         assert_eq!(crate::uses(&g), expected);
+    }
+
+    /// `kind` between In and Out, with a macro (value 1) through a scale of `amount` into the
+    /// knob pin for `knob`.
+    fn followed_chain(kind: &str, knob: &str, amount: f32, knobs: &[(&str, Param)]) -> Graph {
+        let cat = catalog();
+        let mut g =
+            crate::chain_graph(&[(kind.into(), knobs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(), true)]);
+        let target = g.nodes.iter().find(|n| n.kind == kind).unwrap().id;
+        let m = g.add(cat.spec("macro").unwrap(), [0.0, 200.0]);
+        g.node_mut(m).unwrap().params.insert("value".into(), Param::Number(1.0));
+        let sc = g.add(cat.spec("scale").unwrap(), [0.0, 200.0]);
+        g.node_mut(sc).unwrap().params.insert("scale".into(), Param::Number(amount));
+        let spec = cat.spec(kind).unwrap();
+        let pin = spec.inputs.len() - crate::followable(kind).len()
+            + crate::followable(kind).iter().position(|k| *k == knob).unwrap();
+        assert!(g.connect(Link { from: (m, 0), to: (sc, 0) }, cat));
+        assert!(g.connect(Link { from: (sc, 0), to: (target, pin as u8) }, cat), "{kind}.{knob}");
+        if kind == "osc" {
+            // The FM knob only matters with something in the FM input.
+            let input = g.nodes.iter().find(|n| n.kind == "fx_in").unwrap().id;
+            g.connect(Link { from: (input, 0), to: (target, 1) }, cat);
+        }
+        g
+    }
+
+    fn noise(frames: usize) -> Vec<f32> {
+        let mut rng = crate::Rng::new(7);
+        (0..frames * 2).map(|_| rng.next() * 0.5).collect()
+    }
+
+    #[test]
+    fn every_followable_knob_moves_the_sound() {
+        let cat = catalog();
+        for spec in &cat.specs {
+            let kind = spec.kind.as_str();
+            if matches!(kind, "macro" | "lfo") {
+                continue;
+            }
+            for knob in crate::followable(kind) {
+                let p = spec.param_spec(knob).unwrap();
+                // Wet effects so their mix knobs and tails are heard.
+                let extra: Vec<(&str, Param)> = match kind {
+                    "delay" => vec![("ms", Param::Number(20.0)), ("feedback", Param::Number(0.5))],
+                    "osc" => vec![("unison", Param::Number(3.0)), ("wave", Param::Choice("pulse".into()))],
+                    _ => vec![],
+                };
+                let render = |amount: f32| {
+                    let g = followed_chain(kind, knob, amount, &extra);
+                    let program = compile_effects(&g).unwrap_or_else(|e| panic!("{kind}.{knob}: {e:?}"));
+                    let mut audio = noise(24_000);
+                    program.run(&mut audio, Ctx::default());
+                    audio
+                };
+                let span = p.range.1 - p.range.0;
+                let (a, b) = (render(-span), render(span));
+                let diff = a.iter().zip(&b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+                assert!(diff > 1e-4, "{kind}.{knob} doesn't move the sound ({diff})");
+            }
+        }
+        // An LFO's rate and a macro's value, through an amp's mod.
+        for (kind, knob) in [("lfo", "rate"), ("macro", "value")] {
+            let render = |amount: f32| {
+                let mut g = followed_chain("amp", "gain", 0.0, &[]);
+                let amp = g.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+                let source = g.add(cat.spec(kind).unwrap(), [0.0, 400.0]);
+                let m = g.add(cat.spec("macro").unwrap(), [0.0, 400.0]);
+                g.node_mut(m).unwrap().params.insert("value".into(), Param::Number(1.0));
+                let sc = g.add(cat.spec("scale").unwrap(), [0.0, 400.0]);
+                g.node_mut(sc).unwrap().params.insert("scale".into(), Param::Number(amount));
+                let pin = cat.spec(kind).unwrap().inputs.len() - 1;
+                g.connect(Link { from: (m, 0), to: (sc, 0) }, cat);
+                g.connect(Link { from: (sc, 0), to: (source, pin as u8) }, cat);
+                g.connect(Link { from: (source, 0), to: (amp, 1) }, cat);
+                let mut audio = noise(24_000);
+                compile_effects(&g).unwrap().run(&mut audio, Ctx::default());
+                audio
+            };
+            let (a, b) = (render(0.0), render(if kind == "lfo" { 20.0 } else { -0.5 }));
+            let diff = a.iter().zip(&b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+            assert!(diff > 1e-4, "{kind}.{knob} doesn't move the sound ({diff})");
+        }
+    }
+
+    #[test]
+    fn a_knob_pin_adds_to_the_knob() {
+        let rms = |g: &Graph| {
+            let mut audio = noise(24_000);
+            compile_effects(g).unwrap().run(&mut audio, Ctx::default());
+            rms(&audio)
+        };
+        let plain = rms(&crate::chain_graph(&[("amp".into(), Default::default(), true)]));
+        let low = [("gain", Param::Number(-60.0))];
+        let lifted = rms(&followed_chain("amp", "gain", 60.0, &low));
+        assert!((lifted / plain - 1.0).abs() < 0.01, "{lifted} vs {plain}");
+        let capped = rms(&followed_chain("amp", "gain", 100.0, &low));
+        assert!((capped / plain / 3.981 - 1.0).abs() < 0.01, "{}", capped / plain);
     }
 
     #[test]

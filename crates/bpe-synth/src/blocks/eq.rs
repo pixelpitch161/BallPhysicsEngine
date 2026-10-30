@@ -126,6 +126,25 @@ impl Equaliser {
 }
 
 impl Block for Equaliser {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        let gain = value.clamp(-18.0, 18.0);
+        match name {
+            "low_gain" => self.bands.low.1 = gain,
+            "mid_gain" => self.bands.mid.2 = gain,
+            "high_gain" => self.bands.high.1 = gain,
+            _ => return,
+        }
+        // New coefficients, keeping each filter's memory when the same filters remain.
+        let old = std::mem::take(&mut self.filters);
+        let rate = if self.rate > 0.0 { self.rate } else { 48_000.0 };
+        self.build(rate);
+        if old.len() == self.filters.len() {
+            for (new, old) in self.filters.iter_mut().zip(old) {
+                new.z = old.z;
+            }
+        }
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         self.build(cx.rate);
     }

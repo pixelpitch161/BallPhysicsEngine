@@ -17,6 +17,10 @@ pub struct Osc {
     width: f32,
     /// Semitones plus cents.
     offset: f32,
+    semitones: f32,
+    cents: f32,
+    detune: f32,
+    spread: f32,
     unison: usize,
     fm: f32,
     free: bool,
@@ -26,6 +30,21 @@ pub struct Osc {
     /// Each unison voice's pitch as a ratio of the note's.
     ratios: [f32; 8],
     last_sync: f32,
+}
+
+/// Each unison voice's pitch offset in semitones and its left and right gains.
+fn unison_voices(unison: usize, detune: f32, spread: f32) -> [(f32, f32, f32); 8] {
+    let norm = 1.0 / (unison as f32).sqrt();
+    let mut voices = [(0.0, norm, norm); 8];
+    if unison > 1 {
+        for (i, v) in voices.iter_mut().take(unison).enumerate() {
+            let x = i as f32 / (unison - 1) as f32 * 2.0 - 1.0;
+            let angle = (x * spread + 1.0) * std::f32::consts::FRAC_PI_4;
+            let s2 = std::f32::consts::SQRT_2;
+            *v = (x * detune / 100.0, angle.cos() * s2 * norm, angle.sin() * s2 * norm);
+        }
+    }
+    voices
 }
 
 impl Osc {
@@ -40,20 +59,17 @@ impl Osc {
         let unison = (k.number("unison", 1.0).round() as usize).clamp(1, 8);
         let detune = k.number("detune", 20.0).clamp(0.0, 100.0);
         let spread = k.number("spread", 0.5).clamp(0.0, 1.0);
-        let norm = 1.0 / (unison as f32).sqrt();
-        let mut voices = [(0.0, norm, norm); 8];
-        if unison > 1 {
-            for (i, v) in voices.iter_mut().take(unison).enumerate() {
-                let x = i as f32 / (unison - 1) as f32 * 2.0 - 1.0;
-                let angle = (x * spread + 1.0) * std::f32::consts::FRAC_PI_4;
-                let s2 = std::f32::consts::SQRT_2;
-                *v = (x * detune / 100.0, angle.cos() * s2 * norm, angle.sin() * s2 * norm);
-            }
-        }
+        let voices = unison_voices(unison, detune, spread);
+        let semitones = k.number("semitones", 0.0).clamp(-48.0, 48.0);
+        let cents = k.number("cents", 0.0).clamp(-100.0, 100.0);
         Self {
+            semitones,
+            cents,
+            detune,
+            spread,
             wave,
             width: k.number("width", 0.5).clamp(0.01, 0.99),
-            offset: k.number("semitones", 0.0).clamp(-48.0, 48.0) + k.number("cents", 0.0).clamp(-100.0, 100.0) / 100.0,
+            offset: semitones + cents / 100.0,
             unison,
             fm: k.number("fm", 0.0).clamp(0.0, 10.0),
             free: k.choice("phase", "note") == "free",
@@ -98,6 +114,22 @@ impl Osc {
 }
 
 impl Block for Osc {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "semitones" => self.semitones = value.clamp(-48.0, 48.0),
+            "cents" => self.cents = value.clamp(-100.0, 100.0),
+            "width" => self.width = value.clamp(0.01, 0.99),
+            "fm" => self.fm = value.clamp(0.0, 10.0),
+            "detune" => {
+                self.detune = value.clamp(0.0, 100.0);
+                self.voices = unison_voices(self.unison, self.detune, self.spread);
+                self.ratios = self.voices.map(|(semis, ..)| (semis / 12.0).exp2());
+            }
+            _ => {}
+        }
+        self.offset = self.semitones + self.cents / 100.0;
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         let mut rng = Rng::new(cx.seed ^ 0x05C1);
         for (i, p) in self.phases.iter_mut().enumerate() {

@@ -19,6 +19,7 @@ pub struct Drive {
     tone_knob: f32,
     mix: f32,
     lowpass: [f32; 2],
+    rate: f32,
 }
 
 impl Drive {
@@ -37,6 +38,7 @@ impl Drive {
             tone_knob: k.number("tone", 1.0).clamp(0.0, 1.0),
             mix: k.number("mix", 1.0).clamp(0.0, 1.0),
             lowpass: [0.0; 2],
+            rate: 48_000.0,
         }
     }
 
@@ -56,14 +58,33 @@ impl Drive {
     }
 }
 
+impl Drive {
+    /// From 1 kHz at 0 to wide open at 1.
+    fn set_tone(&mut self) {
+        self.tone = (self.tone_knob < 1.0).then(|| {
+            let hz = 1_000.0 * 20f32.powf(self.tone_knob);
+            1.0 - (-std::f32::consts::TAU * hz / self.rate).exp()
+        });
+    }
+}
+
 impl Block for Drive {
     fn reset(&mut self, cx: &Ctx) {
         self.lowpass = [0.0; 2];
-        // From 1 kHz at 0 to wide open at 1.
-        self.tone = (self.tone_knob < 1.0).then(|| {
-            let hz = 1_000.0 * 20f32.powf(self.tone_knob);
-            1.0 - (-std::f32::consts::TAU * hz / cx.rate).exp()
-        });
+        self.rate = cx.rate;
+        self.set_tone();
+    }
+
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "amount" => self.gain = 1.0 + value.clamp(0.0, 1.0) * 39.0,
+            "tone" => {
+                self.tone_knob = value.clamp(0.0, 1.0);
+                self.set_tone();
+            }
+            "mix" => self.mix = value.clamp(0.0, 1.0),
+            _ => {}
+        }
     }
 
     fn process(&mut self, _cx: &Ctx, inputs: &[Option<&Buf>], outputs: &mut [Buf]) {

@@ -72,12 +72,9 @@ impl PhysicsIn {
     fn raw(&self, cx: &Ctx) -> f32 {
         match self.reads {
             Reads::Hit => self.fixed,
-            Reads::Live => self
-                .sources
-                .hit
-                .as_ref()
-                .and_then(|h| h.track.as_ref())
-                .map_or(0.0, |t| t.at(cx.since_on)[self.index]),
+            Reads::Live => {
+                self.sources.hit.as_ref().and_then(|h| h.track.as_ref()).map_or(0.0, |t| t.at(cx.since_on)[self.index])
+            }
             Reads::Scene => self.sources.scene.as_ref().map_or(0.0, |s| s.value(&self.input, &self.channel, cx.time)),
         }
     }
@@ -232,10 +229,8 @@ mod tests {
 
     #[test]
     fn channel_level_reads_its_channel() {
-        let scene = SceneSignals {
-            levels: [("Kick".to_string(), Arc::new(vec![-6.0; 10]))].into(),
-            ..SceneSignals::default()
-        };
+        let scene =
+            SceneSignals { levels: [("Kick".to_string(), Arc::new(vec![-6.0; 10]))].into(), ..SceneSignals::default() };
         let sources = Sources { hit: None, scene: Some(Arc::new(scene)) };
         let with = |channel: &str| {
             let k = knobs("channel", -48.0, -6.0).with("channel", Param::Text(channel.into()));

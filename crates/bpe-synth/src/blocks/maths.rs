@@ -94,6 +94,12 @@ impl Crossfade {
 }
 
 impl Block for Crossfade {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        if name == "mix" {
+            self.mix = value.clamp(0.0, 1.0);
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {}
     fn process(&mut self, _cx: &Ctx, inputs: &[Option<&Buf>], outputs: &mut [Buf]) {
         each(outputs, |side, s| {
@@ -136,16 +142,24 @@ impl Block for NoteIn {
 /// One of the patch's macros: min + value × (max - min).
 pub struct Macro {
     value: f32,
+    min: f32,
+    max: f32,
 }
 
 impl Macro {
     pub fn new(k: &Knobs) -> Self {
         let (min, max) = (k.number("min", 0.0), k.number("max", 1.0));
-        Self { value: min + k.number("value", 0.5).clamp(0.0, 1.0) * (max - min) }
+        Self { value: min + k.number("value", 0.5).clamp(0.0, 1.0) * (max - min), min, max }
     }
 }
 
 impl Block for Macro {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        if name == "value" {
+            self.value = self.min + value.clamp(0.0, 1.0) * (self.max - self.min);
+        }
+    }
+
     fn reset(&mut self, _cx: &Ctx) {}
     fn process(&mut self, _cx: &Ctx, _inputs: &[Option<&Buf>], outputs: &mut [Buf]) {
         outputs[0] = [[self.value; BLOCK]; 2];

@@ -53,6 +53,14 @@ impl Delay {
 }
 
 impl Block for Delay {
+    fn set_knob(&mut self, name: &str, value: f32) {
+        match name {
+            "feedback" => self.feedback = value.clamp(0.0, 0.98),
+            "mix" => self.mix = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
     fn reset(&mut self, cx: &Ctx) {
         let seconds = match self.ms {
             Some(ms) => ms / 1_000.0,
