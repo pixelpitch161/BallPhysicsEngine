@@ -21,6 +21,12 @@ pub const OVERRIDE: Color32 = Color32::from_rgb(0xff, 0xa8, 0x4a);
 // Used by the sound job's error line.
 pub const ERROR: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
 
+// What a chord does in its key: at rest, moving away, pulling home, or borrowed.
+pub const HOME: Color32 = Color32::from_rgb(0x5f, 0xc8, 0xa8);
+pub const AWAY: Color32 = Color32::from_rgb(0xf2, 0xc4, 0x6d);
+pub const PULL: Color32 = Color32::from_rgb(0xff, 0x8a, 0x7a);
+pub const BORROWED: Color32 = Color32::from_rgb(0x8f, 0xb4, 0xff);
+
 pub fn apply(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;

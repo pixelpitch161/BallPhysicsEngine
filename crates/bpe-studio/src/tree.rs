@@ -139,6 +139,7 @@ pub fn show(
     // Delete removes everything selected, unless the keyboard is in a text field.
     if action.is_none()
         && !ui.ctx().text_edit_focused()
+        && !crate::chords::lane_focused(ui.ctx())
         && ui.input(|i| i.key_pressed(Key::Delete))
         && selection.primary.is_some()
     {

@@ -9,6 +9,7 @@
             params: {
                 "beat_sync": Choice("warp"),
                 "bpm": Number(128.0),
+                "chords": Int(0),
             },
             slots: {
                 Look: Linked(
@@ -150,7 +151,44 @@
                 },
             ),
         },
+        progressions: {
+            0: (
+                name: "Epic minor",
+                key: (
+                    root: 9,
+                    mode: Minor,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 5,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 7,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
     ),
     next_thing: 4,
     next_module: 7,
+    next_progression: 1,
 )

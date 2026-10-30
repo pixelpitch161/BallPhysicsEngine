@@ -2,21 +2,25 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
+use crate::chords::{self, Audition, ChordClip, ChordUi};
 use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
-    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, TargetChoices, settings_grid, settings_grid_marked,
+    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, MAKE_UNIQUE, NEW_PROGRESSION, TargetChoices,
+    settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
-    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Chord, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,
+    ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId,
+    Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
+use bpe_mix::Instrument;
 use eframe::egui::{self, DragValue, RichText, Ui};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct Inspector {
@@ -31,6 +35,10 @@ pub struct Inspector {
     pub nodes_request: Option<(ThingId, SlotId)>,
     /// What the node panel shows, so that card's switch shows Nodes as chosen.
     pub nodes_open: Option<(ThingId, SlotId)>,
+    /// Each progression's chord editor: the picked chord, the presets list.
+    pub chord_ui: BTreeMap<ProgressionId, ChordUi>,
+    /// Chords asked to be heard this frame; the app plays them.
+    pub clip: Option<ChordClip>,
 }
 
 /// A card's Nodes button.
@@ -92,6 +100,8 @@ enum Edit {
     RollCard(Option<SlotId>),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
+    /// A chord editor changed a progression in the library.
+    Progression(ProgressionId, Progression),
     /// The look's colour list changed: its Colour and Colours settings, at these addresses.
     Colours {
         colour: Address,
@@ -155,6 +165,7 @@ pub fn show(
     };
     let selected = selection.all(scene);
     let choices = TargetChoices::from_scene(scene, reg);
+    let bpm = bpe_kit::music::root_settings(resolved).bpm;
     let mut edits = Vec::new();
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -241,8 +252,9 @@ pub fn show(
                 mark_for(scene, def, &own(key), time, physics)
             };
             let locked = |key: &str| scene.is_locked(&own(key));
+            let own_choices = TargetChoices { hide_scenes: id == ThingId::ROOT, ..choices.clone() };
             let cx = GridCx {
-                choices: &choices,
+                choices: &own_choices,
                 overridden: &|_| false,
                 inherited: &|_| None,
                 marks: &marks,
@@ -250,6 +262,10 @@ pub fn show(
                 applies: &applies,
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
+            if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, kind.settings(), &get, &mut edits) {
+                let sound = resolved.things.get(&ThingId::ROOT).and_then(|r| r.slots.get(&SlotId::Sound));
+                inspector.clip = Some(chord_clip(heard, bpm, &|k| sound.and_then(|r| r.params.get(k).cloned())));
+            }
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -499,6 +515,9 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
+                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
                         }
@@ -533,6 +552,9 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
+                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
                         }
@@ -597,8 +619,10 @@ pub fn show(
 
     let mut changed = false;
     for edit in edits {
+        let edit = make_picked_progression(scene, reg, id, time, edit);
         let ok = match edit {
             Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
+            Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -910,6 +934,86 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
         (ValueType::Vec2, _) => Value::Vec2([0.0, 100.0]),
         (ValueType::Color, _) => Value::Color(Color::WHITE),
         _ => Value::Number(quarter),
+    }
+}
+
+/// Under a card with a Chords setting: the chord editor for the progression it picks, or a line
+/// saying it follows Scene defaults' chords.
+fn chord_editor(
+    ui: &mut Ui,
+    chord_ui: &mut BTreeMap<ProgressionId, ChordUi>,
+    scene: &Scene,
+    defs: &[SettingDef],
+    get: &dyn Fn(&str) -> Value,
+    edits: &mut Vec<Edit>,
+) -> Option<Vec<Chord>> {
+    let mut heard = None;
+    for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
+        let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
+        let Some((pid, p)) = picked.and_then(|pid| scene.library.progressions.get(&pid).map(|p| (pid, p))) else {
+            ui.label(
+                RichText::new("Plays Scene defaults' chords. Pick Make unique to give it its own.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+            continue;
+        };
+        let mut p = p.clone();
+        let out = ui.push_id(("chords", pid), |ui| chords::show(ui, &mut p, chord_ui.entry(pid).or_default())).inner;
+        heard = match out.audition {
+            Some(Audition::Chord(c)) => Some(vec![Chord { beats: 4, ..c }]),
+            Some(Audition::All) => Some(p.chords.clone()),
+            None => heard,
+        };
+        if out.changed {
+            edits.push(Edit::Progression(pid, p));
+        }
+    }
+    heard
+}
+
+/// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
+fn chord_clip(chords: Vec<Chord>, bpm: f32, get: &dyn Fn(&str) -> Option<Value>) -> ChordClip {
+    let number = |key: &str, or: f32| match get(key) {
+        Some(Value::Number(x)) => x as f32,
+        _ => or,
+    };
+    ChordClip {
+        chords,
+        instrument: get("instrument").and_then(|v| Instrument::from_value(&v)).unwrap_or_default(),
+        decay: number("decay", 0.6),
+        brightness: number("brightness", 0.5),
+        seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
+    }
+}
+
+/// A Chords row's "New progression" or "Make unique" becomes a pick of a progression made for
+/// it: a starter, or a copy of the one the row shows (Scene defaults' when it follows that).
+fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
+    let (slot, key, value) = match &edit {
+        Edit::SetKind(key, value) => (None, *key, value),
+        Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
+        _ => return edit,
+    };
+    let Value::Int(pick @ (NEW_PROGRESSION | MAKE_UNIQUE)) = *value else { return edit };
+    let made =
+        if pick == NEW_PROGRESSION {
+            Some(scene.add_progression(bpe_core::Progression {
+                name: "New chords".into(),
+                ..bpe_core::Progression::starter()
+            }))
+        } else {
+            let here = Address { owner: Owner::Thing(id), slot, key: key.into() };
+            let root = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "chords".into() };
+            let shown = |a: &Address| {
+                scene.value_at_time(reg, a, time).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0)
+            };
+            shown(&here).or_else(|| shown(&root)).and_then(|p| scene.copy_progression(p).ok())
+        };
+    let value = made.map_or(Value::Int(-1), |p| ProgressionRef(Some(p)).to_value());
+    match slot {
+        None => Edit::SetKind(key, value),
+        Some(slot) => Edit::SetSlot(slot, key, value),
     }
 }
 
@@ -1659,6 +1763,84 @@ mod tests {
         let s = h.state();
         let m = s.scene.library.modules.values().find(|m| m.name == "Own bounce").unwrap();
         assert_eq!(m.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
+    }
+
+    fn chords_combos(h: &Harness<'_, State>) -> Vec<egui::Rect> {
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").map(|n| n.rect()).collect()
+    }
+
+    #[test]
+    fn a_chords_setting_has_a_progression_picker() {
+        let h = harness(Some(ThingId::ROOT));
+        assert_eq!(chords_combos(&h).len(), 2, "Scene defaults' own and its sound module's");
+        let shown: Vec<String> = h
+            .query_all_by_role_and_label(Role::ComboBox, "Chords")
+            .map(|n| n.accesskit_node().value().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(shown, ["Starter", "Scene's (Starter)"], "Scene defaults' own, then the module following it");
+    }
+
+    #[test]
+    fn scenes_is_offered_on_modules_not_on_scene_defaults() {
+        let mut h = harness(Some(ThingId::ROOT));
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").next().unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Scene's").is_none());
+        assert!(h.query_by_label("New progression").is_some());
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Scene's").is_some());
+    }
+
+    #[test]
+    fn scene_defaults_fits_the_panel() {
+        // Long labels and units once pushed the number boxes past the edge, so the panel grew.
+        let h = harness(Some(ThingId::ROOT));
+        for n in h.get_all_by_role(Role::SpinButton) {
+            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
+        }
+    }
+
+    #[test]
+    fn the_chord_editor_edits_the_picked_progression() {
+        let mut h = harness(Some(ThingId::ROOT));
+        assert_eq!(h.query_all_by_label("Chord lane").count(), 1, "only Scene defaults picks its own");
+        assert!(h.query_by_label_contains("Plays Scene defaults' chords").is_some(), "its sound module follows it");
+        let node = h.get_by_label("IV\nF");
+        node.scroll_to_me();
+        h.run();
+        h.get_by_label("IV\nF").click();
+        h.run();
+        let p = &h.state().scene.library.progressions[&ProgressionId(0)];
+        assert_eq!(p.chords.len(), 7);
+        assert_eq!(p.chords[6].root, 5);
+        // The new chord is heard for a bar through Scene defaults' sound, on its tempo.
+        let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
+        assert_eq!(clip.chords, [bpe_core::Chord { beats: 4, ..p.chords[6] }]);
+        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
+    }
+
+    #[test]
+    fn make_unique_gives_the_module_its_own_progression() {
+        let mut h = harness(Some(ThingId(2)));
+        let m = {
+            let s = h.state_mut();
+            let m = s.scene.add_module(&s.kit.registry, "sound.notes", "Own sound").unwrap();
+            s.scene.link(&s.kit.registry, ThingId(2), SlotId::Sound, m).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            m
+        };
+        h.run();
+        h.query_all_by_role_and_label(Role::ComboBox, "Chords").next().unwrap().click();
+        h.run();
+        h.get_by_label("Make unique").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.progressions.len(), 2);
+        let copy = s.scene.library.progressions.iter().find(|(_, p)| p.name == "Starter copy").unwrap().0;
+        assert_eq!(s.scene.library.modules[&m].params.get("chords"), Some(&Value::Int(copy.0 as i64)));
     }
 
     /// Stores the module's template as its own graph, so it runs through the compiled path.

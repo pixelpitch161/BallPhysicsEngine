@@ -13,6 +13,10 @@ struct Shared {
     position: f64,
     playing: bool,
     muted: bool,
+    /// A one-shot clip heard over everything, such as chords being edited, and how far into it
+    /// the output is, in clip frames.
+    clip: Arc<Vec<f32>>,
+    clip_position: f64,
 }
 
 pub struct AudioOut {
@@ -58,10 +62,34 @@ impl AudioOut {
         self.shared.lock().unwrap().muted = muted;
     }
 
+    /// Plays a clip once from its start, over the soundtrack whether that plays or not. It is
+    /// made on another thread so the editor doesn't wait; it replaces any clip still playing.
+    pub fn play_clip_with(&self, make: impl FnOnce() -> Vec<f32> + Send + 'static) {
+        let shared = self.shared.clone();
+        std::thread::spawn(move || {
+            let clip = Arc::new(make());
+            let mut shared = shared.lock().unwrap();
+            shared.clip = clip;
+            shared.clip_position = 0.0;
+        });
+    }
+
     /// Where the output has got to, in seconds: the clock the preview follows while playing.
     pub fn position(&self) -> f64 {
         self.shared.lock().unwrap().position / SAMPLE_RATE as f64
     }
+}
+
+/// The clip's frame at `position` (in clip frames, read between samples), moving it on by `step`;
+/// silence once the clip has ended.
+fn clip_frame(clip: &[f32], position: &mut f64, step: f64) -> (f32, f32) {
+    let i = *position as usize;
+    if i + 1 >= clip.len() / 2 {
+        return (0.0, 0.0);
+    }
+    let f = (*position - i as f64) as f32;
+    *position += step;
+    (clip[i * 2] + (clip[i * 2 + 2] - clip[i * 2]) * f, clip[i * 2 + 1] + (clip[i * 2 + 3] - clip[i * 2 + 1]) * f)
 }
 
 fn build<T: SizedSample + FromSample<f32>>(
@@ -91,6 +119,9 @@ fn build<T: SizedSample + FromSample<f32>>(
                         (left, right) = (0.0, 0.0);
                     }
                 }
+                let Shared { clip, clip_position, .. } = &mut *shared;
+                let (l, r) = clip_frame(clip, clip_position, step);
+                (left, right) = (left + l, right + r);
                 for (c, sample) in frame.iter_mut().enumerate() {
                     let value = match (channels, c) {
                         (1, _) => (left + right) * 0.5,
@@ -106,4 +137,22 @@ fn build<T: SizedSample + FromSample<f32>>(
         None,
     )?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clip_plays_then_stops_at_the_end() {
+        let clip = [0.5, -0.5, 1.0, -1.0, 0.0, 0.0];
+        let mut at = 0.0;
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (0.5, -0.5));
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (0.75, -0.75), "read between samples");
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (1.0, -1.0));
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (0.5, -0.5));
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (0.0, 0.0), "ended");
+        assert_eq!(clip_frame(&clip, &mut at, 0.5), (0.0, 0.0));
+        assert_eq!(clip_frame(&[], &mut 0.0, 1.0), (0.0, 0.0));
+    }
 }

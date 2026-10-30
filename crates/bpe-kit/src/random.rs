@@ -2,7 +2,11 @@
 //! and never-random settings alone.
 
 use crate::rng::Rng;
-use bpe_core::{Address, Color, ModuleId, Owner, Registry, Scene, SettingDef, SlotId, SlotLink, ThingId, Value};
+use bpe_core::{
+    Address, Color, ModuleId, Owner, ProgressionId, ProgressionRef, Registry, Scene, SettingDef, SettingValue, SlotId,
+    SlotLink, ThingId, Value, ValueType,
+};
+use bpe_mix::{PRESETS, Preset};
 
 /// What one throw of the dice covers.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,7 +40,9 @@ pub struct Rolled {
 /// same result, and each setting has its own dice, so locking one shifts none of the others.
 pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rolled {
     let mut rolled = Rolled::default();
-    for a in addresses(scene, reg, scope) {
+    let addresses = addresses(scene, reg, scope);
+    roll_progressions(scene, reg, &addresses, roll, &mut rolled);
+    for a in addresses {
         if held(scene, &a) || scene.tracks.contains_key(&a) {
             continue;
         }
@@ -51,6 +57,49 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
     }
     fit_to_camera(scene, reg, &rolled);
     rolled
+}
+
+/// Rolls the chord progressions the scope's Chords settings point at: with a chance of
+/// `amount`, a preset in the progression's mode replaces its chords, and close to "All new" its
+/// key moves too. A setting on "Scene's" leaves Scene defaults' progression to its own setting. Each progression rolls once however many settings point at it, with the dice
+/// of the first one. A locked Chords setting holds its progression.
+fn roll_progressions(scene: &mut Scene, reg: &Registry, addresses: &[Address], roll: Roll, rolled: &mut Rolled) {
+    let amount = roll.amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let mut done: Vec<ProgressionId> = Vec::new();
+    for a in addresses {
+        if held(scene, a) || scene.def_at(reg, a).is_none_or(|d| d.ty != ValueType::Progression) {
+            continue;
+        }
+        let Some(r) = scene.value_at(reg, a).and_then(|v| ProgressionRef::from_value(&v)) else { continue };
+        // "Scene's" belongs to Scene defaults' own Chords setting, which rolls it (or holds it).
+        let Some(id) = r.0 else { continue };
+        if done.contains(&id) {
+            continue;
+        }
+        done.push(id);
+        let Some(mut p) = scene.library.progressions.get(&id).cloned() else { continue };
+        let mut dice = Rng::new(roll.seed, salt(a));
+        if dice.unit() >= amount {
+            continue;
+        }
+        if dice.unit() < structural_chance(amount) {
+            p.transpose_to((dice.next_u32() % 12) as u8);
+        }
+        let fits: Vec<&Preset> = PRESETS.iter().filter(|preset| preset.mode == p.key.mode).collect();
+        let preset = if fits.is_empty() {
+            &PRESETS[dice.next_u32() as usize % PRESETS.len()]
+        } else {
+            fits[dice.next_u32() as usize % fits.len()]
+        };
+        p.key.mode = preset.mode;
+        p.chords = preset.chords(p.key.root);
+        if scene.set_progression(id, p).is_ok() {
+            rolled.changed.push(a.clone());
+        }
+    }
 }
 
 /// Arena sizes the dice picked, made to fit the camera's shot: the dice ranges suit a shot at
@@ -361,6 +410,41 @@ mod tests {
 
     fn rolls(def: &SettingDef, current: &Value, amount: f32, n: u32) -> Vec<Value> {
         (0..n).filter_map(|i| roll_value(def, current, &mut Rng::new(i, 1), amount)).collect()
+    }
+
+    fn starter_chords(scene: &Scene) -> bpe_core::Progression {
+        scene.library.progressions.values().next().unwrap().clone()
+    }
+
+    #[test]
+    fn rolling_the_scene_picks_a_preset_in_key() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let r = roll(&mut scene, &reg, &Scope::Scene, Roll { seed: 7, amount: 1.0 });
+        let p = starter_chords(&scene);
+        assert!(PRESETS.iter().any(|preset| preset.chords(p.key.root) == p.chords), "{:?}", p.chords);
+        assert!(r.changed.iter().any(|a| a.key == "chords"));
+    }
+
+    #[test]
+    fn a_locked_chords_setting_keeps_its_progression() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let before = starter_chords(&scene);
+        scene.set_locked(Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "chords".into() }, true);
+        for seed in 0..20 {
+            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
+        }
+        assert_eq!(starter_chords(&scene), before);
+    }
+
+    #[test]
+    fn the_same_seed_rolls_the_same_chords() {
+        let reg = registry();
+        let (mut a, mut b) = (new_scene(&reg), new_scene(&reg));
+        roll(&mut a, &reg, &Scope::Scene, Roll { seed: 3, amount: 0.9 });
+        roll(&mut b, &reg, &Scope::Scene, Roll { seed: 3, amount: 0.9 });
+        assert_eq!(starter_chords(&a), starter_chords(&b));
     }
 
     #[test]

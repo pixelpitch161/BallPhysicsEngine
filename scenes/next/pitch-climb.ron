@@ -6,6 +6,9 @@
             id: 0,
             name: "Scene defaults",
             kind: "scene",
+            params: {
+                "chords": Int(0),
+            },
             slots: {
                 Look: Linked(
                     module: 0,
@@ -126,7 +129,7 @@
                 kind: "sound.notes",
                 params: {
                     "instrument": Choice("marimba"),
-                    "pitch_by": Choice("hits"),
+                    "order": Choice("hits"),
                 },
             ),
             4: (
@@ -139,7 +142,44 @@
                 },
             ),
         },
+        progressions: {
+            0: (
+                name: "Dreamy loop",
+                key: (
+                    root: 9,
+                    mode: Minor,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Seven,
+                        beats: 4,
+                    ),
+                    (
+                        root: 5,
+                        quality: Major,
+                        ext: Maj7,
+                        beats: 4,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Maj7,
+                        beats: 4,
+                    ),
+                    (
+                        root: 7,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
     ),
     next_thing: 4,
     next_module: 5,
+    next_progression: 1,
 )

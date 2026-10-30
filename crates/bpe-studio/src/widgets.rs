@@ -1,6 +1,9 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType};
+use bpe_core::{
+    Color, ProgressionId, ProgressionRef, PulseSource, Registry, Scene, SettingDef, SettingValue, Target, ThingId,
+    Value, ValueType,
+};
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
@@ -16,7 +19,18 @@ pub struct TargetChoices {
     pub tags: Vec<String>,
     /// Thing kinds as (id, name), in registry order, without the scene itself.
     pub kinds: Vec<(String, String)>,
+    /// Chord progressions as (id, name, how many settings use it), in library order.
+    pub progressions: Vec<(ProgressionId, String, usize)>,
+    /// The progression Scene defaults points at.
+    pub scene_chords: Option<ProgressionId>,
+    /// Leave out "Scene's" from Chords menus: on Scene defaults itself.
+    pub hide_scenes: bool,
 }
+
+/// A Chords row's pick of "New progression": the inspector adds one and points the setting at it.
+pub const NEW_PROGRESSION: i64 = -2;
+/// A Chords row's pick of "Make unique": the inspector copies the progression the row shows.
+pub const MAKE_UNIQUE: i64 = -3;
 
 impl TargetChoices {
     pub fn from_scene(scene: &Scene, reg: &Registry) -> TargetChoices {
@@ -25,7 +39,26 @@ impl TargetChoices {
             scene.things.values().flat_map(|t| t.tags.iter().cloned()).collect();
         let kinds =
             reg.things().filter(|k| k.id() != "scene").map(|k| (k.id().to_owned(), k.name().to_owned())).collect();
-        TargetChoices { things, tags: tags.into_iter().collect(), kinds }
+        let progressions = scene
+            .library
+            .progressions
+            .iter()
+            .map(|(id, p)| (*id, p.name.clone(), scene.progression_users(reg, *id).len()))
+            .collect();
+        let scene_chords = scene
+            .things
+            .get(&ThingId::ROOT)
+            .and_then(|t| t.params.get("chords"))
+            .and_then(ProgressionRef::from_value)
+            .and_then(|r| r.0);
+        TargetChoices {
+            things,
+            tags: tags.into_iter().collect(),
+            kinds,
+            progressions,
+            scene_chords,
+            hide_scenes: false,
+        }
     }
 }
 
@@ -594,8 +627,12 @@ fn number_slider<N: egui::emath::Numeric>(
     feel: NumberFeel,
     unit: String,
 ) -> Response {
-    // Leave room for the number box, so the slider's length is used for precision.
-    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).clamp(100.0, 320.0);
+    // Leave room for the number box at its widest, so the row never pushes the panel wider.
+    let widest = format!("{}{:.*}{unit}", if min < 0.0 { "-" } else { "" }, feel.decimals, min.abs().max(max.abs()));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let number = ui.fonts_mut(|f| f.layout_no_wrap(widest, font, egui::Color32::WHITE).size().x);
+    let room = number + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x + 4.0;
+    ui.spacing_mut().slider_width = (ui.available_width() - room).clamp(48.0, 320.0);
     let mut slider = Slider::new(x, N::from_f64(min)..=N::from_f64(max))
         .suffix(unit)
         .smart_aim(false)
@@ -673,8 +710,47 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
+        (ValueType::Progression, Value::Int(x)) => progression_picker(ui, name, x, choices).labelled_by(name),
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(theme::WARNING)),
     }
+}
+
+/// A menu naming the chord progression a setting uses: Scene defaults' one, any in the library,
+/// a new one, or a copy of the one shown. Marked changed when something is picked; a new one or
+/// a copy comes back as [`NEW_PROGRESSION`] or [`MAKE_UNIQUE`] for the inspector to make.
+fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetChoices) -> Response {
+    let name_of = |id: ProgressionId| {
+        choices.progressions.iter().find(|(p, ..)| *p == id).map_or("missing".to_owned(), |(_, n, _)| n.clone())
+    };
+    let shown = match ProgressionRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
+        Some(id) if choices.progressions.iter().any(|(p, ..)| *p == id) => name_of(id),
+        _ if !choices.hide_scenes => match choices.scene_chords {
+            Some(id) => format!("Scene's ({})", name_of(id)),
+            None => "Scene's".to_owned(),
+        },
+        _ => "None yet".to_owned(),
+    };
+    let before = *x;
+    let mut response = egui::ComboBox::from_id_salt(("progression", row)).selected_text(shown).show_ui(ui, |ui| {
+        if !choices.hide_scenes {
+            ui.selectable_value(x, -1, "Scene's").on_hover_text("Follow Scene defaults' chords");
+        }
+        for (id, name, users) in &choices.progressions {
+            let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
+            ui.selectable_value(x, id.0 as i64, label);
+        }
+        ui.separator();
+        if ui.button("New progression").clicked() {
+            *x = NEW_PROGRESSION;
+        }
+        if ui.button("Make unique").on_hover_text("A copy of these chords that only this uses").clicked() {
+            *x = MAKE_UNIQUE;
+        }
+    });
+    if *x != before {
+        response.response.mark_changed();
+    }
+    response.response
 }
 
 /// A menu naming the target, with Anything, Itself and the scene's things, tags and kinds to

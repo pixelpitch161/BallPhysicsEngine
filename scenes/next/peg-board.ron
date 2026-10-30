@@ -7,6 +7,7 @@
             name: "Scene defaults",
             kind: "scene",
             params: {
+                "chords": Int(0),
                 "gravity": Vec2((0.0, 900.0)),
             },
             slots: {
@@ -152,7 +153,7 @@
                 kind: "sound.notes",
                 params: {
                     "instrument": Choice("marimba"),
-                    "pitch_by": Choice("speed"),
+                    "order": Choice("speed"),
                     "plays_when": Choice("being_hit"),
                 },
             ),
@@ -167,7 +168,56 @@
                 },
             ),
         },
+        progressions: {
+            0: (
+                name: "Starter",
+                key: (
+                    root: 0,
+                    mode: Major,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
     ),
     next_thing: 4,
     next_module: 7,
+    next_progression: 1,
 )
