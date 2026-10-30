@@ -2,7 +2,8 @@
 //! nothing.
 
 use crate::{
-    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Thing, ThingId, Value,
+    Address, Attach, KindId, Module, ModuleId, Owner, Params, Progression, ProgressionId, ProgressionRef, Registry,
+    Scene, SettingValue, SlotId, SlotLink, Thing, ThingId, Value, ValueType,
 };
 use glam::Vec2;
 use std::collections::BTreeSet;
@@ -25,6 +26,9 @@ pub enum EditError {
     InUse(Vec<ThingId>),
     WrongType,
     UnknownSetting(String),
+    MissingProgression(ProgressionId),
+    /// These settings still point at the progression.
+    ProgressionInUse(Vec<Address>),
 }
 
 impl fmt::Display for EditError {
@@ -42,6 +46,13 @@ impl fmt::Display for EditError {
             EditError::InUse(users) => write!(f, "{} things still use this module", users.len()),
             EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
+            EditError::MissingProgression(_) => write!(f, "That chord progression isn't in the library any more"),
+            EditError::ProgressionInUse(users) if users.len() == 1 => {
+                write!(f, "One setting still uses this chord progression")
+            }
+            EditError::ProgressionInUse(users) => {
+                write!(f, "{} settings still use this chord progression", users.len())
+            }
         }
     }
 }
@@ -366,12 +377,120 @@ impl Scene {
         self.locks.retain(|a| a.owner != Owner::Module(m));
         Ok(())
     }
+
+    /// Adds a chord progression to the library.
+    pub fn add_progression(&mut self, p: Progression) -> ProgressionId {
+        let id = ProgressionId(self.next_progression);
+        self.next_progression += 1;
+        self.library.progressions.insert(id, clamped(p));
+        id
+    }
+
+    /// Replaces a progression, folding every chord's pitches into 0..=11 and its length into range.
+    pub fn set_progression(&mut self, id: ProgressionId, p: Progression) -> Result<(), EditError> {
+        let slot = self.library.progressions.get_mut(&id).ok_or(EditError::MissingProgression(id))?;
+        *slot = clamped(p);
+        Ok(())
+    }
+
+    /// Adds a copy of a progression, named "<name> copy".
+    pub fn copy_progression(&mut self, id: ProgressionId) -> Result<ProgressionId, EditError> {
+        let source = self.library.progressions.get(&id).ok_or(EditError::MissingProgression(id))?;
+        let copy = Progression { name: format!("{} copy", source.name), ..source.clone() };
+        Ok(self.add_progression(copy))
+    }
+
+    /// Every setting that points at progression `id`: things' own settings, their slot
+    /// changes and library modules'.
+    pub fn progression_users(&self, reg: &Registry, id: ProgressionId) -> Vec<Address> {
+        let wanted = ProgressionRef(Some(id)).to_value();
+        let mut out = Vec::new();
+        let mut look = |owner: Owner, slot: Option<SlotId>, params: &Params, defs: &[crate::SettingDef]| {
+            for d in defs.iter().filter(|d| d.ty == ValueType::Progression) {
+                if params.get(d.key) == Some(&wanted) {
+                    out.push(Address { owner, slot, key: d.key.into() });
+                }
+            }
+        };
+        for (&tid, t) in &self.things {
+            if let Some(kind) = reg.thing(&t.kind) {
+                look(Owner::Thing(tid), None, &t.params, kind.settings());
+            }
+            for (&slot, link) in &t.slots {
+                if let SlotLink::Linked { module, overrides } = link
+                    && let Some(kind) = self.library.modules.get(module).and_then(|m| reg.module(&m.kind))
+                {
+                    look(Owner::Thing(tid), Some(slot), overrides, kind.settings());
+                }
+            }
+        }
+        for (&mid, m) in &self.library.modules {
+            if let Some(kind) = reg.module(&m.kind) {
+                look(Owner::Module(mid), None, &m.params, kind.settings());
+            }
+        }
+        out
+    }
+
+    /// Removes a progression no setting points at any more.
+    pub fn remove_progression(&mut self, reg: &Registry, id: ProgressionId) -> Result<(), EditError> {
+        if !self.library.progressions.contains_key(&id) {
+            return Err(EditError::MissingProgression(id));
+        }
+        let users = self.progression_users(reg, id);
+        if !users.is_empty() {
+            return Err(EditError::ProgressionInUse(users));
+        }
+        self.library.progressions.remove(&id);
+        Ok(())
+    }
+}
+
+fn clamped(mut p: Progression) -> Progression {
+    p.key.root %= 12;
+    p.chords = p.chords.into_iter().map(|c| c.clamp()).collect();
+    p
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testkit;
+
+    #[test]
+    fn progressions_get_fresh_ids_and_copies() {
+        let mut s = Scene::default();
+        assert_eq!(s.add_progression(Progression::starter()), ProgressionId(0));
+        assert_eq!(s.add_progression(Progression::default()), ProgressionId(1));
+        let copy = s.copy_progression(ProgressionId(0)).unwrap();
+        assert_eq!(copy, ProgressionId(2));
+        assert_eq!(s.library.progressions[&copy].name, "Starter copy");
+        assert_eq!(s.copy_progression(ProgressionId(9)), Err(EditError::MissingProgression(ProgressionId(9))));
+    }
+
+    #[test]
+    fn a_progression_in_use_cannot_be_removed() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let p = s.add_progression(Progression::starter());
+        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
+        let a = Address { owner: Owner::Module(m), slot: None, key: "chords".into() };
+        s.set_at(&r, &a, ProgressionRef(Some(p)).to_value()).unwrap();
+        assert_eq!(s.remove_progression(&r, p), Err(EditError::ProgressionInUse(vec![a.clone()])));
+        s.set_at(&r, &a, Value::Int(-1)).unwrap();
+        assert_eq!(s.remove_progression(&r, p), Ok(()));
+        assert!(s.library.progressions.is_empty());
+    }
+
+    #[test]
+    fn set_progression_clamps_chords() {
+        let mut s = Scene::default();
+        let id = s.add_progression(Progression::default());
+        let chord = crate::Chord { root: 14, beats: 0, ..crate::Chord::default() };
+        s.set_progression(id, Progression { chords: vec![chord], ..Progression::default() }).unwrap();
+        let stored = s.library.progressions[&id].chords[0];
+        assert_eq!((stored.root, stored.beats), (2, 1));
+    }
 
     #[test]
     fn removing_a_thing_or_module_drops_its_locks() {

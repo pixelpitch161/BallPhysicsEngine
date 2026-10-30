@@ -15,6 +15,7 @@ pub mod contract;
 pub mod edit;
 pub mod ids;
 pub mod library;
+pub mod progression;
 pub mod registry;
 pub mod resolve;
 pub mod save;
@@ -33,6 +34,7 @@ pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, ModuleGraph};
+pub use progression::{Chord, Extension, Mode, MusicKey, Progression, ProgressionId, ProgressionRef, Quality};
 pub use registry::{ModuleKind, Registry, ThingKind};
 pub use resolve::{
     Broken, Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve, resolve_slot, resolve_with,

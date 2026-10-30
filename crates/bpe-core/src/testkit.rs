@@ -64,11 +64,13 @@ pub struct Pluck {
     /// Which hits make the sound.
     #[setting(label = "Plays when hitting")]
     pub target: Target,
+    #[setting(label = "Chords")]
+    pub chords: crate::ProgressionRef,
 }
 
 impl Default for Pluck {
     fn default() -> Self {
-        Self { volume: 0.0, target: Target::Anything }
+        Self { volume: 0.0, target: Target::Anything, chords: crate::ProgressionRef(None) }
     }
 }
 
