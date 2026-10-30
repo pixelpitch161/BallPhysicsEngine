@@ -2,7 +2,7 @@
 //! voice.
 
 use crate::catalog::{catalog, make};
-use crate::{Block, Buf, Ctx, Knobs, SILENT};
+use crate::{BLOCK, Block, Buf, Ctx, Knobs, SILENT};
 use bpe_graph::{Catalog, Diagnostic, Graph, Link, Param, order, validate};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,6 +23,8 @@ struct Op {
     outputs: Vec<usize>,
     /// A switched-off block passes its first input through.
     enabled: bool,
+    /// An effects graph's In: its register holds the sound coming in, set before each block.
+    input: bool,
 }
 
 /// A compiled patch: blocks in running order, wired through registers.
@@ -30,8 +32,10 @@ struct Op {
 pub struct Program {
     ops: Arc<[Op]>,
     registers: usize,
-    /// The Voice out block's register.
+    /// The Voice out (or effects Out) block's register.
     out: usize,
+    /// An effects graph's In register, when it has one.
+    input: Option<usize>,
 }
 
 /// One voice's running copy of a program.
@@ -43,16 +47,66 @@ pub struct Patch {
     scratch: [Buf; MAX_PINS],
 }
 
+/// What a graph is compiled as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// A synth patch, played per voice, ending in Voice out.
+    Patch,
+    /// An effects graph, run over a whole track, from In to Out.
+    Effects,
+}
+
 /// Compiles `graph`, or says in plain sentences what stops it.
 pub fn compile(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
+    compile_as(graph, Mode::Patch)
+}
+
+/// Compiles an effects graph, or says in plain sentences what stops it.
+pub fn compile_effects(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
+    compile_as(graph, Mode::Effects)
+}
+
+/// Whether a block kind ends a graph: one register, its right side optional.
+fn is_end(kind: &str) -> bool {
+    kind == "voice_out" || kind == "fx_out"
+}
+
+fn compile_as(graph: &Graph, mode: Mode) -> Result<Program, Vec<Diagnostic>> {
     let cat = catalog();
     let mut problems: Vec<Diagnostic> = validate(graph, cat).into_iter().filter(|d| d.message != EXTRA_WIRE).collect();
-    let outs: Vec<u32> = graph.nodes.iter().filter(|n| n.kind == "voice_out").map(|n| n.id).collect();
-    if outs.len() != 1 {
-        let message = if outs.is_empty() { "Add a Voice out block" } else { "Use only one Voice out block" };
-        // First, since it's the one to fix first.
-        problems.insert(0, Diagnostic { node: outs.get(1).copied(), link: None, message: message.into() });
+    let ids = |kind: &str| -> Vec<u32> { graph.nodes.iter().filter(|n| n.kind == kind).map(|n| n.id).collect() };
+    let (end, wrong_end, ins) = match mode {
+        Mode::Patch => ("voice_out", "fx_out", Vec::new()),
+        Mode::Effects => ("fx_out", "voice_out", ids("fx_in")),
+    };
+    let outs = ids(end);
+    let mut first = Vec::new();
+    if let Some(&n) = ids(wrong_end).first() {
+        let message = match mode {
+            Mode::Patch => "Out is for effects; use Voice out",
+            Mode::Effects => "Use In and Out, not Voice out, in effects",
+        };
+        first.push(Diagnostic { node: Some(n), link: None, message: message.into() });
     }
+    if mode == Mode::Patch
+        && let Some(&n) = ids("fx_in").first()
+    {
+        first.push(Diagnostic { node: Some(n), link: None, message: "In is for effects; use Note".into() });
+    }
+    if outs.len() != 1 {
+        let message = match (mode, outs.is_empty()) {
+            (Mode::Patch, true) => "Add a Voice out block",
+            (Mode::Patch, false) => "Use only one Voice out block",
+            (Mode::Effects, true) => "Add an Out block",
+            (Mode::Effects, false) => "Use only one Out block",
+        };
+        first.insert(0, Diagnostic { node: outs.get(1).copied(), link: None, message: message.into() });
+    }
+    if ins.len() > 1 {
+        first.push(Diagnostic { node: Some(ins[1]), link: None, message: "Use only one In block".into() });
+    }
+    // First, since they're the ones to fix first.
+    problems.splice(0..0, first);
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -64,12 +118,12 @@ pub fn compile(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
             .collect::<Vec<_>>()
     })?;
 
-    // A register for every output pin, plus one for Voice out.
+    // A register for every output pin, plus one for the end block.
     let mut register = BTreeMap::<(u32, u8), usize>::new();
     let mut registers = 0;
     for node in &graph.nodes {
         let spec = cat.spec(&node.kind).expect("validated");
-        let pins = if node.kind == "voice_out" { 1 } else { spec.outputs.len() };
+        let pins = if is_end(&node.kind) { 1 } else { spec.outputs.len() };
         for pin in 0..pins {
             register.insert((node.id, pin as u8), registers);
             registers += 1;
@@ -87,7 +141,7 @@ pub fn compile(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
             let spec = cat.spec(&node.kind).expect("validated");
             let mut knobs = Knobs(spec.params.iter().map(|p| (p.name.clone(), p.default.clone())).collect());
             knobs.0.extend(node.params.iter().map(|(k, v)| (k.clone(), v.clone())));
-            let pins = if node.kind == "voice_out" { 1 } else { spec.outputs.len() };
+            let pins = if is_end(&node.kind) { 1 } else { spec.outputs.len() };
             Op {
                 kind: node.kind.clone(),
                 knobs,
@@ -95,11 +149,13 @@ pub fn compile(graph: &Graph) -> Result<Program, Vec<Diagnostic>> {
                     .map(|pin| wire.get(&(id, pin as u8)).and_then(|from| register.get(from).copied()))
                     .collect(),
                 outputs: (0..pins).map(|pin| register[&(id, pin as u8)]).collect(),
-                enabled: node.enabled || node.kind == "voice_out",
+                enabled: node.enabled || is_end(&node.kind) || node.kind == "fx_in",
+                input: node.kind == "fx_in",
             }
         })
         .collect();
-    Ok(Program { ops, registers, out: register[&(outs[0], 0)] })
+    let input = ins.first().map(|&id| register[&(id, 0)]);
+    Ok(Program { ops, registers, out: register[&(outs[0], 0)], input })
 }
 
 impl Program {
@@ -115,6 +171,27 @@ impl Program {
             })
             .collect();
         Patch { program: self.clone(), blocks, regs: vec![SILENT; self.registers], scratch: [SILENT; MAX_PINS] }
+    }
+
+    /// Runs an effects program over interleaved stereo `audio` in place, a block at a time from
+    /// `cx`'s time. The last part block is padded with silence.
+    pub fn run(&self, audio: &mut [f32], mut cx: Ctx) {
+        let mut patch = self.instantiate(&cx);
+        for chunk in audio.chunks_mut(BLOCK * 2) {
+            let mut input = SILENT;
+            for (s, frame) in chunk.chunks_exact(2).enumerate() {
+                input[0][s] = frame[0];
+                input[1][s] = frame[1];
+            }
+            patch.set_input(&input);
+            let mut out = SILENT;
+            patch.process(&cx, &mut out);
+            for (s, frame) in chunk.chunks_exact_mut(2).enumerate() {
+                frame[0] = out[0][s];
+                frame[1] = out[1][s];
+            }
+            cx.advance();
+        }
     }
 
     /// The same program with every block of `kind` swapped for `by`.
@@ -133,6 +210,9 @@ impl Patch {
     /// Runs one block of the voice into `out`.
     pub fn process(&mut self, cx: &Ctx, out: &mut Buf) {
         for (op, block) in self.program.ops.iter().zip(&mut self.blocks) {
+            if op.input {
+                continue;
+            }
             let n = op.outputs.len().min(MAX_PINS);
             let outs = &mut self.scratch;
             for o in outs.iter_mut().take(n.max(1)) {
@@ -154,6 +234,13 @@ impl Patch {
             }
         }
         *out = self.regs[self.program.out];
+    }
+
+    /// Sets the sound coming into an effects graph's In for the next [`Patch::process`].
+    pub fn set_input(&mut self, input: &Buf) {
+        if let Some(r) = self.program.input {
+            self.regs[r] = *input;
+        }
     }
 
     /// Whether every block has finished (envelopes released).
@@ -247,7 +334,6 @@ pub fn blank_patch() -> Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BLOCK;
 
     /// Plays note 60 through `program` for `blocks` blocks, holding the gate for `gate` blocks.
     pub(crate) fn play(program: &Program, blocks: usize, gate: usize) -> Vec<f32> {

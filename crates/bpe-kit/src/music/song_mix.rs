@@ -1,22 +1,23 @@
 //! Mixing the scene's song under the sounds, dipping it a little while they play.
 
-use bpe_mix::{SAMPLE_RATE, limit_peaks, normalize_loudness};
+use bpe_mix::{SAMPLE_RATE, integrated_lufs};
 
 use super::Song;
 
 /// Seconds the song fades out over at the end of the video.
 const FADE_OUT: f32 = 0.75;
+/// Below this the track counts as silent, and the song is set against `target_db` instead.
+const SILENT_LUFS: f32 = -69.0;
 
-/// Adds `song` under `track` (both interleaved stereo at the mix rate), starting `offset`
-/// seconds into the song (negative starts it late), `gain_db` quieter or louder than the
-/// track's `target_db`, dipping by `ducking` (0 to 1) while the track is loud, then levels and
-/// limits the whole mix.
+/// Adds `song` under `track` (both interleaved stereo at the mix rate, before the master),
+/// starting `offset` seconds into the song (negative starts it late), `gain_db` quieter or
+/// louder than the track (or than `target_db` when the track is silent), dipping by `ducking`
+/// (0 to 1) while the track is loud. Levelling and limiting are the master's, after this.
 pub fn mix_in(track: &mut [f32], song: &Song, offset: f32, gain_db: f32, ducking: f32, target_db: f32) {
     let frames = track.len() / 2;
     if frames == 0 {
         return;
     }
-    normalize_loudness(track, target_db);
     let offset = (offset as f64 * SAMPLE_RATE as f64).round() as i64;
     let mut layer = vec![0.0f32; track.len()];
     for (i, frame) in layer.chunks_exact_mut(2).enumerate() {
@@ -26,28 +27,28 @@ pub fn mix_in(track: &mut [f32], song: &Song, offset: f32, gain_db: f32, ducking
             frame[1] = song.samples[source as usize * 2 + 1];
         }
     }
-    if layer.iter().all(|&s| s == 0.0) {
-        limit_peaks(track);
+    let song_lufs = integrated_lufs(&layer);
+    if song_lufs <= SILENT_LUFS {
         return;
     }
-    normalize_loudness(&mut layer, target_db + gain_db);
+    let track_lufs = integrated_lufs(track);
+    let level = if track_lufs > SILENT_LUFS { track_lufs } else { target_db };
+    let gain = 10f32.powf((level + gain_db - song_lufs).min(48.0) / 20.0);
     let amount = ducking.clamp(0.0, 1.0);
     // Duck: follow the track's level and lower the song while it's loud.
-    let reference = 10f32.powf(target_db / 20.0) * 1.4;
+    let reference = 10f32.powf(level / 20.0) * 1.4;
     let attack = 1.0 - (-1.0 / (0.005 * SAMPLE_RATE as f32)).exp();
     let release = 1.0 - (-1.0 / (0.25 * SAMPLE_RATE as f32)).exp();
     let fade_frames = ((FADE_OUT * SAMPLE_RATE as f32) as usize).clamp(1, frames);
-    let mut level = 0.0f32;
+    let mut follow = 0.0f32;
     for (i, (out, song)) in track.chunks_exact_mut(2).zip(layer.chunks_exact(2)).enumerate() {
         let now = (out[0].abs() + out[1].abs()) * 0.5;
-        level += (now - level) * if now > level { attack } else { release };
-        let duck = 1.0 - amount * 0.75 * (level / reference).min(1.0);
+        follow += (now - follow) * if now > follow { attack } else { release };
+        let duck = 1.0 - amount * 0.75 * (follow / reference).min(1.0);
         let fade = ((frames - i) as f32 / fade_frames as f32).min(1.0);
-        out[0] += song[0] * duck * fade;
-        out[1] += song[1] * duck * fade;
+        out[0] += song[0] * gain * duck * fade;
+        out[1] += song[1] * gain * duck * fade;
     }
-    normalize_loudness(track, target_db);
-    limit_peaks(track);
 }
 
 #[cfg(test)]
@@ -90,7 +91,6 @@ mod tests {
         let after_duck = energy(&track, 2.5, 2.6);
         let after_plain = energy(&no_duck, 2.5, 2.6);
         assert!(after_duck < after_plain, "{after_duck} {after_plain}");
-        assert!(track.iter().all(|s| s.abs() <= 1.0));
         // The song fades out at the end.
         assert!(energy(&track, 3.98, 4.0) < energy(&track, 1.0, 1.02));
     }
@@ -106,7 +106,7 @@ mod tests {
         let mut long = vec![0.0f32; 3 * SAMPLE_RATE as usize * 2];
         mix_in(&mut long, &tone(1.0), 0.0, 0.0, 0.35, -14.0);
         assert!(energy(&long, 0.2, 0.5) > 1e-4 && energy(&long, 2.0, 3.0) == 0.0);
-        // A song entirely out of range leaves the track as it was, levelled.
+        // A song entirely out of range leaves the track as it was.
         let mut out = vec![0.0f32; SAMPLE_RATE as usize * 2];
         mix_in(&mut out, &tone(1.0), 50.0, 0.0, 0.35, -14.0);
         assert!(out.iter().all(|&s| s == 0.0));

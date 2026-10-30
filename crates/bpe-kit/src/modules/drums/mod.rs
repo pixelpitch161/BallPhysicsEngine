@@ -51,6 +51,9 @@ pub struct DrumSound {
     pub piece: Piece,
     #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
     pub volume: f32,
+    /// Where the channel sits from left (-1) to right (1), on top of each hit's own place.
+    #[setting(label = "Pan", range(-1, 1), keyframe)]
+    pub pan: f32,
     /// What every beat plays, when the scene has a tempo or a song.
     #[setting(label = "On beats", simple, random)]
     pub on_beat: Piece,
@@ -72,6 +75,7 @@ impl Default for DrumSound {
         Self {
             piece: Piece::Auto,
             volume: 0.0,
+            pan: 0.0,
             on_beat: Piece::Silent,
             beat_volume: -3.0,
             quietest_hit: 20.0,

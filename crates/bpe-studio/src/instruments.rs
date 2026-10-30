@@ -33,11 +33,15 @@ pub fn choice(scene: &Scene, id: Option<InstrumentId>, module: Option<ModuleId>)
 #[derive(Debug, Clone, PartialEq)]
 pub enum InstrumentEdit {
     /// The library instrument changed: its knobs, voices or patch.
-    Set(InstrumentId, Instrument),
+    Set(InstrumentId, Box<Instrument>),
     /// The module's own value for a macro, or `None` to follow the instrument again.
     Macro(String, Option<f32>),
     /// "Edit patch" was pressed: the node panel should open on this patch.
     EditPatch(InstrumentId),
+    /// The instrument's own effects changed.
+    Fx(InstrumentId, bpe_graph::Graph),
+    /// "Open nodes" under its effects: the node panel should open on them.
+    OpenFx(InstrumentId),
 }
 
 /// Under a sound card's Instrument row: the instrument's name, its knobs (a built-in's own, or
@@ -118,10 +122,10 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
                                     }
                                     edits.push(InstrumentEdit::Set(
                                         id,
-                                        Instrument {
+                                        Box::new(Instrument {
                                             source: InstrumentSource::Patch { graph: g },
                                             ..instrument.clone()
-                                        },
+                                        }),
                                     ));
                                     edits.push(InstrumentEdit::Macro(key.clone(), None));
                                     ui.close();
@@ -138,8 +142,18 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId) -> V
             changed |= voices(ui, &mut i.voices, matches!(i.source, InstrumentSource::Patch { .. }));
         });
         if changed {
-            edits.push(InstrumentEdit::Set(id, i));
+            edits.push(InstrumentEdit::Set(id, Box::new(i)));
         }
+        let fx = &instrument.fx;
+        let count = bpe_synth::straight_chain(fx).map_or("custom".to_owned(), |c| c.len().to_string());
+        egui::CollapsingHeader::new(format!("Instrument effects ({count})")).id_salt("instrument effects").show(
+            ui,
+            |ui| match crate::fx_list::show(ui, fx, ("instrument fx", id)) {
+                crate::fx_list::FxEdit::Set(g) => edits.push(InstrumentEdit::Fx(id, g)),
+                crate::fx_list::FxEdit::OpenNodes => edits.push(InstrumentEdit::OpenFx(id)),
+                crate::fx_list::FxEdit::None => {}
+            },
+        );
     });
     edits
 }

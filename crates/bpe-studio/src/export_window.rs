@@ -2,7 +2,7 @@
 //! its sound on a thread.
 
 use crate::theme;
-use bpe_cli::{Encoder, ExportOptions, export_video, find_ffmpeg, frame_count, gpu_encoders, output_size};
+use bpe_cli::{Encoder, ExportOptions, export_video_reporting, find_ffmpeg, frame_count, gpu_encoders, output_size};
 use bpe_core::Scene;
 use bpe_kit::{Kit, SceneSettings};
 use eframe::egui::{self, RichText};
@@ -36,6 +36,8 @@ struct Finished {
     path: PathBuf,
     seconds: f32,
     encoder: Encoder,
+    /// What the master stage measured of the soundtrack.
+    report: Option<bpe_mix::MasterReport>,
 }
 
 struct Job {
@@ -43,7 +45,7 @@ struct Job {
     done: Arc<AtomicU32>,
     total: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
-    receiver: Receiver<anyhow::Result<Encoder>>,
+    receiver: Receiver<anyhow::Result<(Encoder, Option<bpe_mix::MasterReport>)>>,
     started: Instant,
 }
 
@@ -120,9 +122,12 @@ impl ExportWindow {
             && let Ok(result) = job.receiver.try_recv()
         {
             self.finished = Some(match result {
-                Ok(encoder) => {
-                    Ok(Finished { path: job.path.clone(), seconds: job.started.elapsed().as_secs_f32(), encoder })
-                }
+                Ok((encoder, report)) => Ok(Finished {
+                    path: job.path.clone(),
+                    seconds: job.started.elapsed().as_secs_f32(),
+                    encoder,
+                    report,
+                }),
                 Err(_) if job.cancel.load(Ordering::Relaxed) => Err("Export cancelled.".into()),
                 Err(error) => Err(format!("{error:#}")),
             });
@@ -190,9 +195,10 @@ impl ExportWindow {
                 ui.label(RichText::new(format!("{w} × {h}")).small().color(theme::MUTED));
             });
             ui.end_row();
-            ui.label("Compression")
+            let compression = ui
+                .label("Compression")
                 .on_hover_text("14 is the sharpest and biggest, 18 looks lossless, 28 is small and soft.");
-            ui.add(egui::Slider::new(&mut self.crf, 14..=28));
+            ui.add(egui::Slider::new(&mut self.crf, 14..=28)).labelled_by(compression.id);
             ui.end_row();
             ui.label("Length");
             let frames = frame_count(settings);
@@ -290,6 +296,14 @@ impl ExportWindow {
                 ui.label(
                     RichText::new(format!("Encoded with the {}.", done.encoder.name())).small().color(theme::MUTED),
                 );
+                if let Some(r) = &done.report {
+                    ui.label(
+                        RichText::new(format!("Loudness {:.1} LUFS · True peak {:.1} dBTP", r.integrated, r.true_peak))
+                            .small()
+                            .color(theme::MUTED),
+                    )
+                    .on_hover_text("Measured on the finished soundtrack, after the master stage");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Play video").clicked() {
                         open_file(&done.path);
@@ -336,7 +350,7 @@ impl ExportWindow {
         let (d, t, c) = (done.clone(), total.clone(), cancel.clone());
         std::thread::spawn(move || {
             let result = bpe_gfx::headless_device().and_then(|(device, queue)| {
-                export_video(&device, &queue, &scene, &kit, &options, |frame, frames| {
+                export_video_reporting(&device, &queue, &scene, &kit, &options, |frame, frames| {
                     d.store(frame, Ordering::Relaxed);
                     t.store(frames, Ordering::Relaxed);
                     ctx.request_repaint();
@@ -424,6 +438,30 @@ mod tests {
         assert_eq!(beside, PathBuf::from("/scenes/New scene.mp4"));
         let alone = window.output_path(&scene, None);
         assert_eq!(alone.file_name().unwrap(), "New scene.mp4");
+    }
+
+    #[test]
+    fn export_shows_loudness() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let kit = Arc::new(bpe_kit::kit());
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let settings = SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params);
+        let mut window = ExportWindow { open: true, ..Default::default() };
+        let report = bpe_mix::MasterReport { integrated: -14.04, true_peak: -1.0, ..Default::default() };
+        window.finished = Some(Ok(Finished {
+            path: PathBuf::from("/videos/a.mp4"),
+            seconds: 3.0,
+            encoder: Encoder::Cpu,
+            report: Some(report),
+        }));
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(600.0, 700.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(move |ui, w: &mut ExportWindow| w.show(ui.ctx(), &scene, &settings, None, &kit), window);
+        h.run();
+        h.get_by_label("Loudness -14.0 LUFS · True peak -1.0 dBTP");
     }
 
     #[test]

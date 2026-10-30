@@ -6,6 +6,7 @@ use crate::{Block, Knobs};
 use bpe_graph::{NodeSpec, Param, ParamSpec, PinSpec, PinType, SpecList};
 use std::sync::OnceLock;
 
+const SWEEP: &[&str] = &["off", "lfo", "1/1", "1/2", "1/4", "1/8", "1/16"];
 const SYNC: &[&str] = &["off", "1/1", "1/2", "1/4", "1/8", "1/16", "1/4T", "1/8T"];
 
 fn audio(name: &str) -> PinSpec {
@@ -71,7 +72,10 @@ fn specs() -> Vec<NodeSpec> {
             .param(choice("mode", "Mode", &["low", "high", "band", "notch"], "low"))
             .param(n("cutoff", "Cutoff", 2_000.0, 20.0, 20_000.0))
             .param(n("resonance", "Resonance", 0.0, 0.0, 1.0))
-            .param(n("key_track", "Key tracking", 0.0, 0.0, 1.0).help("1 moves the cutoff with the note")),
+            .param(n("key_track", "Key tracking", 0.0, 0.0, 1.0).help("1 moves the cutoff with the note"))
+            .param(choice("sweep", "Sweep", SWEEP, "off").help("Moves the cutoff up and down on its own"))
+            .param(n("sweep_rate", "Sweep rate Hz", 1.0, 0.01, 50.0))
+            .param(n("sweep_depth", "Sweep depth", 0.0, 0.0, 4.0).help("Octaves up and down")),
         NodeSpec::new("ladder", "Ladder", "Shaping", "A warm four-pole low-pass that can be driven.")
             .input(audio("in").required())
             .input(number("cutoff_mod").help("Octaves up or down from the cutoff"))
@@ -83,9 +87,90 @@ fn specs() -> Vec<NodeSpec> {
         NodeSpec::new("drive", "Drive", "Shaping", "Distortion.")
             .input(audio("in").required())
             .output(audio("out"))
-            .param(choice("mode", "Mode", &["soft", "hard", "fold"], "soft"))
+            .param(choice("mode", "Mode", &["soft", "hard", "fold", "tube"], "soft"))
             .param(n("amount", "Amount", 0.3, 0.0, 1.0))
-            .param(n("bias", "Bias", 0.0, -1.0, 1.0)),
+            .param(n("bias", "Bias", 0.0, -1.0, 1.0))
+            .param(n("tone", "Tone", 1.0, 0.0, 1.0).help("Darker towards 0"))
+            .param(n("mix", "Mix", 1.0, 0.0, 1.0)),
+        NodeSpec::new("eq", "EQ", "Effects", "Three bands of boost or cut, with low and high cuts.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("low_cut", "Low cut", 20.0, 20.0, 1_000.0))
+            .param(n("low_gain", "Low dB", 0.0, -18.0, 18.0))
+            .param(n("low_freq", "Low freq", 120.0, 20.0, 1_000.0))
+            .param(n("mid_gain", "Mid dB", 0.0, -18.0, 18.0))
+            .param(n("mid_freq", "Mid freq", 1_000.0, 100.0, 10_000.0))
+            .param(n("mid_q", "Mid width Q", 0.7, 0.1, 10.0))
+            .param(n("high_gain", "High dB", 0.0, -18.0, 18.0))
+            .param(n("high_freq", "High freq", 8_000.0, 1_000.0, 20_000.0))
+            .param(n("high_cut", "High cut", 20_000.0, 1_000.0, 20_000.0)),
+        NodeSpec::new("bitcrush", "Bitcrush", "Effects", "Fewer bits and a lower sample rate, for grit.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("bits", "Bits", 8.0, 1.0, 16.0))
+            .param(n("downsample", "Downsample", 1.0, 1.0, 32.0))
+            .param(n("mix", "Mix", 1.0, 0.0, 1.0)),
+        NodeSpec::new("delay", "Delay", "Effects", "Echoes. Inside a patch it runs on every voice.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(choice("time_mode", "Time", &["ms", "1/4", "1/8", "1/16", "1/2", "1/1"], "ms"))
+            .param(choice("feel", "Feel", &["straight", "dotted", "triplet"], "straight"))
+            .param(n("ms", "Milliseconds", 250.0, 1.0, 2_000.0))
+            .param(n("feedback", "Feedback", 0.35, 0.0, 1.0))
+            .param(flag("ping_pong", "Ping-pong", false))
+            .param(n("low_cut", "Low cut", 20.0, 20.0, 2_000.0))
+            .param(n("high_cut", "High cut", 20_000.0, 500.0, 20_000.0))
+            .param(n("mix", "Mix", 0.3, 0.0, 1.0)),
+        NodeSpec::new("chorus", "Chorus", "Effects", "Copies on slowly moving short delays, for width.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("rate", "Rate Hz", 0.8, 0.01, 10.0))
+            .param(n("depth", "Depth ms", 3.0, 0.0, 10.0))
+            .param(n("voices", "Voices", 2.0, 1.0, 4.0))
+            .param(n("mix", "Mix", 0.5, 0.0, 1.0)),
+        NodeSpec::new("reverb", "Reverb", "Effects", "A room or hall. Inside a patch it runs on every voice.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("size", "Size", 0.6, 0.0, 1.0))
+            .param(n("decay", "Decay s", 2.0, 0.1, 60.0).help("Seconds for the tail to fall by 60 dB"))
+            .param(n("damping", "Damping", 0.4, 0.0, 1.0))
+            .param(n("predelay", "Pre-delay ms", 10.0, 0.0, 200.0))
+            .param(n("width", "Width", 1.0, 0.0, 1.0))
+            .param(n("mix", "Mix", 0.3, 0.0, 1.0)),
+        NodeSpec::new(
+            "compressor",
+            "Compressor",
+            "Effects",
+            "Turns loud parts down; wire another sound into sidechain to duck under it.",
+        )
+        .input(audio("in").required())
+        .input(audio("sidechain").help("Listen to this instead of the input"))
+        .output(audio("out"))
+        .param(n("threshold", "Threshold dB", -18.0, -60.0, 0.0))
+        .param(n("ratio", "Ratio", 4.0, 1.0, 20.0))
+        .param(n("attack", "Attack ms", 10.0, 0.0, 200.0))
+        .param(n("release", "Release ms", 100.0, 1.0, 2_000.0))
+        .param(n("knee", "Knee dB", 6.0, 0.0, 24.0))
+        .param(n("makeup", "Makeup dB", 0.0, -24.0, 24.0)),
+        NodeSpec::new("clipper", "Clipper", "Effects", "Shaves off peaks, cleanly at four times the rate.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(choice("mode", "Mode", &["soft", "hard"], "soft"))
+            .param(n("drive", "Drive dB", 0.0, 0.0, 24.0)),
+        NodeSpec::new("limiter", "Limiter", "Effects", "Never lets the sound past the ceiling, even between samples.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("ceiling", "Ceiling dB", -1.0, -6.0, 0.0))
+            .param(n("release", "Release ms", 100.0, 1.0, 1_000.0)),
+        NodeSpec::new("width", "Stereo width", "Effects", "0 is mono, 1 unchanged, 2 twice as wide.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("width", "Width", 1.0, 0.0, 2.0)),
+        NodeSpec::new("follower", "Envelope follower", "Modulators", "How loud a sound is, as a control from 0.")
+            .input(audio("in"))
+            .output(number("level"))
+            .param(n("attack", "Attack", 0.01, 0.0, 1.0))
+            .param(n("release", "Release", 0.2, 0.0, 5.0)),
         NodeSpec::new("amp", "Amp", "Shaping", "Louder or quieter; wire an envelope into mod.")
             .input(audio("in").required())
             .input(number("mod").help("Multiplies the sound, usually by an envelope"))
@@ -150,6 +235,10 @@ fn specs() -> Vec<NodeSpec> {
             .param(n("value", "Value", 0.5, 0.0, 1.0))
             .param(n("min", "Min", 0.0, -10_000.0, 10_000.0))
             .param(n("max", "Max", 1.0, -10_000.0, 10_000.0)),
+        NodeSpec::new("fx_in", "In", "Output", "The sound coming into the effects.").output(audio("out")),
+        NodeSpec::new("fx_out", "Out", "Output", "The sound the effects give back. Effects have exactly one.")
+            .input(audio("left").required())
+            .input(audio("right").help("Leave empty to keep the left's stereo")),
         NodeSpec::new("voice_out", "Voice out", "Output", "What the voice sounds like. A patch has exactly one.")
             .input(audio("left").required())
             .input(audio("right").help("Leave empty to send the left to both sides")),
@@ -166,6 +255,16 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "ladder" => Box::new(Ladder::new(k)),
         "drive" => Box::new(Drive::new(k)),
         "amp" => Box::new(Amp::new(k)),
+        "eq" => Box::new(Equaliser::new(k)),
+        "compressor" => Box::new(Compressor::new(k)),
+        "clipper" => Box::new(Clipper::new(k)),
+        "limiter" => Box::new(Limiter::new(k)),
+        "delay" => Box::new(Delay::new(k)),
+        "chorus" => Box::new(Chorus::new(k)),
+        "reverb" => Box::new(Reverb::new(k)),
+        "bitcrush" => Box::new(Bitcrush::new(k)),
+        "width" => Box::new(Width::new(k)),
+        "follower" => Box::new(Follower::new(k)),
         "adsr" => Box::new(Adsr::new(k)),
         "lfo" => Box::new(Lfo::new(k)),
         "hold" => Box::new(Hold::new(k)),
@@ -177,7 +276,9 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "pitch_to_hz" => Box::new(PitchToHz),
         "note" => Box::new(NoteIn),
         "macro" => Box::new(Macro::new(k)),
-        "voice_out" => Box::new(VoiceOut),
+        "voice_out" | "fx_out" => Box::new(VoiceOut),
+        // Never run: the program fills its register with the incoming sound.
+        "fx_in" => Box::new(Mix::new(k)),
         #[cfg(test)]
         "nan" => Box::new(testing::Nan),
         _ => return None,

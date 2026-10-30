@@ -469,6 +469,7 @@ impl<'a> Builder<'a> {
             name: name.into(),
             source: InstrumentSource::Patch { graph },
             voices,
+            ..Default::default()
         })))
     }
 

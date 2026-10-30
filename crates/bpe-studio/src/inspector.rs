@@ -4,6 +4,7 @@
 
 use crate::chords::{self, Audition, ChordClip, ChordUi};
 use crate::dice::dice_button;
+use crate::fx_list::{FxEdit, FxPlace};
 use crate::instruments::InstrumentEdit;
 use crate::nodes::cards;
 use crate::selection::Selection;
@@ -13,10 +14,11 @@ use crate::widgets::{
     TargetChoices, fold_toggle, plays_built_in, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Chord, Color, Depth, InstrumentId, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
-    ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef,
-    SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Bus, BusId, Chord, Color, Depth, InstrumentId, InstrumentRef, InstrumentSource, ModuleGraph,
+    ModuleId, ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene,
+    SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
+use bpe_graph::Graph;
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
@@ -44,6 +46,8 @@ pub struct Inspector {
     pub patch_request: Option<InstrumentId>,
     /// The keyboard strip's octave, once one is shown (C4 at first).
     pub octave: Option<i8>,
+    /// An effects list's "Open nodes" was pressed: the node panel should open on those effects.
+    pub fx_request: Option<FxPlace>,
 }
 
 /// A card's Nodes button.
@@ -111,6 +115,15 @@ enum Edit {
     Instrument(InstrumentId, bpe_core::Instrument),
     /// A module's own value for one of its instrument's macros, or `None` to follow it again.
     Macro(ModuleId, String, Option<f32>),
+    /// An instrument's own effects.
+    InstrumentFx(InstrumentId, Graph),
+    /// A sound module's channel inserts.
+    ChannelInserts(ModuleId, Graph),
+    /// How much a sound module sends to a bus in dB, or `None` for none.
+    Send(ModuleId, BusId, Option<f32>),
+    /// Every bus, after one was added, removed, renamed or changed.
+    Buses(Vec<Bus>),
+    MasterFx(Graph),
 }
 
 /// Where an edit to a slot's settings goes for one thing.
@@ -538,10 +551,14 @@ pub fn show(
                             module,
                             &mut edits,
                             &mut inspector.patch_request,
+                            &mut inspector.fx_request,
                             octave,
                         ) {
                             let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
                             inspector.clip = Some(ChordClip { key: Some(key), ..clip });
+                        }
+                        if slot == SlotId::Sound {
+                            channel_section(ui, scene, module, &mut edits, &mut inspector.fx_request);
                         }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
@@ -589,10 +606,14 @@ pub fn show(
                             module,
                             &mut edits,
                             &mut inspector.patch_request,
+                            &mut inspector.fx_request,
                             octave,
                         ) {
                             let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
                             inspector.clip = Some(ChordClip { key: Some(key), ..clip });
+                        }
+                        if slot == SlotId::Sound {
+                            channel_section(ui, scene, module, &mut edits, &mut inspector.fx_request);
                         }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
@@ -631,6 +652,22 @@ pub fn show(
             });
         }
 
+        // ---------- the mix: buses and master, on Scene defaults ----------
+        if id == ThingId::ROOT {
+            ui.add_space(6.0);
+            card(ui, |ui| buses_section(ui, scene, &mut edits, &mut inspector.fx_request));
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                ui.label(RichText::new("Master effects").strong())
+                    .on_hover_text("Run over the whole mix, before the loudness and the limiter");
+                match crate::fx_list::show(ui, &scene.library.master_fx, "master fx") {
+                    FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
+                    FxEdit::OpenNodes => inspector.fx_request = Some(FxPlace::Master),
+                    FxEdit::None => {}
+                }
+            });
+        }
+
         // ---------- + Add slot ----------
         ui.add_space(8.0);
         let missing: Vec<SlotId> = kind
@@ -662,6 +699,27 @@ pub fn show(
             Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
             Edit::Instrument(iid, i) => scene.set_instrument(iid, i).is_ok(),
             Edit::Macro(module, key, value) => scene.set_macro(module, &key, value).is_ok(),
+            Edit::InstrumentFx(iid, g) => FxPlace::Instrument(iid).set(scene, g),
+            Edit::ChannelInserts(module, g) => FxPlace::Channel(module).set(scene, g),
+            Edit::Send(module, bus, db) => match scene.library.modules.get_mut(&module) {
+                Some(m) => {
+                    match db {
+                        Some(db) => m.channel.sends.insert(bus, db),
+                        None => m.channel.sends.remove(&bus),
+                    };
+                    true
+                }
+                None => false,
+            },
+            Edit::Buses(buses) => {
+                // Sends to a bus that went go with it.
+                for m in scene.library.modules.values_mut() {
+                    m.channel.sends.retain(|id, _| buses.iter().any(|b| b.id == *id));
+                }
+                scene.library.buses = buses;
+                true
+            }
+            Edit::MasterFx(g) => FxPlace::Master.set(scene, g),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -1020,6 +1078,7 @@ fn instrument_section(
     module: ModuleId,
     edits: &mut Vec<Edit>,
     patch_request: &mut Option<InstrumentId>,
+    fx_request: &mut Option<FxPlace>,
     octave: &mut i8,
 ) -> Option<u8> {
     let mut played = None;
@@ -1035,9 +1094,11 @@ fn instrument_section(
         };
         for edit in crate::instruments::show(ui, scene, module, iid) {
             match edit {
-                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, instrument)),
+                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, *instrument)),
                 InstrumentEdit::Macro(key, value) => edits.push(Edit::Macro(module, key, value)),
                 InstrumentEdit::EditPatch(i) => *patch_request = Some(i),
+                InstrumentEdit::Fx(i, g) => edits.push(Edit::InstrumentFx(i, g)),
+                InstrumentEdit::OpenFx(i) => *fx_request = Some(FxPlace::Instrument(i)),
             }
         }
     }
@@ -1046,6 +1107,113 @@ fn instrument_section(
         played = crate::keyboard::show(ui, octave);
     }
     played
+}
+
+/// The lowest send; at it the send is off.
+const SEND_OFF: f32 = -60.0;
+
+/// A sound module's channel: its inserts and its sends to each bus. Its pan is a setting, so
+/// the grid above draws it.
+fn channel_section(
+    ui: &mut Ui,
+    scene: &Scene,
+    module: ModuleId,
+    edits: &mut Vec<Edit>,
+    fx_request: &mut Option<FxPlace>,
+) {
+    let Some(m) = scene.library.modules.get(&module) else { return };
+    ui.push_id(("channel", module), |ui| {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Channel").strong())
+            .on_hover_text("Effects on everything this sound plays, and how much goes to each bus");
+        ui.label(RichText::new("Inserts").small().color(theme::MUTED));
+        match crate::fx_list::show(ui, &m.channel.inserts, "inserts") {
+            FxEdit::Set(g) => edits.push(Edit::ChannelInserts(module, g)),
+            FxEdit::OpenNodes => *fx_request = Some(FxPlace::Channel(module)),
+            FxEdit::None => {}
+        }
+        if scene.library.buses.is_empty() {
+            return;
+        }
+        ui.label(RichText::new("Sends").small().color(theme::MUTED));
+        egui::Grid::new("sends").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            for bus in &scene.library.buses {
+                let label = ui.label(bus.name.as_str());
+                let before = m.channel.sends.get(&bus.id).copied();
+                let mut db = before.unwrap_or(SEND_OFF);
+                ui.spacing_mut().slider_width = 140.0;
+                let slider = egui::Slider::new(&mut db, SEND_OFF..=6.0)
+                    .step_by(0.5)
+                    .max_decimals(1)
+                    .custom_formatter(|v, _| if v <= SEND_OFF as f64 { "off".into() } else { format!("{v:.1} dB") })
+                    .custom_parser(|t| match t.trim() {
+                        "off" => Some(SEND_OFF as f64),
+                        t => t.trim_end_matches("dB").trim().parse().ok(),
+                    });
+                if ui.add(slider).labelled_by(label.id).changed() {
+                    let after = (db > SEND_OFF).then_some(db);
+                    if after != before {
+                        edits.push(Edit::Send(module, bus.id, after));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+/// Scene defaults' buses: each one's name, volume and effects, with Add bus at the end.
+fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
+    ui.label(RichText::new("Buses").strong())
+        .on_hover_text("Shared effects, like one reverb, that sounds send to by their Sends");
+    let mut buses = scene.library.buses.clone();
+    let mut changed = false;
+    let mut remove = None;
+    for (i, bus) in buses.iter_mut().enumerate() {
+        ui.push_id(("bus", bus.id), |ui| {
+            egui::Grid::new("bus").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                let name = ui.label("Name");
+                ui.horizontal(|ui| {
+                    let edit = egui::TextEdit::singleline(&mut bus.name).desired_width(140.0);
+                    changed |= ui.add(edit).labelled_by(name.id).changed();
+                    if ui.small_button("Remove").on_hover_text("Remove this bus and every send to it").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                ui.end_row();
+                let volume = ui.label("Volume");
+                ui.spacing_mut().slider_width = 140.0;
+                let slider =
+                    egui::Slider::new(&mut bus.volume, -60.0..=12.0).step_by(0.5).max_decimals(1).suffix(" dB");
+                changed |= ui.add(slider).labelled_by(volume.id).changed();
+                ui.end_row();
+            });
+            let count = bpe_synth::straight_chain(&bus.fx).map_or("custom".to_owned(), |c| c.len().to_string());
+            egui::CollapsingHeader::new(format!("Effects ({count})")).id_salt("fx").show(ui, |ui| {
+                match crate::fx_list::show(ui, &bus.fx, "list") {
+                    FxEdit::Set(g) => {
+                        bus.fx = g;
+                        changed = true;
+                    }
+                    FxEdit::OpenNodes => *fx_request = Some(FxPlace::Bus(bus.id)),
+                    FxEdit::None => {}
+                }
+            });
+            ui.separator();
+        });
+    }
+    if let Some(i) = remove {
+        buses.remove(i);
+        changed = true;
+    }
+    if ui.button("Add bus").on_hover_text("A new bus with no effects yet").clicked() {
+        let id = BusId(buses.iter().map(|b| b.id.0 + 1).max().unwrap_or(0));
+        buses.push(Bus { id, name: format!("Bus {}", buses.len() + 1), volume: 0.0, fx: Graph::default() });
+        changed = true;
+    }
+    if changed {
+        edits.push(Edit::Buses(buses));
+    }
 }
 
 /// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
@@ -1118,6 +1286,7 @@ fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: Thing
     let starters = || bpe_synth::starters();
     let made = match pick {
         NEW_PATCH => Some(scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: "New patch".into(),
             source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
@@ -1135,6 +1304,7 @@ fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: Thing
             let all = starters();
             all.into_iter().nth((STARTER_BASE - p) as usize).map(|(name, graph, voices)| {
                 scene.add_instrument(bpe_core::Instrument {
+                    fx: Default::default(),
                     name: name.into(),
                     source: InstrumentSource::Patch { graph },
                     voices,
@@ -1864,6 +2034,9 @@ mod tests {
         assert!(h.query_by_label("New progression").is_some());
         h.key_press(egui::Key::Escape);
         h.run();
+        let module_chords = h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap();
+        module_chords.scroll_to_me();
+        h.run();
         h.query_all_by_role_and_label(Role::ComboBox, "Chords").nth(1).unwrap().click();
         h.run();
         assert!(h.query_by_label("Scene's").is_some());
@@ -1986,6 +2159,7 @@ mod tests {
         let (name, graph, voices) = bpe_synth::starters().into_iter().next().unwrap();
         let knob = bpe_synth::macros(&graph).into_iter().next().expect("a starter has macros");
         let id = scene.add_instrument(bpe_core::Instrument {
+            fx: Default::default(),
             name: name.into(),
             source: InstrumentSource::Patch { graph },
             voices,
@@ -2007,6 +2181,77 @@ mod tests {
         h.run();
         assert!(h.state().scene.library.modules[&m].macros.is_empty());
         assert!(h.query_by_label("Changed here").is_none());
+    }
+
+    #[test]
+    fn a_send_knob_sends() {
+        let mut h = harness(Some(ThingId::ROOT));
+        let send = h.get_by_role_and_label(Role::Slider, "Reverb");
+        send.scroll_to_me();
+        h.run();
+        let s = h.state();
+        assert!(s.scene.library.modules[&root_sound(&s.scene)].channel.sends.is_empty(), "off at first");
+        let rect = slider_rect(&h, "Reverb");
+        drag_slider(&mut h, rect, 0.8);
+        let s = h.state();
+        let bus = s.scene.library.buses[0].id;
+        let db = s.scene.library.modules[&root_sound(&s.scene)].channel.sends.get(&bus).copied();
+        assert!(db.is_some_and(|db| db > -60.0), "{db:?}");
+    }
+
+    #[test]
+    fn add_bus_and_rename() {
+        let mut h = harness(Some(ThingId::ROOT));
+        h.get_by_label("Add bus").scroll_to_me();
+        h.run();
+        h.get_by_label("Add bus").click();
+        h.run();
+        assert_eq!(h.state().scene.library.buses.len(), 3);
+        assert_eq!(h.state().scene.library.buses[2].name, "Bus 3");
+        let field = |h: &Harness<'static, State>| {
+            h.get_all_by_value("Bus 3").find(|n| n.accesskit_node().role() == Role::TextInput).unwrap().rect()
+        };
+        let rect = field(&h);
+        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().scroll_to_me();
+        h.run();
+        let rect = field(&h);
+        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().focus();
+        h.run();
+        let rect = field(&h);
+        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().type_text(" echo");
+        h.run();
+        assert_eq!(h.state().scene.library.buses[2].name, "Bus 3 echo");
+    }
+
+    #[test]
+    fn master_effects_list_adds_a_limiter() {
+        let mut h = harness(Some(ThingId::ROOT));
+        let add = h.get_all_by_label("Add effect").last().unwrap();
+        add.scroll_to_me();
+        h.run();
+        h.get_all_by_label("Add effect").last().unwrap().click();
+        h.run();
+        h.get_all_by_label("Limiter").last().unwrap().click();
+        h.run();
+        let g = &h.state().scene.library.master_fx;
+        let chain = bpe_synth::straight_chain(g).unwrap();
+        let kinds: Vec<&str> = chain.iter().map(|id| g.node(*id).unwrap().kind.as_str()).collect();
+        assert_eq!(kinds, ["limiter"]);
+    }
+
+    #[test]
+    fn the_channel_section_fits_the_panel() {
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        let sound = root_sound(&scene);
+        scene.library.modules.get_mut(&sound).unwrap().channel.inserts = bpe_synth::chain_graph(&[
+            ("eq".into(), Default::default(), true),
+            ("compressor".into(), Default::default(), true),
+        ]);
+        let h = harness_of(scene, Some(ThingId::ROOT));
+        h.get_by_label("Channel");
+        for n in h.get_all_by_role(Role::Slider).chain(h.get_all_by_role(Role::SpinButton)) {
+            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
+        }
     }
 
     #[test]

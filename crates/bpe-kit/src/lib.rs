@@ -78,7 +78,7 @@ pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::{SceneSim, SceneState};
-pub use things::scene::{BeatSync, SceneKind, SceneSettings};
+pub use things::scene::{BeatSync, Clip, SceneKind, SceneSettings};
 pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
 pub use things::swarm::draw::SwarmDraw;
 pub use things::swarm::sim::{SwarmSim, SwarmState};
@@ -221,7 +221,17 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         progressions: scene.library.progressions.clone(),
         scene_chords: root.chords.0,
         beats: music::chord_beats(&root),
-        loudness: root.loudness,
+        master: bpe_mix::MasterSettings {
+            loudness: root.loudness,
+            clipper: match root.clipper {
+                Clip::Off => bpe_mix::ClipMode::Off,
+                Clip::Soft => bpe_mix::ClipMode::Soft,
+                Clip::Hard => bpe_mix::ClipMode::Hard,
+            },
+            drive_db: root.clip_drive,
+            ceiling_db: root.ceiling,
+            release_ms: (!root.auto_release).then_some(root.release),
+        },
         seed: root.seed as u64,
         half_width: root.width as f32 * 0.5,
         tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
@@ -242,7 +252,39 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
             .filter(|(_, m)| !m.macros.is_empty())
             .map(|(id, m)| (id.0, m.macros.clone()))
             .collect(),
+        strips: scene
+            .library
+            .modules
+            .iter()
+            .filter(|(_, m)| !m.channel.is_default())
+            .map(|(id, m)| (id.0, m.channel.clone()))
+            .collect(),
+        buses: scene.library.buses.clone(),
+        master_fx: scene.library.master_fx.clone(),
+        channel_names: scene
+            .library
+            .modules
+            .iter()
+            .filter(|(_, m)| m.slot == SlotId::Sound)
+            .map(|(id, m)| (id.0, m.name.clone()))
+            .collect(),
     }
+}
+
+/// The two return buses a new scene starts with: "Reverb" and a quarter-note ping-pong "Delay",
+/// each fully wet.
+pub fn add_starter_buses(library: &mut bpe_core::Library) {
+    use bpe_graph::Param;
+    let wet = |kind: &str, extra: &[(&str, Param)]| {
+        let mut knobs: std::collections::BTreeMap<String, Param> = [("mix".to_string(), Param::Number(1.0))].into();
+        knobs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        bpe_synth::chain_graph(&[(kind.to_string(), knobs, true)])
+    };
+    library.add_bus("Reverb", wet("reverb", &[]));
+    library.add_bus(
+        "Delay",
+        wet("delay", &[("time_mode", Param::Choice("1/4".into())), ("ping_pong", Param::Bool(true))]),
+    );
 }
 
 /// A library instrument that plays the built-in `which`, named after it. The pluck gets the
@@ -255,7 +297,7 @@ pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
     bpe_core::Instrument {
         name: which.label().into(),
         source: bpe_core::InstrumentSource::BuiltIn { which: bpe_core::Choice::name(which).into(), knobs },
-        voices: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -279,11 +321,15 @@ pub fn mix_scene_cached(
     let settings = mix_settings(scene, resolved);
     let video_time = |t| warp.video_time(t);
     let mut track =
-        bpe_mix::mix_cached(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
+        bpe_mix::mix_premaster(&settings, resolved, &scene.library, log, &kit.mixes, animation, &video_time, cache);
     let root = music::root_settings(resolved);
     if let Some(song) = load_song(&root.song) {
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
     }
+    // The master effects and the master run once, over the notes and the song together.
+    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings);
+    track.problems.extend(problems);
+    track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
     track
 }
 
@@ -340,6 +386,7 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
     let sound = scene.add_module(reg, "sound.notes", "Default sound").expect("kit kinds are registered");
     let pluck = scene.add_instrument(built_in_instrument(bpe_mix::Instrument::Pluck));
+    add_starter_buses(&mut scene.library);
     scene
         .library
         .modules
@@ -391,6 +438,18 @@ mod tests {
     use super::*;
     use bpe_core::{Color, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn new_scenes_have_reverb_and_delay_buses() {
+        let scene = new_scene(&registry());
+        let names: Vec<&str> = scene.library.buses.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Reverb", "Delay"]);
+        let kinds = |g: &bpe_graph::Graph| -> Vec<String> {
+            bpe_synth::straight_chain(g).unwrap().iter().map(|id| g.node(*id).unwrap().kind.clone()).collect()
+        };
+        assert_eq!(kinds(&scene.library.buses[0].fx), ["reverb"]);
+        assert_eq!(kinds(&scene.library.buses[1].fx), ["delay"]);
+    }
 
     #[test]
     fn a_new_scene_owns_a_starter_progression() {

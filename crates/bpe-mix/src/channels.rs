@@ -64,19 +64,22 @@ fn resolve(settings: &MixSettings, n: &Note) -> InstrumentChoice {
 }
 
 /// A channel and the instrument some of its notes play through.
-type GroupKey = (u32, NoteInstrument);
+pub(crate) type GroupKey = (u32, NoteInstrument);
 /// A compiled patch, how it plays notes, and the notes it plays.
 type PatchJob = (Program, VoiceSettings, Vec<PlayNote>);
 
 /// The notes of one channel that share an instrument.
 struct Group<'a> {
     choice: InstrumentChoice,
+    /// The instrument's own effects and its name, when it has any.
+    fx: Option<(String, &'a bpe_graph::Graph)>,
     notes: Vec<&'a Note>,
 }
 
-/// Rendered channels added up, and plain sentences about anything that went wrong.
+/// Each channel after its instruments' effects and its inserts, with a fingerprint of what it
+/// was made from, and plain sentences about anything that went wrong.
 pub(crate) struct Rendered {
-    pub samples: Vec<f32>,
+    pub channels: BTreeMap<u32, (Arc<Vec<f32>>, u64)>,
     pub problems: Vec<String>,
     /// How many channels were rendered rather than taken from the cache.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -87,19 +90,51 @@ pub(crate) struct Rendered {
 /// changed. A channel is keyed by its module and instrument, and the render is kept with a
 /// fingerprint of everything it was made from: its notes (after the mix-wide voice cap), its
 /// instrument with the module's macros, the voice settings, the tempo and the length.
+/// The same goes for each channel after its inserts, and for each return bus.
 #[derive(Default)]
-pub struct ChannelCache(BTreeMap<GroupKey, CachedChannel>);
+pub struct ChannelCache {
+    groups: BTreeMap<GroupKey, CachedChannel>,
+    pub(crate) strips: BTreeMap<u32, CachedChannel>,
+    pub(crate) buses: BTreeMap<bpe_core::BusId, CachedChannel>,
+}
 
-struct CachedChannel {
-    fingerprint: u64,
-    samples: Arc<Vec<f32>>,
-    bad_samples: bool,
+pub(crate) struct CachedChannel {
+    pub fingerprint: u64,
+    pub samples: Arc<Vec<f32>>,
+    /// A voice made a bad sample.
+    pub bad_samples: bool,
+    /// Effects made a bad sample.
+    pub fx_bad: bool,
 }
 
 impl ChannelCache {
-    fn take(&self, key: &GroupKey, fingerprint: u64) -> Option<(Arc<Vec<f32>>, bool)> {
-        self.0.get(key).filter(|c| c.fingerprint == fingerprint).map(|c| (c.samples.clone(), c.bad_samples))
+    fn take(&self, key: &GroupKey, fingerprint: u64) -> Option<(Arc<Vec<f32>>, bool, bool)> {
+        self.groups
+            .get(key)
+            .filter(|c| c.fingerprint == fingerprint)
+            .map(|c| (c.samples.clone(), c.bad_samples, c.fx_bad))
     }
+}
+
+/// Hashes a fingerprint together with an effects graph's sound.
+pub(crate) fn with_fx(fingerprint: u64, fx: Option<&bpe_graph::Graph>, cx: &bpe_synth::Ctx) -> u64 {
+    let mut h = DefaultHasher::new();
+    fingerprint.hash(&mut h);
+    fx.map(bpe_synth::sound_key).hash(&mut h);
+    // Synced delays, sweeps and LFOs follow the tempo, and noise the seed.
+    if fx.is_some() {
+        (cx.seconds_per_beat.to_bits(), cx.seed).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The instrument effects a note plays through, with the instrument's name.
+fn instrument_fx<'a>(settings: &'a MixSettings, n: &Note) -> Option<(String, &'a bpe_graph::Graph)> {
+    let NoteInstrument::Library(id) = n.instrument else { return None };
+    let found = id
+        .and_then(|id| settings.instruments.get(&id))
+        .or_else(|| settings.scene_instrument.and_then(|id| settings.instruments.get(&id)))?;
+    (!found.fx.nodes.is_empty()).then(|| (found.name.clone(), &found.fx))
 }
 
 fn hash_note(h: &mut DefaultHasher, frame: usize, key: u8, velocity: f32, left: f32, right: f32) {
@@ -140,7 +175,11 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     for n in notes.iter().filter(|n| n.frame < frames) {
         groups
             .entry((n.channel, n.instrument))
-            .or_insert_with(|| Group { choice: resolve(settings, n), notes: Vec::new() })
+            .or_insert_with(|| Group {
+                choice: resolve(settings, n),
+                fx: instrument_fx(settings, n),
+                notes: Vec::new(),
+            })
             .notes
             .push(n);
     }
@@ -182,15 +221,20 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
             (InstrumentChoice::Patch { .. }, Some((_, _, notes))) => patch_fingerprint(&g.choice, notes, spb, frames),
             (InstrumentChoice::Patch { .. }, None) => continue,
         };
-        fingerprints.insert(*key, fingerprint);
+        fingerprints
+            .insert(*key, with_fx(fingerprint, g.fx.as_ref().map(|(_, fx)| *fx), &crate::buses::fx_ctx(settings)));
     }
     let mut channels: BTreeMap<GroupKey, Arc<Vec<f32>>> = BTreeMap::new();
     let mut bad: BTreeSet<GroupKey> = BTreeSet::new();
+    let mut fx_bad: BTreeSet<GroupKey> = BTreeSet::new();
     for (key, &fingerprint) in &fingerprints {
-        if let Some((samples, bad_samples)) = cache.take(key, fingerprint) {
+        if let Some((samples, bad_samples, bad_fx)) = cache.take(key, fingerprint) {
             channels.insert(*key, samples);
             if bad_samples {
                 bad.insert(*key);
+            }
+            if bad_fx {
+                fx_bad.insert(*key);
             }
         }
     }
@@ -238,19 +282,46 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
     rendered.extend(done.into_inner().unwrap().into_iter().map(|(key, audio)| (key, audio.samples, audio.bad_samples)));
     let fresh = rendered.len();
     debug_assert_eq!(fresh + fresh_before, fingerprints.len());
-    for (key, samples, bad_samples) in rendered {
-        let samples = Arc::new(samples);
+    // The instruments' own effects, over the fresh renders side by side.
+    let cx = crate::buses::fx_ctx(settings);
+    let mut fx_jobs: Vec<(Vec<f32>, Option<&bpe_graph::Graph>, bool)> = rendered
+        .iter_mut()
+        .map(|(key, samples, _)| (std::mem::take(samples), groups[key].fx.as_ref().map(|(_, g)| *g), false))
+        .collect();
+    crate::buses::par_each(&mut fx_jobs, |(samples, fx, bad)| {
+        if let Some(fx) = fx {
+            *bad = crate::buses::run_fx(fx, samples, cx);
+        }
+    });
+    for ((key, samples, bad_samples), (fx_samples, _, bad_fx)) in rendered.into_iter().zip(fx_jobs) {
+        let _ = samples;
+        let samples = Arc::new(fx_samples);
         if bad_samples {
             bad.insert(key);
         }
-        cache.0.insert(key, CachedChannel { fingerprint: fingerprints[&key], samples: samples.clone(), bad_samples });
+        if bad_fx {
+            fx_bad.insert(key);
+        }
+        cache.groups.insert(
+            key,
+            CachedChannel { fingerprint: fingerprints[&key], samples: samples.clone(), bad_samples, fx_bad: bad_fx },
+        );
         channels.insert(key, samples);
     }
     // Channels gone from the mix leave the cache.
-    cache.0.retain(|key, _| fingerprints.contains_key(key));
+    cache.groups.retain(|key, _| fingerprints.contains_key(key));
     for key in &bad {
         if let InstrumentChoice::Patch { name, .. } = &groups[key].choice {
             problems.insert(format!("{name} made a bad sample and was stopped"));
+        }
+    }
+    for (key, g) in &groups {
+        if let Some((name, fx)) = &g.fx {
+            let place = format!("{name} effects");
+            problems.extend(crate::buses::fx_problem(fx, &place));
+            if fx_bad.contains(key) {
+                problems.insert(format!("{place} made bad samples"));
+            }
         }
     }
 
@@ -259,13 +330,21 @@ pub(crate) fn render(settings: &MixSettings, notes: &[Note], frames: usize, cach
             missing_samples(name, graph, &mut problems);
         }
     }
-    let mut samples = vec![0.0; frames * 2];
-    for channel in channels.values() {
-        for (o, s) in samples.iter_mut().zip(channel.iter()) {
-            *o += s;
+    let strips = crate::buses::strips(settings, &channels, &fingerprints, frames, cache, &mut problems);
+    Rendered { channels: strips, problems: problems.into_iter().collect(), fresh }
+}
+
+#[cfg(test)]
+impl Rendered {
+    /// The channels added up.
+    pub fn mixed(&self) -> Vec<f32> {
+        let len = self.channels.values().map(|(s, _)| s.len()).max().unwrap_or(0);
+        let mut out = vec![0.0f32; len];
+        for (s, _) in self.channels.values() {
+            out.iter_mut().zip(s.iter()).for_each(|(o, v)| *o += v);
         }
+        out
     }
-    Rendered { samples, problems: problems.into_iter().collect(), fresh }
 }
 
 fn play_note(n: &Note) -> PlayNote {
@@ -300,6 +379,7 @@ mod tests {
             name: name.into(),
             source: InstrumentSource::Patch { graph },
             voices: VoiceSettings { note_length: NoteLength::Seconds(0.2), ..VoiceSettings::default() },
+            fx: bpe_graph::Graph::default(),
         }
     }
 
@@ -338,7 +418,7 @@ mod tests {
         // A channel that leaves the mix leaves the cache.
         notes.retain(|n| n.channel == 3);
         render(&s, &notes, 96_000, &mut cache);
-        assert_eq!(cache.0.len(), 1);
+        assert_eq!(cache.groups.len(), 1);
     }
 
     #[test]
@@ -365,7 +445,7 @@ mod tests {
         let cached = render(&s, &notes, 96_000, &mut cache);
         let fresh = render(&s, &notes, 96_000, &mut ChannelCache::default());
         assert_eq!(cached.fresh, 1);
-        assert!(cached.samples == fresh.samples, "bit for bit");
+        assert!(cached.mixed() == fresh.mixed(), "bit for bit");
         assert_eq!(cached.problems, fresh.problems);
     }
 
@@ -394,23 +474,47 @@ mod tests {
         let notes: Vec<Note> = (0..2_000)
             .map(|i| note(i * (frames - 48_000) / 2_000, 40 + (i * 7 % 36) as u8, [3, 7][i % 2], played))
             .collect();
+        // Each channel has a reverb and a delay insert, and sends to both starter buses.
+        let fx = |kind: &str| (kind.to_owned(), Default::default(), true);
+        let inserts = bpe_synth::chain_graph(&[fx("reverb"), fx("delay")]);
+        let (reverb, delay) = (bpe_core::BusId(0), bpe_core::BusId(1));
+        s.buses = vec![
+            bpe_core::Bus {
+                id: reverb,
+                name: "Reverb".into(),
+                volume: 0.0,
+                fx: bpe_synth::chain_graph(&[fx("reverb")]),
+            },
+            bpe_core::Bus { id: delay, name: "Delay".into(), volume: 0.0, fx: bpe_synth::chain_graph(&[fx("delay")]) },
+        ];
+        for channel in [3, 7] {
+            let sends = [(reverb, -12.0), (delay, -12.0)].into();
+            s.strips.insert(channel, bpe_core::ChannelStrip { inserts: inserts.clone(), sends });
+        }
         let mut cache = ChannelCache::default();
+        let full = |s: &MixSettings, cache: &mut ChannelCache| {
+            let (mut mix, _, _) = crate::buses::premaster_from_notes(s, &notes, frames, cache);
+            crate::master(&mut mix, &s.master);
+        };
         let started = Instant::now();
-        let first = render(&s, &notes, frames, &mut cache);
+        full(&s, &mut cache);
         let took = started.elapsed().as_secs_f32();
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f32;
         let budget = 4.0 * 8.0 / cores;
-        println!("a busy minute: {took:.2} s on {cores} cores (budget {budget:.2} s)");
-        assert_eq!(first.fresh, 2);
+        println!("a busy minute with effects: {took:.2} s on {cores} cores (budget {budget:.2} s)");
         assert!(took < budget, "{took:.2} s");
-        // One macro on one of the two channels re-renders only that one.
+        // One macro on one of the two channels re-renders only that one; the buses and the
+        // master run again.
         s.macros.insert(7, [(format!("{filter}.cutoff"), 900.0)].into());
         let started = Instant::now();
         let again = render(&s, &notes, frames, &mut cache);
-        let took = started.elapsed().as_secs_f32();
-        println!("one macro changed: {took:.2} s");
         assert_eq!(again.fresh, 1);
-        assert!(took < 1.0, "{took:.2} s");
+        s.macros.insert(7, [(format!("{filter}.cutoff"), 1_200.0)].into());
+        let started_full = Instant::now();
+        full(&s, &mut cache);
+        let took = started_full.elapsed().as_secs_f32();
+        println!("one macro changed: {took:.2} s (channel only {:.2} s)", started.elapsed().as_secs_f32() - took);
+        assert!(took < 1.0 * 8.0 / cores.min(8.0), "{took:.2} s");
     }
 
     #[test]
@@ -419,12 +523,12 @@ mod tests {
         let both = render(&s, &notes, 96_000, &mut ChannelCache::default());
         let only = |c: u32| {
             let mine: Vec<Note> = notes.iter().filter(|n| n.channel == c).cloned().collect();
-            render(&s, &mine, 96_000, &mut ChannelCache::default()).samples
+            render(&s, &mine, 96_000, &mut ChannelCache::default()).mixed()
         };
         let (a, b) = (only(3), only(7));
         assert!(a.iter().any(|v| v.abs() > 0.01) && b.iter().any(|v| v.abs() > 0.01));
-        for i in 0..both.samples.len() {
-            assert!((both.samples[i] - (a[i] + b[i])).abs() < 1e-6, "sample {i}");
+        for i in 0..both.mixed().len() {
+            assert!((both.mixed()[i] - (a[i] + b[i])).abs() < 1e-6, "sample {i}");
         }
     }
 
@@ -438,9 +542,9 @@ mod tests {
         let good = [note(0, 60, 1, NoteInstrument::Library(Some(InstrumentId(0))))];
         let bad = [note(0, 60, 2, NoteInstrument::Library(Some(InstrumentId(1))))];
         let out = render(&s, &good, 48_000, &mut ChannelCache::default());
-        assert!(out.samples.iter().any(|v| v.abs() > 0.01) && out.problems.is_empty());
+        assert!(out.mixed().iter().any(|v| v.abs() > 0.01) && out.problems.is_empty());
         let out = render(&s, &bad, 48_000, &mut ChannelCache::default());
-        assert!(out.samples.iter().all(|v| *v == 0.0));
+        assert!(out.mixed().iter().all(|v| *v == 0.0));
         assert_eq!(out.problems, ["Broken: the patch doesn't compile (Add a Voice out block)"]);
     }
 
@@ -476,7 +580,7 @@ mod tests {
         let notes: Vec<Note> = (0..30)
             .map(|i| note(i * 3_000, 50 + (i % 12) as u8, (i % 3) as u32, NoteInstrument::BuiltIn(Instrument::Marimba)))
             .collect();
-        let new = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
+        let new = render(&s, &notes, 96_000, &mut ChannelCache::default()).mixed();
         // The old way: every note into one track.
         let mut cache = NoteCache::default();
         let placed: Vec<(&Note, Arc<Vec<f32>>)> =
@@ -489,8 +593,8 @@ mod tests {
     #[test]
     fn the_mix_is_the_same_twice() {
         let (s, notes) = two_channels();
-        let a = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
-        let b = render(&s, &notes, 96_000, &mut ChannelCache::default()).samples;
+        let a = render(&s, &notes, 96_000, &mut ChannelCache::default()).mixed();
+        let b = render(&s, &notes, 96_000, &mut ChannelCache::default()).mixed();
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
 }
