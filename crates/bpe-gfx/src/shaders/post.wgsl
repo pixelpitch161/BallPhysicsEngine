@@ -6,6 +6,10 @@ struct Globals {
     bg_bottom: vec4<f32>,
     // x: bloom strength, y: exposure
     post: vec4<f32>,
+    // centre xy, zoom, turn
+    camera: vec4<f32>,
+    // x: background on screen, y, z: world heights it spans
+    bg: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

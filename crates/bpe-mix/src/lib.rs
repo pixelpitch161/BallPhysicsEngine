@@ -84,6 +84,10 @@ pub struct MixSettings {
     pub half_width: f32,
     /// Every thing's tags, for sounds that only play against some things.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
+    /// How far past the edge of the shot a hit fades to silence, in shot widths; 0 is off.
+    pub off_shot_fade: f32,
+    /// Half the video's height, for the shot's shape.
+    pub half_height: f32,
 }
 
 /// What a Sound module can read while turning events into notes.
@@ -100,6 +104,27 @@ pub struct MixCx<'a> {
     pub video_time: &'a dyn Fn(f64) -> f64,
     /// Whether a thing is one a target points at, seen from another: `(target, me, other)`.
     pub matches: &'a dyn Fn(&Target, ThingId, ThingId) -> bool,
+}
+
+impl MixCx<'_> {
+    /// Where an event sounds from left (-1) to right (1), by where it is on the screen when it
+    /// happens, scaled by a sound's stereo `width`.
+    pub fn pan_of(&self, e: &Event, width: f32) -> f32 {
+        let at = self.log.camera_at(e.step).to_screen(e.point);
+        (at.x / self.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * width
+    }
+
+    /// How loud an event is for where it is: 1 in the shot, fading to 0 by the Off-shot fade's
+    /// distance past its edge. Always 1 when the fade is off.
+    pub fn gain_of(&self, e: &Event) -> f32 {
+        if self.settings.off_shot_fade <= 0.0 {
+            return 1.0;
+        }
+        let camera = self.log.camera_at(e.step);
+        let video = glam::Vec2::new(self.settings.half_width, self.settings.half_height) * 2.0;
+        let reach = self.settings.off_shot_fade * video.x / camera.zoom.max(1e-3);
+        (1.0 - camera.distance_outside(video, e.point) / reach.max(1e-3)).max(0.0)
+    }
 }
 
 /// How a Sound module kind turns events into notes.
@@ -315,6 +340,8 @@ mod tests {
             seed: 1,
             half_width: 540.0,
             tags: Default::default(),
+            off_shot_fade: 0.0,
+            half_height: 960.0,
         }
     }
 

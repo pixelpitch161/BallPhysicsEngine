@@ -19,6 +19,15 @@ pub trait ThingKind: Send + Sync + 'static {
     fn slots(&self) -> &'static [SlotId];
     /// Slots a newly added thing of this kind shows straight away.
     fn default_slots(&self) -> &'static [SlotId];
+    /// Whether one of these is drawn on the screen instead of in the world unless it says
+    /// otherwise, such as a caption.
+    fn sticks_to_screen(&self) -> bool {
+        false
+    }
+    /// Whether a scene has at most one of these, which can't be deleted or duplicated.
+    fn single(&self) -> bool {
+        false
+    }
 }
 
 /// A kind of module that fills one slot, such as a plain look or a pluck sound.

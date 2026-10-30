@@ -260,10 +260,12 @@ mod tests {
     fn choosing_a_starter_asks_to_save_changes_then_starts_a_new_scene() {
         let mut studio = Studio::headless();
         let ctx = egui::Context::default();
-        let starter = bpe_kit::scenes::starters(&studio.kit.registry).swap_remove(3).1;
+        let mut starter = bpe_kit::scenes::starters(&studio.kit.registry).swap_remove(3).1;
 
         // Nothing unsaved: the starter replaces the scene at once, as a new unsaved document.
         studio.choose_start(Choice::Scene(Box::new(starter.clone())), &ctx);
+        // The editor gives every scene it opens a camera.
+        bpe_kit::ensure_camera(&mut starter, &studio.kit.registry);
         assert_eq!(studio.scene, starter);
         assert_eq!(studio.path, None, "Save asks for a file name, so no file is overwritten");
         assert!(!studio.history.can_undo(), "a fresh start, like New");

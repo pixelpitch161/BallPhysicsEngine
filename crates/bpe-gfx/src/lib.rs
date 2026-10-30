@@ -26,6 +26,7 @@ pub use gradients::{ATLAS_WIDTH, GradientAtlas, PaintGpu};
 pub use text::Atlas;
 pub use wgpu;
 
+use bpe_runtime::CameraView;
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -41,16 +42,30 @@ struct Globals {
     bg_top: [f32; 4],
     bg_bottom: [f32; 4],
     post: [f32; 4],
+    /// The camera: centre xy, zoom, turn in radians.
+    camera: [f32; 4],
+    /// x: 1 when the background stays on the screen, y, z: the world heights it spans otherwise.
+    bg: [f32; 4],
 }
 
 impl Globals {
-    fn new(frame: &Frame, output_width: u32) -> Self {
+    /// The globals for drawing `frame` through `camera`.
+    fn new(frame: &Frame, camera: &CameraView, output_width: u32) -> Self {
         let pixel = frame.width as f32 / output_width.max(1) as f32;
+        // One output pixel in world units: smaller as the camera zooms in.
+        let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
         Self {
-            view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, pixel, frame.time],
+            view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
             bg_top: frame.background_top,
             bg_bottom: frame.background_bottom,
             post: [frame.bloom, frame.exposure, 0.0, 0.0],
+            camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
+            bg: [
+                if frame.background_on_screen { 1.0 } else { 0.0 },
+                frame.background_span[0],
+                frame.background_span[1],
+                0.0,
+            ],
         }
     }
 }
@@ -109,6 +124,30 @@ impl PaintTexture {
         });
         Self { texture, rows, group }
     }
+
+    /// Uploads `atlas`, making the texture taller first if its gradients do not fit.
+    fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        atlas: &GradientAtlas,
+    ) {
+        if atlas.len() > self.rows {
+            *self = Self::new(device, layout, sampler, gradients::atlas_height(atlas.len()));
+        }
+        if atlas.is_empty() {
+            return;
+        }
+        let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
+        queue.write_texture(
+            self.texture.as_image_copy(),
+            &gradients::half_texels(atlas.rows()),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: atlas.len() as u32, depth_or_array_layers: 1 },
+        );
+    }
 }
 
 /// The glyph atlas on the GPU, remade when the atlas grows or changes.
@@ -121,6 +160,11 @@ struct AtlasTexture {
 pub struct Renderer {
     globals: wgpu::Buffer,
     globals_group: wgpu::BindGroup,
+    /// The same globals with no camera, for things stuck to the screen.
+    screen_globals: wgpu::Buffer,
+    screen_globals_group: wgpu::BindGroup,
+    /// The overlay's instance lists.
+    overlay: OverlayBuffers,
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
@@ -154,10 +198,49 @@ pub struct Renderer {
     glyph_buffer: GrowableBuffer,
     atlas: Option<AtlasTexture>,
     paint: PaintTexture,
+    /// The overlay frame's own gradients: its instances name rows of its own atlas.
+    overlay_paint: PaintTexture,
     targets: Targets,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
     flow: Option<FlowLayers>,
+}
+
+/// The instance lists of the frame's overlay, uploaded beside the main ones.
+struct OverlayBuffers {
+    trails: GrowableBuffer,
+    shapes: GrowableBuffer,
+    soft: GrowableBuffer,
+    balls: GrowableBuffer,
+    looks: GrowableBuffer,
+    flashes: GrowableBuffer,
+    glyphs: GrowableBuffer,
+}
+
+impl Default for OverlayBuffers {
+    fn default() -> Self {
+        Self {
+            trails: GrowableBuffer::new("screen trail vertices"),
+            shapes: GrowableBuffer::new("screen shape instances"),
+            soft: GrowableBuffer::new("screen soft vertices"),
+            balls: GrowableBuffer::new("screen ball instances"),
+            looks: GrowableBuffer::new("screen styled ball instances"),
+            flashes: GrowableBuffer::new("screen flash instances"),
+            glyphs: GrowableBuffer::new("screen glyph instances"),
+        }
+    }
+}
+
+impl OverlayBuffers {
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, o: &Frame) {
+        self.trails.upload(device, queue, bytemuck::cast_slice(&o.trails));
+        self.shapes.upload(device, queue, bytemuck::cast_slice(&o.shapes));
+        self.soft.upload(device, queue, bytemuck::cast_slice(&o.soft));
+        self.balls.upload(device, queue, bytemuck::cast_slice(&o.balls));
+        self.looks.upload(device, queue, bytemuck::cast_slice(&o.looks));
+        self.flashes.upload(device, queue, bytemuck::cast_slice(&o.flashes));
+        self.glyphs.upload(device, queue, bytemuck::cast_slice(&o.glyphs));
+    }
 }
 
 impl Renderer {
@@ -206,6 +289,17 @@ impl Renderer {
                 },
                 count: None,
             }],
+        });
+        let screen_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screen globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let screen_globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("screen globals"),
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: screen_globals.as_entire_binding() }],
         });
         let globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
@@ -505,10 +599,14 @@ impl Renderer {
 
         let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
         let paint = PaintTexture::new(device, &paint_layout, &sampler, gradients::atlas_height(0));
+        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, gradients::atlas_height(0));
         let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
         Self {
             globals,
             globals_group,
+            screen_globals,
+            screen_globals_group,
+            overlay: OverlayBuffers::default(),
             post_layout,
             composite_layout,
             atlas_layout,
@@ -539,6 +637,7 @@ impl Renderer {
             glyph_buffer: GrowableBuffer::new("glyph instances"),
             atlas: None,
             paint,
+            overlay_paint,
             targets,
             surface: flow::surface::Surface::new(device),
             flow: None,
@@ -578,24 +677,6 @@ impl Renderer {
             ],
         });
         self.atlas = Some(AtlasTexture { size: atlas.size, generation: atlas.generation, group });
-    }
-
-    /// Uploads the frame's gradients, making the texture taller first if they do not fit.
-    fn sync_gradients(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, atlas: &GradientAtlas) {
-        if atlas.len() > self.paint.rows {
-            let rows = gradients::atlas_height(atlas.len());
-            self.paint = PaintTexture::new(device, &self.paint_layout, &self.sampler, rows);
-        }
-        if atlas.is_empty() {
-            return;
-        }
-        let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
-        queue.write_texture(
-            self.paint.texture.as_image_copy(),
-            &gradients::half_texels(atlas.rows()),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
-            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: atlas.len() as u32, depth_or_array_layers: 1 },
-        );
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -652,7 +733,21 @@ impl Renderer {
     /// [`Renderer::render_with_flow`]; here they are only drawn. Liquids are shaded between
     /// the walls and the balls, over a copy of what is behind them.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, self.targets.width)));
+        queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&Globals::new(frame, &frame.camera, self.targets.width)),
+        );
+        let overlay = frame.overlay.as_deref().filter(|_| frame.has_overlay());
+        if let Some(o) = overlay {
+            let identity = CameraView::default();
+            queue.write_buffer(
+                &self.screen_globals,
+                0,
+                bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
+            );
+            self.overlay.upload(device, queue, o);
+        }
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
         self.shape_buffer.upload(device, queue, bytemuck::cast_slice(&frame.shapes));
         self.soft_buffer.upload(device, queue, bytemuck::cast_slice(&frame.soft));
@@ -660,11 +755,14 @@ impl Renderer {
         self.look_buffer.upload(device, queue, bytemuck::cast_slice(&frame.looks));
         self.flash_buffer.upload(device, queue, bytemuck::cast_slice(&frame.flashes));
         self.glyph_buffer.upload(device, queue, bytemuck::cast_slice(&frame.glyphs));
-        if !frame.glyphs.is_empty() {
+        if !frame.glyphs.is_empty() || overlay.is_some_and(|o| !o.glyphs.is_empty()) {
             self.sync_atlas(device, queue);
         }
         self.particles.prepare(device, queue, particles::pick(&frame.bursts, frame.time));
-        self.sync_gradients(device, queue, &frame.gradients);
+        self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
+        if let Some(o) = overlay {
+            self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
+        }
 
         let wants_objects = effects::chain::Chain::wants_objects(frame);
         if wants_objects {
@@ -712,7 +810,17 @@ impl Renderer {
                 };
                 if let Some(points) = points {
                     let world = (frame.width, frame.height);
-                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, layer, points);
+                    self.surface.draw(
+                        device,
+                        queue,
+                        &mut encoder,
+                        &self.targets,
+                        slot,
+                        world,
+                        &frame.camera,
+                        layer,
+                        points,
+                    );
                 }
             }
         }
@@ -781,6 +889,9 @@ impl Renderer {
                 pass.draw(0..4, 0..frame.glyphs.len() as u32);
             }
         }
+        if let Some(o) = overlay {
+            self.draw_overlay(&mut encoder, o);
+        }
         self.chain.run(
             device,
             queue,
@@ -824,6 +935,52 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+    }
+
+    /// Draws the things stuck to the screen on top of everything in the world, with no camera.
+    fn draw_overlay(&self, encoder: &mut wgpu::CommandEncoder, o: &Frame) {
+        let b = &self.overlay;
+        let mut pass = begin_pass(encoder, &self.targets.hdr, "stuck to the screen", wgpu::LoadOp::Load);
+        pass.set_bind_group(0, &self.screen_globals_group, &[]);
+        pass.set_bind_group(1, &self.overlay_paint.group, &[]);
+        if !o.trails.is_empty() {
+            pass.set_pipeline(&self.trail);
+            pass.set_vertex_buffer(0, b.trails.slice());
+            pass.draw(0..o.trails.len() as u32, 0..1);
+        }
+        if !o.shapes.is_empty() {
+            pass.set_pipeline(&self.shape);
+            pass.set_vertex_buffer(0, b.shapes.slice());
+            pass.draw(0..4, 0..o.shapes.len() as u32);
+        }
+        let soft_vertices = o.soft.len() - o.soft.len() % 3;
+        if soft_vertices > 0 {
+            pass.set_pipeline(&self.soft);
+            pass.set_vertex_buffer(0, b.soft.slice());
+            pass.draw(0..soft_vertices as u32, 0..1);
+        }
+        if !o.balls.is_empty() {
+            pass.set_pipeline(&self.ball);
+            pass.set_vertex_buffer(0, b.balls.slice());
+            pass.draw(0..4, 0..o.balls.len() as u32);
+        }
+        if !o.looks.is_empty() {
+            pass.set_pipeline(&self.look);
+            pass.set_vertex_buffer(0, b.looks.slice());
+            pass.draw(0..4, 0..o.looks.len() as u32);
+        }
+        if !o.flashes.is_empty() {
+            pass.set_pipeline(&self.flash);
+            pass.set_vertex_buffer(0, b.flashes.slice());
+            pass.draw(0..4, 0..o.flashes.len() as u32);
+        }
+        if let (false, Some(atlas)) = (o.glyphs.is_empty(), &self.atlas) {
+            pass.set_pipeline(&self.glyph);
+            pass.set_bind_group(1, &atlas.group, &[]);
+            pass.set_bind_group(2, &self.overlay_paint.group, &[]);
+            pass.set_vertex_buffer(0, b.glyphs.slice());
+            pass.draw(0..4, 0..o.glyphs.len() as u32);
+        }
     }
 
     /// Copies the output image back to the CPU as tightly packed RGBA bytes (sRGB-encoded).

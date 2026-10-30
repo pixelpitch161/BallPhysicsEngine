@@ -26,6 +26,10 @@ struct Globals {
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
     post: vec4<f32>,
+    // centre xy, zoom, turn
+    camera: vec4<f32>,
+    // x: background on screen, y, z: world heights it spans
+    bg: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -88,7 +92,14 @@ fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     }
     var out: PointOut;
     let world = p + corner * half;
-    out.pos = vec4<f32>(world.x * g.view.x, -world.y * g.view.y, 0.0, 1.0);
+    var q = world - g.camera.xy;
+    if g.camera.w != 0.0 {
+        let sn = sin(-g.camera.w);
+        let k = cos(-g.camera.w);
+        q = vec2<f32>(q.x * k - q.y * sn, q.x * sn + q.y * k);
+    }
+    q = q * g.camera.z;
+    out.pos = vec4<f32>(q.x * g.view.x, -q.y * g.view.y, 0.0, 1.0);
     out.local = corner;
     out.color = color.rgb * draw_params.draw.x * cover;
     return out;

@@ -39,7 +39,7 @@ pub struct ObstacleSettings {
     #[setting(label = "Size", when = "shape!=bar", range(2, 800), unit = "px", simple, keyframe, random(6, 60))]
     pub radius: f32,
     /// Bar only.
-    #[setting(label = "Length", when = "shape=bar", range(10, 4000), unit = "px", simple, keyframe, random(40, 600))]
+    #[setting(label = "Length", when = "shape=bar", range(10, 40000), unit = "px", simple, keyframe, random(40, 600))]
     pub length: f32,
     /// Bar, polygon and ring: how thick the wall is.
     #[setting(label = "Thickness", when = "shape=bar|polygon|ring", range(1, 200), unit = "px", simple, keyframe)]

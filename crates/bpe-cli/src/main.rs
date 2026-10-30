@@ -93,7 +93,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     let scene = if new_scene {
-        bpe_kit::new_scene(&kit.registry)
+        bpe_kit::new_studio_scene(&kit.registry)
     } else {
         let path = scene_path.as_ref().with_context(|| format!("no scene file given\n\n{USAGE}"))?;
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
