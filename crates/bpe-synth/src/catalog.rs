@@ -137,6 +137,31 @@ fn specs() -> Vec<NodeSpec> {
             .param(n("predelay", "Pre-delay ms", 10.0, 0.0, 200.0))
             .param(n("width", "Width", 1.0, 0.0, 1.0))
             .param(n("mix", "Mix", 0.3, 0.0, 1.0)),
+        NodeSpec::new(
+            "compressor",
+            "Compressor",
+            "Effects",
+            "Turns loud parts down; wire another sound into sidechain to duck under it.",
+        )
+        .input(audio("in").required())
+        .input(audio("sidechain").help("Listen to this instead of the input"))
+        .output(audio("out"))
+        .param(n("threshold", "Threshold dB", -18.0, -60.0, 0.0))
+        .param(n("ratio", "Ratio", 4.0, 1.0, 20.0))
+        .param(n("attack", "Attack ms", 10.0, 0.0, 200.0))
+        .param(n("release", "Release ms", 100.0, 1.0, 2_000.0))
+        .param(n("knee", "Knee dB", 6.0, 0.0, 24.0))
+        .param(n("makeup", "Makeup dB", 0.0, -24.0, 24.0)),
+        NodeSpec::new("clipper", "Clipper", "Effects", "Shaves off peaks, cleanly at four times the rate.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(choice("mode", "Mode", &["soft", "hard"], "soft"))
+            .param(n("drive", "Drive dB", 0.0, 0.0, 24.0)),
+        NodeSpec::new("limiter", "Limiter", "Effects", "Never lets the sound past the ceiling, even between samples.")
+            .input(audio("in").required())
+            .output(audio("out"))
+            .param(n("ceiling", "Ceiling dB", -1.0, -6.0, 0.0))
+            .param(n("release", "Release ms", 100.0, 1.0, 1_000.0)),
         NodeSpec::new("width", "Stereo width", "Effects", "0 is mono, 1 unchanged, 2 twice as wide.")
             .input(audio("in").required())
             .output(audio("out"))
@@ -231,6 +256,9 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "drive" => Box::new(Drive::new(k)),
         "amp" => Box::new(Amp::new(k)),
         "eq" => Box::new(Equaliser::new(k)),
+        "compressor" => Box::new(Compressor::new(k)),
+        "clipper" => Box::new(Clipper::new(k)),
+        "limiter" => Box::new(Limiter::new(k)),
         "delay" => Box::new(Delay::new(k)),
         "chorus" => Box::new(Chorus::new(k)),
         "reverb" => Box::new(Reverb::new(k)),
