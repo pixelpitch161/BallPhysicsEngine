@@ -1,6 +1,7 @@
 //! The timeline panel: the transport, the scrub bar, and a lane for every keyed or pulsing
 //! setting of the selection, with its keys as diamonds that can be moved, eased and deleted.
 
+pub mod chords;
 pub mod ease;
 pub mod lanes;
 
@@ -58,6 +59,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected = None;
         timeline.curve_open = false;
     }
+    chords::show(ui, studio, &ruler);
     if lanes.is_empty() {
         ui.add_space(6.0);
         let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \

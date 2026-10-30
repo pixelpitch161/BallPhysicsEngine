@@ -366,6 +366,31 @@ impl ChordClock {
         cycles * self.chords.len() as u64 + i as u64
     }
 
+    /// The video time beat `n` starts: the inverse of [`ChordClock::beat`].
+    fn beat_time(&self, n: u64) -> f64 {
+        if self.beats.len() >= 2 && (n as usize) < self.beats.len() {
+            return self.beats[n as usize];
+        }
+        let last = self.beats.len().saturating_sub(1) as u64;
+        self.beats.last().copied().unwrap_or(0.0) + n.saturating_sub(last) as f64 * self.period
+    }
+
+    /// Every chord from the start of the video to `duration`, as (start, end, chord) in video
+    /// seconds, end to end. The last one stops at `duration`.
+    pub fn spans(&self, duration: f64) -> Vec<(f64, f64, Chord)> {
+        let mut out = Vec::new();
+        let (mut beat, mut start) = (0u64, 0.0);
+        while start < duration && out.len() < 100_000 {
+            let within = (beat % self.total as u64) as u32;
+            let i = self.starts.partition_point(|&s| s <= within) - 1;
+            beat += self.chords[i].beats.max(1) as u64;
+            let end = self.beat_time(beat).min(duration);
+            out.push((start, end, self.chords[i]));
+            start = end;
+        }
+        out
+    }
+
     /// The chord playing at `video_time`, and its place in the progression.
     pub fn at(&self, video_time: f64) -> (usize, &Chord) {
         let i = (self.step(video_time) % self.chords.len() as u64) as usize;
@@ -379,6 +404,19 @@ mod tests {
 
     fn key(root: u8, mode: Mode) -> MusicKey {
         MusicKey { root, mode }
+    }
+
+    #[test]
+    fn spans_cover_the_video_and_cycle() {
+        let beats: Vec<f64> = (0..50).map(|b| b as f64 * 0.5).collect();
+        let spans = ChordClock::new(&Progression::starter(), &beats).spans(25.0);
+        assert_eq!(spans[0], (0.0, 4.0, Progression::starter().chords[0]));
+        assert!(spans.windows(2).all(|w| w[0].1 == w[1].0), "end to end");
+        assert_eq!(spans.last().unwrap().1, 25.0);
+        // 40 beats a time through is 20 s, so the seventh span is the first chord again.
+        assert_eq!(spans[6].0, 20.0);
+        assert_eq!(spans[6].2, Progression::starter().chords[0]);
+        assert!(ChordClock::new(&Progression::starter(), &[]).spans(0.0).is_empty());
     }
 
     #[test]
