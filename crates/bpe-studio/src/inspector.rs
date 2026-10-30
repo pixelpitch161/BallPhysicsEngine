@@ -57,6 +57,8 @@ enum Edit {
     Name(String),
     Tags(BTreeSet<String>),
     Enabled(bool),
+    /// Drawn on the screen or in the world; `None` is the kind's own choice.
+    Screen(Option<bool>),
     Transform(Transform),
     Parent(ThingId),
     Attach(Attach),
@@ -173,7 +175,20 @@ pub fn show(
             ui.label(RichText::new(kind.name()).color(theme::MUTED)).on_hover_text(kind.help());
             ui.end_row();
             if id != ThingId::ROOT {
-                tree_rows(ui, scene, &thing, &mut edits);
+                // The camera's place is its own Position setting, which can be keyframed.
+                if kind.id() != "camera" {
+                    tree_rows(ui, scene, &thing, &mut edits);
+                }
+                if !matches!(kind.id(), "liquid" | "swarm" | "camera") {
+                    let label = ui
+                        .label("Stick to screen")
+                        .on_hover_text("Stay put on the screen while the camera moves, like a caption");
+                    let mut on = thing.sticks_to_screen(kind);
+                    if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
+                        edits.push(Edit::Screen((on != kind.sticks_to_screen()).then_some(on)));
+                    }
+                    ui.end_row();
+                }
                 let shown = ui.label("Shown").on_hover_text("A hidden thing is left out of the video and the physics");
                 let mut enabled = thing.enabled;
                 if ui.checkbox(&mut enabled, "").labelled_by(shown.id).changed() {
@@ -586,6 +601,7 @@ pub fn show(
             Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
+            Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
             Edit::Transform(t) => set_thing(scene, id, |thing| thing.transform = t),
             Edit::Parent(parent) => {
                 let attach = scene.things.get(&id).map(|t| t.attach).unwrap_or_default();
@@ -836,7 +852,8 @@ fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Ve
             }
         }
         Attach::Group => {
-            let position = ui.label("Position").on_hover_text("Where it sits, in video pixels from the centre");
+            let position =
+                ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
             let moved = ui
                 .horizontal(|ui| {
                     let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));

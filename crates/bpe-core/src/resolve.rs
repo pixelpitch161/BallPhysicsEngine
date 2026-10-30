@@ -25,6 +25,8 @@ pub struct ResolvedThing {
     pub params: Params,
     /// Only the slots that something fills.
     pub slots: BTreeMap<SlotId, ResolvedSlot>,
+    /// Drawn on the screen rather than in the world, whatever the camera does.
+    pub screen: bool,
 }
 
 /// Something in the scene that couldn't be used.
@@ -190,7 +192,8 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
 
         let mut params = defaults(kind.settings());
         params.apply(&thing.params);
-        let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new() };
+        let screen = thing.sticks_to_screen(kind);
+        let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new(), screen };
         for &slot in kind.slots() {
             if let Some(from) = here[slot as usize]
                 && let Step::Use(source) = step(scene, reg, from, slot, broken)

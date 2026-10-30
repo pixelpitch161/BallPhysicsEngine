@@ -6,6 +6,8 @@
 use bpe_core::ThingId;
 use glam::Vec2;
 
+use crate::camera::CameraView;
+
 /// One side of an event: a thing, and which of its items (ball number, wall segment, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Party {
@@ -83,6 +85,9 @@ const HASH_PRIME: u64 = 0x100_0000_01b3;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Log {
     events: Vec<Event>,
+    /// Where the camera looked, from each step it moved: `(step, view)` in step order. Kept
+    /// apart from the events so it never changes the log's hash.
+    camera: Vec<(u64, CameraView)>,
 }
 
 impl Log {
@@ -96,6 +101,25 @@ impl Log {
 
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+
+    /// Notes where the camera looks from `step` on; nothing is kept when it hasn't moved.
+    pub fn push_camera(&mut self, step: u64, view: CameraView) {
+        if self.camera.last().is_none_or(|(_, last)| *last != view) {
+            self.camera.push((step, view));
+        }
+    }
+
+    /// Where the camera looked at `step`: the identity before it was first noted.
+    pub fn camera_at(&self, step: u64) -> CameraView {
+        let i = self.camera.partition_point(|(s, _)| *s <= step);
+        if i == 0 { CameraView::default() } else { self.camera[i - 1].1 }
+    }
+
+    /// Forgets where the camera looked after `step`, when playback rewinds.
+    pub fn truncate_camera(&mut self, step: u64) {
+        let keep = self.camera.partition_point(|(s, _)| *s <= step);
+        self.camera.truncate(keep);
     }
 
     pub fn len(&self) -> usize {
@@ -246,5 +270,20 @@ mod tests {
         let mut log = Log::default();
         log.push(Event { step: 5, ..hit() });
         log.push(Event { step: 4, ..hit() });
+    }
+
+    #[test]
+    fn camera_track_ignores_hash() {
+        let mut log = Log::default();
+        log.push(hit());
+        let before = log.hash();
+        let view = CameraView { center: Vec2::new(10.0, 20.0), zoom: 2.0, turn: 0.1 };
+        log.push_camera(3, view);
+        log.push_camera(4, view);
+        assert_eq!(log.hash(), before);
+        assert_eq!(log.camera_at(5), view);
+        assert_eq!(log.camera_at(1), CameraView::default());
+        log.truncate_camera(2);
+        assert_eq!(log.camera_at(5), CameraView::default());
     }
 }

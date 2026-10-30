@@ -31,7 +31,9 @@ fn every_stage7_scene_draws_a_picture() {
         assert!(count > 0, "{name}: nothing bright was drawn");
         bright.insert(name.clone(), count);
         match name.as_str() {
-            "Captioned reel" | "Drum beat" => assert!(!frame.glyphs.is_empty(), "{name}: no caption glyphs"),
+            "Captioned reel" | "Drum beat" => {
+                assert!(frame.overlay.as_ref().is_some_and(|o| !o.glyphs.is_empty()), "{name}: no caption glyphs")
+            }
             "Jelly drop" => assert!(frame.soft.len() >= 3, "{name}: no soft triangles"),
             _ => {}
         }

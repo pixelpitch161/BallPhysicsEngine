@@ -139,4 +139,7 @@ impl ThingKind for TextKind {
     fn default_slots(&self) -> &'static [SlotId] {
         DEFAULT_SLOTS
     }
+    fn sticks_to_screen(&self) -> bool {
+        true
+    }
 }

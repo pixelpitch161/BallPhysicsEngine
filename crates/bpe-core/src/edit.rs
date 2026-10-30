@@ -25,6 +25,8 @@ pub enum EditError {
     InUse(Vec<ThingId>),
     WrongType,
     UnknownSetting(String),
+    /// A scene has only one of these.
+    OnlyOne(KindId),
 }
 
 impl fmt::Display for EditError {
@@ -42,6 +44,7 @@ impl fmt::Display for EditError {
             EditError::InUse(users) => write!(f, "{} things still use this module", users.len()),
             EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
+            EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
         }
     }
 }
@@ -52,6 +55,9 @@ impl Scene {
     /// Adds a thing of `kind` as the last child of `parent`.
     pub fn add_thing(&mut self, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
         let k = reg.thing(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        if k.single() && self.things.values().any(|t| t.kind == kind) {
+            return Err(EditError::OnlyOne(kind.into()));
+        }
         if !self.things.contains_key(&parent) {
             return Err(EditError::Missing(parent));
         }

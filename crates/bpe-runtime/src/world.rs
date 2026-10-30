@@ -14,6 +14,7 @@ use bpe_core::{
 };
 use glam::Vec2;
 
+use crate::camera::CameraView;
 use crate::events::HASH_OFFSET;
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, RuleCx, SimCx, Sims, ThingState};
@@ -67,6 +68,11 @@ pub struct World {
     pub history: BTreeMap<ThingId, History>,
     /// The scene's seed, for anything random; the scene's sim sets it.
     pub seed: u64,
+    /// What the video shows right now; the camera's sim sets it, the identity without one.
+    pub camera: CameraView,
+    /// The video's size: how much of the world the shot covers at Zoom 1. The scene's sim sets
+    /// it.
+    pub video: Vec2,
     /// What the rules asked for in the last step, applied at the start of the next.
     pub pending: Vec<Action>,
     /// The kind of every built thing, in id order.
@@ -128,6 +134,8 @@ impl World {
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
+            camera: CameraView::default(),
+            video: Vec2::new(1080.0, 1920.0),
             pending: Vec::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),

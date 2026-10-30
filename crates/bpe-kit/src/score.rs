@@ -115,7 +115,6 @@ pub struct Sampled {
 pub fn sample(scene: &Scene, resolved: &Resolved, sims: &Sims, stop: &AtomicBool) -> Option<Sampled> {
     let settings = root_settings(resolved);
     let duration = settings.duration.max(0.0) as f64;
-    let (half_w, half_h) = (settings.width as f32 * 0.5, settings.height as f32 * 0.5);
     let (quietest, loudest) = sound_thresholds(resolved);
     let mut world = World::build(scene, resolved, sims);
     let mut log = Log::default();
@@ -138,7 +137,8 @@ pub fn sample(scene: &Scene, resolved: &Resolved, sims: &Sims, stop: &AtomicBool
                     continue;
                 }
                 count += 1;
-                if p.x.abs() <= half_w && p.y.abs() <= half_h {
+                // In the picture: inside the camera's shot at this moment.
+                if world.camera.sees(world.video, p, 0.0) {
                     on_screen += 1;
                 }
                 let speed = v.length();
@@ -572,5 +572,22 @@ mod tests {
         let resolved = resolve_scene(&scene, &reg);
         let stop = AtomicBool::new(true);
         assert!(sample(&scene, &resolved, &sims(), &stop).is_none());
+    }
+
+    #[test]
+    fn score_counts_balls_in_the_shot() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        scene.things.get_mut(&ThingId(1)).unwrap().enabled = false;
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let ball = scene.things.get_mut(&ThingId(2)).unwrap();
+        ball.transform.position = glam::Vec2::new(4000.0, 0.0);
+        ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
+        let off = sampled(&scene);
+        assert!(off.frames.iter().all(|f| f.on_screen == 0), "outside the fixed shot");
+        let cam = crate::ensure_camera(&mut scene, &reg);
+        scene.things.get_mut(&cam).unwrap().params.set("position", Value::Vec2([4000.0, 0.0]));
+        let on = sampled(&scene);
+        assert!(on.frames.iter().all(|f| f.on_screen == f.count && f.count > 0), "the camera looks at it");
     }
 }

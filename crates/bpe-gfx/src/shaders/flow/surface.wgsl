@@ -14,6 +14,8 @@ struct Surface {
     blur: vec4<f32>,
     // x: glow
     extra: vec4<f32>,
+    // centre xy, zoom, turn
+    camera: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> surface: Surface;
@@ -38,7 +40,16 @@ fn vs_splat(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     }
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
     let world = particles[ii].xy + corner * surface.view.z;
-    out.pos = vec4<f32>(world.x * surface.view.x, -world.y * surface.view.y, 0.0, 1.0);
+    // Through the camera; with none (centre 0, zoom 1, turn 0) the point is unchanged, exactly.
+    let c = surface.camera;
+    var q = world - c.xy;
+    if c.w != 0.0 {
+        let s = sin(-c.w);
+        let k = cos(-c.w);
+        q = vec2<f32>(q.x * k - q.y * s, q.x * s + q.y * k);
+    }
+    q = q * c.z;
+    out.pos = vec4<f32>(q.x * surface.view.x, -q.y * surface.view.y, 0.0, 1.0);
     out.local = corner;
     return out;
 }

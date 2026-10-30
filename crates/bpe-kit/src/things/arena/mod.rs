@@ -28,7 +28,7 @@ pub struct ArenaSettings {
     #[setting(
         label = "Radius",
         when = "shape=circle|polygon",
-        range(20, 2000),
+        range(20, 20000),
         unit = "px",
         simple,
         keyframe,
@@ -42,10 +42,10 @@ pub struct ArenaSettings {
     #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe, random(-120, 120))]
     pub spin: f32,
     /// Box only.
-    #[setting(label = "Width", when = "shape=box|capsule", range(20, 4000), unit = "px")]
+    #[setting(label = "Width", when = "shape=box|capsule", range(20, 40000), unit = "px")]
     pub width: f32,
     /// Box only.
-    #[setting(label = "Height", when = "shape=box|capsule", range(20, 4000), unit = "px")]
+    #[setting(label = "Height", when = "shape=box|capsule", range(20, 40000), unit = "px")]
     pub height: f32,
     /// Box only: how round the corners are.
     #[setting(label = "Corner radius", when = "shape=box", range(0, 1000), unit = "px", keyframe, random(0, 200))]
@@ -57,7 +57,7 @@ pub struct ArenaSettings {
     #[setting(label = "Shrink", range(0, 1), unit = "per s", keyframe)]
     pub shrink: f32,
     /// The arena stops shrinking at this size.
-    #[setting(label = "Smallest size", when = "shrink", range(10, 2000), unit = "px")]
+    #[setting(label = "Smallest size", when = "shrink", range(10, 20000), unit = "px")]
     pub min_size: f32,
 }
 

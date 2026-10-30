@@ -1,0 +1,211 @@
+(
+    format: 2,
+    name: "Long drop",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "gravity": Vec2((0.0, 900.0)),
+                "off_shot_fade": Number(1.5),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 2880.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "corner": Number(60.0),
+                "height": Number(7680.0),
+                "shape": Choice("box"),
+                "width": Number(1000.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Ball",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (30.0, -820.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "radius": Number(22.0),
+                "velocity": Vec2((60.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Linked(
+                    module: 6,
+                ),
+                Sound: Off,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Pegs",
+            kind: "obstacle",
+            tags: [
+                "pegs",
+            ],
+            parent: Some(0),
+            transform: (
+                position: (0.0, 3080.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "columns": Int(8),
+                "radius": Number(10.0),
+                "rows": Int(60),
+                "shape": Choice("peg_grid"),
+                "spacing": Number(115.0),
+            },
+            slots: {
+                Look: Inherit,
+                Bounce: Inherit,
+                Sound: Linked(
+                    module: 5,
+                ),
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Title",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -780.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(6.0),
+                "size": Number(110.0),
+                "text": Text("Long drop"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        5: (
+            id: 5,
+            name: "Camera",
+            kind: "camera",
+            parent: Some(0),
+            params: {
+                "box_centre": Vec2((0.0, 2880.0)),
+                "box_size": Vec2((1080.0, 7800.0)),
+                "follow": Bool(true),
+                "follow_target": Target(Thing(2)),
+                "hits_from": Target(Thing(2)),
+                "look_ahead": Number(0.20000000298023224),
+                "position": Vec2((0.0, -480.0)),
+                "punch": Number(0.11999999731779099),
+                "punch_recovery": Number(0.25),
+                "slack": Number(0.05000000074505806),
+                "smoothness": Number(0.5),
+                "stay_inside": Bool(true),
+            },
+            slots: {},
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "color": Color("#ff5ca8"),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Peg sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Choice("marimba"),
+                    "pitch_by": Choice("speed"),
+                    "plays_when": Choice("being_hit"),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Bumpy",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.550000011920929),
+                },
+            ),
+        },
+    ),
+    next_thing: 6,
+    next_module: 7,
+)

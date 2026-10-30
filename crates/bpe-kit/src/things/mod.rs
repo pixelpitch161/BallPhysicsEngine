@@ -2,6 +2,7 @@
 
 pub mod arena;
 pub mod balls;
+pub mod camera;
 pub mod emitter;
 pub mod field;
 pub mod folder;

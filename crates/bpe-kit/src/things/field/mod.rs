@@ -51,7 +51,7 @@ pub struct FieldSettings {
     #[setting(
         label = "Radius",
         when = "shape=circle",
-        range(10, 3000),
+        range(10, 30000),
         unit = "px",
         simple,
         keyframe,
@@ -68,10 +68,10 @@ pub struct FieldSettings {
     #[setting(label = "Direction", when = "kind=wind", range(-360, 360), unit = "°", simple, keyframe, random)]
     pub direction: f32,
     /// A box field's width.
-    #[setting(label = "Width", when = "shape=box", range(10, 4000), unit = "px", keyframe)]
+    #[setting(label = "Width", when = "shape=box", range(10, 40000), unit = "px", keyframe)]
     pub width: f32,
     /// A box field's height.
-    #[setting(label = "Height", when = "shape=box", range(10, 4000), unit = "px", keyframe)]
+    #[setting(label = "Height", when = "shape=box", range(10, 40000), unit = "px", keyframe)]
     pub height: f32,
     /// How the push fades towards the edge.
     #[setting(label = "Falloff", when = "shape!=everywhere")]

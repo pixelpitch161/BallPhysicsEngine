@@ -45,8 +45,12 @@ impl ModuleMix for MelodySoundMix {
             } else {
                 step.velocity as f32 / 127.0
             };
-            let gain = (0.3 + 0.7 * velocity) * gain_db;
-            let pan = (e.point.x / cx.settings.half_width.max(1.0)).clamp(-1.0, 1.0) * s.stereo_width;
+            let fade = cx.gain_of(e);
+            if fade <= 0.0 {
+                continue;
+            }
+            let gain = (0.3 + 0.7 * velocity) * gain_db * fade;
+            let pan = cx.pan_of(e, s.stereo_width);
             let angle = (pan + 1.0) * FRAC_PI_4;
             let keys: &[u8] = if s.chords { &step.keys } else { &step.keys[..1] };
             let share = 1.0 / (keys.len() as f32).sqrt();
