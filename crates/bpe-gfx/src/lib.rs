@@ -413,7 +413,9 @@ impl Renderer {
             })
         };
 
-        let shape_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+        let shape_attributes = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4
+        ];
         let ball_attributes = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
         ];
@@ -1387,7 +1389,7 @@ mod surface_tests {
         let ring =
             Outline::Ring { center: glam::Vec2::new(0.0, 300.0), radius: 60.0, sides: 0, angle: 0.0, thickness: 12.0 };
         let mut frame = Frame::default();
-        frame.shapes.push(ShapeInstance::outline(&ring, [1.0, 1.0, 1.0, 1.0], 0.0));
+        frame.shapes.push(ShapeInstance::outline(&ring, PaintGpu::default(), [1.0, 1.0, 1.0, 1.0], 0.0));
         let plain = render(&mut renderer, &device, &queue, &frame);
         let wall_before = pixel(&plain, 60.0, 300.0);
         assert!(wall_before[0] > 150, "{wall_before:?}: the wall is white");

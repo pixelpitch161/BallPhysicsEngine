@@ -1,6 +1,6 @@
 //! Picture tests for gradient paint inside shapes, on the software GPU.
 
-use crate::{Frame, LookInstance, PaintGpu, Renderer};
+use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance};
 use bpe_core::{Color, Gradient, Stop, Transition};
 
 /// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
@@ -90,4 +90,77 @@ fn things_stuck_to_the_screen_paint_from_their_own_atlas() {
     let row = overlay.gradients.row(&red_blue_steps());
     overlay.looks.push(striped_ball(row));
     assert_two_halves("paint-stripes-overlay", &frame);
+}
+
+#[test]
+fn ring_path_gradient_goes_round() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let red_blue = Gradient { transition: Transition::Smooth, ..red_blue_steps() };
+    let row = frame.gradients.row(&red_blue);
+    let ring =
+        bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
+    // Green, so a wall that ignores its paint fails.
+    let paint = PaintGpu { row: row as f32, pattern: 4.0, ..PaintGpu::default() };
+    frame.shapes.push(ShapeInstance::outline(&ring, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, W, H);
+    renderer.render(&device, &queue, &frame);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    crate::pictures::save("paint-ring-path", &pixels, W, H);
+    let at = |x: u32, y: u32| {
+        let i = (y * W + x) as usize * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    // The ring is 200 pixels round on the output. Row H / 2 sits half a pixel below the centre,
+    // just clockwise of angle 0 on the right.
+    let start = at(W / 2 + 200, H / 2);
+    assert!(start[0] > 150 && start[1] < 60 && start[2] < 60, "{start:?}: red at angle 0");
+    let quarter = at(W / 2, H / 2 + 200);
+    assert!(quarter[0] > quarter[2] && quarter[2] > 40 && quarter[1] < 60, "{quarter:?}: mostly red at 90°");
+    let half = at(W / 2 - 200, H / 2);
+    assert!(half[0] > 40 && half[2] > 40 && half[1] < 60, "{half:?}: between red and blue at 180°");
+    assert!(half[0].abs_diff(half[2]) < 40, "{half:?}: half way at 180°");
+    let three_quarters = at(W / 2, H / 2 - 200);
+    assert!(three_quarters[2] > three_quarters[0] && three_quarters[1] < 60, "{three_quarters:?}: mostly blue at 270°");
+}
+
+#[test]
+fn an_inside_pattern_paints_across_a_shape() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let row = frame.gradients.row(&red_blue_steps());
+    let stripes = PaintGpu { row: row as f32, pattern: 1.0, steps: 1.0, ..PaintGpu::default() };
+    // A disc 400 across each way, so as big as the striped ball.
+    frame.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 200.0, [0.0, 1.0, 0.0, 1.0], 0.0).painted(stripes));
+    assert_two_halves("paint-shape-stripes", &frame);
+}
+
+#[test]
+fn box_path_runs_clockwise_from_the_top_left() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let row = frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
+    let wall = bpe_runtime::Outline::Box {
+        center: glam::Vec2::ZERO,
+        half: glam::Vec2::new(400.0, 400.0),
+        angle: 0.0,
+        thickness: 40.0,
+    };
+    let paint = PaintGpu { row: row as f32, pattern: 4.0, ..PaintGpu::default() };
+    frame.shapes.push(ShapeInstance::outline(&wall, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, W, H);
+    renderer.render(&device, &queue, &frame);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    crate::pictures::save("paint-box-path", &pixels, W, H);
+    let at = |x: u32, y: u32| {
+        let i = (y * W + x) as usize * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    // The box is 200 pixels each way from the centre on the output.
+    let (cx, cy) = (W / 2, H / 2);
+    let near_start = at(cx - 190, cy - 200);
+    assert!(near_start[0] > 150 && near_start[1] < 60 && near_start[2] < 60, "{near_start:?}: red at the top left");
+    let top = at(cx, cy - 200);
+    let bottom = at(cx, cy + 200);
+    assert!(top[0] > top[2] && top[1] < 60, "{top:?}: an eighth of the way round, mostly red");
+    assert!(bottom[2] > bottom[0] && bottom[1] < 60, "{bottom:?}: five eighths of the way round, mostly blue");
 }

@@ -1,12 +1,12 @@
 //! Reading a thing's Look and turning it into colours.
 
 use bpe_core::{Color, Resolved, Settings, SlotId, ThingId};
-use bpe_gfx::DrawCx;
+use bpe_gfx::{DrawCx, GradientAtlas, PaintGpu};
 use bpe_runtime::{Bodies, CameraView, Log};
 use glam::Vec2;
 
 use super::ClassicLook;
-use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, last_hit_at};
+use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, last_hit_at, paint_gpu};
 
 /// The thing's classic look, when its Look slot is filled.
 pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
@@ -96,12 +96,100 @@ impl<'a> BallInputs<'a> {
 
     /// The colour thing `other`'s look paints at `point`, as a still thing with no hits.
     fn colour_of(&self, other: ThingId, point: Vec2) -> Option<[f32; 4]> {
-        let r = self.scene.things.get(&other)?;
-        let fill = for_balls(ClassicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill);
-        let place_screen = if r.screen { point } else { self.camera.to_screen(point) };
-        let inputs =
-            Inputs { count: 1, place: point, place_screen, start: point, time: self.time as f32, ..Inputs::default() };
-        Some(colour_at(&fill, &inputs))
+        still_colour(self.scene, self.camera, self.time, other, point)
+    }
+}
+
+/// The colour thing `other`'s look paints at `point` at `time`, as a still thing with no hits.
+fn still_colour(scene: &Resolved, camera: CameraView, time: f64, other: ThingId, point: Vec2) -> Option<[f32; 4]> {
+    let r = scene.things.get(&other)?;
+    let fill = for_balls(ClassicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill);
+    let place_screen = if r.screen { point } else { camera.to_screen(point) };
+    let inputs = Inputs { count: 1, place: point, place_screen, start: point, time: time as f32, ..Inputs::default() };
+    Some(colour_at(&fill, &inputs))
+}
+
+/// `p` as a wall or obstacle reads it: a wall never spawns, so Start reads as Place.
+pub fn for_walls(mut p: Paint) -> Paint {
+    if p.follow == Follow::Start {
+        p.follow = Follow::Place;
+    }
+    p
+}
+
+/// What the paint of one wall or obstacle reads this frame, for each of its `count` pieces (the
+/// pegs of a grid, the bars of a set; a wall is one piece): the hits on each piece (counted in one
+/// pass over the log, only when the paint follows hits or steps), the beats so far (only when it
+/// follows them), the camera for screen places, and how fast the thing moves. A wall has no life
+/// and its place along its own line is worked out on the GPU, so both read 0.
+pub struct WallInputs<'a> {
+    scene: &'a Resolved,
+    camera: CameraView,
+    /// Stuck to the screen: the pieces' own places are screen places.
+    screen: bool,
+    time: f64,
+    count: usize,
+    speed: f32,
+    beats: f32,
+    /// Per piece: its hits so far, and the latest one (when, what hit it, where).
+    #[allow(clippy::type_complexity)]
+    hits: Vec<(u32, Option<(f64, Option<ThingId>, Vec2)>)>,
+}
+
+impl<'a> WallInputs<'a> {
+    /// The inputs for the `count` pieces of the thing `cx` draws, moving at `speed` pixels per
+    /// second, ready for `p` (already [`for_walls`]).
+    pub fn new(cx: &DrawCx<'a>, p: &Paint, count: usize, speed: f32) -> Self {
+        let steps_per_second = cx.world.steps_per_second;
+        let beats = if p.follow == Follow::Beat { beats_at(cx.log, cx.video_time, steps_per_second) } else { 0.0 };
+        let hits = if matches!(p.follow, Follow::Hits | Follow::Step) {
+            hits_on(cx.log, cx.thing.id, count, cx.time, steps_per_second)
+        } else {
+            Vec::new()
+        };
+        Self {
+            scene: cx.scene,
+            camera: cx.world.camera,
+            screen: cx.resolved.screen,
+            time: cx.time,
+            count,
+            speed: if speed.is_finite() { speed } else { 0.0 },
+            beats,
+            hits,
+        }
+    }
+
+    /// What `p` reads about piece `i`, centred at `place`.
+    pub fn get(&self, p: &Paint, i: usize, place: Vec2) -> Inputs {
+        let (hits, last) = self.hits.get(i).copied().unwrap_or((0, None));
+        let mut inputs = Inputs {
+            index: i,
+            count: self.count,
+            place,
+            place_screen: if self.screen { place } else { self.camera.to_screen(place) },
+            start: place,
+            speed: self.speed,
+            hits,
+            beats: self.beats,
+            time: self.time as f32,
+            ..Inputs::default()
+        };
+        if p.follow == Follow::Step
+            && let Some((at, other, point)) = last
+        {
+            inputs.since_hit = (self.time - at) as f32;
+            if p.take_hit_colour {
+                inputs.hit_colour = other.and_then(|o| still_colour(self.scene, self.camera, self.time, o, point));
+            }
+        }
+        inputs
+    }
+
+    /// How `p` paints piece `i`, centred at `place`: its colour (what the glow shows, and the line
+    /// where nothing is painted on it) and the gradient painted on its line, baked into `atlas`.
+    pub fn paint(&self, p: &Paint, i: usize, place: Vec2, atlas: &mut GradientAtlas) -> ([f32; 4], PaintGpu) {
+        let inputs = self.get(p, i, place);
+        (colour_at(p, &inputs), paint_gpu(p, &inputs, atlas, self.time as f32))
     }
 }
 

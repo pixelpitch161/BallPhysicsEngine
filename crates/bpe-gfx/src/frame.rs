@@ -94,10 +94,15 @@ pub struct ShapeInstance {
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
     pub color: [f32; 4],
+    /// A gradient painted on the line in place of its colour, when its row is not -1: an inside
+    /// pattern across the shape's bounding box, or (pattern 4, Path) along the outline. The glow
+    /// keeps `color`.
+    pub paint: PaintGpu,
 }
 
 impl ShapeInstance {
-    pub fn outline(outline: &Outline, color: [f32; 4], glow: f32) -> Self {
+    /// A closed wall's outline, painted with `paint` (row -1 for plain `color`).
+    pub fn outline(outline: &Outline, paint: PaintGpu, color: [f32; 4], glow: f32) -> Self {
         let color = blend_alpha(color);
         match *outline {
             Outline::Ring { center, radius, sides, angle, thickness } => Self {
@@ -105,18 +110,21 @@ impl ShapeInstance {
                 b: [radius, sides as f32, 0.0, 0.0],
                 c: [0.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
             Outline::Box { center, half, angle, thickness } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [half.x, half.y, 0.0, 0.0],
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
             Outline::Rounded { center, half, corner, angle, thickness } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [half.x, half.y, corner, 0.0],
                 c: [1.0, thickness * 0.5, glow, 0.0],
                 color,
+                paint,
             },
         }
     }
@@ -130,6 +138,7 @@ impl ShapeInstance {
             b: [along.length() * 0.5, 0.0, 0.0, 0.0],
             c: [2.0, half_width, glow, 0.0],
             color: blend_alpha(color),
+            paint: PaintGpu::default(),
         }
     }
 
@@ -140,12 +149,19 @@ impl ShapeInstance {
             b: [radius, 0.0, 0.0, 0.0],
             c: [0.0, radius, glow, 0.0],
             color: blend_alpha(color),
+            paint: PaintGpu::default(),
         }
     }
 
     /// Marks the shape as belonging to a thing, so an effect can paint just that thing.
     pub fn code(mut self, code: f32) -> Self {
         self.c[3] = code;
+        self
+    }
+
+    /// Paints a gradient on the shape in place of its colour (see [`ShapeInstance::paint`]).
+    pub fn painted(mut self, paint: PaintGpu) -> Self {
+        self.paint = paint;
         self
     }
 }
@@ -965,12 +981,12 @@ mod tests {
         use bpe_runtime::Outline;
         let ring =
             Outline::Ring { center: glam::Vec2::new(1.0, 2.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 4.0 };
-        let s = ShapeInstance::outline(&ring, [1.0, 0.5, 0.0, 1.0], 0.1);
+        let s = ShapeInstance::outline(&ring, PaintGpu::default(), [1.0, 0.5, 0.0, 1.0], 0.1);
         assert_eq!(s.a, [1.0, 2.0, 0.3, 0.0]);
         assert_eq!(s.b, [50.0, 6.0, 0.0, 0.0]);
         assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
         let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
-        assert_eq!(ShapeInstance::outline(&b, [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(ShapeInstance::outline(&b, PaintGpu::default(), [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
         let r = Outline::Rounded {
             center: glam::Vec2::ZERO,
             half: glam::Vec2::new(30.0, 40.0),
@@ -978,7 +994,7 @@ mod tests {
             angle: 0.1,
             thickness: 2.0,
         };
-        let s = ShapeInstance::outline(&r, [1.0; 4], 0.0);
+        let s = ShapeInstance::outline(&r, PaintGpu::default(), [1.0; 4], 0.0);
         assert_eq!((s.c[0], s.b), (1.0, [30.0, 40.0, 10.0, 0.0]));
         let cap = ShapeInstance::capsule(glam::Vec2::new(-10.0, 0.0), glam::Vec2::new(10.0, 0.0), 3.0, [1.0; 4], 0.2);
         assert_eq!((cap.c[0], cap.c[1], cap.c[2], cap.b[0]), (2.0, 3.0, 0.2, 10.0));

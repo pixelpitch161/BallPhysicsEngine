@@ -8,7 +8,8 @@ struct PaintGpu {
     // The atlas row; below 0 paints nothing.
     row: f32,
     t0: f32,
-    // 0 none, 1 stripes, 2 rings, 3 sweep.
+    // 0 none, 1 stripes, 2 rings, 3 sweep, 4 path (along a wall's outline; the shape works the
+    // place along it out and calls `paint_along`).
     pattern: f32,
     // 1 picks the nearest baked colour.
     steps: f32,
@@ -55,7 +56,13 @@ fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32) -> vec4<f32> {
         let a = radians(p.angle);
         t = dot(local, vec2<f32>(cos(a), sin(a))) * 0.5 * p.scale + 0.5;
     }
-    t = paint_wrap(t + p.t0 + time * p.scroll, p.repeat);
+    return paint_along(p, t, time);
+}
+
+// The linear-light colour `p` paints `along` its pattern (0 to 1 is one gradient), `time` seconds
+// in: after the start, the scroll and the repeat.
+fn paint_along(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
+    let t = paint_wrap(along + p.t0 + time * p.scroll, p.repeat);
     let height = textureDimensions(paint_atlas).y;
     let row = min(u32(max(p.row, 0.0)), height - 1u);
     if p.steps > 0.5 && p.steps < 1.5 {

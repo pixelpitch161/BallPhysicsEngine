@@ -226,6 +226,38 @@ pub fn last_hit_at(
     })
 }
 
+/// The hits so far on each of the `count` pieces of `thing` (a wall or an obstacle) at or before
+/// `time` seconds on the simulation clock, with the latest one: when, what hit it, and where.
+/// The thing counts as either party, the piece being its item; items past `count` are left out.
+/// One pass over the log up to `time`, so call it once a frame, not once a piece.
+#[allow(clippy::type_complexity)]
+pub fn hits_on(
+    log: &Log,
+    thing: ThingId,
+    count: usize,
+    time: f64,
+    steps_per_second: u32,
+) -> Vec<(u32, Option<(f64, Option<ThingId>, Vec2)>)> {
+    let mut out = vec![(0, None); count];
+    let now = step_at(if time.is_finite() { time } else { 0.0 }, steps_per_second);
+    let events = log.events();
+    let upto = events.partition_point(|e| e.step <= now);
+    for e in events[..upto].iter().filter(|e| e.kind == EventKind::Hit) {
+        let (item, other) = if e.a.thing == thing {
+            (e.a.item, e.b.map(|b| b.thing))
+        } else if let Some(b) = e.b.filter(|b| b.thing == thing) {
+            (b.item, Some(e.a.thing))
+        } else {
+            continue;
+        };
+        if let Some(piece) = out.get_mut(item as usize) {
+            piece.0 += 1;
+            piece.1 = Some((seconds(e.step, steps_per_second), other, e.point));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +465,26 @@ mod tests {
         assert_eq!(last_hit(&log, ThingId(1), 7, 10.0, sps), None);
         let (_, _, point) = last_hit_at(&log, ThingId(1), 3, 4.0, sps).unwrap();
         assert_eq!(point, Vec2::new(7.0, 8.0));
+    }
+
+    #[test]
+    fn hits_on_counts_each_piece_of_a_wall_as_either_party() {
+        let mut log = Log::default();
+        // Balls of thing 1 hit pegs 0 and 2 of thing 9; a peg of thing 9 hits ball 4 of thing 1.
+        log.push(ev(10, EventKind::Hit, (1, 3), Some((9, 0))));
+        log.push(Event { point: Vec2::new(5.0, 6.0), ..ev(20, EventKind::Hit, (1, 4), Some((9, 2))) });
+        log.push(ev(25, EventKind::Hit, (9, 2), Some((1, 4))));
+        log.push(ev(30, EventKind::Hit, (1, 3), Some((8, 0))));
+        log.push(ev(35, EventKind::Hit, (1, 3), Some((9, 7))));
+        log.push(ev(40, EventKind::Spawn, (9, 0), None));
+        log.push(ev(50, EventKind::Hit, (1, 3), Some((9, 0))));
+        let sps = 10;
+        let hits = hits_on(&log, ThingId(9), 3, 4.0, sps);
+        assert_eq!(hits[0], (1, Some((1.0, Some(ThingId(1)), Vec2::ZERO))));
+        assert_eq!(hits[1], (0, None));
+        assert_eq!(hits[2], (2, Some((2.5, Some(ThingId(1)), Vec2::ZERO))), "the peg as the mover counts too");
+        assert_eq!(hits_on(&log, ThingId(9), 3, 10.0, sps)[0].0, 2, "later hits count once their time comes");
+        assert_eq!(hits_on(&log, ThingId(9), 3, 2.0, sps)[2], (1, Some((2.0, Some(ThingId(1)), Vec2::new(5.0, 6.0)))));
+        assert!(hits_on(&log, ThingId(9), 0, 10.0, sps).is_empty());
     }
 }

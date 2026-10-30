@@ -94,6 +94,9 @@ struct ShapeIn {
     // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
+    // The gradient painted on the line, as `PaintGpu`.
+    @location(4) paint_a: vec4<f32>,
+    @location(5) paint_b: vec4<f32>,
 };
 
 struct ShapeOut {
@@ -103,6 +106,8 @@ struct ShapeOut {
     @location(2) @interpolate(flat) b: vec4<f32>,
     @location(3) @interpolate(flat) c: vec4<f32>,
     @location(4) @interpolate(flat) color: vec4<f32>,
+    @location(5) @interpolate(flat) paint_a: vec4<f32>,
+    @location(6) @interpolate(flat) paint_b: vec4<f32>,
 };
 
 @vertex
@@ -126,6 +131,8 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
     out.b = s.b;
     out.c = s.c;
     out.color = s.color;
+    out.paint_a = s.paint_a;
+    out.paint_b = s.paint_b;
     return out;
 }
 
@@ -189,6 +196,49 @@ fn shape_distance(in: ShapeOut) -> f32 {
     return segment_distance(local, vec2<f32>(-in.b.x, 0.0), vec2<f32>(in.b.x, 0.0));
 }
 
+// How far round a shape's line a pixel is, 0 to 1, for a gradient painted along it. A ring or
+// polygon goes clockwise round its centre from its own angle; a box clockwise round its edge from
+// the top-left corner (rounded corners counted as square); a capsule from one end to the other.
+fn shape_path(in: ShapeOut) -> f32 {
+    let local = rotate(in.world - in.a.xy, -in.a.z);
+    if in.c.x < 0.5 {
+        return fract(atan2(local.y, local.x) / TAU);
+    }
+    let half = max(in.b.xy, vec2<f32>(1e-3));
+    if in.c.x < 1.5 {
+        let p = clamp(local, -half, half);
+        let q = abs(local) - half;
+        // The perimeter walked so far: top, right, bottom, left.
+        var walked = 0.0;
+        if q.y >= q.x {
+            if local.y < 0.0 {
+                walked = p.x + half.x;
+            } else {
+                walked = 2.0 * half.x + 2.0 * half.y + (half.x - p.x);
+            }
+        } else if local.x > 0.0 {
+            walked = 2.0 * half.x + (p.y + half.y);
+        } else {
+            walked = 4.0 * half.x + 2.0 * half.y + (half.y - p.y);
+        }
+        return fract(walked / (4.0 * (half.x + half.y)));
+    }
+    return clamp((local.x + in.b.x) / (2.0 * half.x), 0.0, 1.0);
+}
+
+// A pixel's place across a shape's bounding box, -1 to 1 each way, turned with the shape: what
+// an inside pattern paints across.
+fn shape_local(in: ShapeOut) -> vec2<f32> {
+    var half = vec2<f32>(in.b.x);
+    if in.c.x > 1.5 {
+        half = vec2<f32>(in.b.x, 0.0);
+    } else if in.c.x > 0.5 {
+        half = in.b.xy;
+    }
+    half = max(half + vec2<f32>(in.c.y), vec2<f32>(1e-3));
+    return rotate(in.world - in.a.xy, -in.a.z) / half;
+}
+
 @fragment
 fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     let px = g.view.z;
@@ -201,7 +251,18 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     if cover <= 0.0 && glow < 1e-4 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
+    let paint = paint_from(in.paint_a, in.paint_b);
+    if paint.row < 0.0 {
+        return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
+    }
+    // A gradient painted on the line takes the place of its colour; the glow keeps the colour.
+    var line = vec3<f32>(0.0);
+    if paint.pattern > 3.5 {
+        line = paint_along(paint, shape_path(in) * paint.scale, g.view.w).rgb;
+    } else {
+        line = paint_colour(paint, shape_local(in), g.view.w).rgb;
+    }
+    return vec4<f32>(line * cover + in.color.rgb * glow, covering(cover, in.color.a));
 }
 
 // ---- Balls (instanced quads, shaded like small spheres with a soft halo) ----
