@@ -163,6 +163,23 @@ pub(crate) fn make(kind: &str, k: &Knobs) -> Option<Box<dyn Block>> {
         "note" => Box::new(NoteIn),
         "macro" => Box::new(Macro::new(k)),
         "voice_out" => Box::new(VoiceOut),
+        #[cfg(test)]
+        "nan" => Box::new(testing::Nan),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod testing {
+    use crate::{Block, Buf, Ctx};
+
+    /// A broken block that makes samples that aren't numbers.
+    pub struct Nan;
+
+    impl Block for Nan {
+        fn reset(&mut self, _cx: &Ctx) {}
+        fn process(&mut self, _cx: &Ctx, _inputs: &[Option<&Buf>], outputs: &mut [Buf]) {
+            outputs[0] = [[f32::NAN; crate::BLOCK]; 2];
+        }
+    }
 }

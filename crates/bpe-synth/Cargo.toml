@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 bpe-graph.workspace = true
+bpe-core.workspace = true
 hound.workspace = true

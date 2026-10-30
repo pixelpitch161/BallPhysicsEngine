@@ -113,6 +113,17 @@ impl Program {
             .collect();
         Patch { program: self.clone(), blocks, regs: vec![SILENT; self.registers] }
     }
+
+    /// The same program with every block of `kind` swapped for `by`.
+    #[cfg(test)]
+    pub(crate) fn with_block_replaced(&self, kind: &str, by: &str) -> Program {
+        let ops: Vec<Op> = self
+            .ops
+            .iter()
+            .map(|op| if op.kind == kind { Op { kind: by.into(), ..op.clone() } } else { op.clone() })
+            .collect();
+        Program { ops: ops.into(), ..self.clone() }
+    }
 }
 
 impl Patch {
