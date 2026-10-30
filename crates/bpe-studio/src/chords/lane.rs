@@ -44,8 +44,11 @@ pub(super) fn show(ui: &mut Ui, p: &mut Progression, state: &mut ChordUi, out: &
     let bar = p.meter.0.max(1) as u32;
     let total = p.total_beats();
     let span = (total.div_ceil(bar) * bar + bar).max(16);
-    let per_beat = (ui.available_width() / span as f32).max(MIN_BEAT);
-    egui::ScrollArea::horizontal().id_salt("chord lane scroll").show(ui, |ui| {
+    // A little narrower than the room, so the panel never grows to fit the lane.
+    let room = (ui.available_width() - 4.0).max(1.0);
+    let per_beat = (room / span as f32).max(MIN_BEAT);
+    let scroll = egui::ScrollArea::horizontal().id_salt("chord lane scroll").max_width(room).auto_shrink([true, true]);
+    scroll.show(ui, |ui| {
         let (rect, lane) = ui.allocate_exact_size(vec2(per_beat * span as f32, RULER + BLOCK), Sense::click());
         lane.widget_info(|| WidgetInfo::labeled(egui::Role::Group, true, "Chord lane"));
         if lane.has_focus() {

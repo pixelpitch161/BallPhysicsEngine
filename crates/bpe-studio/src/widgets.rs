@@ -627,8 +627,12 @@ fn number_slider<N: egui::emath::Numeric>(
     feel: NumberFeel,
     unit: String,
 ) -> Response {
-    // Leave room for the number box, so the slider's length is used for precision.
-    ui.spacing_mut().slider_width = (ui.available_width() - 90.0).clamp(100.0, 320.0);
+    // Leave room for the number box at its widest, so the row never pushes the panel wider.
+    let widest = format!("{}{:.*}{unit}", if min < 0.0 { "-" } else { "" }, feel.decimals, min.abs().max(max.abs()));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let number = ui.fonts_mut(|f| f.layout_no_wrap(widest, font, egui::Color32::WHITE).size().x);
+    let room = number + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x + 4.0;
+    ui.spacing_mut().slider_width = (ui.available_width() - room).clamp(48.0, 320.0);
     let mut slider = Slider::new(x, N::from_f64(min)..=N::from_f64(max))
         .suffix(unit)
         .smart_aim(false)

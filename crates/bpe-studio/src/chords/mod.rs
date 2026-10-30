@@ -159,7 +159,7 @@ fn key_bar(ui: &mut Ui, p: &mut Progression, state: &mut ChordUi, out: &mut Chor
             p.meter = meter;
             out.changed = true;
         }
-        if ui.button("▶ Play").on_hover_text("Hear the chords from the start").clicked() {
+        if ui.button("Play").on_hover_text("Hear the chords from the start").clicked() {
             out.audition = Some(Audition::All);
         }
         let presets =
@@ -339,7 +339,7 @@ mod tests {
         h.run();
         let s = h.state();
         assert_eq!(s.p.key, MusicKey { root: 2, mode: Mode::Minor });
-        // D minor: Dm, C, B♭, A.
+        // D minor: Dm, C, Bb, A.
         assert_eq!(roots(&s.p), [2, 0, 10, 9]);
         assert!(!s.ui.presets_open, "picking one closes the list");
     }
@@ -407,7 +407,7 @@ mod tests {
         h.get_by_label("Major").click();
         h.run();
         assert_eq!(h.state().p.chords[2].quality, Quality::Major);
-        // A major: A, C♯, E. The E button puts E in the bass.
+        // A major: A, C#, E. The E button puts E in the bass.
         h.get_by_label("E").click();
         h.run();
         assert_eq!(h.state().p.chords[2].bass, Some(4));
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn play_asks_to_hear_everything() {
         let mut h = harness(Progression::starter());
-        h.get_by_label("▶ Play").click();
+        h.get_by_label("Play").click();
         h.run();
         assert_eq!(h.state().heard, [Audition::All]);
     }

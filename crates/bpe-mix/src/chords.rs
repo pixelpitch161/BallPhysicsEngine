@@ -83,10 +83,10 @@ pub fn bass_note(c: &Chord) -> u8 {
     c.bass.unwrap_or(c.root) % 12
 }
 
-const SHARPS: [&str; 12] = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
-const FLATS: [&str; 12] = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"];
+const SHARPS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const FLATS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
-/// Whether the key is written with flats: its relative major is C, F, B♭, E♭, A♭, D♭ or G♭
+/// Whether the key is written with flats: its relative major is C, F, Bb, Eb, Ab, Db or Gb
 /// (C has no sharps or flats of its own, and its borrowed chords read better as flats).
 fn flat_key(key: MusicKey) -> bool {
     let offset = match key.mode {
@@ -118,7 +118,7 @@ const SUFFIXES: &[(&str, Quality, Extension)] = {
         ("aug", Augmented, Triad),
         ("7", Major, Seven),
         ("m7", Minor, Seven),
-        ("m7♭5", Diminished, Seven),
+        ("m7b5", Diminished, Seven),
         ("aug7", Augmented, Seven),
         ("maj7", Major, Maj7),
         ("m(maj7)", Minor, Maj7),
@@ -149,7 +149,6 @@ const SUFFIXES: &[(&str, Quality, Extension)] = {
         ("°", Diminished, Triad),
         ("+", Augmented, Triad),
         ("min7", Minor, Seven),
-        ("m7b5", Diminished, Seven),
         ("ø", Diminished, Seven),
         ("M7", Major, Maj7),
         ("mmaj7", Minor, Maj7),
@@ -157,7 +156,7 @@ const SUFFIXES: &[(&str, Quality, Extension)] = {
     ]
 };
 
-/// The chord's name in the key's spelling, such as "Am7", "Bm7♭5" or "Cmaj7/E".
+/// The chord's name in the key's spelling, such as "Am7", "Bm7b5" or "Cmaj7/E".
 pub fn chord_name(c: &Chord, key: MusicKey) -> String {
     let suffix = match c.ext {
         Extension::Sus2 => "sus2",
@@ -172,7 +171,7 @@ pub fn chord_name(c: &Chord, key: MusicKey) -> String {
     name
 }
 
-/// Reads a chord name such as "F#m", "Bb7", "Dsus4", "Amaj7", "Bm7♭5" or "C/E". The chord
+/// Reads a chord name such as "F#m", "Bb7", "Dsus4", "Amaj7", "Bm7b5" or "C/E". The chord
 /// lasts 4 beats. `None` for names it doesn't know.
 pub fn parse_chord(name: &str) -> Option<Chord> {
     let name = name.trim().replace('♭', "b").replace('♯', "#");
@@ -181,7 +180,6 @@ pub fn parse_chord(name: &str) -> Option<Chord> {
         None => (name.as_str(), None),
     };
     let (root, rest) = parse_root(main)?;
-    let rest = rest.replace("m7b5", "m7♭5");
     let &(_, quality, ext) = SUFFIXES.iter().find(|(s, ..)| *s == rest)?;
     let bass = match bass {
         Some(b) => match parse_root(b)? {
@@ -217,11 +215,11 @@ fn parse_root(text: &str) -> Option<(u8, &str)> {
     Some(((base + shift).rem_euclid(12) as u8, rest))
 }
 
-/// The chord's Roman numeral in the key, such as "I", "ii°", "♭VI" or "V7".
+/// The chord's Roman numeral in the key, such as "I", "ii°", "bVI" or "V7".
 pub fn numeral(c: &Chord, key: MusicKey) -> String {
     let step = (c.root % 12 + 12 - key.root % 12) % 12;
-    let sharp_four = if key.mode == Mode::Locrian { "♭V" } else { "♯IV" };
-    let upper = ["I", "♭II", "II", "♭III", "III", "IV", sharp_four, "V", "♭VI", "VI", "♭VII", "VII"][step as usize];
+    let sharp_four = if key.mode == Mode::Locrian { "bV" } else { "#IV" };
+    let upper = ["I", "bII", "II", "bIII", "III", "IV", sharp_four, "V", "bVI", "VI", "bVII", "VII"][step as usize];
     let mut n = match c.quality {
         Quality::Minor | Quality::Diminished => upper.to_lowercase(),
         _ => upper.to_owned(),
@@ -432,18 +430,18 @@ mod tests {
         let names: Vec<String> = chords.iter().map(|c| chord_name(c, k)).collect();
         let numerals: Vec<String> = chords.iter().map(|c| numeral(c, k)).collect();
         assert_eq!(names, ["Am", "Bdim", "C", "Dm", "Em", "F", "G"]);
-        assert_eq!(numerals, ["i", "ii°", "♭III", "iv", "v", "♭VI", "♭VII"]);
+        assert_eq!(numerals, ["i", "ii°", "bIII", "iv", "v", "bVI", "bVII"]);
     }
 
     #[test]
     fn extensions_and_names() {
         let c = Key::c();
         assert_eq!(chord_name(&Chord::new(9, Quality::Minor, Extension::Seven, 4), c), "Am7");
-        assert_eq!(chord_name(&Chord::new(11, Quality::Diminished, Extension::Seven, 4), c), "Bm7♭5");
+        assert_eq!(chord_name(&Chord::new(11, Quality::Diminished, Extension::Seven, 4), c), "Bm7b5");
         let slash = Chord { bass: Some(4), ..Chord::new(0, Quality::Major, Extension::Maj7, 4) };
         assert_eq!(chord_name(&slash, c), "Cmaj7/E");
-        assert_eq!(chord_name(&Chord::new(3, Quality::Major, Extension::Triad, 4), key(3, Mode::Major)), "E♭");
-        assert_eq!(chord_name(&Chord::new(6, Quality::Major, Extension::Triad, 4), key(2, Mode::Major)), "F♯");
+        assert_eq!(chord_name(&Chord::new(3, Quality::Major, Extension::Triad, 4), key(3, Mode::Major)), "Eb");
+        assert_eq!(chord_name(&Chord::new(6, Quality::Major, Extension::Triad, 4), key(2, Mode::Major)), "F#");
     }
 
     #[test]
@@ -484,7 +482,7 @@ mod tests {
     #[test]
     fn borrowed_chords_leave_out_the_keys_own() {
         let names: Vec<String> = borrowed(Key::c()).iter().map(|c| chord_name(c, Key::c())).collect();
-        assert_eq!(names, ["Fm", "A♭", "B♭", "D"]);
+        assert_eq!(names, ["Fm", "Ab", "Bb", "D"]);
         let mixo = key(7, Mode::Mixolydian);
         assert!(borrowed(mixo).iter().all(|c| function(c, mixo) == Function::Borrowed));
     }

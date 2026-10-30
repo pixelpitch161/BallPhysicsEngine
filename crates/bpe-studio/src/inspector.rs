@@ -1795,6 +1795,15 @@ mod tests {
     }
 
     #[test]
+    fn scene_defaults_fits_the_panel() {
+        // Long labels and units once pushed the number boxes past the edge, so the panel grew.
+        let h = harness(Some(ThingId::ROOT));
+        for n in h.get_all_by_role(Role::SpinButton) {
+            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
+        }
+    }
+
+    #[test]
     fn the_chord_editor_edits_the_picked_progression() {
         let mut h = harness(Some(ThingId::ROOT));
         assert_eq!(h.query_all_by_label("Chord lane").count(), 1, "only Scene defaults picks its own");
