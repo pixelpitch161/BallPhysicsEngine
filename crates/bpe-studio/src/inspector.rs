@@ -660,7 +660,12 @@ pub fn show(
             card(ui, |ui| {
                 ui.label(RichText::new("Master effects").strong())
                     .on_hover_text("Run over the whole mix, before the loudness and the limiter");
-                match crate::fx_list::show(ui, &scene.library.master_fx, "master fx") {
+                match crate::fx_list::show(
+                    ui,
+                    &scene.library.master_fx,
+                    "master fx",
+                    &crate::follow_menu::channel_names(scene, None),
+                ) {
                     FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
                     FxEdit::OpenNodes => inspector.fx_request = Some(FxPlace::Master),
                     FxEdit::None => {}
@@ -1127,7 +1132,12 @@ fn channel_section(
         ui.label(RichText::new("Channel").strong())
             .on_hover_text("Effects on everything this sound plays, and how much goes to each bus");
         ui.label(RichText::new("Inserts").small().color(theme::MUTED));
-        match crate::fx_list::show(ui, &m.channel.inserts, "inserts") {
+        match crate::fx_list::show(
+            ui,
+            &m.channel.inserts,
+            "inserts",
+            &crate::follow_menu::channel_names(scene, Some(module)),
+        ) {
             FxEdit::Set(g) => edits.push(Edit::ChannelInserts(module, g)),
             FxEdit::OpenNodes => *fx_request = Some(FxPlace::Channel(module)),
             FxEdit::None => {}
@@ -1166,6 +1176,7 @@ fn channel_section(
 fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
     ui.label(RichText::new("Buses").strong())
         .on_hover_text("Shared effects, like one reverb, that sounds send to by their Sends");
+    let channels = crate::follow_menu::channel_names(scene, None);
     let mut buses = scene.library.buses.clone();
     let mut changed = false;
     let mut remove = None;
@@ -1190,7 +1201,7 @@ fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: 
             });
             let count = bpe_synth::straight_chain(&bus.fx).map_or("custom".to_owned(), |c| c.len().to_string());
             egui::CollapsingHeader::new(format!("Effects ({count})")).id_salt("fx").show(ui, |ui| {
-                match crate::fx_list::show(ui, &bus.fx, "list") {
+                match crate::fx_list::show(ui, &bus.fx, "list", &channels) {
                     FxEdit::Set(g) => {
                         bus.fx = g;
                         changed = true;
