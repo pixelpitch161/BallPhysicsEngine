@@ -43,7 +43,15 @@ pub struct SceneSettings {
     #[setting(label = "Gravity", unit = "px/s²", simple, keyframe)]
     pub gravity: Vec2,
     /// The colours behind everything, at any angle or spreading from a centre.
-    #[setting(paint, label = "Background", prefix = "background_", follows = "place|time|beat", screen_only, simple)]
+    #[setting(
+        paint,
+        label = "Background",
+        prefix = "background_",
+        follows = "place|time|beat",
+        screen_only,
+        simple,
+        no_vary
+    )]
     pub background: Paint,
     /// How much bright things bleed light around them.
     #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse)]

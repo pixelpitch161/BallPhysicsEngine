@@ -3,7 +3,7 @@
 pub mod draw;
 pub mod styled;
 
-use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, ModuleKind, SettingDef, Settings, SlotId};
 
 use crate::paint::Paint;
 
@@ -38,11 +38,28 @@ pub struct ClassicLook {
     /// How long the flash lasts.
     #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s")]
     pub flash_seconds: f32,
+    /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
+    /// parts overlap they do not stack.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for ClassicLook {
     fn default() -> Self {
-        Self { fill: Paint::default(), glow: 0.12, flash: 0.4, hue_per_hit: 0.0, flash_size: 26.0, flash_seconds: 0.25 }
+        Self {
+            fill: Paint::default(),
+            glow: 0.12,
+            flash: 0.4,
+            hue_per_hit: 0.0,
+            flash_size: 26.0,
+            flash_seconds: 0.25,
+            blend: Blend::Normal,
+            blend_amount: 1.0,
+        }
     }
 }
 
@@ -86,6 +103,34 @@ mod tests {
             assert!(colours.applies(Some("liquid"), &get), "{look}: a liquid paints with its Colours");
             assert!(colours.applies(Some("balls"), &get), "{look}");
         }
+    }
+
+    #[test]
+    fn every_look_has_a_blend_that_round_trips() {
+        use super::ClassicLook;
+        use super::styled::StyledLook;
+        use crate::modules::{look_liquid::LiquidLook, look_swarm::SwarmLook};
+        use bpe_core::{Blend, Settings};
+        assert_eq!(ClassicLook::default().blend, Blend::Normal);
+        assert_eq!(ClassicLook::default().blend_amount, 1.0);
+        assert_eq!(StyledLook::default().blend, Blend::Normal);
+        assert_eq!(LiquidLook::default().blend, Blend::Normal);
+        assert_eq!(SwarmLook::default().blend, Blend::Normal);
+        let reg = registry();
+        for look in ["look.classic", "look.styled", "look.liquid", "look.swarm"] {
+            let defs = reg.module(look).unwrap().settings();
+            for key in ["blend", "blend_amount"] {
+                let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{look} has no {key}"));
+                assert_eq!(def.group, "Blending", "{look} {key}");
+            }
+            let amount = defs.iter().find(|d| d.key == "blend_amount").unwrap();
+            assert_eq!(amount.range, Some((0.0, 1.0)));
+            assert!(amount.flags.keyframe);
+        }
+        let look = ClassicLook { blend: Blend::Screen, blend_amount: 0.25, ..ClassicLook::default() };
+        let params = look.to_params();
+        assert_eq!(Blend::from_params(&params), (Blend::Screen, 0.25));
+        assert_eq!(ClassicLook::from_params(&params), look);
     }
 
     #[test]

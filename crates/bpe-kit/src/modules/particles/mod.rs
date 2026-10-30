@@ -2,7 +2,7 @@
 
 pub mod draw;
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 
 use crate::paint::{Follow, Paint};
 
@@ -32,11 +32,6 @@ impl BurstPreset {
             Self::Rings => 5,
         }
     }
-
-    /// Whether the preset glows (adds its light) when the blend is left to it.
-    pub fn glows(self) -> bool {
-        matches!(self, Self::Sparks | Self::Stars | Self::Rings)
-    }
 }
 
 /// Where a burst takes its colour from.
@@ -47,16 +42,6 @@ pub enum BurstSource {
     Ball,
     /// The burst's own Colours.
     Own,
-}
-
-/// Whether particles add their light or paint over what is behind them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum BurstBlend {
-    /// Sparks, stars and rings glow; smoke, confetti and shards cover.
-    #[default]
-    Auto,
-    Add,
-    Cover,
 }
 
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -98,15 +83,20 @@ pub struct HitBurst {
     /// How quickly the particles slow down.
     #[setting(label = "Drag", range(0, 10), keyframe, random(0, 4))]
     pub drag: f32,
-    /// Add: the particles glow. Cover: they paint over what is behind them.
-    #[setting(label = "Blend", random)]
-    pub blend: BurstBlend,
     /// Harder hits let off faster particles.
     #[setting(label = "Follow impact", random)]
     pub follow_impact: bool,
     /// Hits slower than this let off nothing.
     #[setting(label = "Least speed", range(0, 2000), unit = "px/s")]
     pub least_speed: f32,
+    /// How the particles mix with what is under them: Add glows and adds their light, Normal
+    /// paints over it, the others mix with it. With the others, everything with the same Blend
+    /// and amount is mixed in once, as one picture, so where particles overlap they do not stack.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if the particles weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for HitBurst {
@@ -122,9 +112,10 @@ impl Default for HitBurst {
             spread: 140.0,
             gravity: 300.0,
             drag: 2.0,
-            blend: BurstBlend::Auto,
             follow_impact: true,
             least_speed: 0.0,
+            blend: Blend::Add,
+            blend_amount: 1.0,
         }
     }
 }
@@ -132,11 +123,7 @@ impl Default for HitBurst {
 impl HitBurst {
     /// Whether the particles add their light.
     pub fn additive(&self) -> bool {
-        match self.blend {
-            BurstBlend::Auto => self.preset.glows(),
-            BurstBlend::Add => true,
-            BurstBlend::Cover => false,
-        }
+        self.blend == Blend::Add
     }
 }
 

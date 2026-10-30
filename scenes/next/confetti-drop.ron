@@ -166,6 +166,7 @@
                 slot: Particles,
                 kind: "particles.burst",
                 params: {
+                    "blend": Choice("normal"),
                     "count": Int(5),
                     "drag": Number(1.5),
                     "gravity": Number(500.0),

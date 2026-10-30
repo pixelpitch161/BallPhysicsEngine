@@ -5,7 +5,7 @@ use bpe_core::Transition;
 use bpe_gfx::{BackgroundPaint, GradientAtlas, PaintGpu};
 use bpe_runtime::CameraView;
 
-use super::{Follow, Inputs, Inside, Paint, PlaceShape, Repeat, Space, offset};
+use super::{Follow, Inputs, Inside, Paint, PlaceShape, Repeat, Space, offset, vary_gpu};
 
 /// Pattern 4 in paint.wgsl: a gradient along a wall's line, the shape working out how far round
 /// it each pixel is.
@@ -37,7 +37,8 @@ pub(crate) fn repeat_code(repeat: Repeat) -> f32 {
 /// paints along the wall's line (pattern 4) from start to end, moving by the paint's scroll. A
 /// pattern or path never runs off its gradient's end: the paint's Clamp mirrors it instead. An
 /// inside pattern wins over Path, which then only gives the start (`Inputs::path`, 0 for a
-/// wall).
+/// wall). The paint's variation for this instance (`Inputs::seed`, at `Inputs::time`) goes in
+/// `vary`, turning what the pattern paints the way [`super::colour_at`] turns the one colour.
 pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f32) -> PaintGpu {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
     let steps = if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 };
@@ -51,6 +52,7 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f3
             steps,
             scroll: finite(p.scroll),
             repeat: repeat_code(p.repeat),
+            vary: vary_gpu(p, inputs.seed, inputs.time),
             ..PaintGpu::default()
         };
     }
@@ -63,6 +65,7 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f3
         scale: finite(p.inside_scale),
         scroll: finite(p.inside_scroll),
         repeat: repeat_code(p.repeat),
+        vary: vary_gpu(p, inputs.seed, inputs.time),
     }
 }
 
@@ -210,7 +213,8 @@ mod tests {
                 angle: 190.0,
                 scale: 3.0,
                 scroll: 0.5,
-                repeat: 2.0
+                repeat: 2.0,
+                vary: bpe_gfx::NO_VARY
             }
         );
         assert_eq!(atlas.len(), 1);

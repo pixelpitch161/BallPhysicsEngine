@@ -2,11 +2,11 @@
 //! Each one simulates exactly like its stage 2 twin, which the golden tests check, since
 //! nothing here touches physics.
 
-use bpe_core::{Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
+use bpe_core::{Blend, Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
 
 use crate::{
-    BallFill, BallShape, BurstPreset, ClassicLook, HitBurst, StreakTrail, StyledLook, TrailBlend, TrailSource,
-    paint::Paint, scenes::stage2,
+    BallFill, BallShape, BurstPreset, ClassicLook, HitBurst, StreakTrail, StyledLook, TrailSource, paint::Paint,
+    scenes::stage2,
 };
 
 const BALLS: ThingId = ThingId(2);
@@ -106,6 +106,8 @@ fn confetti_drop(reg: &Registry, scene: &mut Scene) {
         life: 1.2,
         gravity: 500.0,
         drag: 1.5,
+        // Confetti covers what is behind it, as it always has.
+        blend: Blend::Normal,
         ..HitBurst::default()
     };
     own_module(scene, reg, ThingId::ROOT, "particles.burst", "Confetti", burst.to_params());
@@ -169,8 +171,7 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
         ..HitBurst::default()
     };
     own_module(scene, reg, ThingId::ROOT, "particles.burst", "Rings", burst.to_params());
-    let trail =
-        StreakTrail { seconds: 0.5, width: 1.0, brightness: 0.5, blend: TrailBlend::Add, ..StreakTrail::default() };
+    let trail = StreakTrail { seconds: 0.5, width: 1.0, brightness: 0.5, ..StreakTrail::default() };
     own_module(scene, reg, BALLS, "trail.streak", "Neon streak", trail.to_params());
     let echo = params([number("fade", 0.85), number("zoom", 1.03), number("hue", 0.01)]);
     own_module(scene, reg, ThingId::ROOT, "shader.echo", "Echo", echo);

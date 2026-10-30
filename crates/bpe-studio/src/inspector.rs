@@ -1437,7 +1437,7 @@ mod tests {
         }
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 2600.0))
+            .with_size(egui::vec2(420.0, 3000.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
@@ -2501,5 +2501,17 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Locked when randomizing").is_none());
         assert!(h.state().scene.locks.is_empty(), "{:?}", h.state().scene.locks);
+    }
+
+    #[test]
+    fn look_card_shows_blending_and_variation() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Ball look").click();
+        h.run();
+        assert!(h.query_all_by_label("Blending").next().is_some(), "a Blending group");
+        assert!(h.query_all_by_label("Blend").next().is_some(), "the Blend setting");
+        assert!(h.query_all_by_label("Blend amount").next().is_some(), "the Blend amount setting");
+        assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
+        assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
     }
 }

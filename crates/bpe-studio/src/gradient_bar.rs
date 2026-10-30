@@ -203,7 +203,7 @@ fn handles(
         let mut c = picker_color(g.stops[i].color);
         Popup::menu(&r).id(hid.with("picker")).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.spacing_mut().slider_width = 275.0;
-            if egui::color_picker::color_picker_color32(ui, &mut c, Alpha::BlendOrAdditive) {
+            if egui::color_picker::color_picker_color32(ui, &mut c, Alpha::OnlyBlend) {
                 g.stops[i].color = scene_color(c);
                 *changed = true;
             }

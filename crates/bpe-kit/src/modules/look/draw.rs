@@ -9,7 +9,7 @@ use bpe_runtime::{Bodies, CameraView};
 use glam::Vec2;
 
 use super::ClassicLook;
-use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, paint_gpu};
+use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, paint_gpu, seed_of};
 
 /// The thing's classic look, when its Look slot is filled.
 pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
@@ -28,6 +28,8 @@ pub fn for_balls(mut p: Paint) -> Paint {
 /// one pass over the log, only when a paint steps on them), the camera for screen places, and
 /// the beats so far (counted once, only when a paint follows them).
 pub struct BallInputs<'a> {
+    /// The thing the balls belong to, for each ball's own variation.
+    thing: ThingId,
     bodies: &'a Bodies,
     camera: CameraView,
     /// Stuck to the screen: the balls' own places are screen places.
@@ -55,6 +57,7 @@ impl<'a> BallInputs<'a> {
             Vec::new()
         };
         Self {
+            thing: cx.thing.id,
             bodies,
             camera: cx.world.camera,
             screen: cx.resolved.screen,
@@ -86,6 +89,7 @@ impl<'a> BallInputs<'a> {
             hits,
             beats: self.beats,
             time: self.time as f32,
+            seed: seed_of(self.thing, i),
             ..Inputs::default()
         };
         if p.follow == Follow::Step
@@ -154,6 +158,8 @@ pub fn for_walls(mut p: Paint) -> Paint {
 /// follows them), the camera for screen places, and how fast the thing moves. A wall has no life
 /// and its place along its own line is worked out on the GPU, so both read 0.
 pub struct WallInputs<'a> {
+    /// The thing the pieces belong to, for each piece's own variation.
+    thing: ThingId,
     still: StillColours<'a>,
     camera: CameraView,
     /// Stuck to the screen: the pieces' own places are screen places.
@@ -179,6 +185,7 @@ impl<'a> WallInputs<'a> {
             Vec::new()
         };
         Self {
+            thing: cx.thing.id,
             still: StillColours::new(cx),
             camera: cx.world.camera,
             screen: cx.resolved.screen,
@@ -203,6 +210,7 @@ impl<'a> WallInputs<'a> {
             hits,
             beats: self.beats,
             time: self.time as f32,
+            seed: seed_of(self.thing, i),
             ..Inputs::default()
         };
         if p.follow == Follow::Step

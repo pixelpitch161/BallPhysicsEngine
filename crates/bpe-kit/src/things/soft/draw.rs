@@ -299,4 +299,28 @@ mod tests {
         assert_eq!(frame.soft.len(), 4 * 19 * 6);
         assert_eq!(frame.shapes.len(), 1);
     }
+
+    /// How many of `colours` differ from all the others before them by more than a hair.
+    fn distinct(colours: &[[f32; 4]]) -> usize {
+        let mut seen: Vec<[f32; 4]> = Vec::new();
+        for c in colours {
+            if !seen.iter().any(|d| (0..3).all(|k| (d[k] - c[k]).abs() < 1e-4)) {
+                seen.push(*c);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn soft_points_each_vary_their_colour() {
+        let one = |p: &mut bpe_core::Params| p.set("colours", Value::Gradient(Gradient::even(&[RED])));
+        let plain = painted_frame("jelly", 12, one);
+        let skin = |f: &Frame| (0..12).map(|k| f.soft[k * 3 + 1].color).collect::<Vec<_>>();
+        assert_eq!(distinct(&skin(&plain)), 1);
+        let frame = painted_frame("jelly", 12, |p| {
+            one(p);
+            p.set("vary_hue", Value::Number(60.0));
+        });
+        assert!(distinct(&skin(&frame)) >= 10, "{:?}", skin(&frame));
+    }
 }

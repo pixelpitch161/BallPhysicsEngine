@@ -159,4 +159,40 @@ mod tests {
         assert_eq!(frame.gradients.len(), 2, "every peg shares one row");
         assert_eq!(frame.shapes[0].paint.row, -1.0, "the arena keeps its own plain look");
     }
+
+    /// How many of `colours` differ from all the others before them by more than a hair.
+    fn distinct(colours: &[[f32; 4]]) -> usize {
+        let mut seen: Vec<[f32; 4]> = Vec::new();
+        for c in colours {
+            if !seen.iter().any(|d| (0..3).all(|k| (d[k] - c[k]).abs() < 1e-4)) {
+                seen.push(*c);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn wall_pieces_each_vary_their_colour() {
+        use bpe_core::{Color, Gradient, SlotId};
+
+        use crate::testing::OBSTACLE;
+
+        let (mut scene, _, kit) = scene_with_obstacle(|p| {
+            p.set("shape", Value::Choice("peg_grid".into()));
+            p.set("columns", Value::Int(4));
+            p.set("rows", Value::Int(2));
+        });
+        let look = scene.add_module(&kit.registry, "look.classic", "Peg colours").unwrap();
+        let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0)])));
+        params.set("vary_hue", Value::Number(60.0));
+        scene.link(&kit.registry, OBSTACLE, SlotId::Look, look).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
+        let pegs: Vec<[f32; 4]> = frame.shapes[1..].iter().map(|s| s.color).collect();
+        assert!(pegs.len() >= 7, "{pegs:?}");
+        assert!(distinct(&pegs) >= pegs.len() - 1, "{pegs:?}");
+    }
 }

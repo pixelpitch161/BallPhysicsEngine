@@ -201,3 +201,29 @@ fn fs_composite(in: FullOut) -> @location(0) vec4<f32> {
     liquid += vec3<f32>(shine) + colour * (rim + surface.extra.x);
     return vec4<f32>(liquid * cover, cover);
 }
+
+// The same surface drawn into a blend layer: only the liquid's own light (its colour where it
+// is solid, the shine and the rim), covering as much as it is solid. Nothing of what is behind
+// is bent in: the layer's composite mixes in the picture under it, and the clear part leaves
+// that as it is.
+@fragment
+fn fs_composite_layer(in: FullOut) -> @location(0) vec4<f32> {
+    let t = thickness(in.uv);
+    let cover = smoothstep(0.32, 0.55, t);
+    if cover <= 0.0 {
+        discard;
+    }
+    let colour = liquid_colour(in.uv, t);
+    let texel = 1.5 / vec2<f32>(textureDimensions(source));
+    let slope = vec2<f32>(thickness(in.uv + vec2<f32>(texel.x, 0.0)) - thickness(in.uv - vec2<f32>(texel.x, 0.0)),
+                          thickness(in.uv + vec2<f32>(0.0, texel.y)) - thickness(in.uv - vec2<f32>(0.0, texel.y)));
+    let normal = normalize(vec3<f32>(-slope * 3.0, 1.0));
+    let depth = clamp((t - 0.45) * 0.9, 0.0, 1.0);
+    let solid = (1.0 - surface.color.a) * (0.55 + 0.45 * depth);
+    let light = normalize(vec3<f32>(-0.4, 0.55, 0.75));
+    let half_vector = normalize(light + vec3<f32>(0.0, 0.0, 1.0));
+    let shine = pow(max(dot(normal, half_vector), 0.0), 48.0) * surface.look.y;
+    let rim = cover * (1.0 - cover) * 4.0 * surface.look.y * 0.35;
+    let own = colour * (solid + rim + surface.extra.x) + vec3<f32>(shine);
+    return vec4<f32>(own * cover, solid * cover);
+}

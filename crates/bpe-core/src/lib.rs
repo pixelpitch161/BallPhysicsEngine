@@ -10,6 +10,7 @@ extern crate self as bpe_core;
 
 pub mod address;
 pub mod animation;
+pub mod blend;
 pub mod color;
 pub mod contract;
 pub mod edit;
@@ -30,6 +31,7 @@ pub use address::{Address, Owner};
 pub use animation::{
     Animation, Bands, Ease, Inputs, Key, Pulse, PulseInputs, PulseSource, SAME_TIME, Track, pulse_strength,
 };
+pub use blend::Blend;
 pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
 pub use edit::EditError;
