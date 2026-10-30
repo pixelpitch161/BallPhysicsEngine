@@ -13,6 +13,8 @@ bpe-graph.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 hound.workspace = true
+midly = { version = "0.5.3", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
+bpe-music.workspace = true
 bpe-core = { workspace = true, features = ["testkit"] }

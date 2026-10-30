@@ -11,6 +11,7 @@ pub mod audition;
 mod buses;
 mod channels;
 pub mod chords;
+pub mod export;
 pub mod instruments;
 pub mod level;
 pub mod master;
@@ -32,6 +33,7 @@ pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
     numeral, parse_chord, scale, voicing,
 };
+pub use export::{TICKS_PER_QUARTER, gate_seconds, midi_file};
 pub use instruments::{Instrument, NoteCache};
 pub use level::{limit_peaks, mix_notes, mix64, normalize_loudness};
 pub use master::{ClipMode, MasterReport, MasterSettings, integrated_lufs, master};
