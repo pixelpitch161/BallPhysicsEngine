@@ -397,7 +397,6 @@ mod tests {
             bpe_core::ChannelStrip {
                 inserts: chain("drive", &[("amount", 0.5)]),
                 sends: [(bpe_core::BusId(0), -6.0)].into(),
-                ..Default::default()
             },
         );
         s.channel_names.insert(1, "Lead".into());

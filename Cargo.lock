@@ -341,10 +341,12 @@ dependencies = [
  "anyhow",
  "bpe-core",
  "bpe-graph",
+ "bpe-music",
  "bpe-runtime",
  "bpe-synth",
  "glam",
  "hound",
+ "midly",
 ]
 
 [[package]]
