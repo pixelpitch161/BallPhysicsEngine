@@ -10,7 +10,7 @@ pub struct LiquidLookKind;
 pub struct LiquidLook {
     /// The liquid's colours: by place (how deep or high), by how fast it flows there, or over
     /// time or the beat.
-    #[setting(paint, label = "Colours", prefix = "", follows = "place|speed|time|beat", simple)]
+    #[setting(paint, label = "Colours", prefix = "", follows = "place|speed|time|beat", simple, no_vary)]
     pub colour: Paint,
     /// How see-through it is.
     #[setting(label = "Clarity", range(0, 1), simple, keyframe, random)]

@@ -10,8 +10,10 @@ use glam::Vec2;
 
 pub mod eval;
 pub mod gpu;
+pub mod vary;
 pub use eval::{Inputs, beats_at, colour_at, hits_on, last_hit, last_hit_at, offset};
 pub use gpu::{background_gpu, paint_gpu};
+pub use vary::{apply_vary, seed_of, vary_offsets};
 
 /// What the colours follow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -84,6 +86,14 @@ pub struct Paint {
     pub inside_spin: f32,
     pub inside_scale: f32,
     pub inside_scroll: f32,
+    /// How far each instance's hue turns from the paint's, in degrees either way.
+    pub vary_hue: f32,
+    /// How far each instance's saturation moves, either way.
+    pub vary_sat: f32,
+    /// How far each instance's brightness moves, as a share either way.
+    pub vary_bright: f32,
+    /// How fast each instance's variation drifts, in changes per second. 0 keeps it fixed.
+    pub wobble: f32,
 }
 
 impl Default for Paint {
@@ -105,6 +115,10 @@ impl Default for Paint {
             inside_spin: 0.0,
             inside_scale: 1.0,
             inside_scroll: 0.0,
+            vary_hue: 0.0,
+            vary_sat: 0.0,
+            vary_bright: 0.0,
+            wobble: 0.0,
         }
     }
 }
@@ -373,6 +387,49 @@ impl SettingGroup for Paint {
                 "cycles/s",
             );
         }
+        if o.vary {
+            // One paint's variation sits under "Variation"; a prefixed paint (an outline, a
+            // pattern) gets its own heading so its rows can't be mistaken for the main one's.
+            let heading = if p.is_empty() { "Variation" } else { leak(format!("{} variation", o.label)) };
+            let shown = on("");
+            let mut vary = |key: &str, label: &'static str, help: &'static str, default: f32, range, unit| {
+                let mut d = num(def(key, label, help, ty(&default), val(&default), shown), range, unit, true, false);
+                d.group = heading;
+                v.push(d);
+            };
+            vary(
+                "vary_hue",
+                "Vary hue",
+                "How far each one's hue turns from the colours, in degrees either way.",
+                d.vary_hue,
+                (0.0, 180.0),
+                "deg",
+            );
+            vary(
+                "vary_sat",
+                "Vary saturation",
+                "How far each one's colour gets richer or greyer, either way.",
+                d.vary_sat,
+                (0.0, 1.0),
+                "",
+            );
+            vary(
+                "vary_bright",
+                "Vary brightness",
+                "How far each one gets brighter or darker, as a share either way.",
+                d.vary_bright,
+                (0.0, 1.0),
+                "",
+            );
+            vary(
+                "wobble",
+                "Wobble",
+                "How fast each one's variation drifts, in changes per second. 0 keeps it fixed.",
+                d.wobble,
+                (0.0, 5.0),
+                "Hz",
+            );
+        }
         v
     }
 
@@ -410,6 +467,12 @@ impl SettingGroup for Paint {
             set(&mut s.inside_scale, get("inside_scale"));
             set(&mut s.inside_scroll, get("inside_scroll"));
         }
+        if o.vary {
+            set(&mut s.vary_hue, get("vary_hue"));
+            set(&mut s.vary_sat, get("vary_sat"));
+            set(&mut s.vary_bright, get("vary_bright"));
+            set(&mut s.wobble, get("wobble"));
+        }
         s
     }
 
@@ -441,6 +504,12 @@ impl SettingGroup for Paint {
             put("inside_spin", val(&self.inside_spin), val(&d.inside_spin));
             put("inside_scale", val(&self.inside_scale), val(&d.inside_scale));
             put("inside_scroll", val(&self.inside_scroll), val(&d.inside_scroll));
+        }
+        if o.vary {
+            put("vary_hue", val(&self.vary_hue), val(&d.vary_hue));
+            put("vary_sat", val(&self.vary_sat), val(&d.vary_sat));
+            put("vary_bright", val(&self.vary_bright), val(&d.vary_bright));
+            put("wobble", val(&self.wobble), val(&d.wobble));
         }
     }
 }
@@ -481,10 +550,72 @@ mod tests {
         let mut t = Two::default();
         t.outline.colours = Gradient::even(&[RED, BLUE]);
         t.outline.angle = 30.0;
+        t.outline.vary_hue = 25.0;
+        t.outline.vary_sat = 0.25;
+        t.outline.vary_bright = 0.5;
+        t.outline.wobble = 1.5;
+        t.fill.vary_bright = 0.75;
         let p = t.to_params();
         assert_eq!(p.get("outline_angle"), Some(&Value::Number(30.0)));
+        for (key, want) in [
+            ("outline_vary_hue", 25.0),
+            ("outline_vary_sat", 0.25),
+            ("outline_vary_bright", 0.5),
+            ("outline_wobble", 1.5),
+        ] {
+            assert_eq!(p.get(key), Some(&Value::Number(want)), "{key}");
+        }
+        assert_eq!(p.get("vary_bright"), Some(&Value::Number(0.75)));
         assert!(p.get("angle").is_none(), "defaults are not saved");
         assert_eq!(Two::from_params(&p), t);
+    }
+
+    #[test]
+    fn variation_settings_are_keyframed_and_grouped() {
+        let defs = Two::defs();
+        for (key, label, range, group) in [
+            ("vary_hue", "Vary hue", (0.0, 180.0), "Variation"),
+            ("vary_sat", "Vary saturation", (0.0, 1.0), "Variation"),
+            ("vary_bright", "Vary brightness", (0.0, 1.0), "Variation"),
+            ("wobble", "Wobble", (0.0, 5.0), "Variation"),
+            ("outline_vary_hue", "Vary hue", (0.0, 180.0), "Outline colours variation"),
+            ("outline_wobble", "Wobble", (0.0, 5.0), "Outline colours variation"),
+        ] {
+            let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!(d.label, label);
+            assert_eq!(d.range, Some(range), "{key}");
+            assert_eq!(d.group, group, "{key}");
+            assert_eq!(d.default, Value::Number(0.0), "{key}");
+            assert!(d.flags.keyframe, "{key}");
+            assert_eq!(d.depth, Depth::More, "{key}");
+        }
+    }
+
+    #[test]
+    fn a_no_vary_group_has_no_variation_settings() {
+        #[derive(Clone, Debug, PartialEq, Default, Settings)]
+        struct Still {
+            #[setting(paint, label = "Colours", prefix = "bg_", follows = "place|time", no_vary)]
+            bg: Paint,
+        }
+        let keys: Vec<_> = Still::defs().iter().map(|d| d.key).collect();
+        assert!(keys.contains(&"bg_colours"));
+        for k in ["bg_vary_hue", "bg_vary_sat", "bg_vary_bright", "bg_wobble"] {
+            assert!(!keys.contains(&k), "{k} is offered");
+        }
+        // Nothing is saved or read for them either.
+        let mut s = Still::default();
+        s.bg.vary_hue = 40.0;
+        assert!(s.to_params().get("bg_vary_hue").is_none());
+        let mut p = Params::default();
+        p.set("bg_wobble", Value::Number(2.0));
+        assert_eq!(Still::from_params(&p).bg.wobble, 0.0);
+        // One fluid and one picture: the liquid look and the background don't vary.
+        let liquid = crate::modules::look_liquid::LiquidLook::defs();
+        let scene = crate::things::scene::SceneSettings::defs();
+        assert!(liquid.iter().chain(scene).all(|d| !d.key.ends_with("vary_hue") && !d.key.ends_with("wobble")));
+        // Every other look's paint does.
+        assert!(crate::modules::look::ClassicLook::defs().iter().any(|d| d.key == "vary_hue"));
     }
 
     #[test]
@@ -544,6 +675,7 @@ mod tests {
             inside: false,
             screen_only: false,
             simple: false,
+            vary: true,
         };
         // The outer default follows Place, which the list leaves out.
         let outer = Paint::default();
