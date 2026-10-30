@@ -5,6 +5,7 @@
 //! renders every note once, adds them up in a fixed order, sets the level and limits the peaks.
 //! The same log and settings give the same samples every time.
 
+pub mod audition;
 pub mod chords;
 pub mod instruments;
 pub mod level;
@@ -19,6 +20,7 @@ use bpe_core::{
 };
 use bpe_runtime::{Event, Log};
 
+pub use audition::audition;
 pub use chords::{
     ChordClock, Function, PicksFrom, borrowed, candidates, chord_name, diatonic, function, intervals, note_name,
     numeral, parse_chord, scale, voicing,

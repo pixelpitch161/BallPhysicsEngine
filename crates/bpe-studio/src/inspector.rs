@@ -2,7 +2,7 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
-use crate::chords::{self, ChordUi};
+use crate::chords::{self, Audition, ChordClip, ChordUi};
 use crate::dice::dice_button;
 use crate::nodes::cards;
 use crate::selection::Selection;
@@ -12,12 +12,13 @@ use crate::widgets::{
     settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,
+    Address, Attach, Chord, Color, Depth, ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId,
     ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId,
     Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
+use bpe_mix::Instrument;
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +37,8 @@ pub struct Inspector {
     pub nodes_open: Option<(ThingId, SlotId)>,
     /// Each progression's chord editor: the picked chord, the presets list.
     pub chord_ui: BTreeMap<ProgressionId, ChordUi>,
+    /// Chords asked to be heard this frame; the app plays them.
+    pub clip: Option<ChordClip>,
 }
 
 /// A card's Nodes button.
@@ -162,6 +165,7 @@ pub fn show(
     };
     let selected = selection.all(scene);
     let choices = TargetChoices::from_scene(scene, reg);
+    let bpm = bpe_kit::music::root_settings(resolved).bpm;
     let mut edits = Vec::new();
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -258,7 +262,10 @@ pub fn show(
                 applies: &applies,
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
-            chord_editor(ui, &mut inspector.chord_ui, scene, kind.settings(), &get, &mut edits);
+            if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, kind.settings(), &get, &mut edits) {
+                let sound = resolved.things.get(&ThingId::ROOT).and_then(|r| r.slots.get(&SlotId::Sound));
+                inspector.clip = Some(chord_clip(heard, bpm, &|k| sound.and_then(|r| r.params.get(k).cloned())));
+            }
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -508,7 +515,9 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits);
+                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
+                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
                         }
@@ -543,7 +552,9 @@ pub fn show(
                             applies: &applies,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits);
+                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
+                            inspector.clip = Some(chord_clip(heard, bpm, &|k| Some(get(k))));
+                        }
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
                         }
@@ -935,7 +946,8 @@ fn chord_editor(
     defs: &[SettingDef],
     get: &dyn Fn(&str) -> Value,
     edits: &mut Vec<Edit>,
-) {
+) -> Option<Vec<Chord>> {
+    let mut heard = None;
     for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
         let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
         let Some((pid, p)) = picked.and_then(|pid| scene.library.progressions.get(&pid).map(|p| (pid, p))) else {
@@ -948,9 +960,30 @@ fn chord_editor(
         };
         let mut p = p.clone();
         let out = ui.push_id(("chords", pid), |ui| chords::show(ui, &mut p, chord_ui.entry(pid).or_default())).inner;
+        heard = match out.audition {
+            Some(Audition::Chord(c)) => Some(vec![Chord { beats: 4, ..c }]),
+            Some(Audition::All) => Some(p.chords.clone()),
+            None => heard,
+        };
         if out.changed {
             edits.push(Edit::Progression(pid, p));
         }
+    }
+    heard
+}
+
+/// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
+fn chord_clip(chords: Vec<Chord>, bpm: f32, get: &dyn Fn(&str) -> Option<Value>) -> ChordClip {
+    let number = |key: &str, or: f32| match get(key) {
+        Some(Value::Number(x)) => x as f32,
+        _ => or,
+    };
+    ChordClip {
+        chords,
+        instrument: get("instrument").and_then(|v| Instrument::from_value(&v)).unwrap_or_default(),
+        decay: number("decay", 0.6),
+        brightness: number("brightness", 0.5),
+        seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
     }
 }
 
@@ -1774,6 +1807,10 @@ mod tests {
         let p = &h.state().scene.library.progressions[&ProgressionId(0)];
         assert_eq!(p.chords.len(), 7);
         assert_eq!(p.chords[6].root, 5);
+        // The new chord is heard for a bar through Scene defaults' sound, on its tempo.
+        let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
+        assert_eq!(clip.chords, [bpe_core::Chord { beats: 4, ..p.chords[6] }]);
+        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
     }
 
     #[test]
