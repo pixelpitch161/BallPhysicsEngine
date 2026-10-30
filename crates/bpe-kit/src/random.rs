@@ -205,7 +205,8 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
         }
         Value::Gradient(g) => {
             // As many stops as before, each colour rolled like a colour; the stops between the
-            // ends head for an even spread, give or take a tenth, and the ends stay at 0 and 1.
+            // ends head for an even spread, give or take a tenth (at most 0.4 of the even gap, so
+            // neighbours never swap however many stops there are), and the ends stay at 0 and 1.
             let mut rolled = g.clone();
             if amount >= 1.0 {
                 for (stop, new) in rolled.stops.iter_mut().zip(palette(dice, g.stops.len())) {
@@ -225,7 +226,8 @@ pub fn roll_value(def: &SettingDef, current: &Value, dice: &mut Rng, amount: f32
                     1.0
                 } else {
                     let even = i as f32 / last as f32;
-                    let goal = (even + (dice.unit() * 2.0 - 1.0) * 0.1).clamp(0.0, 1.0);
+                    let jitter = (0.4 / last as f32).min(0.1);
+                    let goal = (even + (dice.unit() * 2.0 - 1.0) * jitter).clamp(0.0, 1.0);
                     stop.at + (goal - stop.at) * amount
                 };
             }
@@ -475,6 +477,17 @@ mod tests {
             colours.insert(g.stops[1].color.to_hex());
         }
         assert!(colours.len() > 10, "new colours come up");
+        // With many stops the nudge shrinks to 0.4 of the gap, so no two stops ever cross.
+        let twelve = Gradient::even(&(0..12).map(|i| Color::rgb(i * 20, 100, 200)).collect::<Vec<_>>());
+        for v in rolls(&gradient, &Value::Gradient(twelve), 1.0, 50) {
+            let Value::Gradient(g) = v else { panic!("{v:?}") };
+            assert_eq!(g.stops.len(), 12);
+            for (i, s) in g.stops.iter().enumerate() {
+                let even = i as f32 / 11.0;
+                assert!((s.at - even).abs() <= 0.4 / 11.0 + 1e-6, "stop {i} at {} is near {even}", s.at);
+            }
+            assert!(g.stops.windows(2).all(|w| w[1].at - w[0].at >= 0.2 / 11.0 - 1e-6), "gaps stay open: {g:?}");
+        }
         // What the colours follow, their angle, span and scroll roll inside their dice ranges.
         for key in ["angle", "span", "scroll"] {
             let d = def(&reg, "look.classic", key);

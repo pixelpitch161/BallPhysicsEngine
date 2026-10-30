@@ -119,21 +119,6 @@ impl Color {
         let (a, b) = (a.to_linear(), b.to_linear());
         Self::from_linear(std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t))
     }
-
-    /// Picks a colour along evenly spaced stops, blending in linear light. `t` runs 0 to 1.
-    pub fn sample_gradient(stops: &[Color], t: f32) -> [f32; 4] {
-        match stops {
-            [] => Self::WHITE.to_linear(),
-            [only] => only.to_linear(),
-            _ => {
-                let x = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
-                let i = (x.floor() as usize).min(stops.len() - 2);
-                let f = x - i as f32;
-                let (a, b) = (stops[i].to_linear(), stops[i + 1].to_linear());
-                std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f)
-            }
-        }
-    }
 }
 
 /// One colour sitting at a place along a gradient.
@@ -331,11 +316,21 @@ mod tests {
     }
 
     #[test]
-    fn even_matches_the_old_sampler() {
+    fn even_spaces_the_stops_and_blends_in_linear_light() {
         let cs = [Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)];
         let g = Gradient::even(&cs);
-        for t in [0.0, 0.25, 0.5, 0.9, 1.0] {
-            assert_eq!(g.sample(t), Color::sample_gradient(&cs, t));
+        let want = [
+            (0.0, [1.0, 0.0, 0.0, 1.0]),
+            (0.25, [0.5, 0.5, 0.0, 1.0]),
+            (0.5, [0.0, 1.0, 0.0, 1.0]),
+            (0.9, [0.0, 0.2, 0.8, 1.0]),
+            (1.0, [0.0, 0.0, 1.0, 1.0]),
+        ];
+        for (t, w) in want {
+            let got = g.sample(t);
+            for k in 0..4 {
+                assert!((got[k] - w[k]).abs() < 1e-5, "t {t}: {got:?} vs {w:?}");
+            }
         }
     }
 

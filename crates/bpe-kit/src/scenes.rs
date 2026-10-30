@@ -16,12 +16,13 @@ use glam::Vec2;
 
 use crate::graphs::module_graph;
 use crate::modules::sound::{PitchBy, PlaysWhen};
-use crate::paint::{Follow, Paint};
+use crate::paint::{Follow, Inside, Paint, PlaceShape, Repeat};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
-    ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
-    LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind,
-    SceneSettings, SoftSettings, SoftShape, SwarmLook, SwarmSettings, TextSettings, new_scene, recipes,
+    BurstSource, ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
+    HitBurst, LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
+    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, SwarmLook, SwarmSettings, TextSettings,
+    TrailSource, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -72,6 +73,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.extend(stage5(reg));
     scenes.extend(stage6(reg));
     scenes.extend(stage7(reg));
+    scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes
 }
 
@@ -164,6 +166,109 @@ pub fn long_drop(reg: &Registry) -> Scene {
         ..crate::CameraSettings::default()
     };
     b.add("camera", ThingId::ROOT, "Camera", Vec2::ZERO, camera.to_params());
+    b.scene
+}
+
+/// The colour showcase: a block of balls painted by where they are at an angle with rings of the
+/// same gradient inside each one, a ring whose colours run round its path, streaks and sparks
+/// that change colour over their life, and a background glowing from the centre.
+pub fn colour_demo(reg: &Registry) -> Scene {
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut b = Builder::new(reg, "Colour paints");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 700.0);
+        s.bloom = 0.35;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x2b1458), hex(0x140a33), hex(0x05040f)]),
+            shape: PlaceShape::Centre,
+            span: 1150.0,
+            ..Paint::default()
+        };
+    });
+    b.arena(|a| {
+        a.radius = 470.0;
+        a.thickness = 12.0;
+    });
+    let neon = [hex(0xff3ec8), hex(0xffb82e), hex(0x3ee6ff), hex(0x8a4dff), hex(0xff3ec8)];
+    let ring = ClassicLook {
+        fill: Paint {
+            colours: Gradient::even(&neon),
+            follow: Follow::Path,
+            repeat: Repeat::Repeat,
+            scroll: 0.12,
+            ..Paint::default()
+        },
+        glow: 0.7,
+        ..ClassicLook::default()
+    };
+    b.own_module(ARENA, "look.classic", "Ring look", ring.to_params());
+    b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 8;
+        s.rows = 8;
+        s.spacing = 46.0;
+        s.radius = 19.0;
+        s.velocity = Vec2::new(-420.0, 220.0);
+    });
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[hex(0xffd23e), hex(0xff6a5c), hex(0xff3ec8), hex(0x8a4dff), hex(0x3e9bff)]),
+            angle: 45.0,
+            span: 700.0,
+            repeat: Repeat::Mirror,
+            inside: Inside::Rings,
+            inside_scale: 1.2,
+            inside_scroll: 0.25,
+            ..Paint::default()
+        };
+        l.glow = 0.3;
+    });
+    let streak = StreakTrail {
+        seconds: 0.35,
+        width: 0.55,
+        brightness: 0.45,
+        source: TrailSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0x7cf4ff), hex(0x8a4dff), hex(0x2b1458)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        ..StreakTrail::default()
+    };
+    b.own_module(BALLS, "trail.streak", "Life streak", streak.to_params());
+    let sparks = HitBurst {
+        count: 6,
+        speed: 360.0,
+        size: 3.0,
+        life: 0.55,
+        least_speed: 160.0,
+        source: BurstSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0xffd23e), hex(0xff6a2e), hex(0xc8104a)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        ..HitBurst::default()
+    };
+    b.own_module(BALLS, "particles.burst", "Life sparks", sparks.to_params());
+    let title = b.text("Title", Vec2::new(0.0, -740.0), |t| {
+        t.text = "Colour paints".into();
+        t.size = 130.0;
+        t.outline = 6.0;
+        t.outline_paint = Paint::solid(hex(0x05040f));
+    });
+    let title_look = ClassicLook {
+        fill: Paint { colours: Gradient::even(&neon[..4]), follow: Follow::Order, ..Paint::default() },
+        glow: 0.0,
+        ..ClassicLook::default()
+    };
+    let words = b.own_module(title, "look.classic", "Title look", title_look.to_params());
+    let caption = b.text("Caption", Vec2::new(0.0, 700.0), |t| {
+        t.text = "place  path  life  centre".into();
+        t.size = 56.0;
+        t.outline = 0.0;
+    });
+    b.scene.link(reg, caption, SlotId::Look, words).expect("text has a Look slot");
     b.scene
 }
 
@@ -1176,7 +1281,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 30);
+        assert_eq!(scenes.len(), 31);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1184,6 +1289,7 @@ mod tests {
             scenes::stage5(&reg),
             scenes::stage6(&reg),
             scenes::stage7(&reg),
+            vec![("Colour paints".into(), scenes::colour_demo(&reg))],
         ]
         .concat()
         .into_iter()
@@ -1199,7 +1305,8 @@ mod tests {
         );
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
-        assert_eq!(names[25..], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
+        assert_eq!(names[30..], ["Colour paints"]);
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
