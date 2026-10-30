@@ -126,6 +126,10 @@ pub struct Editor {
     editing_note: Option<usize>,
     drag: Drag,
     pub(super) palette: Option<Palette>,
+    /// Where the canvas was right-clicked, in canvas units: the menu's adds and pastes go there.
+    menu_at: Pos2,
+    /// Where the pointer last was over the canvas, in canvas units, for the "Add block…" button.
+    last_pointer: Option<Pos2>,
     pub show_minimap: bool,
     /// A short explanation, such as why a wire was refused, and when it was shown.
     message: Option<(String, f64)>,
@@ -158,6 +162,8 @@ impl Editor {
             editing_note: None,
             drag: Drag::None,
             palette: None,
+            menu_at: Pos2::ZERO,
+            last_pointer: None,
             show_minimap: true,
             message: None,
             to_screen: TSTransform::IDENTITY,
@@ -170,9 +176,14 @@ impl Editor {
         self.fitted = false;
     }
 
-    /// Opens the add-a-block search at the middle of the canvas.
+    /// Opens the add-a-block search where the pointer last was over the canvas, or at the
+    /// middle when that spot is out of view.
     pub fn open_palette(&mut self) {
-        let at = self.to_screen.inverse() * self.screen.center();
+        let to_canvas = self.to_screen.inverse();
+        let at = self
+            .last_pointer
+            .filter(|p| self.screen.contains(self.to_screen * *p))
+            .unwrap_or_else(|| to_canvas * self.screen.center());
         self.palette = Some(Palette::new(at, None));
     }
 
@@ -253,6 +264,9 @@ impl Editor {
         self.to_screen = TSTransform::new(screen.min.to_vec2() + self.pan, self.zoom);
         let to_canvas = self.to_screen.inverse();
         let pointer_canvas = pointer.map(|p| to_canvas * p);
+        if over_canvas {
+            self.last_pointer = pointer_canvas;
+        }
 
         // ---------- background ----------
         let painter = ui.painter_at(screen);
@@ -633,6 +647,9 @@ impl Editor {
             self.palette = Some(Palette::new(p, None));
         }
         if background.secondary_clicked() {
+            if let Some(p) = pointer_canvas {
+                self.menu_at = p;
+            }
             self.selected_link = hovered_link.and_then(|i| graph.links.get(i).copied());
         }
         background.context_menu(|ui| {
@@ -644,7 +661,7 @@ impl Editor {
                 }
                 ui.separator();
             }
-            let at = ui.ctx().input(|i| i.pointer.press_origin()).map(|p| to_canvas * p).unwrap_or_default();
+            let at = self.menu_at;
             if ui.button("Add a block…").on_hover_text("Space").clicked() {
                 self.palette = Some(Palette::new(at, None));
                 ui.close();

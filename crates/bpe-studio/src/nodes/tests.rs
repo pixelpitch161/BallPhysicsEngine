@@ -185,6 +185,60 @@ fn a_right_click_on_the_canvas_offers_to_add_a_block() {
 }
 
 #[test]
+fn a_block_added_from_the_right_click_menu_lands_where_the_menu_was_opened() {
+    let mut harness = harness(graph());
+    let spot = empty_spot(&harness);
+    click_with(&mut harness, spot, PointerButton::Secondary);
+    harness.get_by_label("Add a block…").click();
+    harness.run();
+    harness.event(Event::Text("number".into()));
+    harness.run();
+    key(&mut harness, Key::Enter, Modifiers::NONE);
+    let pos = harness.state().graph.nodes[2].pos;
+    assert!((pos[0] - 200.0).abs() < 2.0 && (pos[1] - 300.0).abs() < 2.0, "{pos:?}");
+}
+
+#[test]
+fn a_note_added_from_the_right_click_menu_lands_where_the_menu_was_opened() {
+    let mut harness = harness(graph());
+    let spot = empty_spot(&harness);
+    click_with(&mut harness, spot, PointerButton::Secondary);
+    harness.get_by_label("Add a note").click();
+    harness.run();
+    let pos = harness.state().graph.notes[0].pos;
+    assert!((pos[0] - 200.0).abs() < 2.0 && (pos[1] - 300.0).abs() < 2.0, "{pos:?}");
+}
+
+#[test]
+fn the_add_block_button_uses_where_the_pointer_last_was_on_the_canvas() {
+    let mut harness = harness(graph());
+    let spot = empty_spot(&harness);
+    harness.hover_at(spot);
+    harness.run();
+    harness.state_mut().editor.open_palette();
+    harness.run();
+    harness.event(Event::Text("number".into()));
+    harness.run();
+    key(&mut harness, Key::Enter, Modifiers::NONE);
+    let pos = harness.state().graph.nodes[2].pos;
+    assert!((pos[0] - 200.0).abs() < 2.0 && (pos[1] - 300.0).abs() < 2.0, "{pos:?}");
+}
+
+#[test]
+fn space_adds_the_block_under_the_pointer() {
+    let mut harness = harness(graph());
+    let spot = empty_spot(&harness);
+    harness.hover_at(spot);
+    harness.run();
+    key(&mut harness, Key::Space, Modifiers::NONE);
+    harness.event(Event::Text("number".into()));
+    harness.run();
+    key(&mut harness, Key::Enter, Modifiers::NONE);
+    let pos = harness.state().graph.nodes[2].pos;
+    assert!((pos[0] - 200.0).abs() < 2.0 && (pos[1] - 300.0).abs() < 2.0, "{pos:?}");
+}
+
+#[test]
 fn escape_closes_the_search() {
     let mut harness = harness(graph());
     let spot = empty_spot(&harness);
