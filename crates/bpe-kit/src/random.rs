@@ -692,7 +692,9 @@ mod tests {
         for seed in 0..50 {
             let mut rolled = scene.clone();
             roll(&mut rolled, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
-            let Some(Value::Number(radius)) = rolled.things[&ThingId(1)].params.get("radius").cloned() else { continue };
+            let Some(Value::Number(radius)) = rolled.things[&ThingId(1)].params.get("radius").cloned() else {
+                continue;
+            };
             // The dice roll 150 to 500 for a shot at Zoom 1; at Zoom 2 the shot is half as wide.
             assert!(radius <= 250.0 + 1e-3, "seed {seed}: radius {radius}");
         }

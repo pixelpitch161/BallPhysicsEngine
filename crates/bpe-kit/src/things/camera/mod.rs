@@ -2,7 +2,6 @@
 
 pub mod sim;
 
-
 use bpe_core::{KindId, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
 

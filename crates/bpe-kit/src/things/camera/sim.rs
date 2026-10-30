@@ -107,7 +107,8 @@ impl ThingSim for CameraSim {
         if settings.stay_inside {
             view = clamp_to_box(view, world.video, &settings);
         }
-        let st = CameraState { pos: settings.position, vel: Vec2::ZERO, zoom: view.zoom, trauma: 0.0, punch: 0.0, settings };
+        let st =
+            CameraState { pos: settings.position, vel: Vec2::ZERO, zoom: view.zoom, trauma: 0.0, punch: 0.0, settings };
         world.camera = view;
         world.states.insert(thing.id, Box::new(st));
     }
@@ -135,10 +136,11 @@ impl ThingSim for CameraSim {
                     // Slack: the target roams the middle of the shot without moving the camera.
                     let slack = key.shot_half(video) * s.slack;
                     let d = goal - st.pos;
-                    goal = st.pos + Vec2::new(
-                        d.x.signum() * (d.x.abs() - slack.x).max(0.0),
-                        d.y.signum() * (d.y.abs() - slack.y).max(0.0),
-                    );
+                    goal = st.pos
+                        + Vec2::new(
+                            d.x.signum() * (d.x.abs() - slack.x).max(0.0),
+                            d.y.signum() * (d.y.abs() - slack.y).max(0.0),
+                        );
                     let target = key.center.lerp(goal, s.follow_amount.clamp(0.0, 1.0));
                     if s.smoothness <= 0.0 {
                         st.pos = target;
@@ -158,19 +160,23 @@ impl ThingSim for CameraSim {
                         st.zoom = key.zoom;
                     }
                 }
-                // Nothing to follow: hold where the follow left off.
+                // Nothing to follow: hold where the follow left off, and how far out it fitted.
                 None => st.vel = Vec2::ZERO,
             }
             view.center = st.pos;
+            if s.fit_all {
+                view.zoom = st.zoom;
+            }
         } else {
             st.pos = key.center;
             st.vel = Vec2::ZERO;
             st.zoom = key.zoom;
         }
 
-        // Hits add shake and punch; both die away.
+        // Hits add shake and punch; both die away. The last step's hits are all in the log by
+        // now, whichever things logged them after the camera's turn.
         if s.shake > 0.0 || s.punch > 0.0 {
-            for e in log.since(world.step) {
+            for e in log.between(world.step.saturating_sub(1), world.step) {
                 if e.kind != EventKind::Hit {
                     continue;
                 }
@@ -217,7 +223,10 @@ mod tests {
     use bpe_runtime::Playback;
 
     /// The new scene with a camera set up by `f`, and the ball set up by `ball`.
-    fn with_camera(f: impl FnOnce(&mut Params), ball: impl FnOnce(&mut bpe_core::Thing)) -> (Scene, crate::Kit, ThingId) {
+    fn with_camera(
+        f: impl FnOnce(&mut Params),
+        ball: impl FnOnce(&mut bpe_core::Thing),
+    ) -> (Scene, crate::Kit, ThingId) {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
         let cam = ensure_camera(&mut scene, &kit.registry);
@@ -296,11 +305,9 @@ mod tests {
         let mut scene = new_scene(&kit.registry);
         falling(&mut scene);
         scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
-        for (id, x) in [(BALLS, -1500.0)] {
-            let b = scene.things.get_mut(&id).unwrap();
-            b.transform.position = Vec2::new(x, 0.0);
-            b.params.set("velocity", Value::Vec2([0.0, 0.0]));
-        }
+        let b = scene.things.get_mut(&BALLS).unwrap();
+        b.transform.position = Vec2::new(-1500.0, 0.0);
+        b.params.set("velocity", Value::Vec2([0.0, 0.0]));
         let other = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
         let b = scene.things.get_mut(&other).unwrap();
         b.transform.position = Vec2::new(1500.0, 0.0);
@@ -451,5 +458,49 @@ mod tests {
             world.advance_to(i as f64 * 0.1, &kit.sims, &mut log);
             assert_eq!(world.camera.center, Vec2::new(100.0, 100.0));
         }
+    }
+
+    #[test]
+    fn a_hit_logged_after_the_camera_still_shakes_it() {
+        let (scene, kit, cam) = with_camera(|p| p.set("shake", Value::Number(40.0)), |_| {});
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(0.1, &kit.sims, &mut log);
+        // A hit the camera's own step never saw: logged after its turn.
+        log.push(bpe_runtime::Event {
+            step: world.step,
+            kind: EventKind::Hit,
+            a: bpe_runtime::Party { thing: BALLS, item: 0 },
+            b: None,
+            point: Vec2::ZERO,
+            normal: Vec2::Y,
+            speed: 3000.0,
+        });
+        world.step(&kit.sims, &mut log);
+        assert!(state::<CameraState>(world.states[&cam].as_ref()).trauma > 0.0);
+    }
+
+    #[test]
+    fn fit_all_holds_its_zoom_when_the_balls_go() {
+        let (mut scene, kit, cam) = with_camera(
+            |p| {
+                p.set("follow", Value::Bool(true));
+                p.set("fit_all", Value::Bool(true));
+                p.set("fit_margin", Value::Number(1000.0));
+            },
+            |_| {},
+        );
+        falling(&mut scene);
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(2.0, &kit.sims, &mut log);
+        let zoom = world.camera.zoom;
+        assert!(zoom < 1.0, "{zoom}");
+        world.bodies.get_mut(&BALLS).unwrap().alive[0] = false;
+        world.advance_to(2.1, &kit.sims, &mut log);
+        assert_eq!(world.camera.zoom, zoom);
+        let _ = cam;
     }
 }

@@ -650,11 +650,19 @@ impl Renderer {
     /// [`Renderer::render_with_flow`]; here they are only drawn. Liquids are shaded between
     /// the walls and the balls, over a copy of what is behind them.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&Globals::new(frame, &frame.camera, self.targets.width)));
+        queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&Globals::new(frame, &frame.camera, self.targets.width)),
+        );
         let overlay = frame.overlay.as_deref().filter(|_| frame.has_overlay());
         if let Some(o) = overlay {
             let identity = CameraView::default();
-            queue.write_buffer(&self.screen_globals, 0, bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)));
+            queue.write_buffer(
+                &self.screen_globals,
+                0,
+                bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
+            );
             self.overlay.upload(device, queue, o);
         }
         self.trail_buffer.upload(device, queue, bytemuck::cast_slice(&frame.trails));
@@ -714,7 +722,17 @@ impl Renderer {
                 };
                 if let Some(points) = points {
                     let world = (frame.width, frame.height);
-                    self.surface.draw(device, queue, &mut encoder, &self.targets, slot, world, &frame.camera, layer, points);
+                    self.surface.draw(
+                        device,
+                        queue,
+                        &mut encoder,
+                        &self.targets,
+                        slot,
+                        world,
+                        &frame.camera,
+                        layer,
+                        points,
+                    );
                 }
             }
         }

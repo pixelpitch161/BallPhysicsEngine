@@ -852,7 +852,8 @@ fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Ve
             }
         }
         Attach::Group => {
-            let position = ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
+            let position =
+                ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
             let moved = ui
                 .horizontal(|ui| {
                     let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));

@@ -445,7 +445,10 @@ mod tests {
         assert_eq!(loud(heard_at(30_000.0, still, 1.5)), 0.0);
         let off = heard_at(3000.0, still, 0.0);
         let centred = bpe_runtime::CameraView { center: glam::Vec2::new(3000.0, 0.0), ..still };
-        assert!((loud(off) - loud(heard_at(3000.0, centred, 1.5))).abs() < 1e-5, "fade off, or in the shot: full volume");
+        assert!(
+            (loud(off) - loud(heard_at(3000.0, centred, 1.5))).abs() < 1e-5,
+            "fade off, or in the shot: full volume"
+        );
     }
 
     #[test]

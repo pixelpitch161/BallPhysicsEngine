@@ -1208,7 +1208,12 @@ mod tests {
             let bodies = &world.bodies[&bpe_core::ThingId(2)];
             let p = bodies.position[0];
             lowest = lowest.max(p.y);
-            assert!(world.camera.sees(world.video, p, -bodies.radius[0]), "at {:.1} s the ball at {p:?} left {:?}", i as f64 * 0.1, world.camera);
+            assert!(
+                world.camera.sees(world.video, p, -bodies.radius[0]),
+                "at {:.1} s the ball at {p:?} left {:?}",
+                i as f64 * 0.1,
+                world.camera
+            );
         }
         assert!(lowest > 2000.0, "the ball got down the course: {lowest}");
     }

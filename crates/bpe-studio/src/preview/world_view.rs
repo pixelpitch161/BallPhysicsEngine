@@ -137,7 +137,8 @@ pub fn apply_camera_drag(
             let mut degrees = (towards.y.atan2(towards.x) + std::f32::consts::FRAC_PI_2).to_degrees();
             degrees = ((degrees + 180.0).rem_euclid(360.0)) - 180.0;
             // With the grid on, turns land on 15 degree steps.
-            let degrees = if step.is_some() { (degrees / 15.0).round() * 15.0 } else { (degrees * 10.0).round() / 10.0 };
+            let degrees =
+                if step.is_some() { (degrees / 15.0).round() * 15.0 } else { (degrees * 10.0).round() / 10.0 };
             ("turn", Value::Number(degrees as f64))
         }
     };
@@ -216,7 +217,7 @@ mod tests {
 
     fn world_view(nav: WorldNav) -> View {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        View { rect, scale: 800.0 / 2560.0, camera: nav.camera() }
+        View { rect, scale: 800.0 / 2560.0, camera: nav.camera(), world: true }
     }
 
     #[test]

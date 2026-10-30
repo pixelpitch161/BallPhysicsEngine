@@ -226,6 +226,21 @@ impl Studio {
 
     /// Records the edit that turned `before` into the scene as it is now, unless nothing
     /// changed, and brings the simulation and sound along.
+    /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
+    /// the screen goes in the middle of the picture, which is where the camera isn't.
+    pub fn place_added(&mut self, id: ThingId) {
+        let stuck = self
+            .scene
+            .things
+            .get(&id)
+            .is_some_and(|t| self.kit.registry.thing(&t.kind).is_some_and(|k| t.sticks_to_screen(k)));
+        if let Some(thing) = self.scene.things.get_mut(&id)
+            && !thing.rides()
+        {
+            thing.transform.position = if stuck { glam::Vec2::ZERO } else { self.view_centre.round() };
+        }
+    }
+
     pub fn after_edit(&mut self, before: Scene) {
         self.edited(before, false);
     }
@@ -796,12 +811,8 @@ impl eframe::App for Studio {
         if let Some(message) = tree.message {
             self.status = message;
         }
-        // A new thing goes in the middle of whatever the preview is looking at.
-        if let Some(id) = tree.added
-            && let Some(thing) = self.scene.things.get_mut(&id)
-            && !thing.rides()
-        {
-            thing.transform.position = self.view_centre.round();
+        if let Some(id) = tree.added {
+            self.place_added(id);
         }
         if tree.removed.is_some() {
             // Deleting is always its own undo step.
@@ -952,6 +963,18 @@ mod tests {
     use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
     use std::time::Duration;
+
+    #[test]
+    fn a_new_caption_lands_in_the_middle_of_the_picture() {
+        let mut studio = Studio::headless();
+        studio.view_centre = glam::Vec2::new(5000.0, -300.0);
+        let text = studio.scene.add_thing(&studio.kit.registry, "text", ThingId::ROOT).unwrap();
+        let balls = studio.scene.add_thing(&studio.kit.registry, "balls", ThingId::ROOT).unwrap();
+        studio.place_added(text);
+        studio.place_added(balls);
+        assert_eq!(studio.scene.things[&text].transform.position, glam::Vec2::ZERO);
+        assert_eq!(studio.scene.things[&balls].transform.position, glam::Vec2::new(5000.0, -300.0));
+    }
 
     #[test]
     fn opening_an_old_scene_reports_it_and_keeps_the_current_one() {

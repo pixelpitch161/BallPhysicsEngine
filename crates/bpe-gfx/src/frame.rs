@@ -490,6 +490,9 @@ pub struct Frame {
     /// Things stuck to the screen, drawn after the main lists with no camera. Its own camera,
     /// background and overlay are unused.
     pub overlay: Option<Box<Frame>>,
+    /// The scene's video size. Usually `width` by `height`; the editor's World view draws a
+    /// picture of another shape, and the GPU layers keep stepping in the video's.
+    pub video: (u32, u32),
 }
 
 impl Default for Frame {
@@ -518,6 +521,7 @@ impl Default for Frame {
             background_on_screen: true,
             background_span: [-960.0, 960.0],
             overlay: None,
+            video: (1080, 1920),
         }
     }
 }
@@ -546,9 +550,9 @@ impl Frame {
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
     /// moment.
     pub fn overlay_mut(&mut self) -> &mut Frame {
-        let (width, height, time) = (self.width, self.height, self.time);
+        let (width, height, time, video) = (self.width, self.height, self.time, self.video);
         let overlay = self.overlay.get_or_insert_with(Box::default);
-        (overlay.width, overlay.height, overlay.time) = (width, height, time);
+        (overlay.width, overlay.height, overlay.time, overlay.video) = (width, height, time, video);
         overlay
     }
 
@@ -705,6 +709,15 @@ pub fn build_frame_at(
         }
     }
     frame.camera = world.camera;
+    // Shader effects, hit particles and hit marks of stuck things work on the whole picture
+    // like everyone else's: the overlay only holds what is drawn as shapes.
+    if let Some(o) = frame.overlay.as_deref_mut() {
+        let (effects, bursts, hits) =
+            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        frame.effects.extend(effects);
+        frame.bursts.extend(bursts);
+        frame.hits.extend(hits);
+    }
 }
 
 #[cfg(test)]

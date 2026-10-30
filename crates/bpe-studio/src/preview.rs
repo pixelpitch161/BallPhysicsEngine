@@ -109,20 +109,23 @@ pub struct Outcome {
 
 /// Converts between world pixels and screen points, through the camera the picture is drawn
 /// with: the scene's in the Camera view, the free one in the World view.
+#[derive(Clone, Copy, Debug)]
 pub struct View {
     pub rect: Rect,
     /// Screen points per screen unit of the picture (a 1080-wide video is 1080 units across).
     pub scale: f32,
     pub camera: CameraView,
+    /// The World view's free canvas, rather than the shot.
+    pub world: bool,
 }
 
 impl View {
-    pub fn to_screen(&self, p: Vec2) -> Pos2 {
+    pub fn to_screen(self, p: Vec2) -> Pos2 {
         let q = self.camera.to_screen(p);
         self.rect.center() + egui::vec2(q.x, q.y) * self.scale
     }
 
-    pub fn to_world(&self, p: Pos2) -> Vec2 {
+    pub fn to_world(self, p: Pos2) -> Vec2 {
         let d = (p - self.rect.center()) / self.scale;
         self.camera.to_world(Vec2::new(d.x, d.y))
     }
@@ -130,6 +133,21 @@ impl View {
     /// Screen points per world pixel.
     pub fn world_scale(&self) -> f32 {
         self.scale * self.camera.zoom
+    }
+
+    /// The view `id` is seen through. A thing stuck to the screen sits on the picture, where
+    /// the camera doesn't move it, so it is seen without the camera; the World view shows the
+    /// world only, so it isn't seen there at all.
+    pub fn of(&self, studio: &Studio, id: ThingId) -> Option<View> {
+        if !studio.resolved.things.get(&id).is_some_and(|r| r.screen) {
+            return Some(*self);
+        }
+        (!self.world).then_some(View { camera: CameraView::default(), ..*self })
+    }
+
+    /// Where the pointer at `pos` is, in the space of the thing `handle` holds.
+    pub fn pointer_for(&self, studio: &Studio, handle: Handle, pos: Pos2) -> Vec2 {
+        self.of(studio, handle.thing()).unwrap_or(*self).to_world(pos)
     }
 }
 
@@ -207,7 +225,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
 
     let camera = if world_mode { studio.world_nav.camera() } else { studio.playback.world().camera };
-    let mut view = View { rect, scale: view_scale, camera };
+    let mut view = View { rect, scale: view_scale, camera, world: world_mode };
     if world_mode && navigate(ui, &response, studio, &view) {
         view.camera = studio.world_nav.camera();
         preview.drawn = None;
@@ -235,9 +253,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
 
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
     let grab = |studio: &Studio, at: Pos2| {
-        let on_camera = world_mode
-            .then(|| world_view::camera_hit(&studio.scene, studio.playback.world(), &view, at))
-            .flatten();
+        let on_camera =
+            world_mode.then(|| world_view::camera_hit(&studio.scene, studio.playback.world(), &view, at)).flatten();
         on_camera.or_else(|| hit_test(studio, &view, at))
     };
     let hovered = pointer.and_then(|p| grab(studio, p));
@@ -249,11 +266,13 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(handle) = grab(studio, press)
     {
         let anchor = match handle {
-            Handle::Body(id) => place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.to_world(press)),
+            Handle::Body(id) => {
+                place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.pointer_for(studio, handle, press))
+            }
             Handle::CameraMove(_) => studio.playback.world().camera.center,
-            _ => view.to_world(press),
+            _ => view.pointer_for(studio, handle, press),
         };
-        preview.drag = Some(Drag { handle, offset: view.to_world(press) - anchor });
+        preview.drag = Some(Drag { handle, offset: view.pointer_for(studio, handle, press) - anchor });
         outcome.drag_started = true;
         outcome.drag_camera = handle.is_camera();
     }
@@ -276,7 +295,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             );
             studio.panels.inspector.keyed_edit |= keyed;
         } else {
-            apply_drag(&mut studio.scene, studio.playback.world(), drag, view.to_world(pos), step);
+            let pointer = view.pointer_for(studio, drag.handle, pos);
+            apply_drag(&mut studio.scene, studio.playback.world(), drag, pointer, step);
         }
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
@@ -316,7 +336,8 @@ fn navigate(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &View
         }
     }
     let space = ui.input(|i| i.key_down(egui::Key::Space));
-    if response.dragged_by(egui::PointerButton::Middle) || (space && response.dragged_by(egui::PointerButton::Primary)) {
+    if response.dragged_by(egui::PointerButton::Middle) || (space && response.dragged_by(egui::PointerButton::Primary))
+    {
         studio.world_nav.pan(view, response.drag_delta());
     }
     if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::F)) {
@@ -428,34 +449,41 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
 /// middle, then a selected thing with nothing of its own to show, then an arena's edge.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
-    let p = view.to_world(pos);
-    let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
-    for id in studio.resolved.things.keys().filter(|id| shown(id)) {
-        if let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
-            && (view.to_screen(tip) - pos).length() <= TIP_GRAB
+    // Each thing through its own view: stuck things aren't seen through the camera.
+    let seen = |id: &ThingId| {
+        if studio.scene.things.get(id).is_some_and(|t| t.enabled) { view.of(studio, *id) } else { None }
+    };
+    for id in studio.resolved.things.keys() {
+        if let Some(v) = seen(id)
+            && let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
+            && (v.to_screen(tip) - pos).length() <= TIP_GRAB
         {
             return Some(Handle::Aim(*id));
         }
     }
     let mut best: Option<(f32, ThingId)> = None;
-    for (id, bodies) in world.bodies.iter().filter(|(id, _)| shown(id)) {
+    for (id, bodies) in world.bodies.iter() {
+        let Some(v) = seen(id) else { continue };
+        let p = v.to_world(pos);
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
                 continue;
             }
-            let grab = (bodies.radius[i] * 1.5).max(8.0 / view.world_scale());
-            let distance = (bodies.position[i] - p).length();
-            if distance <= grab && best.is_none_or(|(d, _)| distance < d) {
+            let grab = (bodies.radius[i] * 1.5).max(8.0 / v.world_scale());
+            let distance = (bodies.position[i] - p).length() * v.camera.zoom;
+            if distance <= grab * v.camera.zoom && best.is_none_or(|(d, _)| distance < d) {
                 best = Some((distance, *id));
             }
         }
     }
-    for (id, st) in world.states.iter().filter(|(id, _)| shown(id)) {
+    for (id, st) in world.states.iter() {
+        let Some(v) = seen(id) else { continue };
         let Some(soft) = st.as_any().downcast_ref::<bpe_kit::SoftState>() else { continue };
+        let p = v.to_world(pos);
         for point in &soft.world.points {
-            let grab = (point.radius * 1.5).max(8.0 / view.world_scale());
-            let distance = (point.position - p).length();
-            if distance <= grab && best.is_none_or(|(d, _)| distance < d) {
+            let grab = (point.radius * 1.5).max(8.0 / v.world_scale());
+            let distance = (point.position - p).length() * v.camera.zoom;
+            if distance <= grab * v.camera.zoom && best.is_none_or(|(d, _)| distance < d) {
                 best = Some((distance, *id));
             }
         }
@@ -463,45 +491,54 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     if let Some((_, id)) = best {
         return Some(Handle::Body(id));
     }
-    for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
+    for (id, solids) in world.solids.iter() {
+        let Some(v) = seen(id) else { continue };
+        let p = v.to_world(pos);
         // Each part's own circle, so the gaps of a peg grid or the inside of a ring stay free.
-        let grab = SPOT_GRAB / view.world_scale();
+        let grab = SPOT_GRAB / v.world_scale();
         let on_part = solids.bounds.iter().any(|(center, bound)| (*center - p).length() <= bound + grab);
         if on_part || (solids.pose.position - p).length() <= grab {
             return Some(Handle::Body(*id));
         }
     }
     // Things with nothing of their own to click are grabbed by their gizmo's middle.
-    for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
-        let Some(r) = studio.resolved.things.get(id) else { continue };
+    for (id, thing) in studio.scene.things.iter() {
+        let (Some(v), Some(r)) = (seen(id), studio.resolved.things.get(id)) else { continue };
         for gizmo in gizmos(thing, r, world) {
             let middle = match gizmo {
                 Gizmo::Dot(at) | Gizmo::Circle(at, _) | Gizmo::Rect { center: at, .. } | Gizmo::Arrow(at, _) => at,
                 Gizmo::Line(a, b) => (a + b) * 0.5,
             };
-            if (view.to_screen(middle) - pos).length() <= GIZMO_GRAB {
+            if (v.to_screen(middle) - pos).length() <= GIZMO_GRAB {
                 return Some(Handle::Body(*id));
             }
         }
     }
-    if let Some(id) = studio.selection.primary.filter(|id| shown(id) && spot_only(world, *id))
+    if let Some(id) = studio.selection.primary.filter(|id| spot_only(studio, world, *id))
+        && let Some(v) = seen(&id)
         && let Some(place) = place_of(&studio.scene, world, id)
-        && (view.to_screen(place) - pos).length() <= SPOT_GRAB
+        && (v.to_screen(place) - pos).length() <= SPOT_GRAB
     {
         return Some(Handle::Body(id));
     }
-    for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
+    for (id, wall) in world.walls.iter() {
+        let Some(v) = seen(id) else { continue };
+        let p = v.to_world(pos);
         let edge = outline_point_towards(&wall.outline, p);
-        if (edge - p).length() * view.world_scale() <= EDGE_GRAB {
+        if (edge - p).length() * v.world_scale() <= EDGE_GRAB {
             return Some(Handle::Edge(*id));
         }
     }
     None
 }
 
-/// A thing with no balls, wall or solids of its own: a folder, or an empty obstacle.
-fn spot_only(world: &World, id: ThingId) -> bool {
-    !world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && !world.solids.contains_key(&id)
+/// A thing with no balls, wall or solids of its own: a folder, or an empty obstacle. The camera
+/// has its own frame to grab instead.
+fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
+    !world.bodies.contains_key(&id)
+        && !world.walls.contains_key(&id)
+        && !world.solids.contains_key(&id)
+        && studio.scene.things.get(&id).is_some_and(|t| t.kind != "camera")
 }
 
 /// Moves what `drag` holds to the pointer at `pointer`, in world pixels. A rider moves by its
@@ -562,6 +599,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     draw_gizmos(&painter, studio, view, active, selected);
 
     for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
+        let Some(view) = view.of(studio, *id) else { continue };
         let edge_active = active == Some(Handle::Edge(*id));
         let highlighted = edge_active || selected == Some(*id);
         if highlighted {
@@ -587,13 +625,15 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
 
     // Obstacles: a ring at their place, like the balls below.
     for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
+        let Some(view) = view.of(studio, *id) else { continue };
         let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
         let color = if highlighted { theme::ACCENT } else { faint };
         painter.circle_stroke(view.to_screen(solids.pose.position), 6.0, Stroke::new(1.2, color));
     }
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
     // name, so it can still be found and dragged.
-    if let Some(id) = selected.filter(|id| shown(id) && spot_only(world, *id))
+    if let Some(id) = selected.filter(|id| shown(id) && spot_only(studio, world, *id))
+        && let Some(view) = view.of(studio, id)
         && let Some(thing) = studio.scene.things.get(&id)
         && let Some(place) = place_of(&studio.scene, world, id)
     {
@@ -612,6 +652,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     }
 
     for (id, thing) in studio.scene.things.iter().filter(|(id, t)| t.enabled && world.bodies.contains_key(id)) {
+        let Some(view) = view.of(studio, *id) else { continue };
         let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
         let color = if highlighted { theme::ACCENT } else { faint };
         let center = view.to_screen(place_of(&studio.scene, world, *id).unwrap_or(thing.transform.position));
@@ -658,6 +699,7 @@ fn draw_gizmos(
     let world = studio.playback.world();
     for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
         let Some(r) = studio.resolved.things.get(id) else { continue };
+        let Some(view) = view.of(studio, *id) else { continue };
         let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
         let color = if highlighted { theme::ACCENT } else { theme::MUTED };
         let stroke = Stroke::new(if highlighted { 1.6 } else { 1.0 }, color);
@@ -791,7 +833,12 @@ mod tests {
     #[test]
     fn hit_testing_finds_balls_before_arenas() {
         let studio = Studio::headless();
-        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25, camera: CameraView::default() };
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(508.0, 0.0))), Some(Handle::Edge(ThingId(1))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None);
@@ -806,7 +853,12 @@ mod tests {
         let soft = studio.scene.add_thing(&studio.kit.registry, "soft", ThingId::ROOT).unwrap();
         studio.scene.things.get_mut(&soft).unwrap().transform.position = Vec2::new(0.0, 300.0);
         studio.after_edit(before);
-        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25, camera: CameraView::default() };
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
         // The top of the jelly's skin, 120 px above its middle.
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 182.0))), Some(Handle::Body(soft)));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None, "the hollow middle");
@@ -859,7 +911,12 @@ mod tests {
         let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: true, item: None };
         studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
         studio.after_edit(before);
-        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25, camera: CameraView::default() };
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(100.0, 100.0))), Some(Handle::Body(peg)));
         let world = studio.playback.world().clone();
         apply_drag(
@@ -912,7 +969,12 @@ mod tests {
         thing.transform.position = Vec2::new(300.0, 0.0);
         thing.params.set("radius", Value::Number(100.0));
         studio.after_edit(before);
-        let view = View { rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)), scale: 0.25, camera: CameraView::default() };
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 0.0))), Some(Handle::Body(field)));
         // Just past the grab distance there is nothing: a field's circle has no edge handle.
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 80.0))), None);
@@ -997,6 +1059,45 @@ mod tests {
     }
 
     #[test]
+    fn a_stuck_ball_is_grabbed_where_it_is_drawn() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let ball = studio.scene.things.get_mut(&ThingId(2)).unwrap();
+        ball.screen = Some(true);
+        ball.transform.position = Vec2::new(100.0, 300.0);
+        studio.after_edit(before);
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0));
+        let camera = CameraView { center: Vec2::new(4000.0, 0.0), zoom: 2.0, turn: 0.0 };
+        let shot = View { rect, scale: 0.25, camera, world: false };
+        // Drawn on the picture as if there were no camera.
+        let drawn = View { camera: CameraView::default(), ..shot }.to_screen(Vec2::new(100.0, 300.0));
+        assert_eq!(hit_test(&studio, &shot, drawn), Some(Handle::Body(ThingId(2))));
+        assert_eq!(shot.pointer_for(&studio, Handle::Body(ThingId(2)), drawn), Vec2::new(100.0, 300.0));
+        // Through the camera, where it isn't, there's nothing.
+        assert_eq!(hit_test(&studio, &shot, shot.to_screen(Vec2::new(100.0, 300.0))), None);
+        // The World view shows the world only.
+        let free = View { world: true, ..shot };
+        assert_eq!(hit_test(&studio, &free, free.to_screen(Vec2::new(100.0, 300.0))), None);
+        assert_eq!(hit_test(&studio, &free, drawn), None);
+    }
+
+    #[test]
+    fn a_selected_camera_has_no_spot_to_grab() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        let cam = bpe_kit::ensure_camera(&mut studio.scene, &studio.kit.registry);
+        studio.after_edit(before);
+        studio.selection.primary = Some(cam);
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::ZERO)).map(Handle::thing), None);
+    }
+
+    #[test]
     fn hit_test_under_turned_zoomed_camera() {
         let mut studio = Studio::headless();
         let before = studio.scene.clone();
@@ -1007,7 +1108,7 @@ mod tests {
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 3.0, turn: 0.6 },
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 0.05, turn: 0.6 },
         ] {
-            let view = View { rect, scale: 0.25, camera };
+            let view = View { rect, scale: 0.25, camera, world: false };
             let at = view.to_screen(Vec2::new(520.0, 790.0));
             // Zoomed far out, the launch arrow's tip sits on the ball too: either grabs it.
             assert_eq!(hit_test(&studio, &view, at).map(Handle::thing), Some(ThingId(2)), "{camera:?}");
