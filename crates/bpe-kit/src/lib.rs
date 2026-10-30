@@ -56,6 +56,7 @@ pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::camera::{CameraKind, CameraSettings};
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
@@ -245,6 +246,7 @@ pub fn registry() -> Registry {
     r.add_thing(ObstacleKind);
     r.add_thing(EmitterKind);
     r.add_thing(FieldKind);
+    r.add_thing(CameraKind);
     r.add_thing(LiquidKind);
     r.add_thing(SwarmKind);
     r.add_module(ClassicLookKind);
@@ -290,6 +292,29 @@ pub fn new_scene(reg: &Registry) -> Scene {
     let thing = scene.things.get_mut(&ball).expect("just added");
     thing.name = "Ball".into();
     thing.transform.position = Vec2::new(0.0, -200.0);
+    scene
+}
+
+/// The scene's camera, if it has one.
+pub fn camera_of(scene: &Scene) -> Option<ThingId> {
+    scene.order.iter().copied().find(|id| scene.things.get(id).is_some_and(|t| t.kind == "camera"))
+}
+
+/// The scene's camera, added under Scene defaults when it has none. It is always the newest
+/// thing, so no other thing's id moves, and nothing else changes.
+pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
+    if let Some(id) = camera_of(scene) {
+        return id;
+    }
+    scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
+}
+
+/// A new scene as the editor starts it: [`new_scene`] with a camera, and hits off the shot
+/// fading away.
+pub fn new_studio_scene(reg: &Registry) -> Scene {
+    let mut scene = new_scene(reg);
+    ensure_camera(&mut scene, reg);
+    scene.things.get_mut(&ThingId::ROOT).expect("root").params.set("off_shot_fade", Value::Number(1.5));
     scene
 }
 
@@ -450,5 +475,44 @@ mod tests {
         let b = add_thing(&mut kit_scene, &reg, "balls", ThingId::ROOT).unwrap();
         assert_eq!(a, b);
         assert_eq!(plain, kit_scene);
+    }
+
+    #[test]
+    fn ensure_camera_appends_once() {
+        let reg = registry();
+        let mut scene = scenes::all(&reg).into_iter().next().unwrap().1;
+        let before: Vec<ThingId> = scene.things.keys().copied().collect();
+        let newest = ThingId(scene.next_thing);
+        let a = ensure_camera(&mut scene, &reg);
+        let b = ensure_camera(&mut scene, &reg);
+        assert_eq!(a, b);
+        assert_eq!(a, newest);
+        assert_eq!(scene.things.values().filter(|t| t.kind == "camera").count(), 1);
+        assert!(before.iter().all(|id| scene.things.contains_key(id)));
+        assert_eq!(scene.add_thing(&reg, "camera", ThingId::ROOT), Err(EditError::OnlyOne("camera".into())));
+    }
+
+    #[test]
+    fn old_file_loads_without_screen_or_camera() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let text = scene.add_thing(&reg, "text", ThingId::ROOT).unwrap();
+        let saved = bpe_core::save(&scene);
+        assert!(!saved.contains("screen"), "{saved}");
+        let loaded = bpe_core::load(&saved, &reg).unwrap();
+        assert_eq!(camera_of(&loaded), None);
+        let t = &loaded.things[&text];
+        assert!(t.sticks_to_screen(reg.thing("text").unwrap()));
+        let b = &loaded.things[&ThingId(2)];
+        assert!(!b.sticks_to_screen(reg.thing("balls").unwrap()));
+    }
+
+    #[test]
+    fn new_studio_scene_has_a_camera_and_fades_off_shot_hits() {
+        let reg = registry();
+        let scene = new_studio_scene(&reg);
+        assert!(camera_of(&scene).is_some());
+        let root = SceneSettings::from_params(&bpe_core::resolve(&scene, &reg).things[&ThingId::ROOT].params);
+        assert_eq!(root.off_shot_fade, 1.5);
     }
 }

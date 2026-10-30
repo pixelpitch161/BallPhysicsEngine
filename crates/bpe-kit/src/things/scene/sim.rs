@@ -29,6 +29,7 @@ impl ThingSim for SceneSim {
         world.steps_per_second = s.steps_per_second.max(1);
         world.gravity = s.gravity;
         world.seed = s.seed as u64;
+        world.aspect = s.height.max(1) as f32 / s.width.max(1) as f32;
         let beats = beats_for(&s);
         let song = load_song(&s.song);
         if !beats.is_empty() || song.is_some() {

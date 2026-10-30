@@ -90,12 +90,21 @@ pub struct Thing {
     pub params: Params,
     /// Slots shown in the inspector. A slot left out behaves as `Inherit`.
     pub slots: BTreeMap<SlotId, SlotLink>,
+    /// Drawn on the screen instead of in the world, whatever the camera does. `None` is the
+    /// kind's own choice ([`crate::ThingKind::sticks_to_screen`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<bool>,
 }
 
 impl Thing {
     /// Whether this thing sits on its parent instead of keeping its own place.
     pub fn rides(&self) -> bool {
         matches!(self.attach, Attach::Ride { .. })
+    }
+
+    /// Whether it is drawn on the screen rather than in the world.
+    pub fn sticks_to_screen(&self, kind: &dyn crate::ThingKind) -> bool {
+        self.screen.unwrap_or_else(|| kind.sticks_to_screen())
     }
 }
 
@@ -112,6 +121,7 @@ impl Default for Thing {
             enabled: true,
             params: Params::default(),
             slots: BTreeMap::new(),
+            screen: None,
         }
     }
 }

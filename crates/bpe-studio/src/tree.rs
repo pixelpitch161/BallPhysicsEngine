@@ -86,7 +86,8 @@ pub fn show(
                 .color(theme::MUTED),
         );
         ui.menu_button("+ Add thing", |ui| {
-            for kind in reg.things().filter(|k| k.id() != "scene") {
+            let present = |k: &str| scene.things.values().any(|t| t.kind == k);
+            for kind in reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))) {
                 if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
                     action = Some(Action::Add(kind.id()));
                     ui.close();
@@ -123,6 +124,7 @@ pub fn show(
                         parent_name: thing.parent.and_then(|p| scene.things.get(&p)).map(|p| p.name.as_str()),
                         problems: &problems,
                         selected: selection.contains(id),
+                        single: reg.thing(&thing.kind).is_some_and(|k| k.single()),
                     };
                     let rect = row(ui, tree, scene, thing, &cx, &mut action);
                     rows.push((id, rect));
@@ -199,7 +201,9 @@ pub fn show(
         }
         Some(Action::DeleteRow(_)) | Some(Action::MakeFolder(_)) => unreachable!("turned into Delete and Folder"),
         Some(Action::Delete(ids)) => {
-            // Parents first; a child whose parent went is already gone.
+            // Parents first; a child whose parent went is already gone. Nothing holding a
+            // one-per-scene thing (the camera) goes.
+            let ids: Vec<ThingId> = ids.into_iter().filter(|&id| !holds_single(scene, reg, id)).collect();
             for id in ids {
                 if let Ok(removed) = scene.remove_thing(id) {
                     selection.remove(&removed);
@@ -461,6 +465,8 @@ struct RowCx<'a> {
     parent_name: Option<&'a str>,
     problems: &'a [String],
     selected: bool,
+    /// One per scene, such as the camera: it can't be deleted or duplicated.
+    single: bool,
 }
 
 /// Draws one row and returns the rectangle it covers.
@@ -561,21 +567,21 @@ fn name_button(ui: &mut Ui, scene: &Scene, thing: &Thing, cx: &RowCx, action: &m
     } else if response.clicked() {
         *action = Some(Action::Select(id, ui.input(|i| i.modifiers)));
     }
-    response.context_menu(|ui| context_menu(ui, scene, thing, action));
+    response.context_menu(|ui| context_menu(ui, scene, thing, cx.single, action));
 }
 
-fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, action: &mut Option<Action>) {
+fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action: &mut Option<Action>) {
     let id = thing.id;
     if ui.button("Rename").clicked() {
         *action = Some(Action::StartRename(id));
         ui.close();
     }
     if id != ThingId::ROOT {
-        if ui.button("Duplicate").clicked() {
+        if !single && ui.button("Duplicate").clicked() {
             *action = Some(Action::Duplicate(id));
             ui.close();
         }
-        if ui.button("Delete").clicked() {
+        if !single && ui.button("Delete").clicked() {
             *action = Some(Action::DeleteRow(id));
             ui.close();
         }
@@ -717,6 +723,8 @@ enum Icon {
     Blob,
     /// Text: a letter.
     Letter,
+    /// The camera: a 9:16 frame.
+    Frame,
     /// Anything else.
     Diamond,
 }
@@ -730,6 +738,7 @@ fn icon_shape(kind: &str) -> Icon {
         "liquid" => Icon::Drop,
         "swarm" => Icon::Dots,
         "field" => Icon::Wind,
+        "camera" => Icon::Frame,
         "folder" => Icon::Folder,
         "obstacle" => Icon::Bar,
         "soft" => Icon::Blob,
@@ -815,6 +824,11 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             painter.line_segment([top - Vec2::new(r * 0.9, 0.0), top + Vec2::new(r * 0.9, 0.0)], Stroke::new(2.0, ink));
             painter.line_segment([top, c + Vec2::new(0.0, r * 0.95)], Stroke::new(2.0, ink));
         }
+        Icon::Frame => {
+            let rect = Rect::from_center_size(c, Vec2::new(r * 1.15, r * 2.0));
+            painter.rect_stroke(rect, 1.5, Stroke::new(1.6, ink), egui::StrokeKind::Inside);
+            painter.circle_filled(c, r * 0.28, ink);
+        }
         Icon::Diamond => {
             let points =
                 vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
@@ -825,6 +839,14 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
 
 /// A copy of `id` beside it, with the same settings, slots and transform. The scene's defaults
 /// can't be copied.
+/// Whether `id` or anything under it is a one-per-scene thing, such as the camera.
+fn holds_single(scene: &Scene, reg: &Registry, id: ThingId) -> bool {
+    scene.things.values().any(|t| {
+        reg.thing(&t.kind).is_some_and(|k| k.single())
+            && std::iter::successors(Some(t.id), |c| scene.things.get(c).and_then(|t| t.parent)).any(|a| a == id)
+    })
+}
+
 pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<ThingId> {
     let source = scene.things.get(&id)?.clone();
     let parent = source.parent?;
@@ -1307,5 +1329,23 @@ mod tests {
         assert!(
             matches!(s.scene.things[&ThingId(1)].slots.get(&SlotId::Look), Some(bpe_core::SlotLink::Linked { module, .. }) if *module == m)
         );
+    }
+
+    #[test]
+    fn camera_cannot_be_deleted_or_doubled() {
+        let mut h = harness();
+        let s = h.state_mut();
+        let cam = bpe_kit::ensure_camera(&mut s.scene, &s.kit.registry);
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        h.get_by_label("Camera").click();
+        h.run();
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(h.state().scene.things.contains_key(&cam));
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        assert!(h.query_by_label("Camera").is_none() || h.query_all_by_label("Camera").count() == 1);
+        assert!(duplicate(&mut h.state_mut().scene, &bpe_kit::registry(), cam).is_none());
     }
 }

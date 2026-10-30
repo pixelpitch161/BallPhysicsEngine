@@ -70,6 +70,8 @@ pub struct World {
     pub seed: u64,
     /// What the video shows right now; the camera's sim sets it, the identity without one.
     pub camera: CameraView,
+    /// The video's height over its width; the scene's sim sets it.
+    pub aspect: f32,
     /// What the rules asked for in the last step, applied at the start of the next.
     pub pending: Vec<Action>,
     /// The kind of every built thing, in id order.
@@ -132,6 +134,7 @@ impl World {
             history: BTreeMap::new(),
             seed: 0,
             camera: CameraView::default(),
+            aspect: 1920.0 / 1080.0,
             pending: Vec::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),

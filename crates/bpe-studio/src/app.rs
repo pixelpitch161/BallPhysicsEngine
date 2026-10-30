@@ -143,8 +143,9 @@ impl Studio {
         match scene_path {
             Some(path) => _ = studio.open_path(&path),
             None => {
-                if let Some(path) = settings::last_scene() {
-                    studio.open_path(&path);
+                let opened = settings::last_scene().is_some_and(|path| studio.open_path(&path));
+                if !opened {
+                    studio.new_scene();
                 }
                 studio.show_start();
             }
@@ -248,7 +249,10 @@ impl Studio {
         self.revision += 1;
     }
 
-    pub fn replace_scene(&mut self, scene: Scene, path: Option<PathBuf>) {
+    pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
+        // Every scene the editor holds has a camera; an older file gets one at the identity, so
+        // it looks and sounds as it always did.
+        bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
         self.saved = scene.clone();
         self.scene = scene;
         self.path = path;
@@ -297,7 +301,7 @@ impl Studio {
     }
 
     pub fn new_scene(&mut self) {
-        self.replace_scene(bpe_kit::new_scene(&self.kit.registry), None);
+        self.replace_scene(bpe_kit::new_studio_scene(&self.kit.registry), None);
         self.status = "Started a new scene.".into();
     }
 
