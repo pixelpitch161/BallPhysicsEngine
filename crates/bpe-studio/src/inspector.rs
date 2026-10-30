@@ -4,17 +4,18 @@
 
 use crate::chords::{self, Audition, ChordClip, ChordUi};
 use crate::dice::dice_button;
+use crate::instruments::InstrumentEdit;
 use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
-    COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, MAKE_UNIQUE, NEW_PROGRESSION, TargetChoices,
-    settings_grid, settings_grid_marked,
+    BUILT_IN_BASE, COLOUR, COLOURS, ColoursEdit, GridCx, KeyMark, ListChange, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT,
+    NEW_PATCH, NEW_PROGRESSION, STARTER_BASE, TargetChoices, plays_built_in, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Chord, Color, Depth, InstrumentRef, ModuleGraph, ModuleId, ModuleKind, Owner, Progression,
-    ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink,
-    ThingId, Transform, Value, ValueType,
+    Address, Attach, Chord, Color, Depth, InstrumentId, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
+    ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene, SettingDef,
+    SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
 };
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
@@ -38,6 +39,8 @@ pub struct Inspector {
     pub chord_ui: BTreeMap<ProgressionId, ChordUi>,
     /// Chords asked to be heard this frame; the app plays them.
     pub clip: Option<ChordClip>,
+    /// A card's "Edit patch" was pressed: the node panel should open on this patch.
+    pub patch_request: Option<InstrumentId>,
 }
 
 /// A card's Nodes button.
@@ -101,6 +104,10 @@ enum Edit {
     Graph(ModuleId, ModuleGraph),
     /// A chord editor changed a progression in the library.
     Progression(ProgressionId, Progression),
+    /// An instrument section changed an instrument in the library.
+    Instrument(InstrumentId, bpe_core::Instrument),
+    /// A module's own value for one of its instrument's macros, or `None` to follow it again.
+    Macro(ModuleId, String, Option<f32>),
     /// The look's colour list changed: its Colour and Colours settings, at these addresses.
     Colours {
         colour: Address,
@@ -519,6 +526,7 @@ pub fn show(
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
+                        instrument_section(ui, scene, defs, &get, module, &mut edits, &mut inspector.patch_request);
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_module(COLOUR), colours: of_module(COLOURS), edit });
                         }
@@ -556,6 +564,7 @@ pub fn show(
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
+                        instrument_section(ui, scene, defs, &get, module, &mut edits, &mut inspector.patch_request);
                         if let Some(edit) = out.colours {
                             edits.push(Edit::Colours { colour: of_thing(COLOUR), colours: of_thing(COLOURS), edit });
                         }
@@ -621,9 +630,12 @@ pub fn show(
     let mut changed = false;
     for edit in edits {
         let edit = make_picked_progression(scene, reg, id, time, edit);
+        let edit = make_picked_instrument(scene, reg, id, time, edit);
         let ok = match edit {
             Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
             Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
+            Edit::Instrument(iid, i) => scene.set_instrument(iid, i).is_ok(),
+            Edit::Macro(module, key, value) => scene.set_macro(module, &key, value).is_ok(),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -973,6 +985,37 @@ fn chord_editor(
     heard
 }
 
+/// Under a card with an Instrument setting: the section for the instrument it picks, or a line
+/// saying it plays Scene defaults' one.
+fn instrument_section(
+    ui: &mut Ui,
+    scene: &Scene,
+    defs: &[SettingDef],
+    get: &dyn Fn(&str) -> Value,
+    module: ModuleId,
+    edits: &mut Vec<Edit>,
+    patch_request: &mut Option<InstrumentId>,
+) {
+    for def in defs.iter().filter(|d| d.ty == ValueType::Instrument) {
+        let picked = InstrumentRef::from_value(&get(def.key)).and_then(|r| r.0);
+        let Some(iid) = picked.filter(|i| scene.library.instruments.contains_key(i)) else {
+            ui.label(
+                RichText::new("Plays Scene defaults' instrument. Pick Make unique to shape its own.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+            continue;
+        };
+        for edit in crate::instruments::show(ui, scene, module, iid) {
+            match edit {
+                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, instrument)),
+                InstrumentEdit::Macro(key, value) => edits.push(Edit::Macro(module, key, value)),
+                InstrumentEdit::EditPatch(i) => *patch_request = Some(i),
+            }
+        }
+    }
+}
+
 /// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
 fn chord_clip(
     chords: Vec<Chord>,
@@ -1013,6 +1056,65 @@ fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: Thin
             shown(&here).or_else(|| shown(&root)).and_then(|p| scene.copy_progression(p).ok())
         };
     let value = made.map_or(Value::Int(-1), |p| ProgressionRef(Some(p)).to_value());
+    match slot {
+        None => Edit::SetKind(key, value),
+        Some(slot) => Edit::SetSlot(slot, key, value),
+    }
+}
+
+/// An Instrument row's built-in, starter, "New patch" or "Make unique" pick becomes a pick of a
+/// library instrument made for it: a built-in is shared with whatever already plays it.
+fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
+    let (slot, key, value) = match &edit {
+        Edit::SetKind(key, value) => (None, *key, value),
+        Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
+        _ => return edit,
+    };
+    let is_instrument = |d: &SettingDef| d.key == key && d.ty == ValueType::Instrument;
+    let defs = match slot {
+        None => scene.things.get(&id).and_then(|t| reg.thing(&t.kind)).map(|k| k.settings()),
+        Some(slot) => {
+            let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
+            scene.def_at(reg, &a).map(std::slice::from_ref)
+        }
+    };
+    if !defs.is_some_and(|d| d.iter().any(is_instrument)) {
+        return edit;
+    }
+    let Value::Int(pick) = *value else { return edit };
+    let starters = || bpe_synth::starters();
+    let made = match pick {
+        NEW_PATCH => Some(scene.add_instrument(bpe_core::Instrument {
+            name: "New patch".into(),
+            source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
+            voices: Default::default(),
+        })),
+        MAKE_UNIQUE_INSTRUMENT => {
+            let here = Address { owner: Owner::Thing(id), slot, key: key.into() };
+            let shown =
+                scene.value_at_time(reg, &here, time).and_then(|v| InstrumentRef::from_value(&v)).and_then(|r| r.0);
+            shown
+                .filter(|i| scene.library.instruments.contains_key(i))
+                .or_else(|| crate::instruments::scene_instrument(scene))
+                .and_then(|i| scene.copy_instrument(i).ok())
+        }
+        p if p <= STARTER_BASE => {
+            let all = starters();
+            all.into_iter().nth((STARTER_BASE - p) as usize).map(|(name, graph, voices)| {
+                scene.add_instrument(bpe_core::Instrument {
+                    name: name.into(),
+                    source: InstrumentSource::Patch { graph },
+                    voices,
+                })
+            })
+        }
+        p if p <= BUILT_IN_BASE => bpe_mix::Instrument::ALL.get((BUILT_IN_BASE - p) as usize).map(|&which| {
+            let found = scene.library.instruments.iter().find(|(_, i)| plays_built_in(i, which)).map(|(i, _)| *i);
+            found.unwrap_or_else(|| scene.add_instrument(bpe_kit::built_in_instrument(which)))
+        }),
+        _ => return edit,
+    };
+    let value = made.map_or(Value::Int(-1), |i| InstrumentRef(Some(i)).to_value());
     match slot {
         None => Edit::SetKind(key, value),
         Some(slot) => Edit::SetSlot(slot, key, value),
@@ -1822,6 +1924,128 @@ mod tests {
         let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
         assert_eq!(clip.chords, [bpe_core::Chord { beats: 4, ..p.chords[6] }]);
         assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
+    }
+
+    /// The module Scene defaults' sound links.
+    fn root_sound(s: &Scene) -> ModuleId {
+        let SlotLink::Linked { module, .. } = &s.things[&ThingId::ROOT].slots[&SlotId::Sound] else {
+            panic!("Scene defaults links a sound")
+        };
+        *module
+    }
+
+    fn open_instrument_menu(h: &mut Harness<'_, State>) {
+        let combo = h.get_by_role_and_label(Role::ComboBox, "Instrument");
+        combo.scroll_to_me();
+        h.run();
+        h.get_by_role_and_label(Role::ComboBox, "Instrument").click();
+        h.run();
+    }
+
+    #[test]
+    fn a_sound_card_has_an_instrument_picker_with_built_ins_first() {
+        let mut h = harness(Some(ThingId::ROOT));
+        let combo = h.get_by_role_and_label(Role::ComboBox, "Instrument");
+        assert_eq!(combo.accesskit_node().value().as_deref(), Some("Pluck"));
+        open_instrument_menu(&mut h);
+        let y = |label: &str| h.get_by_label(label).rect().top();
+        assert!(h.query_by_label("Scene's").is_some(), "a module can follow Scene defaults");
+        assert!(y("Built-in") < y("Marimba"));
+        assert!(y("Marimba") < y("New patch"), "built-ins come before the library and new ones");
+        assert!(y("New patch") < y("Starter patches"));
+        assert!(h.query_by_label(bpe_synth::starters()[0].0).is_some());
+        assert!(h.query_by_label("Make unique").is_some());
+    }
+
+    #[test]
+    fn picking_a_starter_adds_it_to_the_library_and_links_it() {
+        let mut h = harness(Some(ThingId::ROOT));
+        open_instrument_menu(&mut h);
+        let name = bpe_synth::starters()[0].0;
+        h.get_by_label(name).scroll_to_me();
+        h.run();
+        h.get_by_label(name).click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.instruments.len(), 2);
+        let (id, i) = s.scene.library.instruments.iter().find(|(_, i)| i.name == name).expect("the starter is added");
+        assert!(matches!(i.source, InstrumentSource::Patch { .. }));
+        let m = root_sound(&s.scene);
+        assert_eq!(s.scene.library.modules[&m].params.get("instrument"), Some(&InstrumentRef(Some(*id)).to_value()));
+        // The section now shows the patch, its macros and its voices.
+        h.get_by_label("Edit patch");
+        h.get_by_role_and_label(Role::Slider, "Voice limit");
+        // Picking a built-in shares the library's Pluck rather than adding another.
+        open_instrument_menu(&mut h);
+        // The first Pluck is the built-in; the library's own Pluck follows further down.
+        h.query_all_by_label("Pluck").next().unwrap().scroll_to_me();
+        h.run();
+        h.query_all_by_label("Pluck").next().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.instruments.len(), 2);
+        assert_eq!(
+            s.scene.library.modules[&root_sound(&s.scene)].params.get("instrument"),
+            Some(&InstrumentRef(Some(InstrumentId(0))).to_value())
+        );
+    }
+
+    #[test]
+    fn make_unique_copies_the_instrument() {
+        let mut h = harness(Some(ThingId::ROOT));
+        open_instrument_menu(&mut h);
+        // The menu scrolls: Make unique is at its foot.
+        h.get_by_label("Make unique").scroll_to_me();
+        h.run();
+        h.get_by_label("Make unique").click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.instruments.len(), 2);
+        let copy = s.scene.library.instruments.iter().find(|(_, i)| i.name == "Pluck copy").expect("a copy").0;
+        assert_eq!(
+            s.scene.library.modules[&root_sound(&s.scene)].params.get("instrument"),
+            Some(&InstrumentRef(Some(*copy)).to_value())
+        );
+    }
+
+    #[test]
+    fn a_macro_override_is_marked_and_resets() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let (name, graph, voices) = bpe_synth::starters().into_iter().next().unwrap();
+        let knob = bpe_synth::macros(&graph).into_iter().next().expect("a starter has macros");
+        let id = scene.add_instrument(bpe_core::Instrument {
+            name: name.into(),
+            source: InstrumentSource::Patch { graph },
+            voices,
+        });
+        let m = root_sound(&scene);
+        scene.library.modules.get_mut(&m).unwrap().params.set("instrument", InstrumentRef(Some(id)).to_value());
+        let mid = (knob.min + knob.max) / 2.0;
+        scene.set_macro(m, &knob.key(), Some(mid)).unwrap();
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        let slider = h.get_by_role_and_label(Role::Slider, &knob.label);
+        assert_eq!(slider.accesskit_node().numeric_value(), Some(mid as f64));
+        assert!(h.query_by_label("Changed here").is_some(), "the override is marked");
+        let label = h.get_by_role_and_label(Role::Label, &knob.label);
+        label.scroll_to_me();
+        h.run();
+        h.get_by_role_and_label(Role::Label, &knob.label).click_secondary();
+        h.run();
+        h.get_by_label("Reset to instrument").click();
+        h.run();
+        assert!(h.state().scene.library.modules[&m].macros.is_empty());
+        assert!(h.query_by_label("Changed here").is_none());
+    }
+
+    #[test]
+    fn pluck_knobs_show_for_the_built_in_pluck() {
+        let h = harness(Some(ThingId::ROOT));
+        let decay = h.get_by_role_and_label(Role::Slider, "Decay");
+        assert_eq!(decay.accesskit_node().numeric_value(), Some(0.9f32 as f64));
+        let brightness = h.get_by_role_and_label(Role::Slider, "Brightness");
+        assert_eq!(brightness.accesskit_node().numeric_value(), Some(0.5));
+        assert!(h.query_by_label("Voice limit").is_none(), "a built-in plays without voices");
     }
 
     #[test]

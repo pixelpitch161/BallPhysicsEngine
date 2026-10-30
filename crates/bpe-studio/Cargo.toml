@@ -15,6 +15,7 @@ bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 ron.workspace = true
 bpe-mix.workspace = true
+bpe-synth.workspace = true
 bpe-kit.workspace = true
 bpe-graph.workspace = true
 bpe-vm.workspace = true
