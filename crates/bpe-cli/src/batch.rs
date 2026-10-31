@@ -482,6 +482,7 @@ fn render(
                 job.status = Status::Rendered;
             }
             Err(error) => {
+                remove_leftovers(&partial, &options.extras_path());
                 job.status = Status::Failed;
                 job.error = Some(format!("{error:#}"));
             }
@@ -494,6 +495,13 @@ fn render(
         }
     }
     Ok(())
+}
+
+/// What a failed video leaves behind: its part-made file, MIDI file and stems folder.
+fn remove_leftovers(partial: &Path, extras_base: &Path) {
+    let _ = std::fs::remove_file(partial);
+    let _ = std::fs::remove_file(bpe_kit::midi_path(extras_base));
+    let _ = std::fs::remove_dir_all(bpe_kit::stems_folder(extras_base));
 }
 
 /// Keeps the best rendered videos and moves or deletes the rest.
@@ -670,5 +678,18 @@ mod tests {
             }
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    #[test]
+    fn a_failed_video_leaves_nothing_behind() {
+        let dir = temp_dir("leftovers");
+        let base = dir.join("clip-seed-3");
+        let partial = dir.join("clip-seed-3.mp4.partial.mp4");
+        std::fs::write(&partial, b"video").unwrap();
+        std::fs::write(bpe_kit::midi_path(&base), b"midi").unwrap();
+        std::fs::create_dir_all(bpe_kit::stems_folder(&base)).unwrap();
+        remove_leftovers(&partial, &base);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

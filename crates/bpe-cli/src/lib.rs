@@ -269,7 +269,7 @@ pub fn export_video_reporting(
 ) -> anyhow::Result<ExportReport> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_with(device, queue, scene, kit, options, encoder, &mut progress) {
-        Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
+        Err(error) if retry_on_cpu(encoder, &error) => {
             let (master, extras) = export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
             Ok(ExportReport { encoder: Encoder::Cpu, master, extras })
@@ -279,6 +279,29 @@ pub fn export_video_reporting(
 }
 
 const CANCELLED: &str = "export cancelled";
+/// The error an export gives when the video is made but its MIDI file or stems couldn't be saved.
+const EXTRAS_FAILED: &str = "saving the MIDI file and stems";
+
+/// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
+/// made the video, and not because it was cancelled or the extras couldn't be saved.
+fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    encoder != Encoder::Cpu && !message.contains(CANCELLED) && !message.contains(EXTRAS_FAILED)
+}
+
+/// Reads a MIDI or stems flag into `extras`; false when `flag` is not one.
+pub fn extras_flag(flag: &str, extras: &mut bpe_kit::Extras) -> bool {
+    match flag {
+        "--midi" => extras.midi = true,
+        "--stems" => extras.stems = true,
+        "--wet-stems" => {
+            extras.stems = true;
+            extras.wet = true;
+        }
+        _ => return false,
+    }
+    true
+}
 /// Frames that can be on their way back from the graphics card at once.
 const FRAMES_IN_FLIGHT: usize = 3;
 /// Finished frames that can wait for ffmpeg at once.
@@ -418,7 +441,7 @@ fn export_with(
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
     // Only once the video is made, so a cancelled or failed export leaves no extras behind.
-    let extras = bpe_kit::write_extras(&export, &options.extras_path()).context("saving the MIDI file and stems")?;
+    let extras = bpe_kit::write_extras(&export, &options.extras_path()).context(EXTRAS_FAILED)?;
     Ok((track.report.clone(), extras))
 }
 
@@ -509,5 +532,27 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extras_that_fail_to_save_are_not_rendered_again() {
+        let extras = anyhow::anyhow!("disk full").context(EXTRAS_FAILED);
+        assert!(!retry_on_cpu(Encoder::Nvidia, &extras));
+        assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!(CANCELLED)));
+        assert!(retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("ffmpeg failed")));
+        assert!(!retry_on_cpu(Encoder::Cpu, &anyhow::anyhow!("ffmpeg failed")));
+    }
+
+    #[test]
+    fn extras_flags() {
+        let mut extras = bpe_kit::Extras::default();
+        assert!(extras_flag("--midi", &mut extras) && extras_flag("--wet-stems", &mut extras));
+        assert!(!extras_flag("--scale", &mut extras));
+        assert_eq!(extras, bpe_kit::Extras { midi: true, stems: true, wet: true });
     }
 }

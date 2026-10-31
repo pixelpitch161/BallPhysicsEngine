@@ -31,8 +31,8 @@ pub struct SceneExport {
     /// The finished soundtrack, the same as [`crate::mix_scene`] gives.
     pub soundtrack: Soundtrack,
     pub midi: Option<Vec<u8>>,
-    /// Channels, buses, then the song.
-    pub stems: Vec<Stem>,
+    /// Channels, buses, then the song; `None` when stems weren't asked for.
+    pub stems: Option<Vec<Stem>>,
 }
 
 /// "<module> (<things>)" for every sound module some thing plays through.
@@ -77,13 +77,13 @@ pub fn mix_scene_export(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit
         &physics,
         &mut cache,
     );
-    let mut stems = if extras.stems { bpe_mix::stems(&settings, &track, &physics, extras.wet) } else { Vec::new() };
+    let mut stems = extras.stems.then(|| bpe_mix::stems(&settings, &track, &physics, extras.wet));
     let root = music::root_settings(resolved);
     if let Some(song) = music::load_song(&root.song) {
         let before = extras.stems.then(|| track.samples.clone());
         music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
         // The song as it sits in the mix, ducking and all: what it added.
-        if let Some(before) = before {
+        if let (Some(before), Some(stems)) = (before, stems.as_mut()) {
             let samples = track.samples.iter().zip(&before).map(|(after, b)| after - b).collect();
             stems.push(Stem { name: "Song".into(), samples });
         }
@@ -112,8 +112,15 @@ pub fn midi_path(base: &Path) -> PathBuf {
     base.with_file_name(name)
 }
 
-/// Writes `<base>.mid` and `<base>-stems/` (replacing an old stems folder) for what the export
-/// holds. Gives the paths written.
+/// The loudest stem's peak, at most, once written: just under full scale.
+const STEM_PEAK: f32 = 0.99;
+
+/// Writes `<base>.mid` and `<base>-stems/` for what the export holds. Gives the paths written.
+///
+/// Stems are written into a side folder that replaces the old stems folder only once every file
+/// is in, so a failed write never leaves a half folder posing as the export's stems. Stems are
+/// taken before the master, so they can peak over full scale: then all of them are turned down
+/// by the same amount, which keeps their balance, and a note in the folder says by how much.
 pub fn write_extras(export: &SceneExport, base: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     if let Some(bytes) = &export.midi {
@@ -121,17 +128,38 @@ pub fn write_extras(export: &SceneExport, base: &Path) -> anyhow::Result<Vec<Pat
         std::fs::write(&path, bytes)?;
         written.push(path);
     }
-    if !export.stems.is_empty() {
+    if let Some(stems) = &export.stems {
         let folder = stems_folder(base);
+        let mut name = folder.file_name().unwrap_or_default().to_os_string();
+        name.push(".partial");
+        let partial = folder.with_file_name(name);
+        if partial.exists() {
+            std::fs::remove_dir_all(&partial)?;
+        }
+        std::fs::create_dir_all(&partial)?;
+        let peak = stems.iter().flat_map(|s| &s.samples).filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()));
+        let gain = if peak > STEM_PEAK { STEM_PEAK / peak } else { 1.0 };
+        let mut names = Vec::new();
+        for (stem, file) in stems.iter().zip(bpe_mix::stem_file_names(stems)) {
+            let samples: Vec<f32> = stem.samples.iter().map(|v| v * gain).collect();
+            bpe_mix::write_wav24(&partial.join(&file), &samples)?;
+            names.push(file);
+        }
+        if gain < 1.0 {
+            let db = -20.0 * gain.log10();
+            let note = format!(
+                "These stems are taken before the master stage and were louder than a WAV file can hold, \
+                 so all of them were turned down by {db:.1} dB together. Their balance is unchanged.\n"
+            );
+            let file = "About these stems.txt".to_string();
+            std::fs::write(partial.join(&file), note)?;
+            names.push(file);
+        }
         if folder.exists() {
             std::fs::remove_dir_all(&folder)?;
         }
-        std::fs::create_dir_all(&folder)?;
-        for (stem, name) in export.stems.iter().zip(bpe_mix::stem_file_names(&export.stems)) {
-            let path = folder.join(name);
-            bpe_mix::write_wav24(&path, &stem.samples)?;
-            written.push(path);
-        }
+        std::fs::rename(&partial, &folder)?;
+        written.extend(names.into_iter().map(|n| folder.join(n)));
     }
     Ok(written)
 }
@@ -166,9 +194,10 @@ mod tests {
     fn stems_through_the_master_match_the_mix() {
         let (scene, resolved, kit, log) = scene_and_log(20.0);
         let export = mix_scene_export(&scene, &resolved, &log, &kit, all());
-        assert!(!export.stems.is_empty());
+        let stems = export.stems.as_deref().unwrap();
+        assert!(!stems.is_empty());
         let mut sum = vec![0.0f32; export.soundtrack.samples.len()];
-        for s in &export.stems {
+        for s in stems {
             for (o, v) in sum.iter_mut().zip(&s.samples) {
                 *o += v;
             }
@@ -202,6 +231,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let written = write_extras(&export, &dir.join("silent")).unwrap();
         assert!(written.iter().any(|p| p.extension().is_some_and(|e| e == "mid")));
+        assert!(dir.join("silent-stems").is_dir(), "stems on gives a stems folder, empty or not");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -215,11 +245,56 @@ mod tests {
         let written = write_extras(&export, &base).unwrap();
         assert!(bpe_music::midi::parse(&std::fs::read(dir.join("clip.mid")).unwrap()).is_ok());
         let stems: Vec<_> = written.iter().filter(|p| p.extension().is_some_and(|e| e == "wav")).collect();
-        assert_eq!(stems.len(), export.stems.len());
+        assert_eq!(stems.len(), export.stems.as_ref().unwrap().len());
         for p in stems {
             assert!(p.starts_with(dir.join("clip-stems")));
             assert_eq!(hound::WavReader::open(p).unwrap().spec().bits_per_sample, 24);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn export_of(stems: Vec<Stem>) -> SceneExport {
+        SceneExport { soundtrack: Soundtrack::default(), midi: None, stems: Some(stems) }
+    }
+
+    #[test]
+    fn a_new_export_replaces_the_old_stems_whole() {
+        let dir = std::env::temp_dir().join(format!("bpe-replace-extras-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("clip");
+        let two =
+            vec![Stem { name: "A".into(), samples: vec![0.1; 8] }, Stem { name: "B".into(), samples: vec![0.1; 8] }];
+        write_extras(&export_of(two), &base).unwrap();
+        write_extras(&export_of(vec![Stem { name: "C".into(), samples: vec![0.1; 8] }]), &base).unwrap();
+        let mut left: Vec<_> =
+            std::fs::read_dir(dir.join("clip-stems")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, vec![std::ffi::OsString::from("01 C.wav")]);
+        let folders: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(folders, vec![std::ffi::OsString::from("clip-stems")], "no half-written folder is left");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn loud_stems_are_turned_down_together() {
+        let dir = std::env::temp_dir().join(format!("bpe-loud-extras-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let loud = vec![
+            Stem { name: "Loud".into(), samples: vec![2.0, -2.0] },
+            Stem { name: "Soft".into(), samples: vec![0.5, 0.5] },
+        ];
+        write_extras(&export_of(loud), &dir.join("clip")).unwrap();
+        let read = |name: &str| -> Vec<i32> {
+            hound::WavReader::open(dir.join("clip-stems").join(name))
+                .unwrap()
+                .samples::<i32>()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let (loud, soft) = (read("01 Loud.wav"), read("02 Soft.wav"));
+        assert!(loud[0] < 8_388_607 && loud[0] > 8_300_000, "the loudest stem sits just under full scale, not clipped");
+        assert!((loud[0] as f32 / soft[0] as f32 - 4.0).abs() < 0.01, "every stem keeps its level against the others");
+        assert!(dir.join("clip-stems").join("About these stems.txt").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -111,7 +111,9 @@ pub fn midi_file(settings: &MixSettings, notes: &[Note], names: &BTreeMap<u32, S
             }
             c
         };
-        let mut events = Vec::new();
+        // (key, on, off, velocity), then per key: hits on one tick become the loudest of them,
+        // and a note still held when its key is struck again ends there.
+        let mut spans: Vec<(u8, u64, u64, u8)> = Vec::new();
         for n in list {
             let seconds = n.frame as f64 / SAMPLE_RATE as f64;
             let on = ticks(seconds);
@@ -119,9 +121,27 @@ pub fn midi_file(settings: &MixSettings, notes: &[Note], names: &BTreeMap<u32, S
                 continue;
             }
             let off = ticks(seconds + gate_seconds(settings, n) as f64).clamp(on + 1, end.max(on + 1));
-            let v = midi_velocity(n.velocity);
-            events.push(At { tick: on, order: 1, kind: note(midi_channel, n.key, v, true) });
-            events.push(At { tick: off, order: 0, kind: note(midi_channel, n.key, 0, false) });
+            spans.push((n.key, on, off, midi_velocity(n.velocity)));
+        }
+        spans.sort_by_key(|&(key, on, _, _)| (key, on));
+        let mut merged: Vec<(u8, u64, u64, u8)> = Vec::new();
+        for span in spans {
+            match merged.last_mut() {
+                Some(last) if last.0 == span.0 && last.1 == span.1 => {
+                    last.2 = last.2.max(span.2);
+                    last.3 = last.3.max(span.3);
+                }
+                Some(last) if last.0 == span.0 && last.2 > span.1 => {
+                    last.2 = span.1;
+                    merged.push(span);
+                }
+                _ => merged.push(span),
+            }
+        }
+        let mut events = Vec::new();
+        for (key, on, off, v) in merged {
+            events.push(At { tick: on, order: 1, kind: note(midi_channel, key, v, true) });
+            events.push(At { tick: off, order: 0, kind: note(midi_channel, key, 0, false) });
         }
         names_owned.push(
             names
@@ -358,6 +378,33 @@ mod tests {
         let played: Vec<_> = file.notes.iter().filter(|n| file.parts[n.part as usize].name != "Chords").collect();
         assert_eq!(played.len(), 1, "the note after the end is left out");
         assert!(played[0].time + played[0].duration <= 2.0 + 1e-3);
+    }
+
+    #[test]
+    fn same_key_hits_never_overlap() {
+        let s = with_patch();
+        let pluck = NoteInstrument::BuiltIn(Instrument::Pluck);
+        // Repeats well inside the pluck's gate, and two balls landing on the same tick.
+        let notes = vec![at(0.0, 60, 0.5, 1, pluck), at(0.1, 60, 0.4, 1, pluck), at(0.1, 60, 0.9, 1, pluck)];
+        let bytes = midi_file(&s, &notes, &BTreeMap::new());
+        let events = &raw_tracks(&bytes)[1];
+        let (mut held, mut ons, mut loudest) = (0i32, 0, 0u8);
+        for e in events {
+            if let TrackEventKind::Midi { message, .. } = e.kind {
+                match message {
+                    MidiMessage::NoteOn { vel, .. } if vel > 0 => {
+                        held += 1;
+                        ons += 1;
+                        loudest = loudest.max(vel.as_int());
+                        assert!(held <= 1, "a key is struck again while still held");
+                    }
+                    MidiMessage::NoteOff { .. } | MidiMessage::NoteOn { .. } => held -= 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((ons, held), (2, 0), "the same-tick hits merge into one note");
+        assert_eq!(loudest, midi_velocity(0.9));
     }
 
     #[test]

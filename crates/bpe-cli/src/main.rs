@@ -34,6 +34,7 @@ Batch options (many seeds of one scene, the best kept; a stopped batch carries o
   --amount F       how far the variations go, 0 to 1 (default 0.5)
   --quality NAME   draft, good (default) or best
   --delete-rejected  delete the videos that didn't make the cut instead of moving them
+  --midi, --stems, --wet-stems  as for a single video, for every video kept
   --ffmpeg PATH    ffmpeg executable (default: found automatically)";
 
 fn main() {
@@ -72,12 +73,7 @@ fn run() -> anyhow::Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--new" => new_scene = true,
-            "--midi" => extras.midi = true,
-            "--stems" => extras.stems = true,
-            "--wet-stems" => {
-                extras.stems = true;
-                extras.wet = true;
-            }
+            flag if bpe_cli::extras_flag(flag, &mut extras) => {}
             "--scale" => scale = value(&mut i, "--scale")?.parse().context("--scale needs a number")?,
             "--frames" => frames = Some(value(&mut i, "--frames")?.parse().context("--frames needs a whole number")?),
             "--crf" => crf = value(&mut i, "--crf")?.parse().context("--crf needs a number from 0 to 51")?,
@@ -178,6 +174,7 @@ fn run_batch(args: &[String]) -> anyhow::Result<()> {
                     .with_context(|| format!("unknown quality {name}: use draft, good or best"))?;
             }
             "--delete-rejected" => spec.rejected = Rejected::Delete,
+            flag if bpe_cli::extras_flag(flag, &mut spec.extras) => {}
             "--ffmpeg" => ffmpeg = Some(PathBuf::from(value(&mut i, "--ffmpeg")?)),
             flag if flag.starts_with("--") => bail!("unknown option {flag}\n\n{USAGE}"),
             path => paths.push(path.into()),
