@@ -349,19 +349,34 @@ impl FlowLayers {
     }
 
     /// Draws the frame's swarms into the scene pass, after the walls and before everything
-    /// in front of them.
+    /// in front of them; in a layer whose things blend with each other (`each`), with the
+    /// pipeline [`FlowLayers::ensure_each`] made.
     pub(crate) fn draw_swarms(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         globals: &wgpu::BindGroup,
         paint: &wgpu::BindGroup,
         frame: &Frame,
+        each: Option<bpe_core::Blend>,
     ) {
+        // Without swarms no each-pipeline was made for this layer's mode.
+        if frame.swarms.is_empty() {
+            return;
+        }
+        let pipeline = match each {
+            Some(blend) => self.pipelines.swarm.each(blend),
+            None => self.pipelines.swarm.draw(),
+        };
         for l in &frame.swarms {
             if let Some(Layer::Swarm(s)) = self.layers.get(&l.thing) {
-                s.draw(&self.pipelines.swarm, pass, globals, paint);
+                s.draw(pipeline, pass, globals, paint);
             }
         }
+    }
+
+    /// Makes the pipeline swarms blending with each other by `blend` are drawn with.
+    pub(crate) fn ensure_each(&mut self, device: &wgpu::Device, blend: bpe_core::Blend) {
+        self.pipelines.swarm.ensure_each(device, blend);
     }
 
     /// Steps the layers to `time`, in batches of [`BATCH_STEPS`]. Going back restores the
@@ -775,6 +790,32 @@ mod tests {
     }
 
     #[test]
+    fn balls_blending_with_each_other_draw_with_flow_and_no_swarm() {
+        // The exporter always draws with flow; a layer of balls blending with each other has no
+        // swarm, so no swarm pipeline was made for its mode.
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, 90, 160);
+        let mut layer = Frame::default();
+        layer.balls.push(BallInstance { radius: 30.0, color: [0.3, 0.3, 0.3, 1.0], ..Default::default() });
+        let mut frame = Frame::default();
+        frame.layers.push(crate::BlendLayer { blend: bpe_core::Blend::Screen, amount: 1.0, each: true, frame: layer });
+        let (scene, resolved) = tiny_scene();
+        let sims = Sims::default();
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 1,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+        let pixels = renderer.read_output(&device, &queue).unwrap();
+        let i = ((80 * 90 + 45) * 4) as usize;
+        assert!(pixels[i] > 20, "the ball shows: {:?}", &pixels[i..i + 4]);
+    }
+
+    #[test]
     fn a_swarm_stays_inside_the_wall_and_is_deterministic() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
@@ -898,6 +939,15 @@ mod tests {
 
     #[test]
     fn a_swarm_in_a_blend_layer_is_stepped_and_drawn() {
+        swarm_in_a_layer(false);
+    }
+
+    #[test]
+    fn a_swarm_blending_with_each_other_is_drawn() {
+        swarm_in_a_layer(true);
+    }
+
+    fn swarm_in_a_layer(each: bool) {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
@@ -907,7 +957,8 @@ mod tests {
         layer.count = 20_000;
         layer.look.brightness = 0.8;
         layer.look.size = 2.0;
-        frame.layer_mut(bpe_core::Blend::Screen, 1.0).swarms.push(layer);
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0, each).swarms.push(layer);
+        assert_eq!(frame.layers[0].each, each);
         assert!(frame.swarms.is_empty());
         let source = FlowSource {
             scene: &scene,

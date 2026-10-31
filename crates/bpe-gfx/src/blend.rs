@@ -60,7 +60,8 @@ impl Composite {
     }
 
     /// Records the mix of `layer` into `picture` with `blend` at `amount`; `under` holds a copy of
-    /// `picture` from before. `slot` tells the layers of one frame apart.
+    /// `picture` from before. `slot` tells the layers of one frame apart. `each`: the layer's
+    /// things blended with each other into it, so it covers wherever any of them drew.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn composite(
         &mut self,
@@ -70,6 +71,7 @@ impl Composite {
         slot: usize,
         blend: Blend,
         amount: f32,
+        each: bool,
         under: &wgpu::TextureView,
         layer: &wgpu::TextureView,
         picture: &wgpu::TextureView,
@@ -83,7 +85,7 @@ impl Composite {
             }));
         }
         let uniform = &self.uniforms[slot];
-        let how = [blend.shader_code() as f32, amount.clamp(0.0, 1.0), 0.0, 0.0];
+        let how = [blend.shader_code() as f32, amount.clamp(0.0, 1.0), if each { 1.0 } else { 0.0 }, 0.0];
         queue.write_buffer(uniform, 0, bytemuck::cast_slice(&how));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blend"),

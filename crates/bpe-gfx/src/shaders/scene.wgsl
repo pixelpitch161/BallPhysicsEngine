@@ -264,8 +264,8 @@ fn shape_local(in: ShapeOut) -> vec2<f32> {
     return rotate(in.world - in.a.xy, -in.a.z) / half;
 }
 
-@fragment
-fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
+// What `fs_shape` and `fs_shape_each` draw.
+fn shade_shape(in: ShapeOut) -> vec4<f32> {
     let px = g.view.z;
     let d = shape_distance(in);
     let width = in.c.y * 2.0;
@@ -347,8 +347,8 @@ fn sphere_light(p: vec2<f32>, color: vec3<f32>) -> vec3<f32> {
     return color * diffuse + vec3<f32>(spec);
 }
 
-@fragment
-fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
+// What `fs_ball` and `fs_ball_each` draw.
+fn shade_ball(in: BallOut) -> vec4<f32> {
     let r = length(in.local);
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
@@ -396,8 +396,8 @@ fn vs_flash(@builtin(vertex_index) i: u32, f: FlashIn) -> FlashOut {
     return out;
 }
 
-@fragment
-fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
+// What `fs_flash` and `fs_flash_each` draw.
+fn shade_flash(in: FlashOut) -> vec4<f32> {
     let r2 = dot(in.local, in.local);
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
     return vec4<f32>(in.color.rgb * v, 0.0);
@@ -442,8 +442,8 @@ fn vs_soft(v: SoftIn) -> SoftOut {
     return out;
 }
 
-@fragment
-fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
+// What `fs_soft` and `fs_soft_each` draw.
+fn shade_soft(in: SoftOut) -> vec4<f32> {
     let cover = clamp(in.inside / g.view.z + 0.5, 0.0, 1.0);
     let a = abs(in.color.a) * cover;
     if a <= 0.0 {
@@ -456,4 +456,48 @@ fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
     // A gradient painted across the body takes the place of its colours.
     let rgb = paint_colour(paint, in.local, g.view.w).rgb;
     return vec4<f32>(rgb * a, covering(a, in.color.a));
+}
+
+@fragment
+fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
+    return shade_shape(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_shape_each(in: ShapeOut) -> @location(0) vec4<f32> {
+    return each_out(shade_shape(in), g.post.w);
+}
+
+@fragment
+fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
+    return shade_ball(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_ball_each(in: BallOut) -> @location(0) vec4<f32> {
+    return each_out(shade_ball(in), g.post.w);
+}
+
+@fragment
+fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
+    return shade_flash(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_flash_each(in: FlashOut) -> @location(0) vec4<f32> {
+    return each_out(shade_flash(in), g.post.w);
+}
+
+@fragment
+fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
+    return shade_soft(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_soft_each(in: SoftOut) -> @location(0) vec4<f32> {
+    return each_out(shade_soft(in), g.post.w);
 }

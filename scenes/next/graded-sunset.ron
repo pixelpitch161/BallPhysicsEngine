@@ -1,0 +1,535 @@
+(
+    format: 2,
+    name: "Graded sunset",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "background_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#1a0b3a",
+                        ),
+                        (
+                            at: 0.5,
+                            color: "#2b1055",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#4a2a7a",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "background_span": Number(1900.0),
+                "bloom": Number(0.30000001192092896),
+                "chords": Int(0),
+                "grade_contrast": Number(0.20000000298023224),
+                "grade_map": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#2b1055",
+                        ),
+                        (
+                            at: 0.25,
+                            color: "#7597de",
+                        ),
+                        (
+                            at: 0.5,
+                            color: "#f4a259",
+                        ),
+                        (
+                            at: 0.75,
+                            color: "#f25c54",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#ffd6a5",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "grade_vignette": Number(0.4000000059604645),
+                "grade_warmth": Number(0.30000001192092896),
+                "gravity": Vec2((0.0, 600.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "radius": Number(470.0),
+                "thickness": Number(14.0),
+            },
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Sunset balls",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -150.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(7),
+                "radius": Number(22.0),
+                "rows": Int(5),
+                "spacing": Number(52.0),
+                "velocity": Vec2((300.0, -120.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 4,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Glow balls",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 230.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("ring"),
+                "count": Int(5),
+                "radius": Number(55.0),
+                "ring_radius": Number(50.0),
+                "velocity": Vec2((-260.0, -380.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 6,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Title",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -740.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(6.0),
+                "outline_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#1a0b3a",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "size": Number(120.0),
+                "text": Text("Graded sunset"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        5: (
+            id: 5,
+            name: "Caption",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 700.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(0.0),
+                "size": Number(56.0),
+                "text": Text("palette  triad  grade"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Int(0),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#2b1055",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#7597de",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#f4a259",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#f25c54",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ffd6a5",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                    "glow": Number(0.20000000298023224),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Wall look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#f25c54",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#54f25c",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#5c54f2",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("path"),
+                    "glow": Number(0.5),
+                    "repeat": Choice("mirror"),
+                    "scroll": Number(0.07999999821186066),
+                },
+            ),
+            6: (
+                id: 6,
+                name: "Screen look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("screen"),
+                    "blend_each": Bool(true),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#2b1055",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#7597de",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#f4a259",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#f25c54",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ffd6a5",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                    "glow": Number(0.0),
+                },
+            ),
+        },
+        progressions: {
+            0: (
+                name: "Starter",
+                key: (
+                    root: 0,
+                    mode: Major,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
+        buses: [
+            (
+                id: 0,
+                name: "Reverb",
+                volume: 0.0,
+                fx: (
+                    name: "Effects",
+                    nodes: [
+                        (
+                            id: 1,
+                            kind: "fx_in",
+                            pos: (0.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 2,
+                            kind: "reverb",
+                            pos: (180.0, 0.0),
+                            params: {
+                                "damping": Number(0.4),
+                                "decay": Number(2.0),
+                                "mix": Number(1.0),
+                                "predelay": Number(10.0),
+                                "size": Number(0.6),
+                                "width": Number(1.0),
+                            },
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 3,
+                            kind: "fx_out",
+                            pos: (360.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                    ],
+                    links: [
+                        (
+                            from: (1, 0),
+                            to: (2, 0),
+                        ),
+                        (
+                            from: (2, 0),
+                            to: (3, 0),
+                        ),
+                    ],
+                    notes: [],
+                    enabled: true,
+                ),
+            ),
+            (
+                id: 1,
+                name: "Delay",
+                volume: 0.0,
+                fx: (
+                    name: "Effects",
+                    nodes: [
+                        (
+                            id: 1,
+                            kind: "fx_in",
+                            pos: (0.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 2,
+                            kind: "delay",
+                            pos: (180.0, 0.0),
+                            params: {
+                                "feedback": Number(0.35),
+                                "feel": Choice("straight"),
+                                "high_cut": Number(20000.0),
+                                "low_cut": Number(20.0),
+                                "mix": Number(1.0),
+                                "ms": Number(250.0),
+                                "ping_pong": Bool(true),
+                                "time_mode": Choice("1/4"),
+                            },
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 3,
+                            kind: "fx_out",
+                            pos: (360.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                    ],
+                    links: [
+                        (
+                            from: (1, 0),
+                            to: (2, 0),
+                        ),
+                        (
+                            from: (2, 0),
+                            to: (3, 0),
+                        ),
+                    ],
+                    notes: [],
+                    enabled: true,
+                ),
+            ),
+        ],
+    ),
+    next_thing: 6,
+    next_module: 7,
+    next_progression: 1,
+    next_instrument: 1,
+    tracks: {
+        (
+            owner: Thing(0),
+            slot: None,
+            key: "grade_map_amount",
+        ): (
+            keys: [
+                (
+                    time: 0.0,
+                    value: Number(0.0),
+                    ease: Linear,
+                ),
+                (
+                    time: 20.0,
+                    value: Number(0.5),
+                    ease: Linear,
+                ),
+            ],
+            range: Some((0.0, 1.0)),
+        ),
+    },
+)

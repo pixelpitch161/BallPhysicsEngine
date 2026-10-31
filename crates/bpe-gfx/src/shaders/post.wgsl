@@ -6,18 +6,26 @@ struct Globals {
     bg_paint: vec4<f32>,
     // The background place: direction, span, centre xy.
     bg_place: vec4<f32>,
-    // x: bloom strength, y: exposure
+    // x: bloom strength, y: exposure, z: 1 to run the colour grade
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
     // x: background on screen, y: how its place runs, z: steps
     bg: vec4<f32>,
+    bg_from: vec4<f32>,
+    bg_to: vec4<f32>,
+    // The colour grade: brightness, contrast, saturation, warmth.
+    grade: vec4<f32>,
+    // The colour grade: tint, vignette, vignette size, gradient map amount.
+    grade_more: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var src: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var bloom_tex: texture_2d<f32>;
+// The grade's gradient map, 256 by 1, linear light.
+@group(1) @binding(3) var grade_map: texture_2d<f32>;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -91,6 +99,35 @@ fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
 
+fn luma(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// The scene's colour grade on display-ready (sRGB-encoded) colours, in this order: gradient
+// map, brightness, contrast, saturation, warmth, tint, vignette; then clamped to 0..1.
+fn grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    var c = colour;
+    let amount = g.grade_more.w;
+    if amount > 0.0 {
+        // The baked row's first texel is at 0 and its last at 1.
+        let t = clamp(luma(c), 0.0, 1.0) * (255.0 / 256.0) + 0.5 / 256.0;
+        let m = textureSampleLevel(grade_map, samp, vec2<f32>(t, 0.5), 0.0).rgb;
+        c = mix(c, vec3<f32>(srgb_encode(m.r), srgb_encode(m.g), srgb_encode(m.b)), amount);
+    }
+    c *= 1.0 + g.grade.x;
+    c = (c - 0.5) * (1.0 + g.grade.y) + 0.5;
+    c = mix(vec3<f32>(luma(c)), c, 1.0 + g.grade.z);
+    c.r += 0.1 * g.grade.w;
+    c.b -= 0.1 * g.grade.w;
+    c.g -= 0.1 * g.grade_more.x;
+    // smoothstep(size, 1, d), written out so a size of 1 (equal edges) is no step, not a NaN.
+    let d = length((uv - 0.5) * 2.0) / sqrt(2.0);
+    let size = g.grade_more.z;
+    let s = clamp((d - size) / max(1.0 - size, 1e-5), 0.0, 1.0);
+    c *= 1.0 - g.grade_more.y * s * s * (3.0 - 2.0 * s);
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let hdr = textureSample(src, samp, in.uv).rgb;
@@ -103,10 +140,10 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let mapped = vec3<f32>(shoulder(toward_white.r), shoulder(toward_white.g), shoulder(toward_white.b));
     let dither = (hash(in.pos.xy) - 0.5) / 255.0;
     // The output texture is plain Rgba8Unorm holding sRGB-encoded values (what egui and video encoders expect).
-    return vec4<f32>(
-        srgb_encode(mapped.r) + dither,
-        srgb_encode(mapped.g) + dither,
-        srgb_encode(mapped.b) + dither,
-        1.0,
-    );
+    var out = vec3<f32>(srgb_encode(mapped.r), srgb_encode(mapped.g), srgb_encode(mapped.b));
+    // At its defaults the grade is skipped altogether, so the picture is exactly as without it.
+    if g.post.z > 0.5 {
+        out = grade(out, in.uv);
+    }
+    return vec4<f32>(out.r + dither, out.g + dither, out.b + dither, 1.0);
 }

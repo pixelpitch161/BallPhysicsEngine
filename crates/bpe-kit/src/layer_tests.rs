@@ -196,3 +196,23 @@ fn a_layered_ball_still_hands_its_hits_to_the_frame() {
     assert!(!frame.bursts.is_empty(), "the root's additive bursts are drawn in the frame");
     assert!(frame.layers[0].frame.hits.is_empty());
 }
+
+#[test]
+fn a_look_blending_with_each_other_gets_its_own_layer() {
+    let (mut scene, kit) = ball_blended("screen", 1.0);
+    let root_look = module_of(&scene, &kit, ThingId::ROOT, SlotId::Look);
+    set_blend(&mut scene, root_look, "screen", 1.0);
+    let look = module_of(&scene, &kit, BALL, SlotId::Look);
+    scene.library.modules.get_mut(&look).unwrap().params.set("blend_each", Value::Bool(true));
+    let frame = frame_at(&scene, &kit, 0.0);
+    let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
+    assert_eq!(kept, [(Blend::Screen, 1.0, false), (Blend::Screen, 1.0, true)], "the arena, then the ball");
+    assert_eq!(frame.layers[1].frame.balls.len(), 1);
+
+    // Overlay cannot blend with itself: the switch is ignored and the two share again.
+    set_blend(&mut scene, root_look, "overlay", 1.0);
+    set_blend(&mut scene, look, "overlay", 1.0);
+    let frame = frame_at(&scene, &kit, 0.0);
+    let kept: Vec<(Blend, bool)> = frame.layers.iter().map(|l| (l.blend, l.each)).collect();
+    assert_eq!(kept, [(Blend::Overlay, false)]);
+}

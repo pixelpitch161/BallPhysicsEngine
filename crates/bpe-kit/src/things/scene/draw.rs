@@ -17,6 +17,7 @@ impl ThingDraw for SceneDraw {
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let s = SceneSettings::from_params(&cx.resolved.params);
+        frame.grade = s.grade();
         frame.width = s.width.max(2);
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);
@@ -88,6 +89,12 @@ mod tests {
     /// The background a frame of the new scene paints after `f`'s changes to the scene's
     /// settings, with a camera when `camera` gives its settings.
     fn background(f: impl FnOnce(&mut bpe_core::Params), camera: Option<&[(&str, Value)]>) -> bpe_gfx::BackgroundPaint {
+        drawn(f, camera).background
+    }
+
+    /// A frame of the new scene after `f`'s changes to the scene's settings, with a camera when
+    /// `camera` gives its settings.
+    fn drawn(f: impl FnOnce(&mut bpe_core::Params), camera: Option<&[(&str, Value)]>) -> Frame {
         let kit = crate::kit();
         let mut scene = crate::new_scene(&kit.registry);
         f(&mut scene.things.get_mut(&ThingId::ROOT).unwrap().params);
@@ -101,7 +108,7 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        frame.background
+        frame
     }
 
     /// Where along the background's place a point on the screen `y` pixels below the middle sits.
@@ -146,5 +153,45 @@ mod tests {
         ];
         let b = background(|p| p.set("background_on_screen", Value::Bool(false)), Some(&boxed));
         assert_eq!(b.place, [90.0, 5000.0, 0.0, -500.0]);
+    }
+
+    #[test]
+    fn the_scene_s_grade_reaches_the_frame() {
+        let plain = drawn(|_| {}, None);
+        assert!(plain.grade.is_default(), "{:?}", plain.grade);
+        let graded = drawn(
+            |p| {
+                p.set("grade_warmth", Value::Number(0.25));
+                p.set("grade_vignette", Value::Number(0.5));
+                p.set("grade_vignette_size", Value::Number(0.3));
+                p.set("grade_map_amount", Value::Number(0.75));
+            },
+            None,
+        );
+        let g = &graded.grade;
+        assert_eq!((g.warmth, g.vignette, g.vignette_size, g.map_amount), (0.25, 0.5, 0.3, 0.75));
+        assert!(!g.is_default());
+        assert!(graded.overlay.as_ref().is_none_or(|o| o.grade.is_default()));
+    }
+
+    #[test]
+    fn a_grade_key_at_its_default_value_gives_a_default_grade_at_that_time() {
+        use bpe_core::{Address, Ease, Owner};
+        let kit = crate::kit();
+        let mut scene = crate::new_scene(&kit.registry);
+        let a = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "grade_warmth".into() };
+        for (t, v) in [(0.0, 0.5), (1.0, 0.0), (2.0, 0.5)] {
+            let i = scene.set_key(&kit.registry, &a, t, Value::Number(v)).unwrap();
+            scene.set_ease(&a, i, Ease::Linear);
+        }
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let at = |t: f64| {
+            let mut frame = Frame::default();
+            build_frame(&scene, &resolved, &world, &Log::default(), t, &kit.draws, &mut frame);
+            frame
+        };
+        assert!(!at(0.5).grade.is_default());
+        assert!(at(1.0).grade.is_default(), "{:?}", at(1.0).grade);
     }
 }

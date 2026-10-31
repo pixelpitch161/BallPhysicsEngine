@@ -137,6 +137,7 @@ pub struct Studio {
 impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
+        crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
         let mut studio = Self::headless();
         match AudioOut::new() {
             Ok(audio) => studio.audio = Some(audio),

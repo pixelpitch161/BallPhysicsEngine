@@ -20,6 +20,7 @@ mod instruments;
 mod keyboard;
 mod library;
 mod nodes;
+mod palettes;
 mod presets;
 mod preview;
 mod selection;

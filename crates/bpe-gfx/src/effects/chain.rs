@@ -619,7 +619,7 @@ pub(crate) mod tests {
     fn a_material_finds_a_thing_drawn_in_a_blend_layer() {
         let mut frame = two_balls_frame();
         let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Screen, 1.0).balls.push(b);
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0, false).balls.push(b);
         frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Picture));
         let Some(after) = render(&frame) else { return };
         assert!(green(pixel(&after, B)), "{:?}: the layered ball is in the object picture", pixel(&after, B));
@@ -636,7 +636,7 @@ pub(crate) mod tests {
         let mut frame = two_balls_frame();
         grey(&mut frame);
         let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Normal, 0.5).balls.push(b);
+        frame.layer_mut(bpe_core::Blend::Normal, 0.5, false).balls.push(b);
         let Some(plain) = render(&frame) else { return };
         frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
         let after = render(&frame).unwrap();
@@ -651,6 +651,31 @@ pub(crate) mod tests {
         assert!(p[0] <= g[0] + 2, "{p:?} vs grey {g:?}: the ball's red is gone, not mixed over green");
         for at in [A, WALL, EMPTY] {
             assert_eq!(pixel(&after, at), pixel(&plain, at), "{at:?}: the layer stays see-through elsewhere");
+        }
+    }
+
+    #[test]
+    fn a_material_on_a_multiply_or_darken_thing_blending_with_each_other_leaves_no_dark_ring() {
+        // Ball B multiplied (or darkened) over a light grey picture, a material on it. Those
+        // layers start from 1 or far above it, which a material cannot paint over cleanly, so
+        // with a material they are drawn as if the switch were off.
+        for blend in [bpe_core::Blend::Multiply, bpe_core::Blend::Darken] {
+            let shot = |each: bool| {
+                let mut frame = two_balls_frame();
+                let c = [0.6, 0.6, 0.6, 1.0];
+                frame.background = crate::BackgroundPaint { row: 0, ends: Some([c, c]), ..Default::default() };
+                let b = frame.balls.pop().unwrap();
+                frame.layer_mut(blend, 1.0, each).balls.push(b);
+                assert_eq!(frame.layers[0].each, each);
+                frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
+                render(&frame)
+            };
+            let Some(off) = shot(false) else { return };
+            let on = shot(true).unwrap();
+            // The ball's edge, where a ring would show.
+            let edge = B + Vec2::new(69.0, 0.0);
+            assert_eq!(pixel(&on, edge), pixel(&off, edge), "{blend:?}: the edge");
+            assert!(on == off, "{blend:?}: the same picture as with the switch off");
         }
     }
 

@@ -132,3 +132,23 @@
 - Modify: `crates/bpe-kit/src/scenes.rs` (new built-in "Graded sunset": balls painted with the Sunset palette, a Triad-matched wall, grade warmth 0.3, contrast 0.2, vignette 0.4, gradient map Sunset at 0.25 with its amount keyframed 0→0.5 over the video); bless `scenes/next/graded-sunset.ron`
 - Test: inspector kittest `scene_card_shows_the_grade_group` (Scene card shows "Brightness", "Vignette", "Gradient map")
 - [ ] **Step 1:** failing kittest. **Step 2:** run → fail. **Step 3:** implement scene and any inspector tweak needed (Grade group folds like other groups). **Step 4:** full tests + clippy; render `graded-sunset` to mp4 and a frame PNG, and an editor screenshot with the Palette menu open, into `/mnt/project-files/ballphysics/colour-features/part3/`. **Step 5:** commit `feat(colour): Graded sunset demo scene`.
+
+### Task 6: Blend with each other (added at Aedan's request, 2026-10-31)
+
+Aedan asked (thread, 2026-10-31 00:18Z): balls of one group should be able to blend with each other, not only with what is behind them. Today a blended thing's instances are drawn into one layer where they cover each other, and the layer is composited once (part 2 ruling P2-R1/P2-R2).
+
+**Ruling P3-R5 (how):** a new switch `blend_each` ("Blend with each other", group "Blending", default off, shown when `blend` is Add, Screen, Multiply, Lighten, Darken or Subtract) on `look.classic`, `look.styled` and `look.swarm`. When on, the thing's layer is keyed separately (`BlendLayer.each: bool`), cleared to the mode's identity, and its instances are drawn into it with a fixed-function blend state for that mode so overlapping instances combine with each other by the mode; the composite then combines the layer with the picture by the same mode and amount, treating the whole layer as covering wherever any instance drew (coverage tracked in alpha with Max). Identities and in-layer blend states: Add/Screen/Lighten clear 0 (Add One+One; Screen One, OneMinusSrc on clamped src; Lighten Max), Multiply clear 1 (Dst, Zero), Darken clear a large value (Min), Subtract clear 0 and accumulate the subtracted light with One+One, composite as d − layer. Modes Overlay, Soft light, Difference, Hue and Colour keep today's behaviour and hide the switch. Pipelines per (instance kind, mode) are created lazily and cached.
+
+**Files:**
+- Modify: `crates/bpe-kit/src/modules/look/mod.rs`, `look/styled.rs`, `look_swarm/mod.rs` (setting); `crates/bpe-core/src/blend.rs` (`Blend::combines_with_itself(self) -> bool` true for the six modes; `from_params` gains reading `"blend_each"` → keep signature, add `Blend::each_from_params(&Params) -> bool`); `crates/bpe-gfx/src/frame.rs` (`BlendLayer.each`, `Frame::layer_mut(blend, amount, each)` — `each` only kept when `blend.combines_with_itself()`); `crates/bpe-gfx/src/lib.rs`, `blend.rs`, `shaders/blend.wgsl` (identity clear, per-mode in-layer pipelines, composite of an `each` layer)
+- Test: `crates/bpe-gfx/src/blend_tests.rs`, kit layer tests, look settings tests
+
+- [ ] **Step 1: Failing tests**
+  - `two_overlapping_screen_balls_blending_with_each_other_are_brighter_where_they_overlap` (switch on: overlap pixel brighter than either single-ball pixel; switch off: overlap equals single).
+  - `multiply_balls_with_each_other_darken_their_overlap`.
+  - `add_with_each_other_matches_adding_both` (overlap ≈ d + s1 + s2 within 2/255 before tonemap reasoning — use a dark background and low intensities so nothing clips).
+  - `darken_each_leaves_uncovered_pixels_untouched` (byte-equal outside the balls).
+  - `each_layers_and_plain_layers_do_not_share` (same mode/amount, one with the switch and one without → two layers).
+  - Settings: `blend_each` key exists on the three looks, default false, hidden (its `when`) for Overlay.
+  - Every built-in scene renders byte-identically (switch defaults off).
+- [ ] **Step 2:** run → fail. **Step 3:** implement. **Step 4:** full tests, clippy, fmt; byte-identity check of all scenes/next/*.ron. **Step 5:** commit `feat(colour): blend with each other`.

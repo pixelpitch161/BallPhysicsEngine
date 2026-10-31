@@ -1501,6 +1501,19 @@ mod tests {
     }
 
     #[test]
+    fn a_palette_from_the_menu_sets_the_colours() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        h.get_by_label("Colours palette").click();
+        h.run();
+        h.get_by_label("Ocean").click();
+        h.run();
+        let ocean = bpe_kit::paint::palettes::built_in().into_iter().find(|p| p.name == "Ocean").unwrap().colours;
+        let m = &h.state().scene.library.modules[&module];
+        assert_eq!(m.params.get("colours"), Some(&Value::Gradient(ocean)), "{:?}", m.params);
+    }
+
+    #[test]
     fn keyed_gradient_edit_writes_a_key() {
         let mut h = harness(Some(ThingId(2)));
         let (module, _) = ball_look(h.state());
@@ -2311,8 +2324,14 @@ mod tests {
         let h = harness(Some(ThingId::ROOT));
         let decay = h.get_by_role_and_label(Role::Slider, "Decay");
         assert_eq!(decay.accesskit_node().numeric_value(), Some(0.9f32 as f64));
-        let brightness = h.get_by_role_and_label(Role::Slider, "Brightness");
-        assert_eq!(brightness.accesskit_node().numeric_value(), Some(0.5));
+        // The scene's grade has a Brightness slider too, at 0.
+        let mut brightness: Vec<_> = h
+            .get_all_by_label("Brightness")
+            .filter(|n| n.accesskit_node().role() == Role::Slider)
+            .filter_map(|n| n.accesskit_node().numeric_value())
+            .collect();
+        brightness.sort_by(f64::total_cmp);
+        assert_eq!(brightness, [0.0, 0.5]);
         assert!(h.query_by_label("Voice limit").is_none(), "a built-in plays without voices");
     }
 
@@ -2513,5 +2532,27 @@ mod tests {
         assert!(h.query_all_by_label("Blend amount").next().is_some(), "the Blend amount setting");
         assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
+    }
+
+    #[test]
+    fn scene_card_shows_the_grade_group() {
+        let reg = bpe_kit::registry();
+        let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
+        // At the start the map amount is 0, yet the map still shows.
+        h.run();
+        // The sound's pluck has a Brightness slider too.
+        let slider =
+            |h: &Harness<'_, State>, label: &str| h.query_all_by_role_and_label(Role::Slider, label).count() > 0;
+        assert!(h.query_by_role_and_label(Role::Label, "Grade").is_some(), "a Grade heading");
+        assert!(slider(&h, "Brightness"), "the Brightness setting");
+        assert!(slider(&h, "Vignette"), "the Vignette setting");
+        assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting at t=0");
+        // The group folds like the others.
+        h.get_by_label("Hide Grade").click();
+        h.run();
+        assert!(!slider(&h, "Vignette"), "the grade's rows fold away");
+        h.get_by_label("Show Grade").click();
+        h.run();
+        assert!(slider(&h, "Vignette"));
     }
 }

@@ -7,9 +7,12 @@
 mod blend;
 #[cfg(test)]
 mod blend_tests;
+mod each;
 pub mod effects;
 pub mod flow;
 mod frame;
+#[cfg(test)]
+mod grade_tests;
 mod gradients;
 #[cfg(test)]
 mod paint_tests;
@@ -22,9 +25,9 @@ use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame,
-    GlyphInstance, GpuLiquid, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage,
-    SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength,
-    push_streak, push_streak_colours, thing_code,
+    GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex,
+    Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at,
+    hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
@@ -39,6 +42,33 @@ pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Fl
 pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const BLOOM_LEVELS: usize = 6;
 
+// Every instance carries its paint (`PaintGpu`) as its last three vec4s.
+const SHAPE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+    6 => Float32x4
+];
+const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+    7 => Float32x4
+];
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+    6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4,
+    12 => Float32x4
+];
+const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
+const SOFT_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+    7 => Float32x2
+];
+const GLYPH_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+    6 => Float32x4, 7 => Float32x4, 8 => Float32x4
+];
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Globals {
@@ -47,6 +77,8 @@ struct Globals {
     bg_paint: [f32; 4],
     /// The background's place: direction in degrees, span, centre xy.
     bg_place: [f32; 4],
+    /// x: bloom strength, y: exposure, z: 1 to run the colour grade, w: in a layer whose things
+    /// blend with each other, the blend's `shader_code` (see each.wgsl).
     post: [f32; 4],
     /// The camera: centre xy, zoom, turn in radians.
     camera: [f32; 4],
@@ -56,6 +88,10 @@ struct Globals {
     /// The two colours of a plain blend the background mixes itself (`bg.w` is 1 then).
     bg_from: [f32; 4],
     bg_to: [f32; 4],
+    /// The colour grade: brightness, contrast, saturation, warmth.
+    grade: [f32; 4],
+    /// The colour grade: tint, vignette, vignette size, gradient map amount.
+    grade_more: [f32; 4],
 }
 
 impl Globals {
@@ -73,7 +109,7 @@ impl Globals {
                 frame.background.repeat,
             ],
             bg_place: frame.background.place,
-            post: [frame.bloom, frame.exposure, 0.0, 0.0],
+            post: [frame.bloom, frame.exposure, if frame.grade.is_default() { 0.0 } else { 1.0 }, 0.0],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
@@ -83,6 +119,8 @@ impl Globals {
             ],
             bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
             bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
+            grade: [frame.grade.brightness, frame.grade.contrast, frame.grade.saturation, frame.grade.warmth],
+            grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
         }
     }
 }
@@ -117,6 +155,53 @@ struct Targets {
     down_sources: Vec<wgpu::BindGroup>,
     up_sources: Vec<wgpu::BindGroup>,
     composite: wgpu::BindGroup,
+}
+
+/// The colour grade's gradient map, baked into one 256×1 row the composite reads. It is always
+/// there, and written only when a frame maps by an amount above 0 with a gradient it does not
+/// hold yet.
+struct GradeMap {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// The gradient baked into the texture, once one has been.
+    baked: Option<bpe_core::Gradient>,
+}
+
+impl GradeMap {
+    fn new(device: &wgpu::Device) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("grade map"),
+            size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        Self { texture, view, baked: None }
+    }
+
+    /// Bakes `grade`'s map into the texture when it is used and not there already.
+    fn sync(&mut self, queue: &wgpu::Queue, grade: &Grade) {
+        if grade.map_amount <= 0.0 || self.baked.as_ref() == Some(&grade.map) {
+            return;
+        }
+        let mut row = [[0.0; 4]; ATLAS_WIDTH];
+        row.copy_from_slice(&grade.map.bake(ATLAS_WIDTH));
+        queue.write_texture(
+            self.texture.as_image_copy(),
+            &gradients::half_texels(&[row]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ATLAS_WIDTH as u32 * 8),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+        );
+        self.baked = Some(grade.map.clone());
+    }
 }
 
 /// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows.
@@ -202,6 +287,10 @@ pub struct Renderer {
     overlay: FrameBuffers,
     layer_buffers: Vec<FrameBuffers>,
     blend: blend::Composite,
+    /// For layers whose things blend with each other.
+    each: each::EachPipelines,
+    each_globals: each::EachGlobals,
+    globals_layout: wgpu::BindGroupLayout,
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
@@ -231,6 +320,7 @@ pub struct Renderer {
     /// The overlay frame's own gradients: its instances name rows of its own atlas.
     overlay_paint: PaintTexture,
     targets: Targets,
+    grade_map: GradeMap,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
     flow: Option<FlowLayers>,
@@ -290,6 +380,8 @@ struct Through {
     /// Drawing into a blend layer: liquids there hold only their own light and leave the
     /// picture under them out, as the composite mixes that in.
     layer: bool,
+    /// Drawing into a layer whose things blend with each other by this blend.
+    each: Option<bpe_core::Blend>,
 }
 
 impl Renderer {
@@ -304,6 +396,7 @@ impl Renderer {
                     include_str!("shaders/ball_look.wgsl"),
                     include_str!("shaders/styled.wgsl"),
                     include_str!("shaders/trail.wgsl"),
+                    include_str!("shaders/each.wgsl"),
                 ]
                 .concat()
                 .into(),
@@ -316,7 +409,13 @@ impl Renderer {
         let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("glyph shader"),
             source: wgpu::ShaderSource::Wgsl(
-                [gradients::paint_wgsl(2).as_str(), include_str!("shaders/glyph.wgsl")].concat().into(),
+                [
+                    gradients::paint_wgsl(2).as_str(),
+                    include_str!("shaders/glyph.wgsl"),
+                    include_str!("shaders/each.wgsl"),
+                ]
+                .concat()
+                .into(),
             ),
         });
 
@@ -378,7 +477,7 @@ impl Renderer {
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite layout"),
-            entries: &[texture_entry(0), sampler_entry, texture_entry(2)],
+            entries: &[texture_entry(0), sampler_entry, texture_entry(2), texture_entry(3)],
         });
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("atlas layout"),
@@ -455,30 +554,6 @@ impl Renderer {
             })
         };
 
-        // Every instance carries its paint (`PaintGpu`) as its last three vec4s.
-        let shape_attributes = wgpu::vertex_attr_array![
-            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4
-        ];
-        let ball_attributes = wgpu::vertex_attr_array![
-            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-            7 => Float32x4
-        ];
-        let trail_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
-        let look_attributes = wgpu::vertex_attr_array![
-            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4,
-            12 => Float32x4
-        ];
-        let flash_attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
-        let soft_attributes = wgpu::vertex_attr_array![
-            0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-            7 => Float32x2
-        ];
-        let glyph_attributes = wgpu::vertex_attr_array![
-            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4, 8 => Float32x4
-        ];
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -508,7 +583,7 @@ impl Renderer {
             &scene_shader,
             "vs_shape",
             "fs_shape",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &shape_attributes))],
+            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -519,7 +594,7 @@ impl Renderer {
             &scene_shader,
             "vs_soft",
             "fs_soft",
-            &[Some(vertices(std::mem::size_of::<SoftVertex>() as u64, &soft_attributes))],
+            &[Some(vertices(std::mem::size_of::<SoftVertex>() as u64, &SOFT_ATTRIBUTES))],
             TriangleList,
             HDR_FORMAT,
             Some(premultiplied),
@@ -530,7 +605,7 @@ impl Renderer {
             &scene_shader,
             "vs_ball",
             "fs_ball",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -541,7 +616,7 @@ impl Renderer {
             &glyph_shader,
             "vs_glyph",
             "fs_glyph",
-            &[Some(instances(std::mem::size_of::<GlyphInstance>() as u64, &glyph_attributes))],
+            &[Some(instances(std::mem::size_of::<GlyphInstance>() as u64, &GLYPH_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -555,7 +630,7 @@ impl Renderer {
             &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TrailVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &trail_attributes,
+                attributes: &TRAIL_ATTRIBUTES,
             })],
             TriangleList,
             HDR_FORMAT,
@@ -567,7 +642,7 @@ impl Renderer {
             &scene_shader,
             "vs_look",
             "fs_look",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -578,7 +653,7 @@ impl Renderer {
             &scene_shader,
             "vs_flash",
             "fs_flash",
-            &[Some(instances(std::mem::size_of::<FlashInstance>() as u64, &flash_attributes))],
+            &[Some(instances(std::mem::size_of::<FlashInstance>() as u64, &FLASH_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(additive),
@@ -589,7 +664,7 @@ impl Renderer {
             &scene_shader,
             "vs_shape",
             "fs_shape_object",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &shape_attributes))],
+            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -600,7 +675,7 @@ impl Renderer {
             &scene_shader,
             "vs_ball",
             "fs_ball_object",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -611,7 +686,7 @@ impl Renderer {
             &scene_shader,
             "vs_look",
             "fs_look_object",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -650,7 +725,110 @@ impl Renderer {
             None,
         );
 
-        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
+        let each = {
+            use each::{Kind, Recipe};
+            use wgpu::VertexStepMode::{Instance, Vertex};
+            let recipe = |glyph: bool, vs, fs, stride: usize, step, attributes, topology| Recipe {
+                module: if glyph { glyph_shader.clone() } else { scene_shader.clone() },
+                layout: if glyph { glyph_pipeline_layout.clone() } else { scene_pipeline_layout.clone() },
+                vs,
+                fs,
+                stride: stride as u64,
+                step,
+                attributes,
+                topology,
+            };
+            use std::mem::size_of;
+            each::EachPipelines::new([
+                (
+                    Kind::Trail,
+                    recipe(
+                        false,
+                        "vs_trail",
+                        "fs_trail_each",
+                        size_of::<TrailVertex>(),
+                        Vertex,
+                        &TRAIL_ATTRIBUTES,
+                        TriangleList,
+                    ),
+                ),
+                (
+                    Kind::Shape,
+                    recipe(
+                        false,
+                        "vs_shape",
+                        "fs_shape_each",
+                        size_of::<ShapeInstance>(),
+                        Instance,
+                        &SHAPE_ATTRIBUTES,
+                        TriangleStrip,
+                    ),
+                ),
+                (
+                    Kind::Soft,
+                    recipe(
+                        false,
+                        "vs_soft",
+                        "fs_soft_each",
+                        size_of::<SoftVertex>(),
+                        Vertex,
+                        &SOFT_ATTRIBUTES,
+                        TriangleList,
+                    ),
+                ),
+                (
+                    Kind::Ball,
+                    recipe(
+                        false,
+                        "vs_ball",
+                        "fs_ball_each",
+                        size_of::<BallInstance>(),
+                        Instance,
+                        &BALL_ATTRIBUTES,
+                        TriangleStrip,
+                    ),
+                ),
+                (
+                    Kind::Look,
+                    recipe(
+                        false,
+                        "vs_look",
+                        "fs_look_each",
+                        size_of::<LookInstance>(),
+                        Instance,
+                        &LOOK_ATTRIBUTES,
+                        TriangleStrip,
+                    ),
+                ),
+                (
+                    Kind::Flash,
+                    recipe(
+                        false,
+                        "vs_flash",
+                        "fs_flash_each",
+                        size_of::<FlashInstance>(),
+                        Instance,
+                        &FLASH_ATTRIBUTES,
+                        TriangleStrip,
+                    ),
+                ),
+                (
+                    Kind::Glyph,
+                    recipe(
+                        true,
+                        "vs_glyph",
+                        "fs_glyph_each",
+                        size_of::<GlyphInstance>(),
+                        Instance,
+                        &GLYPH_ATTRIBUTES,
+                        TriangleStrip,
+                    ),
+                ),
+            ])
+        };
+
+        let grade_map = GradeMap::new(device);
+        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler, &grade_map.view);
         let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
@@ -664,6 +842,9 @@ impl Renderer {
             overlay: FrameBuffers::default(),
             layer_buffers: Vec::new(),
             blend: blend::Composite::new(device),
+            each,
+            each_globals: each::EachGlobals::default(),
+            globals_layout,
             post_layout,
             composite_layout,
             atlas_layout,
@@ -689,6 +870,7 @@ impl Renderer {
             paint,
             overlay_paint,
             targets,
+            grade_map,
             surface: flow::surface::Surface::new(device),
             flow: None,
         }
@@ -735,8 +917,15 @@ impl Renderer {
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size() != (width.max(1), height.max(1)) {
-            self.targets =
-                Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
+            self.targets = Targets::new(
+                device,
+                width,
+                height,
+                &self.post_layout,
+                &self.composite_layout,
+                &self.sampler,
+                &self.grade_map.view,
+            );
         }
     }
 
@@ -814,6 +1003,7 @@ impl Renderer {
             self.sync_atlas(device, queue);
         }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
+        self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
             self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
         }
@@ -834,6 +1024,7 @@ impl Renderer {
             camera: frame.camera,
             size: (frame.width, frame.height),
             layer: false,
+            each: None,
         };
         {
             let mut pass =
@@ -854,7 +1045,7 @@ impl Renderer {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.paint.group, &[]);
-            self.draw_balls(&mut pass, frame, &self.buffers);
+            self.draw_balls(&mut pass, frame, &self.buffers, &world);
         }
         if wants_objects {
             let view = &self.targets.object.as_ref().expect("made above").1;
@@ -888,7 +1079,8 @@ impl Renderer {
         let world_layer = Through { layer: true, ..world.clone() };
         for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate() {
             let effects = Some((frame, i, object_view.as_ref()));
-            self.draw_layer(device, queue, &mut encoder, l, b, &world_layer, slot, &mut liquid_slot, effects);
+            let through = self.layer_through(device, queue, frame, l, Some(i), &world_layer);
+            self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, &mut liquid_slot, effects);
             slot += 1;
         }
         if let Some(o) = overlay {
@@ -899,13 +1091,15 @@ impl Renderer {
                 camera: CameraView::default(),
                 size: (frame.width, frame.height),
                 layer: false,
+                each: None,
             };
             let buffers = std::mem::take(&mut self.overlay);
             self.draw_things(device, queue, &mut encoder, o, &buffers, &screen, &hdr, &mut liquid_slot);
             self.overlay = buffers;
             let screen_layer = Through { layer: true, ..screen.clone() };
             for (l, b) in o.layers.iter().zip(&layer_buffers[frame.layers.len()..]) {
-                self.draw_layer(device, queue, &mut encoder, l, b, &screen_layer, slot, &mut liquid_slot, None);
+                let through = self.layer_through(device, queue, frame, l, None, &screen_layer);
+                self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, &mut liquid_slot, None);
                 slot += 1;
             }
         }
@@ -968,24 +1162,25 @@ impl Renderer {
 
     /// Trails, shapes and soft bodies, then (in the world) swarms: what sits behind the rest.
     fn draw_back(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers, through: &Through) {
+        use each::Kind;
         if !f.trails.is_empty() {
-            pass.set_pipeline(&self.trail);
+            pass.set_pipeline(self.pipeline(&self.trail, Kind::Trail, through));
             pass.set_vertex_buffer(0, b.trails.slice());
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
         if !f.shapes.is_empty() {
-            pass.set_pipeline(&self.shape);
+            pass.set_pipeline(self.pipeline(&self.shape, Kind::Shape, through));
             pass.set_vertex_buffer(0, b.shapes.slice());
             pass.draw(0..4, 0..f.shapes.len() as u32);
         }
         let soft_vertices = f.soft.len() - f.soft.len() % 3;
         if soft_vertices > 0 {
-            pass.set_pipeline(&self.soft);
+            pass.set_pipeline(self.pipeline(&self.soft, Kind::Soft, through));
             pass.set_vertex_buffer(0, b.soft.slice());
             pass.draw(0..soft_vertices as u32, 0..1);
         }
         if let (true, Some(flow)) = (through.world, &self.flow) {
-            flow.draw_swarms(pass, &through.globals, &through.paint, f);
+            flow.draw_swarms(pass, &through.globals, &through.paint, f, through.each);
         }
     }
 
@@ -1028,15 +1223,29 @@ impl Renderer {
         }
     }
 
+    /// `normal`, or in a layer whose things blend with each other, that layer's pipeline for
+    /// `kind` (made by [`each::EachPipelines::ensure`] before the layer is drawn).
+    fn pipeline<'a>(
+        &'a self,
+        normal: &'a wgpu::RenderPipeline,
+        kind: each::Kind,
+        through: &Through,
+    ) -> &'a wgpu::RenderPipeline {
+        match through.each {
+            Some(blend) => self.each.get(kind, blend.shader_code()),
+            None => normal,
+        }
+    }
+
     /// Balls and styled balls.
-    fn draw_balls(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers) {
+    fn draw_balls(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers, through: &Through) {
         if !f.balls.is_empty() {
-            pass.set_pipeline(&self.ball);
+            pass.set_pipeline(self.pipeline(&self.ball, each::Kind::Ball, through));
             pass.set_vertex_buffer(0, b.balls.slice());
             pass.draw(0..4, 0..f.balls.len() as u32);
         }
         if !f.looks.is_empty() {
-            pass.set_pipeline(&self.look);
+            pass.set_pipeline(self.pipeline(&self.look, each::Kind::Look, through));
             pass.set_vertex_buffer(0, b.looks.slice());
             pass.draw(0..4, 0..f.looks.len() as u32);
         }
@@ -1045,14 +1254,14 @@ impl Renderer {
     /// Flashes, particles and glyphs, in front of everything; the globals are bound already.
     fn draw_front(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers, through: &Through) {
         if !f.flashes.is_empty() {
-            pass.set_pipeline(&self.flash);
+            pass.set_pipeline(self.pipeline(&self.flash, each::Kind::Flash, through));
             pass.set_bind_group(1, &through.paint, &[]);
             pass.set_vertex_buffer(0, b.flashes.slice());
             pass.draw(0..4, 0..f.flashes.len() as u32);
         }
         self.particles.draw_list(pass, &through.paint, &b.bursts);
         if let (false, Some(atlas)) = (f.glyphs.is_empty(), &self.atlas) {
-            pass.set_pipeline(&self.glyph);
+            pass.set_pipeline(self.pipeline(&self.glyph, each::Kind::Glyph, through));
             pass.set_bind_group(1, &atlas.group, &[]);
             pass.set_bind_group(2, &through.paint, &[]);
             pass.set_vertex_buffer(0, b.glyphs.slice());
@@ -1106,8 +1315,46 @@ impl Renderer {
         let mut pass = begin_pass(encoder, view, "things in front", wgpu::LoadOp::Load);
         pass.set_bind_group(0, &through.globals, &[]);
         pass.set_bind_group(1, &through.paint, &[]);
-        self.draw_balls(&mut pass, f, b);
+        self.draw_balls(&mut pass, f, b, through);
         self.draw_front(&mut pass, f, b, through);
+    }
+
+    /// How `l` is drawn: as `through` says, or, when its things blend with each other, through
+    /// globals that name its blend (see each.wgsl), with the pipelines it needs made. `index`
+    /// is its place in `frame.layers` (none for the overlay's layers, which run no effects).
+    ///
+    /// This is where a layer's `each` is decided. A Multiply or Darken layer starts as 1 or far
+    /// above it, not as nothing, and an effect on one of its things (Things stage) assumes a
+    /// layer of colour over nothing: it would paint dark rings round the thing. Such a layer is
+    /// drawn as if its things did not blend with each other. Add, Screen, Lighten and Subtract
+    /// start as nothing, so they keep blending.
+    fn layer_through(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        l: &BlendLayer,
+        index: Option<usize>,
+        through: &Through,
+    ) -> Through {
+        let starts_above_nothing = matches!(l.blend, bpe_core::Blend::Multiply | bpe_core::Blend::Darken);
+        let has_effects = index.is_some_and(|i| {
+            let here = effects::chain::Canvas::Layer(i);
+            frame.effects.iter().any(|call| effects::chain::canvas_of(frame, call) == here)
+        });
+        if !(l.each && l.blend.combines_with_itself()) || (starts_above_nothing && has_effects) {
+            return through.clone();
+        }
+        let code = l.blend.shader_code();
+        let mut globals = Globals::new(frame, &through.camera, self.targets.width);
+        globals.post[3] = code as f32;
+        let key = (code, !through.world);
+        let group = self.each_globals.group(device, queue, &self.globals_layout, key, bytemuck::bytes_of(&globals));
+        self.each.ensure(device, l.blend, &l.frame);
+        if let (true, Some(flow)) = (!l.frame.swarms.is_empty(), self.flow.as_mut()) {
+            flow.ensure_each(device, l.blend);
+        }
+        Through { globals: group, each: Some(l.blend), ..through.clone() }
     }
 
     /// Draws one blend layer's things into the layer picture, runs the effects on those things
@@ -1130,7 +1377,9 @@ impl Renderer {
         // The picture under the layer: what its liquids bend and what the composite mixes with.
         self.copy_under(encoder);
         let (texture, layer) = self.targets.layer.clone().expect("made before the frame is drawn");
-        drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
+        // A layer whose things blend with each other starts as its blend's identity.
+        let clear = through.each.map_or(wgpu::Color::TRANSPARENT, each::clear);
+        drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(clear)));
         self.draw_things(device, queue, encoder, &l.frame, b, through, &layer, liquid_slot);
         if let Some((frame, index, objects)) = effects {
             let on = effects::chain::Canvas::Layer(index);
@@ -1143,6 +1392,7 @@ impl Renderer {
             slot,
             l.blend,
             l.amount,
+            through.each.is_some(),
             &self.targets.behind_view,
             &layer,
             &self.targets.hdr,
@@ -1200,6 +1450,7 @@ impl Targets {
         post_layout: &wgpu::BindGroupLayout,
         composite_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
+        grade_map: &wgpu::TextureView,
     ) -> Self {
         let (width, height) = (width.max(1), height.max(1));
         let texture = |label, w: u32, h: u32, format, usage| {
@@ -1268,6 +1519,7 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&hdr) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(grade_map) },
             ],
         });
         Self {

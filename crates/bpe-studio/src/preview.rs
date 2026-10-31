@@ -392,6 +392,8 @@ fn draw_picture(
         if let Some((camera, (w, h))) = look {
             frame.set_view(camera, (w, h));
             frame.overlay = None;
+            // The grade belongs to the finished video, not to the world seen through a camera.
+            frame.grade = Default::default();
         }
         frame.cull();
         // Liquids and swarms on the graphics card step towards the playhead within the same

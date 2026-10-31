@@ -1,7 +1,7 @@
 //! Picture tests for blend layers and their composite, on the software GPU.
 
 use crate::paint_tests::gpu;
-use crate::{BackgroundPaint, BlendLayer, Frame, LiquidLayer, PaintGpu, Points, Renderer, TrailVertex};
+use crate::{BackgroundPaint, BallInstance, BlendLayer, Frame, LiquidLayer, PaintGpu, Points, Renderer, TrailVertex};
 use bpe_core::{Blend, ThingId};
 
 const N: u32 = 64;
@@ -46,7 +46,7 @@ fn square(half: f32, colour: [f32; 4]) -> Vec<TrailVertex> {
 /// `frame` with one layer holding `trails`.
 fn with_layer(mut frame: Frame, blend: Blend, amount: f32, trails: Vec<TrailVertex>) -> Frame {
     let layer = Frame { trails, ..flat([0.0; 3]) };
-    frame.layers.push(BlendLayer { blend, amount, frame: layer });
+    frame.layers.push(BlendLayer { blend, amount, each: false, frame: layer });
     frame
 }
 
@@ -317,4 +317,173 @@ fn a_clear_liquid_added_in_a_layer_does_not_add_the_picture_to_itself() {
         let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
         assert!(close(got, plain), "{blend:?}: {got:?} vs {plain:?}: a fully clear liquid adds nothing of its own");
     }
+}
+
+// ---- Blend with each other ----
+
+/// `frame` with one layer holding `layer`'s lists, its things blending with each other when
+/// `each` is set.
+fn with_each(mut frame: Frame, blend: Blend, amount: f32, each: bool, layer: Frame) -> Frame {
+    frame.layers.push(BlendLayer { blend, amount, each, frame: layer });
+    frame
+}
+
+/// Plain lit balls (no halo) of colour `c` at each of `centres`, in a layer frame.
+fn balls(centres: &[[f32; 2]], radius: f32, c: [f32; 3]) -> Frame {
+    let balls = centres
+        .iter()
+        .map(|&center| BallInstance { center, radius, glow: 0.0, color: [c[0], c[1], c[2], 1.0], ..Default::default() })
+        .collect();
+    Frame { balls, ..flat([0.0; 3]) }
+}
+
+fn sum(p: [u8; 4]) -> i32 {
+    p[..3].iter().map(|&v| v as i32).sum()
+}
+
+/// The centre pixel with ball A alone, ball B alone and both, the two balls overlapping there.
+fn overlap(blend: Blend, d: [f32; 3], c: [f32; 3], each: bool) -> Option<([u8; 4], [u8; 4], [u8; 4])> {
+    let (device, queue) = gpu()?;
+    let mut renderer = Renderer::new(&device, N, N);
+    let (a, b) = ([-8.0, 0.0], [8.0, 0.0]);
+    let mut shot = |centres: &[[f32; 2]]| {
+        let frame = with_each(flat(d), blend, 1.0, each, balls(centres, 14.0, c));
+        at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2)
+    };
+    Some((shot(&[a]), shot(&[b]), shot(&[a, b])))
+}
+
+#[test]
+fn two_overlapping_screen_balls_blending_with_each_other_are_brighter_where_they_overlap() {
+    let Some((a, b, both)) = overlap(Blend::Screen, [0.05; 3], [0.3; 3], true) else { return };
+    assert!(sum(both) > sum(a) + 6 && sum(both) > sum(b) + 6, "{both:?} vs {a:?} and {b:?}");
+    let Some((_, b, both)) = overlap(Blend::Screen, [0.05; 3], [0.3; 3], false) else { return };
+    assert!(close(both, b), "switch off: the later ball covers the first, {both:?} vs {b:?}");
+}
+
+#[test]
+fn multiply_balls_with_each_other_darken_their_overlap() {
+    let Some((a, b, both)) = overlap(Blend::Multiply, [0.8; 3], [0.5; 3], true) else { return };
+    assert!(sum(both) + 6 < sum(a) && sum(both) + 6 < sum(b), "{both:?} vs {a:?} and {b:?}");
+    let Some((_, b, both)) = overlap(Blend::Multiply, [0.8; 3], [0.5; 3], false) else { return };
+    assert!(close(both, b), "switch off: {both:?} vs {b:?}");
+}
+
+/// Two squares covering the whole picture, `s1` under `s2`.
+fn two_squares(s1: [f32; 3], s2: [f32; 3]) -> Frame {
+    let mut trails = square(40.0, [s1[0], s1[1], s1[2], 1.0]);
+    trails.extend(square(40.0, [s2[0], s2[1], s2[2], 1.0]));
+    Frame { trails, ..flat([0.0; 3]) }
+}
+
+#[test]
+fn add_with_each_other_matches_adding_both() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let (d, s1, s2) = ([0.1, 0.08, 0.05], [0.05, 0.1, 0.02], [0.1, 0.05, 0.08]);
+    let frame = with_each(flat(d), Blend::Add, 1.0, true, two_squares(s1, s2));
+    let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
+    let want = expected(&mut renderer, &device, &queue, [0, 1, 2].map(|k| d[k] + s1[k] + s2[k]));
+    assert!(close(got, want), "{got:?}, d + s1 + s2 is {want:?}");
+}
+
+#[test]
+fn every_mode_with_each_other_is_like_blending_each_in_turn() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let (d, s1, s2) = ([0.6, 0.3, 0.2], [0.2, 0.5, 0.1], [0.3, 0.2, 0.15]);
+    for blend in ALL.into_iter().filter(|b| b.combines_with_itself()) {
+        let frame = with_each(flat(d), blend, 1.0, true, two_squares(s1, s2));
+        let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
+        let want = expected(&mut renderer, &device, &queue, mode(blend, mode(blend, d, s1), s2));
+        assert!(close(got, want), "{blend:?}: {got:?}, in turn gives {want:?}");
+        let half = with_each(flat(d), blend, 0.5, true, two_squares(s1, s2));
+        let got = at(&render(&mut renderer, &device, &queue, &half), N / 2, N / 2);
+        let both = mode(blend, mode(blend, d, s1), s2);
+        let want = expected(&mut renderer, &device, &queue, [0, 1, 2].map(|k| (d[k] + both[k]) * 0.5));
+        assert!(close(got, want), "{blend:?} at half: {got:?} vs {want:?}");
+    }
+}
+
+#[test]
+fn darken_each_leaves_uncovered_pixels_untouched() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let plain = render(&mut renderer, &device, &queue, &flat(D));
+    for blend in ALL.into_iter().filter(|b| b.combines_with_itself()) {
+        let mut layer = balls(&[[-6.0, 0.0], [6.0, 0.0]], 8.0, S);
+        layer.trails = square(4.0, [S[0], S[1], S[2], 1.0]);
+        let frame = with_each(flat(D), blend, 1.0, true, layer);
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        crate::pictures::save(&format!("blend_each_{blend:?}"), &pixels, N, N);
+        for y in 0..N {
+            for x in 0..N {
+                // The balls reach from -14 to 14 across and -8 to 8 down; a pixel more is their
+                // soft edge.
+                let outside = !(16..=48).contains(&x) || !(22..=42).contains(&y);
+                if outside {
+                    assert_eq!(at(&pixels, x, y), at(&plain, x, y), "{blend:?}: ({x}, {y}) is not under a ball");
+                }
+            }
+        }
+        if blend == Blend::Darken {
+            let got = at(&pixels, N / 2, N / 2);
+            // The flat square there meets the lit (darker-edged) balls: at most the darker of the
+            // picture and the square.
+            let want = expected(&mut renderer, &device, &queue, [0, 1, 2].map(|k| D[k].min(S[k])));
+            assert!((0..3).all(|k| got[k] <= want[k] + 2), "{got:?}, darker of the two is {want:?}");
+        }
+    }
+}
+
+#[test]
+fn the_switch_on_a_mode_that_cannot_combine_changes_nothing() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let layer = two_squares(S, [0.1, 0.2, 0.3]);
+    let off = render(&mut renderer, &device, &queue, &with_each(flat(D), Blend::Overlay, 1.0, false, layer.clone()));
+    let on = render(&mut renderer, &device, &queue, &with_each(flat(D), Blend::Overlay, 1.0, true, layer));
+    assert!(off == on);
+}
+
+#[test]
+fn every_kind_of_thing_can_blend_with_each_other() {
+    use crate::{FlashInstance, GlyphInstance, LookInstance, ShapeInstance, SoftVertex};
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let plain = render(&mut renderer, &device, &queue, &flat(D));
+    for blend in ALL.into_iter().filter(|b| b.combines_with_itself()) {
+        let mut layer = balls(&[[0.0, 0.0]], 6.0, S);
+        layer.trails = square(4.0, [S[0], S[1], S[2], 1.0]);
+        layer.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 5.0, [S[0], S[1], S[2], 1.0], 0.0));
+        layer.looks.push(LookInstance { radius: 5.0, color: [S[0], S[1], S[2], 1.0], ..LookInstance::default() });
+        layer.flashes.push(FlashInstance { center: [0.0; 2], size: 4.0, color: [0.1, 0.1, 0.1, 1.0] });
+        layer.glyphs.push(GlyphInstance::default());
+        layer.soft.extend([SoftVertex::default(); 3]);
+        let frame = with_each(flat(D), blend, 1.0, true, layer);
+        let pixels = render(&mut renderer, &device, &queue, &frame);
+        assert_eq!(at(&pixels, 2, 2), at(&plain, 2, 2), "{blend:?}: the corner nothing reaches");
+        assert!(at(&pixels, N / 2, N / 2) != at(&plain, N / 2, N / 2), "{blend:?}: the middle changes");
+    }
+}
+
+#[test]
+fn a_stuck_layer_blending_with_each_other_ignores_the_camera() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let (d, s1, s2) = ([0.1, 0.08, 0.05], [0.05, 0.1, 0.02], [0.1, 0.05, 0.08]);
+    let stuck = flat([0.0; 3]);
+    let mut layer = Frame { trails: square(6.0, [s1[0], s1[1], s1[2], 1.0]), ..flat([0.0; 3]) };
+    layer.trails.extend(square(6.0, [s2[0], s2[1], s2[2], 1.0]));
+    let stuck = with_each(stuck, Blend::Add, 1.0, true, layer);
+    let mut frame = Frame { overlay: Some(Box::new(stuck)), ..flat(d) };
+    // The world's camera looks elsewhere; what is stuck to the screen stays in the middle.
+    frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(200.0, 0.0), zoom: 2.0, turn: 0.0 };
+    assert!(frame.has_overlay());
+    let pixels = render(&mut renderer, &device, &queue, &frame);
+    let want = expected(&mut renderer, &device, &queue, [0, 1, 2].map(|k| d[k] + s1[k] + s2[k]));
+    let got = at(&pixels, N / 2, N / 2);
+    assert!(close(got, want), "{got:?}, d + s1 + s2 is {want:?}");
+    let plain = render(&mut renderer, &device, &queue, &flat(d));
+    assert_eq!(at(&pixels, 2, 2), at(&plain, 2, 2), "the corner the squares miss");
 }

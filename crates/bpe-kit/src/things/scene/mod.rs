@@ -78,6 +78,34 @@ pub struct SceneSettings {
     /// How bright the whole picture is.
     #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse)]
     pub exposure: f32,
+    /// Makes the finished picture lighter or darker.
+    #[setting(label = "Brightness", range(-1, 1), group = "Grade", keyframe, pulse)]
+    pub grade_brightness: f32,
+    /// Spreads the colours apart from the middle grey, or pulls them together.
+    #[setting(label = "Contrast", range(-1, 1), group = "Grade", keyframe, pulse)]
+    pub grade_contrast: f32,
+    /// More colourful, or towards grey at -1.
+    #[setting(label = "Saturation", range(-1, 1), group = "Grade", keyframe, pulse)]
+    pub grade_saturation: f32,
+    /// Warms the picture towards red, or cools it towards blue.
+    #[setting(label = "Warm / cool", range(-1, 1), group = "Grade", keyframe, pulse)]
+    pub grade_warmth: f32,
+    /// Tints the picture towards magenta, or towards green.
+    #[setting(label = "Tint", range(-1, 1), group = "Grade", keyframe, pulse)]
+    pub grade_tint: f32,
+    /// Darkens the corners of the picture.
+    #[setting(label = "Vignette", range(0, 1), group = "Grade", keyframe, pulse)]
+    pub grade_vignette: f32,
+    /// How far out from the middle the vignette starts.
+    #[setting(label = "Vignette size", range(0, 1), group = "Grade", keyframe, pulse)]
+    pub grade_vignette_size: f32,
+    /// Recolours the picture by its brightness: dark parts take the first colours, light parts
+    /// the last.
+    #[setting(label = "Gradient map", group = "Grade", keyframe)]
+    pub grade_map: Gradient,
+    /// How much of the gradient map's colour replaces the picture's own.
+    #[setting(label = "Gradient map amount", range(0, 1), group = "Grade", keyframe, pulse)]
+    pub grade_map_amount: f32,
     /// How loud the finished soundtrack is, measured as real loudness (LUFS). -14 is the usual
     /// level for TikTok, Reels and Shorts.
     #[setting(label = "Loudness", range(-30, -6), unit = "LUFS", group = "Master")]
@@ -145,6 +173,15 @@ impl Default for SceneSettings {
             fps: 60,
             steps_per_second: 240,
             exposure: 1.0,
+            grade_brightness: 0.0,
+            grade_contrast: 0.0,
+            grade_saturation: 0.0,
+            grade_warmth: 0.0,
+            grade_tint: 0.0,
+            grade_vignette: 0.0,
+            grade_vignette_size: 0.5,
+            grade_map: Gradient::even(&[Color::rgb(0, 0, 0), Color::WHITE]),
+            grade_map_amount: 0.0,
             loudness: -14.0,
             clipper: Clip::Off,
             clip_drive: 0.0,
@@ -162,6 +199,23 @@ impl Default for SceneSettings {
             warp_strength: 0.5,
             background_on_screen: true,
             off_shot_fade: 0.0,
+        }
+    }
+}
+
+impl SceneSettings {
+    /// The colour grade these settings run over the finished picture.
+    pub fn grade(&self) -> bpe_gfx::Grade {
+        bpe_gfx::Grade {
+            brightness: self.grade_brightness,
+            contrast: self.grade_contrast,
+            saturation: self.grade_saturation,
+            warmth: self.grade_warmth,
+            tint: self.grade_tint,
+            vignette: self.grade_vignette,
+            vignette_size: self.grade_vignette_size,
+            map: self.grade_map.clone(),
+            map_amount: self.grade_map_amount,
         }
     }
 }
@@ -210,5 +264,39 @@ mod tests {
         let d = SceneSettings::default().background;
         assert_eq!((d.angle, d.span, d.centre), (90.0, 1920.0, Vec2::ZERO));
         assert_eq!(d.colours.stops.len(), 2);
+    }
+
+    #[test]
+    fn the_grade_is_nine_keyframed_settings_in_one_group() {
+        let defs = SceneSettings::defs();
+        let keys = [
+            ("grade_brightness", "Brightness"),
+            ("grade_contrast", "Contrast"),
+            ("grade_saturation", "Saturation"),
+            ("grade_warmth", "Warm / cool"),
+            ("grade_tint", "Tint"),
+            ("grade_vignette", "Vignette"),
+            ("grade_vignette_size", "Vignette size"),
+            ("grade_map", "Gradient map"),
+            ("grade_map_amount", "Gradient map amount"),
+        ];
+        for (key, label) in keys {
+            let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((d.label, d.group), (label, "Grade"), "{key}");
+            assert!(d.flags.keyframe, "{key}");
+            assert_eq!(d.flags.pulse, key != "grade_map", "{key}");
+        }
+        assert_eq!(defs.iter().filter(|d| d.group == "Grade").count(), 9);
+        let map = defs.iter().find(|d| d.key == "grade_map").unwrap();
+        assert_eq!(map.ty, bpe_core::ValueType::Gradient);
+        let range = |key: &str| defs.iter().find(|d| d.key == key).unwrap().range;
+        for key in ["grade_brightness", "grade_contrast", "grade_saturation", "grade_warmth", "grade_tint"] {
+            assert_eq!(range(key), Some((-1.0, 1.0)), "{key}");
+        }
+        for key in ["grade_vignette", "grade_vignette_size", "grade_map_amount"] {
+            assert_eq!(range(key), Some((0.0, 1.0)), "{key}");
+        }
+        let d = SceneSettings::default();
+        assert_eq!(d.grade(), bpe_gfx::Grade::default());
     }
 }

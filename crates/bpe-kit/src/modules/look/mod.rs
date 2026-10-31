@@ -40,12 +40,20 @@ pub struct ClassicLook {
     pub flash_seconds: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
     /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
-    /// parts overlap they do not stack.
+    /// parts overlap they do not stack, unless Blend with each other is on.
     #[setting(label = "Blend", group = "Blending")]
     pub blend: Blend,
     /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
     #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
     pub blend_amount: f32,
+    /// Where its own parts overlap, they blend with each other too, as they do with what is
+    /// under them; off, they cover each other and are mixed in as one picture.
+    #[setting(
+        label = "Blend with each other",
+        when = "blend=add|screen|multiply|lighten|darken|subtract",
+        group = "Blending"
+    )]
+    pub blend_each: bool,
 }
 
 impl Default for ClassicLook {
@@ -59,6 +67,7 @@ impl Default for ClassicLook {
             flash_seconds: 0.25,
             blend: Blend::Normal,
             blend_amount: 1.0,
+            blend_each: false,
         }
     }
 }
@@ -131,6 +140,27 @@ mod tests {
         let params = look.to_params();
         assert_eq!(Blend::from_params(&params), (Blend::Screen, 0.25));
         assert_eq!(ClassicLook::from_params(&params), look);
+    }
+
+    #[test]
+    fn three_looks_can_blend_with_each_other_in_the_modes_that_combine() {
+        use bpe_core::{Blend, Choice};
+        let reg = registry();
+        for look in ["look.classic", "look.styled", "look.swarm"] {
+            let defs = reg.module(look).unwrap().settings();
+            let def = defs.iter().find(|d| d.key == "blend_each").unwrap_or_else(|| panic!("{look} has no blend_each"));
+            assert_eq!(def.default, Value::Bool(false), "{look}");
+            assert_eq!(def.group, "Blending", "{look}");
+            assert_eq!(def.label, "Blend with each other", "{look}");
+            for name in Blend::NAMES {
+                let get = |k: &str| (k == "blend").then(|| Value::Choice(name.to_string()));
+                let shown = def.applies(Some("balls"), &get);
+                let b = Blend::from_name(name).unwrap();
+                assert_eq!(shown, b.combines_with_itself(), "{look}: {name}");
+            }
+        }
+        let reg_liquid = reg.module("look.liquid").unwrap().settings();
+        assert!(reg_liquid.iter().all(|d| d.key != "blend_each"), "a liquid is one surface already");
     }
 
     #[test]

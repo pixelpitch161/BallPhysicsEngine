@@ -422,9 +422,29 @@ fn roll_vec2(
     [new_speed * new_angle.cos(), new_speed * new_angle.sin()]
 }
 
-/// `n` colours that go together: hues stepped around the wheel (close, spread, opposite or
-/// evenly), all bright and fairly saturated.
+/// `n` colours that go together. Half the time they are spread along a random built-in palette
+/// (one colour takes its middle); otherwise hues are stepped around the wheel (close, spread,
+/// opposite or evenly), all bright and fairly saturated.
 pub fn palette(dice: &mut Rng, n: usize) -> Vec<Color> {
+    if dice.unit() < 0.5 {
+        let all = crate::paint::palettes::built_in();
+        let pick = &all[dice.next_u32() as usize % all.len()];
+        return sample_palette(&pick.colours, n);
+    }
+    procedural_palette(dice, n)
+}
+
+/// `n` colours at evenly spaced points along `g` (one colour takes its middle).
+pub(crate) fn sample_palette(g: &bpe_core::Gradient, n: usize) -> Vec<Color> {
+    (0..n)
+        .map(|i| {
+            let t = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+            Color::from_linear(g.sample(t))
+        })
+        .collect()
+}
+
+fn procedural_palette(dice: &mut Rng, n: usize) -> Vec<Color> {
     let base = dice.unit();
     let sign = if dice.unit() < 0.5 { -1.0 } else { 1.0 };
     let step = match dice.next_u32() % 4 {
@@ -858,9 +878,20 @@ mod tests {
     }
 
     #[test]
+    fn palette_dice_sometimes_returns_a_built_in_palette() {
+        let want: Vec<Vec<Color>> =
+            crate::paint::palettes::built_in().iter().map(|p| sample_palette(&p.colours, 3)).collect();
+        let hits = (0..200).filter(|&seed| want.contains(&palette(&mut Rng::new(seed, 0), 3))).count();
+        assert!(hits > 0 && hits < 200, "{hits}");
+        assert_eq!(palette(&mut Rng::new(7, 0), 3), palette(&mut Rng::new(7, 0), 3));
+        assert!((0..200).all(|seed| palette(&mut Rng::new(seed, 0), 1).len() == 1));
+        assert!((0..200).all(|seed| palette(&mut Rng::new(seed, 0), 4).iter().all(|c| !c.is_additive())));
+    }
+
+    #[test]
     fn palette_makes_n_distinct_bright_colours() {
         for seed in 0..20 {
-            let colours = palette(&mut Rng::new(seed, 0), 5);
+            let colours = procedural_palette(&mut Rng::new(seed, 0), 5);
             assert_eq!(colours.len(), 5);
             for c in &colours {
                 let (_, s, v) = c.to_hsv();
