@@ -163,7 +163,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.selectable_value(&mut studio.preview_mode, PreviewMode::Camera, "Camera")
             .on_hover_text("Exactly what the video shows");
         ui.selectable_value(&mut studio.preview_mode, PreviewMode::World, "World")
-            .on_hover_text("The whole world: scroll to zoom, drag with the middle button or Space to pan, F to frame");
+            .on_hover_text("The whole world: scroll to zoom, drag with the middle button to pan, F to frame");
     });
     let settings = studio.settings();
     let (video_width, video_height) = (settings.width.max(1), settings.height.max(1));
@@ -258,10 +258,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         on_camera.or_else(|| hit_test(studio, &view, at))
     };
     let hovered = pointer.and_then(|p| grab(studio, p));
-    let panning = ui.input(|i| i.key_down(egui::Key::Space));
-
     if response.drag_started_by(egui::PointerButton::Primary)
-        && !panning
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
         && let Some(handle) = grab(studio, press)
     {
@@ -311,7 +308,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     }
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
     let hint = if world_mode {
-        "Scroll to zoom · middle-drag or Space-drag to pan · F to frame · drag the camera's frame to move, zoom or turn it"
+        "Scroll to zoom · middle-drag to pan · F to frame · drag the camera's frame to move, zoom or turn it"
     } else if studio.grid.snap {
         "Drags snap to the grid · hold Alt to place freely"
     } else {
@@ -322,8 +319,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     outcome
 }
 
-/// Pans and zooms the World view: scroll zooms about the pointer, the middle button or Space
-/// with the left button pans, F frames the selected thing (or the camera's shot). Returns
+/// Pans and zooms the World view: scroll zooms about the pointer, the middle button pans (Space
+/// is left to play and pause), F frames the selected thing (or the camera's shot). Returns
 /// whether the view moved.
 fn navigate(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &View) -> bool {
     let before = studio.world_nav;
@@ -335,9 +332,7 @@ fn navigate(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &View
             studio.world_nav.zoom_about(view, pointer, (scroll * 0.003).exp());
         }
     }
-    let space = ui.input(|i| i.key_down(egui::Key::Space));
-    if response.dragged_by(egui::PointerButton::Middle) || (space && response.dragged_by(egui::PointerButton::Primary))
-    {
+    if response.dragged_by(egui::PointerButton::Middle) {
         studio.world_nav.pan(view, response.drag_delta());
     }
     if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::F)) {
