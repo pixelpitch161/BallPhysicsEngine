@@ -316,6 +316,7 @@ dependencies = [
 name = "bpe-kit"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bpe-core",
  "bpe-gfx",
  "bpe-graph",
@@ -341,10 +342,12 @@ dependencies = [
  "anyhow",
  "bpe-core",
  "bpe-graph",
+ "bpe-music",
  "bpe-runtime",
  "bpe-synth",
  "glam",
  "hound",
+ "midly",
 ]
 
 [[package]]

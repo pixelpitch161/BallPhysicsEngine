@@ -1,7 +1,7 @@
 //! Command-line renderer for the modular studio: `bpe-render-next scene.ron out.mp4`.
 
 use anyhow::{Context, bail};
-use bpe_cli::{Encoder, ExportOptions, export_video};
+use bpe_cli::{Encoder, ExportOptions, export_video_reporting};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -17,6 +17,9 @@ Without an output name the video is written next to the scene file, with the sam
 Options:
   --scale F        render at a fraction of the scene's size, for quick drafts
   --frames N       render only the first N frames
+  --midi           also save the notes and chords as <out>.mid
+  --stems          also save each sound, bus and the song as WAVs in <out>-stems/
+  --wet-stems      stems include each sound's sends to the buses
   --crf N          H.264 quality, lower is better (default 18)
   --preset NAME    x264 speed preset (default medium)
   --ffmpeg PATH    ffmpeg executable (default: found automatically)
@@ -31,6 +34,7 @@ Batch options (many seeds of one scene, the best kept; a stopped batch carries o
   --amount F       how far the variations go, 0 to 1 (default 0.5)
   --quality NAME   draft, good (default) or best
   --delete-rejected  delete the videos that didn't make the cut instead of moving them
+  --midi, --stems, --wet-stems  as for a single video, for every video kept
   --ffmpeg PATH    ffmpeg executable (default: found automatically)";
 
 fn main() {
@@ -59,6 +63,7 @@ fn run() -> anyhow::Result<()> {
     let mut preset = String::from("medium");
     let mut ffmpeg = None;
     let mut encoder = Encoder::Auto;
+    let mut extras = bpe_kit::Extras::default();
 
     let mut i = 0;
     let value = |i: &mut usize, flag: &str| -> anyhow::Result<String> {
@@ -68,6 +73,7 @@ fn run() -> anyhow::Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--new" => new_scene = true,
+            flag if bpe_cli::extras_flag(flag, &mut extras) => {}
             "--scale" => scale = value(&mut i, "--scale")?.parse().context("--scale needs a number")?,
             "--frames" => frames = Some(value(&mut i, "--frames")?.parse().context("--frames needs a whole number")?),
             "--crf" => crf = value(&mut i, "--crf")?.parse().context("--crf needs a number from 0 to 51")?,
@@ -111,20 +117,29 @@ fn run() -> anyhow::Result<()> {
     options.crf = crf;
     options.preset = preset;
     options.encoder = encoder;
+    options.extras = extras;
     if let Some(ffmpeg) = ffmpeg {
         options.ffmpeg = ffmpeg;
     }
 
     let (device, queue) = bpe_gfx::headless_device().context("no graphics device for rendering")?;
     let started = std::time::Instant::now();
-    let used = export_video(&device, &queue, &scene, &kit, &options, |done, total| {
+    let report = export_video_reporting(&device, &queue, &scene, &kit, &options, |done, total| {
         if done % 60 == 0 || done == total {
             print!("\r{done}/{total} frames");
             let _ = std::io::stdout().flush();
         }
         true
     })?;
-    println!("\nwrote {} with the {} in {:.1} s", output.display(), used.name(), started.elapsed().as_secs_f32());
+    println!(
+        "\nwrote {} with the {} in {:.1} s",
+        output.display(),
+        report.encoder.name(),
+        started.elapsed().as_secs_f32()
+    );
+    for path in &report.extras {
+        println!("also wrote {}", path.display());
+    }
     Ok(())
 }
 
@@ -159,6 +174,7 @@ fn run_batch(args: &[String]) -> anyhow::Result<()> {
                     .with_context(|| format!("unknown quality {name}: use draft, good or best"))?;
             }
             "--delete-rejected" => spec.rejected = Rejected::Delete,
+            flag if bpe_cli::extras_flag(flag, &mut spec.extras) => {}
             "--ffmpeg" => ffmpeg = Some(PathBuf::from(value(&mut i, "--ffmpeg")?)),
             flag if flag.starts_with("--") => bail!("unknown option {flag}\n\n{USAGE}"),
             path => paths.push(path.into()),

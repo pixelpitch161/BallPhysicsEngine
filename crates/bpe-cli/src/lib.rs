@@ -10,7 +10,7 @@ pub mod batch;
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
 use bpe_gfx::{Frame, Readback, Renderer, build_frame_at, wgpu};
-use bpe_kit::{Kit, SceneSettings, flow_source, mix_scene};
+use bpe_kit::{Kit, SceneSettings, flow_source};
 use bpe_runtime::{Log, World};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -31,6 +31,22 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
+    /// MIDI and stems to save beside the video.
+    pub extras: bpe_kit::Extras,
+    /// What the extras are named after: `<base>.mid` and `<base>-stems/`. `None` names them
+    /// after the video.
+    pub extras_base: Option<PathBuf>,
+}
+
+/// What an export made, besides the video.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExportReport {
+    /// The encoder that made the video.
+    pub encoder: Encoder,
+    /// What the master stage measured of the soundtrack.
+    pub master: Option<bpe_mix::MasterReport>,
+    /// The MIDI file and stems written beside it.
+    pub extras: Vec<PathBuf>,
 }
 
 impl ExportOptions {
@@ -43,7 +59,15 @@ impl ExportOptions {
             scale: 1.0,
             max_frames: None,
             encoder: Encoder::Auto,
+            extras: bpe_kit::Extras::default(),
+            extras_base: None,
         }
+    }
+
+    /// What the MIDI file and stems are named after: the extras base, else the video without
+    /// its extension.
+    pub fn extras_path(&self) -> PathBuf {
+        self.extras_base.clone().unwrap_or_else(|| self.output.with_extension(""))
     }
 }
 
@@ -231,7 +255,7 @@ pub fn export_video(
     options: &ExportOptions,
     progress: impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<Encoder> {
-    export_video_reporting(device, queue, scene, kit, options, progress).map(|(encoder, _)| encoder)
+    export_video_reporting(device, queue, scene, kit, options, progress).map(|r| r.encoder)
 }
 
 /// [`export_video`], with what the master stage measured of the soundtrack too.
@@ -242,19 +266,42 @@ pub fn export_video_reporting(
     kit: &Kit,
     options: &ExportOptions,
     mut progress: impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<(Encoder, Option<bpe_mix::MasterReport>)> {
+) -> anyhow::Result<ExportReport> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_with(device, queue, scene, kit, options, encoder, &mut progress) {
-        Err(error) if encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED) => {
-            let report = export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
+        Err(error) if retry_on_cpu(encoder, &error) => {
+            let (master, extras) = export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
-            Ok((Encoder::Cpu, report))
+            Ok(ExportReport { encoder: Encoder::Cpu, master, extras })
         }
-        result => result.map(|report| (encoder, report)),
+        result => result.map(|(master, extras)| ExportReport { encoder, master, extras }),
     }
 }
 
 const CANCELLED: &str = "export cancelled";
+/// The error an export gives when the video is made but its MIDI file or stems couldn't be saved.
+const EXTRAS_FAILED: &str = "saving the MIDI file and stems";
+
+/// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
+/// made the video, and not because it was cancelled or the extras couldn't be saved.
+fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    encoder != Encoder::Cpu && !message.contains(CANCELLED) && !message.contains(EXTRAS_FAILED)
+}
+
+/// Reads a MIDI or stems flag into `extras`; false when `flag` is not one.
+pub fn extras_flag(flag: &str, extras: &mut bpe_kit::Extras) -> bool {
+    match flag {
+        "--midi" => extras.midi = true,
+        "--stems" => extras.stems = true,
+        "--wet-stems" => {
+            extras.stems = true;
+            extras.wet = true;
+        }
+        _ => return false,
+    }
+    true
+}
 /// Frames that can be on their way back from the graphics card at once.
 const FRAMES_IN_FLIGHT: usize = 3;
 /// Finished frames that can wait for ffmpeg at once.
@@ -268,7 +315,7 @@ fn export_with(
     options: &ExportOptions,
     encoder: Encoder,
     progress: &mut impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<Option<bpe_mix::MasterReport>> {
+) -> anyhow::Result<(Option<bpe_mix::MasterReport>, Vec<PathBuf>)> {
     let (resolved, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
@@ -285,7 +332,8 @@ fn export_with(
     let mut log = Log::default();
     run.advance_to(video.duration as f64, &kit.sims, &mut log);
     let wav = TempFile::new("wav");
-    let track = mix_scene(scene, &resolved, &log, kit);
+    let export = bpe_kit::mix_scene_export(scene, &resolved, &log, kit, options.extras);
+    let track = &export.soundtrack;
     for problem in &track.problems {
         eprintln!("sound: {problem}");
     }
@@ -392,7 +440,9 @@ fn export_with(
         let _ = std::fs::remove_file(&output);
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
-    Ok(track.report)
+    // Only once the video is made, so a cancelled or failed export leaves no extras behind.
+    let extras = bpe_kit::write_extras(&export, &options.extras_path()).context(EXTRAS_FAILED)?;
+    Ok((track.report.clone(), extras))
 }
 
 /// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put
@@ -482,5 +532,27 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extras_that_fail_to_save_are_not_rendered_again() {
+        let extras = anyhow::anyhow!("disk full").context(EXTRAS_FAILED);
+        assert!(!retry_on_cpu(Encoder::Nvidia, &extras));
+        assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!(CANCELLED)));
+        assert!(retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("ffmpeg failed")));
+        assert!(!retry_on_cpu(Encoder::Cpu, &anyhow::anyhow!("ffmpeg failed")));
+    }
+
+    #[test]
+    fn extras_flags() {
+        let mut extras = bpe_kit::Extras::default();
+        assert!(extras_flag("--midi", &mut extras) && extras_flag("--wet-stems", &mut extras));
+        assert!(!extras_flag("--scale", &mut extras));
+        assert_eq!(extras, bpe_kit::Extras { midi: true, stems: true, wet: true });
     }
 }
