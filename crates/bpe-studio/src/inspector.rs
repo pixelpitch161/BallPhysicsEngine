@@ -2325,11 +2325,12 @@ mod tests {
         let decay = h.get_by_role_and_label(Role::Slider, "Decay");
         assert_eq!(decay.accesskit_node().numeric_value(), Some(0.9f32 as f64));
         // The scene's grade has a Brightness slider too, at 0.
-        let brightness: Vec<_> = h
+        let mut brightness: Vec<_> = h
             .get_all_by_label("Brightness")
             .filter(|n| n.accesskit_node().role() == Role::Slider)
             .filter_map(|n| n.accesskit_node().numeric_value())
             .collect();
+        brightness.sort_by(f64::total_cmp);
         assert_eq!(brightness, [0.0, 0.5]);
         assert!(h.query_by_label("Voice limit").is_none(), "a built-in plays without voices");
     }
@@ -2537,8 +2538,7 @@ mod tests {
     fn scene_card_shows_the_grade_group() {
         let reg = bpe_kit::registry();
         let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
-        // Halfway through, where the keyframed map amount is above 0 and so the map shows.
-        h.state_mut().time = 10.0;
+        // At the start the map amount is 0, yet the map still shows.
         h.run();
         // The sound's pluck has a Brightness slider too.
         let slider =
@@ -2546,7 +2546,7 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Grade").is_some(), "a Grade heading");
         assert!(slider(&h, "Brightness"), "the Brightness setting");
         assert!(slider(&h, "Vignette"), "the Vignette setting");
-        assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting");
+        assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting at t=0");
         // The group folds like the others.
         h.get_by_label("Hide Grade").click();
         h.run();

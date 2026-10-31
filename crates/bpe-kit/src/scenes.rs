@@ -432,7 +432,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         s.grade_contrast = 0.2;
         s.grade_vignette = 0.4;
         s.grade_map = sunset.clone();
-        s.grade_map_amount = 0.25;
+        s.grade_map_amount = 0.0;
     });
     b.arena(|a| {
         a.radius = 470.0;

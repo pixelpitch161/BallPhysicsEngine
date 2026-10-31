@@ -165,6 +165,21 @@ fn gradient_map_full_maps_black_to_first_stop() {
 }
 
 #[test]
+fn gradient_map_looks_up_by_encoded_brightness_at_mid_grey() {
+    // Grey at sRGB 0.5 looks up halfway along a red-to-blue map. Gradients blend in linear light,
+    // so that halfway colour is (0.5, 0, 0.5) linear, which encodes to about 188. Looking up by
+    // linear brightness (0.214) instead would give about (231, 0, 128).
+    let grade = Grade {
+        map: Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]),
+        map_amount: 1.0,
+        ..Grade::default()
+    };
+    let Some(mapped) = draw(&graded(flat(MID), grade)) else { return };
+    let p = centre(&mapped);
+    assert!((p[0] - 188).abs() <= 3 && p[1] <= 2 && (p[2] - 188).abs() <= 3, "{p:?}");
+}
+
+#[test]
 fn defaults_follow_the_ruling_and_ignore_an_unused_map() {
     let d = Grade::default();
     assert_eq!(
@@ -176,7 +191,8 @@ fn defaults_follow_the_ruling_and_ignore_an_unused_map() {
     let red = Gradient::solid(Color::rgb(255, 0, 0));
     assert!(Grade { map: red.clone(), ..Grade::default() }.is_default());
     assert!(!Grade { map: red, map_amount: 0.5, ..Grade::default() }.is_default());
-    assert!(!Grade { vignette_size: 0.4, ..Grade::default() }.is_default());
+    assert!(Grade { vignette_size: 0.4, ..Grade::default() }.is_default(), "size is moot without a vignette");
+    assert!(!Grade { vignette: 0.3, vignette_size: 0.4, ..Grade::default() }.is_default());
 }
 
 #[test]

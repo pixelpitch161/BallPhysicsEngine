@@ -97,11 +97,11 @@ pub struct SceneSettings {
     #[setting(label = "Vignette", range(0, 1), group = "Grade", keyframe, pulse)]
     pub grade_vignette: f32,
     /// How far out from the middle the vignette starts.
-    #[setting(label = "Vignette size", range(0, 1), when = "grade_vignette", group = "Grade", keyframe, pulse)]
+    #[setting(label = "Vignette size", range(0, 1), group = "Grade", keyframe, pulse)]
     pub grade_vignette_size: f32,
     /// Recolours the picture by its brightness: dark parts take the first colours, light parts
     /// the last.
-    #[setting(label = "Gradient map", when = "grade_map_amount", group = "Grade", keyframe)]
+    #[setting(label = "Gradient map", group = "Grade", keyframe)]
     pub grade_map: Gradient,
     /// How much of the gradient map's colour replaces the picture's own.
     #[setting(label = "Gradient map amount", range(0, 1), group = "Grade", keyframe, pulse)]

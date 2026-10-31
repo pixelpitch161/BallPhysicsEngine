@@ -675,7 +675,7 @@ impl Default for Grade {
 
 impl Grade {
     /// Whether the grade changes nothing: every value at its default. The map only counts once
-    /// its amount is above 0.
+    /// its amount is above 0, and the vignette's size once the vignette is above 0.
     pub fn is_default(&self) -> bool {
         let d = Self::default();
         self.brightness == d.brightness
@@ -684,7 +684,7 @@ impl Grade {
             && self.warmth == d.warmth
             && self.tint == d.tint
             && self.vignette == d.vignette
-            && self.vignette_size == d.vignette_size
+            && (self.vignette == 0.0 || self.vignette_size == d.vignette_size)
             && self.map_amount == d.map_amount
     }
 }

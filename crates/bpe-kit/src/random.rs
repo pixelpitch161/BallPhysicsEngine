@@ -435,7 +435,7 @@ pub fn palette(dice: &mut Rng, n: usize) -> Vec<Color> {
 }
 
 /// `n` colours at evenly spaced points along `g` (one colour takes its middle).
-pub fn sample_palette(g: &bpe_core::Gradient, n: usize) -> Vec<Color> {
+pub(crate) fn sample_palette(g: &bpe_core::Gradient, n: usize) -> Vec<Color> {
     (0..n)
         .map(|i| {
             let t = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };

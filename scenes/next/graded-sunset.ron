@@ -53,7 +53,6 @@
                     ],
                     transition: Smooth,
                 )),
-                "grade_map_amount": Number(0.25),
                 "grade_vignette": Number(0.4000000059604645),
                 "grade_warmth": Number(0.30000001192092896),
                 "gravity": Vec2((0.0, 600.0)),
