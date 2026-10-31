@@ -1501,6 +1501,19 @@ mod tests {
     }
 
     #[test]
+    fn a_palette_from_the_menu_sets_the_colours() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        h.get_by_label("Colours palette").click();
+        h.run();
+        h.get_by_label("Ocean").click();
+        h.run();
+        let ocean = bpe_kit::paint::palettes::built_in().into_iter().find(|p| p.name == "Ocean").unwrap().colours;
+        let m = &h.state().scene.library.modules[&module];
+        assert_eq!(m.params.get("colours"), Some(&Value::Gradient(ocean)), "{:?}", m.params);
+    }
+
+    #[test]
     fn keyed_gradient_edit_writes_a_key() {
         let mut h = harness(Some(ThingId(2)));
         let (module, _) = ball_look(h.state());

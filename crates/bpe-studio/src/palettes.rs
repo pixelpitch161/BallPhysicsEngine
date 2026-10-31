@@ -92,7 +92,6 @@ fn store_id() -> egui::Id {
 }
 
 /// The saved palettes, if the app installed a store in this context.
-#[allow(dead_code)]
 pub fn store(ctx: &egui::Context) -> Option<Arc<Mutex<PaletteStore>>> {
     ctx.data(|d| d.get_temp::<Arc<Mutex<PaletteStore>>>(store_id()))
 }
