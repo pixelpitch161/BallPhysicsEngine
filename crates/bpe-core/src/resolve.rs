@@ -125,7 +125,9 @@ pub(crate) fn find_slot<'a>(
     slot: SlotId,
     problems: &mut Vec<Problem>,
 ) -> Option<Source<'a>> {
-    for at in std::iter::once(id).chain(scene.ancestors(id)) {
+    // An ancestor whose kind keeps its slots to itself is skipped; the thing itself never is.
+    let passes = |at: &ThingId| scene.things.get(at).and_then(|t| reg.thing(&t.kind)).is_none_or(|k| k.passes_down());
+    for at in std::iter::once(id).chain(scene.ancestors(id).into_iter().filter(passes)) {
         match step(scene, reg, at, slot, &Broken::new()) {
             Step::Off => return None,
             Step::Use(source) => return Some(source),
@@ -158,8 +160,9 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
 pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved {
     let mut out = Resolved::default();
     let mut left_out = BTreeSet::new();
-    // For each thing and slot, the thing whose link fills it when walking up from here. Parents
-    // come before children in `order`, so each thing only looks one step up.
+    // For each thing and slot, the thing whose link fills it for the thing's children: its own
+    // link when its kind passes slots down, else whatever it was handed itself. Parents come
+    // before children in `order`, so each thing only looks one step up.
     let mut source: BTreeMap<ThingId, [Option<ThingId>; 8]> = BTreeMap::new();
 
     for &id in &scene.order {
@@ -188,7 +191,7 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
                 Step::Pass => above[i],
             };
         }
-        source.insert(id, here);
+        source.insert(id, if kind.passes_down() { here } else { above });
 
         let mut params = defaults(kind.settings());
         params.apply(&thing.params);
@@ -248,6 +251,29 @@ mod tests {
         let plain = resolve(&scene, &reg);
         assert!(plain.problems.is_empty());
         assert_eq!(plain.things[&balls].slots[&SlotId::Look].module, own);
+    }
+
+    #[test]
+    fn a_kind_that_does_not_pass_down_is_skipped_by_children() {
+        // ROOT(look A) > sealed(look B) > balls: the balls get A, the sealed thing gets B.
+        let reg = testkit::registry();
+        let mut scene = Scene::empty(&reg);
+        let sealed = scene.add_thing(&reg, "sealed", ThingId::ROOT).unwrap();
+        let balls = scene.add_thing(&reg, "balls", sealed).unwrap();
+        let a = scene.add_module(&reg, "look.plain", "A").unwrap();
+        let b = scene.add_module(&reg, "look.plain", "B").unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Look, a).unwrap();
+        scene.link(&reg, sealed, SlotId::Look, b).unwrap();
+        let r = resolve(&scene, &reg);
+        assert_eq!(r.things[&sealed].slots[&SlotId::Look].module, b);
+        assert_eq!(r.things[&balls].slots[&SlotId::Look].module, a);
+        let mut problems = Vec::new();
+        assert_eq!(resolve_slot(&scene, &reg, balls, SlotId::Look, &mut problems).unwrap().module, a);
+        // A sealed thing in the middle with nothing above it: the balls get nothing.
+        scene.set_slot_inherit(ThingId::ROOT, SlotId::Look);
+        let r = resolve(&scene, &reg);
+        assert!(!r.things[&balls].slots.contains_key(&SlotId::Look));
+        assert!(resolve_slot(&scene, &reg, balls, SlotId::Look, &mut problems).is_none());
     }
 
     #[test]

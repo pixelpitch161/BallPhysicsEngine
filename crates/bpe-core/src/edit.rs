@@ -34,6 +34,8 @@ pub enum EditError {
     InstrumentInUse(Vec<Address>),
     /// A scene has only one of these.
     OnlyOne(KindId),
+    /// The thing's kind doesn't take that kind of module in that slot.
+    NotAccepted,
 }
 
 impl fmt::Display for EditError {
@@ -62,6 +64,7 @@ impl fmt::Display for EditError {
             EditError::InstrumentInUse(users) if users.len() == 1 => write!(f, "One sound still uses this instrument"),
             EditError::InstrumentInUse(users) => write!(f, "{} sounds still use this instrument", users.len()),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
+            EditError::NotAccepted => write!(f, "That kind of module can't go there"),
         }
     }
 }
@@ -219,6 +222,9 @@ impl Scene {
         let kind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
         if !kind.slots().contains(&slot) {
             return Err(EditError::SlotNotSupported(slot));
+        }
+        if !kind.accepts(slot, &module.kind) {
+            return Err(EditError::NotAccepted);
         }
         thing.slots.insert(slot, SlotLink::Linked { module: m, overrides: Params::default() });
         Ok(())
@@ -631,6 +637,18 @@ mod tests {
             [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
         );
         assert!(matches!(s.add_thing(&r, "magnet", ThingId::ROOT), Err(EditError::UnknownKind(_))));
+    }
+
+    #[test]
+    fn link_refuses_a_module_kind_the_thing_does_not_accept() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let sealed = s.add_thing(&r, "sealed", ThingId::ROOT).unwrap();
+        let pluck = s.add_module(&r, "sound.pluck", "Pluck").unwrap();
+        assert_eq!(s.link(&r, sealed, SlotId::Sound, pluck), Err(EditError::NotAccepted));
+        assert!(!s.things[&sealed].slots.contains_key(&SlotId::Sound));
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(s.link(&r, balls, SlotId::Sound, pluck), Ok(()));
     }
 
     #[test]
