@@ -1,5 +1,7 @@
 //! The swarm layer: up to a million points moved by compute shaders and drawn as glowing dots.
 
+use std::collections::BTreeMap;
+
 use bytemuck::{Pod, Zeroable};
 
 use super::inputs::{Inputs, STEP_WGSL};
@@ -104,6 +106,11 @@ pub struct SwarmPipelines {
     fill: wgpu::ComputePipeline,
     advance: wgpu::ComputePipeline,
     draw: wgpu::RenderPipeline,
+    /// What [`SwarmPipelines::ensure_each`] makes from: the draw shader and its layout.
+    draw_module: wgpu::ShaderModule,
+    draw_pipeline_layout: wgpu::PipelineLayout,
+    /// Drawing into a layer whose things blend with each other, by the blend's code.
+    each: BTreeMap<u32, wgpu::RenderPipeline>,
 }
 
 impl SwarmPipelines {
@@ -152,33 +159,13 @@ impl SwarmPipelines {
         let draw_module = util::shader(
             device,
             "swarm draw",
-            &[&crate::gradients::paint_wgsl(2), include_str!("../shaders/flow/swarm_draw.wgsl")],
+            &[
+                &crate::gradients::paint_wgsl(2),
+                include_str!("../shaders/flow/swarm_draw.wgsl"),
+                include_str!("../shaders/each.wgsl"),
+            ],
         );
-        let draw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("swarm draw"),
-            layout: Some(&draw_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &draw_module,
-                entry_point: Some("vs_point"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &draw_module,
-                entry_point: Some("fs_point"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: crate::HDR_FORMAT,
-                    blend: Some(util::ADDITIVE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let draw = draw_pipeline(device, &draw_pipeline_layout, &draw_module, "fs_point", util::ADDITIVE);
         Self {
             init: compute("init_points"),
             clear: compute("clear_field"),
@@ -187,8 +174,64 @@ impl SwarmPipelines {
             layout,
             draw_layout,
             draw,
+            draw_module,
+            draw_pipeline_layout,
+            each: BTreeMap::new(),
         }
     }
+
+    /// The usual draw pipeline: points of light added to the picture.
+    pub fn draw(&self) -> &wgpu::RenderPipeline {
+        &self.draw
+    }
+
+    /// Makes the pipeline for swarms blending with each other by `blend` (see each.wgsl).
+    pub fn ensure_each(&mut self, device: &wgpu::Device, blend: bpe_core::Blend) {
+        let (layout, module) = (&self.draw_pipeline_layout, &self.draw_module);
+        self.each
+            .entry(blend.shader_code())
+            .or_insert_with(|| draw_pipeline(device, layout, module, "fs_point_each", crate::each::blend_state(blend)));
+    }
+
+    /// The pipeline [`SwarmPipelines::ensure_each`] made for `blend`.
+    pub fn each(&self, blend: bpe_core::Blend) -> &wgpu::RenderPipeline {
+        &self.each[&blend.shader_code()]
+    }
+}
+
+/// The swarm's point drawing with fragment entry `fs` and `blend`.
+fn draw_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    fs: &str,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("swarm draw"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_point"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fs),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: crate::HDR_FORMAT,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// One swarm's points on the GPU.
@@ -322,7 +365,7 @@ impl SwarmGpu {
     /// Draws the points, reading the frame's gradients from `paint`.
     pub fn draw(
         &self,
-        pipelines: &SwarmPipelines,
+        pipeline: &wgpu::RenderPipeline,
         pass: &mut wgpu::RenderPass<'_>,
         globals: &wgpu::BindGroup,
         paint: &wgpu::BindGroup,
@@ -330,7 +373,7 @@ impl SwarmGpu {
         if self.sim.count == 0 || self.last.draw[0] <= 0.0 {
             return;
         }
-        pass.set_pipeline(&pipelines.draw);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, &self.draw_group, &[]);
         pass.set_bind_group(2, paint, &[]);

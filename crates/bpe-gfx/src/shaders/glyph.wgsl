@@ -85,8 +85,8 @@ fn vs_glyph(@builtin(vertex_index) i: u32, q: GlyphIn) -> GlyphOut {
     return out;
 }
 
-@fragment
-fn fs_glyph(in: GlyphOut) -> @location(0) vec4<f32> {
+// What `fs_glyph` and `fs_glyph_each` draw.
+fn shade_glyph(in: GlyphOut) -> vec4<f32> {
     let sample = textureSample(atlas, atlas_sampler, in.uv).r;
     let px = g.view.z;
     // Signed distance inside the glyph's edge, in world units.
@@ -118,4 +118,15 @@ fn fs_glyph(in: GlyphOut) -> @location(0) vec4<f32> {
         a = select(outline_a, 0.0, in.outline.a < 0.0);
     }
     return vec4<f32>(rgb, a);
+}
+
+@fragment
+fn fs_glyph(in: GlyphOut) -> @location(0) vec4<f32> {
+    return shade_glyph(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_glyph_each(in: GlyphOut) -> @location(0) vec4<f32> {
+    return each_out(shade_glyph(in), g.post.w);
 }

@@ -75,8 +75,8 @@ fn vs_look(@builtin(vertex_index) i: u32, b: LookIn) -> LookOut {
     return out;
 }
 
-@fragment
-fn fs_look(in: LookOut) -> @location(0) vec4<f32> {
+// What `fs_look` and `fs_look_each` draw.
+fn shade_look(in: LookOut) -> vec4<f32> {
     let angle = in.look.w;
     let p = rotate(in.local, -angle);
     let d = ball_shape(p, in.form.x, in.form.w);
@@ -125,4 +125,15 @@ fn fs_look_object(in: LookOut) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(p, in.code.x, cover);
+}
+
+@fragment
+fn fs_look(in: LookOut) -> @location(0) vec4<f32> {
+    return shade_look(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_look_each(in: LookOut) -> @location(0) vec4<f32> {
+    return each_out(shade_look(in), g.post.w);
 }

@@ -695,6 +695,11 @@ pub struct BlendLayer {
     pub blend: Blend,
     /// 0 to 1.
     pub amount: f32,
+    /// Its things blend with each other by `blend` too, not only with the picture under them:
+    /// the layer starts as the blend's identity, each thing is mixed into it by the blend, and
+    /// the layer then counts as covering everywhere one drew. Only for a blend that
+    /// [combines with itself](Blend::combines_with_itself).
+    pub each: bool,
     /// The layer's own lists. Its globals follow the frame it belongs to; it paints from that
     /// frame's gradient atlas, so its own `gradients` stay empty, and the hits and effects drawn
     /// into it are handed to that frame.
@@ -759,18 +764,22 @@ impl Frame {
     }
 
     /// The frame things drawn with `blend` at `amount` go into: this one for Normal at full
-    /// amount, else the layer for exactly that blend and amount, made on first use. The layer
-    /// takes this frame's size, moment, camera and picture settings.
-    pub fn layer_mut(&mut self, blend: Blend, amount: f32) -> &mut Frame {
+    /// amount, else the layer for exactly that blend, amount and `each` (whether its things
+    /// blend with each other, kept only where the blend [combines with
+    /// itself](Blend::combines_with_itself)), made on first use. The layer takes this frame's
+    /// size, moment, camera and picture settings.
+    pub fn layer_mut(&mut self, blend: Blend, amount: f32, each: bool) -> &mut Frame {
         if !layered(blend, amount) {
             return self;
         }
         // -0 and 0 are one amount (their bits differ).
         let amount = amount + 0.0;
-        let i = match self.layers.iter().position(|l| l.blend == blend && l.amount.to_bits() == amount.to_bits()) {
+        let each = each && blend.combines_with_itself();
+        let same = |l: &BlendLayer| l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each;
+        let i = match self.layers.iter().position(same) {
             Some(i) => i,
             None => {
-                self.layers.push(BlendLayer { blend, amount, frame: Frame::default() });
+                self.layers.push(BlendLayer { blend, amount, each, frame: Frame::default() });
                 self.layers.len() - 1
             }
         };
@@ -823,15 +832,15 @@ impl Frame {
         let Some(o) = self.overlay.as_deref_mut() else { return };
         let (effects, mut bursts, hits) =
             (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        let mut layered: Vec<(Blend, f32, Vec<Burst>)> = o
+        let mut layered: Vec<(Blend, f32, bool, Vec<Burst>)> = o
             .layers
             .iter_mut()
             .filter(|l| !l.frame.bursts.is_empty())
-            .map(|l| (l.blend, l.amount, std::mem::take(&mut l.frame.bursts)))
+            .map(|l| (l.blend, l.amount, l.each, std::mem::take(&mut l.frame.bursts)))
             .collect();
         o.layers.retain(|l| !l.frame.draws_nothing());
         // A burst names its gradient by the overlay's atlas row: give it the same row here.
-        for b in bursts.iter_mut().chain(layered.iter_mut().flat_map(|(_, _, list)| list.iter_mut())) {
+        for b in bursts.iter_mut().chain(layered.iter_mut().flat_map(|(_, _, _, list)| list.iter_mut())) {
             if b.paint.row >= 0.0
                 && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
             {
@@ -841,8 +850,8 @@ impl Frame {
         self.effects.extend(effects);
         self.bursts.extend(bursts);
         self.hits.extend(hits);
-        for (blend, amount, list) in layered {
-            self.layer_mut(blend, amount).bursts.extend(list);
+        for (blend, amount, each, list) in layered {
+            self.layer_mut(blend, amount, each).bursts.extend(list);
         }
     }
 
@@ -902,11 +911,11 @@ fn layered(blend: Blend, amount: f32) -> bool {
     !(blend == Blend::Normal && amount >= 1.0)
 }
 
-/// Runs `draw` on what things with `blend` at `amount` draw into: `target` itself, or its layer
-/// (see [`Frame::layer_mut`]). A layer borrows `target`'s gradient atlas, hits and effects while
+/// Runs `draw` on what things with `blend` at `amount` (blending with each other when `each`)
+/// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows `target`'s gradient atlas, hits and effects while
 /// it is drawn into, so its paint rows are the rows the renderer uploads and every module reads
 /// every hit. A layer nothing was drawn into is not kept.
-fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, draw: impl FnOnce(&mut Frame)) {
+fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
     if !layered(blend, amount) {
         draw(target);
         return;
@@ -915,7 +924,7 @@ fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, draw: impl FnOnce(
     let take =
         |f: &mut Frame| (std::mem::take(&mut f.gradients), std::mem::take(&mut f.hits), std::mem::take(&mut f.effects));
     let shared = take(target);
-    let layer = target.layer_mut(blend, amount);
+    let layer = target.layer_mut(blend, amount, each);
     (layer.gradients, layer.hits, layer.effects) = shared;
     draw(layer);
     let shared = take(layer);
@@ -1046,13 +1055,15 @@ pub fn build_frame_at(
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        let (blend, amount) = match r.slots.get(&SlotId::Look) {
-            Some(look) if *id != ThingId::ROOT => Blend::from_params(&look.params),
-            _ => (Blend::Normal, 1.0),
+        let ((blend, amount), each) = match r.slots.get(&SlotId::Look) {
+            Some(look) if *id != ThingId::ROOT => {
+                (Blend::from_params(&look.params), Blend::each_from_params(&look.params))
+            }
+            _ => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
-        draw_routed(target, blend, amount, |into| d.draw(&cx, into));
+        draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
@@ -1063,9 +1074,10 @@ pub fn build_frame_at(
             if d.draws_add_itself() && matches!(blend, Blend::Normal | Blend::Add) {
                 (blend, amount) = (Blend::Normal, 1.0);
             }
+            let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
             let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
-            draw_routed(target, blend, amount, |into| d.draw(&cx, slot, into));
+            draw_routed(target, blend, amount, each, |into| d.draw(&cx, slot, into));
         }
     }
     frame.camera = world.camera;
@@ -1275,13 +1287,13 @@ mod tests {
         let mut frame = Frame { width: 100, height: 200, time: 1.5, video: (300, 400), ..Frame::default() };
         frame.camera.zoom = 2.0;
         frame.bloom = 0.25;
-        frame.layer_mut(Blend::Normal, 1.0).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Normal, 1.0, false).balls.push(BallInstance::default());
         assert_eq!(frame.balls.len(), 1, "Normal at full amount is the frame itself");
         assert!(frame.layers.is_empty());
-        frame.layer_mut(Blend::Multiply, 1.0).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 0.5).looks.push(LookInstance::default());
-        frame.layer_mut(Blend::Multiply, 1.0).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Normal, 0.5).shapes.push(ShapeInstance::default());
+        frame.layer_mut(Blend::Multiply, 1.0, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 0.5, false).looks.push(LookInstance::default());
+        frame.layer_mut(Blend::Multiply, 1.0, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Normal, 0.5, false).shapes.push(ShapeInstance::default());
         let kept: Vec<(Blend, f32)> = frame.layers.iter().map(|l| (l.blend, l.amount)).collect();
         assert_eq!(kept, [(Blend::Multiply, 1.0), (Blend::Screen, 0.5), (Blend::Normal, 0.5)], "first-use order");
         let l = &frame.layers[0].frame;
@@ -1293,15 +1305,33 @@ mod tests {
     }
 
     #[test]
+    fn each_layers_and_plain_layers_do_not_share() {
+        use bpe_core::Blend;
+        let mut frame = Frame::default();
+        frame.layer_mut(Blend::Screen, 1.0, true).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, true).balls.push(BallInstance::default());
+        let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
+        assert_eq!(kept, [(Blend::Screen, 1.0, true), (Blend::Screen, 1.0, false)]);
+        assert_eq!(frame.layers[0].frame.balls.len(), 2);
+        // A mode that cannot combine with itself drops the switch, and so shares.
+        frame.layer_mut(Blend::Overlay, 1.0, true).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Overlay, 1.0, false).balls.push(BallInstance::default());
+        assert_eq!((frame.layers.len(), frame.layers[2].each, frame.layers[2].frame.balls.len()), (3, false, 2));
+        frame.layer_mut(Blend::Normal, 1.0, true).balls.push(BallInstance::default());
+        assert_eq!((frame.layers.len(), frame.balls.len()), (3, 1), "Normal at full amount is the frame itself");
+    }
+
+    #[test]
     fn a_layer_counts_towards_the_overlay_and_is_culled_with_the_frame() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
         frame.overlay_mut();
         assert!(!frame.has_overlay());
-        frame.overlay_mut().layer_mut(Blend::Screen, 1.0).balls.push(BallInstance::default());
+        frame.overlay_mut().layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
         assert!(frame.has_overlay(), "a stuck blended thing is something to draw");
         frame.camera.zoom = 4.0;
-        let layer = frame.layer_mut(Blend::Multiply, 1.0);
+        let layer = frame.layer_mut(Blend::Multiply, 1.0, false);
         layer.balls.push(BallInstance { center: [0.0, 0.0], radius: 5.0, ..BallInstance::default() });
         layer.balls.push(BallInstance { center: [5000.0, 0.0], radius: 5.0, ..BallInstance::default() });
         frame.cull();
@@ -1314,7 +1344,7 @@ mod tests {
         // Built through a camera zoomed in on the middle of the video...
         let mut frame = Frame::default();
         frame.camera.zoom = 4.0;
-        let layer = frame.layer_mut(Blend::Screen, 1.0);
+        let layer = frame.layer_mut(Blend::Screen, 1.0, false);
         layer.balls.push(BallInstance { center: [2000.0, 0.0], radius: 5.0, ..BallInstance::default() });
         layer.balls.push(BallInstance { center: [90_000.0, 0.0], radius: 5.0, ..BallInstance::default() });
         // ...then looked at by the editor's World view, zoomed far out, on a wider picture.
@@ -1329,8 +1359,8 @@ mod tests {
     fn minus_zero_and_zero_amounts_share_a_layer() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
-        frame.layer_mut(Blend::Screen, -0.0).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 0.0).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, -0.0, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 0.0, false).balls.push(BallInstance::default());
         assert_eq!(frame.layers.len(), 1);
         assert_eq!(frame.layers[0].amount.to_bits(), 0.0f32.to_bits());
     }
@@ -1339,8 +1369,8 @@ mod tests {
     fn set_view_moves_the_layers_with_the_frame() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
-        frame.layer_mut(Blend::Screen, 1.0).balls.push(BallInstance::default());
-        frame.overlay_mut().layer_mut(Blend::Add, 0.5).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
+        frame.overlay_mut().layer_mut(Blend::Add, 0.5, false).balls.push(BallInstance::default());
         let camera = CameraView { center: Vec2::new(10.0, 20.0), zoom: 0.5, turn: 0.25 };
         frame.set_view(camera, (300, 200));
         let l = &frame.layers[0].frame;
@@ -1378,7 +1408,7 @@ mod tests {
             follow: 1,
             amount: 1.0,
         };
-        o.layer_mut(Blend::Screen, 0.5).bursts.push(burst);
+        o.layer_mut(Blend::Screen, 0.5, false).bursts.push(burst);
         frame.lift_overlay_extras();
         let o = frame.overlay.as_deref().unwrap();
         assert!(o.layers.is_empty(), "a layer left with nothing to draw is dropped");
@@ -1430,6 +1460,11 @@ mod tests {
     /// One ball group with a look slot whose blend and amount are set straight on the resolved
     /// scene, drawn by [`Painter`] and the look's module by [`Sees`].
     fn routed(blend: &str, amount: f64, screen: bool, adds_itself: bool) -> Frame {
+        routed_each(blend, amount, screen, adds_itself, false)
+    }
+
+    /// [`routed`], with the look's Blend with each other switch set to `each`.
+    fn routed_each(blend: &str, amount: f64, screen: bool, adds_itself: bool, each: bool) -> Frame {
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
         let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
@@ -1441,6 +1476,9 @@ mod tests {
         let params = &mut r.slots.get_mut(&SlotId::Look).unwrap().params;
         params.set("blend", Value::Choice(blend.into()));
         params.set("blend_amount", Value::Number(amount));
+        if each {
+            params.set("blend_each", Value::Bool(true));
+        }
         let world = World::build(&scene, &resolved, &Sims::default());
         let mut draws = Draws::default();
         draws.add(Painter);
@@ -1474,6 +1512,17 @@ mod tests {
         assert_eq!(frame.hits.len(), 1, "the hit is the frame's, for every module to read");
         assert!(frame.layers[0].frame.hits.is_empty());
         assert_eq!(layer.frame.trails[0].color[0], 1.0, "a layered module still sees the thing's hits");
+    }
+
+    #[test]
+    fn a_thing_blending_with_each_other_draws_with_its_look_into_an_each_layer() {
+        use bpe_core::Blend;
+        let frame = routed_each("multiply", 1.0, false, false, true);
+        assert_eq!(frame.layers.len(), 1, "the thing and its look's module share the layer");
+        let layer = &frame.layers[0];
+        assert_eq!((layer.blend, layer.amount, layer.each), (Blend::Multiply, 1.0, true));
+        assert_eq!((layer.frame.balls.len(), layer.frame.trails.len()), (1, 1));
+        assert!(!routed("multiply", 1.0, false, false).layers[0].each, "off by default");
     }
 
     #[test]

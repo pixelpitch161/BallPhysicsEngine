@@ -139,12 +139,23 @@ fn vs_point(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     return out;
 }
 
-@fragment
-fn fs_point(in: PointOut) -> @location(0) vec4<f32> {
+// What `fs_point` and `fs_point_each` draw.
+fn shade_point(in: PointOut) -> vec4<f32> {
     let r2 = dot(in.local, in.local);
     let a = max(1.0 - r2, 0.0);
     if a <= 0.0 {
         discard;
     }
     return vec4<f32>(in.color * a * 1.6, 0.0);
+}
+
+@fragment
+fn fs_point(in: PointOut) -> @location(0) vec4<f32> {
+    return shade_point(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_point_each(in: PointOut) -> @location(0) vec4<f32> {
+    return each_out(shade_point(in), g.post.w);
 }

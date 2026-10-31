@@ -23,8 +23,8 @@ fn vs_trail(v: TrailIn) -> TrailOut {
     return out;
 }
 
-@fragment
-fn fs_trail(in: TrailOut) -> @location(0) vec4<f32> {
+// What `fs_trail` and `fs_trail_each` draw.
+fn shade_trail(in: TrailOut) -> vec4<f32> {
     let px = g.view.z;
     let half_width = max(in.edge.y, 0.5 * px);
     // Streaks thinner than a pixel get dimmer instead of aliasing.
@@ -39,4 +39,15 @@ fn fs_trail(in: TrailOut) -> @location(0) vec4<f32> {
     }
     let a = in.color.a * cover;
     return vec4<f32>(in.color.rgb * a, a);
+}
+
+@fragment
+fn fs_trail(in: TrailOut) -> @location(0) vec4<f32> {
+    return shade_trail(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_trail_each(in: TrailOut) -> @location(0) vec4<f32> {
+    return each_out(shade_trail(in), g.post.w);
 }

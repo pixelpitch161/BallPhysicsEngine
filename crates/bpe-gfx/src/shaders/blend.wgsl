@@ -1,9 +1,12 @@
 // The blend composite: mixes a layer of things drawn with one blend and amount into the picture
 // under them. The layer holds premultiplied colour and coverage; light added with no coverage
-// (alpha 0) counts as covering as much as its brightest channel.
+// (alpha 0) counts as covering as much as its brightest channel. A layer whose things blend with
+// each other (see each.wgsl) holds their combined colour instead, and covers wherever its alpha,
+// the largest coverage, is above 0.
 
 struct Mix {
-    // x: the blend's number (Blend::shader_code), y: the amount, 0 to 1.
+    // x: the blend's number (Blend::shader_code), y: the amount, 0 to 1, z: 1 when the layer's
+    // things blend with each other.
     how: vec4<f32>,
 };
 
@@ -102,6 +105,12 @@ fn fs_blend(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let code = u32(mixing.how.x + 0.5);
     let amount = clamp(mixing.how.y, 0.0, 1.0);
     let c = max(l.rgb, vec3<f32>(0.0));
+    if mixing.how.z > 0.5 && code != 1u {
+        if l.a <= 0.0 {
+            return d;
+        }
+        return vec4<f32>(mix(d.rgb, blended(code, d.rgb, l.rgb), amount), d.a);
+    }
     if code == 1u {
         // Add stays additive: its light goes on at the amount, coverage or not.
         return vec4<f32>(d.rgb + c * amount, d.a);

@@ -43,6 +43,19 @@ impl Blend {
         (blend, amount + 0.0)
     }
 
+    /// Whether things in this blend can also blend with each other (the Blend with each other
+    /// switch, `blend_each`): Add, Screen, Multiply, Lighten, Darken and Subtract, whose mix
+    /// with the picture can be built up one thing at a time.
+    pub fn combines_with_itself(self) -> bool {
+        matches!(self, Self::Add | Self::Screen | Self::Multiply | Self::Lighten | Self::Darken | Self::Subtract)
+    }
+
+    /// Whether a module's `params` turn on Blend with each other (`blend_each`): off when
+    /// missing or of the wrong kind. It only counts where [`Blend::combines_with_itself`].
+    pub fn each_from_params(params: &Params) -> bool {
+        matches!(params.get("blend_each"), Some(Value::Bool(true)))
+    }
+
     /// The blend's number in the composite shader.
     pub fn shader_code(self) -> u32 {
         match self {
@@ -81,6 +94,25 @@ mod tests {
         assert_eq!(Blend::from_params(&p).1, 0.25);
         p.set("blend", Value::Choice("no_such_blend".into()));
         assert_eq!(Blend::from_params(&p).0, Blend::Normal);
+    }
+
+    #[test]
+    fn six_modes_combine_with_themselves() {
+        let each = [Blend::Add, Blend::Screen, Blend::Multiply, Blend::Lighten, Blend::Darken, Blend::Subtract];
+        for n in Blend::NAMES {
+            let b = Blend::from_name(n).unwrap();
+            assert_eq!(b.combines_with_itself(), each.contains(&b), "{b:?}");
+        }
+    }
+
+    #[test]
+    fn each_from_params_reads_the_switch() {
+        let mut p = Params::default();
+        assert!(!Blend::each_from_params(&p), "off when missing");
+        p.set("blend_each", Value::Bool(true));
+        assert!(Blend::each_from_params(&p));
+        p.set("blend_each", Value::Number(1.0));
+        assert!(!Blend::each_from_params(&p), "off when of the wrong kind");
     }
 
     #[test]

@@ -349,19 +349,30 @@ impl FlowLayers {
     }
 
     /// Draws the frame's swarms into the scene pass, after the walls and before everything
-    /// in front of them.
+    /// in front of them; in a layer whose things blend with each other (`each`), with the
+    /// pipeline [`FlowLayers::ensure_each`] made.
     pub(crate) fn draw_swarms(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         globals: &wgpu::BindGroup,
         paint: &wgpu::BindGroup,
         frame: &Frame,
+        each: Option<bpe_core::Blend>,
     ) {
+        let pipeline = match each {
+            Some(blend) => self.pipelines.swarm.each(blend),
+            None => self.pipelines.swarm.draw(),
+        };
         for l in &frame.swarms {
             if let Some(Layer::Swarm(s)) = self.layers.get(&l.thing) {
-                s.draw(&self.pipelines.swarm, pass, globals, paint);
+                s.draw(pipeline, pass, globals, paint);
             }
         }
+    }
+
+    /// Makes the pipeline swarms blending with each other by `blend` are drawn with.
+    pub(crate) fn ensure_each(&mut self, device: &wgpu::Device, blend: bpe_core::Blend) {
+        self.pipelines.swarm.ensure_each(device, blend);
     }
 
     /// Steps the layers to `time`, in batches of [`BATCH_STEPS`]. Going back restores the
@@ -898,6 +909,15 @@ mod tests {
 
     #[test]
     fn a_swarm_in_a_blend_layer_is_stepped_and_drawn() {
+        swarm_in_a_layer(false);
+    }
+
+    #[test]
+    fn a_swarm_blending_with_each_other_is_drawn() {
+        swarm_in_a_layer(true);
+    }
+
+    fn swarm_in_a_layer(each: bool) {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
@@ -907,7 +927,8 @@ mod tests {
         layer.count = 20_000;
         layer.look.brightness = 0.8;
         layer.look.size = 2.0;
-        frame.layer_mut(bpe_core::Blend::Screen, 1.0).swarms.push(layer);
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0, each).swarms.push(layer);
+        assert_eq!(frame.layers[0].each, each);
         assert!(frame.swarms.is_empty());
         let source = FlowSource {
             scene: &scene,
