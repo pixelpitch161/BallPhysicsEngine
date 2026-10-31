@@ -5,6 +5,7 @@ use bpe_gfx::{Frame, build_frame};
 
 use crate::{Kit, kit, new_scene};
 
+const ARENA: ThingId = ThingId(1);
 const BALL: ThingId = ThingId(2);
 
 /// The module filling `slot` on `thing`.
@@ -47,7 +48,7 @@ fn a_multiply_look_puts_the_ball_in_a_layer() {
     let layer = &frame.layers[0];
     assert_eq!((layer.blend, layer.amount), (Blend::Multiply, 1.0));
     assert_eq!(layer.frame.balls.len(), 1);
-    assert!(!frame.shapes.is_empty(), "the arena keeps the root's plain look");
+    assert!(!frame.shapes.is_empty(), "the arena keeps its plain look");
 }
 
 #[test]
@@ -81,7 +82,7 @@ fn trail_add_stays_in_the_main_frame_but_trail_screen_uses_a_layer() {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
     let trail = scene.add_module(&kit.registry, "trail.streak", "Streak").unwrap();
-    scene.link(&kit.registry, ThingId::ROOT, SlotId::Trail, trail).unwrap();
+    scene.link(&kit.registry, BALL, SlotId::Trail, trail).unwrap();
     let frame = frame_at(&scene, &kit, 2.0);
     assert!(!frame.trails.is_empty(), "Add is the trail's own");
     assert!(frame.layers.is_empty(), "an empty layer is never kept");
@@ -103,8 +104,8 @@ fn trail_add_stays_in_the_main_frame_but_trail_screen_uses_a_layer() {
 #[test]
 fn two_things_with_the_same_mode_and_amount_share_one_layer() {
     let (mut scene, kit) = ball_blended("difference", 1.0);
-    let root_look = module_of(&scene, &kit, ThingId::ROOT, SlotId::Look);
-    set_blend(&mut scene, root_look, "difference", 1.0);
+    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
+    set_blend(&mut scene, arena_look, "difference", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     assert_eq!(frame.layers.len(), 1);
     let layer = &frame.layers[0].frame;
@@ -123,8 +124,8 @@ fn the_scene_itself_never_goes_into_a_layer() {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
     let plain = frame_at(&scene, &kit, 0.0);
-    let root_look = module_of(&scene, &kit, ThingId::ROOT, SlotId::Look);
-    set_blend(&mut scene, root_look, "multiply", 0.5);
+    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
+    set_blend(&mut scene, arena_look, "multiply", 0.5);
     let frame = frame_at(&scene, &kit, 0.0);
     assert_eq!((frame.width, frame.height, frame.bloom), (plain.width, plain.height, plain.bloom));
     assert_eq!(frame.background, plain.background);
@@ -159,7 +160,7 @@ fn painted_bursts(blend: &str, amount: f64) -> Frame {
     params.set("source", Value::Choice("own".into()));
     params.set("follow", Value::Choice("life".into()));
     params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
-    scene.link(&kit.registry, ThingId::ROOT, SlotId::Particles, m).unwrap();
+    scene.link(&kit.registry, BALL, SlotId::Particles, m).unwrap();
     set_blend(&mut scene, m, blend, amount);
     frame_at(&scene, &kit, 4.0)
 }
@@ -190,18 +191,18 @@ fn layered_bursts_are_plain_and_still_see_the_hits() {
 fn a_layered_ball_still_hands_its_hits_to_the_frame() {
     let (mut scene, kit) = ball_blended("subtract", 1.0);
     let m = scene.add_module(&kit.registry, "particles.burst", "Sparks").unwrap();
-    scene.link(&kit.registry, ThingId::ROOT, SlotId::Particles, m).unwrap();
+    scene.link(&kit.registry, BALL, SlotId::Particles, m).unwrap();
     let frame = frame_at(&scene, &kit, 4.0);
     assert!(!frame.hits.is_empty());
-    assert!(!frame.bursts.is_empty(), "the root's additive bursts are drawn in the frame");
+    assert!(!frame.bursts.is_empty(), "the ball's additive bursts are drawn in the frame");
     assert!(frame.layers[0].frame.hits.is_empty());
 }
 
 #[test]
 fn a_look_blending_with_each_other_gets_its_own_layer() {
     let (mut scene, kit) = ball_blended("screen", 1.0);
-    let root_look = module_of(&scene, &kit, ThingId::ROOT, SlotId::Look);
-    set_blend(&mut scene, root_look, "screen", 1.0);
+    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
+    set_blend(&mut scene, arena_look, "screen", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
     scene.library.modules.get_mut(&look).unwrap().params.set("blend_each", Value::Bool(true));
     let frame = frame_at(&scene, &kit, 0.0);
@@ -210,7 +211,7 @@ fn a_look_blending_with_each_other_gets_its_own_layer() {
     assert_eq!(frame.layers[1].frame.balls.len(), 1);
 
     // Overlay cannot blend with itself: the switch is ignored and the two share again.
-    set_blend(&mut scene, root_look, "overlay", 1.0);
+    set_blend(&mut scene, arena_look, "overlay", 1.0);
     set_blend(&mut scene, look, "overlay", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, bool)> = frame.layers.iter().map(|l| (l.blend, l.each)).collect();

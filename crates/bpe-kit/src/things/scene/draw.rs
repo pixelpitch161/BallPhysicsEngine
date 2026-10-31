@@ -99,7 +99,7 @@ mod tests {
         let mut scene = crate::new_scene(&kit.registry);
         f(&mut scene.things.get_mut(&ThingId::ROOT).unwrap().params);
         if let Some(settings) = camera {
-            let id = scene.add_thing(&kit.registry, "camera", ThingId::ROOT).unwrap();
+            let id = crate::add_thing(&mut scene, &kit.registry, "camera", ThingId::ROOT).unwrap();
             for (k, v) in settings {
                 scene.things.get_mut(&id).unwrap().params.set(k, v.clone());
             }

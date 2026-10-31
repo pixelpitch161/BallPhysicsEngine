@@ -188,12 +188,12 @@ impl Scene {
         if locked { self.locks.insert(a) } else { self.locks.remove(&a) }
     }
 
-    /// A scene holding only Scene defaults. Panics if `reg` has no `"scene"` kind.
+    /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
         let kind = reg.thing("scene").expect("the registry needs a \"scene\" thing kind");
         let root = Thing {
             id: ThingId::ROOT,
-            name: "Scene defaults".into(),
+            name: kind.name().into(),
             kind: "scene".into(),
             slots: kind.default_slots().iter().map(|&s| (s, SlotLink::Inherit)).collect(),
             ..Thing::default()
@@ -374,7 +374,7 @@ mod tests {
     fn empty_scene_has_only_the_root() {
         let s = Scene::empty(&testkit::registry());
         assert_eq!(s.order, vec![ThingId::ROOT]);
-        assert_eq!(s.things[&ThingId::ROOT].name, "Scene defaults");
+        assert_eq!(s.things[&ThingId::ROOT].name, "Scene settings");
         assert_eq!(s.format, 2);
         assert_eq!(s.next_thing, 1);
     }

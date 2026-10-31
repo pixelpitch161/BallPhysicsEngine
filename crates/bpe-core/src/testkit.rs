@@ -2,7 +2,7 @@
 
 use crate::{Color, ModuleKind, Registry, Scene, SettingDef, Settings, SlotId, Target, Thing, ThingId, ThingKind};
 
-/// Scene defaults.
+/// The scene settings.
 pub struct SceneKind;
 /// A folder that only groups things.
 pub struct FolderKind;
@@ -92,7 +92,7 @@ impl ThingKind for SceneKind {
         "scene"
     }
     fn name(&self) -> &'static str {
-        "Scene defaults"
+        "Scene settings"
     }
     fn icon(&self) -> &'static str {
         "scene"

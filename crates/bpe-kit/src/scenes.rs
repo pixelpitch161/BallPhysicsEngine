@@ -5,10 +5,11 @@
 mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
+use std::collections::BTreeMap;
 use bpe_core::{
     Address, Attach, Blend, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
     ModuleKind, MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue,
-    Settings, SlotId, Target, ThingId, Value,
+    Settings, SlotId, SlotLink, Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
@@ -525,22 +526,63 @@ fn wire(g: &mut Graph, role: Role, from: (u32, u8), to: (u32, u8)) {
     assert!(g.connect(Link { from, to }, catalog(role)), "{from:?} can't wire into {to:?}");
 }
 
-/// A new scene with a name, and handles on its things and shared modules.
+/// A new scene with a name, and handles on its things and the modules its things share.
 struct Builder<'a> {
     reg: &'a Registry,
     scene: Scene,
+    /// One module per slot that every thing of a fitting kind uses instead of its own starter,
+    /// so a scene's looks, motion, bounce and sound can be set in one place.
+    shared: BTreeMap<SlotId, ModuleId>,
 }
 
 impl<'a> Builder<'a> {
     fn new(reg: &'a Registry, name: &str) -> Builder<'a> {
         let mut scene = new_scene(reg);
         scene.name = name.into();
-        Builder { reg, scene }
+        let mut shared = BTreeMap::new();
+        for (slot, kind, module_name) in [
+            (SlotId::Look, "look.classic", "Plain look"),
+            (SlotId::Motion, "motion.basic", "Default motion"),
+            (SlotId::Bounce, "bounce.basic", "Default bounce"),
+            (SlotId::Sound, "sound.notes", "Default sound"),
+        ] {
+            let m = scene.add_module(reg, kind, module_name).expect("kit kinds are registered");
+            shared.insert(slot, m);
+        }
+        let (pluck, chords) = (crate::starters::shared_pluck(&mut scene), crate::starters::shared_progression(&mut scene));
+        let sound = &mut scene.library.modules.get_mut(&shared[&SlotId::Sound]).expect("just added").params;
+        sound.set("instrument", pluck.to_value());
+        sound.set("chords", chords.to_value());
+        let mut b = Builder { reg, scene, shared };
+        b.share(ARENA, &SlotId::ALL);
+        b.share(BALLS, &[SlotId::Motion, SlotId::Bounce, SlotId::Sound]);
+        b
+    }
+
+    /// Swaps `thing`'s own starters in `slots` for the shared modules of the same kind, and
+    /// drops the starters.
+    fn share(&mut self, thing: ThingId, slots: &[SlotId]) {
+        // A liquid's and a swarm's starters are made for them, so they keep their own.
+        if matches!(self.scene.things[&thing].kind.as_str(), "liquid" | "swarm") {
+            return;
+        }
+        for slot in slots {
+            let Some(&shared) = self.shared.get(slot) else { continue };
+            let Some(SlotLink::Linked { module, .. }) = self.scene.things[&thing].slots.get(slot).cloned() else {
+                continue;
+            };
+            let own = &self.scene.library.modules[&module];
+            if own.owner != Some(thing) || own.kind != self.scene.library.modules[&shared].kind {
+                continue;
+            }
+            self.scene.link(self.reg, thing, *slot, shared).expect("the thing has the slot");
+            self.scene.remove_module(module).expect("nothing else uses a fresh starter");
+        }
     }
 
     fn scene_settings(&mut self, f: impl FnOnce(&mut SceneSettings)) {
         let root = self.scene.things.get_mut(&ThingId::ROOT).expect("root");
-        // Keep what the new scene set, such as its chords.
+        // Keep what the new scene set.
         let mut s = SceneSettings::from_params(&root.params);
         f(&mut s);
         root.params = s.to_params();
@@ -576,10 +618,10 @@ impl<'a> Builder<'a> {
         })))
     }
 
-    /// Scene defaults' chords become the preset `name`, in the key on `root`.
+    /// The shared sound's chords become the preset `name`, in the key on `root`.
     fn chords(&mut self, name: &str, root: u8) {
         let preset = bpe_mix::PRESETS.iter().find(|p| p.name == name).expect("a known preset");
-        let a = own(ThingId::ROOT, "chords");
+        let a = of_module(self.shared[&SlotId::Sound], "chords");
         let id = self.scene.value_at(self.reg, &a).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0);
         let p = Progression {
             name: preset.name.into(),
@@ -605,10 +647,10 @@ impl<'a> Builder<'a> {
         thing.params = s.to_params();
     }
 
-    /// The module linked into `slot` on `thing` (the root's shared one when the thing inherits).
+    /// The module that fills `slot` on `thing`.
     fn module_of(&self, thing: ThingId, slot: SlotId) -> ModuleId {
         let resolved = bpe_core::resolve_slot(&self.scene, self.reg, thing, slot, &mut Vec::new());
-        resolved.expect("the new scene fills every slot").module
+        resolved.expect("the thing has a module in that slot").module
     }
 
     fn set_params(&mut self, m: ModuleId, params: bpe_core::Params) {
@@ -618,7 +660,7 @@ impl<'a> Builder<'a> {
     fn root_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
         let mut s = ClassicLook::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Look);
+        let m = self.shared[&SlotId::Look];
         self.set_params(m, s.to_params());
     }
 
@@ -654,30 +696,61 @@ impl<'a> Builder<'a> {
     fn motion(&mut self, f: impl FnOnce(&mut BasicMotion)) {
         let mut s = BasicMotion::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Motion);
+        let m = self.shared[&SlotId::Motion];
         self.set_params(m, s.to_params());
     }
 
     fn bounce(&mut self, f: impl FnOnce(&mut BasicBounce)) {
         let mut s = BasicBounce::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Bounce);
+        let m = self.shared[&SlotId::Bounce];
         self.set_params(m, s.to_params());
     }
 
     fn sound(&mut self, f: impl FnOnce(&mut NoteSound)) {
-        let mut s = NoteSound::default();
+        // Every built-in scene plays the library Pluck and the shared chords unless it says.
+        let now = NoteSound::from_params(&self.scene.library.modules[&self.shared[&SlotId::Sound]].params);
+        let mut s = NoteSound { instrument: now.instrument, chords: now.chords, ..NoteSound::default() };
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Sound);
+        let m = self.shared[&SlotId::Sound];
         self.set_params(m, s.to_params());
     }
 
-    /// A new module linked onto one thing.
+    /// A new module linked onto one thing. On the scene settings it also takes the place of the
+    /// shared module for its slot, so every thing that used that one uses this instead (the way
+    /// they used to inherit it). On a folder, the things inside that used the shared module
+    /// follow the folder instead.
     fn own_module(&mut self, thing: ThingId, kind: &str, name: &str, params: bpe_core::Params) -> ModuleId {
         let m = self.scene.add_module(self.reg, kind, name).expect("kit kinds are registered");
         self.set_params(m, params);
         let slot = self.scene.library.modules[&m].slot;
+        let shared = self.shared.get(&slot).copied();
+        let users: Vec<ThingId> = self
+            .scene
+            .things
+            .values()
+            .filter(|t| matches!(t.slots.get(&slot), Some(SlotLink::Linked { module, .. }) if Some(*module) == shared))
+            .map(|t| t.id)
+            .collect();
+        if thing == ThingId::ROOT {
+            if self.reg.thing("scene").is_some_and(|k| k.accepts(slot, kind)) {
+                self.scene.link(self.reg, thing, slot, m).expect("the scene settings have the slot");
+            }
+            if let Some(old) = shared {
+                for user in users {
+                    self.scene.link(self.reg, user, slot, m).expect("the thing has the slot");
+                }
+                self.shared.insert(slot, m);
+                let _ = self.scene.remove_module(old);
+            }
+            return m;
+        }
         self.scene.link(self.reg, thing, slot, m).expect("the kind has the slot");
+        for user in users {
+            if self.scene.ancestors(user).contains(&thing) {
+                self.scene.things.get_mut(&user).expect("thing").slots.insert(slot, SlotLink::Inherit);
+            }
+        }
         m
     }
 
@@ -685,8 +758,9 @@ impl<'a> Builder<'a> {
     /// modules the kit gives that kind (a liquid's surface look, a swarm's flocking).
     fn add(&mut self, kind: &str, parent: ThingId, name: &str, position: Vec2, params: Params) -> ThingId {
         let id = crate::add_thing(&mut self.scene, self.reg, kind, parent).expect("kit kinds are registered");
+        self.scene.rename_thing(id, name);
+        self.share(id, &SlotId::ALL);
         let thing = self.scene.things.get_mut(&id).expect("just added");
-        thing.name = name.into();
         thing.transform.position = position;
         thing.params = params;
         id
@@ -739,11 +813,11 @@ impl<'a> Builder<'a> {
         self.scene.link(self.reg, thing, SlotId::Rules, m).expect("the thing has a Rules slot");
     }
 
-    /// Edits the root's shared module for `slot` as nodes, starting from its template with the
+    /// Edits the shared module for `slot` as nodes, starting from its template with the
     /// module's settings in.
     fn custom(&mut self, slot: SlotId, edit: impl FnOnce(&mut Graph)) {
         let reg = self.reg;
-        let m = self.module_of(ThingId::ROOT, slot);
+        let m = self.shared[&slot];
         let module = self.scene.library.modules.get_mut(&m).expect("module");
         let kind = reg.module(&module.kind).expect("a registered kind");
         let mut g = module_graph(kind, module).expect("the kind has a template");

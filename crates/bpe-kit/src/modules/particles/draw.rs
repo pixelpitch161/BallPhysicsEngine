@@ -193,12 +193,12 @@ mod tests {
     use bpe_gfx::build_frame;
 
     #[test]
-    fn a_root_burst_goes_off_at_each_recent_hit_of_the_balls() {
+    fn a_burst_goes_off_at_each_recent_hit_of_the_balls() {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
         scene.library.modules.get_mut(&m).unwrap().params.set("life", Value::Number(2.0));
-        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
         let resolved = resolve(&scene, &reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let kit = kit();
@@ -257,7 +257,7 @@ mod tests {
         let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
         params.set("preset", Value::Choice("smoke".into()));
         params.set("life", Value::Number(2.0));
-        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);
@@ -285,7 +285,7 @@ mod tests {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);
@@ -341,11 +341,12 @@ mod tests {
     }
 
     #[test]
-    fn the_arena_and_the_root_let_off_nothing_themselves() {
+    fn the_arena_lets_off_nothing_itself() {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(1), SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
         let resolved = resolve(&scene, &reg);
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -366,7 +367,7 @@ mod tests {
         params.set("source", Value::Choice("own".into()));
         params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0))));
         params.set("vary_hue", Value::Number(60.0));
-        scene.link(&reg, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);

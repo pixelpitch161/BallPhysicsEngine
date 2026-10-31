@@ -195,7 +195,7 @@ mod tests {
     fn frame_with(shape: &str, detail: i64) -> Frame {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let soft = scene.add_thing(&kit.registry, "soft", ThingId::ROOT).unwrap();
+        let soft = crate::add_thing(&mut scene, &kit.registry, "soft", ThingId::ROOT).unwrap();
         let thing = scene.things.get_mut(&soft).unwrap();
         thing.params.set("shape", Value::Choice(shape.into()));
         thing.params.set("detail", Value::Int(detail));
@@ -231,7 +231,7 @@ mod tests {
     fn painted_frame(shape: &str, detail: i64, f: impl FnOnce(&mut bpe_core::Params)) -> Frame {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let soft = scene.add_thing(&kit.registry, "soft", ThingId::ROOT).unwrap();
+        let soft = crate::add_thing(&mut scene, &kit.registry, "soft", ThingId::ROOT).unwrap();
         let thing = scene.things.get_mut(&soft).unwrap();
         thing.params.set("shape", Value::Choice(shape.into()));
         thing.params.set("detail", Value::Int(detail));

@@ -142,11 +142,11 @@ mod tests {
     use bpe_gfx::{Frame, build_frame};
 
     #[test]
-    fn a_root_streak_follows_every_ball_in_its_colour() {
+    fn a_streak_follows_the_ball_in_its_colour() {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let trail = scene.add_module(&reg, "trail.streak", "Streak").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Trail, trail).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Trail, trail).unwrap();
         let resolved = bpe_core::resolve(&scene, &reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let kit = kit();
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(c[..3], [0.0, 1.0, 0.0]);
         assert!(c[3] > 0.45 && c[3] <= 0.5, "{c:?}");
         // Without a trail nothing is drawn and no history is kept.
-        scene.set_slot_off(ThingId::ROOT, SlotId::Trail);
+        scene.set_slot_off(ThingId(2), SlotId::Trail);
         let resolved = bpe_core::resolve(&scene, &reg);
         let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
         assert!(world.history.is_empty());
@@ -215,7 +215,7 @@ mod tests {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let trail = scene.add_module(&reg, "trail.streak", "Streak").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Trail, trail).unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Trail, trail).unwrap();
         let (red, blue) = (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255));
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
@@ -261,7 +261,7 @@ mod tests {
         });
         let reg = &kit.registry;
         let trail = scene.add_module(reg, "trail.streak", "Streak").unwrap();
-        scene.link(reg, ThingId::ROOT, SlotId::Trail, trail).unwrap();
+        scene.link(reg, ThingId(2), SlotId::Trail, trail).unwrap();
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
         m.params.set("blend", Value::Choice("normal".into()));

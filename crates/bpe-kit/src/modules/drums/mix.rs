@@ -101,13 +101,16 @@ mod tests {
         Event { step, kind, a: Party { thing, item }, b: None, point: Vec2::ZERO, normal: Vec2::Y, speed }
     }
 
-    /// The new scene with a drum machine as the shared Sound module, its "on_beat" set.
+    /// The new scene with a drum machine on Scene settings, the arena and the ball, its "on_beat" set.
     fn drum_scene(on_beat: &str) -> (bpe_core::Scene, bpe_core::Resolved) {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
         let drums = scene.add_module(&kit.registry, "sound.drums", "Drums").unwrap();
         scene.library.modules.get_mut(&drums).unwrap().params.set("on_beat", Value::Choice(on_beat.into()));
-        scene.link(&kit.registry, ThingId::ROOT, SlotId::Sound, drums).unwrap();
+        // Scene settings plays it on the beat; the arena and the ball play it on their hits.
+        for id in [ThingId::ROOT, ThingId(1), ThingId(2)] {
+            scene.link(&kit.registry, id, SlotId::Sound, drums).unwrap();
+        }
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         (scene, resolved)

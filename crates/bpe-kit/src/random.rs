@@ -62,20 +62,26 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
 
 /// Rolls the chord progressions the scope's Chords settings point at: with a chance of
 /// `amount`, a preset in the progression's mode replaces its chords, and close to "All new" its
-/// key moves too. A setting on "Scene's" leaves Scene defaults' progression to its own setting. Each progression rolls once however many settings point at it, with the dice
-/// of the first one. A locked Chords setting holds its progression.
+/// key moves too. Each progression rolls once however many settings point at it, with the dice
+/// of the first one. A locked Chords setting holds its progression, even for the other settings
+/// that share it.
 fn roll_progressions(scene: &mut Scene, reg: &Registry, addresses: &[Address], roll: Roll, rolled: &mut Rolled) {
     let amount = roll.amount.clamp(0.0, 1.0);
     if amount <= 0.0 {
         return;
     }
-    let mut done: Vec<ProgressionId> = Vec::new();
+    // Progressions a locked setting points at, anywhere in the scene.
+    let mut done: Vec<ProgressionId> = scene
+        .locks
+        .iter()
+        .filter(|a| scene.def_at(reg, a).is_some_and(|d| d.ty == ValueType::Progression))
+        .filter_map(|a| scene.value_at(reg, a).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0))
+        .collect();
     for a in addresses {
         if held(scene, a) || scene.def_at(reg, a).is_none_or(|d| d.ty != ValueType::Progression) {
             continue;
         }
         let Some(r) = scene.value_at(reg, a).and_then(|v| ProgressionRef::from_value(&v)) else { continue };
-        // "Scene's" belongs to Scene defaults' own Chords setting, which rolls it (or holds it).
         let Some(id) = r.0 else { continue };
         if done.contains(&id) {
             continue;

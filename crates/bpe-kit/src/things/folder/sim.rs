@@ -37,7 +37,7 @@ mod tests {
     fn folders_add_with_no_slots_and_place_their_riders() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let f = scene.add_thing(&kit.registry, "folder", ThingId::ROOT).unwrap();
+        let f = crate::add_thing(&mut scene, &kit.registry, "folder", ThingId::ROOT).unwrap();
         assert!(scene.things[&f].slots.is_empty());
         assert_eq!(scene.things[&f].name, "Folder");
         scene.things.get_mut(&f).unwrap().transform.position = Vec2::new(100.0, 50.0);

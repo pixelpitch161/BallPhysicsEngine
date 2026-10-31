@@ -4,7 +4,7 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
                 "background_colours": Gradient((
@@ -27,27 +27,9 @@
                 "background_shape": Choice("centre"),
                 "background_span": Number(1150.0),
                 "bloom": Number(0.3499999940395355),
-                "chords": Int(0),
                 "gravity": Vec2((0.0, 700.0)),
             },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -60,10 +42,14 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 11,
                 ),
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         2: (
@@ -85,16 +71,22 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
                 Trail: Linked(
-                    module: 6,
+                    module: 12,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
                 Particles: Linked(
-                    module: 7,
+                    module: 13,
                 ),
             },
         ),
@@ -123,7 +115,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 8,
+                    module: 15,
                 ),
             },
         ),
@@ -143,7 +135,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 8,
+                    module: 15,
                 ),
             },
         ),
@@ -157,35 +149,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -223,9 +188,38 @@
                     "repeat": Choice("mirror"),
                     "span": Number(700.0),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            9: (
+                id: 9,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            10: (
+                id: 10,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+            ),
+            11: (
+                id: 11,
                 name: "Ring look",
                 slot: Look,
                 kind: "look.classic",
@@ -261,8 +255,8 @@
                     "scroll": Number(0.11999999731779099),
                 },
             ),
-            6: (
-                id: 6,
+            12: (
+                id: 12,
                 name: "Life streak",
                 slot: Trail,
                 kind: "trail.streak",
@@ -294,8 +288,8 @@
                     "width": Number(0.550000011920929),
                 },
             ),
-            7: (
-                id: 7,
+            13: (
+                id: 13,
                 name: "Life sparks",
                 slot: Particles,
                 kind: "particles.burst",
@@ -329,8 +323,8 @@
                     "speed": Number(360.0),
                 },
             ),
-            8: (
-                id: 8,
+            15: (
+                id: 15,
                 name: "Title look",
                 slot: Look,
                 kind: "look.classic",
@@ -540,7 +534,7 @@
         ],
     ),
     next_thing: 5,
-    next_module: 9,
+    next_module: 17,
     next_progression: 1,
     next_instrument: 1,
 )

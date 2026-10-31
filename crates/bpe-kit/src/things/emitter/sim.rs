@@ -280,7 +280,7 @@ mod tests {
             p.set("target", Value::Target(Target::Tag("cup".into())));
             p.set("rate", Value::Number(10.0));
         });
-        let second = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
+        let second = crate::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         for id in [BALLS, second] {
             scene.things.get_mut(&id).unwrap().tags.insert("cup".into());
         }

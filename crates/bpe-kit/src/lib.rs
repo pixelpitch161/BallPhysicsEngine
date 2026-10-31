@@ -513,21 +513,10 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                (SlotId::Look, "look.swarm".to_string(), "Glowing dots".to_string()),
-                (SlotId::Motion, "motion.flock".to_string(), "Flocking".to_string())
+                (SlotId::Look, "look.swarm".to_string(), "Swarm look".to_string()),
+                (SlotId::Motion, "motion.flock".to_string(), "Swarm motion".to_string())
             ]
         );
-    }
-
-    #[test]
-    fn adding_balls_is_unchanged() {
-        let reg = registry();
-        let mut plain = new_scene(&reg);
-        let mut kit_scene = plain.clone();
-        let a = plain.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
-        let b = add_thing(&mut kit_scene, &reg, "balls", ThingId::ROOT).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(plain, kit_scene);
     }
 
     #[test]

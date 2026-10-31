@@ -98,7 +98,10 @@ impl ThingDraw for BallsDraw {
         // flashes' worth is scanned when nothing else wants them.
         let rate = cx.world.steps_per_second;
         let flashing = look.flash > 0.0 && look.flash_seconds > 0.0;
-        let wants_hits = [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
+        // The scene settings' effects aren't passed down but still pulse on every hit.
+        let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
+        let wants_hits =
+            scene_effects || [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
         let memory = if wants_hits {
             HIT_MEMORY
         } else if flashing {
@@ -158,10 +161,13 @@ mod tests {
     use bpe_runtime::{Log, World};
 
     #[test]
-    fn a_missing_look_module_still_draws() {
+    fn a_missing_look_module_falls_back_to_the_folder_above() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        // Point the ball at a module that doesn't exist.
+        // The ball sits in a folder with a plain look, and points at a module that doesn't exist.
+        let folder = crate::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
+        crate::fill_slot(&mut scene, &reg, folder, SlotId::Look).unwrap();
+        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
         scene
             .things
             .get_mut(&ThingId(2))
@@ -176,7 +182,7 @@ mod tests {
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert_eq!(frame.balls.len(), 1);
         assert_eq!(frame.shapes.len(), 1);
-        assert_eq!(frame.balls[0].color, [1.0, 1.0, 1.0, 1.0]); // falls back to the root's Plain look
+        assert_eq!(frame.balls[0].color, [1.0, 1.0, 1.0, 1.0]); // the folder's plain look
         assert_eq!(frame.balls[0].glow, 0.12);
         assert_eq!((frame.width, frame.height), (1080, 1920));
     }
@@ -292,9 +298,9 @@ mod tests {
     #[test]
     fn balls_leave_a_hit_mark_in_their_colour() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
-        // Hits are listed for the modules that use them: here a scene-wide burst.
+        // Hits are listed for the modules that use them: here the ball's own burst.
         let m = scene.add_module(&kit.registry, "particles.burst", "Sparks").unwrap();
-        scene.link(&kit.registry, ThingId::ROOT, SlotId::Particles, m).unwrap();
+        scene.link(&kit.registry, ThingId(2), SlotId::Particles, m).unwrap();
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(4.0);
@@ -317,11 +323,28 @@ mod tests {
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         assert_eq!(frame.hits.len(), old.len());
         // Without a module that wants them, only the flashes' quarter second is listed.
-        scene.set_slot_off(ThingId::ROOT, SlotId::Particles);
+        scene.set_slot_off(ThingId(2), SlotId::Particles);
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         let flash_worth = playback.log().events().iter().filter(|e| e.time(rate) > 10.0 - 0.25).count();
         assert_eq!(frame.hits.len(), flash_worth);
+    }
+
+    #[test]
+    fn an_effect_on_the_scene_settings_still_gets_the_balls_hits() {
+        let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        let fx = scene.add_module(&kit.registry, "shader.kaleidoscope", "Slices").unwrap();
+        scene.link(&kit.registry, ThingId::ROOT, SlotId::Shader, fx).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert!(!resolved.things[&ThingId(2)].slots.contains_key(&SlotId::Shader), "the effect is not passed down");
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(4.0);
+        let rate = playback.world().steps_per_second;
+        let recent = playback.log().events().iter().filter(|e| e.time(rate) > 4.0 - 3.0).count();
+        assert!(recent > 0, "the ball hit nothing in four seconds");
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
+        assert_eq!(frame.hits.len(), recent, "the scene's effect pulses on every hit it remembers");
     }
 
     #[test]

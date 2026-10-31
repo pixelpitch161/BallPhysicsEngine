@@ -4,30 +4,16 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
                 "beat_sync": Choice("warp"),
                 "bpm": Number(128.0),
-                "chords": Int(0),
             },
             slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
                 Sound: Linked(
-                    module: 5,
+                    module: 11,
                 ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
             },
         ),
         1: (
@@ -41,9 +27,15 @@
                 "spin": Number(25.0),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 11,
+                ),
             },
         ),
         2: (
@@ -61,12 +53,16 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
                 Sound: Linked(
-                    module: 6,
+                    module: 12,
                 ),
             },
         ),
@@ -85,7 +81,9 @@
                 "text": Text("{time}"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
     },
@@ -97,35 +95,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -140,9 +111,28 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            9: (
+                id: 9,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            11: (
+                id: 11,
                 name: "Drum machine",
                 slot: Sound,
                 kind: "sound.drums",
@@ -151,8 +141,8 @@
                     "on_beat": Choice("auto"),
                 },
             ),
-            6: (
-                id: 6,
+            12: (
+                id: 12,
                 name: "Tune",
                 slot: Sound,
                 kind: "sound.melody",
@@ -506,7 +496,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 7,
+    next_module: 14,
     next_progression: 1,
     next_instrument: 2,
 )

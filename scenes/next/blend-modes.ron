@@ -4,7 +4,7 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
                 "background_colours": Gradient((
@@ -29,27 +29,9 @@
                     transition: Smooth,
                 )),
                 "background_span": Number(1500.0),
-                "chords": Int(0),
                 "gravity": Vec2((0.0, 0.0)),
             },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -64,10 +46,14 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 11,
                 ),
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         2: (
@@ -89,11 +75,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 13,
+                    module: 46,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         3: (
@@ -115,11 +107,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 6,
+                    module: 16,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         4: (
@@ -136,7 +134,9 @@
                 "text": Text("Screen"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
         5: (
@@ -158,11 +158,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 22,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         6: (
@@ -179,7 +185,9 @@
                 "text": Text("Difference"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
         7: (
@@ -201,11 +209,17 @@
             },
             slots: {
                 Look: Linked(
+                    module: 28,
+                ),
+                Motion: Linked(
                     module: 8,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         8: (
@@ -222,7 +236,9 @@
                 "text": Text("Overlay"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
         9: (
@@ -244,11 +260,17 @@
             },
             slots: {
                 Look: Linked(
+                    module: 34,
+                ),
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
                     module: 9,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         10: (
@@ -265,7 +287,9 @@
                 "text": Text("Multiply"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
         11: (
@@ -284,10 +308,14 @@
             },
             slots: {
                 Look: Linked(
+                    module: 39,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
                     module: 10,
                 ),
-                Bounce: Inherit,
-                Sound: Inherit,
             },
         ),
         12: (
@@ -308,14 +336,20 @@
             },
             slots: {
                 Look: Linked(
-                    module: 11,
+                    module: 44,
                 ),
                 Trail: Linked(
-                    module: 12,
+                    module: 45,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 10,
+                ),
             },
         ),
         13: (
@@ -342,7 +376,9 @@
                 "text": Text("Blend modes"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
             },
         ),
     },
@@ -364,35 +400,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -407,15 +416,44 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            9: (
+                id: 9,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            10: (
+                id: 10,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+            ),
+            11: (
+                id: 11,
                 name: "Rim look",
                 slot: Look,
                 kind: "look.classic",
             ),
-            6: (
-                id: 6,
+            16: (
+                id: 16,
                 name: "Screen look",
                 slot: Look,
                 kind: "look.classic",
@@ -441,8 +479,8 @@
                     "follow": Choice("order"),
                 },
             ),
-            7: (
-                id: 7,
+            22: (
+                id: 22,
                 name: "Difference look",
                 slot: Look,
                 kind: "look.classic",
@@ -468,8 +506,8 @@
                     "follow": Choice("order"),
                 },
             ),
-            8: (
-                id: 8,
+            28: (
+                id: 28,
                 name: "Overlay look",
                 slot: Look,
                 kind: "look.classic",
@@ -495,8 +533,8 @@
                     "follow": Choice("order"),
                 },
             ),
-            9: (
-                id: 9,
+            34: (
+                id: 34,
                 name: "Multiply look",
                 slot: Look,
                 kind: "look.classic",
@@ -522,8 +560,8 @@
                     "follow": Choice("order"),
                 },
             ),
-            10: (
-                id: 10,
+            39: (
+                id: 39,
                 name: "Subtract look",
                 slot: Look,
                 kind: "look.classic",
@@ -540,8 +578,8 @@
                     )),
                 },
             ),
-            11: (
-                id: 11,
+            44: (
+                id: 44,
                 name: "Comet look",
                 slot: Look,
                 kind: "look.classic",
@@ -549,8 +587,8 @@
                     "glow": Number(0.6000000238418579),
                 },
             ),
-            12: (
-                id: 12,
+            45: (
+                id: 45,
                 name: "Add streak",
                 slot: Trail,
                 kind: "trail.streak",
@@ -578,8 +616,8 @@
                     "width": Number(0.800000011920929),
                 },
             ),
-            13: (
-                id: 13,
+            46: (
+                id: 46,
                 name: "Drift look",
                 slot: Look,
                 kind: "look.styled",
@@ -777,7 +815,7 @@
         ],
     ),
     next_thing: 14,
-    next_module: 14,
+    next_module: 48,
     next_progression: 1,
     next_instrument: 1,
 )

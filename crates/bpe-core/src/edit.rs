@@ -49,7 +49,7 @@ impl fmt::Display for EditError {
             EditError::UnknownKind(k) => write!(f, "This version of Ball Studio doesn't know \"{k}\""),
             EditError::Missing(_) => write!(f, "That thing isn't in the scene any more"),
             EditError::MissingModule(_) => write!(f, "That module isn't in the library any more"),
-            EditError::Root => write!(f, "Scene defaults can't be moved or removed"),
+            EditError::Root => write!(f, "Scene settings can't be moved or removed"),
             EditError::WouldLoop => write!(f, "A thing can't ride on itself or on something inside it"),
             EditError::SlotNotSupported(s) => write!(f, "This kind of thing has no {} slot", s.name()),
             EditError::WrongSlot => write!(f, "That module is made for a different slot"),

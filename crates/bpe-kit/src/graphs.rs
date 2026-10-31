@@ -461,7 +461,7 @@ mod tests {
     fn a_scene_with_a_broken_custom_graph_resolves_around_it() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let bounce = ModuleId(2);
+        let bounce = bpe_core::resolve_slot(&scene, &reg, ThingId(2), SlotId::Bounce, &mut Vec::new()).unwrap().module;
         assert_eq!(scene.library.modules[&bounce].kind, "bounce.basic");
         let c = catalog(Role::Bounce);
         let mut g = Graph::new("b");
@@ -474,7 +474,7 @@ mod tests {
         let problems = graph_problems(&scene);
         assert!(problems[&bounce].contains("Only one"), "{problems:?}");
         let resolved = resolve_scene(&scene, &reg);
-        assert!(resolved.problems.iter().any(|p| p.thing == ThingId::ROOT
+        assert!(resolved.problems.iter().any(|p| p.thing == ThingId(2)
             && p.slot == Some(SlotId::Bounce)
             && matches!(&p.kind, ProblemKind::BrokenGraph(m) if m.contains("Only one"))));
         assert!(!resolved.things[&ThingId(2)].slots.contains_key(&SlotId::Bounce));
