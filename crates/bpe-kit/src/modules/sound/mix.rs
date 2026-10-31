@@ -415,13 +415,13 @@ mod tests {
         }
     }
 
-    /// Mix settings holding `p` as Scene defaults' progression, on a beat every half second.
+    /// Mix settings holding `p` as progression 0, on a beat every half second. `keys_of` plays
+    /// a sound with no chords of its own on progression 0.
     fn with_chords(p: Progression) -> MixSettings {
         MixSettings {
             duration: 20.0,
             steps_per_second: 240,
             progressions: [(ProgressionId(0), p)].into(),
-            scene_chords: Some(ProgressionId(0)),
             beats: (0..60).map(|b| b as f64 * 0.5).collect(),
             master: Default::default(),
             seed: 1,
@@ -430,7 +430,6 @@ mod tests {
             off_shot_fade: 0.0,
             tags: Default::default(),
             instruments: Default::default(),
-            scene_instrument: None,
             macros: Default::default(),
             strips: Default::default(),
             buses: Vec::new(),
@@ -440,6 +439,13 @@ mod tests {
     }
 
     fn keys_of(s: &NoteSound, settings: &MixSettings, log: &Log) -> Vec<Vec<u8>> {
+        let on_zero;
+        let s = if s.chords.0.is_none() {
+            on_zero = NoteSound { chords: ProgressionRef(Some(ProgressionId(0))), ..s.clone() };
+            &on_zero
+        } else {
+            s
+        };
         let cx = test_cx(settings, log);
         let mut notes = Vec::new();
         NoteSoundMix.notes(&s.to_params(), ThingId(2), log.events(), &cx, &mut notes);
@@ -473,7 +479,7 @@ mod tests {
             (5, Quality::Major, Extension::Triad, None, 4),
         ]));
         let log = hits_at(&[2.1], 500.0);
-        let s = NoteSound::default();
+        let s = NoteSound { chords: ProgressionRef(Some(ProgressionId(0))), ..NoteSound::default() };
         let straight = keys_of(&s, &settings, &log);
         assert!([5, 9, 0].contains(&(straight[0][0] % 12)), "F chord at 2.1 s: {straight:?}");
         fn early(t: f64) -> f64 {
@@ -496,7 +502,12 @@ mod tests {
         assert!(scene_s.iter().flatten().all(|k| [9, 0, 4].contains(&(k % 12))), "{scene_s:?}");
         assert!(own_s.iter().flatten().all(|k| [6, 10, 1].contains(&(k % 12))), "{own_s:?}");
         let missing = NoteSound { chords: ProgressionRef(Some(ProgressionId(7))), ..NoteSound::default() };
-        assert_eq!(keys_of(&missing, &settings, &log), scene_s, "a missing progression plays the scene's");
+        let starter = with_chords(Progression::starter());
+        assert_eq!(
+            keys_of(&missing, &settings, &log),
+            keys_of(&NoteSound::default(), &starter, &log),
+            "a missing progression plays the starter"
+        );
     }
 
     fn arp(order: Order, low: u32, high: u32) -> NoteSound {

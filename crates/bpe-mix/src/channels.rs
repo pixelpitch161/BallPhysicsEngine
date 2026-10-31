@@ -44,12 +44,10 @@ impl InstrumentChoice {
     }
 }
 
-/// The instrument a module pointing at `id` plays: that one if it's in the library, else Scene
-/// defaults' one, else the built-in pluck.
+/// The instrument a module pointing at `id` plays: that one if it's in the library, else the
+/// built-in pluck.
 pub fn instrument_for(settings: &MixSettings, id: Option<InstrumentId>, channel: u32) -> InstrumentChoice {
-    let found = id
-        .and_then(|id| settings.instruments.get(&id))
-        .or_else(|| settings.scene_instrument.and_then(|id| settings.instruments.get(&id)));
+    let found = id.and_then(|id| settings.instruments.get(&id));
     let empty = BTreeMap::new();
     let macros = settings.macros.get(&channel).unwrap_or(&empty);
     found.map_or_else(InstrumentChoice::pluck, |i| InstrumentChoice::from_library(i, macros))
@@ -146,9 +144,7 @@ pub(crate) fn with_fx(
 /// The instrument effects a note plays through, with the instrument's name.
 fn instrument_fx<'a>(settings: &'a MixSettings, n: &Note) -> Option<(String, &'a bpe_graph::Graph)> {
     let NoteInstrument::Library(id) = n.instrument else { return None };
-    let found = id
-        .and_then(|id| settings.instruments.get(&id))
-        .or_else(|| settings.scene_instrument.and_then(|id| settings.instruments.get(&id)))?;
+    let found = id.and_then(|id| settings.instruments.get(&id))?;
     (!found.fx.nodes.is_empty()).then(|| (found.name.clone(), &found.fx))
 }
 
@@ -948,15 +944,14 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_instrument_plays_scene_defaults() {
+    fn a_missing_instrument_plays_pluck() {
         let mut s = settings();
         assert_eq!(instrument_for(&s, Some(InstrumentId(9)), 1), InstrumentChoice::pluck());
-        s.instruments.insert(InstrumentId(2), patch("Scene's", bpe_synth::blank_patch()));
-        s.scene_instrument = Some(InstrumentId(2));
-        let InstrumentChoice::Patch { name, .. } = instrument_for(&s, Some(InstrumentId(9)), 1) else { panic!() };
-        assert_eq!(name, "Scene's");
-        let InstrumentChoice::Patch { name, .. } = instrument_for(&s, None, 1) else { panic!() };
-        assert_eq!(name, "Scene's");
+        assert_eq!(instrument_for(&s, None, 1), InstrumentChoice::pluck());
+        s.instruments.insert(InstrumentId(2), patch("Someone's", bpe_synth::blank_patch()));
+        assert_eq!(instrument_for(&s, None, 1), InstrumentChoice::pluck(), "no scene-wide instrument to fall back on");
+        let InstrumentChoice::Patch { name, .. } = instrument_for(&s, Some(InstrumentId(2)), 1) else { panic!() };
+        assert_eq!(name, "Someone's");
     }
 
     #[test]

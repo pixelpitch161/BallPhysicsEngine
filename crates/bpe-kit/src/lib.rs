@@ -221,7 +221,6 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         duration: root.duration,
         steps_per_second: root.steps_per_second,
         progressions: scene.library.progressions.clone(),
-        scene_chords: root.chords.0,
         beats: music::chord_beats(&root),
         master: bpe_mix::MasterSettings {
             loudness: root.loudness,
@@ -240,13 +239,6 @@ pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
         off_shot_fade: root.off_shot_fade.max(0.0),
         half_height: root.height as f32 * 0.5,
         instruments: scene.library.instruments.clone(),
-        scene_instrument: resolved
-            .things
-            .get(&ThingId::ROOT)
-            .and_then(|r| r.slots.get(&SlotId::Sound))
-            .and_then(|s| s.params.get("instrument"))
-            .and_then(InstrumentRef::from_value)
-            .and_then(|r| r.0),
         macros: scene
             .library
             .modules
@@ -387,12 +379,6 @@ pub fn new_scene(reg: &Registry) -> Scene {
     scene.name = "New scene".into();
     let root = ThingId::ROOT;
     let chords = scene.add_progression(Progression::starter());
-    scene
-        .things
-        .get_mut(&root)
-        .expect("the root is always there")
-        .params
-        .set("chords", ProgressionRef(Some(chords)).to_value());
     let look = scene.add_module(reg, "look.classic", "Plain look").expect("kit kinds are registered");
     let motion = scene.add_module(reg, "motion.basic", "Default motion").expect("kit kinds are registered");
     let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
@@ -406,12 +392,25 @@ pub fn new_scene(reg: &Registry) -> Scene {
         .expect("just added")
         .params
         .set("instrument", InstrumentRef(Some(pluck)).to_value());
-    for (slot, m) in [(SlotId::Look, look), (SlotId::Motion, motion), (SlotId::Bounce, bounce), (SlotId::Sound, sound)]
-    {
-        scene.link(reg, root, slot, m).expect("the root has every slot");
-    }
-    scene.add_thing(reg, "arena", root).expect("kit kinds are registered");
+    scene
+        .library
+        .modules
+        .get_mut(&sound)
+        .expect("just added")
+        .params
+        .set("chords", ProgressionRef(Some(chords)).to_value());
+    let arena = scene.add_thing(reg, "arena", root).expect("kit kinds are registered");
     let ball = scene.add_thing(reg, "balls", root).expect("kit kinds are registered");
+    for (id, slot, m) in [
+        (arena, SlotId::Look, look),
+        (arena, SlotId::Bounce, bounce),
+        (arena, SlotId::Sound, sound),
+        (ball, SlotId::Motion, motion),
+        (ball, SlotId::Bounce, bounce),
+        (ball, SlotId::Sound, sound),
+    ] {
+        scene.link(reg, id, slot, m).expect("the kind has the slot");
+    }
     let ball_look = scene.add_module(reg, "look.classic", "Ball look").expect("kit kinds are registered");
     scene.library.modules.get_mut(&ball_look).expect("just added").params =
         ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() }.to_params();
@@ -470,7 +469,8 @@ mod tests {
         assert_eq!(scene.library.progressions.len(), 1);
         let (&id, p) = scene.library.progressions.iter().next().unwrap();
         assert_eq!(p.name, "Starter");
-        assert_eq!(scene.things[&ThingId::ROOT].params.get("chords"), Some(&Value::Int(id.0 as i64)));
+        let sound = resolve(&scene, &reg).things[&ThingId(2)].slots[&SlotId::Sound].params.clone();
+        assert_eq!(sound.get("chords"), Some(&Value::Int(id.0 as i64)));
     }
 
     #[test]
@@ -480,7 +480,8 @@ mod tests {
         let settings = mix_settings(&scene, &resolve(&scene, &reg));
         let (&id, pluck) = scene.library.instruments.iter().next().unwrap();
         assert_eq!(pluck.name, "Pluck");
-        assert_eq!(settings.scene_instrument, Some(id));
+        let sound = resolve(&scene, &reg).things[&ThingId(2)].slots[&SlotId::Sound].params.clone();
+        assert_eq!(sound.get("instrument"), Some(&Value::Int(id.0 as i64)));
         assert_eq!(
             bpe_mix::instrument_for(&settings, None, 0),
             bpe_mix::InstrumentChoice::BuiltIn { which: bpe_mix::Instrument::Pluck, decay: 0.9, brightness: 0.5 }

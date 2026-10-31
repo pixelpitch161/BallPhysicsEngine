@@ -549,7 +549,8 @@ mod tests {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let before = starter_chords(&scene);
-        scene.set_locked(Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "chords".into() }, true);
+        let sound = bpe_core::resolve_slot(&scene, &reg, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
+        scene.set_locked(Address { owner: Owner::Module(sound), slot: None, key: "chords".into() }, true);
         for seed in 0..20 {
             roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
         }
