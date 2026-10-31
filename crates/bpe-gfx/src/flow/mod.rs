@@ -11,7 +11,7 @@ mod liquid;
 mod sdf;
 pub(crate) mod surface;
 mod swarm;
-mod util;
+pub(crate) mod util;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Outline, Sims, World};
 
-use crate::frame::{Frame, Points};
+use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
 use inputs::{Inputs, step_inputs};
 use liquid::{LiquidGpu, LiquidPipelines};
 use sdf::Sdf;
@@ -161,6 +161,16 @@ pub struct FlowLayers {
     checkpoint_bytes: u64,
 }
 
+/// The frame's swarms, then those of its blend layers: all of them are stepped here.
+fn all_swarms(frame: &Frame) -> impl Iterator<Item = &SwarmLayer> + Clone {
+    frame.swarms.iter().chain(frame.layers.iter().flat_map(|l| &l.frame.swarms))
+}
+
+/// The frame's liquids, then those of its blend layers.
+fn all_liquids(frame: &Frame) -> impl Iterator<Item = &LiquidLayer> + Clone {
+    frame.liquids.iter().chain(frame.layers.iter().flat_map(|l| &l.frame.liquids))
+}
+
 /// The wall the layers keep out of: the first closed wall in id order.
 fn first_wall(world: &World) -> Option<Outline> {
     world.walls.values().next().map(|w| w.outline)
@@ -265,12 +275,12 @@ impl FlowLayers {
     /// or how one of them moves changed, takes a changed look in place, and lets everything go
     /// when the frame has no GPU layers.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
-        let gpu_liquids = frame.liquids.iter().filter_map(|l| match &l.points {
+        let gpu_liquids = all_liquids(frame).filter_map(|l| match &l.points {
             Points::Gpu(desc) => Some((l.thing, desc)),
             Points::Cpu(_) => None,
         });
         let wanted: BTreeSet<ThingId> =
-            frame.swarms.iter().map(|s| s.thing).chain(gpu_liquids.clone().map(|(id, _)| id)).collect();
+            all_swarms(frame).map(|s| s.thing).chain(gpu_liquids.clone().map(|(id, _)| id)).collect();
         if wanted.is_empty() {
             self.driver = None;
             self.layers.clear();
@@ -278,7 +288,7 @@ impl FlowLayers {
         }
         let same = self.driver.as_ref().is_some_and(|d| d.key == source.key && d.video == frame.video)
             && self.layers.keys().eq(wanted.iter())
-            && frame.swarms.iter().all(|l| match self.layers.get(&l.thing) {
+            && all_swarms(frame).all(|l| match self.layers.get(&l.thing) {
                 Some(Layer::Swarm(s)) => *s.sim() == SwarmSim::of(l),
                 _ => false,
             })
@@ -290,7 +300,7 @@ impl FlowLayers {
             self.restart(device, queue, frame, source);
             return;
         }
-        for l in &frame.swarms {
+        for l in all_swarms(frame) {
             if let Some(Layer::Swarm(s)) = self.layers.get_mut(&l.thing) {
                 s.set_look(queue, l);
             }
@@ -311,11 +321,11 @@ impl FlowLayers {
         self.inputs.write(queue, 0, &bytes);
         let arena = arena_size(wall.as_ref(), video);
         let (pipelines, inputs, sdf) = (&self.pipelines, &self.inputs, &self.sdf);
-        let swarms = frame.swarms.iter().map(|l| {
+        let swarms = all_swarms(frame).map(|l| {
             let swarm = SwarmGpu::new(device, queue, &mut encoder, &pipelines.swarm, inputs, sdf, l, video, arena);
             (l.thing, Layer::Swarm(Box::new(swarm)))
         });
-        let liquids = frame.liquids.iter().filter_map(|l| match &l.points {
+        let liquids = all_liquids(frame).filter_map(|l| match &l.points {
             Points::Gpu(desc) => {
                 let liquid = LiquidGpu::new(device, queue, &pipelines.liquid, desc, wall.as_ref(), video);
                 Some((l.thing, Layer::Liquid(liquid)))
@@ -557,6 +567,7 @@ mod tests {
                 // The top speed below reaches the end of the colours.
                 place: [0.0, 260.0, 0.0, 0.0],
                 color: [1.0; 4],
+                vary: [0.0; 4],
             },
             motion: Flock {
                 top_speed: 260.0,
@@ -886,6 +897,36 @@ mod tests {
     }
 
     #[test]
+    fn a_swarm_in_a_blend_layer_is_stepped_and_drawn() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame { time: 0.5, ..Frame::default() };
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 20_000;
+        layer.look.brightness = 0.8;
+        layer.look.size = 2.0;
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0).swarms.push(layer);
+        assert!(frame.swarms.is_empty());
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        renderer.render_with_flow(&device, &queue, &frame, &source);
+        let flow = renderer.flow().unwrap();
+        assert!(flow.swarm(ThingId(1)).is_some(), "the layer's swarm has a GPU layer");
+        assert_eq!(flow.steps_run(), 60);
+        let lit = renderer.read_output(&device, &queue).unwrap();
+        let bright = lit.chunks(4).filter(|p| p[0] > 60 || p[1] > 60 || p[2] > 60).count();
+        assert!(bright > 500, "{bright}: screened over black, the swarm's light shows");
+    }
+
+    #[test]
     fn changing_only_the_look_keeps_the_layer() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
@@ -1047,6 +1088,59 @@ mod tests {
         assert!(top[2] > top[0], "{top:?}: the top is bluer");
         assert!(bottom[0] > bottom[2], "{bottom:?}: the floor is redder");
         assert!(top[2] > bottom[2] && bottom[0] > top[0], "{top:?} {bottom:?}");
+    }
+
+    #[test]
+    fn swarm_points_vary() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let sims = ring_sims(400.0);
+        let mut renderer = Renderer::new(&device, 270, 480);
+        let mut frame = Frame { time: 0.5, bloom: 0.0, ..Frame::default() };
+        let mut layer = swarm_layer(ThingId(1));
+        layer.count = 400;
+        layer.look.brightness = 0.3;
+        layer.look.size = 12.0;
+        // Every point one dull red.
+        layer.look.follow = 5;
+        layer.look.color = [0.5, 0.0, 0.0, 1.0];
+        frame.swarms.push(layer);
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 7,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        let mut draw = |vary: [f32; 4], time: f32| {
+            frame.time = time;
+            frame.swarms[0].look.vary = vary;
+            renderer.render_with_flow(&device, &queue, &frame, &source);
+            renderer.read_output(&device, &queue).unwrap()
+        };
+        let plain = draw([0.0; 4], 0.5);
+        let lit = |p: &[u8]| p[0] > 30;
+        assert!(plain.chunks(4).filter(|p| lit(p)).count() > 200);
+        assert!(plain.chunks(4).all(|p| p[1] < 8 && p[2] < 8), "no variation: every point red");
+        // The look alone changed: the points are where they were, each brighter or darker.
+        let bright = draw([0.0, 0.0, 1.0, 0.0], 0.5);
+        let ratios: Vec<f32> = plain
+            .chunks(4)
+            .zip(bright.chunks(4))
+            .filter(|(a, _)| lit(a))
+            .map(|(a, b)| b[0] as f32 / a[0] as f32)
+            .collect();
+        let (lo, hi) = ratios.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+        assert!(lo < 0.7 && hi > 1.3, "brightness spread across points: {lo} to {hi}");
+        // A hue turn of up to 120 degrees shows green and blue points.
+        let turned = draw([120.0, 0.0, 0.0, 0.0], 0.5);
+        assert!(turned.chunks(4).any(|p| p[1] > p[0] + 20), "some points turn green");
+        assert!(turned.chunks(4).any(|p| p[2] > p[0] + 20), "some points turn blue");
+        // Wobbling, the colours move with the frame's time.
+        let still = draw([120.0, 0.0, 0.0, 3.0], 0.5);
+        let later = draw([120.0, 0.0, 0.0, 3.0], 0.6);
+        assert_ne!(still, later);
     }
 
     #[test]

@@ -288,8 +288,14 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     var result = effect(in.uv, unpack());
     // A NaN leaves the pixel as it was instead of spreading, and feedback can't run away.
     result = select(result, base, result != result);
+    // A blend layer keeps how much it covers, and the effect's colour covers that much too.
+    var cover = 1.0;
+    if fx.in_layer > 0.5 {
+        cover = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0).a;
+        result = result * clamp(cover, 0.0, 1.0);
+    }
     let blended = mix(base, result, fx.blend * target_weight(in.uv));
-    return vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), 1.0);
+    return vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), cover);
 }
 ",
     );

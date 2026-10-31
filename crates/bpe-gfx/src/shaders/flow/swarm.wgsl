@@ -28,6 +28,9 @@ struct Params {
     paint_b: vec4<f32>,
     // x: direction in degrees, y: span (also of a speed), zw: centre
     place: vec4<f32>,
+    // Each point's colour variation (drawing): x hue in degrees, y saturation, z brightness,
+    // w wobbles a second.
+    vary: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> step: Step;

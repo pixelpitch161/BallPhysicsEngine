@@ -3,6 +3,8 @@
 
 pub mod gizmo;
 pub mod graphs;
+#[cfg(test)]
+mod layer_tests;
 pub mod modules;
 pub mod music;
 pub mod paint;
@@ -44,14 +46,14 @@ pub use modules::motion_flock::{Flocking, FlockingKind};
 pub use modules::motion_liquid::sim::FlowingSim;
 pub use modules::motion_liquid::{Flowing, FlowingKind};
 pub use modules::particles::draw::BurstDraw;
-pub use modules::particles::{BurstBlend, BurstPreset, BurstSource, HitBurst, HitBurstKind};
+pub use modules::particles::{BurstPreset, BurstSource, HitBurst, HitBurstKind};
 pub use modules::rules::{Recipe, RulesKind, RulesSim, RulesState, recipes};
 pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
 pub use modules::sound::mix::NoteSoundMix;
 pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
-pub use modules::trail::{StreakTrail, StreakTrailKind, TrailBlend, TrailSource};
+pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
 pub use music::{Extras, SceneExport, midi_path, mix_scene_export, stems_folder, write_extras};
 pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,

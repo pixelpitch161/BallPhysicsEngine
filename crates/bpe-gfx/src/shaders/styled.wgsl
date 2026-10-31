@@ -20,6 +20,7 @@ struct LookIn {
     // The gradient painted inside, as `PaintGpu`.
     @location(10) paint_a: vec4<f32>,
     @location(11) paint_b: vec4<f32>,
+    @location(12) paint_c: vec4<f32>,
 };
 
 struct LookOut {
@@ -37,6 +38,7 @@ struct LookOut {
     @location(8) @interpolate(flat) code: vec2<f32>,
     @location(9) @interpolate(flat) paint_a: vec4<f32>,
     @location(10) @interpolate(flat) paint_b: vec4<f32>,
+    @location(11) @interpolate(flat) paint_c: vec4<f32>,
 };
 
 // How far past the shape's edge the halo reaches, in glow sizes.
@@ -69,6 +71,7 @@ fn vs_look(@builtin(vertex_index) i: u32, b: LookIn) -> LookOut {
     out.code = vec2<f32>(b.extent.y, b.seed);
     out.paint_a = b.paint_a;
     out.paint_b = b.paint_b;
+    out.paint_c = b.paint_c;
     return out;
 }
 
@@ -82,7 +85,7 @@ fn fs_look(in: LookOut) -> @location(0) vec4<f32> {
 
     let fill = in.form.y;
     var color = in.color.rgb;
-    let paint = paint_from(in.paint_a, in.paint_b);
+    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint.row >= 0.0 {
         // A gradient painted inside takes the place of the fill's own colours.
         color = paint_colour(paint, p, g.view.w).rgb;

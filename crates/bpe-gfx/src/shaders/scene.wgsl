@@ -97,7 +97,7 @@ fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
         let t = paint_wrap(along + g.bg_paint.y + g.view.w * g.bg_paint.z, g.bg_paint.w);
         return vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0);
     }
-    let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w);
+    let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w, PAINT_NO_VARY);
     return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
 }
 
@@ -119,6 +119,7 @@ struct ShapeIn {
     // The gradient painted on the line, as `PaintGpu`.
     @location(4) paint_a: vec4<f32>,
     @location(5) paint_b: vec4<f32>,
+    @location(6) paint_c: vec4<f32>,
 };
 
 struct ShapeOut {
@@ -130,6 +131,7 @@ struct ShapeOut {
     @location(4) @interpolate(flat) color: vec4<f32>,
     @location(5) @interpolate(flat) paint_a: vec4<f32>,
     @location(6) @interpolate(flat) paint_b: vec4<f32>,
+    @location(7) @interpolate(flat) paint_c: vec4<f32>,
 };
 
 @vertex
@@ -155,6 +157,7 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
     out.color = s.color;
     out.paint_a = s.paint_a;
     out.paint_b = s.paint_b;
+    out.paint_c = s.paint_c;
     return out;
 }
 
@@ -273,7 +276,7 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
     if cover <= 0.0 && glow < 1e-4 {
         discard;
     }
-    let paint = paint_from(in.paint_a, in.paint_b);
+    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint.row < 0.0 {
         return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
     }
@@ -301,6 +304,7 @@ struct BallIn {
     // The gradient painted inside, as `PaintGpu`.
     @location(5) paint_a: vec4<f32>,
     @location(6) paint_b: vec4<f32>,
+    @location(7) paint_c: vec4<f32>,
 };
 
 struct BallOut {
@@ -312,6 +316,7 @@ struct BallOut {
     @location(4) @interpolate(flat) code: vec4<f32>,
     @location(5) @interpolate(flat) paint_a: vec4<f32>,
     @location(6) @interpolate(flat) paint_b: vec4<f32>,
+    @location(7) @interpolate(flat) paint_c: vec4<f32>,
 };
 
 @vertex
@@ -326,6 +331,7 @@ fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
     out.code = b.code;
     out.paint_a = b.paint_a;
     out.paint_b = b.paint_b;
+    out.paint_c = b.paint_c;
     return out;
 }
 
@@ -347,7 +353,7 @@ fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
     var base = in.color.rgb;
-    let paint = paint_from(in.paint_a, in.paint_b);
+    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint.row >= 0.0 {
         // A gradient painted inside takes the place of the ball's colour; the light stays on top.
         base = paint_colour(paint, in.local, g.view.w).rgb;
@@ -408,8 +414,9 @@ struct SoftIn {
     // The gradient painted across the body, as `PaintGpu`; the same at every corner.
     @location(4) paint_a: vec4<f32>,
     @location(5) paint_b: vec4<f32>,
+    @location(6) paint_c: vec4<f32>,
     // Where the corner is in the body's bounding box, -1 to 1.
-    @location(6) local: vec2<f32>,
+    @location(7) local: vec2<f32>,
 };
 
 struct SoftOut {
@@ -418,7 +425,8 @@ struct SoftOut {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) paint_a: vec4<f32>,
     @location(3) @interpolate(flat) paint_b: vec4<f32>,
-    @location(4) local: vec2<f32>,
+    @location(4) @interpolate(flat) paint_c: vec4<f32>,
+    @location(5) local: vec2<f32>,
 };
 
 @vertex
@@ -429,6 +437,7 @@ fn vs_soft(v: SoftIn) -> SoftOut {
     out.color = v.color;
     out.paint_a = v.paint_a;
     out.paint_b = v.paint_b;
+    out.paint_c = v.paint_c;
     out.local = v.local;
     return out;
 }
@@ -440,7 +449,7 @@ fn fs_soft(in: SoftOut) -> @location(0) vec4<f32> {
     if a <= 0.0 {
         discard;
     }
-    let paint = paint_from(in.paint_a, in.paint_b);
+    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint.row < 0.0 {
         return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
     }

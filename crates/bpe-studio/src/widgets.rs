@@ -811,7 +811,7 @@ pub(crate) fn scene_color(c: Color32) -> Color {
 
 pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
     let mut c = picker_color(*value);
-    let response = egui::color_picker::color_edit_button_srgba(ui, &mut c, Alpha::BlendOrAdditive);
+    let response = egui::color_picker::color_edit_button_srgba(ui, &mut c, Alpha::OnlyBlend);
     if response.changed() {
         *value = scene_color(c);
     }
@@ -950,7 +950,7 @@ mod tests {
             let mut h = harness(Gradient::even(&[RED, BLUE]));
             h.get_by_label("Colours stop 2").click_secondary();
             h.run();
-            assert!(h.query_by_label_contains("Additive").is_none(), "a right-click opens no picker");
+            assert!(h.query_by_label_contains("Alpha").is_none(), "a right-click opens no picker");
             h.get_by_label("Remove").click();
             h.run();
             assert_eq!(h.state().stops, [Stop { at: 0.0, color: RED }]);
@@ -972,7 +972,7 @@ mod tests {
             assert!(h.query_by_label("Colours bar").is_none(), "no bar for one colour");
             h.get_by_label("Colours colour").click();
             h.run();
-            assert!(h.query_by_label_contains("Additive").is_some(), "the swatch opens the picker");
+            assert!(h.query_by_label_contains("Alpha").is_some(), "the swatch opens the picker");
             h.key_press(egui::Key::Escape);
             h.run();
             h.get_by_label("Add a colour").click();
@@ -984,10 +984,11 @@ mod tests {
         #[test]
         fn colour_handle_opens_on_left_click() {
             let mut h = harness(Gradient::even(&[RED, BLUE]));
-            assert!(h.query_by_label_contains("Additive").is_none());
+            assert!(h.query_by_label_contains("Alpha").is_none());
             h.get_by_label("Colours stop 2").click();
             h.run();
-            assert!(h.query_by_label_contains("Additive").is_some(), "a click opens the picker");
+            assert!(h.query_by_label_contains("Alpha").is_some(), "a click opens the picker");
+            assert!(h.query_by_label_contains("Additive").is_none(), "Blend Add replaced the Additive checkbox");
             assert!(h.query_by_label("Remove").is_none());
             assert_eq!(h.state().stops.len(), 2, "a click on a handle adds nothing");
         }

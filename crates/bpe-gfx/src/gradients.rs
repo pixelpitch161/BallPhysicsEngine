@@ -180,11 +180,28 @@ pub struct PaintGpu {
     pub scroll: f32,
     /// 0 clamp, 1 repeat, 2 mirror.
     pub repeat: f32,
+    /// The instance's own colour variation, turned on what the gradient paints: hue turned by
+    /// this many turns, saturation added, value multiplied, and one unused. [`NO_VARY`] leaves
+    /// the colour exactly as sampled.
+    pub vary: [f32; 4],
 }
+
+/// A [`PaintGpu::vary`] that changes nothing.
+pub const NO_VARY: [f32; 4] = [0.0, 0.0, 1.0, 0.0];
 
 impl Default for PaintGpu {
     fn default() -> Self {
-        Self { row: -1.0, t0: 0.0, pattern: 0.0, steps: 0.0, angle: 0.0, scale: 1.0, scroll: 0.0, repeat: 0.0 }
+        Self {
+            row: -1.0,
+            t0: 0.0,
+            pattern: 0.0,
+            steps: 0.0,
+            angle: 0.0,
+            scale: 1.0,
+            scroll: 0.0,
+            repeat: 0.0,
+            vary: NO_VARY,
+        }
     }
 }
 
@@ -275,6 +292,6 @@ mod tests {
     #[test]
     fn a_new_paint_paints_nothing() {
         assert_eq!(PaintGpu::default().row, -1.0);
-        assert_eq!(std::mem::size_of::<PaintGpu>(), 32);
+        assert_eq!(std::mem::size_of::<PaintGpu>(), 48);
     }
 }

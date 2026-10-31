@@ -1,6 +1,6 @@
 //! Glowing dots: how a swarm is drawn, as tiny additive points of light.
 
-use bpe_core::{Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
 
 use crate::paint::{Follow, Paint};
 
@@ -19,6 +19,14 @@ pub struct SwarmLook {
     /// (Order), its place, or the time or the beat.
     #[setting(paint, label = "Colours", prefix = "", follows = "speed|nearest_ball|place|order|time|beat", simple)]
     pub colours: Paint,
+    /// How it mixes with what is under it: Normal paints over it, the others mix with it.
+    /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
+    /// parts overlap they do not stack.
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
+    #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
+    pub blend_amount: f32,
 }
 
 impl Default for SwarmLook {
@@ -37,6 +45,8 @@ impl Default for SwarmLook {
                 span: 260.0,
                 ..Paint::default()
             },
+            blend: Blend::Normal,
+            blend_amount: 1.0,
         }
     }
 }

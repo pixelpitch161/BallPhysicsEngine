@@ -1,0 +1,783 @@
+(
+    format: 2,
+    name: "Blend modes",
+    things: {
+        0: (
+            id: 0,
+            name: "Scene defaults",
+            kind: "scene",
+            params: {
+                "background_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#0b1030",
+                        ),
+                        (
+                            at: 0.33333334,
+                            color: "#3a4a8c",
+                        ),
+                        (
+                            at: 0.6666667,
+                            color: "#d9a38c",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#f4ecd8",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "background_span": Number(1500.0),
+                "chords": Int(0),
+                "gravity": Vec2((0.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 0,
+                ),
+                Trail: Inherit,
+                Motion: Linked(
+                    module: 1,
+                ),
+                Bounce: Linked(
+                    module: 2,
+                ),
+                Sound: Linked(
+                    module: 3,
+                ),
+                Particles: Inherit,
+                Rules: Inherit,
+                Shader: Inherit,
+            },
+        ),
+        1: (
+            id: 1,
+            name: "Arena",
+            kind: "arena",
+            parent: Some(0),
+            params: {
+                "height": Number(1400.0),
+                "shape": Choice("box"),
+                "thickness": Number(8.0),
+                "width": Number(1000.0),
+            },
+            slots: {
+                Look: Linked(
+                    module: 5,
+                ),
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        2: (
+            id: 2,
+            name: "Drifters",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-260.0, 600.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(8),
+                "radius": Number(22.0),
+                "rows": Int(2),
+                "spacing": Number(52.0),
+                "velocity": Vec2((160.0, -90.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 13,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        3: (
+            id: 3,
+            name: "Screen",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-190.0, -470.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(5),
+                "radius": Number(70.0),
+                "rows": Int(1),
+                "spacing": Number(95.0),
+                "velocity": Vec2((-170.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 6,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        4: (
+            id: 4,
+            name: "Screen label",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -470.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(44.0),
+                "text": Text("Screen"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        5: (
+            id: 5,
+            name: "Difference",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-190.0, -280.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(5),
+                "radius": Number(70.0),
+                "rows": Int(1),
+                "spacing": Number(95.0),
+                "velocity": Vec2((-130.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 7,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        6: (
+            id: 6,
+            name: "Difference label",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -280.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(44.0),
+                "text": Text("Difference"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        7: (
+            id: 7,
+            name: "Overlay",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-190.0, -90.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(5),
+                "radius": Number(70.0),
+                "rows": Int(1),
+                "spacing": Number(95.0),
+                "velocity": Vec2((190.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 8,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        8: (
+            id: 8,
+            name: "Overlay label",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -90.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(44.0),
+                "text": Text("Overlay"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        9: (
+            id: 9,
+            name: "Multiply",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (-190.0, 100.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("block"),
+                "columns": Int(5),
+                "radius": Number(70.0),
+                "rows": Int(1),
+                "spacing": Number(95.0),
+                "velocity": Vec2((150.0, 0.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 9,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        10: (
+            id: 10,
+            name: "Multiply label",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 100.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(44.0),
+                "text": Text("Multiply"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+        11: (
+            id: 11,
+            name: "Subtract bar",
+            kind: "obstacle",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 290.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "length": Number(800.0),
+                "shape": Choice("bar"),
+                "thickness": Number(56.0),
+            },
+            slots: {
+                Look: Linked(
+                    module: 10,
+                ),
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        12: (
+            id: 12,
+            name: "Comets",
+            kind: "balls",
+            parent: Some(0),
+            transform: (
+                position: (0.0, 450.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "arrangement": Choice("ring"),
+                "count": Int(3),
+                "radius": Number(14.0),
+                "ring_radius": Number(60.0),
+                "velocity": Vec2((520.0, 380.0)),
+            },
+            slots: {
+                Look: Linked(
+                    module: 11,
+                ),
+                Trail: Linked(
+                    module: 12,
+                ),
+                Motion: Inherit,
+                Bounce: Inherit,
+                Sound: Inherit,
+            },
+        ),
+        13: (
+            id: 13,
+            name: "Title",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -790.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "outline": Number(6.0),
+                "outline_colours": Gradient((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#05040f",
+                        ),
+                    ],
+                    transition: Smooth,
+                )),
+                "size": Number(120.0),
+                "text": Text("Blend modes"),
+            },
+            slots: {
+                Look: Inherit,
+            },
+        ),
+    },
+    order: [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+    ],
+    library: (
+        modules: {
+            0: (
+                id: 0,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            1: (
+                id: 1,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+            ),
+            2: (
+                id: 2,
+                name: "Default bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+            ),
+            3: (
+                id: 3,
+                name: "Default sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "instrument": Int(0),
+                },
+            ),
+            4: (
+                id: 4,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                },
+            ),
+            5: (
+                id: 5,
+                name: "Rim look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            6: (
+                id: 6,
+                name: "Screen look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("screen"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#3ee6ff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#4d7bff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ff3ec8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                },
+            ),
+            7: (
+                id: 7,
+                name: "Difference look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("difference"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffffff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ffb82e",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#3ee6ff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                },
+            ),
+            8: (
+                id: 8,
+                name: "Overlay look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("overlay"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffd23e",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#3eff9a",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#3e9bff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                },
+            ),
+            9: (
+                id: 9,
+                name: "Multiply look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("multiply"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff9a3e",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ff4f7b",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#8a4dff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                },
+            ),
+            10: (
+                id: 10,
+                name: "Subtract look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "blend": Choice("subtract"),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#66c8ff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                },
+            ),
+            11: (
+                id: 11,
+                name: "Comet look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "glow": Number(0.6000000238418579),
+                },
+            ),
+            12: (
+                id: 12,
+                name: "Add streak",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "brightness": Number(0.8999999761581421),
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffffff",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#7cf4ff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#ff3ec8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "seconds": Number(0.6000000238418579),
+                    "source": Choice("own"),
+                    "width": Number(0.800000011920929),
+                },
+            ),
+            13: (
+                id: 13,
+                name: "Drift look",
+                slot: Look,
+                kind: "look.styled",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff7a3e",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "vary_hue": Number(25.0),
+                    "wobble": Number(0.5),
+                },
+            ),
+        },
+        progressions: {
+            0: (
+                name: "Starter",
+                key: (
+                    root: 0,
+                    mode: Major,
+                ),
+                meter: (4, 4),
+                chords: [
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 0,
+                        quality: Major,
+                        ext: Triad,
+                        beats: 8,
+                    ),
+                    (
+                        root: 9,
+                        quality: Minor,
+                        ext: Triad,
+                        beats: 4,
+                    ),
+                    (
+                        root: 2,
+                        quality: Major,
+                        ext: Sus4,
+                        beats: 4,
+                    ),
+                ],
+            ),
+        },
+        instruments: {
+            0: (
+                name: "Pluck",
+                source: BuiltIn(
+                    which: "pluck",
+                    knobs: {
+                        "brightness": 0.5,
+                        "decay": 0.9,
+                    },
+                ),
+                voices: (
+                    note_length: Beats(1.0),
+                    limit: 16,
+                    mono: false,
+                    glide: 0.1,
+                    retrigger: true,
+                ),
+            ),
+        },
+        buses: [
+            (
+                id: 0,
+                name: "Reverb",
+                volume: 0.0,
+                fx: (
+                    name: "Effects",
+                    nodes: [
+                        (
+                            id: 1,
+                            kind: "fx_in",
+                            pos: (0.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 2,
+                            kind: "reverb",
+                            pos: (180.0, 0.0),
+                            params: {
+                                "damping": Number(0.4),
+                                "decay": Number(2.0),
+                                "mix": Number(1.0),
+                                "predelay": Number(10.0),
+                                "size": Number(0.6),
+                                "width": Number(1.0),
+                            },
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 3,
+                            kind: "fx_out",
+                            pos: (360.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                    ],
+                    links: [
+                        (
+                            from: (1, 0),
+                            to: (2, 0),
+                        ),
+                        (
+                            from: (2, 0),
+                            to: (3, 0),
+                        ),
+                    ],
+                    notes: [],
+                    enabled: true,
+                ),
+            ),
+            (
+                id: 1,
+                name: "Delay",
+                volume: 0.0,
+                fx: (
+                    name: "Effects",
+                    nodes: [
+                        (
+                            id: 1,
+                            kind: "fx_in",
+                            pos: (0.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 2,
+                            kind: "delay",
+                            pos: (180.0, 0.0),
+                            params: {
+                                "feedback": Number(0.35),
+                                "feel": Choice("straight"),
+                                "high_cut": Number(20000.0),
+                                "low_cut": Number(20.0),
+                                "mix": Number(1.0),
+                                "ms": Number(250.0),
+                                "ping_pong": Bool(true),
+                                "time_mode": Choice("1/4"),
+                            },
+                            enabled: true,
+                            exposed: [],
+                        ),
+                        (
+                            id: 3,
+                            kind: "fx_out",
+                            pos: (360.0, 0.0),
+                            params: {},
+                            enabled: true,
+                            exposed: [],
+                        ),
+                    ],
+                    links: [
+                        (
+                            from: (1, 0),
+                            to: (2, 0),
+                        ),
+                        (
+                            from: (2, 0),
+                            to: (3, 0),
+                        ),
+                    ],
+                    notes: [],
+                    enabled: true,
+                ),
+            ),
+        ],
+    ),
+    next_thing: 14,
+    next_module: 14,
+    next_progression: 1,
+    next_instrument: 1,
+)

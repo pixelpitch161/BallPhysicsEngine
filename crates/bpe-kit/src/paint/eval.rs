@@ -23,6 +23,8 @@ pub struct Inputs {
     pub hit_colour: Option<[f32; 4]>,
     pub beats: f32,
     pub time: f32,
+    /// Which instance this is, for colour variation: see [`super::seed_of`].
+    pub seed: u32,
 }
 
 /// How fast `Follow::Time` runs when the paint's scroll is still, in cycles per second.
@@ -135,8 +137,18 @@ fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
     pair.sample(f)
 }
 
-/// The colour a ball is painted, in linear light. Never NaN, whatever the inputs.
+/// The colour a ball is painted, in linear light, with its own variation (from `i.seed` at the
+/// simulation time `i.time`). Never NaN, whatever the inputs.
 pub fn colour_at(p: &Paint, i: &Inputs) -> [f32; 4] {
+    let c = followed_colour(p, i);
+    match super::vary_offsets(p, i.seed, i.time) {
+        Some(v) => super::apply_vary(c, v),
+        None => c,
+    }
+}
+
+/// The colour the paint's follow picks, before variation.
+fn followed_colour(p: &Paint, i: &Inputs) -> [f32; 4] {
     match p.follow {
         Follow::NearestBall => i.nearest.unwrap_or_else(|| stop_colour(p, 0)),
         Follow::Step => match i.hit_colour {

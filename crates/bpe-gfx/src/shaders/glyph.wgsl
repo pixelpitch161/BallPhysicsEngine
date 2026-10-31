@@ -49,8 +49,9 @@ struct GlyphIn {
     // The gradient painted inside the fill, as `PaintGpu`.
     @location(5) paint_a: vec4<f32>,
     @location(6) paint_b: vec4<f32>,
+    @location(7) paint_c: vec4<f32>,
     // The world rectangle the paint spans, -1 to 1 across it: left, top, right, bottom.
-    @location(7) span: vec4<f32>,
+    @location(8) span: vec4<f32>,
 };
 
 struct GlyphOut {
@@ -61,8 +62,9 @@ struct GlyphOut {
     @location(3) @interpolate(flat) params: vec4<f32>,
     @location(4) @interpolate(flat) paint_a: vec4<f32>,
     @location(5) @interpolate(flat) paint_b: vec4<f32>,
+    @location(6) @interpolate(flat) paint_c: vec4<f32>,
     // Where the pixel is in the paint's rectangle, -1 to 1.
-    @location(6) local: vec2<f32>,
+    @location(7) local: vec2<f32>,
 };
 
 @vertex
@@ -77,6 +79,7 @@ fn vs_glyph(@builtin(vertex_index) i: u32, q: GlyphIn) -> GlyphOut {
     out.params = q.params;
     out.paint_a = q.paint_a;
     out.paint_b = q.paint_b;
+    out.paint_c = q.paint_c;
     let half = max((q.span.zw - q.span.xy) * 0.5, vec2<f32>(1e-3));
     out.local = (world - (q.span.xy + q.span.zw) * 0.5) / half;
     return out;
@@ -101,7 +104,7 @@ fn fs_glyph(in: GlyphOut) -> @location(0) vec4<f32> {
     let outline_a = abs(in.outline.a) * edge * (1.0 - fill_a);
     // A gradient painted inside takes the place of the fill's colour; the halo keeps the colour.
     var fill_rgb = in.color.rgb;
-    let paint = paint_from(in.paint_a, in.paint_b);
+    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint.row >= 0.0 {
         fill_rgb = paint_colour(paint, in.local, g.view.w).rgb;
     }

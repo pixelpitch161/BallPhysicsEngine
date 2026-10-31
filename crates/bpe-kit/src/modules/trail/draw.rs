@@ -1,11 +1,11 @@
 //! Drawing streaks from the runtime's position history.
 
-use bpe_core::{Settings, SlotId};
+use bpe_core::{Blend, Settings, SlotId};
 use bpe_gfx::{DrawCx, Frame, ModuleDraw, push_streak, push_streak_colours};
 use glam::Vec2;
 
-use super::{StreakTrail, TrailBlend, TrailSource};
-use crate::paint::{Follow, Inputs, beats_at, colour_at};
+use super::{StreakTrail, TrailSource};
+use crate::paint::{Follow, Inputs, beats_at, colour_at, seed_of};
 use crate::things::balls::draw::ball_colors;
 
 pub struct StreakDraw;
@@ -17,6 +17,10 @@ pub const AA_MARGIN: f32 = 4.0;
 impl ModuleDraw for StreakDraw {
     fn kind(&self) -> &'static str {
         "trail.streak"
+    }
+
+    fn draws_add_itself(&self) -> bool {
+        true
     }
 
     fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame) {
@@ -51,20 +55,28 @@ impl ModuleDraw for StreakDraw {
             }
             let speed = bodies.velocity[i].length();
             colours.clear();
-            colours.extend((0..points.len()).map(|k| shade(&trail, along.colour(&points, k, speed))));
+            let seed = seed_of(cx.thing.id, i);
+            colours.extend((0..points.len()).map(|k| shade(&trail, along.colour(&points, k, speed, seed))));
             push_streak_colours(&mut frame.trails, &points, half_width, trail.taper, &colours, AA_MARGIN);
         }
     }
 }
 
-/// The streak's colour from `base` (linear light) at its brightness: covering with the brightness
-/// as opacity, or adding that much light. An additive colour glows whatever the blend says.
+/// The streak's colour from `base` (linear light) at its brightness, faded by the blend amount:
+/// covering with the brightness as opacity, or adding that much light. An additive colour glows
+/// whatever the blend says. Other blends draw into a layer that is mixed in at its amount later,
+/// so here they are plain: Normal at full amount.
 fn shade(trail: &StreakTrail, base: [f32; 4]) -> [f32; 4] {
     let k = trail.brightness;
-    match trail.blend {
-        TrailBlend::Cover if base[3] > 0.0 => [base[0], base[1], base[2], (base[3] * k).min(1.0)],
-        _ => [base[0] * k, base[1] * k, base[2] * k, -1.0],
+    let amount = match trail.blend {
+        Blend::Normal | Blend::Add => trail.blend_amount.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    if trail.blend != Blend::Add && base[3] > 0.0 {
+        return [base[0], base[1], base[2], (base[3] * k).min(1.0) * amount];
     }
+    let k = k * amount;
+    [base[0] * k, base[1] * k, base[2] * k, -1.0]
 }
 
 /// What the streak's own Colours read at each of its points, this frame.
@@ -92,8 +104,9 @@ impl<'a> Along<'a> {
     /// The colour at point `k` of `points` (newest first, the ball moving at `speed` at the
     /// first): Life runs from 0 at the ball to 1 at the tail end; Place reads where the point
     /// is, Speed how fast the ball went there, and Time when it was there, so each part of the
-    /// streak keeps the colour it was drawn in. Beat is the same all along.
-    fn colour(&self, points: &[Vec2], k: usize, speed: f32) -> [f32; 4] {
+    /// streak keeps the colour it was drawn in. Beat is the same all along. `seed` is the ball's
+    /// own, so the streak varies the way its ball does.
+    fn colour(&self, points: &[Vec2], k: usize, speed: f32, seed: u32) -> [f32; 4] {
         let n = points.len();
         let place = points[k];
         let gap = |a: usize, b: usize| (points[a] - points[b]).length() / self.interval.max(1e-6);
@@ -115,6 +128,7 @@ impl<'a> Along<'a> {
             life: if n > 1 { k as f32 / (n - 1) as f32 } else { 0.0 },
             beats: self.beats,
             time: self.time as f32 - if self.trail.colour.follow == Follow::Time { age } else { 0.0 },
+            seed,
             ..Inputs::default()
         };
         colour_at(&self.trail.colour, &inputs)
@@ -163,7 +177,7 @@ mod tests {
         // Its own colour, covering, at the brightness as opacity.
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
-        m.params.set("blend", Value::Choice("cover".into()));
+        m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(0, 255, 0))));
         let resolved = bpe_core::resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 2.0, &kit.draws, &mut frame);
@@ -180,6 +194,23 @@ mod tests {
     }
 
     #[test]
+    fn the_blend_amount_fades_a_normal_streak_and_dims_an_added_one() {
+        use super::{StreakTrail, shade};
+        use bpe_core::Blend;
+        assert_eq!(StreakTrail::default().blend, Blend::Add);
+        assert_eq!(StreakTrail::default().blend_amount, 1.0);
+        let base = [0.8, 0.4, 0.2, 1.0];
+        let trail =
+            |blend, blend_amount| StreakTrail { brightness: 0.5, blend, blend_amount, ..StreakTrail::default() };
+        assert_eq!(shade(&trail(Blend::Normal, 1.0), base), [0.8, 0.4, 0.2, 0.5]);
+        assert_eq!(shade(&trail(Blend::Normal, 0.5), base), [0.8, 0.4, 0.2, 0.25]);
+        assert_eq!(shade(&trail(Blend::Add, 1.0), base), [0.4, 0.2, 0.1, -1.0]);
+        assert_eq!(shade(&trail(Blend::Add, 0.5), base), [0.2, 0.1, 0.05, -1.0]);
+        // An additive colour glows whatever the blend says, still at the amount.
+        assert_eq!(shade(&trail(Blend::Normal, 0.5), [0.8, 0.4, 0.2, 0.0]), [0.2, 0.1, 0.05, -1.0]);
+    }
+
+    #[test]
     fn trail_life_runs_head_to_tail() {
         let reg = registry();
         let mut scene = new_scene(&reg);
@@ -188,7 +219,7 @@ mod tests {
         let (red, blue) = (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255));
         let m = scene.library.modules.get_mut(&trail).unwrap();
         m.params.set("source", Value::Choice("own".into()));
-        m.params.set("blend", Value::Choice("cover".into()));
+        m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, blue])));
         m.params.set("follow", Value::Choice("life".into()));
         let resolved = bpe_core::resolve(&scene, &reg);
@@ -220,5 +251,35 @@ mod tests {
         assert!(near(frame.trails[0].color, at(2.01 * 0.25)), "{:?}", frame.trails[0].color);
         let tail = frame.trails.last().unwrap().color;
         assert!(near(tail, at(2.01 * 0.25 - 30.0 / 60.0 * 0.25)), "{tail:?}");
+    }
+
+    #[test]
+    fn each_ball_s_streak_varies_its_own_colour_like_the_ball() {
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(3));
+            p.set("rows", Value::Int(1));
+        });
+        let reg = &kit.registry;
+        let trail = scene.add_module(reg, "trail.streak", "Streak").unwrap();
+        scene.link(reg, ThingId::ROOT, SlotId::Trail, trail).unwrap();
+        let m = scene.library.modules.get_mut(&trail).unwrap();
+        m.params.set("source", Value::Choice("own".into()));
+        m.params.set("blend", Value::Choice("normal".into()));
+        m.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0))));
+        m.params.set("vary_hue", Value::Number(60.0));
+        let resolved = bpe_core::resolve(&scene, reg);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(1.01);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 1.01, &kit.draws, &mut frame);
+        let mut heads: Vec<[f32; 4]> = Vec::new();
+        for v in &frame.trails {
+            if !heads.iter().any(|h| (0..3).all(|k| (h[k] - v.color[k]).abs() < 1e-4)) {
+                heads.push(v.color);
+            }
+        }
+        // One colour per streak, each its own.
+        assert_eq!(heads.len(), 3, "{heads:?}");
     }
 }

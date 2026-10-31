@@ -40,10 +40,18 @@ fn swarm_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, Paint
         Follow::Time | Follow::Beat => {
             let beats =
                 if p.follow == Follow::Beat { beats_at(cx.log, cx.video_time, cx.world.steps_per_second) } else { 0.0 };
-            (ONE_COLOUR, none, [0.0; 4], colour_at(p, &Inputs { time, beats, count: 1, ..Inputs::default() }))
+            // Each point varies the colour on the GPU, so it is worked out here unvaried.
+            let plain = Paint { vary_hue: 0.0, vary_sat: 0.0, vary_bright: 0.0, ..p.clone() };
+            (ONE_COLOUR, none, [0.0; 4], colour_at(&plain, &Inputs { time, beats, count: 1, ..Inputs::default() }))
         }
         _ => (ONE_COLOUR, none, [0.0; 4], first),
     }
+}
+
+/// The swarm's variation as its draw shader reads it (`SwarmLook::vary`): hue in degrees,
+/// saturation, brightness and wobble in turns a second, each a real number.
+fn swarm_vary(p: &Paint) -> [f32; 4] {
+    [p.vary_hue, p.vary_sat, p.vary_bright, p.wobble].map(|x| if x.is_finite() { x } else { 0.0 })
 }
 
 pub struct SwarmDraw;
@@ -77,7 +85,15 @@ impl ThingDraw for SwarmDraw {
             center: cx.thing.transform.position.into(),
             seed: settings.seed,
             release_seconds: settings.release_seconds,
-            look: SwarmLook { size: look.size, brightness: look.brightness, follow, paint, place, color },
+            look: SwarmLook {
+                size: look.size,
+                brightness: look.brightness,
+                follow,
+                paint,
+                place,
+                color,
+                vary: swarm_vary(&look.colours),
+            },
             motion: Flock {
                 top_speed: motion.top_speed,
                 drag: motion.drag,
@@ -161,6 +177,34 @@ mod tests {
         let frame = draw("speed", Gradient::solid(blue));
         assert_eq!((follow(&frame), frame.swarms[0].look.color), (5, blue.to_linear()));
         assert!(frame.gradients.len() == 1);
+    }
+
+    #[test]
+    fn swarm_variation_goes_to_the_gpu_and_the_one_colour_stays_plain() {
+        let (mut scene, _, kit, me) = scene_with("swarm", "Fireflies", Vec2::ZERO, |_| {});
+        let look = scene.add_module(&kit.registry, "look.swarm", "Dots").unwrap();
+        scene.link(&kit.registry, me, SlotId::Look, look).unwrap();
+        let blue = Color::rgb(0, 0, 255);
+        let mut draw = |follow: &str, vary: bool| {
+            let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+            params.set("colours", Value::Gradient(Gradient::even(&[blue, Color::rgb(255, 0, 0)])));
+            params.set("follow", Value::Choice(follow.into()));
+            for (key, v) in [("vary_hue", 30.0), ("vary_sat", 0.25), ("vary_bright", 0.5), ("wobble", 2.0)] {
+                params.set(key, Value::Number(if vary { v } else { 0.0 }));
+            }
+            let resolved = bpe_core::resolve(&scene, &kit.registry);
+            let world = World::build(&scene, &resolved, &kit.sims);
+            let mut frame = Frame::default();
+            build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+            frame.swarms[0].look.clone()
+        };
+        assert_eq!(draw("speed", false).vary, [0.0, 0.0, 0.0, 0.0], "nothing varies");
+        assert_eq!(draw("speed", true).vary, [30.0, 0.25, 0.5, 2.0]);
+        // A time colour is worked out once for every point; each point varies it on the GPU, so
+        // it is not varied here as well.
+        let (plain, varied) = (draw("time", false), draw("time", true));
+        assert_eq!((plain.follow, plain.color), (varied.follow, varied.color));
+        assert_eq!(varied.color, blue.to_linear());
     }
 
     #[test]

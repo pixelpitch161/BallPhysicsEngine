@@ -484,4 +484,60 @@ mod tests {
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
         assert_ne!(frame.balls[0].color, green.to_linear());
     }
+
+    #[test]
+    fn a_ball_group_with_vary_hue_has_different_colours() {
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(4));
+            p.set("rows", Value::Int(2));
+            p.set("velocity", Value::Vec2([0.0, 0.0]));
+        });
+        let m = ball_look(&scene, &kit);
+        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED])));
+        params.set("vary_hue", Value::Number(40.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let build = || {
+            let mut frame = Frame::default();
+            build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
+            frame.balls.iter().map(|b| b.color).collect::<Vec<_>>()
+        };
+        let colours = build();
+        assert_eq!(colours.len(), 8);
+        let mut distinct: Vec<[f32; 4]> = Vec::new();
+        for c in &colours {
+            if !distinct.iter().any(|d| (0..3).all(|k| (d[k] - c[k]).abs() < 1e-4)) {
+                distinct.push(*c);
+            }
+        }
+        assert!(distinct.len() >= 6, "only {} distinct colours: {colours:?}", distinct.len());
+        // The same frame built twice is the same.
+        assert_eq!(build(), colours);
+    }
+
+    #[test]
+    fn an_inside_pattern_carries_each_ball_s_variation_to_the_gpu() {
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(3));
+            p.set("rows", Value::Int(1));
+            p.set("velocity", Value::Vec2([0.0, 0.0]));
+        });
+        let m = ball_look(&scene, &kit);
+        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        params.set("inside", Value::Choice("stripes".into()));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
+        assert!(frame.balls.iter().all(|b| b.paint.vary == [0.0, 0.0, 1.0, 0.0]), "no variation is the identity");
+        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        params.set("vary_hue", Value::Number(90.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
+        let turns: Vec<f32> = frame.balls.iter().map(|b| b.paint.vary[0]).collect();
+        assert!(turns.iter().all(|t| t.abs() <= 0.25), "{turns:?}");
+        assert!(turns[0] != turns[1] && turns[1] != turns[2], "{turns:?}");
+    }
 }

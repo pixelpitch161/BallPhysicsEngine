@@ -119,6 +119,8 @@ pub struct GroupOpts {
     pub screen_only: bool,
     /// The group's main setting shows in the simple view.
     pub simple: bool,
+    /// Whether each instance may vary the group's colours (false with `no_vary`).
+    pub vary: bool,
 }
 
 /// A struct of settings that another struct embeds as one field, its keys all starting with a

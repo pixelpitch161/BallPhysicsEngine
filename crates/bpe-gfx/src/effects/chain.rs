@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bytemuck::{Pod, Zeroable};
 
 use super::{MAX_PARAM_FLOATS, assemble, needs_history};
-use crate::{Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
+use crate::{EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
 
 pub(crate) const MAX_HITS: usize = 16;
 /// How far back effects see hits, in seconds.
@@ -34,6 +34,8 @@ struct Fx {
     level: f32,
     view: u32,
     apply_to: f32,
+    in_layer: f32,
+    _pad: [f32; 3],
     audio: [f32; 4],
     params: [f32; MAX_PARAM_FLOATS],
     hits: [[f32; 4]; MAX_HITS],
@@ -192,7 +194,9 @@ impl Chain {
         key
     }
 
-    /// Runs `frame`'s effects of `stage`, in order, over `hdr` in place.
+    /// Runs `frame`'s effects of `stage` that `on` picks for this picture, in order, over `hdr`
+    /// in place. `hdr` is a blend layer's picture when `on` says so: the effects then keep its
+    /// cover (alpha) and premultiply their colour by it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &mut self,
@@ -201,12 +205,14 @@ impl Chain {
         encoder: &mut wgpu::CommandEncoder,
         stage: Stage,
         frame: &Frame,
+        on: Canvas,
         hdr: &wgpu::Texture,
         hdr_view: &wgpu::TextureView,
         objects: Option<&wgpu::TextureView>,
     ) {
         let mut active = Vec::new();
-        for call in frame.effects.iter().filter(|e| e.stage == stage && e.blend > 0.0) {
+        let picked = |e: &&EffectCall| e.stage == stage && e.blend > 0.0 && on.runs(frame, e);
+        for call in frame.effects.iter().filter(picked) {
             let key = self.compile(device, &call.wgsl);
             if self.compiled.get(&key).is_some_and(|c| c.is_ok()) {
                 active.push((call, key));
@@ -262,6 +268,7 @@ impl Chain {
             uniform.dt = dt;
             uniform.params = call.params;
             uniform.apply_to = call.apply_to;
+            uniform.in_layer = if matches!(on, Canvas::Layer(_)) { 1.0 } else { 0.0 };
             slot.frames = slot.frames.saturating_add(1);
             if self.uniforms.len() <= self.used_uniforms {
                 self.uniforms.push(device.create_buffer(&wgpu::BufferDescriptor {
@@ -310,6 +317,38 @@ impl Chain {
         if in_scratch {
             copy(encoder, &self.scratch.as_ref().expect("made above").0, hdr);
         }
+    }
+}
+
+/// Which picture a run of the chain paints: the main one, or one of the frame's blend layers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Canvas {
+    Main,
+    Layer(usize),
+}
+
+impl Canvas {
+    /// Whether `call` runs on this picture. An effect on things at the Things stage runs where
+    /// its thing is drawn: on the main picture if the thing draws anything there, else on the
+    /// first blend layer it draws into, before that layer is mixed in (so the picture under a
+    /// blended thing is left alone). Every other effect runs on the main picture.
+    fn runs(self, frame: &Frame, call: &EffectCall) -> bool {
+        self == canvas_of(frame, call)
+    }
+}
+
+/// See [`Canvas::runs`].
+pub(crate) fn canvas_of(frame: &Frame, call: &EffectCall) -> Canvas {
+    if call.stage != Stage::Things
+        || call.apply_to <= 0.5
+        || frame.layers.is_empty()
+        || frame.draws_thing(call.apply_to)
+    {
+        return Canvas::Main;
+    }
+    match frame.layers.iter().position(|l| l.frame.draws_thing(call.apply_to)) {
+        Some(i) => Canvas::Layer(i),
+        None => Canvas::Main,
     }
 }
 
@@ -501,7 +540,7 @@ pub(crate) mod tests {
         assert_eq!(key_of(GREEN), key_of(GREEN));
         assert_eq!(name_of(GREEN), "Green");
         assert_eq!(name_of("fn effect("), "effect");
-        assert_eq!(std::mem::size_of::<Fx>(), 640);
+        assert_eq!(std::mem::size_of::<Fx>(), 656);
     }
 
     #[test]
@@ -574,6 +613,45 @@ pub(crate) mod tests {
         let mut nobody = two_balls_frame();
         nobody.effects.push(call(GREEN, thing_code(ThingId(9)), Stage::Picture));
         assert_eq!(render(&nobody).unwrap(), before, "a thing that isn't there changes nothing");
+    }
+
+    #[test]
+    fn a_material_finds_a_thing_drawn_in_a_blend_layer() {
+        let mut frame = two_balls_frame();
+        let b = frame.balls.pop().unwrap();
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0).balls.push(b);
+        frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Picture));
+        let Some(after) = render(&frame) else { return };
+        assert!(green(pixel(&after, B)), "{:?}: the layered ball is in the object picture", pixel(&after, B));
+        assert!(!green(pixel(&after, A)) && !green(pixel(&after, EMPTY)));
+    }
+
+    #[test]
+    fn a_material_on_a_layered_thing_paints_the_layer_not_the_picture_under_it() {
+        // Ball B drawn half see-through over a grey picture, with a green material on it.
+        let grey = |frame: &mut Frame| {
+            let c = [0.3, 0.3, 0.3, 1.0];
+            frame.background = crate::BackgroundPaint { row: 0, ends: Some([c, c]), ..Default::default() };
+        };
+        let mut frame = two_balls_frame();
+        grey(&mut frame);
+        let b = frame.balls.pop().unwrap();
+        frame.layer_mut(bpe_core::Blend::Normal, 0.5).balls.push(b);
+        let Some(plain) = render(&frame) else { return };
+        frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
+        let after = render(&frame).unwrap();
+        // Half green over grey: no red from the ball's own colour shows through.
+        let p = pixel(&after, B);
+        assert!(p[1] > p[0] + 60 && p[1] > p[2] + 60, "{p:?}: the material paints the layered ball");
+        let mut green_under = two_balls_frame();
+        grey(&mut green_under);
+        green_under.balls.pop();
+        let grey_only = render(&green_under).unwrap();
+        let g = pixel(&grey_only, B);
+        assert!(p[0] <= g[0] + 2, "{p:?} vs grey {g:?}: the ball's red is gone, not mixed over green");
+        for at in [A, WALL, EMPTY] {
+            assert_eq!(pixel(&after, at), pixel(&plain, at), "{at:?}: the layer stays see-through elsewhere");
+        }
     }
 
     #[test]

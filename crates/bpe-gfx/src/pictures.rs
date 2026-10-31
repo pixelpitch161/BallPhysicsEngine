@@ -180,6 +180,7 @@ fn a_burst_of_sparks_flies_the_way_its_normal_points_and_dies_after_its_life() {
         seed: 3,
         paint: crate::PaintGpu::default(),
         follow: 0,
+        amount: 1.0,
     });
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("sparks", &pixels, W, H);

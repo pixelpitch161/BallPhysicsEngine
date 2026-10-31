@@ -41,6 +41,8 @@ struct FieldAttrs {
     follows: Option<LitStr>,
     inside: bool,
     screen_only: bool,
+    /// The group offers no per-instance colour variation.
+    no_vary: bool,
 }
 
 /// The `(min, max)` after an option such as `range`.
@@ -92,6 +94,8 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.inside = true;
             } else if p.is_ident("screen_only") {
                 a.screen_only = true;
+            } else if p.is_ident("no_vary") {
+                a.no_vary = true;
             } else {
                 return Err(meta.error("unknown setting option"));
             }
@@ -140,7 +144,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
             let prefix = a.prefix.map(|s| s.value()).unwrap_or_default();
             let follows: Vec<String> =
                 a.follows.map(|s| s.value().split('|').map(|n| n.trim().to_owned()).collect()).unwrap_or_default();
-            let (inside, screen_only, simple) = (a.inside, a.screen_only, a.simple);
+            let (inside, screen_only, simple, vary) = (a.inside, a.screen_only, a.simple, !a.no_vary);
             let opts = quote! {
                 ::bpe_core::GroupOpts {
                     prefix: #prefix,
@@ -151,6 +155,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                     inside: #inside,
                     screen_only: #screen_only,
                     simple: #simple,
+                    vary: #vary,
                 }
             };
             defs.push(quote! {

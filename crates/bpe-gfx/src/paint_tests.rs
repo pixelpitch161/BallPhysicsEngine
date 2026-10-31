@@ -4,7 +4,7 @@ use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance, SoftVertex};
 use bpe_core::{Color, Gradient, Stop, Transition};
 
 /// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
-fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(crate) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -253,6 +253,7 @@ fn confetti(paint: PaintGpu, follow: u32) -> crate::Burst {
         seed: 11,
         paint,
         follow,
+        amount: 1.0,
     }
 }
 
@@ -316,6 +317,23 @@ fn particles_of_things_stuck_to_the_screen_paint_from_their_own_atlas() {
     for p in lit {
         assert!(p[1] < 40, "{p:?} is green or white: the burst read another row than its own");
         assert!(p[0] > p[2], "{p:?} should be mostly red early in its life");
+    }
+}
+
+#[test]
+fn particles_painted_on_the_gpu_fade_with_the_blend_amount() {
+    let row_of =
+        |frame: &mut Frame| frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
+    for (amount, glows) in [(1.0, true), (0.0, false)] {
+        for additive in [false, true] {
+            let mut frame = Frame { bloom: 0.0, time: 0.1, ..Frame::default() };
+            let paint = PaintGpu { row: row_of(&mut frame) as f32, ..PaintGpu::default() };
+            frame.bursts.push(crate::Burst { additive, amount, ..confetti(paint, 1) });
+            let name = format!("particles-amount-{}-{}", amount as u32, if additive { "add" } else { "normal" });
+            let Some(pixels) = render(&name, &frame) else { return };
+            let lit = lit(&pixels).len();
+            assert_eq!(lit > 50, glows, "{name}: {lit} pixels lit");
+        }
     }
 }
 
@@ -413,4 +431,43 @@ fn turning_a_sweep_half_way_swaps_its_sides() {
     let ((l0, r0), (l1, r1)) = (sides[0], sides[1]);
     assert!(blue(l0) && red(r0), "at 90°: blue left {l0:?}, red right {r0:?}");
     assert!(red(l1) && blue(r1), "at 270°: red left {l1:?}, blue right {r1:?}");
+}
+
+#[test]
+fn inside_pattern_varies_per_ball() {
+    // Three striped balls in a row, each turned by its own hue: red's left half turns
+    // yellow-green at a quarter turn, purple at minus a quarter, and stays red a hair back.
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let row = frame.gradients.row(&red_blue_steps());
+    let turns = [0.25, -0.25, -1e-5 / 360.0];
+    for (k, turn) in turns.into_iter().enumerate() {
+        let mut ball = striped_ball(row);
+        ball.center = [(k as f32 - 1.0) * 340.0, 0.0];
+        ball.radius = 160.0;
+        ball.paint.vary = [turn, 0.0, 1.0, 0.0];
+        frame.looks.push(ball);
+    }
+    let Some(pixels) = render("paint-varied-balls", &frame) else { return };
+    // Each ball's red half, 40 pixels left of its centre.
+    let at = |k: usize| {
+        let x = (W as f32 / 2.0 + (k as f32 - 1.0) * 170.0 - 40.0) as u32;
+        let i = ((H / 2) * W + x) as usize * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let (a, b, c) = (at(0), at(1), at(2));
+    assert!(a[1] > 200 && (120..235).contains(&a[0]) && a[2] < 40, "a quarter turn from red: {a:?}");
+    assert!(b[2] > 200 && (120..235).contains(&b[0]) && b[1] < 40, "minus a quarter: {b:?}");
+    assert!(c[0] > 200 && c[1] < 40 && c[2] < 40, "a hair back from red is red: {c:?}");
+
+    // No variation: every ball paints the pattern's own red.
+    for ball in &mut frame.looks {
+        ball.paint.vary = crate::NO_VARY;
+    }
+    let Some(plain) = render("paint-unvaried-balls", &frame) else { return };
+    let at = |k: usize| {
+        let x = (W as f32 / 2.0 + (k as f32 - 1.0) * 170.0 - 40.0) as u32;
+        let i = ((H / 2) * W + x) as usize * 4;
+        [plain[i], plain[i + 1], plain[i + 2]]
+    };
+    assert!((0..3).all(|k| at(k)[0] > 200 && at(k)[1] < 40), "all red: {:?}", [at(0), at(1), at(2)]);
 }
