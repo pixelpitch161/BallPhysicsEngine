@@ -10,6 +10,8 @@ mod blend_tests;
 pub mod effects;
 pub mod flow;
 mod frame;
+#[cfg(test)]
+mod grade_tests;
 mod gradients;
 #[cfg(test)]
 mod paint_tests;
@@ -22,9 +24,9 @@ use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame,
-    GlyphInstance, GpuLiquid, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage,
-    SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength,
-    push_streak, push_streak_colours, thing_code,
+    GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex,
+    Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at,
+    hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
@@ -47,6 +49,7 @@ struct Globals {
     bg_paint: [f32; 4],
     /// The background's place: direction in degrees, span, centre xy.
     bg_place: [f32; 4],
+    /// x: bloom strength, y: exposure, z: 1 to run the colour grade.
     post: [f32; 4],
     /// The camera: centre xy, zoom, turn in radians.
     camera: [f32; 4],
@@ -56,6 +59,10 @@ struct Globals {
     /// The two colours of a plain blend the background mixes itself (`bg.w` is 1 then).
     bg_from: [f32; 4],
     bg_to: [f32; 4],
+    /// The colour grade: brightness, contrast, saturation, warmth.
+    grade: [f32; 4],
+    /// The colour grade: tint, vignette, vignette size, gradient map amount.
+    grade_more: [f32; 4],
 }
 
 impl Globals {
@@ -73,7 +80,7 @@ impl Globals {
                 frame.background.repeat,
             ],
             bg_place: frame.background.place,
-            post: [frame.bloom, frame.exposure, 0.0, 0.0],
+            post: [frame.bloom, frame.exposure, if frame.grade.is_default() { 0.0 } else { 1.0 }, 0.0],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
@@ -83,6 +90,8 @@ impl Globals {
             ],
             bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
             bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
+            grade: [frame.grade.brightness, frame.grade.contrast, frame.grade.saturation, frame.grade.warmth],
+            grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
         }
     }
 }
@@ -117,6 +126,53 @@ struct Targets {
     down_sources: Vec<wgpu::BindGroup>,
     up_sources: Vec<wgpu::BindGroup>,
     composite: wgpu::BindGroup,
+}
+
+/// The colour grade's gradient map, baked into one 256×1 row the composite reads. It is always
+/// there, and written only when a frame maps by an amount above 0 with a gradient it does not
+/// hold yet.
+struct GradeMap {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// The gradient baked into the texture, once one has been.
+    baked: Option<bpe_core::Gradient>,
+}
+
+impl GradeMap {
+    fn new(device: &wgpu::Device) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("grade map"),
+            size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        Self { texture, view, baked: None }
+    }
+
+    /// Bakes `grade`'s map into the texture when it is used and not there already.
+    fn sync(&mut self, queue: &wgpu::Queue, grade: &Grade) {
+        if grade.map_amount <= 0.0 || self.baked.as_ref() == Some(&grade.map) {
+            return;
+        }
+        let mut row = [[0.0; 4]; ATLAS_WIDTH];
+        row.copy_from_slice(&grade.map.bake(ATLAS_WIDTH));
+        queue.write_texture(
+            self.texture.as_image_copy(),
+            &gradients::half_texels(&[row]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ATLAS_WIDTH as u32 * 8),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+        );
+        self.baked = Some(grade.map.clone());
+    }
 }
 
 /// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows.
@@ -231,6 +287,7 @@ pub struct Renderer {
     /// The overlay frame's own gradients: its instances name rows of its own atlas.
     overlay_paint: PaintTexture,
     targets: Targets,
+    grade_map: GradeMap,
     surface: flow::surface::Surface,
     /// The GPU-stepped layers, made the first time a frame is drawn with [`Renderer::render_with_flow`].
     flow: Option<FlowLayers>,
@@ -378,7 +435,7 @@ impl Renderer {
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite layout"),
-            entries: &[texture_entry(0), sampler_entry, texture_entry(2)],
+            entries: &[texture_entry(0), sampler_entry, texture_entry(2), texture_entry(3)],
         });
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("atlas layout"),
@@ -650,7 +707,8 @@ impl Renderer {
             None,
         );
 
-        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
+        let grade_map = GradeMap::new(device);
+        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler, &grade_map.view);
         let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
@@ -689,6 +747,7 @@ impl Renderer {
             paint,
             overlay_paint,
             targets,
+            grade_map,
             surface: flow::surface::Surface::new(device),
             flow: None,
         }
@@ -735,8 +794,15 @@ impl Renderer {
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size() != (width.max(1), height.max(1)) {
-            self.targets =
-                Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
+            self.targets = Targets::new(
+                device,
+                width,
+                height,
+                &self.post_layout,
+                &self.composite_layout,
+                &self.sampler,
+                &self.grade_map.view,
+            );
         }
     }
 
@@ -814,6 +880,7 @@ impl Renderer {
             self.sync_atlas(device, queue);
         }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
+        self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
             self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
         }
@@ -1200,6 +1267,7 @@ impl Targets {
         post_layout: &wgpu::BindGroupLayout,
         composite_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
+        grade_map: &wgpu::TextureView,
     ) -> Self {
         let (width, height) = (width.max(1), height.max(1));
         let texture = |label, w: u32, h: u32, format, usage| {
@@ -1268,6 +1336,7 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&hdr) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(grade_map) },
             ],
         });
         Self {

@@ -2324,8 +2324,13 @@ mod tests {
         let h = harness(Some(ThingId::ROOT));
         let decay = h.get_by_role_and_label(Role::Slider, "Decay");
         assert_eq!(decay.accesskit_node().numeric_value(), Some(0.9f32 as f64));
-        let brightness = h.get_by_role_and_label(Role::Slider, "Brightness");
-        assert_eq!(brightness.accesskit_node().numeric_value(), Some(0.5));
+        // The scene's grade has a Brightness slider too, at 0.
+        let brightness: Vec<_> = h
+            .get_all_by_label("Brightness")
+            .filter(|n| n.accesskit_node().role() == Role::Slider)
+            .filter_map(|n| n.accesskit_node().numeric_value())
+            .collect();
+        assert_eq!(brightness, [0.0, 0.5]);
         assert!(h.query_by_label("Voice limit").is_none(), "a built-in plays without voices");
     }
 
