@@ -114,6 +114,17 @@ mod tests {
     }
 
     #[test]
+    fn owner_survives_save_and_load() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_starter(&r, balls, "look.plain").unwrap();
+        let loaded = load(&save(&s), &r).unwrap();
+        assert_eq!(loaded.library.modules[&m].owner, Some(balls));
+        assert_eq!(loaded, s);
+    }
+
+    #[test]
     fn old_editor_files_are_refused_with_a_clear_message() {
         let old =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenes/reference-reel.ron")).unwrap();

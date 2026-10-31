@@ -34,7 +34,7 @@ pub use animation::{
 pub use blend::Blend;
 pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
-pub use edit::EditError;
+pub use edit::{EditError, starter_name};
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use instrument::{Instrument, InstrumentId, InstrumentRef, InstrumentSource, NoteLength, VoiceSettings};
 pub use library::{Bus, BusId, ChannelStrip, Library, Module, ModuleGraph};
