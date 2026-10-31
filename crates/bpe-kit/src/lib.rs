@@ -12,16 +12,14 @@ pub mod random;
 pub mod rng;
 pub mod scenes;
 pub mod score;
+pub mod starters;
 #[cfg(test)]
 pub mod testing;
 pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{
-    Color, EditError, InstrumentRef, ModuleId, Progression, ProgressionRef, Registry, Resolved, Scene, SettingValue,
-    Settings, SlotId, ThingId, Value,
-};
+use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, SlotLink, ThingId, Value};
 use bpe_gfx::{Draws, FlowSource};
 use bpe_mix::{MixSettings, Mixes, Soundtrack};
 use bpe_runtime::{Log, Sims};
@@ -59,6 +57,7 @@ pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
     uses_live_inputs, wants_beats, warp_for,
 };
+pub use starters::{add_thing, fill_slot, keep_followers, move_thing};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -146,50 +145,6 @@ pub struct Kit {
 
 pub fn kit() -> Kit {
     Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
-}
-
-/// A module a new thing starts with: the module kind, its name in the library, and the
-/// settings that differ from the kind's defaults.
-type Starter = (&'static str, &'static str, &'static [(&'static str, Value)]);
-
-/// The shared modules a new thing of `kind` starts with.
-fn starter_modules(kind: &str) -> &'static [Starter] {
-    const SOFT: &[(&str, Value)] = &[("bounciness", Value::Number(0.0))];
-    match kind {
-        "liquid" => &[
-            ("look.liquid", "Liquid surface", &[]),
-            ("motion.liquid", "Flowing", &[]),
-            ("bounce.basic", "Soft landing", SOFT),
-        ],
-        "swarm" => &[("look.swarm", "Glowing dots", &[]), ("motion.flock", "Flocking", &[])],
-        _ => &[],
-    }
-}
-
-/// Adds a thing of `kind` under `parent` and links the kit's shared starter modules for that
-/// kind (a liquid gets its surface look, flowing motion and a soft landing; a swarm its glowing
-/// dots and flocking), reusing a library module of the same kind and name when the scene
-/// already has one. Other kinds are added plain.
-pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId) -> Result<ThingId, EditError> {
-    let id = scene.add_thing(reg, kind, parent)?;
-    for &(module_kind, name, settings) in starter_modules(kind) {
-        let existing: Option<ModuleId> =
-            scene.library.modules.values().find(|m| m.kind == module_kind && m.name == name).map(|m| m.id);
-        let module = match existing {
-            Some(m) => m,
-            None => {
-                let m = scene.add_module(reg, module_kind, name)?;
-                let params = &mut scene.library.modules.get_mut(&m).expect("just added").params;
-                for (key, value) in settings {
-                    params.set(key, value.clone());
-                }
-                m
-            }
-        };
-        let slot = reg.module(module_kind).expect("kit kinds are registered").slot();
-        scene.link(reg, id, slot, module)?;
-    }
-    Ok(id)
 }
 
 /// What the renderer's graphics-card layers step along with: the scene, keyed by its physics
@@ -377,47 +332,17 @@ pub fn registry() -> Registry {
 pub fn new_scene(reg: &Registry) -> Scene {
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
-    let root = ThingId::ROOT;
-    let chords = scene.add_progression(Progression::starter());
-    let look = scene.add_module(reg, "look.classic", "Plain look").expect("kit kinds are registered");
-    let motion = scene.add_module(reg, "motion.basic", "Default motion").expect("kit kinds are registered");
-    let bounce = scene.add_module(reg, "bounce.basic", "Default bounce").expect("kit kinds are registered");
-    let sound = scene.add_module(reg, "sound.notes", "Default sound").expect("kit kinds are registered");
-    let pluck = scene.add_instrument(built_in_instrument(bpe_mix::Instrument::Pluck));
     add_starter_buses(&mut scene.library);
-    scene
-        .library
-        .modules
-        .get_mut(&sound)
-        .expect("just added")
-        .params
-        .set("instrument", InstrumentRef(Some(pluck)).to_value());
-    scene
-        .library
-        .modules
-        .get_mut(&sound)
-        .expect("just added")
-        .params
-        .set("chords", ProgressionRef(Some(chords)).to_value());
-    let arena = scene.add_thing(reg, "arena", root).expect("kit kinds are registered");
-    let ball = scene.add_thing(reg, "balls", root).expect("kit kinds are registered");
-    for (id, slot, m) in [
-        (arena, SlotId::Look, look),
-        (arena, SlotId::Bounce, bounce),
-        (arena, SlotId::Sound, sound),
-        (ball, SlotId::Motion, motion),
-        (ball, SlotId::Bounce, bounce),
-        (ball, SlotId::Sound, sound),
-    ] {
-        scene.link(reg, id, slot, m).expect("the kind has the slot");
-    }
-    let ball_look = scene.add_module(reg, "look.classic", "Ball look").expect("kit kinds are registered");
-    scene.library.modules.get_mut(&ball_look).expect("just added").params =
+    let root = ThingId::ROOT;
+    add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
+    let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
+    scene.rename_thing(ball, "Ball");
+    let SlotLink::Linked { module: look, .. } = scene.things[&ball].slots[&SlotId::Look] else {
+        unreachable!("a new ball owns its look")
+    };
+    scene.library.modules.get_mut(&look).expect("just added").params =
         ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() }.to_params();
-    scene.link(reg, ball, SlotId::Look, ball_look).expect("balls have a look slot");
-    let thing = scene.things.get_mut(&ball).expect("just added");
-    thing.name = "Ball".into();
-    thing.transform.position = Vec2::new(0.0, -200.0);
+    scene.things.get_mut(&ball).expect("just added").transform.position = Vec2::new(0.0, -200.0);
     scene
 }
 
@@ -447,7 +372,7 @@ pub fn new_studio_scene(reg: &Registry) -> Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Color, SlotId, ThingId, Value, resolve};
+    use bpe_core::{SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
 
     #[test]
@@ -558,27 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_scene_is_an_arena_and_one_ball_with_shared_modules() {
-        let reg = registry();
-        let s = new_scene(&reg);
-        assert_eq!(s.name, "New scene");
-        let kinds: Vec<&str> = s.order.iter().map(|id| s.things[id].kind.as_str()).collect();
-        assert_eq!(kinds, ["scene", "arena", "balls"]);
-        assert_eq!(s.things[&ThingId(2)].name, "Ball");
-        assert_eq!(s.things[&ThingId(2)].transform.position, glam::Vec2::new(0.0, -200.0));
-        assert_eq!(s.library.modules.len(), 5);
-        let res = bpe_core::resolve(&s, &reg);
-        assert!(res.problems.is_empty(), "{:?}", res.problems);
-        let ball = &res.things[&ThingId(2)];
-        let pink = bpe_core::Gradient::solid(Color::rgb(0xff, 0x5c, 0xa8));
-        assert_eq!(ball.slots[&SlotId::Look].params.get("colours"), Some(&Value::Gradient(pink)));
-        assert_eq!(ball.slots[&SlotId::Bounce].from, ThingId::ROOT);
-        assert_eq!(ball.slots[&SlotId::Motion].from, ThingId::ROOT);
-        assert_eq!(ball.slots[&SlotId::Sound].from, ThingId::ROOT);
-        assert_eq!(res.things[&ThingId(1)].slots[&SlotId::Look].from, ThingId::ROOT);
-    }
-
-    #[test]
     fn a_ball_bigger_than_its_arena_is_pinned_and_logs_no_hits() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
@@ -591,33 +495,6 @@ mod tests {
         assert!(log.is_empty(), "a pinned ball buzzed {} hits", log.len());
         let p = world.bodies[&ThingId(2)].position[0];
         assert!(p.is_finite() && p.length() < 1e-3, "{p:?}");
-    }
-
-    #[test]
-    fn adding_a_liquid_links_its_three_shared_modules() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let a = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
-        let module = |scene: &Scene, id: ThingId, slot: SlotId| {
-            let bpe_core::SlotLink::Linked { module: m, .. } = scene.things[&id].slots[&slot] else { panic!("linked") };
-            let module = &scene.library.modules[&m];
-            (m, module.kind.clone(), module.name.clone())
-        };
-        let (look, look_kind, look_name) = module(&scene, a, SlotId::Look);
-        let (motion, motion_kind, motion_name) = module(&scene, a, SlotId::Motion);
-        let (bounce, bounce_kind, bounce_name) = module(&scene, a, SlotId::Bounce);
-        assert_eq!((look_kind.as_str(), look_name.as_str()), ("look.liquid", "Liquid surface"));
-        assert_eq!((motion_kind.as_str(), motion_name.as_str()), ("motion.liquid", "Flowing"));
-        assert_eq!((bounce_kind.as_str(), bounce_name.as_str()), ("bounce.basic", "Soft landing"));
-        assert_eq!(scene.library.modules[&bounce].params.get("bounciness"), Some(&Value::Number(0.0)));
-        let modules = scene.library.modules.len();
-        let b = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
-        assert_eq!(scene.library.modules.len(), modules, "the second liquid shares the first one's modules");
-        assert_eq!(module(&scene, b, SlotId::Look).0, look);
-        assert_eq!(module(&scene, b, SlotId::Motion).0, motion);
-        assert_eq!(module(&scene, b, SlotId::Bounce).0, bounce);
-        let resolved = resolve(&scene, &reg);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     }
 
     #[test]
@@ -665,7 +542,7 @@ mod tests {
         assert_eq!(a, newest);
         assert_eq!(scene.things.values().filter(|t| t.kind == "camera").count(), 1);
         assert!(before.iter().all(|id| scene.things.contains_key(id)));
-        assert_eq!(scene.add_thing(&reg, "camera", ThingId::ROOT), Err(EditError::OnlyOne("camera".into())));
+        assert_eq!(scene.add_thing(&reg, "camera", ThingId::ROOT), Err(bpe_core::EditError::OnlyOne("camera".into())));
     }
 
     #[test]
