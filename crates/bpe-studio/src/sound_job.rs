@@ -6,12 +6,35 @@ use bpe_kit::{Kit, SceneSettings, TimeWarp};
 use bpe_mix::ChannelCache;
 use bpe_runtime::{EventKind, Log, Sims, World, fingerprint};
 use eframe::egui;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long after the last sound-changing edit the mix starts.
 pub const SOUND_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// How much of the run a mix simulates between looks at whether a newer edit replaced it.
+const STALE_CHECK_SECONDS: f64 = 0.5;
+
+/// What the mixes keep from one to the next: each channel's last render, and the last physics
+/// run, so a sound edit neither re-renders the channels it didn't touch nor simulates the
+/// scene again.
+#[derive(Default)]
+pub(crate) struct MixMemory {
+    channels: ChannelCache,
+    physics: Option<PhysicsRun>,
+    /// How many times a mix has simulated the scene, for the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    simulated: usize,
+}
+
+/// One finished physics run and what it was made from.
+struct PhysicsRun {
+    key: u64,
+    log: Arc<Log>,
+    steps_per_second: u32,
+}
 
 /// A finished mix.
 pub struct Mixed {
@@ -45,9 +68,14 @@ pub struct SoundJob {
     pub beats: Vec<f32>,
     /// The last finished mix's master readings, for the meters.
     pub report: Option<bpe_mix::MasterReport>,
-    /// Each channel's last render, shared by the mixes one after another, so an edit to one
-    /// sound re-renders only its channel.
-    channels: Arc<Mutex<ChannelCache>>,
+    /// Each channel's last render and the last physics run, shared by the mixes one after
+    /// another, so an edit to one sound re-renders only its channel.
+    memory: Arc<Mutex<MixMemory>>,
+    /// The generation of the newest mix wanted: a running mix older than this gives up.
+    wanted: Arc<AtomicU64>,
+    /// Bumped by [`SoundJob::remix`], so the next mix simulates again (a song that finished
+    /// loading can change the run).
+    epoch: u64,
 }
 
 impl Default for SoundJob {
@@ -63,7 +91,9 @@ impl Default for SoundJob {
             hits: Vec::new(),
             beats: Vec::new(),
             report: None,
-            channels: Default::default(),
+            memory: Default::default(),
+            wanted: Default::default(),
+            epoch: 0,
         }
     }
 }
@@ -74,14 +104,21 @@ impl SoundJob {
         let fingerprint = sound_fingerprint(scene, resolved, sims);
         if self.fingerprint != Some(fingerprint) {
             self.fingerprint = Some(fingerprint);
-            self.dirty_since = Some(Instant::now());
+            self.edited();
         }
+    }
+
+    /// A newer mix is due: the one running, if any, is out of date and stops early.
+    fn edited(&mut self) {
+        self.dirty_since = Some(Instant::now());
+        self.wanted.store(self.generation + 1, Ordering::Relaxed);
     }
 
     /// Schedules a mix although the scene reads the same: something it depends on, like a song
     /// that finished loading, has changed.
     pub fn remix(&mut self) {
-        self.dirty_since = Some(Instant::now());
+        self.epoch += 1;
+        self.edited();
     }
 
     /// The soundtrack doesn't match the scene yet.
@@ -107,20 +144,29 @@ impl SoundJob {
             self.dirty_since = None;
             self.running = true;
             self.generation += 1;
-            let (generation, scene, resolved, kit, sender, ctx, channels) = (
+            self.wanted.store(self.generation, Ordering::Relaxed);
+            let (generation, scene, resolved, kit, sender, ctx, memory, wanted, epoch) = (
                 self.generation,
                 scene.clone(),
                 resolved.clone(),
                 kit.clone(),
                 self.sender.clone(),
                 ctx.clone(),
-                self.channels.clone(),
+                self.memory.clone(),
+                self.wanted.clone(),
+                self.epoch,
             );
             std::thread::spawn(move || {
                 // One mix runs at a time, so the lock is never waited on.
-                let mut cache = channels.lock().unwrap_or_else(|e| e.into_inner());
-                let mut mixed = mix(&scene, &resolved, &kit, &mut cache);
-                mixed.generation = generation;
+                let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
+                let stale = || wanted.load(Ordering::Relaxed) != generation;
+                let mixed = mix(&scene, &resolved, &kit, &mut memory, epoch, &stale);
+                // A mix that gave up still says it finished, so the next one can start, with a
+                // generation no mix has, so it is never played.
+                let mixed = match mixed {
+                    Some(mixed) => Mixed { generation, ..mixed },
+                    None => Mixed::abandoned(),
+                };
                 let _ = sender.send(mixed);
                 ctx.request_repaint();
             });
@@ -131,16 +177,66 @@ impl SoundJob {
     }
 }
 
+impl Mixed {
+    /// What a mix that gave up for a newer one sends: generation 0, which no mix has, so it is
+    /// never played.
+    fn abandoned() -> Self {
+        Self {
+            generation: 0,
+            track: Default::default(),
+            hits: Vec::new(),
+            beats: Vec::new(),
+            warp: TimeWarp::identity(),
+            problems: Vec::new(),
+            report: None,
+        }
+    }
+}
+
 /// Runs the whole scene and mixes it: the track, when every hit and beat happens in the video,
-/// and the time warp the video plays through.
-fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) -> Mixed {
+/// and the time warp the video plays through. The physics run is kept in `memory` and used
+/// again while the physics is the same, as it is after any sound edit. Gives up, with
+/// `None`, as soon as `stale` says a newer edit has replaced this mix.
+fn mix(
+    scene: &Scene,
+    resolved: &Resolved,
+    kit: &Kit,
+    memory: &mut MixMemory,
+    epoch: u64,
+    stale: &dyn Fn() -> bool,
+) -> Option<Mixed> {
     let settings =
         resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
-    let mut world = World::build(scene, resolved, &kit.sims);
-    world.record_tracks = bpe_kit::uses_live_inputs(scene);
-    let mut log = Log::default();
-    world.advance_to(settings.duration.max(0.0) as f64, &kit.sims, &mut log);
-    let rate = world.steps_per_second;
+    let duration = settings.duration.max(0.0) as f64;
+    let record_tracks = bpe_kit::uses_live_inputs(scene);
+    let key = {
+        let mut h = fingerprint(scene, resolved, &kit.sims) ^ 0x2545_f491_4f6c_dd1d;
+        for part in [duration.to_bits(), record_tracks as u64, epoch] {
+            h = (h ^ part).wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    };
+    if memory.physics.as_ref().is_none_or(|run| run.key != key) {
+        memory.physics = None;
+        let mut world = World::build(scene, resolved, &kit.sims);
+        world.record_tracks = record_tracks;
+        let mut log = Log::default();
+        let mut at = 0.0;
+        while at < duration {
+            if stale() {
+                return None;
+            }
+            at = (at + STALE_CHECK_SECONDS).min(duration);
+            world.advance_to(at, &kit.sims, &mut log);
+        }
+        memory.simulated += 1;
+        memory.physics = Some(PhysicsRun { key, log: Arc::new(log), steps_per_second: world.steps_per_second });
+    }
+    let run = memory.physics.as_ref().expect("simulated above");
+    let (log, rate) = (run.log.clone(), run.steps_per_second);
+    if stale() {
+        return None;
+    }
     let warp = bpe_kit::warp_for(scene, resolved, &log);
     let hits = log
         .events()
@@ -149,8 +245,8 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) 
         .map(|e| warp.video_time(e.time(rate)) as f32)
         .collect();
     let beats = bpe_kit::beats_for(&settings).into_iter().map(|b| b as f32).collect();
-    let mixed = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, cache);
-    Mixed {
+    let mixed = bpe_kit::mix_scene_cached(scene, resolved, &log, kit, &mut memory.channels);
+    Some(Mixed {
         generation: 0,
         track: Arc::new(mixed.samples),
         hits,
@@ -158,7 +254,7 @@ fn mix(scene: &Scene, resolved: &Resolved, kit: &Kit, cache: &mut ChannelCache) 
         warp,
         problems: mixed.problems,
         report: mixed.report,
-    }
+    })
 }
 
 /// Everything the soundtrack depends on: the physics, every Sound module in use, the root's
@@ -362,7 +458,7 @@ mod tests {
             .params
             .set("instrument", bpe_core::InstrumentRef(Some(id)).to_value());
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
+        let mixed = mix(&scene, &resolved, &kit, &mut MixMemory::default(), 0, &|| false).unwrap();
         assert!(
             mixed.problems.iter().any(|p| p.starts_with("Broken: the patch doesn't compile")),
             "{:?}",
@@ -375,7 +471,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
+        let mixed = mix(&scene, &resolved, &kit, &mut MixMemory::default(), 0, &|| false).unwrap();
         let duration = SceneSettings::default().duration;
         assert_eq!(mixed.track.len(), (duration * bpe_mix::SAMPLE_RATE as f32) as usize * 2);
         assert!(!mixed.hits.is_empty());
@@ -388,7 +484,7 @@ mod tests {
         scene.set_at(&kit.registry, &bpm, Value::Number(120.0)).unwrap();
         scene.set_at(&kit.registry, &sync, Value::Choice("warp".into())).unwrap();
         let resolved = resolve(&scene, &kit.registry);
-        let mixed = mix(&scene, &resolved, &kit, &mut ChannelCache::default());
+        let mixed = mix(&scene, &resolved, &kit, &mut MixMemory::default(), 0, &|| false).unwrap();
         assert_eq!(mixed.beats.len(), 42);
         assert!(!mixed.warp.is_identity());
     }
@@ -412,5 +508,62 @@ mod tests {
         let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
         scene.set_key(reg, &volume, 3.0, Value::Number(-10.0)).unwrap();
         assert_ne!(sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims), with_tempo);
+    }
+
+    #[test]
+    fn a_sound_edit_mixes_without_simulating_again_and_sounds_the_same_as_from_scratch() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let mut memory = MixMemory::default();
+        let run = |scene: &Scene, memory: &mut MixMemory| {
+            mix(scene, &resolve(scene, &kit.registry), &kit, memory, 0, &|| false).unwrap()
+        };
+        run(&scene, &mut memory);
+        assert_eq!(memory.simulated, 1);
+        let sound = module_named(&scene, "Default sound");
+        let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
+        scene.set_at(&kit.registry, &volume, Value::Number(-9.0)).unwrap();
+        let kept = run(&scene, &mut memory);
+        assert_eq!(memory.simulated, 1, "a sound edit keeps the run");
+        let fresh = run(&scene, &mut MixMemory::default());
+        assert_eq!(kept.track, fresh.track);
+        assert_eq!(kept.hits, fresh.hits);
+        // A physics edit simulates again.
+        let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        scene.set_at(&kit.registry, &gravity, Value::Vec2([0.0, 10.0])).unwrap();
+        run(&scene, &mut memory);
+        assert_eq!(memory.simulated, 2, "a physics edit doesn't");
+        // So does a remix, which bumps the epoch (a song may have finished loading).
+        mix(&scene, &resolve(&scene, &kit.registry), &kit, &mut memory, 1, &|| false).unwrap();
+        assert_eq!(memory.simulated, 3, "nor does a remix");
+    }
+
+    #[test]
+    fn a_mix_a_newer_edit_replaced_gives_up() {
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let mut memory = MixMemory::default();
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(mix(&scene, &resolved, &kit, &mut memory, 0, &|| true).is_none());
+        assert_eq!(memory.simulated, 0, "it stops while simulating");
+        assert!(memory.physics.is_none(), "and keeps no half run");
+    }
+
+    #[test]
+    fn an_edit_during_a_mix_marks_the_running_mix_out_of_date() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let mut job = SoundJob::default();
+        let resolved = resolve(&scene, &kit.registry);
+        job.mark(&scene, &resolved, &kit.sims);
+        // As poll does when it starts the mix.
+        job.generation += 1;
+        job.wanted.store(job.generation, Ordering::Relaxed);
+        let running = job.generation;
+        let sound = module_named(&scene, "Default sound");
+        let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
+        scene.set_at(&kit.registry, &volume, Value::Number(-9.0)).unwrap();
+        job.mark(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        assert_ne!(job.wanted.load(Ordering::Relaxed), running);
     }
 }
