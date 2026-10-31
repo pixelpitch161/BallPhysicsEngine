@@ -29,6 +29,8 @@ const REMOVE_DROP: f32 = 30.0;
 const MENU_WIDTH: f32 = 72.0;
 /// A palette's swatch in the Palette menu.
 const SWATCH: Vec2 = Vec2::new(48.0, 14.0);
+/// The tallest the Palette menu's lists grow before they scroll.
+const LISTS_HEIGHT: f32 = 320.0;
 
 /// A gradient bar named "Colours". The inspector names each bar after its setting.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -211,36 +213,38 @@ fn palette_menu(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str, small: 
     let popup_id = id.with("palette menu");
     let naming_key = popup_id.with("naming");
     let error_key = popup_id.with("error");
+    let focus_key = popup_id.with("focus name");
     let store = palettes::store(ui.ctx());
     let mut action = None;
     Popup::menu(&button).id(popup_id).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        for p in built_in() {
-            if palette_item(ui, &p).clicked() {
-                action = Some(PaletteAction::Apply(p.colours));
-            }
-        }
-        if let Some(store) = &store {
-            let saved = store.lock().unwrap_or_else(|e| e.into_inner()).saved.clone();
-            if !saved.is_empty() {
-                ui.separator();
-                ui.weak("Saved");
-                for p in saved {
-                    ui.horizontal(|ui| {
-                        if palette_item(ui, &p).clicked() {
-                            action = Some(PaletteAction::Apply(p.colours.clone()));
-                        }
-                        let more = ui.menu_button("More", |ui| {
-                            if ui.button("Remove").on_hover_text("Take this palette off the list").clicked() {
-                                action = Some(PaletteAction::Remove(p.name.clone()));
-                                ui.close();
-                            }
-                        });
-                        let label = format!("{} options", p.name);
-                        more.response
-                            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone()));
-                    });
+        let saved = store.as_ref().map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).saved.clone());
+        // The lists scroll, so however many palettes are saved the actions below stay in reach.
+        egui::ScrollArea::vertical().id_salt(popup_id.with("lists")).max_height(LISTS_HEIGHT).show(ui, |ui| {
+            for p in built_in() {
+                if palette_item(ui, &p).clicked() {
+                    action = Some(PaletteAction::Apply(p.colours));
                 }
             }
+            let Some(saved) = saved.filter(|s| !s.is_empty()) else { return };
+            ui.separator();
+            ui.weak("Saved");
+            for p in saved {
+                ui.horizontal(|ui| {
+                    if palette_item(ui, &p).clicked() {
+                        action = Some(PaletteAction::Apply(p.colours.clone()));
+                    }
+                    let more = ui.menu_button("More", |ui| {
+                        if ui.button("Remove").on_hover_text("Take this palette off the list").clicked() {
+                            action = Some(PaletteAction::Remove(p.name.clone()));
+                            ui.close();
+                        }
+                    });
+                    let label = format!("{} options", p.name);
+                    more.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone()));
+                });
+            }
+        });
+        if store.is_some() {
             ui.separator();
             let mut naming: Option<String> = ui.data(|d| d.get_temp(naming_key));
             let mut cancel = false;
@@ -248,13 +252,21 @@ fn palette_menu(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str, small: 
                 None => {
                     if ui.button("Save as palette...").on_hover_text("Keep these colours to use again").clicked() {
                         naming = Some(String::new());
+                        ui.data_mut(|d| d.insert_temp(focus_key, true));
                     }
                 }
                 Some(text) => {
                     ui.horizontal(|ui| {
                         let label = ui.label("Palette name");
                         let field = egui::TextEdit::singleline(text).hint_text("My palette").desired_width(120.0);
-                        ui.add(field).labelled_by(label.id);
+                        let field = ui.add(field).labelled_by(label.id);
+                        if ui.data_mut(|d| d.remove_temp::<bool>(focus_key)).is_some() {
+                            field.request_focus();
+                        }
+                        // Enter saves, as the Save button does.
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            action = Some(PaletteAction::Save(text.clone()));
+                        }
                     });
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
@@ -592,6 +604,8 @@ mod tests {
             open_menu(&mut h);
         }
         assert!(h.query_by_label("Saved").is_some());
+        h.get_by_label("Mine").scroll_to_me();
+        h.run();
         h.get_by_label("Mine").click();
         h.run();
         assert_eq!(*h.state(), start);
@@ -603,6 +617,8 @@ mod tests {
         store.save_as("Old", &red_blue_steps()).unwrap();
         let mut h = harness(Gradient::solid(BLUE), Some(store));
         open_menu(&mut h);
+        h.get_by_label("Old options").scroll_to_me();
+        h.run();
         h.get_by_label("Old options").click();
         h.run();
         h.get_by_label("Remove").click();
@@ -627,6 +643,50 @@ mod tests {
         h.get_by_label("Save").click();
         h.run();
         assert!(h.query_by_label_contains("Could not save").is_some(), "the menu says the save failed");
+        let store = palettes::store(&h.ctx).unwrap();
+        assert!(store.lock().unwrap().saved.is_empty(), "a failed save is not kept");
+        assert!(h.query_by_label("Saved").is_none(), "nor listed");
+    }
+
+    #[test]
+    fn the_name_field_takes_focus_and_enter_saves() {
+        let (store, path) = temp_store("enter");
+        let start = red_blue_steps();
+        let mut h = harness(start.clone(), Some(store));
+        open_menu(&mut h);
+        h.get_by_label("Save as palette...").click();
+        h.run();
+        assert!(h.get_by_label("Palette name").is_focused(), "ready to type");
+        h.get_by_label("Palette name").type_text("Quick");
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let store = palettes::store(&h.ctx).unwrap();
+        let saved = store.lock().unwrap().saved.clone();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(saved[0].name, "Quick");
+        assert_eq!(saved[0].colours, start);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn many_saved_palettes_keep_the_menu_actions_on_screen() {
+        let (mut store, _) = temp_store("many");
+        for i in 0..40 {
+            store.save_as(&format!("Mine {i}"), &red_blue_steps()).unwrap();
+        }
+        let start = red_blue_steps();
+        let mut h = harness(start.clone(), Some(store));
+        open_menu(&mut h);
+        for label in ["Save as palette...", "Random palette", "Add matching colours"] {
+            let rect = h.get_by_label(label).rect();
+            assert!(rect.top() >= 0.0 && rect.bottom() <= 900.0, "{label} is on screen: {rect:?}");
+        }
+        h.get_by_label("Add matching colours").click();
+        h.run();
+        h.get_by_label("Complementary").click();
+        h.run();
+        assert_eq!(*h.state(), add_matching(&start, Harmony::Complementary));
     }
 
     #[test]

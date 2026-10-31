@@ -40,8 +40,9 @@ impl PaletteStore {
     }
 
     /// Saves `colours` under `name` (trimmed; empty becomes "My palette"), replacing a palette
-    /// of the same name in place.
+    /// of the same name in place. When the file cannot be written the list is left as it was.
     pub fn save_as(&mut self, name: &str, colours: &Gradient) -> std::io::Result<()> {
+        let before = self.saved.clone();
         let name = name.trim();
         let name = if name.is_empty() { "My palette" } else { name };
         let palette = Palette { name: name.to_string(), colours: colours.clone() };
@@ -49,12 +50,23 @@ impl PaletteStore {
             Some(slot) => *slot = palette,
             None => self.saved.push(palette),
         }
-        self.write()
+        self.write_or_restore(before)
     }
 
+    /// Takes `name` off the list. When the file cannot be written the list is left as it was.
     pub fn remove(&mut self, name: &str) -> std::io::Result<()> {
+        let before = self.saved.clone();
         self.saved.retain(|p| p.name != name);
-        self.write()
+        self.write_or_restore(before)
+    }
+
+    /// Writes the list, or puts `before` back if that fails, so the list matches the file.
+    fn write_or_restore(&mut self, before: Vec<Palette>) -> std::io::Result<()> {
+        let done = self.write();
+        if done.is_err() {
+            self.saved = before;
+        }
+        done
     }
 
     fn write(&mut self) -> std::io::Result<()> {
@@ -165,6 +177,22 @@ mod tests {
         let mut s = PaletteStore::load_from(temp("empty"));
         s.save_as("   ", &grad(&["#ff0000", "#0000ff"])).unwrap();
         assert_eq!(s.saved[0].name, "My palette");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_list_as_it_was() {
+        let path = temp("rollback");
+        let mut s = PaletteStore::load_from(path.clone());
+        s.save_as("Kept", &grad(&["#ff0000", "#0000ff"])).unwrap();
+        // The file's place becomes a folder, so writing fails.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(s.save_as("New", &grad(&["#00ff00", "#0000ff"])).is_err());
+        assert!(s.save_as("Kept", &grad(&["#111111", "#222222"])).is_err());
+        assert!(s.remove("Kept").is_err());
+        assert_eq!(s.saved.len(), 1);
+        assert_eq!(s.saved[0].name, "Kept");
+        assert_eq!(s.saved[0].colours, grad(&["#ff0000", "#0000ff"]));
     }
 
     #[test]
