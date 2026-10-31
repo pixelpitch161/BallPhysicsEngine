@@ -16,6 +16,7 @@ bpe-vm.workspace = true
 bpe-music = { workspace = true, features = ["decode"] }
 glam.workspace = true
 serde.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
 png = "0.18"

@@ -47,13 +47,13 @@ pub(crate) fn run_fx(graph: &bpe_graph::Graph, samples: &mut [f32], cx: Ctx, sce
     bad
 }
 
-fn add(into: &mut [f32], from: &[f32], gain: f32) {
+pub(crate) fn add(into: &mut [f32], from: &[f32], gain: f32) {
     for (o, v) in into.iter_mut().zip(from) {
         *o += v * gain;
     }
 }
 
-fn db_to_gain(db: f32) -> f32 {
+pub(crate) fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
@@ -135,6 +135,10 @@ pub(crate) struct Premaster {
     pub fresh: usize,
     /// The channel levels anything reads, by name, for the master effects.
     pub levels: BTreeMap<String, Arc<Vec<f32>>>,
+    /// Each channel after its inserts, by module id, for stems.
+    pub channels: BTreeMap<u32, Arc<Vec<f32>>>,
+    /// Each bus that something sends to, after its effects and before its volume.
+    pub buses: Vec<(bpe_core::BusId, Arc<Vec<f32>>)>,
 }
 
 /// Plays `notes` through their channels, sends and buses: the mix before the master effects
@@ -216,8 +220,8 @@ pub(crate) fn premaster_from_notes(
     }
     cache.buses.retain(|id, _| live.contains(id));
     ready.sort_by_key(|(i, _)| *i);
-    for (i, samples) in ready {
-        add(&mut mix, &samples, db_to_gain(settings.buses[i].volume));
+    for (i, samples) in &ready {
+        add(&mut mix, samples, db_to_gain(settings.buses[*i].volume));
     }
 
     Premaster {
@@ -225,6 +229,8 @@ pub(crate) fn premaster_from_notes(
         problems: problems.into_iter().collect(),
         fresh: rendered.fresh,
         levels: rendered.scene.levels,
+        channels: rendered.channels.into_iter().map(|(ch, (samples, _))| (ch, samples)).collect(),
+        buses: ready.into_iter().map(|(i, samples)| (settings.buses[i].id, samples)).collect(),
     }
 }
 

@@ -83,6 +83,9 @@ pub struct BatchSpec {
     pub amount: f32,
     pub quality: Quality,
     pub rejected: Rejected,
+    /// MIDI and stems saved beside each video.
+    #[serde(default)]
+    pub extras: bpe_kit::Extras,
 }
 
 impl Default for BatchSpec {
@@ -95,6 +98,7 @@ impl Default for BatchSpec {
             amount: bpe_kit::random::START_AMOUNT,
             quality: Quality::Good,
             rejected: Rejected::Move,
+            extras: bpe_kit::Extras::default(),
         }
     }
 }
@@ -437,6 +441,7 @@ fn render(
     let mut options = ExportOptions::new(folder.join("unused.mp4"));
     options.ffmpeg = ffmpeg.to_path_buf();
     manifest.spec.quality.apply(&mut options);
+    options.extras = manifest.spec.extras;
     for (position, &index) in queue_of_jobs.iter().enumerate() {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -447,6 +452,7 @@ fn render(
         let partial = folder.join(format!("{name}.partial.mp4"));
         let _ = std::fs::remove_file(&partial);
         options.output = partial.clone();
+        options.extras_base = Some(folder.join(name.trim_end_matches(".mp4")));
         let done = done_before + position as u32;
         let mut stopped = false;
         let result = export_video(device, queue, &scene, kit, &options, |frame, frames| {
@@ -476,6 +482,7 @@ fn render(
                 job.status = Status::Rendered;
             }
             Err(error) => {
+                remove_leftovers(&partial, &options.extras_path());
                 job.status = Status::Failed;
                 job.error = Some(format!("{error:#}"));
             }
@@ -490,23 +497,38 @@ fn render(
     Ok(())
 }
 
+/// What a failed video leaves behind: its part-made file, MIDI file and stems folder.
+fn remove_leftovers(partial: &Path, extras_base: &Path) {
+    let _ = std::fs::remove_file(partial);
+    let _ = std::fs::remove_file(bpe_kit::midi_path(extras_base));
+    let _ = std::fs::remove_dir_all(bpe_kit::stems_folder(extras_base));
+}
+
 /// Keeps the best rendered videos and moves or deletes the rest.
 fn pick(folder: &Path, manifest: &mut Manifest) -> anyhow::Result<()> {
     pick_kept(&mut manifest.jobs, manifest.spec.keep);
     let rejected_dir = folder.join("rejected");
     for job in manifest.jobs.iter_mut().filter(|j| j.status == Status::Rejected) {
         let Some(file) = job.file.clone() else { continue };
-        let scene_file = file.with_extension("ron");
-        for name in [file, scene_file] {
+        let stem = file.with_extension("");
+        let base = stem.to_string_lossy().into_owned();
+        let names =
+            [file.clone(), file.with_extension("ron"), format!("{base}.mid").into(), format!("{base}-stems").into()];
+        for name in names {
             let from = folder.join(&name);
             if !from.exists() {
                 continue;
             }
             match manifest.spec.rejected {
+                Rejected::Delete if from.is_dir() => std::fs::remove_dir_all(&from)?,
                 Rejected::Delete => std::fs::remove_file(&from)?,
                 Rejected::Move => {
                     std::fs::create_dir_all(&rejected_dir)?;
-                    std::fs::rename(&from, rejected_dir.join(&name))?;
+                    let to = rejected_dir.join(&name);
+                    if to.is_dir() {
+                        std::fs::remove_dir_all(&to)?;
+                    }
+                    std::fs::rename(&from, to)?;
                 }
             }
         }
@@ -618,5 +640,56 @@ mod tests {
         assert_eq!((options.scale, options.preset.as_str(), options.crf), (1.0, "slow", 18));
         assert_eq!(Quality::parse("best"), Some(Quality::Best));
         assert_eq!(Quality::parse("nope"), None);
+    }
+
+    #[test]
+    fn options_name_extras_after_the_video() {
+        let mut options = ExportOptions::new("/clips/peg-board.mp4");
+        assert_eq!(options.extras_path(), PathBuf::from("/clips/peg-board"));
+        options.extras_base = Some("/clips/peg-board-seed-2".into());
+        assert_eq!(options.extras_path(), PathBuf::from("/clips/peg-board-seed-2"));
+        assert_eq!(bpe_kit::midi_path(&options.extras_path()), PathBuf::from("/clips/peg-board-seed-2.mid"));
+        assert_eq!(bpe_kit::stems_folder(&options.extras_path()), PathBuf::from("/clips/peg-board-seed-2-stems"));
+    }
+
+    #[test]
+    fn rejects_take_their_extras() {
+        for rejected in [Rejected::Move, Rejected::Delete] {
+            let dir = temp_dir(&format!("extras-{rejected:?}"));
+            let kit = kit();
+            let mut jobs = Vec::new();
+            for (seed, score) in [(1, 0.9), (2, 0.1)] {
+                let name = video_name("clip", seed);
+                let base = name.trim_end_matches(".mp4").to_string();
+                std::fs::write(dir.join(&name), b"video").unwrap();
+                std::fs::write(dir.join(format!("{base}.mid")), b"midi").unwrap();
+                std::fs::create_dir_all(dir.join(format!("{base}-stems"))).unwrap();
+                std::fs::write(dir.join(format!("{base}-stems/01 Lead.wav")), b"wav").unwrap();
+                jobs.push(Job { file: Some(name.into()), ..job(seed, Status::Rendered, score) });
+            }
+            let spec = BatchSpec { count: 2, keep: 1, rejected, ..BatchSpec::default() };
+            let mut manifest = Manifest { spec, base: new_scene(&kit.registry), phase: Phase::Render, jobs };
+            pick(&dir, &mut manifest).unwrap();
+            assert!(dir.join("clip-seed-1.mid").exists() && dir.join("clip-seed-1-stems").is_dir(), "kept");
+            assert!(!dir.join("clip-seed-2.mid").exists() && !dir.join("clip-seed-2-stems").exists(), "{rejected:?}");
+            if rejected == Rejected::Move {
+                assert!(dir.join("rejected/clip-seed-2.mid").exists());
+                assert!(dir.join("rejected/clip-seed-2-stems/01 Lead.wav").exists());
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_failed_video_leaves_nothing_behind() {
+        let dir = temp_dir("leftovers");
+        let base = dir.join("clip-seed-3");
+        let partial = dir.join("clip-seed-3.mp4.partial.mp4");
+        std::fs::write(&partial, b"video").unwrap();
+        std::fs::write(bpe_kit::midi_path(&base), b"midi").unwrap();
+        std::fs::create_dir_all(bpe_kit::stems_folder(&base)).unwrap();
+        remove_leftovers(&partial, &base);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
