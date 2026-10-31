@@ -569,7 +569,7 @@ impl Studio {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.text_edit_focused();
-        // A node canvas under the pointer uses Space, Delete and the arrows itself.
+        // A node canvas under the pointer uses Delete and the arrows itself, but never Space.
         let canvas_keys = crate::nodes::take_wants_keyboard(ctx);
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
@@ -593,11 +593,11 @@ impl Studio {
         if pressed(Modifiers::COMMAND, Key::Z) {
             self.undo();
         }
-        if canvas_keys {
-            return;
-        }
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
+        }
+        if canvas_keys {
+            return;
         }
         // Other keys belong to a slider or button that has the keyboard focus.
         if ctx.memory(|m| m.focused().is_some()) {

@@ -154,12 +154,24 @@ fn dragging_a_block_moves_it() {
 }
 
 #[test]
-fn space_opens_the_search_and_enter_adds_the_block() {
+fn space_over_the_canvas_adds_nothing_as_it_plays_and_pauses_the_studio() {
     let mut harness = harness(graph());
     let spot = empty_spot(&harness);
     harness.hover_at(spot);
     harness.run();
     key(&mut harness, Key::Space, Modifiers::NONE);
+    assert!(harness.state().editor.palette.is_none());
+    assert_eq!(harness.state().graph.nodes.len(), 2);
+}
+
+#[test]
+fn the_search_adds_the_block_on_enter() {
+    let mut harness = harness(graph());
+    let spot = empty_spot(&harness);
+    harness.hover_at(spot);
+    harness.run();
+    harness.state_mut().editor.open_palette();
+    harness.run();
     assert!(harness.state().editor.palette.is_some());
     harness.event(Event::Text("kick".into()));
     harness.run();
@@ -225,26 +237,13 @@ fn the_add_block_button_uses_where_the_pointer_last_was_on_the_canvas() {
 }
 
 #[test]
-fn space_adds_the_block_under_the_pointer() {
-    let mut harness = harness(graph());
-    let spot = empty_spot(&harness);
-    harness.hover_at(spot);
-    harness.run();
-    key(&mut harness, Key::Space, Modifiers::NONE);
-    harness.event(Event::Text("number".into()));
-    harness.run();
-    key(&mut harness, Key::Enter, Modifiers::NONE);
-    let pos = harness.state().graph.nodes[2].pos;
-    assert!((pos[0] - 200.0).abs() < 2.0 && (pos[1] - 300.0).abs() < 2.0, "{pos:?}");
-}
-
-#[test]
 fn escape_closes_the_search() {
     let mut harness = harness(graph());
     let spot = empty_spot(&harness);
     harness.hover_at(spot);
     harness.run();
-    key(&mut harness, Key::Space, Modifiers::NONE);
+    harness.state_mut().editor.open_palette();
+    harness.run();
     key(&mut harness, Key::Escape, Modifiers::NONE);
     assert!(harness.state().editor.palette.is_none());
     assert_eq!(harness.state().graph.nodes.len(), 2);

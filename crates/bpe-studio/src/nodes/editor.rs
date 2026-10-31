@@ -6,8 +6,9 @@
 //!
 //! Mouse: drag a block to move it, drag from a pin to wire it, drag empty space to select, middle
 //! or right drag (or the scroll wheel with Shift) to pan, scroll to zoom. Keys while the pointer
-//! is over the canvas: Space or a double-click to add a block, Delete, Ctrl+C / Ctrl+V / Ctrl+D,
-//! Ctrl+A, Ctrl+G to frame the selection with a note, F to fit the view.
+//! is over the canvas: Delete, Ctrl+C / Ctrl+V / Ctrl+D, Ctrl+A, Ctrl+G to frame the selection
+//! with a note, F to fit the view. A double-click or the right-click menu adds a block; Space is
+//! left to the studio, where it plays and pauses.
 
 use super::draw;
 use super::palette::{self, Palette};
@@ -142,8 +143,8 @@ fn keyboard_id() -> Id {
     Id::unique("node editor wants keys")
 }
 
-/// Whether a node editor under the pointer took Space, Delete and arrow keys last frame, so
-/// the studio's own shortcuts (play, step) should leave them alone. Clears the answer, so a
+/// Whether a node editor under the pointer took Delete and arrow keys last frame, so the
+/// studio's own shortcuts (like Home) should leave them alone. Clears the answer, so a
 /// canvas that is no longer drawn doesn't keep the keys.
 pub fn take_wants_keyboard(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.remove_temp::<bool>(keyboard_id())).unwrap_or(false)
@@ -662,7 +663,7 @@ impl Editor {
                 ui.separator();
             }
             let at = self.menu_at;
-            if ui.button("Add a block…").on_hover_text("Space").clicked() {
+            if ui.button("Add a block…").on_hover_text("Or double-click the canvas").clicked() {
                 self.palette = Some(Palette::new(at, None));
                 ui.close();
             }
@@ -707,7 +708,7 @@ impl Editor {
             overlay.painter().text(
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
-                "Press Space or double-click to add a block",
+                "Double-click or right-click to add a block",
                 egui::FontId::proportional(16.0),
                 theme::MUTED,
             );
@@ -959,9 +960,6 @@ impl Editor {
         }
         if pressed(Modifiers::NONE, Key::F) {
             self.fitted = false;
-        }
-        if pressed(Modifiers::NONE, Key::Space) {
-            self.palette = Some(Palette::new(pointer, None));
         }
         if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
             if !self.selection.is_empty() {

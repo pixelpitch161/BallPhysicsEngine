@@ -128,7 +128,11 @@ fn lufs(power: f64) -> f32 {
 /// Integrated loudness of interleaved stereo at 48 kHz (BS.1770-4): 400 ms blocks every
 /// 100 ms, gated at -70 LUFS and then 10 LU under the ungated level. Silence reads -70.
 pub fn integrated_lufs(samples: &[f32]) -> f32 {
-    let steps = step_powers(samples);
+    integrated_of(&step_powers(samples))
+}
+
+/// [`integrated_lufs`] from the 100 ms step powers.
+fn integrated_of(steps: &[f64]) -> f32 {
     let blocks: Vec<f64> = if steps.len() < 4 {
         vec![steps.iter().sum::<f64>() / steps.len().max(1) as f64]
     } else {
@@ -148,7 +152,11 @@ pub fn integrated_lufs(samples: &[f32]) -> f32 {
 
 /// Short-term loudness (the 3 s before each step's end) every [`METER_STEP`] seconds.
 pub fn short_term_lufs(samples: &[f32]) -> Vec<f32> {
-    let steps = step_powers(samples);
+    short_term_of(&step_powers(samples))
+}
+
+/// [`short_term_lufs`] from the 100 ms step powers.
+fn short_term_of(steps: &[f64]) -> Vec<f32> {
     (0..steps.len())
         .map(|i| {
             let from = (i + 1).saturating_sub(30);
@@ -180,10 +188,17 @@ pub fn master(samples: &mut [f32], s: &MasterSettings) -> MasterReport {
         frame[1] = r[i] * g;
     }
     let per_step = (SAMPLE_RATE as f32 * METER_STEP) as usize / bpe_synth::BLOCK;
+    // The finished mix is measured once for loudness, with the true peak found side by side.
+    let samples = &*samples;
+    let (steps, peak) = std::thread::scope(|scope| {
+        let peak = scope.spawn(|| true_peak(samples));
+        let steps = step_powers(samples);
+        (steps, peak.join().expect("the true-peak meter doesn't panic"))
+    });
     MasterReport {
-        integrated: integrated_lufs(samples),
-        true_peak: 20.0 * true_peak(samples).max(1e-9).log10(),
-        short_term: short_term_lufs(samples),
+        integrated: integrated_of(&steps),
+        true_peak: 20.0 * peak.max(1e-9).log10(),
+        short_term: short_term_of(&steps),
         reduction: blocks.chunks(per_step.max(1)).map(|c| c.iter().copied().fold(0.0, f32::max)).collect(),
     }
 }
@@ -248,6 +263,15 @@ mod tests {
         let report = master(&mut n, &MasterSettings::default());
         assert!((report.integrated + 14.0).abs() < 0.5, "{}", report.integrated);
         assert!((integrated_lufs(&n) + 14.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_report_reads_what_the_meters_read_on_the_finished_mix() {
+        let mut n = noise(6.0, 0.2);
+        let report = master(&mut n, &MasterSettings::default());
+        assert_eq!(report.integrated, integrated_lufs(&n));
+        assert_eq!(report.short_term, short_term_lufs(&n));
+        assert_eq!(report.true_peak, true_peak_db(&n));
     }
 
     #[test]

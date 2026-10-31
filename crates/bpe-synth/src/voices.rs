@@ -14,6 +14,9 @@ const QUIET: f32 = 3.162_277_7e-5;
 const QUIET_FOR: f32 = 0.05;
 /// Seconds after the gate closes when a voice ends regardless.
 const LONGEST_TAIL: f32 = 10.0;
+/// Below this many voice frames to render, voices advance on one thread: starting threads
+/// costs more than it saves when notes come thick and fast (hundreds a second).
+const PARALLEL_MIN_FRAMES: usize = 48_000;
 
 /// One note for a channel to play.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -173,6 +176,11 @@ impl Live {
         self.patch.is_none()
     }
 
+    /// How many frames [`Live::advance_to`] would render to reach the channel's frame `to`.
+    fn frames_to(&self, to: usize) -> usize {
+        if self.finished() { 0 } else { to.saturating_sub(self.note.frame).min(self.len).saturating_sub(self.done) }
+    }
+
     /// Renders on until the voice has played up to the channel's frame `to`, or has ended.
     fn advance_to(&mut self, to: usize) {
         let want = to.saturating_sub(self.note.frame);
@@ -221,7 +229,8 @@ impl Live {
 /// Advances every voice to the channel's frame `to`, side by side on up to `threads` threads.
 fn advance_all(live: &mut [Live], to: usize, threads: usize) {
     let busy = live.iter().filter(|v| !v.finished()).count();
-    if threads <= 1 || busy < 2 {
+    let work: usize = live.iter().map(|v| v.frames_to(to)).sum();
+    if threads <= 1 || busy < 2 || work < PARALLEL_MIN_FRAMES {
         for v in live.iter_mut() {
             v.advance_to(to);
         }
@@ -575,6 +584,18 @@ mod tests {
         limited.limit = 3;
         let one = render_channel(&program, &channel, &limited, 0.5, 48_000.0, 96_000);
         let four = render_channel_on(&program, &channel, &limited, 0.5, 48_000.0, 96_000, 4);
+        assert!(one.samples == four.samples, "the same on four threads");
+    }
+
+    #[test]
+    fn long_notes_far_apart_render_side_by_side_to_the_same_channel() {
+        // Four two-second voices sound together between notes a second apart: enough work
+        // between notes to use the threads.
+        let program = compile(&sine_patch(0.001, 0.05)).unwrap();
+        let notes: Vec<PlayNote> = (0..6).map(|i| note(i * 48_000, 60 + i as u8)).collect();
+        let one = render_channel(&program, &notes, &seconds(2.0), 0.5, 48_000.0, 6 * 48_000);
+        let four = render_channel_on(&program, &notes, &seconds(2.0), 0.5, 48_000.0, 6 * 48_000, 4);
+        assert!(one.samples.iter().any(|v| v.abs() > 0.05));
         assert!(one.samples == four.samples, "the same on four threads");
     }
 
