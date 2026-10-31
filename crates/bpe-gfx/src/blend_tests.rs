@@ -466,3 +466,24 @@ fn every_kind_of_thing_can_blend_with_each_other() {
         assert!(at(&pixels, N / 2, N / 2) != at(&plain, N / 2, N / 2), "{blend:?}: the middle changes");
     }
 }
+
+#[test]
+fn a_stuck_layer_blending_with_each_other_ignores_the_camera() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let (d, s1, s2) = ([0.1, 0.08, 0.05], [0.05, 0.1, 0.02], [0.1, 0.05, 0.08]);
+    let stuck = flat([0.0; 3]);
+    let mut layer = Frame { trails: square(6.0, [s1[0], s1[1], s1[2], 1.0]), ..flat([0.0; 3]) };
+    layer.trails.extend(square(6.0, [s2[0], s2[1], s2[2], 1.0]));
+    let stuck = with_each(stuck, Blend::Add, 1.0, true, layer);
+    let mut frame = Frame { overlay: Some(Box::new(stuck)), ..flat(d) };
+    // The world's camera looks elsewhere; what is stuck to the screen stays in the middle.
+    frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(200.0, 0.0), zoom: 2.0, turn: 0.0 };
+    assert!(frame.has_overlay());
+    let pixels = render(&mut renderer, &device, &queue, &frame);
+    let want = expected(&mut renderer, &device, &queue, [0, 1, 2].map(|k| d[k] + s1[k] + s2[k]));
+    let got = at(&pixels, N / 2, N / 2);
+    assert!(close(got, want), "{got:?}, d + s1 + s2 is {want:?}");
+    let plain = render(&mut renderer, &device, &queue, &flat(d));
+    assert_eq!(at(&pixels, 2, 2), at(&plain, 2, 2), "the corner the squares miss");
+}

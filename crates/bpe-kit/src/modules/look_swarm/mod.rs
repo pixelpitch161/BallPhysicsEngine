@@ -27,8 +27,9 @@ pub struct SwarmLook {
     /// How much of the blend shows: 0 is as if it weren't there, 1 is the whole blend.
     #[setting(label = "Blend amount", range(0, 1), group = "Blending", keyframe)]
     pub blend_amount: f32,
-    /// Where its own parts overlap, they blend with each other too, as they do with what is
-    /// under them; off, they cover each other and are mixed in as one picture.
+    /// Where its dots overlap, they mix with each other by the Blend too, as they do with what
+    /// is under them. Off, overlapping dots add their light together first, and the swarm is
+    /// then mixed in as one picture.
     #[setting(
         label = "Blend with each other",
         when = "blend=add|screen|multiply|lighten|darken|subtract",

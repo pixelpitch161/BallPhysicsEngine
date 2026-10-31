@@ -912,9 +912,10 @@ fn layered(blend: Blend, amount: f32) -> bool {
 }
 
 /// Runs `draw` on what things with `blend` at `amount` (blending with each other when `each`)
-/// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows `target`'s gradient atlas, hits and effects while
-/// it is drawn into, so its paint rows are the rows the renderer uploads and every module reads
-/// every hit. A layer nothing was drawn into is not kept.
+/// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows
+/// `target`'s gradient atlas, hits and effects while it is drawn into, so its paint rows are the
+/// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
+/// not kept.
 fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
     if !layered(blend, amount) {
         draw(target);

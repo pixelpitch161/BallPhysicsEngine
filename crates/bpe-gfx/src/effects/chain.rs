@@ -655,6 +655,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_material_on_a_multiply_or_darken_thing_blending_with_each_other_leaves_no_dark_ring() {
+        // Ball B multiplied (or darkened) over a light grey picture, a material on it. Those
+        // layers start from 1 or far above it, which a material cannot paint over cleanly, so
+        // with a material they are drawn as if the switch were off.
+        for blend in [bpe_core::Blend::Multiply, bpe_core::Blend::Darken] {
+            let shot = |each: bool| {
+                let mut frame = two_balls_frame();
+                let c = [0.6, 0.6, 0.6, 1.0];
+                frame.background = crate::BackgroundPaint { row: 0, ends: Some([c, c]), ..Default::default() };
+                let b = frame.balls.pop().unwrap();
+                frame.layer_mut(blend, 1.0, each).balls.push(b);
+                assert_eq!(frame.layers[0].each, each);
+                frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
+                render(&frame)
+            };
+            let Some(off) = shot(false) else { return };
+            let on = shot(true).unwrap();
+            // The ball's edge, where a ring would show.
+            let edge = B + Vec2::new(69.0, 0.0);
+            assert_eq!(pixel(&on, edge), pixel(&off, edge), "{blend:?}: the edge");
+            assert!(on == off, "{blend:?}: the same picture as with the switch off");
+        }
+    }
+
+    #[test]
     fn blend_zero_leaves_the_picture_unchanged() {
         let Some(before) = render(&two_balls_frame()) else { return };
         let mut off = two_balls_frame();

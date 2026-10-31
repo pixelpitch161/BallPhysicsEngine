@@ -554,10 +554,6 @@ impl Renderer {
             })
         };
 
-        let (shape_attributes, ball_attributes, trail_attributes) =
-            (SHAPE_ATTRIBUTES, BALL_ATTRIBUTES, TRAIL_ATTRIBUTES);
-        let (look_attributes, flash_attributes) = (LOOK_ATTRIBUTES, FLASH_ATTRIBUTES);
-        let (soft_attributes, glyph_attributes) = (SOFT_ATTRIBUTES, GLYPH_ATTRIBUTES);
         let instances = |stride, attributes| wgpu::VertexBufferLayout {
             array_stride: stride,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -587,7 +583,7 @@ impl Renderer {
             &scene_shader,
             "vs_shape",
             "fs_shape",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &shape_attributes))],
+            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -598,7 +594,7 @@ impl Renderer {
             &scene_shader,
             "vs_soft",
             "fs_soft",
-            &[Some(vertices(std::mem::size_of::<SoftVertex>() as u64, &soft_attributes))],
+            &[Some(vertices(std::mem::size_of::<SoftVertex>() as u64, &SOFT_ATTRIBUTES))],
             TriangleList,
             HDR_FORMAT,
             Some(premultiplied),
@@ -609,7 +605,7 @@ impl Renderer {
             &scene_shader,
             "vs_ball",
             "fs_ball",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -620,7 +616,7 @@ impl Renderer {
             &glyph_shader,
             "vs_glyph",
             "fs_glyph",
-            &[Some(instances(std::mem::size_of::<GlyphInstance>() as u64, &glyph_attributes))],
+            &[Some(instances(std::mem::size_of::<GlyphInstance>() as u64, &GLYPH_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -634,7 +630,7 @@ impl Renderer {
             &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TrailVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &trail_attributes,
+                attributes: &TRAIL_ATTRIBUTES,
             })],
             TriangleList,
             HDR_FORMAT,
@@ -646,7 +642,7 @@ impl Renderer {
             &scene_shader,
             "vs_look",
             "fs_look",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
@@ -657,7 +653,7 @@ impl Renderer {
             &scene_shader,
             "vs_flash",
             "fs_flash",
-            &[Some(instances(std::mem::size_of::<FlashInstance>() as u64, &flash_attributes))],
+            &[Some(instances(std::mem::size_of::<FlashInstance>() as u64, &FLASH_ATTRIBUTES))],
             TriangleStrip,
             HDR_FORMAT,
             Some(additive),
@@ -668,7 +664,7 @@ impl Renderer {
             &scene_shader,
             "vs_shape",
             "fs_shape_object",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &shape_attributes))],
+            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -679,7 +675,7 @@ impl Renderer {
             &scene_shader,
             "vs_ball",
             "fs_ball_object",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &ball_attributes))],
+            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -690,7 +686,7 @@ impl Renderer {
             &scene_shader,
             "vs_look",
             "fs_look_object",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &look_attributes))],
+            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
             TriangleStrip,
             OBJECT_FORMAT,
             None,
@@ -1083,7 +1079,7 @@ impl Renderer {
         let world_layer = Through { layer: true, ..world.clone() };
         for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate() {
             let effects = Some((frame, i, object_view.as_ref()));
-            let through = self.layer_through(device, queue, frame, l, &world_layer);
+            let through = self.layer_through(device, queue, frame, l, Some(i), &world_layer);
             self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, &mut liquid_slot, effects);
             slot += 1;
         }
@@ -1102,7 +1098,7 @@ impl Renderer {
             self.overlay = buffers;
             let screen_layer = Through { layer: true, ..screen.clone() };
             for (l, b) in o.layers.iter().zip(&layer_buffers[frame.layers.len()..]) {
-                let through = self.layer_through(device, queue, frame, l, &screen_layer);
+                let through = self.layer_through(device, queue, frame, l, None, &screen_layer);
                 self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, &mut liquid_slot, None);
                 slot += 1;
             }
@@ -1324,16 +1320,29 @@ impl Renderer {
     }
 
     /// How `l` is drawn: as `through` says, or, when its things blend with each other, through
-    /// globals that name its blend (see each.wgsl), with the pipelines it needs made.
+    /// globals that name its blend (see each.wgsl), with the pipelines it needs made. `index`
+    /// is its place in `frame.layers` (none for the overlay's layers, which run no effects).
+    ///
+    /// This is where a layer's `each` is decided. A Multiply or Darken layer starts as 1 or far
+    /// above it, not as nothing, and an effect on one of its things (Things stage) assumes a
+    /// layer of colour over nothing: it would paint dark rings round the thing. Such a layer is
+    /// drawn as if its things did not blend with each other. Add, Screen, Lighten and Subtract
+    /// start as nothing, so they keep blending.
     fn layer_through(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame: &Frame,
         l: &BlendLayer,
+        index: Option<usize>,
         through: &Through,
     ) -> Through {
-        if !(l.each && l.blend.combines_with_itself()) {
+        let starts_above_nothing = matches!(l.blend, bpe_core::Blend::Multiply | bpe_core::Blend::Darken);
+        let has_effects = index.is_some_and(|i| {
+            let here = effects::chain::Canvas::Layer(i);
+            frame.effects.iter().any(|call| effects::chain::canvas_of(frame, call) == here)
+        });
+        if !(l.each && l.blend.combines_with_itself()) || (starts_above_nothing && has_effects) {
             return through.clone();
         }
         let code = l.blend.shader_code();
