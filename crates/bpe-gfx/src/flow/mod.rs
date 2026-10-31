@@ -359,6 +359,10 @@ impl FlowLayers {
         frame: &Frame,
         each: Option<bpe_core::Blend>,
     ) {
+        // Without swarms no each-pipeline was made for this layer's mode.
+        if frame.swarms.is_empty() {
+            return;
+        }
         let pipeline = match each {
             Some(blend) => self.pipelines.swarm.each(blend),
             None => self.pipelines.swarm.draw(),
@@ -783,6 +787,32 @@ mod tests {
         assert!(status.caught_up);
         assert_eq!(renderer.read_output(&device, &queue).unwrap(), plain);
         assert_eq!(renderer.flow().unwrap().steps_run(), 0);
+    }
+
+    #[test]
+    fn balls_blending_with_each_other_draw_with_flow_and_no_swarm() {
+        // The exporter always draws with flow; a layer of balls blending with each other has no
+        // swarm, so no swarm pipeline was made for its mode.
+        let Some((device, queue)) = gpu() else { return };
+        let mut renderer = Renderer::new(&device, 90, 160);
+        let mut layer = Frame::default();
+        layer.balls.push(BallInstance { radius: 30.0, color: [0.3, 0.3, 0.3, 1.0], ..Default::default() });
+        let mut frame = Frame::default();
+        frame.layers.push(crate::BlendLayer { blend: bpe_core::Blend::Screen, amount: 1.0, each: true, frame: layer });
+        let (scene, resolved) = tiny_scene();
+        let sims = Sims::default();
+        let source = FlowSource {
+            scene: &scene,
+            resolved: &resolved,
+            sims: &sims,
+            key: 1,
+            budget: None,
+            ball_colors: BTreeMap::new(),
+        };
+        assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+        let pixels = renderer.read_output(&device, &queue).unwrap();
+        let i = ((80 * 90 + 45) * 4) as usize;
+        assert!(pixels[i] > 20, "the ball shows: {:?}", &pixels[i..i + 4]);
     }
 
     #[test]

@@ -2532,4 +2532,27 @@ mod tests {
         assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
     }
+
+    #[test]
+    fn scene_card_shows_the_grade_group() {
+        let reg = bpe_kit::registry();
+        let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
+        // Halfway through, where the keyframed map amount is above 0 and so the map shows.
+        h.state_mut().time = 10.0;
+        h.run();
+        // The sound's pluck has a Brightness slider too.
+        let slider =
+            |h: &Harness<'_, State>, label: &str| h.query_all_by_role_and_label(Role::Slider, label).count() > 0;
+        assert!(h.query_by_role_and_label(Role::Label, "Grade").is_some(), "a Grade heading");
+        assert!(slider(&h, "Brightness"), "the Brightness setting");
+        assert!(slider(&h, "Vignette"), "the Vignette setting");
+        assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting");
+        // The group folds like the others.
+        h.get_by_label("Hide Grade").click();
+        h.run();
+        assert!(!slider(&h, "Vignette"), "the grade's rows fold away");
+        h.get_by_label("Show Grade").click();
+        h.run();
+        assert!(slider(&h, "Vignette"));
+    }
 }

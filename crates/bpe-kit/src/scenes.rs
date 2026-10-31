@@ -76,6 +76,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.extend(stage7(reg));
     scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes.push(("Blend modes".into(), blend_demo(reg)));
+    scenes.push(("Graded sunset".into(), graded_sunset(reg)));
     scenes
 }
 
@@ -401,6 +402,108 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         t.outline = 6.0;
         t.outline_paint = Paint::solid(hex(0x05040f));
     });
+    b.scene
+}
+
+/// The palette and grade showcase: balls painted from the Sunset palette in a ring whose wall
+/// wears the Triad colours that match it, a cluster of glowing balls that Screen onto each other,
+/// and a warm, contrasty grade with a vignette whose Sunset gradient map comes in over the video.
+pub fn graded_sunset(reg: &Registry) -> Scene {
+    use crate::paint::harmony::{Harmony, add_matching};
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let sunset = crate::paint::palettes::built_in()
+        .into_iter()
+        .find(|p| p.name == "Sunset")
+        .expect("Sunset is a built-in palette")
+        .colours;
+    let mut b = Builder::new(reg, "Graded sunset");
+    let duration = 20.0;
+    b.scene_settings(|s| {
+        s.duration = duration;
+        s.gravity = Vec2::new(0.0, 600.0);
+        s.bloom = 0.3;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x1a0b3a), hex(0x2b1055), hex(0x4a2a7a)]),
+            angle: 90.0,
+            span: 1900.0,
+            ..Paint::default()
+        };
+        s.grade_warmth = 0.3;
+        s.grade_contrast = 0.2;
+        s.grade_vignette = 0.4;
+        s.grade_map = sunset.clone();
+        s.grade_map_amount = 0.25;
+    });
+    b.arena(|a| {
+        a.radius = 470.0;
+        a.thickness = 14.0;
+    });
+    // The wall: the Sunset coral and the two colours a third of the way round the wheel from it.
+    let coral = Gradient::even(&[sunset.stops[3].color]);
+    let wall = ClassicLook {
+        fill: Paint {
+            colours: add_matching(&coral, Harmony::Triad),
+            follow: Follow::Path,
+            repeat: Repeat::Mirror,
+            scroll: 0.08,
+            ..Paint::default()
+        },
+        glow: 0.5,
+        ..ClassicLook::default()
+    };
+    b.own_module(ARENA, "look.classic", "Wall look", wall.to_params());
+    b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 7;
+        s.rows = 5;
+        s.spacing = 52.0;
+        s.radius = 22.0;
+        s.velocity = Vec2::new(300.0, -120.0);
+    });
+    b.ball_look(|l| {
+        l.fill = Paint { colours: sunset.clone(), follow: Follow::Order, ..Paint::default() };
+        l.glow = 0.2;
+    });
+    // Overlapping glow balls that Screen onto each other as well as onto the scene, so where
+    // they cross they brighten.
+    let glow = b.add(
+        "balls",
+        ThingId::ROOT,
+        "Glow balls",
+        Vec2::new(0.0, 230.0),
+        BallsSettings {
+            arrangement: Arrangement::Ring,
+            count: 5,
+            ring_radius: 50.0,
+            radius: 55.0,
+            velocity: Vec2::new(-260.0, -380.0),
+            ..BallsSettings::default()
+        }
+        .to_params(),
+    );
+    let screen = ClassicLook {
+        fill: Paint { colours: sunset.clone(), follow: Follow::Order, ..Paint::default() },
+        glow: 0.0,
+        blend: Blend::Screen,
+        blend_each: true,
+        ..ClassicLook::default()
+    };
+    b.own_module(glow, "look.classic", "Screen look", screen.to_params());
+    b.text("Title", Vec2::new(0.0, -740.0), |t| {
+        t.text = "Graded sunset".into();
+        t.size = 120.0;
+        t.outline = 6.0;
+        t.outline_paint = Paint::solid(hex(0x1a0b3a));
+    });
+    b.text("Caption", Vec2::new(0.0, 700.0), |t| {
+        t.text = "palette  triad  grade".into();
+        t.size = 56.0;
+        t.outline = 0.0;
+    });
+    b.track(
+        own(ThingId::ROOT, "grade_map_amount"),
+        &[(0.0, Value::Number(0.0), Ease::Linear), (duration as f64, Value::Number(0.5), Ease::Linear)],
+    );
     b.scene
 }
 
@@ -1465,7 +1568,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 32);
+        assert_eq!(scenes.len(), 33);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1473,7 +1576,11 @@ mod tests {
             scenes::stage5(&reg),
             scenes::stage6(&reg),
             scenes::stage7(&reg),
-            vec![("Colour paints".into(), scenes::colour_demo(&reg)), ("Blend modes".into(), scenes::blend_demo(&reg))],
+            vec![
+                ("Colour paints".into(), scenes::colour_demo(&reg)),
+                ("Blend modes".into(), scenes::blend_demo(&reg)),
+                ("Graded sunset".into(), scenes::graded_sunset(&reg)),
+            ],
         ]
         .concat()
         .into_iter()
@@ -1490,7 +1597,7 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
-        assert_eq!(names[30..], ["Colour paints", "Blend modes"]);
+        assert_eq!(names[30..], ["Colour paints", "Blend modes", "Graded sunset"]);
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
