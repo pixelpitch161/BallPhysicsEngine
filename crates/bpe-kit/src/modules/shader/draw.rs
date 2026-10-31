@@ -19,10 +19,6 @@ impl ModuleDraw for EffectDraw {
     fn draw(&self, cx: &DrawCx, slot: bpe_core::SlotId, frame: &mut Frame) {
         let Some(rslot) = cx.resolved.slots.get(&slot) else { return };
         let root = cx.thing.id == ThingId::ROOT;
-        // The root's shader is a picture effect, which already covers every thing below it.
-        if !root && rslot.from == ThingId::ROOT {
-            return;
-        }
         let header = self.0.header();
         let blend = match rslot.params.get(BLEND) {
             Some(Value::Number(b)) => *b as f32,
