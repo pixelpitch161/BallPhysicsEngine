@@ -116,6 +116,10 @@ pub struct Studio {
     persist_settings: bool,
     /// The inspector's width as last saved.
     inspector_width: f32,
+    /// The inspector's width last frame.
+    inspector_seen: f32,
+    /// The inspector's edge is being dragged: its width changed while a button was down.
+    inspector_resizing: bool,
     /// The soundtrack no longer matches the scene.
     pub sound_dirty: bool,
     /// The speakers, when there are any.
@@ -196,6 +200,8 @@ impl Studio {
             view_centre: glam::Vec2::ZERO,
             persist_settings: false,
             inspector_width: settings::INSPECTOR_DEFAULT,
+            inspector_seen: settings::INSPECTOR_DEFAULT,
+            inspector_resizing: false,
             sound_dirty: true,
             audio: None,
             audio_error: None,
@@ -724,9 +730,14 @@ impl Studio {
                 ui.advance_cursor_after_rect(rect);
             });
         let width = panel.response.rect.width();
-        // A drag is remembered once the mouse lets go, and only when the width really changed.
-        let released = !ui.input(|i| i.pointer.any_down());
-        if released && (width - self.inspector_width).abs() >= 0.5 {
+        // Only a drag of the edge is remembered, once the mouse lets go; a window squeezing the
+        // panel is not.
+        let down = ui.input(|i| i.pointer.any_down());
+        if down && (width - self.inspector_seen).abs() >= 0.5 {
+            self.inspector_resizing = true;
+        }
+        self.inspector_seen = width;
+        if !down && std::mem::take(&mut self.inspector_resizing) && (width - self.inspector_width).abs() >= 0.5 {
             self.inspector_width = width;
             if self.persist_settings {
                 settings::save_inspector_width(width);
@@ -1054,6 +1065,44 @@ mod tests {
         h.run();
         let scene = h.state().1;
         assert!((ball - scene).abs() <= 1.0, "a ball's inspector is {ball} wide, Scene settings' {scene}");
+    }
+
+    #[test]
+    fn a_squeezed_window_does_not_change_the_saved_width() {
+        let mut h = inspector_harness(ThingId(2));
+        h.set_size(egui::vec2(380.0, 900.0));
+        h.run();
+        assert!(h.state().1 < 420.0, "the window squeezes the panel to {}", h.state().1);
+        assert_eq!(h.state().0.inspector_width, 420.0);
+    }
+
+    #[test]
+    fn dragging_the_inspector_edge_saves_its_width() {
+        let mut h = inspector_harness(ThingId(2));
+        let edge = egui::pos2(1400.0 - 420.0, 450.0);
+        let to = egui::pos2(1400.0 - 500.0, 450.0);
+        h.hover_at(edge);
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: edge,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.event(egui::Event::PointerMoved(to));
+        h.step();
+        assert_eq!(h.state().0.inspector_width, 420.0, "nothing is saved while the button is down");
+        h.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        let (saved, shown) = (h.state().0.inspector_width, h.state().1);
+        // The drag starts a few pixels in, past egui's drag threshold, so it lands near 500.
+        assert!(saved > 480.0 && saved == shown, "the dragged width {shown} is saved, got {saved}");
     }
 
     #[test]

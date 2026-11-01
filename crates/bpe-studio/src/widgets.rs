@@ -433,10 +433,11 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
     }
 }
 
-/// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on hover; a double-click or Alt+click puts
-/// the value back to `inherited`, or the setting's default), a dot when the setting is
-/// `overridden`, a padlock when it is `locked` against the dice, and the widget for its type.
-/// The label's menu offers the lock on any setting the dice may pick.
+/// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on
+/// hover; a double-click or Alt+click puts the value back to `inherited`, or the setting's
+/// default), a dot when the setting is `overridden`, a padlock when it is `locked` against the
+/// dice, and the widget for its type. The label's menu offers the lock on any setting the dice
+/// may pick.
 #[allow(clippy::too_many_arguments)]
 pub fn setting(
     ui: &mut Ui,
@@ -884,12 +885,13 @@ pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
 mod tests {
     use super::*;
 
+    use bpe_core::Settings;
+
     #[test]
     fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
         assert_eq!(label_width(200.0), 120.0);
         assert_eq!(label_width(500.0), 190.0);
     }
-    use bpe_core::Settings;
 
     #[test]
     fn target_words_name_things_tags_and_kinds() {
