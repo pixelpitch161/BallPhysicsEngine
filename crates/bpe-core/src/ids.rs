@@ -32,11 +32,12 @@ pub enum SlotId {
     Particles,
     Rules,
     Shader,
+    Marks,
 }
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 8] = [
+    pub const ALL: [SlotId; 9] = [
         SlotId::Look,
         SlotId::Trail,
         SlotId::Motion,
@@ -45,6 +46,7 @@ impl SlotId {
         SlotId::Particles,
         SlotId::Rules,
         SlotId::Shader,
+        SlotId::Marks,
     ];
 
     /// The name shown in the inspector.
@@ -58,6 +60,7 @@ impl SlotId {
             SlotId::Particles => "Particles",
             SlotId::Rules => "Rules",
             SlotId::Shader => "Shader",
+            SlotId::Marks => "Marks",
         }
     }
 }
