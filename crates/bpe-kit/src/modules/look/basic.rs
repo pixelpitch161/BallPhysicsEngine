@@ -52,11 +52,13 @@ pub enum Style {
 }
 
 impl Style {
-    /// The style's number in styled.wgsl's `form.y`: 1 lights the shape like a sphere.
+    /// The style's number in styled.wgsl's `form.y`: 0 one even colour, 1 lit like a sphere,
+    /// 2 lit like the classic glowing ball.
     pub fn code(self) -> f32 {
         match self {
-            Self::Glow | Self::Flat => 0.0,
+            Self::Flat => 0.0,
             Self::Shiny => 1.0,
+            Self::Glow => 2.0,
         }
     }
 }
@@ -85,8 +87,8 @@ pub struct BasicLook {
     /// The outline the ball is drawn with; it still bounces as a circle.
     #[setting(label = "Shape", when = "thing=balls", simple, random)]
     pub ball_shape: BallShape,
-    /// How the ball is lit: Glow is a lit ball with a soft halo, Flat is one even colour and
-    /// Shiny is lit like a sphere.
+    /// How the ball is lit: Glow is the classic ball, lit from the upper left; Shiny is lit like
+    /// a sphere; Flat is one even colour. Whatever the style, the halo is as bright as Glow says.
     #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
     pub style: Style,
     /// How wide the outline just inside the edge is; 0 means none.
@@ -115,6 +117,9 @@ pub struct BasicLook {
         random
     )]
     pub roundness: f32,
+    /// Turns the shape to point the way the ball is going.
+    #[setting(label = "Face motion", when = "thing=balls and ball_shape!=circle", group = "Shape", random)]
+    pub face_motion: bool,
     /// The shape's starting angle; the pattern inside turns with it.
     #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Shape", keyframe, random)]
     pub turn: f32,
@@ -181,6 +186,7 @@ impl Default for BasicLook {
             glow: 0.12,
             outline_paint: Paint::default(),
             roundness: 0.15,
+            face_motion: false,
             turn: 0.0,
             spin: 0.0,
             glow_size: 0.8,
@@ -205,21 +211,50 @@ impl BasicLook {
     }
 
     /// Whether a ball wearing this look is drawn as the classic glowing ball rather than a
-    /// styled shape: a glowing circle.
+    /// styled shape: a glowing circle with nothing the classic ball can't draw (an outline, its
+    /// own glow size, opacity, rainbow or stretch).
     pub fn is_classic_ball(&self) -> bool {
-        self.style == Style::Glow && self.ball_shape == BallShape::Circle
+        let d = Self::default();
+        self.style == Style::Glow
+            && self.ball_shape == BallShape::Circle
+            && self.outline <= 0.0
+            && self.glow_size == d.glow_size
+            && self.opacity >= 1.0
+            && self.rainbow == 0.0
+            && self.stretch <= 0.0
     }
 
-    /// The angle in degrees the pattern inside a classic ball moving at `velocity` turns by at
-    /// `time` seconds, the way a styled ball's pattern turns with its shape: the shape's own
-    /// Turn and Spin, and the way the ball goes when the pattern turns with the ball.
-    pub fn inside_turn(&self, velocity: Vec2, time: f32) -> f32 {
-        let mut angle = self.turn + self.spin * time;
-        if self.inside.turns {
-            angle += heading(velocity).to_angle().to_degrees() + 90.0;
-        }
-        angle
+    /// Whether the shape turns to point the way the ball goes. A circle has no point, so it
+    /// never does, whatever the hidden Face motion says.
+    pub fn faces_motion(&self) -> bool {
+        self.face_motion && self.ball_shape != BallShape::Circle
     }
+
+    /// The angle in degrees the pattern inside a ball moving at `velocity` turns by on screen at
+    /// `time` seconds, on top of its own angle and spin: the shape's Turn and Spin, and the way
+    /// the ball goes when the pattern turns with the ball. A classic ball adds it to its paint.
+    pub fn inside_turn(&self, velocity: Vec2, time: f32) -> f32 {
+        self.turn + self.spin * time + self.inside_heading(velocity)
+    }
+
+    /// What a styled ball adds to its paint's angle, which is measured on the turned shape: the
+    /// way the ball goes when the pattern turns with the ball, less the shape's own turn to face
+    /// its motion, so the pattern turns only when Turns with the ball says.
+    pub fn inside_turn_on_shape(&self, velocity: Vec2) -> f32 {
+        let faced = if self.faces_motion() { facing_degrees(velocity) } else { 0.0 };
+        self.inside_heading(velocity) - faced
+    }
+
+    /// How far the pattern turns to follow the ball's way, in degrees: none unless it turns with
+    /// the ball.
+    fn inside_heading(&self, velocity: Vec2) -> f32 {
+        if self.inside.turns { facing_degrees(velocity) } else { 0.0 }
+    }
+}
+
+/// The turn, in degrees, that points something drawn pointing up the way `velocity` goes.
+fn facing_degrees(velocity: Vec2) -> f32 {
+    heading(velocity).to_angle().to_degrees() + 90.0
 }
 
 impl ModuleKind for BasicLookKind {
@@ -297,7 +332,7 @@ pub fn instance(
     let amount = look.stretch.clamp(0.0, 1.0) * (speed / STRETCH_SPEED).min(1.5);
     let along = 1.0 + amount;
     let across = 1.0 / along.sqrt();
-    let turns = look.inside.turns;
+    let turns = look.faces_motion();
     let stretches = amount > 1e-4 || turns;
     let dir = if stretches { heading } else { Vec2::X };
     let mut angle = (look.turn + look.spin * time).to_radians();
@@ -338,7 +373,7 @@ mod tests {
         assert_eq!(Style::NAMES, ["glow", "flat", "shiny"]);
         let pattern = defs.iter().find(|d| d.key == "in_pattern").unwrap();
         assert_eq!((pattern.label, pattern.group), ("Pattern", "Inside each one"));
-        for gone in ["finish", "pattern_colours", "pattern_size", "face_motion", "inside", "inside_angle"] {
+        for gone in ["finish", "pattern_colours", "pattern_size", "inside", "inside_angle"] {
             assert!(defs.iter().all(|d| d.key != gone), "{gone} is gone");
         }
     }
@@ -349,6 +384,20 @@ mod tests {
         assert!(BasicLook::default().to_params().0.is_empty(), "the defaults are not saved");
         let d = BasicLook::default();
         assert!(d.is_classic_ball(), "a new look is a glowing circle");
+        // Anything the classic ball can't draw sends it down the styled path.
+        for l in [
+            BasicLook { outline: 3.0, ..d.clone() },
+            BasicLook { glow_size: 1.2, ..d.clone() },
+            BasicLook { opacity: 0.5, ..d.clone() },
+            BasicLook { rainbow: 0.2, ..d.clone() },
+            BasicLook { stretch: 0.5, ..d.clone() },
+            BasicLook { style: Style::Shiny, ..d.clone() },
+            BasicLook { ball_shape: BallShape::Star, ..d.clone() },
+        ] {
+            assert!(!l.is_classic_ball(), "{l:?}");
+        }
+        // Turning a circle needs no shape: the classic ball turns its pattern itself.
+        assert!(BasicLook { turn: 40.0, spin: 30.0, ..d.clone() }.is_classic_ball());
         assert_eq!(d.inside.pattern, crate::paint::Pattern::None);
     }
 
@@ -375,9 +424,8 @@ mod tests {
         // The pattern stays still on screen: the quad turned a quarter turn, the pattern turns
         // back.
         assert!((fast.look[3] + FRAC_PI_2).abs() < 1e-6);
-        // Turning with the ball points the shape's tip along the way it goes instead.
-        let mut facing = BasicLook::default();
-        facing.inside.turns = true;
+        // Facing the motion points the shape's tip along the way it goes instead.
+        let facing = BasicLook { face_motion: true, ball_shape: BallShape::Star, ..BasicLook::default() };
         let faced = instance(
             &facing,
             BallColours::plain(&facing, [1.0; 4]),
@@ -390,9 +438,32 @@ mod tests {
         );
         assert_eq!(faced.stretch, [0.0, 1.0, 1.0, 1.0]);
         assert!((faced.look[3] - FRAC_PI_2).abs() < 1e-6);
-        // A classic ball's pattern turns the same way on screen: a quarter turn for the heading
-        // and a quarter turn more.
-        assert!((facing.inside_turn(Vec2::new(0.0, 10.0), 0.0) - 180.0).abs() < 1e-4);
+        // A circle has no tip: a hidden Face motion turns nothing.
+        let circle = BasicLook { ball_shape: BallShape::Circle, ..facing.clone() };
+        let still = instance(
+            &circle,
+            BallColours::plain(&circle, [1.0; 4]),
+            Vec2::ZERO,
+            Vec2::new(0.0, 10.0),
+            20.0,
+            0.0,
+            3.0,
+            0.5,
+        );
+        assert_eq!((still.stretch, still.look[3]), ([1.0, 0.0, 1.0, 1.0], 0.0));
+        // Facing the motion turns the shape, not the pattern inside: the paint turns back.
+        let down = Vec2::new(0.0, 10.0);
+        assert!((facing.inside_turn_on_shape(down) + 180.0).abs() < 1e-4);
+        // Turning with the ball turns only the pattern: a quarter turn for the heading and a
+        // quarter turn more, on a classic ball as on a styled one.
+        let mut turning = BasicLook::default();
+        turning.inside.turns = true;
+        assert!((turning.inside_turn(down, 0.0) - 180.0).abs() < 1e-4);
+        assert!((turning.inside_turn_on_shape(down) - 180.0).abs() < 1e-4);
+        let shape = instance(&turning, BallColours::plain(&turning, [1.0; 4]), Vec2::ZERO, down, 20.0, 0.0, 3.0, 0.5);
+        assert_eq!((shape.stretch, shape.look[3]), ([1.0, 0.0, 1.0, 1.0], 0.0), "the shape stays put");
+        let both = BasicLook { face_motion: true, ball_shape: BallShape::Star, ..turning };
+        assert!(both.inside_turn_on_shape(down).abs() < 1e-4, "the pattern turns with the shape");
         assert_eq!(BasicLook { turn: 30.0, spin: 10.0, ..BasicLook::default() }.inside_turn(Vec2::X, 2.0), 50.0);
     }
 
@@ -406,11 +477,10 @@ mod tests {
         // Half a turn around the wheel from red is cyan.
         assert_eq!(Color::from_linear(at1.color), Color::rgb(0, 255, 255));
         assert_eq!(at0.form[..2], [5.0, 1.0]);
-        let flat = BasicLook { style: Style::Flat, ..look.clone() };
-        let glow = BasicLook { style: Style::Glow, ..look };
-        for l in [flat, glow] {
+        for (style, code) in [(Style::Flat, 0.0), (Style::Glow, 2.0)] {
+            let l = BasicLook { style, ..look.clone() };
             let i = instance(&l, BallColours::plain(&l, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
-            assert_eq!(i.form[1], 0.0, "{:?} is unlit", l.style);
+            assert_eq!(i.form[1], code, "{style:?}");
         }
         // An additive colour keeps its mark.
         let add = instance(

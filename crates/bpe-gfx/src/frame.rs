@@ -66,7 +66,8 @@ pub struct LookInstance {
     /// Linear light; alpha -1 is additive, see [`blend_alpha`].
     pub color: [f32; 4],
     pub outline_color: [f32; 4],
-    /// Shape code, style code (1 lights it like a sphere), one spare, roundness.
+    /// Shape code, style code (0 flat, 1 shiny, 2 glow: both lit like a sphere), one spare,
+    /// roundness.
     pub form: [f32; 4],
     /// Outline width in pixels, glow brightness, opacity, angle in radians.
     pub look: [f32; 4],

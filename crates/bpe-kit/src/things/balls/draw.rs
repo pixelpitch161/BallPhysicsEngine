@@ -72,6 +72,11 @@ impl ThingDraw for BallsDraw {
                 paint = inside_gpu(&look.inside, vary_gpu(&fill, at.seed, at.time), &mut frame.gradients, time);
             }
             if !classic {
+                if painted {
+                    // Measured on the turned shape: the pattern follows the ball's way only when
+                    // it turns with the ball, not when the shape faces its motion.
+                    paint.angle += look.inside_turn_on_shape(velocity);
+                }
                 let colours =
                     BallColours { fill: color(i), outline: colour_at(&outline, &inputs.get(&outline, i)), paint };
                 frame.looks.push(basic::instance(&look, colours, center, velocity, radius, time, code, seed));
@@ -248,7 +253,19 @@ mod tests {
             p.set("style", Value::Choice("glow".into()));
         });
         assert!(!star.looks.is_empty() && star.balls.is_empty());
-        assert_eq!(star.looks[0].form[..2], [5.0, 0.0]);
+        assert_eq!(star.looks[0].form[..2], [5.0, 2.0], "a glowing star is lit like the classic ball");
+    }
+
+    #[test]
+    fn a_glow_circle_with_an_outline_draws_a_styled_glow_instance() {
+        let frame = basic_frame(|p| p.set("outline", Value::Number(3.0)));
+        assert!(frame.balls.is_empty());
+        assert_eq!(frame.looks.len(), 1);
+        assert_eq!(frame.looks[0].form[..2], [0.0, 2.0]);
+        assert_eq!(frame.looks[0].look[0], 3.0);
+        // Its default sibling still takes the classic path.
+        let plain = basic_frame(|_| {});
+        assert!(plain.looks.is_empty() && plain.balls.len() == 1);
     }
 
     #[test]

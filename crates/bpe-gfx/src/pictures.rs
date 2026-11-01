@@ -94,6 +94,40 @@ fn every_shape_and_style_draws_a_styled_ball() {
 }
 
 #[test]
+fn a_styled_glow_circle_looks_like_the_classic_ball() {
+    use crate::BallInstance;
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let (center, radius, glow) = (Vec2::new(0.0, 0.0), 200.0, 0.3);
+    let mut classic = Frame { bloom: 0.0, ..Frame::default() };
+    classic.balls.push(BallInstance {
+        center: center.into(),
+        radius,
+        glow,
+        color: PINK,
+        code: [3.0, 0.3, 0.0, 0.0],
+        paint: PaintGpu::default(),
+    });
+    let mut styled = Frame { bloom: 0.0, ..Frame::default() };
+    let mut l = look(center, radius);
+    l.form[1] = 2.0;
+    l.look[1] = glow;
+    styled.looks.push(l);
+    let Some(a) = render_sized(&classic, W, H) else { return };
+    let b = render_sized(&styled, W, H).unwrap();
+    save("glow-classic", &a, W, H);
+    save("glow-styled", &b, W, H);
+    let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+    assert!(worst <= TOLERANCE, "worst byte difference {worst}");
+}
+
+/// How far, in output bytes, a styled glowing circle may stray from the classic ball: the two
+/// shade the same, but the rim's antialiased pixels are lit from just past the edge by the
+/// classic ball and from the edge itself by the styled one, and the classic quad cuts the halo
+/// off at 3 radii where the styled one reaches a little further. Both show as at most 2 bytes.
+const TOLERANCE: u8 = 2;
+
+#[test]
 fn a_stretched_ball_reaches_further_along_its_motion() {
     const W: u32 = 270;
     const H: u32 = 480;

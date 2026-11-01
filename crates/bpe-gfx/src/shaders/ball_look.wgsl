@@ -69,4 +69,4 @@ fn ball_shape(p: vec2<f32>, shape: f32, round: f32) -> f32 {
     return abs(length(q) - 0.72) - 0.28;
 }
 
-// The fill patterns are `paint_mask` in paint.wgsl.
+// The patterns painted inside each ball are `paint_colour` in paint.wgsl.

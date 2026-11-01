@@ -8,7 +8,7 @@ struct LookIn {
     @location(2) seed: f32,
     @location(3) color: vec4<f32>,
     @location(4) outline_color: vec4<f32>,
-    // Shape, style (1 lights it like a sphere), spare, roundness.
+    // Shape, style (0 flat, 1 shiny, 2 glow), spare, roundness.
     @location(5) form: vec4<f32>,
     // Outline width in pixels, glow, opacity, angle.
     @location(6) look: vec4<f32>,
@@ -86,8 +86,10 @@ fn shade_look(in: LookOut) -> vec4<f32> {
         // What is painted inside takes the place of the ball's own colour.
         color = paint_colour(paint, p, g.view.w, in.color).rgb;
     }
+    // Style 0 is Flat (one even colour), 1 Shiny and 2 Glow. Both of the last are lit as the
+    // ball sits on screen, whichever way it is stretched; Glow the way the classic ball in
+    // scene.wgsl (`shade_ball`) is, so a glowing circle looks the same down either path.
     if in.form.y > 0.5 {
-        // Lit as the ball sits on screen, whichever way it is stretched.
         let dir = in.misc.xy;
         let screen = dir * in.local.x + vec2<f32>(-dir.y, dir.x) * in.local.y;
         color = sphere_light(screen / max(length(screen), 1.0), color);
