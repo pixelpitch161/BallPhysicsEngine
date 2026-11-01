@@ -92,18 +92,22 @@ that only matter for balls keep `when = "thing=balls"`.
 
 - **Shape** (balls): `ball_shape` Circle, Square, Triangle, Diamond, Hexagon, Star, Heart, Donut,
   plus Roundness and Outline (px) with Outline colours.
-- **Style** (balls): a new `style` choice. Glow is today's Classic ball and the default. Flat is
-  today's Solid fill. Shiny is today's Shiny fill.
+- **Style** (balls): a new `style` choice, Shiny (the default, today's Classic ball, lit like a
+  sphere) or Flat (today's Solid fill). A separate Glow style was dropped while building: the
+  Classic ball and the Styled Shiny fill shade the same way, so two names would have meant one
+  look. A Shiny circle whose Outline, Glow size, Opacity, Rainbow and Stretch are at their
+  defaults draws through today's classic ball path; anything else draws through the styled path.
+- **Face motion** (balls, not circles) stays a Shape row and turns the shape; Turns with the ball
+  (Inside) turns only the inside pattern.
 - The old `finish` patterns (Radial, Linear, Stripes, Rings, Dots, Checker, Halves, Slices,
   Swirl, Face) move into Inside (1.6).
 - Glow, Flash, Flash size, Flash time, Hue shift per hit, Glow size, Opacity, Rainbow, Stretch,
   Turn, Spin and Blending keep their meaning.
 
-Drawing: in `balls/draw.rs`, Style Glow with Shape Circle draws through today's classic ball path.
-Every other combination draws through today's styled path (`styled::instance`, `styled.wgsl`).
+Drawing: see Style above for which path a ball takes (`balls/draw.rs`, `styled.wgsl`).
 Things other than balls read the look as `look_of` does now, keeping only Colours, Inside and Glow.
 
-Defaults: a new ball's starter look is Glow, Circle, one colour, Inside None, which is today's
+Defaults: a new ball's starter look is Shiny, Circle, one colour, Inside None, which is today's
 classic default.
 
 ### 1.5 Across the group
@@ -280,7 +284,7 @@ Clicking the timeline's chord lane label also opens it.
 ## Built-in scenes
 
 `scenes.rs` and `scenes_stage5.rs` build looks with `look.basic`. A Classic look becomes Style
-Glow. A Styled look's `finish` maps to Style plus Inside:
+Shiny. A Styled look's `finish` maps to Style plus Inside:
 
 - Solid becomes Style Flat, Inside None.
 - Shiny becomes Style Shiny, Inside None.
