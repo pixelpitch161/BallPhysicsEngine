@@ -107,12 +107,20 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
 /// nothing). Things are checked parents first, so a folder that gets its copy keeps its
 /// followers' view the same.
 pub fn keep_followers(scene: &mut Scene, reg: &Registry, before: &Resolved) {
+    // Followers: slots that came from a thing above, and that the thing still leaves to the
+    // folder (marked to follow, or never set at all).
     let following: Vec<(ThingId, SlotId)> = scene
         .order
         .iter()
         .flat_map(|id| {
             let thing = &scene.things[id];
-            thing.slots.iter().filter(|(_, l)| matches!(l, SlotLink::Inherit)).map(move |(s, _)| (*id, *s))
+            let was = before.things.get(id);
+            was.into_iter()
+                .flat_map(|t| t.slots.iter())
+                .filter(move |(slot, r)| {
+                    r.from != *id && matches!(thing.slots.get(slot), None | Some(SlotLink::Inherit))
+                })
+                .map(move |(slot, _)| (*id, *slot))
         })
         .collect();
     for (id, slot) in following {
@@ -124,8 +132,16 @@ pub fn keep_followers(scene: &mut Scene, reg: &Registry, before: &Resolved) {
         if now.is_some_and(|n| n.kind == was.kind && n.params == was.params) {
             continue;
         }
-        let _ = scene.own_copy(reg, id, slot, was.module);
+        let _ = scene.own_copy(reg, id, slot, was.module, was.params.clone());
     }
+}
+
+/// Puts `ids` in a new folder (see [`Scene::make_folder`]), keeping what every follower uses.
+pub fn make_folder(scene: &mut Scene, reg: &Registry, ids: &[ThingId]) -> Result<ThingId, EditError> {
+    let before = resolve(scene, reg);
+    let folder = scene.make_folder(reg, ids)?;
+    keep_followers(scene, reg, &before);
+    Ok(folder)
 }
 
 /// Moves `id` (and what hangs under it) to `parent`, keeping what every follower uses.
@@ -321,6 +337,37 @@ mod tests {
         assert_eq!(before.as_ref().and_then(|p| p.get("glow")), Some(&Value::Number(0.25)));
         move_thing(&mut scene, &reg, folder, ThingId::ROOT, Attach::Group).unwrap();
         assert_eq!(effective(&scene, &reg, deep, SlotId::Look), before);
+        assert_eq!(effective(&scene, &reg, balls, SlotId::Look), before);
+    }
+
+    #[test]
+    fn a_follower_with_no_entry_for_the_slot_keeps_it_when_moved() {
+        let reg = registry();
+        let mut scene = Scene::empty(&reg);
+        let folder = add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
+        let balls = add_thing(&mut scene, &reg, "balls", folder).unwrap();
+        // The trail is added to the folder after the balls, so the balls have no trail entry.
+        fill_slot(&mut scene, &reg, folder, SlotId::Trail).unwrap();
+        assert!(!scene.things[&balls].slots.contains_key(&SlotId::Trail));
+        let before = effective(&scene, &reg, balls, SlotId::Trail);
+        assert!(before.is_some());
+        move_thing(&mut scene, &reg, balls, ThingId::ROOT, Attach::Group).unwrap();
+        assert_eq!(effective(&scene, &reg, balls, SlotId::Trail), before);
+    }
+
+    #[test]
+    fn making_a_folder_keeps_the_looks_of_things_taken_from_another_folder() {
+        let reg = registry();
+        let mut scene = Scene::empty(&reg);
+        // The loose balls come first, so the new folder goes where they are, outside the folder.
+        let loose = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let folder = add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
+        fill_slot(&mut scene, &reg, folder, SlotId::Look).unwrap();
+        let balls = add_thing(&mut scene, &reg, "balls", folder).unwrap();
+        let before = effective(&scene, &reg, balls, SlotId::Look);
+        let made = make_folder(&mut scene, &reg, &[loose, balls]).unwrap();
+        assert_eq!(scene.things[&made].parent, Some(ThingId::ROOT));
+        assert_eq!(scene.things[&balls].parent, Some(made));
         assert_eq!(effective(&scene, &reg, balls, SlotId::Look), before);
     }
 

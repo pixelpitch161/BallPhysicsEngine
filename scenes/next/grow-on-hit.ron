@@ -18,10 +18,10 @@
                     module: 7,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 12,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 13,
                 ),
             },
         ),
@@ -45,10 +45,10 @@
                     module: 8,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 14,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 15,
                 ),
                 Rules: Linked(
                     module: 11,
@@ -86,28 +86,14 @@
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
             8: (
                 id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            10: (
-                id: 10,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "chords": Int(0),
-                    "instrument": Int(0),
-                },
+                owner: Some(2),
             ),
             11: (
                 id: 11,
@@ -189,6 +175,43 @@
                         (4, "add"),
                     ],
                 )),
+                owner: Some(2),
+            ),
+            12: (
+                id: 12,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            13: (
+                id: 13,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            14: (
+                id: 14,
+                name: "Trio bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            15: (
+                id: 15,
+                name: "Trio sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -370,7 +393,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 12,
+    next_module: 16,
     next_progression: 1,
     next_instrument: 1,
 )

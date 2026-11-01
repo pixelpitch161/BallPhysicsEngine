@@ -72,10 +72,10 @@
                     module: 11,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 19,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 20,
                 ),
             },
         ),
@@ -101,13 +101,13 @@
                     module: 3,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 21,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 22,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 23,
                 ),
             },
         ),
@@ -132,13 +132,13 @@
                     module: 16,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 24,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 25,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 26,
                 ),
             },
         ),
@@ -167,7 +167,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 27,
                 ),
             },
         ),
@@ -187,7 +187,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 28,
                 ),
             },
         ),
@@ -238,34 +238,6 @@
                 },
                 owner: Some(2),
             ),
-            7: (
-                id: 7,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            8: (
-                id: 8,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            10: (
-                id: 10,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "chords": Int(0),
-                    "instrument": Int(0),
-                },
-            ),
             11: (
                 id: 11,
                 name: "Wall look",
@@ -294,6 +266,7 @@
                     "repeat": Choice("mirror"),
                     "scroll": Number(0.07999999821186066),
                 },
+                owner: Some(1),
             ),
             16: (
                 id: 16,
@@ -331,6 +304,89 @@
                     "follow": Choice("order"),
                     "glow": Number(0.0),
                 },
+                owner: Some(3),
+            ),
+            19: (
+                id: 19,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            20: (
+                id: 20,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            21: (
+                id: 21,
+                name: "Sunset balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            22: (
+                id: 22,
+                name: "Sunset balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            23: (
+                id: 23,
+                name: "Sunset balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            24: (
+                id: 24,
+                name: "Glow balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            25: (
+                id: 25,
+                name: "Glow balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            26: (
+                id: 26,
+                name: "Glow balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(3),
+            ),
+            27: (
+                id: 27,
+                name: "Title look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(4),
+            ),
+            28: (
+                id: 28,
+                name: "Caption look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(5),
             ),
         },
         progressions: {
@@ -512,7 +568,7 @@
         ],
     ),
     next_thing: 6,
-    next_module: 19,
+    next_module: 29,
     next_progression: 1,
     next_instrument: 1,
     tracks: {

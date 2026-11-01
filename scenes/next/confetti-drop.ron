@@ -22,13 +22,13 @@
                     module: 11,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 12,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 13,
                 ),
                 Particles: Linked(
-                    module: 12,
+                    module: 18,
                 ),
             },
         ),
@@ -53,19 +53,19 @@
                     module: 3,
                 ),
                 Trail: Linked(
-                    module: 13,
+                    module: 17,
                 ),
                 Motion: Linked(
                     module: 8,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 14,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 15,
                 ),
                 Particles: Linked(
-                    module: 12,
+                    module: 19,
                 ),
             },
         ),
@@ -125,22 +125,7 @@
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            10: (
-                id: 10,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "chords": Int(0),
-                    "instrument": Int(0),
-                },
+                owner: Some(2),
             ),
             11: (
                 id: 11,
@@ -158,10 +143,59 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(1),
             ),
             12: (
                 id: 12,
-                name: "Confetti",
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            13: (
+                id: 13,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            14: (
+                id: 14,
+                name: "Block bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            15: (
+                id: 15,
+                name: "Block sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            17: (
+                id: 17,
+                name: "Short streaks",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "brightness": Number(0.3499999940395355),
+                    "seconds": Number(0.20000000298023224),
+                    "width": Number(0.6000000238418579),
+                },
+                owner: Some(2),
+            ),
+            18: (
+                id: 18,
+                name: "Arena particles",
                 slot: Particles,
                 kind: "particles.burst",
                 params: {
@@ -174,17 +208,24 @@
                     "size": Number(4.0),
                     "speed": Number(260.0),
                 },
+                owner: Some(1),
             ),
-            13: (
-                id: 13,
-                name: "Short streaks",
-                slot: Trail,
-                kind: "trail.streak",
+            19: (
+                id: 19,
+                name: "Block particles",
+                slot: Particles,
+                kind: "particles.burst",
                 params: {
-                    "brightness": Number(0.3499999940395355),
-                    "seconds": Number(0.20000000298023224),
-                    "width": Number(0.6000000238418579),
+                    "blend": Choice("normal"),
+                    "count": Int(5),
+                    "drag": Number(1.5),
+                    "gravity": Number(500.0),
+                    "life": Number(1.2000000476837158),
+                    "preset": Choice("confetti"),
+                    "size": Number(4.0),
+                    "speed": Number(260.0),
                 },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -366,7 +407,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 14,
+    next_module: 20,
     next_progression: 1,
     next_instrument: 1,
 )

@@ -21,13 +21,13 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 15,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 16,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 17,
                 ),
             },
         ),
@@ -56,13 +56,13 @@
                     module: 3,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 18,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 19,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 20,
                 ),
             },
         ),
@@ -88,16 +88,16 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 21,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 22,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 23,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 24,
                 ),
             },
         ),
@@ -158,33 +158,87 @@
                 },
                 owner: Some(2),
             ),
-            7: (
-                id: 7,
-                name: "Plain look",
+            15: (
+                id: 15,
+                name: "Arena look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
-            8: (
-                id: 8,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
+            16: (
+                id: 16,
+                name: "Arena bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
+                owner: Some(1),
             ),
-            10: (
-                id: 10,
-                name: "Default sound",
+            17: (
+                id: 17,
+                name: "Arena sound",
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
                     "chords": Int(0),
                     "instrument": Int(0),
                 },
+                owner: Some(1),
+            ),
+            18: (
+                id: 18,
+                name: "Feathers motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            19: (
+                id: 19,
+                name: "Feathers bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            20: (
+                id: 20,
+                name: "Feathers sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            21: (
+                id: 21,
+                name: "Stones look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(3),
+            ),
+            22: (
+                id: 22,
+                name: "Stones motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            23: (
+                id: 23,
+                name: "Stones bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            24: (
+                id: 24,
+                name: "Stones sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(3),
             ),
         },
         progressions: {
@@ -366,7 +420,7 @@
         ],
     ),
     next_thing: 6,
-    next_module: 15,
+    next_module: 25,
     next_progression: 1,
     next_instrument: 1,
 )

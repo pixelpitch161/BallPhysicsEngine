@@ -27,10 +27,10 @@
                     module: 7,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 11,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 12,
                 ),
             },
         ),
@@ -58,10 +58,10 @@
                     module: 8,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 13,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 14,
                 ),
             },
         ),
@@ -106,16 +106,18 @@
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
             8: (
                 id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
+                owner: Some(2),
             ),
-            9: (
-                id: 9,
-                name: "Default bounce",
+            11: (
+                id: 11,
+                name: "Arena bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
                 params: {
@@ -123,10 +125,11 @@
                     "friction": Number(0.30000001192092896),
                     "hit_balls": Bool(true),
                 },
+                owner: Some(1),
             ),
-            10: (
-                id: 10,
-                name: "Default sound",
+            12: (
+                id: 12,
+                name: "Arena sound",
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
@@ -134,6 +137,31 @@
                     "instrument": Int(0),
                     "min_gap": Number(0.029999999329447746),
                 },
+                owner: Some(1),
+            ),
+            13: (
+                id: 13,
+                name: "Pit bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "bounciness": Number(0.5),
+                    "friction": Number(0.30000001192092896),
+                    "hit_balls": Bool(true),
+                },
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
+                name: "Pit sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                    "min_gap": Number(0.029999999329447746),
+                },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -315,7 +343,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 11,
+    next_module: 15,
     next_progression: 1,
     next_instrument: 1,
 )

@@ -38,7 +38,7 @@ pub fn save_in(dir: &Path, module: &Module) -> anyhow::Result<PathBuf> {
         .map(|n| if n == 1 { dir.join(format!("{stem}.ron")) } else { dir.join(format!("{stem}-{n}.ron")) })
         .find(|p| !p.exists())
         .expect("some number is free");
-    let preset = Module { id: ModuleId(0), ..module.clone() };
+    let preset = Module { id: ModuleId(0), owner: None, ..module.clone() };
     let text = ron::ser::to_string_pretty(&preset, ron::ser::PrettyConfig::default())?;
     std::fs::write(&path, text)?;
     Ok(path)
@@ -54,7 +54,7 @@ pub fn add_to_scene(scene: &mut Scene, module: &Module) -> ModuleId {
     let id = ModuleId(scene.next_module);
     scene.next_module += 1;
     let name = free_name(scene, module.slot, &module.name);
-    scene.library.modules.insert(id, Module { id, name, ..module.clone() });
+    scene.library.modules.insert(id, Module { id, name, owner: None, ..module.clone() });
     id
 }
 
@@ -140,6 +140,18 @@ mod tests {
         assert_eq!(added.slot, SlotId::Look);
         let again = add_to_scene(&mut scene, &preset);
         assert_eq!(scene.library.modules[&again].name, "Neon (3)");
+    }
+
+    #[test]
+    fn a_saved_or_added_preset_belongs_to_no_thing() {
+        let dir = temp_dir("owner");
+        let (mut scene, module) = neon();
+        let owned = Module { owner: Some(bpe_core::ThingId::ROOT), ..module };
+        let saved = save_in(&dir, &owned).unwrap();
+        assert_eq!(list_in(&dir)[0].module.owner, None, "{saved:?}");
+        let id = add_to_scene(&mut scene, &owned);
+        assert_eq!(scene.library.modules[&id].owner, None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

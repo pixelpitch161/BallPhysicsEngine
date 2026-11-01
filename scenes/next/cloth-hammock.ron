@@ -25,10 +25,10 @@
                     module: 7,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 16,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 17,
                 ),
             },
         ),
@@ -53,13 +53,13 @@
                     module: 3,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 18,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 19,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 20,
                 ),
             },
         ),
@@ -85,13 +85,13 @@
                     module: 15,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 21,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 22,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 23,
                 ),
             },
         ),
@@ -127,28 +127,7 @@
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
-            ),
-            8: (
-                id: 8,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            10: (
-                id: 10,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "chords": Int(0),
-                    "instrument": Int(0),
-                },
+                owner: Some(1),
             ),
             15: (
                 id: 15,
@@ -166,6 +145,75 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(3),
+            ),
+            16: (
+                id: 16,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            17: (
+                id: 17,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            18: (
+                id: 18,
+                name: "Balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            19: (
+                id: 19,
+                name: "Balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            20: (
+                id: 20,
+                name: "Balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            21: (
+                id: 21,
+                name: "Cloth motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            22: (
+                id: 22,
+                name: "Cloth bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            23: (
+                id: 23,
+                name: "Cloth sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(3),
             ),
         },
         progressions: {
@@ -347,7 +395,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 16,
+    next_module: 24,
     next_progression: 1,
     next_instrument: 1,
 )

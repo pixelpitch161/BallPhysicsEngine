@@ -30,6 +30,7 @@ pub fn stage5_with_twins(reg: &Registry) -> Vec<(String, Scene, String)> {
             let (twin_name, mut scene) = twins[*twin].clone();
             scene.name = (*name).into();
             build(reg, &mut scene);
+            super::own_everything(&mut scene);
             ((*name).to_owned(), scene, twin_name)
         })
         .collect()

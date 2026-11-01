@@ -57,7 +57,7 @@ pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
     uses_live_inputs, wants_beats, warp_for,
 };
-pub use starters::{add_thing, fill_slot, keep_followers, move_thing};
+pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};

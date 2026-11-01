@@ -719,7 +719,10 @@ pub fn show(
         let reslotted = matches!(edit, Edit::Link(..) | Edit::NewModule { .. } | Edit::Follow(_) | Edit::Off(_));
         let before = (reslotted && !scene.children(id).is_empty()).then(|| bpe_core::resolve(scene, reg));
         let ok = match edit {
-            Edit::Name(name) => set_thing(scene, id, |t| t.name = name),
+            Edit::Name(name) => {
+                scene.set_thing_name(id, &name);
+                true
+            }
             Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
             Edit::Instrument(iid, i) => scene.set_instrument(iid, i).is_ok(),
             Edit::Macro(module, key, value) => scene.set_macro(module, &key, value).is_ok(),
@@ -1974,6 +1977,21 @@ mod tests {
         let s = h.state();
         assert_ne!(s.scene.library.modules[&motion].params, before, "the ball's own motion changed");
         assert_eq!(linked(&s.scene, ThingId(2), SlotId::Motion), motion);
+    }
+
+    #[test]
+    fn typing_a_new_name_renames_the_things_starters() {
+        let mut h = harness(Some(ThingId(2)));
+        let field = h.get_by_label("Name");
+        field.click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("Hero".into()));
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.things[&ThingId(2)].name, "Hero");
+        let look = linked(&s.scene, ThingId(2), SlotId::Look);
+        assert_eq!(s.scene.library.modules[&look].name, "Hero look");
     }
 
     #[test]

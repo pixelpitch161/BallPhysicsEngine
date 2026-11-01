@@ -228,7 +228,7 @@ pub fn show(
                 out.added = Some(id);
             }
         }
-        Some(Action::Folder(ids)) => match scene.make_folder(reg, &ids) {
+        Some(Action::Folder(ids)) => match bpe_kit::make_folder(scene, reg, &ids) {
             Ok(folder) => {
                 selection.set(folder);
                 out.edited = true;
@@ -274,7 +274,10 @@ pub(crate) fn link_dropped(
     module: ModuleId,
 ) -> Result<(), EditError> {
     let slot = scene.library.modules.get(&module).ok_or(EditError::MissingModule(module))?.slot;
-    scene.link(reg, onto, slot, module)
+    let before = bpe_core::resolve(scene, reg);
+    scene.link(reg, onto, slot, module)?;
+    bpe_kit::keep_followers(scene, reg, &before);
+    Ok(())
 }
 
 /// Where in a row a drop lands: the top quarter puts the thing before the row, the bottom
@@ -1382,6 +1385,49 @@ mod tests {
             matches!(scene.things[&f].slots[&SlotId::Look], bpe_core::SlotLink::Linked { module, .. } if module == look)
         );
         assert!(matches!(link_dropped(&mut scene, &kit.registry, f, ModuleId(99)), Err(EditError::MissingModule(_))));
+    }
+
+    #[test]
+    fn dropping_a_module_on_a_folder_keeps_its_followers_looks() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let folder = bpe_kit::add_thing(&mut scene, reg, "folder", ThingId::ROOT).unwrap();
+        bpe_kit::fill_slot(&mut scene, reg, folder, SlotId::Look).unwrap();
+        let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
+        let other = scene.add_module(reg, "look.classic", "Other").unwrap();
+        scene.library.modules.get_mut(&other).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
+        let look = |s: &Scene| bpe_core::resolve_slot(s, reg, balls, SlotId::Look, &mut Vec::new()).map(|r| r.params);
+        let before = look(&scene);
+        link_dropped(&mut scene, reg, folder, other).unwrap();
+        assert_eq!(look(&scene), before);
+    }
+
+    #[test]
+    fn making_a_folder_from_the_tree_keeps_looks() {
+        let mut h = harness();
+        let f = add_folder(&mut h);
+        let before = {
+            let s = h.state_mut();
+            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Folder look").unwrap();
+            s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
+            s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
+            s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            // The arena comes first, so the new folder goes where it is, outside the folder.
+            s.selection.set(ThingId(1));
+            s.selection.extra.insert(ThingId(2));
+            s.resolved.things[&ThingId(2)].slots[&SlotId::Look].params.clone()
+        };
+        h.run();
+        h.get_by_label("Arena").click_secondary();
+        h.run();
+        h.get_by_label("Make folder from selection").click();
+        h.run();
+        let s = h.state();
+        assert_ne!(s.scene.things[&ThingId(2)].parent, Some(f));
+        let now = bpe_core::resolve_slot(&s.scene, &s.kit.registry, ThingId(2), SlotId::Look, &mut Vec::new());
+        assert_eq!(now.map(|r| r.params), Some(before));
     }
 
     #[test]

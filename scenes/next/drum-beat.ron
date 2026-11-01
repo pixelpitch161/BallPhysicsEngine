@@ -12,7 +12,7 @@
             },
             slots: {
                 Sound: Linked(
-                    module: 11,
+                    module: 14,
                 ),
             },
         ),
@@ -28,13 +28,13 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 15,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 16,
                 ),
                 Sound: Linked(
-                    module: 11,
+                    module: 17,
                 ),
             },
         ),
@@ -59,7 +59,7 @@
                     module: 8,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 18,
                 ),
                 Sound: Linked(
                     module: 12,
@@ -82,7 +82,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 19,
                 ),
             },
         ),
@@ -113,33 +113,12 @@
                 },
                 owner: Some(2),
             ),
-            7: (
-                id: 7,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
             8: (
                 id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            11: (
-                id: 11,
-                name: "Drum machine",
-                slot: Sound,
-                kind: "sound.drums",
-                params: {
-                    "beat_volume": Number(-4.0),
-                    "on_beat": Choice("auto"),
-                },
+                owner: Some(2),
             ),
             12: (
                 id: 12,
@@ -150,6 +129,57 @@
                     "instrument": Int(1),
                     "volume": Number(-2.0),
                 },
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
+                name: "Scene settings sound",
+                slot: Sound,
+                kind: "sound.drums",
+                params: {
+                    "beat_volume": Number(-4.0),
+                    "on_beat": Choice("auto"),
+                },
+                owner: Some(0),
+            ),
+            15: (
+                id: 15,
+                name: "Arena look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(1),
+            ),
+            16: (
+                id: 16,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            17: (
+                id: 17,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.drums",
+                params: {
+                    "beat_volume": Number(-4.0),
+                    "on_beat": Choice("auto"),
+                },
+                owner: Some(1),
+            ),
+            18: (
+                id: 18,
+                name: "Ball bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            19: (
+                id: 19,
+                name: "Clock look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(3),
             ),
         },
         progressions: {
@@ -496,7 +526,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 14,
+    next_module: 20,
     next_progression: 1,
     next_instrument: 2,
 )

@@ -49,10 +49,10 @@
                     module: 11,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 48,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 49,
                 ),
             },
         ),
@@ -78,13 +78,13 @@
                     module: 46,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 50,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 51,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 52,
                 ),
             },
         ),
@@ -110,13 +110,13 @@
                     module: 16,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 53,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 54,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 55,
                 ),
             },
         ),
@@ -135,7 +135,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 56,
                 ),
             },
         ),
@@ -161,13 +161,13 @@
                     module: 22,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 57,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 58,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 59,
                 ),
             },
         ),
@@ -186,7 +186,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 60,
                 ),
             },
         ),
@@ -212,13 +212,13 @@
                     module: 28,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 61,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 62,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 63,
                 ),
             },
         ),
@@ -237,7 +237,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 64,
                 ),
             },
         ),
@@ -263,13 +263,13 @@
                     module: 34,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 65,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 66,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 67,
                 ),
             },
         ),
@@ -288,7 +288,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 68,
                 ),
             },
         ),
@@ -311,10 +311,10 @@
                     module: 39,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 69,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 70,
                 ),
             },
         ),
@@ -342,13 +342,13 @@
                     module: 45,
                 ),
                 Motion: Linked(
-                    module: 8,
+                    module: 71,
                 ),
                 Bounce: Linked(
-                    module: 9,
+                    module: 72,
                 ),
                 Sound: Linked(
-                    module: 10,
+                    module: 73,
                 ),
             },
         ),
@@ -377,7 +377,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 7,
+                    module: 74,
                 ),
             },
         ),
@@ -418,39 +418,12 @@
                 },
                 owner: Some(2),
             ),
-            7: (
-                id: 7,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            8: (
-                id: 8,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            9: (
-                id: 9,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
-            10: (
-                id: 10,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "chords": Int(0),
-                    "instrument": Int(0),
-                },
-            ),
             11: (
                 id: 11,
                 name: "Rim look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
             16: (
                 id: 16,
@@ -478,6 +451,7 @@
                     )),
                     "follow": Choice("order"),
                 },
+                owner: Some(3),
             ),
             22: (
                 id: 22,
@@ -505,6 +479,7 @@
                     )),
                     "follow": Choice("order"),
                 },
+                owner: Some(5),
             ),
             28: (
                 id: 28,
@@ -532,6 +507,7 @@
                     )),
                     "follow": Choice("order"),
                 },
+                owner: Some(7),
             ),
             34: (
                 id: 34,
@@ -559,6 +535,7 @@
                     )),
                     "follow": Choice("order"),
                 },
+                owner: Some(9),
             ),
             39: (
                 id: 39,
@@ -577,6 +554,7 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(11),
             ),
             44: (
                 id: 44,
@@ -586,6 +564,7 @@
                 params: {
                     "glow": Number(0.6000000238418579),
                 },
+                owner: Some(12),
             ),
             45: (
                 id: 45,
@@ -615,6 +594,7 @@
                     "source": Choice("own"),
                     "width": Number(0.800000011920929),
                 },
+                owner: Some(12),
             ),
             46: (
                 id: 46,
@@ -634,6 +614,228 @@
                     "vary_hue": Number(25.0),
                     "wobble": Number(0.5),
                 },
+                owner: Some(2),
+            ),
+            48: (
+                id: 48,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            49: (
+                id: 49,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            50: (
+                id: 50,
+                name: "Drifters motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            51: (
+                id: 51,
+                name: "Drifters bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            52: (
+                id: 52,
+                name: "Drifters sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            53: (
+                id: 53,
+                name: "Screen motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            54: (
+                id: 54,
+                name: "Screen bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            55: (
+                id: 55,
+                name: "Screen sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(3),
+            ),
+            56: (
+                id: 56,
+                name: "Screen label look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(4),
+            ),
+            57: (
+                id: 57,
+                name: "Difference motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(5),
+            ),
+            58: (
+                id: 58,
+                name: "Difference bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(5),
+            ),
+            59: (
+                id: 59,
+                name: "Difference sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(5),
+            ),
+            60: (
+                id: 60,
+                name: "Difference label look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(6),
+            ),
+            61: (
+                id: 61,
+                name: "Overlay motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(7),
+            ),
+            62: (
+                id: 62,
+                name: "Overlay bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(7),
+            ),
+            63: (
+                id: 63,
+                name: "Overlay sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(7),
+            ),
+            64: (
+                id: 64,
+                name: "Overlay label look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(8),
+            ),
+            65: (
+                id: 65,
+                name: "Multiply motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(9),
+            ),
+            66: (
+                id: 66,
+                name: "Multiply bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(9),
+            ),
+            67: (
+                id: 67,
+                name: "Multiply sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(9),
+            ),
+            68: (
+                id: 68,
+                name: "Multiply label look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(10),
+            ),
+            69: (
+                id: 69,
+                name: "Subtract bar bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(11),
+            ),
+            70: (
+                id: 70,
+                name: "Subtract bar sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(11),
+            ),
+            71: (
+                id: 71,
+                name: "Comets motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(12),
+            ),
+            72: (
+                id: 72,
+                name: "Comets bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(12),
+            ),
+            73: (
+                id: 73,
+                name: "Comets sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(12),
+            ),
+            74: (
+                id: 74,
+                name: "Title look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(13),
             ),
         },
         progressions: {
@@ -815,7 +1017,7 @@
         ],
     ),
     next_thing: 14,
-    next_module: 48,
+    next_module: 75,
     next_progression: 1,
     next_instrument: 1,
 )
