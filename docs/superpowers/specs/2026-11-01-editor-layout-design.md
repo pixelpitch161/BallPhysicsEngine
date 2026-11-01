@@ -171,8 +171,8 @@ It changes to:
 
 - Every `SettingDef` of a module kind names a `group`. Ungrouped rows are allowed only in a thing
   kind's own card, and show first there.
-- Groups are ordered by a fixed list, `widgets::SECTION_ORDER`: Basics, Shape, Style, Burst, Each
-  particle, Across the group, Colours, Inside each one, Light, Motion, Growing, Instrument, Notes,
+- Groups are ordered by a fixed list, `bpe_core::settings::SECTION_ORDER`: Basics, Shape, Style, Burst, Each
+  particle, Across the group, Colours, Inside each one, Surface (Liquid surface), Light, Motion, Growing, Instrument, Notes,
   Which hits, Level, Chords, Other balls, Against some things, Variation, Channel, Blending. A
   prefixed paint's variation (for example "Outline colours variation") sorts with Variation.
   Unknown groups go last in appearance order, and a debug assert names them.
