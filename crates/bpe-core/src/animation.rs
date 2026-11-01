@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(Value::Bool(false).lerp(&Value::Bool(true), 1.0), Value::Bool(true));
     }
 
-    /// Scene defaults with a Plain look, and two balls things linking a second look module.
+    /// Scene settings with a Plain look, and two balls things linking a second look module.
     fn scene() -> (Registry, Scene, ModuleId, ThingId, ThingId) {
         let reg = testkit::registry();
         let mut scene = Scene::empty(&reg);

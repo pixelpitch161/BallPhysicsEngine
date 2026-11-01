@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct ThingId(pub u32);
 
 impl ThingId {
-    /// Scene defaults, the root of every scene's tree.
+    /// The scene settings, the root of every scene's tree.
     pub const ROOT: ThingId = ThingId(0);
 }
 

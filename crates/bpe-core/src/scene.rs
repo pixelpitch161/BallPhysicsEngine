@@ -76,7 +76,7 @@ pub struct Thing {
     pub kind: KindId,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub tags: BTreeSet<String>,
-    /// `None` only for Scene defaults.
+    /// `None` only for the scene settings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ThingId>,
     #[serde(skip_serializing_if = "is_default")]
@@ -256,10 +256,10 @@ impl Scene {
     }
 
     /// Puts a scene that was edited by hand back in shape, so every later step can trust it: ids
-    /// match their map keys, Scene defaults is the root with no parent, things whose parent is
-    /// missing or part of a loop move under Scene defaults, and `order` lists every thing once with
+    /// match their map keys, the scene settings are the root with no parent, things whose parent is
+    /// missing or part of a loop move under the scene settings, and `order` lists every thing once with
     /// each thing after its parent, keeping the old order among siblings. Returns `false` when there
-    /// is no Scene defaults to hang the tree on; the scene is then unusable.
+    /// are no scene settings to hang the tree on; the scene is then unusable.
     pub fn mend(&mut self) -> bool {
         for (id, t) in &mut self.things {
             t.id = *id;

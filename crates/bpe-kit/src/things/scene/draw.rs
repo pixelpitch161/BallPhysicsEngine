@@ -1,4 +1,4 @@
-//! Scene defaults in the picture: its size, background, bloom and exposure.
+//! Scene settings in the picture: its size, background, bloom and exposure.
 
 use bpe_core::Settings;
 use bpe_gfx::{DrawCx, Frame, ThingDraw};

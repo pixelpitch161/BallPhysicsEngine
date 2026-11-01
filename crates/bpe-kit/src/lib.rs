@@ -170,12 +170,24 @@ pub fn flow_source<'a>(
 }
 
 /// What the mixer needs from the root's settings, and every thing's tags.
+/// The progression the whole song follows: that of the first thing in the tree whose sound picks
+/// one from the library, else the library's first, else none (the built-in starter).
+fn song_chords(scene: &Scene, resolved: &Resolved) -> bpe_core::ProgressionRef {
+    let picked = scene.order.iter().find_map(|id| {
+        let params = &resolved.things.get(id)?.slots.get(&SlotId::Sound)?.params;
+        let p = <bpe_core::ProgressionRef as bpe_core::SettingValue>::from_value(params.get("chords")?)?.0?;
+        scene.library.progressions.contains_key(&p).then_some(p)
+    });
+    bpe_core::ProgressionRef(picked.or_else(|| scene.library.progressions.keys().next().copied()))
+}
+
 pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
     let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
     MixSettings {
         duration: root.duration,
         steps_per_second: root.steps_per_second,
         progressions: scene.library.progressions.clone(),
+        chords: song_chords(scene, resolved),
         beats: music::chord_beats(&root),
         master: bpe_mix::MasterSettings {
             loudness: root.loudness,
@@ -351,7 +363,7 @@ pub fn camera_of(scene: &Scene) -> Option<ThingId> {
     scene.order.iter().copied().find(|id| scene.things.get(id).is_some_and(|t| t.kind == "camera"))
 }
 
-/// The scene's camera, added under Scene defaults when it has none. It is always the newest
+/// The scene's camera, added under Scene settings when it has none. It is always the newest
 /// thing, so no other thing's id moves, and nothing else changes.
 pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     if let Some(id) = camera_of(scene) {
@@ -411,6 +423,17 @@ mod tests {
             bpe_mix::instrument_for(&settings, None, 0),
             bpe_mix::InstrumentChoice::BuiltIn { which: bpe_mix::Instrument::Pluck, decay: 0.9, brightness: 0.5 }
         );
+    }
+
+    #[test]
+    fn the_songs_chords_are_the_first_sounding_things() {
+        let reg = registry();
+        let (_, scene) = crate::scenes::all(&reg).into_iter().find(|(n, _)| n == "Drum beat").unwrap();
+        let settings = mix_settings(&scene, &resolve(&scene, &reg));
+        assert_eq!(settings.progression(settings.chords).name, "Epic minor", "the MIDI and the patches' chords");
+        let new = new_scene(&reg);
+        let settings = mix_settings(&new, &resolve(&new, &reg));
+        assert_eq!(settings.progression(settings.chords).name, "Starter");
     }
 
     #[test]

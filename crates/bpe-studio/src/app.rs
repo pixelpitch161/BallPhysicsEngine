@@ -983,8 +983,8 @@ mod tests {
     fn a_new_caption_lands_in_the_middle_of_the_picture() {
         let mut studio = Studio::headless();
         studio.view_centre = glam::Vec2::new(5000.0, -300.0);
-        let text = studio.scene.add_thing(&studio.kit.registry, "text", ThingId::ROOT).unwrap();
-        let balls = studio.scene.add_thing(&studio.kit.registry, "balls", ThingId::ROOT).unwrap();
+        let text = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "text", ThingId::ROOT).unwrap();
+        let balls = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "balls", ThingId::ROOT).unwrap();
         studio.place_added(text);
         studio.place_added(balls);
         assert_eq!(studio.scene.things[&text].transform.position, glam::Vec2::ZERO);
@@ -1005,7 +1005,7 @@ mod tests {
         let mut studio = Studio::headless();
         studio.seek(2.0);
         let before = studio.scene.clone();
-        // Module ids start at 0: the root's "Plain look" is the first module the new scene adds.
+        // Module ids start at 0: the arena's look is the first module the new scene adds.
         let look = Address { owner: Owner::Module(ModuleId(0)), slot: None, key: "glow".into() };
         studio.scene.set_at(&studio.kit.registry, &look, Value::Number(1.0)).unwrap();
         studio.after_edit(before);

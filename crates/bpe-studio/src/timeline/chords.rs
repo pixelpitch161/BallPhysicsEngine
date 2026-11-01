@@ -14,19 +14,14 @@ pub fn chord_spans(p: &bpe_core::Progression, beats: &[f64], duration: f64) -> V
     ChordClock::new(p, beats).spans(duration)
 }
 
-/// The progression the selection's sound plays: its Sound module's own pick, else Scene
-/// defaults'.
+/// The progression the selection's sound plays, else that of the first thing in the tree whose
+/// sound plays one from the library.
 fn shown(studio: &Studio) -> Option<bpe_core::ProgressionId> {
-    let chords_of = |id: ThingId, slot: Option<SlotId>| {
-        let thing = studio.resolved.things.get(&id)?;
-        let params = match slot {
-            Some(slot) => &thing.slots.get(&slot)?.params,
-            None => &thing.params,
-        };
-        ProgressionRef::from_value(params.get("chords")?)?.0
+    let chords_of = |id: &ThingId| {
+        let params = &studio.resolved.things.get(id)?.slots.get(&SlotId::Sound)?.params;
+        ProgressionRef::from_value(params.get("chords")?)?.0.filter(|p| studio.scene.library.progressions.contains_key(p))
     };
-    let own = studio.selection.primary.and_then(|id| chords_of(id, Some(SlotId::Sound)));
-    own.or_else(|| chords_of(ThingId::ROOT, None)).filter(|p| studio.scene.library.progressions.contains_key(p))
+    studio.selection.primary.as_ref().and_then(chords_of).or_else(|| studio.scene.order.iter().find_map(chords_of))
 }
 
 pub(super) fn show(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
@@ -73,6 +68,7 @@ fn draw_block(ui: &mut Ui, block: Rect, c: &Chord, key: MusicKey, id: egui::Id, 
 mod tests {
     use super::super::show as timeline;
     use crate::app::Studio;
+    use bpe_core::{ProgressionRef, SettingValue, SlotId};
     use eframe::egui;
     use egui_kittest::{Harness, kittest::Queryable};
 
@@ -87,5 +83,52 @@ mod tests {
         assert!(h.query_by_label("Chords (Starter)").is_some());
         assert!(h.query_all_by_label("C").next().is_some(), "the first chord is named");
         assert!(h.query_all_by_label("Dsus4").next().is_some());
+    }
+
+    /// The new scene with a second ball whose sound plays its own progression, "Second".
+    fn two_balls() -> (Studio, bpe_core::ThingId) {
+        let mut studio = Studio::headless();
+        let reg = &studio.kit.registry;
+        let second = bpe_kit::add_thing(&mut studio.scene, reg, "balls", bpe_core::ThingId::ROOT).unwrap();
+        let p = studio.scene.add_progression(bpe_core::Progression { name: "Second".into(), ..Default::default() });
+        let bpe_core::SlotLink::Linked { module, .. } = studio.scene.things[&second].slots[&SlotId::Sound] else {
+            panic!("a new ball has its own sound")
+        };
+        studio.scene.library.modules.get_mut(&module).unwrap().params.set("chords", ProgressionRef(Some(p)).to_value());
+        studio.resolved = bpe_core::resolve(&studio.scene, &studio.kit.registry);
+        (studio, second)
+    }
+
+    /// The Chords track's name, out of the two the tests use.
+    fn track_of(studio: Studio) -> &'static str {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 1200.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(|ui, s: &mut Studio| timeline(ui, s), studio);
+        h.run();
+        let names = ["Chords (Second)", "Chords (Starter)"];
+        let shown: Vec<&str> = names.into_iter().filter(|n| h.query_by_label(n).is_some()).collect();
+        assert_eq!(shown.len(), 1, "one Chords track: {shown:?}");
+        shown[0]
+    }
+
+    #[test]
+    fn the_chord_track_follows_the_selected_things_sound() {
+        let (mut studio, second) = two_balls();
+        studio.selection.set(second);
+        assert_eq!(track_of(studio), "Chords (Second)");
+        let (mut studio, _) = two_balls();
+        studio.selection.set(bpe_core::ThingId(2));
+        assert_eq!(track_of(studio), "Chords (Starter)");
+        // Nothing selected: the first thing in the tree with a sound, the arena.
+        let (studio, _) = two_balls();
+        assert_eq!(track_of(studio), "Chords (Starter)");
+        // The scene settings have no chords: the first thing with a sound again.
+        let (mut studio, second) = two_balls();
+        studio.scene.move_before(second, bpe_core::ThingId(1)).unwrap();
+        studio.resolved = bpe_core::resolve(&studio.scene, &studio.kit.registry);
+        studio.selection.set(bpe_core::ThingId::ROOT);
+        assert_eq!(track_of(studio), "Chords (Second)");
     }
 }

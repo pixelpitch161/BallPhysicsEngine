@@ -1,4 +1,4 @@
-//! Scene defaults in the world: the step rate and gravity, the beat grid and the song's levels
+//! Scene settings in the world: the step rate and gravity, the beat grid and the song's levels
 //! for pulses, and a Beat event on every beat.
 
 use std::sync::Arc;

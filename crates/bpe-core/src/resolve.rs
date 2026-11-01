@@ -1,5 +1,5 @@
 //! Working out every thing's effective settings: its own changes, then its linked module, then
-//! whatever its parents use, then Scene defaults.
+//! whatever the folders above it use. The scene settings' own slots are never passed down.
 
 use crate::{KindId, Module, ModuleId, Params, Registry, Scene, SettingDef, SlotId, SlotLink, Target, ThingId, Value};
 use std::collections::{BTreeMap, BTreeSet};

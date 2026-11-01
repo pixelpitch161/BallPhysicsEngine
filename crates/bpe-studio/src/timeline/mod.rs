@@ -342,16 +342,16 @@ mod tests {
     }
 
     #[test]
-    fn the_timeline_shows_lanes_for_the_selection_then_scene_defaults() {
+    fn the_timeline_shows_lanes_for_the_selection_then_scene_settings() {
         let h = harness();
         let labels: Vec<String> = h
             .get_all_by_role(Role::Label)
             .filter_map(|n| n.accesskit_node().label().or_else(|| n.accesskit_node().value()))
             .filter(|l| l.contains(" · ") && !l.starts_with("Drag"))
             .collect();
-        assert_eq!(labels, ["Ball · Size", "Scene defaults · Gravity"]);
+        assert_eq!(labels, ["Ball · Size", "Scene settings · Gravity"]);
         assert!(h.query_by_label("Key at 0:02.00 of Ball · Size").is_some());
-        assert!(h.query_by_label("Key at 0:01.00 of Scene defaults · Gravity").is_some());
+        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some());
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
         assert!(h.state().scene.things.contains_key(&ThingId(2)));
         assert_eq!(h.state().panels.timeline.selected, None);
         // The gravity lane is still there.
-        assert!(h.query_by_label("Key at 0:01.00 of Scene defaults · Gravity").is_some());
+        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some());
     }
 
     #[test]

@@ -2,28 +2,16 @@
 
 use crate::theme;
 use bpe_core::{
-    Choice, Instrument, InstrumentId, InstrumentRef, InstrumentSource, ModuleId, NoteLength, Scene, SettingValue,
-    SlotId, SlotLink, ThingId, VoiceSettings,
+    Choice, Instrument, InstrumentId, InstrumentSource, ModuleId, NoteLength, Scene, SlotId, VoiceSettings,
 };
 use bpe_mix::InstrumentChoice;
 use eframe::egui::{self, RichText, Sense, Ui};
 
-/// The instrument Scene defaults' sound plays through, if it points at one.
-pub fn scene_instrument(scene: &Scene) -> Option<InstrumentId> {
-    let root = scene.things.get(&ThingId::ROOT)?;
-    let SlotLink::Linked { module, overrides } = root.slots.get(&SlotId::Sound)? else { return None };
-    let m = scene.library.modules.get(module)?;
-    let v = overrides.get("instrument").or_else(|| m.params.get("instrument"))?;
-    InstrumentRef::from_value(v)?.0
-}
-
 /// What a module pointing at `id` plays: that instrument with the module's own macros, else
-/// Scene defaults' one, else the built-in pluck.
+/// the built-in pluck.
 pub fn choice(scene: &Scene, id: Option<InstrumentId>, module: Option<ModuleId>) -> InstrumentChoice {
     let lib = &scene.library;
-    let found = id
-        .and_then(|id| lib.instruments.get(&id))
-        .or_else(|| scene_instrument(scene).and_then(|id| lib.instruments.get(&id)));
+    let found = id.and_then(|id| lib.instruments.get(&id));
     let empty = Default::default();
     let macros = module.and_then(|m| lib.modules.get(&m)).map_or(&empty, |m| &m.macros);
     found.map_or_else(InstrumentChoice::pluck, |i| InstrumentChoice::from_library(i, macros))
@@ -254,7 +242,7 @@ mod tests {
     fn harness() -> Harness<'static, State> {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
-        let id = scene_instrument(&scene).unwrap();
+        let id = *scene.library.instruments.keys().next().expect("a new scene has the shared Pluck");
         let mut graph = bpe_synth::blank_patch();
         graph.nodes.iter_mut().find(|n| n.kind == "filter").unwrap().exposed.insert("cutoff".into());
         scene.library.instruments.get_mut(&id).unwrap().source = InstrumentSource::Patch { graph };

@@ -86,8 +86,8 @@ mod tests {
     fn toggling_ranging_and_listing_a_selection() {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
-        let c = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
-        let d = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
+        let c = bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
+        let d = bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         let mut s = Selection::default();
         s.set(ThingId(1));
         s.toggle(d);

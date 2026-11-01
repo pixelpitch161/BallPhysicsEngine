@@ -16,7 +16,7 @@ pub enum EditError {
     UnknownKind(KindId),
     Missing(ThingId),
     MissingModule(ModuleId),
-    /// Scene defaults can't be removed or moved.
+    /// Scene settings can't be removed or moved.
     Root,
     WouldLoop,
     SlotNotSupported(SlotId),

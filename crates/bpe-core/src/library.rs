@@ -81,7 +81,7 @@ impl ChannelStrip {
 #[serde(default)]
 pub struct Library {
     pub modules: BTreeMap<ModuleId, Module>,
-    /// Chord progressions that sound modules and Scene defaults point at.
+    /// Chord progressions that sound modules point at.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub progressions: BTreeMap<ProgressionId, Progression>,
     /// Instruments that sound modules play through.

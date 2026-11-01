@@ -422,6 +422,7 @@ mod tests {
             duration: 20.0,
             steps_per_second: 240,
             progressions: [(ProgressionId(0), p)].into(),
+            chords: bpe_core::ProgressionRef(None),
             beats: (0..60).map(|b| b as f64 * 0.5).collect(),
             master: Default::default(),
             seed: 1,
