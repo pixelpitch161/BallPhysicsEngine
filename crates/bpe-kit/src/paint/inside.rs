@@ -80,8 +80,7 @@ impl SettingGroup for InsidePaint {
                    range: Option<(f64, f64)>,
                    unit: &'static str,
                    keyframe: bool| {
-            let mut flags = Flags::default();
-            flags.keyframe = keyframe;
+            let flags = Flags { keyframe, ..Flags::default() };
             SettingDef {
                 key: leak(format!("{p}{key}")),
                 label,
@@ -257,6 +256,7 @@ mod tests {
     fn inside_rows_and_conditions() {
         let defs = Holder::defs();
         let n = "in_pattern!=none";
+        #[allow(clippy::type_complexity)]
         let rows: [(&str, &str, &str, Option<(f64, f64)>, bool); 10] = [
             ("in_pattern", "Pattern", "", None, false),
             ("in_from", "Inside colours", n, None, false),
