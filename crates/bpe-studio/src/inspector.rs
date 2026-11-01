@@ -80,7 +80,6 @@ enum Edit {
     /// Drawn on the screen or in the world; `None` is the kind's own choice.
     Screen(Option<bool>),
     Transform(Transform),
-    Parent(ThingId),
     Attach(Attach),
     /// One of the kind's own settings, for every selected thing of the kind.
     SetOwn(&'static str, Value),
@@ -214,39 +213,24 @@ pub fn show(
                 .on_hover_text("Settings changed here apply to every selected thing that has them.");
         }
         // ---------- header ----------
+        // Row 1: the name, the kind and the eye; row 2: the tags.
         egui::Grid::new(("header", id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
             let name_label = ui.label("Name");
-            let mut name = thing.name.clone();
-            let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
-            if ui.add(edit).labelled_by(name_label.id).changed() {
-                edits.push(Edit::Name(name));
-            }
-            ui.end_row();
-            ui.label("Kind");
-            ui.label(RichText::new(kind.name()).color(theme::MUTED)).on_hover_text(kind.help());
-            ui.end_row();
-            if id != ThingId::ROOT {
-                // The camera's place is its own Position setting, which can be keyframed.
-                if kind.id() != "camera" {
-                    tree_rows(ui, scene, &thing, &mut edits);
-                }
-                if !matches!(kind.id(), "liquid" | "swarm" | "camera") {
-                    let label = ui
-                        .label("Stick to screen")
-                        .on_hover_text("Stay put on the screen while the camera moves, like a caption");
-                    let mut on = thing.sticks_to_screen(kind);
-                    if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
-                        edits.push(Edit::Screen((on != kind.sticks_to_screen()).then_some(on)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Hiding the root would hide the whole scene; its card already says what it is.
+                if id != ThingId::ROOT {
+                    if eye_toggle(ui, thing.enabled) {
+                        edits.push(Edit::Enabled(!thing.enabled));
                     }
-                    ui.end_row();
+                    ui.label(RichText::new(kind.name()).small().color(theme::MUTED)).on_hover_text(kind.help());
                 }
-                let shown = ui.label("Shown").on_hover_text("A hidden thing is left out of the video and the physics");
-                let mut enabled = thing.enabled;
-                if ui.checkbox(&mut enabled, "").labelled_by(shown.id).changed() {
-                    edits.push(Edit::Enabled(enabled));
+                let mut name = thing.name.clone();
+                let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
+                if ui.add(edit).labelled_by(name_label.id).changed() {
+                    edits.push(Edit::Name(name));
                 }
-                ui.end_row();
-            }
+            });
+            ui.end_row();
             let tags_label = ui
                 .label("Tags")
                 .on_hover_text("Words that rules and other things can pick this out by, separated by spaces");
@@ -266,12 +250,8 @@ pub fn show(
 
         // ---------- the kind's own settings ----------
         card(ui, |ui| {
-            // "Scene settings" already says it; other kinds read "Balls settings".
-            let title = if kind.name().ends_with("settings") {
-                kind.name().to_owned()
-            } else {
-                format!("{} settings", kind.name())
-            };
+            // The kind's name alone: "Balls", "Arena", and "Scene settings" for the root.
+            let title = kind.name().to_owned();
             let open = ui
                 .horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
@@ -314,6 +294,24 @@ pub fn show(
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
             edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(own(key), lock)));
         });
+
+        // ---------- placement ----------
+        // The camera's place is its own Position setting, which can be keyframed.
+        if id != ThingId::ROOT && kind.id() != "camera" {
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                let open = ui
+                    .horizontal(|ui| {
+                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
+                        ui.label(RichText::new("Placement").strong());
+                        open
+                    })
+                    .inner;
+                if open {
+                    placement_rows(ui, scene, kind, &thing, &mut edits);
+                }
+            });
+        }
 
         // ---------- one card per slot ----------
         let rthing = resolved.things.get(&id);
@@ -820,10 +818,6 @@ pub fn show(
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
             Edit::Transform(t) => set_thing(scene, id, |thing| thing.transform = t),
-            Edit::Parent(parent) => {
-                let attach = scene.things.get(&id).map(|t| t.attach).unwrap_or_default();
-                crate::tree::apply_drop(scene, reg, id, parent, crate::tree::Drop::Into(attach)).is_ok()
-            }
             Edit::Attach(attach) => crate::tree::reattach(scene, id, attach).is_ok(),
             Edit::SetOwn(key, value) => {
                 let mut any = false;
@@ -1016,27 +1010,60 @@ fn set_or_key(
     }
 }
 
-/// The header rows about the thing's place in the tree: its parent, how it hangs off it, and
-/// where it sits, as a position of its own or an offset along for the ride.
-fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Vec<Edit>) {
-    let id = thing.id;
-    let parent = thing.parent.unwrap_or(ThingId::ROOT);
-    let parent_name = scene.things.get(&parent).map(|t| t.name.clone()).unwrap_or_default();
-    ui.label("Parent").on_hover_text("The thing this one sits under in the tree");
-    let under = scene.descendants(id);
-    ui.menu_button(parent_name, |ui| {
-        for other in scene.order.iter().filter(|o| **o != id && !under.contains(o)) {
-            let Some(name) = scene.things.get(other).map(|t| t.name.as_str()) else { continue };
-            if ui.selectable_label(*other == parent, name).clicked() {
-                edits.push(Edit::Parent(*other));
-                ui.close();
+/// The Placement card's rows: where the thing sits, as a position of its own or an offset along
+/// for the ride, how it is turned, how it hangs off its parent, and whether it sticks to the
+/// screen.
+fn placement_rows(
+    ui: &mut Ui,
+    scene: &Scene,
+    kind: &dyn bpe_core::ThingKind,
+    thing: &bpe_core::Thing,
+    edits: &mut Vec<Edit>,
+) {
+    egui::Grid::new(("placement", thing.id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
+        position_rows(ui, scene, thing, edits);
+        if !matches!(kind.id(), "liquid" | "swarm") {
+            let label = ui
+                .label("Stick to screen")
+                .on_hover_text("Stay put on the screen while the camera moves, like a caption");
+            let mut on = thing.sticks_to_screen(kind);
+            if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
+                edits.push(Edit::Screen((on != kind.sticks_to_screen()).then_some(on)));
             }
+            ui.end_row();
         }
-    })
-    .response
-    .on_hover_text("Move it under another thing");
+    });
+}
+
+/// Where the thing sits and how it hangs off its parent: Position (for a grouped thing),
+/// Rotation, Attach, and a rider's Offset, Turns with it and Item.
+fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Vec<Edit>) {
+    let mut t = thing.transform;
+    if let Attach::Group = thing.attach {
+        let position =
+            ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
+        let moved = ui
+            .horizontal(|ui| {
+                let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
+                let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
+                x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
+            })
+            .inner;
+        ui.end_row();
+        if moved {
+            edits.push(Edit::Transform(t));
+        }
+    }
+    let rotation = ui.label("Rotation").on_hover_text("How far it is turned, clockwise");
+    let mut degrees = t.rotation.to_degrees();
+    let turned = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
+    if turned {
+        t.rotation = degrees.to_radians();
+        edits.push(Edit::Transform(t));
+    }
     ui.end_row();
 
+    let parent = thing.parent.unwrap_or(ThingId::ROOT);
     let rides = thing.rides();
     ui.label("Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");
     ui.horizontal(|ui| {
@@ -1050,62 +1077,50 @@ fn tree_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Ve
     });
     ui.end_row();
 
-    let mut t = thing.transform;
-    match thing.attach {
-        Attach::Ride { offset, turn_with_parent, item } => {
-            let mut o = offset;
-            let label = ui.label("Offset").on_hover_text("Where it sits from its parent, in video pixels");
-            let moved = ui
-                .horizontal(|ui| {
-                    let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
-                    let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
-                    x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
-                })
-                .inner;
-            ui.end_row();
-            let label = ui.label("Turns with it").on_hover_text("Swing around as the parent turns");
-            let mut turns = turn_with_parent;
-            let turned = ui.checkbox(&mut turns, "").labelled_by(label.id).changed();
-            ui.end_row();
-            let mut picked = item;
-            let mut item_changed = false;
-            if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
-                let label = ui.label("Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
-                let mut n: i64 = item.map_or(-1, |i| i as i64);
-                if ui.add(DragValue::new(&mut n).range(-1..=9999)).labelled_by(label.id).changed() {
-                    picked = (n >= 0).then_some(n as u32);
-                    item_changed = true;
-                }
-                ui.end_row();
+    if let Attach::Ride { offset, turn_with_parent, item } = thing.attach {
+        let mut o = offset;
+        let label = ui.label("Offset").on_hover_text("Where it sits from its parent, in video pixels");
+        let moved = ui
+            .horizontal(|ui| {
+                let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
+                let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
+                x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
+            })
+            .inner;
+        ui.end_row();
+        let label = ui.label("Turns with it").on_hover_text("Swing around as the parent turns");
+        let mut turns = turn_with_parent;
+        let turned = ui.checkbox(&mut turns, "").labelled_by(label.id).changed();
+        ui.end_row();
+        let mut picked = item;
+        let mut item_changed = false;
+        if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
+            let label = ui.label("Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
+            let mut n: i64 = item.map_or(-1, |i| i as i64);
+            if ui.add(DragValue::new(&mut n).range(-1..=9999)).labelled_by(label.id).changed() {
+                picked = (n >= 0).then_some(n as u32);
+                item_changed = true;
             }
-            if moved || turned || item_changed {
-                edits.push(Edit::Attach(Attach::Ride { offset: o, turn_with_parent: turns, item: picked }));
-            }
+            ui.end_row();
         }
-        Attach::Group => {
-            let position =
-                ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
-            let moved = ui
-                .horizontal(|ui| {
-                    let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
-                    let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
-                    x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
-                })
-                .inner;
-            ui.end_row();
-            if moved {
-                edits.push(Edit::Transform(t));
-            }
+        if moved || turned || item_changed {
+            edits.push(Edit::Attach(Attach::Ride { offset: o, turn_with_parent: turns, item: picked }));
         }
     }
-    let rotation = ui.label("Rotation").on_hover_text("How far it is turned, clockwise");
-    let mut degrees = t.rotation.to_degrees();
-    let turned = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
-    if turned {
-        t.rotation = degrees.to_radians();
-        edits.push(Edit::Transform(t));
-    }
-    ui.end_row();
+}
+
+/// The header's eye: open while the thing is shown. True when it was clicked.
+fn eye_toggle(ui: &mut Ui, shown: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, shown, "Shown"));
+    let ink = if response.hovered() { theme::TEXT } else { theme::MUTED };
+    crate::tree::paint_eye(ui.painter(), rect, shown, ink);
+    let help = if shown {
+        "Shown. A hidden thing is left out of the video and the physics."
+    } else {
+        "Hidden: left out of the video and the physics. Click to show it."
+    };
+    response.on_hover_text(help).clicked()
 }
 
 /// What a setting's diamond shows, or `None` for a setting that can't be keyed or pulsed.
@@ -1741,12 +1756,12 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Columns").is_none(), "a single ball has no columns");
         assert!(h.query_by_role_and_label(Role::Label, "Friction").is_some(), "settings once under More show too");
         let before = h.get_all_by_role(Role::Slider).count();
-        h.get_by_label("Hide Balls settings").click();
+        h.get_by_label("Hide Balls").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_none());
         assert!(h.get_all_by_role(Role::Slider).count() < before);
         assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None, "")));
-        h.get_by_label("Show Balls settings").click();
+        h.get_by_label("Show Balls").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
     }
@@ -2264,13 +2279,11 @@ mod tests {
     }
 
     #[test]
-    fn the_parent_and_attach_rows_reparent_and_ride() {
-        let mut h = harness(Some(ThingId(2)));
-        // The Parent picker shows the current parent.
-        h.get_by_label("Scene settings").click();
-        h.run();
-        h.get_by_label("Arena").click();
-        h.run();
+    fn the_attach_rows_ride_and_regroup() {
+        // The tree moves things (Move into, or a drag); the Placement card hangs them off it.
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        scene.set_parent(ThingId(2), ThingId(1), Attach::Group).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
         assert_eq!(h.state().scene.things[&ThingId(2)].parent, Some(ThingId(1)));
         h.get_by_label("Rides on it").click();
         h.run();
@@ -3096,5 +3109,54 @@ mod tests {
         button.click();
         h.run();
         assert_eq!(h.state().scene, before);
+    }
+
+    #[test]
+    fn the_header_is_name_kind_and_shown_then_tags() {
+        let h = harness(Some(ThingId(2)));
+        for label in ["Name", "Shown", "Tags"] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label} is in the header");
+        }
+        for gone in ["Parent", "Kind"] {
+            assert!(h.query_by_role_and_label(Role::Label, gone).is_none(), "{gone} is no longer a row");
+        }
+        // The Placement card's heading sits above its Position row.
+        let heading = h.get_by_role_and_label(Role::Label, "Placement").rect();
+        let position = h.get_by_role_and_label(Role::Label, "Position").rect();
+        assert!(heading.top() < position.top(), "Position is under Placement");
+        for row in ["Rotation", "Attach", "Stick to screen"] {
+            let r = h.get_by_role_and_label(Role::Label, row).rect();
+            assert!(heading.top() < r.top(), "{row} is under Placement");
+        }
+        // The kind's card is titled by the kind alone.
+        assert!(h.query_by_label("Hide Balls").is_some());
+        assert!(h.query_by_label_contains("Balls settings").is_none());
+    }
+
+    #[test]
+    fn the_camera_and_scene_settings_have_no_placement_card() {
+        let root = harness(Some(ThingId::ROOT));
+        assert!(root.query_by_role_and_label(Role::Label, "Placement").is_none());
+        assert!(root.query_by_role_and_label(Role::Label, "Shown").is_none(), "the root has no eye");
+        assert!(root.query_by_label("Hide Scene settings").is_some(), "the root keeps its card title");
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let camera = bpe_kit::add_thing(&mut scene, &reg, "camera", ThingId::ROOT).unwrap();
+        let h = harness_of(scene, Some(camera));
+        assert!(h.query_by_role_and_label(Role::Label, "Placement").is_none());
+        assert!(h.query_by_role_and_label(Role::Label, "Stick to screen").is_none());
+        assert!(h.query_all_by_label("Shown").next().is_some(), "the camera can still be hidden");
+    }
+
+    #[test]
+    fn the_placement_card_folds_away() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Hide Placement").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_none());
+        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None, "placement")));
+        h.get_by_label("Show Placement").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 }

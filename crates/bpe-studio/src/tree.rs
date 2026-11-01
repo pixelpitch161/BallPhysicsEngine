@@ -62,6 +62,8 @@ enum Action {
     Attach(ThingId, Attach),
     /// Ride on another thing, keeping the place on screen.
     AttachTo(ThingId, ThingId),
+    /// Move under another thing, hanging off it the way it hangs off its parent now.
+    MoveInto(ThingId, ThingId),
     Drop(ThingId, ThingId, Drop),
     /// A module dragged from the Library lands on a thing.
     Link(ThingId, ModuleId),
@@ -254,6 +256,10 @@ pub fn show(
                 Err(e) => out.message = Some(refusal(&e)),
             }
         }
+        Some(Action::MoveInto(id, parent)) => match move_into(scene, reg, id, parent) {
+            Ok(()) => out.edited = true,
+            Err(e) => out.message = Some(refusal(&e)),
+        },
         Some(Action::Drop(dragged, onto, drop)) => match apply_drop(scene, reg, dragged, onto, drop) {
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
@@ -264,6 +270,12 @@ pub fn show(
         },
     }
     out
+}
+
+/// Moves `id` under `parent`, keeping how it hangs off its parent: the tree's Move into.
+fn move_into(scene: &mut Scene, reg: &Registry, id: ThingId, parent: ThingId) -> Result<(), EditError> {
+    let attach = scene.things.get(&id).map(|t| t.attach).unwrap_or_default();
+    apply_drop(scene, reg, id, parent, Drop::Into(attach))
 }
 
 /// Links a module dropped onto a thing into the slot the module is made for.
@@ -630,6 +642,23 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
                 }
             }
         });
+        ui.menu_button("Move into", |ui| {
+            // Scene settings and the folders, but not the thing itself, what hangs under it, or
+            // where it already is.
+            let under = scene.descendants(id);
+            let parent = thing.parent.unwrap_or(ThingId::ROOT);
+            for other in scene.order.iter().filter(|o| **o != id && **o != parent && !under.contains(o)) {
+                let Some(other_thing) = scene.things.get(other) else { continue };
+                if *other != ThingId::ROOT && other_thing.kind != "folder" {
+                    continue;
+                }
+                let name = other_thing.name.as_str();
+                if ui.button(name).clicked() {
+                    *action = Some(Action::MoveInto(id, *other));
+                    ui.close();
+                }
+            }
+        });
     }
     let linked: Vec<(String, ModuleId)> = thing
         .slots
@@ -685,7 +714,7 @@ fn paint_hook(painter: &egui::Painter, rect: Rect, ink: Color32) {
 }
 
 /// An open eye for a shown thing, a struck-through one for a hidden thing.
-fn paint_eye(painter: &egui::Painter, rect: Rect, open: bool, ink: Color32) {
+pub(crate) fn paint_eye(painter: &egui::Painter, rect: Rect, open: bool, ink: Color32) {
     let c = rect.center();
     let stroke = Stroke::new(1.3, ink);
     let (w, h) = (rect.width() * 0.42, rect.height() * 0.28);
@@ -914,6 +943,7 @@ mod tests {
         selection: Selection,
         messages: Vec<String>,
         added: Vec<ThingId>,
+        history: crate::history::History,
     }
 
     fn harness() -> Harness<'static, State> {
@@ -928,6 +958,7 @@ mod tests {
             selection: Selection::default(),
             messages: Vec::new(),
             added: Vec::new(),
+            history: crate::history::History::default(),
         };
         let mut h = Harness::builder()
             .with_size(egui::vec2(260.0, 600.0))
@@ -938,8 +969,11 @@ mod tests {
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
+                    let before = s.scene.clone();
                     let out = show(ui, &mut s.tree, &mut s.scene, &s.kit, &s.resolved, &mut s.selection);
                     if out.edited {
+                        // Like the studio: a tree edit is its own undo step.
+                        s.history.record(before, true);
                         s.resolved = resolve(&s.scene, &s.kit.registry);
                     }
                     s.messages.extend(out.message);
@@ -1492,5 +1526,56 @@ mod tests {
         h.get_by_label("Obstacle").click();
         h.run();
         assert_eq!(h.state().added, [ThingId(3)]);
+    }
+
+    #[test]
+    fn move_into_puts_a_thing_in_a_folder() {
+        let mut h = harness();
+        let f = add_folder(&mut h);
+        let before = h.state().scene.clone();
+        let row = h.get_by_label("Folder").rect();
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        h.get_by_label("Move into").click();
+        h.run();
+        // The folder's name shows on its row and in the menu.
+        h.get_all_by_label("Folder").find(|n| n.rect() != row).expect("the folder is offered").click();
+        h.run();
+        let s = h.state_mut();
+        assert_eq!(s.scene.things[&ThingId(2)].parent, Some(f));
+        assert_eq!(s.history.undo.len(), 1, "one undo step");
+        assert!(s.history.undo(&mut s.scene));
+        assert_eq!(s.scene, before);
+    }
+
+    #[test]
+    fn move_into_leaves_out_the_thing_and_whats_under_it() {
+        let mut h = harness();
+        let f = add_folder(&mut h);
+        {
+            let s = h.state_mut();
+            s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        let rows = |h: &Harness<'_, State>, name: &str| h.query_all_by_label(name).count();
+        let (folder, ball, arena, root) =
+            (rows(&h, "Folder"), rows(&h, "Ball"), rows(&h, "Arena"), rows(&h, "Scene settings"));
+        h.get_by_label("Folder").click_secondary();
+        h.run();
+        h.get_by_label("Move into").click();
+        h.run();
+        assert_eq!(rows(&h, "Folder"), folder, "not the folder itself");
+        assert_eq!(rows(&h, "Ball"), ball, "not what is in it");
+        assert_eq!(rows(&h, "Arena"), arena, "only folders and the root are offered");
+        assert_eq!(rows(&h, "Scene settings"), root, "not where it already is");
+        h.key_press(Key::Escape);
+        h.run();
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        h.get_by_label("Move into").click();
+        h.run();
+        assert_eq!(rows(&h, "Scene settings"), root + 1, "a thing in a folder can go back to the top");
+        assert_eq!(rows(&h, "Folder"), folder, "not the folder it is already in");
     }
 }
