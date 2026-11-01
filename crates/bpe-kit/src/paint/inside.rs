@@ -28,8 +28,8 @@ pub enum Pattern {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum InsideFrom {
     #[default]
-    Shade,
-    Own,
+    ShadeOfOwnColour,
+    OwnGradient,
 }
 
 /// The colour layout inside each ball.
@@ -51,7 +51,7 @@ impl Default for InsidePaint {
     fn default() -> Self {
         Self {
             pattern: Pattern::None,
-            from: InsideFrom::Shade,
+            from: InsideFrom::ShadeOfOwnColour,
             shade: -0.5,
             colours: Gradient::even(&[Color::WHITE, Color::rgb(0, 0, 0)]),
             repeat: Repeat::Clamp,
@@ -69,8 +69,8 @@ impl SettingGroup for InsidePaint {
         let p = o.prefix;
         let (pat, from) = (format!("{p}pattern"), format!("{p}from"));
         let shown = also(o.when, &format!("{pat}!=none"));
-        let shade_when = also(o.when, &format!("{pat}!=none and {from}=shade"));
-        let own_when = also(o.when, &format!("{pat}!=none and {from}=own"));
+        let shade_when = also(o.when, &format!("{pat}!=none and {from}=shade_of_own_colour"));
+        let own_when = also(o.when, &format!("{pat}!=none and {from}=own_gradient"));
         let def = |key: &str,
                    label: &'static str,
                    help: &'static str,
@@ -252,6 +252,35 @@ mod tests {
         inside: InsidePaint,
     }
 
+    #[derive(Clone, Debug, PartialEq, Default, Settings)]
+    struct Gated {
+        #[setting(label = "X", range(0, 2))]
+        x: f32,
+        #[setting(paint, label = "Inside each one", prefix = "in_", group = "Inside each one", when = "x=1")]
+        inside: InsidePaint,
+    }
+
+    #[test]
+    fn the_fields_own_when_is_anded_into_every_row() {
+        let defs = Gated::defs();
+        let get = |k: &str| defs.iter().find(|d| d.key == k).unwrap().when;
+        assert_eq!(get("in_pattern"), "x=1");
+        assert_eq!(get("in_angle"), "x=1 and in_pattern!=none");
+        assert_eq!(get("in_shade"), "x=1 and in_pattern!=none and in_from=shade_of_own_colour");
+        assert_eq!(get("in_colours"), "x=1 and in_pattern!=none and in_from=own_gradient");
+    }
+
+    #[test]
+    fn choice_names_read_as_the_required_labels() {
+        let pretty = |n: &str| {
+            let s = n.replace('_', " ");
+            let mut c = s.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        };
+        let labels: Vec<_> = InsideFrom::NAMES.iter().map(|n| pretty(n)).collect();
+        assert_eq!(labels, ["Shade of own colour", "Own gradient"]);
+    }
+
     #[test]
     fn inside_rows_and_conditions() {
         let defs = Holder::defs();
@@ -260,9 +289,9 @@ mod tests {
         let rows: [(&str, &str, &str, Option<(f64, f64)>, bool); 10] = [
             ("in_pattern", "Pattern", "", None, false),
             ("in_from", "Inside colours", n, None, false),
-            ("in_shade", "Shade", "in_pattern!=none and in_from=shade", Some((-1.0, 1.0)), true),
-            ("in_colours", "Colours", "in_pattern!=none and in_from=own", None, false),
-            ("in_repeat", "Beyond the last colour", "in_pattern!=none and in_from=own", None, false),
+            ("in_shade", "Shade", "in_pattern!=none and in_from=shade_of_own_colour", Some((-1.0, 1.0)), true),
+            ("in_colours", "Colours", "in_pattern!=none and in_from=own_gradient", None, false),
+            ("in_repeat", "Beyond the last colour", "in_pattern!=none and in_from=own_gradient", None, false),
             ("in_angle", "Angle", n, Some((-180.0, 180.0)), true),
             ("in_spin", "Spin", n, Some((-720.0, 720.0)), true),
             ("in_size", "Size", n, Some((0.1, 24.0)), true),
@@ -288,7 +317,7 @@ mod tests {
         let mut h = Holder::default();
         assert!(h.to_params().get("in_pattern").is_none(), "defaults are not saved");
         h.inside.pattern = Pattern::Checker;
-        h.inside.from = InsideFrom::Own;
+        h.inside.from = InsideFrom::OwnGradient;
         h.inside.shade = 0.25;
         h.inside.colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
         h.inside.repeat = Repeat::Mirror;
@@ -299,7 +328,7 @@ mod tests {
         h.inside.turns = true;
         let p = h.to_params();
         assert_eq!(p.get("in_pattern"), Some(&Value::Choice("checker".into())));
-        assert_eq!(p.get("in_from"), Some(&Value::Choice("own".into())));
+        assert_eq!(p.get("in_from"), Some(&Value::Choice("own_gradient".into())));
         assert_eq!(Holder::from_params(&p), h);
         let mut only = Holder::default();
         only.inside.size = 2.0;
