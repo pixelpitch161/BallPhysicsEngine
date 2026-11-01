@@ -74,7 +74,7 @@
                 id: 7,
                 name: "Plain look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "glow": Number(0.5),
                 },
@@ -135,7 +135,7 @@
                 id: 15,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.styled",
+                kind: "look.basic",
                 params: {
                     "ball_shape": Choice("hexagon"),
                     "colours": Gradient((
@@ -147,19 +147,27 @@
                         ],
                         transition: Smooth,
                     )),
-                    "finish": Choice("slices"),
-                    "outline": Number(2.0),
-                    "pattern_colours": Gradient((
+                    "in_angle": Number(0.0),
+                    "in_colours": Gradient((
                         stops: [
                             (
                                 at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                            (
+                                at: 1.0,
                                 color: "#101030",
                             ),
                         ],
                         transition: Smooth,
                     )),
+                    "in_from": Choice("own_gradient"),
+                    "in_pattern": Choice("slices"),
+                    "in_size": Number(2.0),
+                    "outline": Number(2.0),
                     "rainbow": Number(0.15000000596046448),
                     "spin": Number(90.0),
+                    "style": Choice("flat"),
                 },
                 owner: Some(2),
             ),

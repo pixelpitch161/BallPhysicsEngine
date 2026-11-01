@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn a_wall_paints_along_its_line_or_across_itself() {
         let (mut scene, _, kit) = scene_with_balls("single", |_| {});
-        let look = scene.add_module(&kit.registry, "look.classic", "Wall colours").unwrap();
+        let look = scene.add_module(&kit.registry, "look.basic", "Wall colours").unwrap();
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
         params.set("colours", Value::Gradient(colours.clone()));
@@ -56,15 +56,9 @@ mod tests {
         assert_eq!(wall.color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(frame.gradients.rows()[1].to_vec(), colours.bake(bpe_gfx::ATLAS_WIDTH));
 
-        // An inside pattern wins over Path.
-        scene.library.modules.get_mut(&look).unwrap().params.set("inside", Value::Choice("stripes".into()));
-        let wall = draw(&scene).shapes[0];
-        assert_eq!((wall.paint.row, wall.paint.pattern), (1.0, 1.0));
-
         // One colour paints nothing on the line, as before.
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         params.set("colours", Value::Gradient(Gradient::solid(Color::rgb(0, 255, 0))));
-        params.set("inside", Value::Choice("none".into()));
         params.set("follow", Value::Choice("order".into()));
         let frame = draw(&scene);
         assert_eq!((frame.shapes[0].paint.row, frame.shapes[0].color), (-1.0, [0.0, 1.0, 0.0, 1.0]));

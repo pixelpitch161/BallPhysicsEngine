@@ -21,7 +21,7 @@ fn starter_kind(thing_kind: &str, slot: SlotId) -> Option<(&'static str, Tweaks)
         ("liquid", SlotId::Bounce) => ("bounce.basic", SOFT_LANDING),
         ("swarm", SlotId::Look) => ("look.swarm", &[]),
         ("swarm", SlotId::Motion) => ("motion.flock", &[]),
-        (_, SlotId::Look) => ("look.classic", &[]),
+        (_, SlotId::Look) => ("look.basic", &[]),
         (_, SlotId::Motion) => ("motion.basic", &[]),
         (_, SlotId::Bounce) => ("bounce.basic", &[]),
         (_, SlotId::Sound) => ("sound.notes", &[]),
@@ -182,7 +182,7 @@ mod tests {
             (
                 "balls",
                 &[
-                    (SlotId::Look, "look.classic"),
+                    (SlotId::Look, "look.basic"),
                     (SlotId::Motion, "motion.basic"),
                     (SlotId::Bounce, "bounce.basic"),
                     (SlotId::Sound, "sound.notes"),
@@ -191,7 +191,7 @@ mod tests {
             (
                 "soft",
                 &[
-                    (SlotId::Look, "look.classic"),
+                    (SlotId::Look, "look.basic"),
                     (SlotId::Motion, "motion.basic"),
                     (SlotId::Bounce, "bounce.basic"),
                     (SlotId::Sound, "sound.notes"),
@@ -199,18 +199,18 @@ mod tests {
             ),
             (
                 "arena",
-                &[(SlotId::Look, "look.classic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
+                &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
             ),
             (
                 "obstacle",
-                &[(SlotId::Look, "look.classic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
+                &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
             ),
             (
                 "liquid",
                 &[(SlotId::Look, "look.liquid"), (SlotId::Motion, "motion.liquid"), (SlotId::Bounce, "bounce.basic")],
             ),
             ("swarm", &[(SlotId::Look, "look.swarm"), (SlotId::Motion, "motion.flock")]),
-            ("text", &[(SlotId::Look, "look.classic")]),
+            ("text", &[(SlotId::Look, "look.basic")]),
         ];
         for &(kind, slots) in table {
             let mut scene = Scene::empty(&reg);

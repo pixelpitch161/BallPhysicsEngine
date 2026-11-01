@@ -1,5 +1,4 @@
-// Shapes and fill patterns of styled balls. Appended to scene.wgsl's module, which defines PI
-// and TAU.
+// Shapes of styled balls. Appended to scene.wgsl's module, which defines PI and TAU.
 
 // Shapes are distance functions on a unit-radius ball, y up, tip on top.
 
@@ -70,60 +69,4 @@ fn ball_shape(p: vec2<f32>, shape: f32, round: f32) -> f32 {
     return abs(length(q) - 0.72) - 0.28;
 }
 
-// 0 or 1 in alternating bands of `x`, softened over a pixel.
-fn bands(x: f32) -> f32 {
-    return bands_over(x, fwidth(x));
-}
-
-// The same, softened over `w`, for values that jump where an angle wraps around.
-fn bands_over(x: f32, w_in: f32) -> f32 {
-    let w = max(w_in, 1e-4);
-    let f = fract(x);
-    return clamp((abs(f - 0.5) - 0.25) / w + 0.5, 0.0, 1.0);
-}
-
-// 1 inside where signed distance `d` is negative, softened over a pixel.
-fn inside(d: f32) -> f32 {
-    return clamp(-d / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
-}
-
-// How much of the second colour shows at `p` (unit radius, y down) for a fill pattern. Fills:
-// 2 radial, 3 linear, 4 stripes, 5 rings, 6 dots, 7 checker, 8 halves, 9 slices, 10 swirl,
-// 11 face (0 solid and 1 shiny don't come here).
-fn pattern(p: vec2<f32>, fill: f32, size: f32) -> f32 {
-    let r = length(p);
-    let n = size * 0.5;
-    if fill < 2.5 {
-        return smoothstep(0.0, 1.0, r);
-    } else if fill < 3.5 {
-        return clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
-    } else if fill < 4.5 {
-        return bands(p.x * n + 0.25);
-    } else if fill < 5.5 {
-        return bands(r * n + 0.25);
-    } else if fill < 6.5 {
-        let cell = fract(p * n + 0.5) - 0.5;
-        return inside(length(cell) - 0.28);
-    } else if fill < 7.5 {
-        let a = bands(p.x * n + 0.25);
-        let b = bands(p.y * n + 0.25);
-        return a + b - 2.0 * a * b;
-    } else if fill < 8.5 {
-        return inside(-p.y);
-    }
-    // Patterns around the middle: a whole number of slice pairs, so the seam where the angle
-    // wraps doesn't show.
-    let turns = atan2(p.y, p.x) / TAU;
-    let turn_width = length(fwidth(p)) / max(r, 1e-3) / TAU;
-    let m = max(round(n), 1.0);
-    if fill < 9.5 {
-        return bands_over(turns * m, turn_width * m);
-    } else if fill < 10.5 {
-        return bands_over(turns * m + r * 1.2, turn_width * m + fwidth(r) * 1.2);
-    }
-    // A smiley face: two eyes and a grin.
-    let eyes = length(vec2<f32>(abs(p.x) - 0.32, p.y + 0.22) / vec2<f32>(1.0, 1.4)) - 0.11;
-    let mouth_ring = abs(length(p - vec2<f32>(0.0, -0.1)) - 0.5) - 0.065;
-    let mouth = max(mouth_ring, 0.18 - p.y);
-    return inside(min(eyes, mouth));
-}
+// The patterns painted inside each ball are `paint_colour` in paint.wgsl.

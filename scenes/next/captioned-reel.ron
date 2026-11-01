@@ -115,7 +115,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "centre": Vec2((30.0, -120.0)),
                     "colours": Gradient((
@@ -151,7 +151,7 @@
                 id: 13,
                 name: "Arena look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(1),
             ),
             14: (
@@ -194,14 +194,14 @@
                 id: 18,
                 name: "Hit counter look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(3),
             ),
             19: (
                 id: 19,
                 name: "Countdown look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(4),
             ),
         },

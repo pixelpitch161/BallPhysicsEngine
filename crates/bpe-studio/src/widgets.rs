@@ -1052,13 +1052,13 @@ mod tests {
 
     #[test]
     fn a_looks_colours_are_one_gradient_row() {
-        let defs = bpe_kit::modules::look::ClassicLook::defs();
+        let defs = bpe_kit::modules::look::BasicLook::defs();
         let rows = rows_for(defs, &|_| true);
         let colours: Vec<&SettingDef> =
             rows.iter().filter_map(|r| if let Row::Setting(d) = r { Some(*d) } else { None }).collect();
-        let colours: Vec<&&SettingDef> = colours.iter().filter(|d| d.ty == ValueType::Gradient).collect();
-        assert_eq!(colours.len(), 1);
-        assert_eq!(colours[0].key, "colours");
+        let colours: Vec<&str> = colours.iter().filter(|d| d.ty == ValueType::Gradient).map(|d| d.key).collect();
+        // One row for the colours, one for the outline's, one for those inside each one.
+        assert_eq!(colours, ["colours", "in_colours", "outline_colours"]);
     }
 
     #[test]

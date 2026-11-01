@@ -1,6 +1,8 @@
 //! The scene's library of modules, which things link to and share.
 
-use crate::{Instrument, InstrumentId, KindId, ModuleId, Params, Progression, ProgressionId, SlotId, ThingId};
+use crate::{
+    Instrument, InstrumentId, KindId, ModuleId, Params, Progression, ProgressionId, Pulse, SlotId, ThingId, Track,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +17,23 @@ pub struct ModuleGraph {
     pub custom: bool,
     /// (node id, setting name) pairs shown at Simple depth.
     pub simple: BTreeSet<(u32, String)>,
+}
+
+/// What a module set aside when it changed kind: the settings, keyframes, pulses, locks and
+/// per-thing changes its new kind has no use for. Switching back to the old kind puts them back.
+/// Module-level entries are keyed by setting key; per-thing ones by (thing, setting key).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Stash {
+    pub params: Params,
+    pub tracks: BTreeMap<String, Track>,
+    pub pulses: BTreeMap<String, Pulse>,
+    pub locks: BTreeSet<String>,
+    /// Each linked thing's own changes to the module, by thing.
+    pub overrides: BTreeMap<ThingId, Params>,
+    pub thing_tracks: BTreeMap<(ThingId, String), Track>,
+    pub thing_pulses: BTreeMap<(ThingId, String), Pulse>,
+    pub thing_locks: BTreeSet<(ThingId, String)>,
 }
 
 /// One shared group of settings for a slot, such as a look called "Neon glow".
@@ -41,6 +60,9 @@ pub struct Module {
     /// with it, and removed with it when nothing else uses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<ThingId>,
+    /// What earlier kinds of this module left behind, by kind, to restore if it switches back.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub stash: BTreeMap<KindId, Stash>,
 }
 
 /// One return bus in a scene's mix. Never reused within a scene.

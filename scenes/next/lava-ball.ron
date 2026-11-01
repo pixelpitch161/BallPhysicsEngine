@@ -67,7 +67,7 @@
                 id: 7,
                 name: "Plain look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(1),
             ),
             8: (
@@ -117,7 +117,7 @@
                 id: 15,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.styled",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -130,15 +130,6 @@
                     )),
                     "glow": Number(0.6000000238418579),
                     "glow_size": Number(1.399999976158142),
-                    "pattern_colours": Gradient((
-                        stops: [
-                            (
-                                at: 0.0,
-                                color: "#ffbf26",
-                            ),
-                        ],
-                        transition: Smooth,
-                    )),
                 },
                 owner: Some(2),
             ),

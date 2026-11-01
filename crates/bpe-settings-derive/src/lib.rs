@@ -39,7 +39,6 @@ struct FieldAttrs {
     paint: bool,
     prefix: Option<LitStr>,
     follows: Option<LitStr>,
-    inside: bool,
     screen_only: bool,
     /// The group offers no per-instance colour variation.
     no_vary: bool,
@@ -90,8 +89,6 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.prefix = Some(meta.value()?.parse()?);
             } else if p.is_ident("follows") {
                 a.follows = Some(meta.value()?.parse()?);
-            } else if p.is_ident("inside") {
-                a.inside = true;
             } else if p.is_ident("screen_only") {
                 a.screen_only = true;
             } else if p.is_ident("no_vary") {
@@ -144,7 +141,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
             let prefix = a.prefix.map(|s| s.value()).unwrap_or_default();
             let follows: Vec<String> =
                 a.follows.map(|s| s.value().split('|').map(|n| n.trim().to_owned()).collect()).unwrap_or_default();
-            let (inside, screen_only, simple, vary) = (a.inside, a.screen_only, a.simple, !a.no_vary);
+            let (screen_only, simple, vary) = (a.screen_only, a.simple, !a.no_vary);
             let opts = quote! {
                 ::bpe_core::GroupOpts {
                     prefix: #prefix,
@@ -152,7 +149,6 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                     group: #group,
                     when: #when,
                     follows: &[#(#follows),*],
-                    inside: #inside,
                     screen_only: #screen_only,
                     simple: #simple,
                     vary: #vary,

@@ -277,15 +277,15 @@ fn shade_shape(in: ShapeOut) -> vec4<f32> {
         discard;
     }
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint.row < 0.0 {
+    if !paint_paints(paint) {
         return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
     }
     // A gradient painted on the line takes the place of its colour; the glow keeps the colour.
     var line = vec3<f32>(0.0);
-    if paint.pattern > 3.5 {
+    if paint.pattern > 3.5 && paint.pattern < 4.5 {
         line = paint_pattern(paint, shape_path(in) * paint.scale, g.view.w).rgb;
     } else {
-        line = paint_colour(paint, shape_local(in), g.view.w).rgb;
+        line = paint_colour(paint, shape_local(in), g.view.w, in.color).rgb;
     }
     return vec4<f32>(line * cover + in.color.rgb * glow, covering(cover, in.color.a));
 }
@@ -354,9 +354,9 @@ fn shade_ball(in: BallOut) -> vec4<f32> {
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
     var base = in.color.rgb;
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint.row >= 0.0 {
+    if paint_paints(paint) {
         // A gradient painted inside takes the place of the ball's colour; the light stays on top.
-        base = paint_colour(paint, in.local, g.view.w).rgb;
+        base = paint_colour(paint, in.local, g.view.w, in.color).rgb;
     }
     let lit = sphere_light(in.local, base);
     let halo_d = max(r - 1.0, 0.0) / 0.8;
@@ -450,11 +450,11 @@ fn shade_soft(in: SoftOut) -> vec4<f32> {
         discard;
     }
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint.row < 0.0 {
+    if !paint_paints(paint) {
         return vec4<f32>(in.color.rgb * a, covering(a, in.color.a));
     }
     // A gradient painted across the body takes the place of its colours.
-    let rgb = paint_colour(paint, in.local, g.view.w).rgb;
+    let rgb = paint_colour(paint, in.local, g.view.w, in.color).rgb;
     return vec4<f32>(rgb * a, covering(a, in.color.a));
 }
 

@@ -11,10 +11,12 @@ use glam::Vec2;
 pub mod eval;
 pub mod gpu;
 pub mod harmony;
+pub mod inside;
 pub mod palettes;
 pub mod vary;
 pub use eval::{Inputs, beats_at, colour_at, hits_on, last_hit, last_hit_at, offset};
-pub use gpu::{background_gpu, paint_gpu};
+pub use gpu::{background_gpu, inside_gpu, paint_gpu};
+pub use inside::{InsideFrom, InsidePaint, Pattern};
 pub use vary::{apply_vary, seed_of, vary_gpu, vary_offsets};
 
 /// What the colours follow.
@@ -51,16 +53,6 @@ pub enum Repeat {
     Mirror,
 }
 
-/// A pattern drawn inside each shape on top of the colours.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum Inside {
-    #[default]
-    None,
-    Stripes,
-    Rings,
-    Sweep,
-}
-
 /// Where a place-based gradient runs from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum PlaceShape {
@@ -83,11 +75,6 @@ pub struct Paint {
     pub scroll: f32,
     pub take_hit_colour: bool,
     pub step_time: f32,
-    pub inside: Inside,
-    pub inside_angle: f32,
-    pub inside_spin: f32,
-    pub inside_scale: f32,
-    pub inside_scroll: f32,
     /// How far each instance's hue turns from the paint's, in degrees either way.
     pub vary_hue: f32,
     /// How far each instance's saturation moves, either way.
@@ -112,11 +99,6 @@ impl Default for Paint {
             scroll: 0.0,
             take_hit_colour: false,
             step_time: 0.15,
-            inside: Inside::None,
-            inside_angle: 0.0,
-            inside_spin: 0.0,
-            inside_scale: 1.0,
-            inside_scroll: 0.0,
             vary_hue: 0.0,
             vary_sat: 0.0,
             vary_bright: 0.0,
@@ -176,7 +158,7 @@ impl SettingGroup for Paint {
         let d = group_default(o, default);
         let p = o.prefix;
         let (c, f) = (format!("{p}colours"), format!("{p}follow"));
-        let (shape, inside) = (format!("{p}shape"), format!("{p}inside"));
+        let shape = format!("{p}shape");
         let on = |extra: &str| also(o.when, &format!("{c}{extra}"));
         let def =
             |key: &str, label: &'static str, help: &'static str, ty: ValueType, default: Value, when: &'static str| {
@@ -341,54 +323,6 @@ impl SettingGroup for Paint {
             false,
             false,
         ));
-        if o.inside {
-            let mut pattern = def(
-                "inside",
-                "Inside pattern",
-                "A pattern drawn inside each shape on top of the colours.",
-                ty(&d.inside),
-                val(&d.inside),
-                on(""),
-            );
-            pattern.flags.random = true;
-            v.push(pattern);
-            let shown = on(&format!(" and {inside}!=none"));
-            let mut more = |key: &str, label: &'static str, help: &'static str, default: f32, range, unit| {
-                v.push(num(def(key, label, help, ty(&default), val(&default), shown), range, unit, true, false));
-            };
-            more(
-                "inside_angle",
-                "Pattern angle",
-                "The angle of the inside pattern, in degrees.",
-                d.inside_angle,
-                (-180.0, 180.0),
-                "deg",
-            );
-            more(
-                "inside_spin",
-                "Pattern spin",
-                "How fast the inside pattern turns, in degrees per second.",
-                d.inside_spin,
-                (-720.0, 720.0),
-                "deg/s",
-            );
-            more(
-                "inside_scale",
-                "Pattern size",
-                "How many times the inside pattern's colours go by across the shape.",
-                d.inside_scale,
-                (0.1, 8.0),
-                "",
-            );
-            more(
-                "inside_scroll",
-                "Pattern scroll",
-                "How fast the inside pattern slides along, in cycles per second.",
-                d.inside_scroll,
-                (-4.0, 4.0),
-                "cycles/s",
-            );
-        }
         if o.vary {
             // One paint's variation sits under "Variation"; a prefixed paint (an outline, a
             // pattern) gets its own heading so its rows can't be mistaken for the main one's.
@@ -463,13 +397,6 @@ impl SettingGroup for Paint {
         set(&mut s.scroll, get("scroll"));
         set(&mut s.take_hit_colour, get("take_hit_colour"));
         set(&mut s.step_time, get("step_time"));
-        if o.inside {
-            set(&mut s.inside, get("inside"));
-            set(&mut s.inside_angle, get("inside_angle"));
-            set(&mut s.inside_spin, get("inside_spin"));
-            set(&mut s.inside_scale, get("inside_scale"));
-            set(&mut s.inside_scroll, get("inside_scroll"));
-        }
         if o.vary {
             set(&mut s.vary_hue, get("vary_hue"));
             set(&mut s.vary_sat, get("vary_sat"));
@@ -501,13 +428,6 @@ impl SettingGroup for Paint {
         put("scroll", val(&self.scroll), val(&d.scroll));
         put("take_hit_colour", val(&self.take_hit_colour), val(&d.take_hit_colour));
         put("step_time", val(&self.step_time), val(&d.step_time));
-        if o.inside {
-            put("inside", val(&self.inside), val(&d.inside));
-            put("inside_angle", val(&self.inside_angle), val(&d.inside_angle));
-            put("inside_spin", val(&self.inside_spin), val(&d.inside_spin));
-            put("inside_scale", val(&self.inside_scale), val(&d.inside_scale));
-            put("inside_scroll", val(&self.inside_scroll), val(&d.inside_scroll));
-        }
         if o.vary {
             put("vary_hue", val(&self.vary_hue), val(&d.vary_hue));
             put("vary_sat", val(&self.vary_sat), val(&d.vary_sat));
@@ -533,15 +453,15 @@ mod tests {
     struct Two {
         #[setting(paint, label = "Colours", prefix = "", follows = "place|order|speed")]
         fill: Paint,
-        #[setting(paint, label = "Outline colours", prefix = "outline_", follows = "place", inside)]
+        #[setting(paint, label = "Outline colours", prefix = "outline_", follows = "place")]
         outline: Paint,
     }
 
     #[test]
     fn a_paint_field_expands_to_prefixed_settings() {
         let keys: Vec<_> = Two::defs().iter().map(|d| d.key).collect();
-        assert!(keys.contains(&"colours") && keys.contains(&"outline_colours") && keys.contains(&"outline_inside"));
-        assert!(!keys.contains(&"inside"), "no inside pattern unless asked");
+        assert!(keys.contains(&"colours") && keys.contains(&"outline_colours"));
+        assert!(!keys.iter().any(|k| k.contains("inside")), "the inside is a group of its own now");
         let f = Two::defs().iter().find(|d| d.key == "follow").unwrap();
         assert_eq!(f.ty, ValueType::Choice(&["place", "order", "speed"]));
         let a = Two::defs().iter().find(|d| d.key == "outline_angle").unwrap();
@@ -618,7 +538,7 @@ mod tests {
         let scene = crate::things::scene::SceneSettings::defs();
         assert!(liquid.iter().chain(scene).all(|d| !d.key.ends_with("vary_hue") && !d.key.ends_with("wobble")));
         // Every other look's paint does.
-        assert!(crate::modules::look::ClassicLook::defs().iter().any(|d| d.key == "vary_hue"));
+        assert!(crate::modules::look::BasicLook::defs().iter().any(|d| d.key == "vary_hue"));
     }
 
     #[test]
@@ -633,7 +553,7 @@ mod tests {
         #[derive(Clone, Debug, PartialEq, Default, Settings)]
         struct Gated {
             #[setting(label = "Mode")]
-            mode: Inside,
+            mode: Pattern,
             #[setting(paint, label = "Colours", prefix = "p_", when = "mode=stripes or mode=rings", screen_only)]
             p: Paint,
         }
@@ -675,7 +595,6 @@ mod tests {
             group: "",
             when: "",
             follows: &["life", "order"],
-            inside: false,
             screen_only: false,
             simple: false,
             vary: true,
@@ -700,13 +619,13 @@ mod tests {
     fn the_outer_default_is_the_groups_default() {
         #[derive(Clone, Debug, PartialEq, Settings)]
         struct Navy {
-            #[setting(paint, label = "Colours", prefix = "p_", follows = "life|order", inside)]
+            #[setting(paint, label = "Colours", prefix = "p_", follows = "life|order")]
             p: Paint,
         }
         impl Default for Navy {
             fn default() -> Self {
                 let colours = Gradient::solid(Color::rgb(0x20, 0x20, 0x40));
-                Self { p: Paint { colours, follow: Follow::Order, inside: Inside::Rings, ..Paint::default() } }
+                Self { p: Paint { colours, follow: Follow::Order, scroll: 0.5, ..Paint::default() } }
             }
         }
         let d = Navy::default();

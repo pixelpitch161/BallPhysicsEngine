@@ -98,7 +98,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -126,7 +126,7 @@
                 id: 14,
                 name: "Arena look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(1),
             ),
             15: (
@@ -181,7 +181,7 @@
                 id: 19,
                 name: "Soft bar look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(3),
             ),
             20: (

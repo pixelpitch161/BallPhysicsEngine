@@ -105,8 +105,8 @@ fn shade_glyph(in: GlyphOut) -> vec4<f32> {
     // A gradient painted inside takes the place of the fill's colour; the halo keeps the colour.
     var fill_rgb = in.color.rgb;
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint.row >= 0.0 {
-        fill_rgb = paint_colour(paint, in.local, g.view.w).rgb;
+    if paint_paints(paint) {
+        fill_rgb = paint_colour(paint, in.local, g.view.w, in.color).rgb;
     }
     let rgb = fill_rgb * fill_a + in.outline.rgb * outline_a + in.color.rgb * halo;
     var a = fill_a + outline_a;

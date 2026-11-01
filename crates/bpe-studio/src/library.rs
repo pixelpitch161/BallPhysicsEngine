@@ -543,11 +543,12 @@ mod tests {
         let before = h.state().scene.library.modules.len();
         h.get_by_label("+ New Look").click();
         h.run();
-        h.get_by_label("Classic").click();
+        // The kind's name, in the menu just opened (the card's own heading says Look too).
+        h.get_all_by_label("Look").last().expect("the Look kind").click();
         h.run();
         let s = h.state();
         assert_eq!(s.scene.library.modules.len(), before + 1);
-        let new = s.scene.library.modules.values().find(|m| m.name == "Classic").expect("named after its kind");
+        let new = s.scene.library.modules.values().find(|m| m.name == "Look").expect("named after its kind");
         assert_eq!(s.lib.selected, Some(new.id));
         assert_eq!(new.slot, SlotId::Look);
     }

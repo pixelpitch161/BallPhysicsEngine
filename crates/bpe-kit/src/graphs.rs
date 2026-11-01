@@ -454,7 +454,7 @@ mod tests {
         edited.graph.links.clear();
         scene.library.modules.get_mut(&m).unwrap().graph = Some(edited.clone());
         assert_eq!(module_graph(&TemplateKind, &scene.library.modules[&m]), Some(edited));
-        assert_eq!(module_graph(&crate::ClassicLookKind, &scene.library.modules[&ModuleId(0)]), None);
+        assert_eq!(module_graph(&crate::BasicLookKind, &scene.library.modules[&ModuleId(0)]), None);
     }
 
     #[test]
