@@ -89,6 +89,9 @@ impl ModuleKind for ClassicLookKind {
     fn help(&self) -> &'static str {
         "A lit ball with a soft halo and a flash where it hits."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        !matches!(thing_kind, "liquid" | "swarm")
+    }
     fn slot(&self) -> SlotId {
         SlotId::Look
     }

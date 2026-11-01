@@ -245,6 +245,9 @@ impl ModuleKind for StyledLookKind {
     fn help(&self) -> &'static str {
         "A ball with its own shape, fill pattern, outline and halo, stretched as it speeds up."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        !matches!(thing_kind, "liquid" | "swarm")
+    }
     fn slot(&self) -> SlotId {
         SlotId::Look
     }

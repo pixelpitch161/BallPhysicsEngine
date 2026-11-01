@@ -71,6 +71,9 @@ impl ModuleKind for SwarmLookKind {
     fn help(&self) -> &'static str {
         "Tiny points of light, coloured by speed, by the nearest ball, by place, or at random along the colours."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind == "swarm"
+    }
     fn slot(&self) -> SlotId {
         SlotId::Look
     }

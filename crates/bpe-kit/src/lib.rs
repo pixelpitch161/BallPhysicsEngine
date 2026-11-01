@@ -491,6 +491,24 @@ mod tests {
     }
 
     #[test]
+    fn kinds_fitting_limits_looks_and_motions_by_thing() {
+        let reg = registry();
+        let ids = |thing: &str, slot: SlotId| -> Vec<&'static str> {
+            let t = reg.thing(thing).unwrap();
+            reg.kinds_fitting(slot, t).map(|m| m.id()).collect()
+        };
+        // Task 5 merges these two into "look.basic".
+        assert_eq!(ids("balls", SlotId::Look), ["look.classic", "look.styled"]);
+        assert_eq!(ids("liquid", SlotId::Look), ["look.liquid"]);
+        assert_eq!(ids("swarm", SlotId::Look), ["look.swarm"]);
+        assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
+        assert_eq!(ids("liquid", SlotId::Motion), ["motion.liquid"]);
+        assert_eq!(ids("swarm", SlotId::Motion), ["motion.flock"]);
+        assert_eq!(ids("balls", SlotId::Shader).len(), 13);
+        assert_eq!(ids("scene", SlotId::Sound), ["sound.drums", "sound.melody"]);
+    }
+
+    #[test]
     fn the_new_module_kinds_are_registered_on_their_slots() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();

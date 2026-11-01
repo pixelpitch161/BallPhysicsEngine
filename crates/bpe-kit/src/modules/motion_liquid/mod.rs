@@ -39,6 +39,9 @@ impl ModuleKind for FlowingKind {
     fn help(&self) -> &'static str {
         "Falls under gravity and flows like a liquid."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind == "liquid"
+    }
     fn slot(&self) -> SlotId {
         SlotId::Motion
     }
