@@ -80,7 +80,10 @@ enum Edit {
     Parent(ThingId),
     Attach(Attach),
     /// One of the kind's own settings, for every selected thing of the kind.
-    SetKind(&'static str, Value),
+    SetOwn(&'static str, Value),
+    /// The module in a slot becomes another kind, once for each module the selected things show
+    /// there with the same kind.
+    SetKind(SlotId, &'static str),
     /// One of a slot's settings, for every selected thing whose slot holds the same module kind.
     SetSlot(SlotId, &'static str, Value),
     ResetOverride(SlotId, &'static str),
@@ -288,7 +291,7 @@ pub fn show(
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
             fold_groups(&mut inspector.collapsed, (id, None), &out.folds);
-            edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetKind(key, value)));
+            edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
             edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(own(key), lock)));
@@ -331,6 +334,43 @@ pub fn show(
                         let title = kind.slot_label(slot);
                         let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), title);
                         ui.label(RichText::new(title).strong());
+                        // The Type menu: what kind of module fills the slot, when more than one fits.
+                        let fitting: Vec<&dyn ModuleKind> = reg.kinds_fitting(slot, kind).collect();
+                        let shown = shown_module.and_then(|m| scene.library.modules.get(&m));
+                        if let Some(m) = shown
+                            && let Some(current) = reg.module(&m.kind)
+                            && fitting.len() > 1
+                        {
+                            let inherited = matches!(link, SlotLink::Inherit);
+                            ui.add_space(4.0);
+                            let label = ui.label(RichText::new("Type").small().color(theme::MUTED));
+                            ui.add_enabled_ui(!inherited, |ui| {
+                                ui.menu_button(current.name(), |ui| {
+                                    ui.set_min_width(180.0);
+                                    let users = scene.users_of(m.id).len();
+                                    if users > 1 {
+                                        ui.label(
+                                            RichText::new(format!("Changes all {users} things using {}", m.name))
+                                                .color(theme::MUTED),
+                                        );
+                                    }
+                                    for k in &fitting {
+                                        if ui
+                                            .selectable_label(k.id() == current.id(), k.name())
+                                            .on_hover_text(k.help())
+                                            .clicked()
+                                        {
+                                            edits.push(Edit::SetKind(slot, k.id()));
+                                            ui.close();
+                                        }
+                                    }
+                                })
+                                .response
+                                .labelled_by(label.id)
+                                .on_hover_text("What kind of module fills this slot")
+                                .on_disabled_hover_text("Make own first: this slot follows the folder above");
+                            });
+                        }
                         // The picker: a button that reads the slot's state and drops down the choices.
                         ui.menu_button(state, |ui| {
                             for m in
@@ -346,8 +386,7 @@ pub fn show(
                             // One kind: a plain button. Several: a submenu naming each kind. A new
                             // module copies the shown one's settings, all of them when it is of the
                             // same kind, else the ones both kinds have (a look's colour and glow).
-                            let kinds: Vec<&dyn ModuleKind> =
-                                reg.modules_for(slot).filter(|k| kind.accepts(slot, k.id())).collect();
+                            let kinds = &fitting;
                             if let [only] = kinds[..] {
                                 if ui.button(format!("New {title} module…")).clicked() {
                                     edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
@@ -356,7 +395,7 @@ pub fn show(
                             } else if !kinds.is_empty() {
                                 ui.menu_button(format!("New {title} module"), |ui| {
                                     ui.set_min_width(180.0);
-                                    for kind in &kinds {
+                                    for kind in kinds {
                                         if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
                                             edits.push(Edit::NewModule {
                                                 slot,
@@ -756,7 +795,7 @@ pub fn show(
                 crate::tree::apply_drop(scene, reg, id, parent, crate::tree::Drop::Into(attach)).is_ok()
             }
             Edit::Attach(attach) => crate::tree::reattach(scene, id, attach).is_ok(),
-            Edit::SetKind(key, value) => {
+            Edit::SetOwn(key, value) => {
                 let mut any = false;
                 let same_kind: Vec<ThingId> = selected
                     .iter()
@@ -766,6 +805,23 @@ pub fn show(
                 for t in &same_kind {
                     let a = Address { owner: Owner::Thing(*t), slot: None, key: key.into() };
                     any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
+                }
+                any
+            }
+            Edit::SetKind(slot, kind) => {
+                let shown = |t: &ThingId| match scene.things.get(t).and_then(|t| t.slots.get(&slot)) {
+                    Some(SlotLink::Linked { module, .. }) => Some(*module),
+                    _ => None,
+                };
+                let mkind = shown(&id).and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.clone());
+                let modules: BTreeSet<ModuleId> = selected
+                    .iter()
+                    .filter_map(shown)
+                    .filter(|m| scene.library.modules.get(m).map(|m| &m.kind) == mkind.as_ref())
+                    .collect();
+                let mut any = false;
+                for m in modules {
+                    any |= scene.set_module_kind(reg, m, kind).is_ok();
                 }
                 any
             }
@@ -1280,7 +1336,7 @@ fn chord_clip(
 /// it: a starter, or a copy of the one the row shows.
 fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
     let (slot, key, value) = match &edit {
-        Edit::SetKind(key, value) => (None, *key, value),
+        Edit::SetOwn(key, value) => (None, *key, value),
         Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
         _ => return edit,
     };
@@ -1306,7 +1362,7 @@ fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: Thin
         };
     let value = made.map_or(Value::Int(-1), |p| ProgressionRef(Some(p)).to_value());
     match slot {
-        None => Edit::SetKind(key, value),
+        None => Edit::SetOwn(key, value),
         Some(slot) => Edit::SetSlot(slot, key, value),
     }
 }
@@ -1315,7 +1371,7 @@ fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: Thin
 /// library instrument made for it: a built-in is shared with whatever already plays it.
 fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
     let (slot, key, value) = match &edit {
-        Edit::SetKind(key, value) => (None, *key, value),
+        Edit::SetOwn(key, value) => (None, *key, value),
         Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
         _ => return edit,
     };
@@ -1368,7 +1424,7 @@ fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: Thing
     };
     let value = made.map_or(Value::Int(-1), |i| InstrumentRef(Some(i)).to_value());
     match slot {
-        None => Edit::SetKind(key, value),
+        None => Edit::SetOwn(key, value),
         Some(slot) => Edit::SetSlot(slot, key, value),
     }
 }
@@ -1751,10 +1807,8 @@ mod tests {
         let starter = linked(&h.state().scene, ThingId(1), SlotId::Look);
         h.get_by_label("Arena look").click();
         h.run();
-        h.get_by_label("New Look module").click();
-        h.run();
-        // The kind's name, in the menu just opened (the card's own heading says Look too).
-        h.get_all_by_label("Look").last().expect("the Look kind").click();
+        // One Look kind fits an arena, so the menu makes the module straight away.
+        h.get_by_label("New Look module…").click();
         h.run();
         let s = h.state();
         let module = linked(&s.scene, ThingId(1), SlotId::Look);
@@ -1781,21 +1835,19 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
         assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
         assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
-        // The ball's Look has several kinds: the submenu names them, and a different kind keeps
-        // only the settings both kinds share, such as the colour.
-        let classic = s.scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().params.clone();
-        h.get_by_label("Ball look").click();
+        // The ball's Sound has several kinds: the submenu names them, and a different kind keeps
+        // only the settings both kinds share, such as the volume.
+        let notes = s.scene.library.modules[&ball_sound(&s.scene)].params.clone();
+        h.get_by_label("Ball sound").click();
         h.run();
-        h.get_by_label("New Look module").click();
+        h.get_by_label("New Sound module").click();
         h.run();
-        h.get_by_label("Liquid surface").click();
+        h.get_by_label("Melody").click();
         h.run();
         let s = h.state();
-        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
-        let m = &s.scene.library.modules[module];
-        assert_eq!(m.kind, "look.liquid");
-        assert_eq!(m.params.get("colours"), classic.get("colours"), "{:?}", m.params);
-        assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.liquid"));
+        let m = &s.scene.library.modules[&ball_sound(&s.scene)];
+        assert_eq!(m.kind, "sound.melody");
+        assert_eq!(m.params, s.kit.registry.carry_over(&notes, "sound.melody"));
     }
 
     #[test]
@@ -1823,21 +1875,28 @@ mod tests {
     }
 
     #[test]
-    fn the_new_module_menu_lists_every_kind_of_the_slot() {
+    fn the_new_module_menu_lists_every_kind_that_fits_the_thing() {
         let mut h = harness(Some(ThingId(2)));
+        // A swarm's or a liquid's look doesn't fit a ball, so its Look has one kind.
         h.get_by_label("Ball look").click();
         h.run();
-        h.get_by_label("New Look module").click();
+        assert!(h.query_by_label("New Look module…").is_some());
+        assert!(h.query_by_label("Liquid surface").is_none());
+        h.key_press(egui::Key::Escape);
         h.run();
-        for name in ["Look", "Liquid surface", "Glowing dots"] {
+        h.get_by_label("Ball sound").click();
+        h.run();
+        h.get_by_label("New Sound module").click();
+        h.run();
+        for name in ["Notes", "Melody", "Drum machine"] {
             assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
         }
-        h.get_by_label("Glowing dots").click();
+        h.get_all_by_label("Drum machine").last().unwrap().click();
         h.run();
         let s = h.state();
-        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
-        assert_eq!(s.scene.library.modules[module].kind, "look.swarm");
-        assert_eq!(s.scene.library.modules[module].name, "Ball Look");
+        let module = ball_sound(&s.scene);
+        assert_eq!(s.scene.library.modules[&module].kind, "sound.drums");
+        assert_eq!(s.scene.library.modules[&module].name, "Ball Sound");
         // Bounce has one kind, so its menu keeps the plain button that makes the module at once.
         h.get_by_label("Ball bounce").click();
         h.run();
@@ -2642,32 +2701,29 @@ mod tests {
     }
 
     #[test]
-    fn a_new_look_of_another_kind_keeps_the_colour_and_glow() {
+    fn a_new_sound_of_another_kind_keeps_the_volume_and_pan() {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
-            panic!("the ball's look is linked");
-        };
-        let colour = Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color { r: 12, g: 200, b: 90, a: 255 }));
+        let module = ball_sound(&scene);
         let set = |scene: &mut Scene, key: &str, v: Value| {
             let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
             scene.set_at(&reg, &a, v).unwrap();
         };
-        set(&mut scene, "colours", colour.clone());
-        set(&mut scene, "glow", Value::Number(0.7));
+        set(&mut scene, "volume", Value::Number(-12.0));
+        set(&mut scene, "pan", Value::Number(0.5));
         let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
+        h.get_by_label("Ball sound").click();
         h.run();
-        h.get_by_label("New Look module").hover();
+        h.get_by_label("New Sound module").hover();
         h.run();
-        h.get_by_label("Liquid surface").click();
+        h.get_all_by_label("Drum machine").last().unwrap().click();
         h.run();
-        let (new, _) = ball_look(h.state());
+        let new = ball_sound(&h.state().scene);
         assert_ne!(new, module);
-        let liquid = &h.state().scene.library.modules[&new];
-        assert_eq!(liquid.kind, "look.liquid");
-        assert_eq!(liquid.params.get("colours"), Some(&colour), "the colour comes along");
-        assert_eq!(liquid.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
+        let drums = &h.state().scene.library.modules[&new];
+        assert_eq!(drums.kind, "sound.drums");
+        assert_eq!(drums.params.get("volume"), Some(&Value::Number(-12.0)), "the volume comes along");
+        assert_eq!(drums.params.get("pan"), Some(&Value::Number(0.5)), "and the pan");
     }
 
     /// The Colours row's name, after the Colours heading over it.
@@ -2742,5 +2798,129 @@ mod tests {
         h.get_by_label("Show Grade").click();
         h.run();
         assert!(slider(&h, "Vignette"));
+    }
+
+    /// Opens the card's Type menu: the one Type button on the page.
+    fn open_type_menu(h: &mut Harness<'_, State>) {
+        h.get_by_role_and_label(Role::Button, "Type").click();
+        h.run();
+    }
+
+    /// The ball's sound with its lowest note set to 40.
+    fn ball_with_a_low_note() -> (Scene, ModuleId, Address) {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let sound = ball_sound(&scene);
+        let low = Address { owner: Owner::Module(sound), slot: None, key: "low_note".into() };
+        scene.set_at(&reg, &low, Value::Int(40)).unwrap();
+        (scene, sound, low)
+    }
+
+    #[test]
+    fn an_effects_card_has_a_type_menu_and_a_balls_look_has_none() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        // Only the ball's Look, Motion and Bounce: each has one kind that fits a ball.
+        scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Sound);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().slots.remove(&SlotId::Sound);
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        assert!(h.query_by_label("Ball look").is_some(), "the look card shows its module");
+        assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "a ball's look has one kind");
+        h.state_mut().selection.set(ThingId::ROOT);
+        h.run();
+        let root = reg.thing("scene").unwrap();
+        let effects: Vec<&str> = reg.kinds_fitting(SlotId::Shader, root).map(|k| k.name()).collect();
+        assert!(effects.len() > 1, "{effects:?}");
+        let shader = linked(&h.state().scene, ThingId::ROOT, SlotId::Shader);
+        let current = reg.module(&h.state().scene.library.modules[&shader].kind).unwrap().name();
+        open_type_menu(&mut h);
+        for name in &effects {
+            assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
+        }
+        let other = effects.iter().find(|n| **n != current).unwrap();
+        h.get_all_by_label(other).last().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(linked(&s.scene, ThingId::ROOT, SlotId::Shader), shader, "the same module, another kind");
+        assert_eq!(reg.module(&s.scene.library.modules[&shader].kind).unwrap().name(), *other);
+    }
+
+    #[test]
+    fn picking_a_type_switches_the_module_and_back_restores_it() {
+        let (scene, sound, low) = ball_with_a_low_note();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        open_type_menu(&mut h);
+        h.get_all_by_label("Drum machine").last().unwrap().click();
+        h.run();
+        {
+            let s = h.state();
+            assert_eq!(ball_sound(&s.scene), sound, "the slot keeps its module");
+            assert_eq!(s.scene.library.modules[&sound].kind, "sound.drums");
+            assert!(s.scene.library.modules[&sound].params.get("low_note").is_none());
+        }
+        open_type_menu(&mut h);
+        h.get_all_by_label("Notes").last().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules[&sound].kind, "sound.notes");
+        assert_eq!(s.scene.value_at(&s.kit.registry, &low), Some(Value::Int(40)), "the lowest note is back");
+    }
+
+    #[test]
+    fn undo_after_a_type_switch_restores_the_module() {
+        let (scene, sound, _) = ball_with_a_low_note();
+        let before = scene.clone();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        open_type_menu(&mut h);
+        h.get_all_by_label("Melody").last().unwrap().click();
+        h.run();
+        assert_eq!(h.state().scene.library.modules[&sound].kind, "sound.melody");
+        // The studio records any frame that changed the scene as an undo step.
+        let mut history = crate::history::History::default();
+        history.record(before.clone(), false);
+        let s = h.state_mut();
+        assert!(history.undo(&mut s.scene));
+        assert_eq!(s.scene.library.modules[&sound].kind, "sound.notes");
+        assert_eq!(s.scene, before);
+        assert!(history.redo(&mut s.scene));
+        assert_eq!(s.scene.library.modules[&sound].kind, "sound.melody");
+    }
+
+    #[test]
+    fn a_shared_modules_type_menu_says_how_many_change() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let sound = ball_sound(&scene);
+        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        scene.link(&reg, other, SlotId::Sound, sound).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        open_type_menu(&mut h);
+        let name = h.state().scene.library.modules[&sound].name.clone();
+        assert!(h.query_by_label(&format!("Changes all 2 things using {name}")).is_some());
+        h.get_all_by_label("Drum machine").last().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules[&sound].kind, "sound.drums");
+        assert_eq!(linked(&s.scene, other, SlotId::Sound), sound, "both still share it");
+    }
+
+    #[test]
+    fn a_type_switch_reaches_each_selected_module_once() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let theirs = linked(&scene, other, SlotId::Sound);
+        let mine = ball_sound(&scene);
+        assert_ne!(theirs, mine, "each ball has its own sound");
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.state_mut().selection.toggle(other);
+        h.run();
+        open_type_menu(&mut h);
+        h.get_all_by_label("Melody").last().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules[&mine].kind, "sound.melody");
+        assert_eq!(s.scene.library.modules[&theirs].kind, "sound.melody");
     }
 }
