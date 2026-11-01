@@ -231,37 +231,38 @@ mod tests {
     }
 
     #[test]
-    fn glow_circle_draws_through_the_classic_ball_path() {
+    fn shiny_circle_draws_through_the_classic_ball_path() {
         let frame = basic_frame(|_| {});
         assert!(!frame.balls.is_empty());
         assert!(frame.looks.is_empty());
     }
 
     #[test]
-    fn flat_or_shiny_or_another_shape_draws_a_styled_instance() {
+    fn flat_or_see_through_or_another_shape_draws_a_styled_instance() {
         let flat = basic_frame(|p| p.set("style", Value::Choice("flat".into())));
         assert!(!flat.looks.is_empty() && flat.balls.is_empty());
         assert_eq!(flat.looks[0].form[1], 0.0, "flat is unlit");
+        // A shiny circle the classic ball can't draw: half see-through.
         let shiny = basic_frame(|p| {
-            p.set("ball_shape", Value::Choice("circle".into()));
             p.set("style", Value::Choice("shiny".into()));
+            p.set("opacity", Value::Number(0.5));
         });
         assert!(!shiny.looks.is_empty() && shiny.balls.is_empty());
         assert_eq!(shiny.looks[0].form[1], 1.0, "shiny is lit like a sphere");
         let star = basic_frame(|p| {
             p.set("ball_shape", Value::Choice("star".into()));
-            p.set("style", Value::Choice("glow".into()));
+            p.set("style", Value::Choice("shiny".into()));
         });
         assert!(!star.looks.is_empty() && star.balls.is_empty());
-        assert_eq!(star.looks[0].form[..2], [5.0, 2.0], "a glowing star is lit like the classic ball");
+        assert_eq!(star.looks[0].form[..2], [5.0, 1.0], "a shiny star is lit like the classic ball");
     }
 
     #[test]
-    fn a_glow_circle_with_an_outline_draws_a_styled_glow_instance() {
+    fn a_shiny_circle_with_an_outline_draws_a_styled_shiny_instance() {
         let frame = basic_frame(|p| p.set("outline", Value::Number(3.0)));
         assert!(frame.balls.is_empty());
         assert_eq!(frame.looks.len(), 1);
-        assert_eq!(frame.looks[0].form[..2], [0.0, 2.0]);
+        assert_eq!(frame.looks[0].form[..2], [0.0, 1.0]);
         assert_eq!(frame.looks[0].look[0], 3.0);
         // Its default sibling still takes the classic path.
         let plain = basic_frame(|_| {});

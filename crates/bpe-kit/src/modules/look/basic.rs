@@ -1,5 +1,5 @@
-//! The look: a ball's colours, its shape and style (a glowing ball, one flat colour, or lit like
-//! a sphere), a pattern inside each one, an outline, a halo and a flash where it hits. Other
+//! The look: a ball's colours, its shape and style (lit like a shiny sphere, or one flat
+//! colour), a pattern inside each one, an outline, a halo and a flash where it hits. Other
 //! things wear the same look and read only its colours, its inside pattern and its glow.
 
 use std::f32::consts::FRAC_PI_2;
@@ -42,23 +42,20 @@ impl BallShape {
     }
 }
 
-/// How a ball is lit: a glowing ball, one flat colour, or lit like a shiny sphere.
+/// How a ball is lit: like a shiny sphere (the classic ball), or one flat colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Style {
     #[default]
-    Glow,
-    Flat,
     Shiny,
+    Flat,
 }
 
 impl Style {
-    /// The style's number in styled.wgsl's `form.y`: 0 one even colour, 1 lit like a sphere,
-    /// 2 lit like the classic glowing ball.
+    /// The style's number in styled.wgsl's `form.y`: 0 one even colour, 1 lit like a sphere.
     pub fn code(self) -> f32 {
         match self {
             Self::Flat => 0.0,
             Self::Shiny => 1.0,
-            Self::Glow => 2.0,
         }
     }
 }
@@ -87,8 +84,8 @@ pub struct BasicLook {
     /// The outline the ball is drawn with; it still bounces as a circle.
     #[setting(label = "Shape", when = "thing=balls", simple, random)]
     pub ball_shape: BallShape,
-    /// How the ball is lit: Glow is the classic ball, lit from the upper left; Shiny is lit like
-    /// a sphere; Flat is one even colour. Whatever the style, the halo is as bright as Glow says.
+    /// How the ball is lit: Shiny is lit like a sphere; Flat is one even colour. Either way, the
+    /// halo is as bright as Glow says.
     #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
     pub style: Style,
     /// How wide the outline just inside the edge is; 0 means none.
@@ -181,7 +178,7 @@ impl Default for BasicLook {
             fill: Paint::default(),
             inside: InsidePaint::default(),
             ball_shape: BallShape::Circle,
-            style: Style::Glow,
+            style: Style::Shiny,
             outline: 0.0,
             glow: 0.12,
             outline_paint: Paint::default(),
@@ -210,12 +207,12 @@ impl BasicLook {
         self.fill.colours.first().to_linear()
     }
 
-    /// Whether a ball wearing this look is drawn as the classic glowing ball rather than a
-    /// styled shape: a glowing circle with nothing the classic ball can't draw (an outline, its
+    /// Whether a ball wearing this look is drawn as the classic ball rather than a styled
+    /// shape: a shiny circle with nothing the classic ball can't draw (an outline, its
     /// own glow size, opacity, rainbow or stretch).
     pub fn is_classic_ball(&self) -> bool {
         let d = Self::default();
-        self.style == Style::Glow
+        self.style == Style::Shiny
             && self.ball_shape == BallShape::Circle
             && self.outline <= 0.0
             && self.glow_size == d.glow_size
@@ -369,8 +366,8 @@ mod tests {
         assert_eq!(simple, ["colours", "ball_shape", "style", "outline", "glow"]);
         let style = defs.iter().find(|d| d.key == "style").unwrap();
         assert_eq!((style.label, style.group, style.when), ("Style", "Style", "thing=balls"));
-        assert_eq!(style.default, Value::Choice("glow".into()));
-        assert_eq!(Style::NAMES, ["glow", "flat", "shiny"]);
+        assert_eq!(style.default, Value::Choice("shiny".into()));
+        assert_eq!(Style::NAMES, ["shiny", "flat"]);
         let pattern = defs.iter().find(|d| d.key == "in_pattern").unwrap();
         assert_eq!((pattern.label, pattern.group), ("Pattern", "Inside each one"));
         for gone in ["finish", "pattern_colours", "pattern_size", "inside", "inside_angle"] {
@@ -383,7 +380,7 @@ mod tests {
         assert_eq!(BasicLook::from_params(&bpe_core::Params::default()), BasicLook::default());
         assert!(BasicLook::default().to_params().0.is_empty(), "the defaults are not saved");
         let d = BasicLook::default();
-        assert!(d.is_classic_ball(), "a new look is a glowing circle");
+        assert!(d.is_classic_ball(), "a new look is a shiny circle");
         // Anything the classic ball can't draw sends it down the styled path.
         for l in [
             BasicLook { outline: 3.0, ..d.clone() },
@@ -391,7 +388,7 @@ mod tests {
             BasicLook { opacity: 0.5, ..d.clone() },
             BasicLook { rainbow: 0.2, ..d.clone() },
             BasicLook { stretch: 0.5, ..d.clone() },
-            BasicLook { style: Style::Shiny, ..d.clone() },
+            BasicLook { style: Style::Flat, ..d.clone() },
             BasicLook { ball_shape: BallShape::Star, ..d.clone() },
         ] {
             assert!(!l.is_classic_ball(), "{l:?}");
@@ -477,7 +474,7 @@ mod tests {
         // Half a turn around the wheel from red is cyan.
         assert_eq!(Color::from_linear(at1.color), Color::rgb(0, 255, 255));
         assert_eq!(at0.form[..2], [5.0, 1.0]);
-        for (style, code) in [(Style::Flat, 0.0), (Style::Glow, 2.0)] {
+        for (style, code) in [(Style::Flat, 0.0), (Style::Shiny, 1.0)] {
             let l = BasicLook { style, ..look.clone() };
             let i = instance(&l, BallColours::plain(&l, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
             assert_eq!(i.form[1], code, "{style:?}");
