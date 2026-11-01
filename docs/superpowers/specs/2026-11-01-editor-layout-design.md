@@ -144,8 +144,9 @@ Paint today: the Look's fill (balls, text letters, soft bodies). Its rows:
 - Linear, Radial and Sweep cover the shape once at Size 1 and follow `in_repeat` past the ends.
   Stripes, Rings, Dots, Checker, Halves, Slices and Swirl repeat Size times across the shape.
   Face draws today's face in the shaded colour.
-- The old rule that "a pattern never runs off the end, Clamp mirrors it" goes away. Mirror is now
-  a choice.
+- Linear, Radial and Sweep follow `in_repeat` (Clamp, Repeat or Mirror). Stripes and Rings are
+  repeating patterns, so they always mirror their gradient and `in_repeat` is hidden for them and
+  for the mask patterns (Dots to Face), where it would do nothing. Face hides Inside colours too.
 
 GPU: the pattern maths in `paint.wgsl` (`paint_colour`, `paint_pattern`) and the finish patterns
 in `styled.wgsl` become one function, `inside_colour(inside: InsideGpu, base: vec4, local: vec2,
