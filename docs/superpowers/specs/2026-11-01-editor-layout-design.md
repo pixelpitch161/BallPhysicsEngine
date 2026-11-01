@@ -288,7 +288,8 @@ Glow. A Styled look's `finish` maps to Style plus Inside:
   set to the old fill colour then the old pattern colours, so it draws the same two colours.
 
 The colour-paints scene's classic Inside Rings becomes Inside Rings with Own gradient (its old
-colours) and Mirror, so it looks the same. Shader kinds generated from effect headers put every
+colours) and Mirror. It looks almost the same: the rings no longer shift colour with each ball's
+place in the group, because Inside now has its own gradient (an expected picture change). Shader kinds generated from effect headers put every
 parameter in a "Basics" group, so the section rule (2.1) holds for them too.
 
 ## Testing
