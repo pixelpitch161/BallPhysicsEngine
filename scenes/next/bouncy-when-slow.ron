@@ -4,29 +4,9 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -38,9 +18,15 @@
                 "shape": Choice("box"),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 11,
+                ),
+                Sound: Linked(
+                    module: 12,
+                ),
             },
         ),
         2: (
@@ -58,11 +44,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 13,
+                ),
+                Sound: Linked(
+                    module: 14,
+                ),
             },
         ),
     },
@@ -73,21 +65,41 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
+            3: (
+                id: 3,
+                name: "Ball look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff5ca8",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                },
+                owner: Some(2),
+            ),
+            7: (
+                id: 7,
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
-            1: (
-                id: 1,
+            8: (
+                id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
+                owner: Some(2),
             ),
-            2: (
-                id: 2,
-                name: "Default bounce",
+            11: (
+                id: 11,
+                name: "Arena bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
                 graph: Some((
@@ -406,32 +418,352 @@
                         (10, "value"),
                     ],
                 )),
+                owner: Some(1),
             ),
-            3: (
-                id: 3,
-                name: "Default sound",
+            12: (
+                id: 12,
+                name: "Arena sound",
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
+                    "chords": Int(0),
                     "instrument": Int(0),
                 },
+                owner: Some(1),
             ),
-            4: (
-                id: 4,
-                name: "Ball look",
-                slot: Look,
-                kind: "look.classic",
-                params: {
-                    "colours": Gradient((
-                        stops: [
+            13: (
+                id: 13,
+                name: "Ball bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                graph: Some((
+                    graph: (
+                        name: "Bounce",
+                        nodes: [
                             (
-                                at: 0.0,
-                                color: "#ff5ca8",
+                                id: 1,
+                                kind: "bounce.in",
+                                pos: (40.0, 200.0),
+                                params: {},
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 2,
+                                kind: "bounce.out",
+                                pos: (1340.0, 300.0),
+                                params: {},
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 3,
+                                kind: "setting",
+                                pos: (40.0, 440.0),
+                                params: {
+                                    "key": Text("bounciness"),
+                                    "label": Text("Bounciness"),
+                                    "max": Number(1.5),
+                                    "min": Number(0.0),
+                                    "value": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 4,
+                                kind: "reflect",
+                                pos: (300.0, 200.0),
+                                params: {
+                                    "keep": Number(1.0),
+                                    "normal": Vector((0.0, -1.0)),
+                                    "surface": Vector((0.0, 0.0)),
+                                    "v": Vector((0.0, 0.0)),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 5,
+                                kind: "setting",
+                                pos: (300.0, 440.0),
+                                params: {
+                                    "key": Text("speed_gain"),
+                                    "label": Text("Speed gain"),
+                                    "max": Number(1.5),
+                                    "min": Number(0.5),
+                                    "value": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 6,
+                                kind: "vec.scale",
+                                pos: (560.0, 260.0),
+                                params: {
+                                    "by": Number(1.0),
+                                    "v": Vector((0.0, 0.0)),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 7,
+                                kind: "choose.vector",
+                                pos: (820.0, 200.0),
+                                params: {
+                                    "else": Vector((0.0, 0.0)),
+                                    "if": Bool(false),
+                                    "then": Vector((0.0, 0.0)),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 8,
+                                kind: "setting",
+                                pos: (820.0, 440.0),
+                                params: {
+                                    "key": Text("top_speed"),
+                                    "label": Text("Top speed"),
+                                    "max": Number(20000.0),
+                                    "min": Number(50.0),
+                                    "value": Number(3000.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 9,
+                                kind: "vec.limit",
+                                pos: (1080.0, 200.0),
+                                params: {
+                                    "max": Number(1000.0),
+                                    "v": Vector((0.0, 0.0)),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 10,
+                                kind: "setting",
+                                pos: (300.0, 640.0),
+                                params: {
+                                    "key": Text("grow"),
+                                    "label": Text("Grow per hit"),
+                                    "max": Number(20.0),
+                                    "min": Number(-20.0),
+                                    "value": Number(0.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 11,
+                                kind: "math",
+                                pos: (560.0, 600.0),
+                                params: {
+                                    "a": Number(0.0),
+                                    "b": Number(0.0),
+                                    "op": Choice("add"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 12,
+                                kind: "setting",
+                                pos: (560.0, 800.0),
+                                params: {
+                                    "key": Text("max_size"),
+                                    "label": Text("Biggest size"),
+                                    "max": Number(400.0),
+                                    "min": Number(0.5),
+                                    "value": Number(60.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 13,
+                                kind: "clamp",
+                                pos: (820.0, 600.0),
+                                params: {
+                                    "max": Number(1.0),
+                                    "min": Number(0.5),
+                                    "x": Number(0.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 14,
+                                kind: "choose",
+                                pos: (1080.0, 600.0),
+                                params: {
+                                    "else": Number(0.0),
+                                    "if": Bool(false),
+                                    "then": Number(1.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 15,
+                                kind: "setting.bool",
+                                pos: (1080.0, 800.0),
+                                params: {
+                                    "key": Text("takes_over"),
+                                    "label": Text("Takes over"),
+                                    "on": Bool(false),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 16,
+                                kind: "compare",
+                                pos: (40.0, 640.0),
+                                params: {
+                                    "a": Number(0.0),
+                                    "b": Number(300.0),
+                                    "op": Choice("less"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 17,
+                                kind: "choose",
+                                pos: (300.0, 640.0),
+                                params: {
+                                    "else": Number(0.9),
+                                    "if": Bool(false),
+                                    "then": Number(1.15),
+                                },
+                                enabled: true,
+                                exposed: [],
                             ),
                         ],
-                        transition: Smooth,
-                    )),
+                        links: [
+                            (
+                                from: (1, 1),
+                                to: (4, 0),
+                            ),
+                            (
+                                from: (1, 2),
+                                to: (4, 1),
+                            ),
+                            (
+                                from: (1, 3),
+                                to: (4, 3),
+                            ),
+                            (
+                                from: (4, 0),
+                                to: (6, 0),
+                            ),
+                            (
+                                from: (5, 0),
+                                to: (6, 1),
+                            ),
+                            (
+                                from: (1, 7),
+                                to: (7, 0),
+                            ),
+                            (
+                                from: (6, 0),
+                                to: (7, 1),
+                            ),
+                            (
+                                from: (4, 0),
+                                to: (7, 2),
+                            ),
+                            (
+                                from: (7, 0),
+                                to: (9, 0),
+                            ),
+                            (
+                                from: (8, 0),
+                                to: (9, 1),
+                            ),
+                            (
+                                from: (9, 0),
+                                to: (2, 0),
+                            ),
+                            (
+                                from: (1, 5),
+                                to: (11, 0),
+                            ),
+                            (
+                                from: (10, 0),
+                                to: (11, 1),
+                            ),
+                            (
+                                from: (11, 0),
+                                to: (13, 0),
+                            ),
+                            (
+                                from: (12, 0),
+                                to: (13, 2),
+                            ),
+                            (
+                                from: (1, 7),
+                                to: (14, 0),
+                            ),
+                            (
+                                from: (13, 0),
+                                to: (14, 1),
+                            ),
+                            (
+                                from: (1, 5),
+                                to: (14, 2),
+                            ),
+                            (
+                                from: (14, 0),
+                                to: (2, 1),
+                            ),
+                            (
+                                from: (15, 0),
+                                to: (2, 2),
+                            ),
+                            (
+                                from: (1, 4),
+                                to: (16, 0),
+                            ),
+                            (
+                                from: (16, 0),
+                                to: (17, 0),
+                            ),
+                            (
+                                from: (17, 0),
+                                to: (4, 2),
+                            ),
+                        ],
+                        notes: [],
+                        enabled: true,
+                    ),
+                    template: "bounce.basic",
+                    custom: true,
+                    simple: [
+                        (3, "value"),
+                        (5, "value"),
+                        (8, "value"),
+                        (10, "value"),
+                    ],
+                )),
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
+                name: "Ball sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
                 },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -613,7 +945,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 5,
+    next_module: 15,
     next_progression: 1,
     next_instrument: 1,
 )

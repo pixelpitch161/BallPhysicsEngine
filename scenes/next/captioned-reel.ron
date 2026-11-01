@@ -4,30 +4,12 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
-                "chords": Int(0),
                 "gravity": Vec2((0.0, 160.0)),
             },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -35,9 +17,15 @@
             kind: "arena",
             parent: Some(0),
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 13,
+                ),
+                Bounce: Linked(
+                    module: 14,
+                ),
+                Sound: Linked(
+                    module: 15,
+                ),
             },
         ),
         2: (
@@ -59,11 +47,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 16,
+                ),
+                Sound: Linked(
+                    module: 17,
+                ),
             },
         ),
         3: (
@@ -82,7 +76,9 @@
                 "text": Text("Hits {hits}"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 18,
+                ),
             },
         ),
         4: (
@@ -100,7 +96,9 @@
                 "text": Text("{countdown}"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 19,
+                ),
             },
         ),
     },
@@ -113,35 +111,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -167,6 +138,71 @@
                     "follow": Choice("start"),
                     "span": Number(390.0),
                 },
+                owner: Some(2),
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            13: (
+                id: 13,
+                name: "Arena look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(1),
+            ),
+            14: (
+                id: 14,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            15: (
+                id: 15,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            16: (
+                id: 16,
+                name: "Block bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            17: (
+                id: 17,
+                name: "Block sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            18: (
+                id: 18,
+                name: "Hit counter look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(3),
+            ),
+            19: (
+                id: 19,
+                name: "Countdown look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(4),
             ),
         },
         progressions: {
@@ -348,7 +384,7 @@
         ],
     ),
     next_thing: 5,
-    next_module: 5,
+    next_module: 20,
     next_progression: 1,
     next_instrument: 1,
     tracks: {
@@ -391,7 +427,7 @@
             range: None,
         ),
         (
-            owner: Module(4),
+            owner: Module(3),
             slot: None,
             key: "glow",
         ): (

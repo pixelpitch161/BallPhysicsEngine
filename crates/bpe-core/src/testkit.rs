@@ -2,10 +2,13 @@
 
 use crate::{Color, ModuleKind, Registry, Scene, SettingDef, Settings, SlotId, Target, Thing, ThingId, ThingKind};
 
-/// Scene defaults.
+/// The scene settings.
 pub struct SceneKind;
 /// A folder that only groups things.
 pub struct FolderKind;
+/// A group whose slots stay its own (children never inherit them). It refuses `sound.pluck`
+/// in its Sound slot, to test `accepts`.
+pub struct SealedKind;
 /// A set of balls.
 pub struct BallsKind;
 /// A plain coloured look.
@@ -89,7 +92,7 @@ impl ThingKind for SceneKind {
         "scene"
     }
     fn name(&self) -> &'static str {
-        "Scene defaults"
+        "Scene settings"
     }
     fn icon(&self) -> &'static str {
         "scene"
@@ -129,6 +132,36 @@ impl ThingKind for FolderKind {
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
+    }
+}
+
+impl ThingKind for SealedKind {
+    fn id(&self) -> &'static str {
+        "sealed"
+    }
+    fn name(&self) -> &'static str {
+        "Sealed"
+    }
+    fn icon(&self) -> &'static str {
+        "folder"
+    }
+    fn help(&self) -> &'static str {
+        "Keeps its slots to itself."
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        &[]
+    }
+    fn slots(&self) -> &'static [SlotId] {
+        &SlotId::ALL
+    }
+    fn default_slots(&self) -> &'static [SlotId] {
+        &[]
+    }
+    fn passes_down(&self) -> bool {
+        false
+    }
+    fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
+        !(slot == SlotId::Sound && module_kind == "sound.pluck")
     }
 }
 
@@ -197,6 +230,7 @@ pub fn registry() -> Registry {
     let mut r = Registry::new();
     r.add_thing(SceneKind);
     r.add_thing(FolderKind);
+    r.add_thing(SealedKind);
     r.add_thing(BallsKind);
     r.add_module(PlainLookKind);
     r.add_module(PluckKind);

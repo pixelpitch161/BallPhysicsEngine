@@ -847,7 +847,7 @@ mod tests {
     fn hit_testing_grabs_a_soft_body_by_its_points() {
         let mut studio = Studio::headless();
         let before = studio.scene.clone();
-        let soft = studio.scene.add_thing(&studio.kit.registry, "soft", ThingId::ROOT).unwrap();
+        let soft = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "soft", ThingId::ROOT).unwrap();
         studio.scene.things.get_mut(&soft).unwrap().transform.position = Vec2::new(0.0, 300.0);
         studio.after_edit(before);
         let view = View {
@@ -903,7 +903,7 @@ mod tests {
     fn dragging_a_rider_moves_its_offset_and_obstacles_are_grabbable() {
         let mut studio = Studio::headless();
         let before = studio.scene.clone();
-        let peg = studio.scene.add_thing(&studio.kit.registry, "obstacle", ThingId::ROOT).unwrap();
+        let peg = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "obstacle", ThingId::ROOT).unwrap();
         studio.scene.things.get_mut(&peg).unwrap().transform.position = Vec2::new(100.0, 100.0);
         let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: true, item: None };
         studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();

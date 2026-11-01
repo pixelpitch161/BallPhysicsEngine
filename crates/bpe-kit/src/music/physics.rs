@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use bpe_core::{Color, ProgressionRef, Quality, Resolved, Scene, Settings, SlotId, ThingId};
+use bpe_core::{Color, Quality, Resolved, Scene, Settings, SlotId, ThingId};
 use bpe_mix::{ChordClock, MixSettings, PhysicsInputs};
 use bpe_runtime::{Event, EventKind, Log, MOTION_RATE, Party, TRACK_SECONDS, TrackSample};
 use bpe_synth::{HitPhysics, SceneSignals, Track};
@@ -305,7 +305,7 @@ fn scene_series(
         mid: (0..n).map(|k| band(time(k), 1)).collect(),
         high: (0..n).map(|k| band(time(k), 2)).collect(),
         beats: settings.beats.clone(),
-        chords: chord_series(settings.progression(ProgressionRef(None)), settings, n, rate),
+        chords: chord_series(settings.progression(settings.chords), settings, n, rate),
         levels: BTreeMap::new(),
     }
 }
@@ -325,7 +325,7 @@ pub fn physics_inputs(
     };
     let signals = scene_series(resolved, log, settings, video_time);
     let n = signals.chords.len();
-    let scene_progression = settings.progression(ProgressionRef(None));
+    let scene_progression = settings.progression(settings.chords);
     let mut chords = BTreeMap::new();
     for r in resolved.things.values() {
         let Some(slot) = r.slots.get(&SlotId::Sound).filter(|s| s.kind.as_str() == "sound.notes") else { continue };

@@ -4,29 +4,9 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -37,9 +17,15 @@
                 "shape": Choice("box"),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 16,
+                ),
+                Sound: Linked(
+                    module: 17,
+                ),
             },
         ),
         2: (
@@ -61,11 +47,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 18,
+                ),
+                Bounce: Linked(
+                    module: 19,
+                ),
+                Sound: Linked(
+                    module: 20,
+                ),
             },
         ),
         3: (
@@ -87,11 +79,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 15,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 21,
+                ),
+                Bounce: Linked(
+                    module: 22,
+                ),
+                Sound: Linked(
+                    module: 23,
+                ),
             },
         ),
     },
@@ -103,35 +101,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(1),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -146,9 +117,17 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(1),
+            ),
+            15: (
+                id: 15,
                 name: "Rope look",
                 slot: Look,
                 kind: "look.classic",
@@ -163,6 +142,75 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(3),
+            ),
+            16: (
+                id: 16,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            17: (
+                id: 17,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(1),
+                },
+                owner: Some(1),
+            ),
+            18: (
+                id: 18,
+                name: "Balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            19: (
+                id: 19,
+                name: "Balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            20: (
+                id: 20,
+                name: "Balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(1),
+                },
+                owner: Some(2),
+            ),
+            21: (
+                id: 21,
+                name: "Rope motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            22: (
+                id: 22,
+                name: "Rope bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            23: (
+                id: 23,
+                name: "Rope sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(1),
+                },
+                owner: Some(3),
             ),
         },
         progressions: {
@@ -358,7 +406,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 6,
+    next_module: 24,
     next_progression: 1,
     next_instrument: 2,
 )

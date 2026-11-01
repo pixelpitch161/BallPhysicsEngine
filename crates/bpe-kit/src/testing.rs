@@ -45,7 +45,7 @@ pub fn scene_with(
 ) -> (Scene, Resolved, Kit, ThingId) {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let id = scene.add_thing(&kit.registry, kind, ThingId::ROOT).expect("kit kind");
+    let id = crate::add_thing(&mut scene, &kit.registry, kind, ThingId::ROOT).expect("kit kind");
     let thing = scene.things.get_mut(&id).unwrap();
     thing.name = name.into();
     thing.transform.position = position;
@@ -78,7 +78,7 @@ pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Ki
 pub fn scene_with_obstacle(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let obstacle = scene.add_thing(&kit.registry, "obstacle", ThingId::ROOT).unwrap();
+    let obstacle = crate::add_thing(&mut scene, &kit.registry, "obstacle", ThingId::ROOT).unwrap();
     assert_eq!(obstacle, OBSTACLE);
     f(&mut scene.things.get_mut(&OBSTACLE).unwrap().params);
     let ball = scene.things.get_mut(&BALLS).unwrap();
@@ -99,7 +99,7 @@ pub fn peg_board(columns: u32, rows: u32, balls_per_side: u32) -> (Scene, Resolv
     arena.params.set("shape", Value::Choice("box".into()));
     arena.params.set("width", Value::Number(((columns + 1) as f32 * 90.0) as f64));
     arena.params.set("height", Value::Number(height as f64));
-    let pegs = scene.add_thing(&kit.registry, "obstacle", ThingId::ROOT).unwrap();
+    let pegs = crate::add_thing(&mut scene, &kit.registry, "obstacle", ThingId::ROOT).unwrap();
     assert_eq!(pegs, OBSTACLE);
     let p = &mut scene.things.get_mut(&OBSTACLE).unwrap().params;
     p.set("shape", Value::Choice("peg_grid".into()));

@@ -623,7 +623,7 @@ mod tests {
         let mut h = Harness::builder()
             .with_size(vec2(1200.0, 1700.0))
             .with_step_dt(1.0 / 60.0)
-            // Scene defaults' long card takes a few seconds of frames for its grids to settle.
+            // Scene settings' long card takes a few seconds of frames for its grids to settle.
             .with_max_steps(240)
             .allow_missing_glyphs()
             .with_context_setup(crate::theme::apply)
@@ -688,8 +688,13 @@ mod tests {
         s.panel.editor.node_screen_pos(s.panel.graph().expect("a graph is open"), catalog(Role::Bounce), node)
     }
 
-    /// The root's modules are added look, motion, bounce, sound; the ball inherits the bounce.
-    const DEFAULT_BOUNCE: ModuleId = ModuleId(2);
+    /// The ball's own bounce module.
+    fn ball_bounce(scene: &Scene) -> ModuleId {
+        match &scene.things[&ThingId(2)].slots[&SlotId::Bounce] {
+            bpe_core::SlotLink::Linked { module, .. } => *module,
+            other => panic!("the ball links its bounce: {other:?}"),
+        }
+    }
 
     #[test]
     fn the_nodes_switch_opens_the_panel_with_the_path_in_its_title() {
@@ -698,7 +703,7 @@ mod tests {
         open_ball_bounce(&mut h);
         assert_eq!(h.state().panel.open, Some(PanelTarget::Slot(ThingId(2), SlotId::Bounce)));
         h.get_by_label("Ball › Bounce");
-        h.get_by_label("Default bounce");
+        assert_eq!(h.get_all_by_label("Ball bounce").count(), 2, "the card's picker and the panel's header");
         h.get_by_label("Compiles");
         // The template's blocks are on the canvas (their titles are painted, not widgets).
         let kinds: Vec<&str> = h.state().panel.graph().unwrap().nodes.iter().map(|n| n.kind.as_str()).collect();
@@ -707,7 +712,7 @@ mod tests {
             "{kinds:?}"
         );
         // Opening is not an edit: the module keeps running natively and the scene is unchanged.
-        assert!(h.state().scene.library.modules[&DEFAULT_BOUNCE].graph.is_none());
+        assert!(h.state().scene.library.modules[&ball_bounce(&h.state().scene)].graph.is_none());
     }
 
     #[test]
@@ -720,7 +725,7 @@ mod tests {
         key(&mut h, Key::Delete);
         {
             let s = h.state();
-            let g = s.scene.library.modules[&DEFAULT_BOUNCE].graph.as_ref().expect("the edit is stored");
+            let g = s.scene.library.modules[&ball_bounce(&s.scene)].graph.as_ref().expect("the edit is stored");
             assert!(g.custom);
             assert!(g.graph.node(reflect).is_none());
         }
@@ -729,7 +734,7 @@ mod tests {
         h.get_all_by_label("Revert to template").next().expect("the card offers to go back").click();
         h.run();
         let s = h.state();
-        assert!(s.scene.library.modules[&DEFAULT_BOUNCE].graph.is_none());
+        assert!(s.scene.library.modules[&ball_bounce(&s.scene)].graph.is_none());
         assert_eq!(s.panel.open, Some(PanelTarget::Slot(ThingId(2), SlotId::Bounce)), "the panel stays open");
         assert!(s.panel.graph().unwrap().nodes.iter().any(|n| n.kind == "reflect"), "on the fresh template");
     }
@@ -738,9 +743,13 @@ mod tests {
     fn a_broken_graph_shows_a_red_badge() {
         let kit = bpe_kit::kit();
         let mut scene = new_scene();
-        // The ball gets its own bounce whose graph has two result blocks.
-        let own = scene.add_module(&kit.registry, "bounce.basic", "Ball bounce").unwrap();
-        scene.link(&kit.registry, ThingId(2), SlotId::Bounce, own).unwrap();
+        // The ball sits in a folder with a bounce, and its own bounce's graph has two result
+        // blocks.
+        let folder = bpe_kit::add_thing(&mut scene, &kit.registry, "folder", ThingId::ROOT).unwrap();
+        let folder_bounce = scene.add_module(&kit.registry, "bounce.basic", "Folder bounce").unwrap();
+        scene.link(&kit.registry, folder, SlotId::Bounce, folder_bounce).unwrap();
+        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
+        let own = ball_bounce(&scene);
         let kind = kit.registry.module("bounce.basic").unwrap();
         let mut g = module_graph(kind, &scene.library.modules[&own]).unwrap();
         g.graph.add(catalog(Role::Bounce).spec("bounce.out").unwrap(), [900.0, 500.0]);
@@ -748,9 +757,9 @@ mod tests {
         let message = compile_module(SlotId::Bounce, &g.graph).unwrap_err();
         scene.library.modules.get_mut(&own).unwrap().graph = Some(g);
         let mut h = harness(scene, Some(ThingId(2)));
-        // The parent's bounce runs instead, and the card and the tree say so.
-        assert_eq!(h.state().resolved.things[&ThingId(2)].slots[&SlotId::Bounce].module, DEFAULT_BOUNCE);
-        h.get_by_label_contains("The Bounce graph doesn't compile, so the parent's module is used");
+        // The folder's bounce runs instead, and the card and the tree say so.
+        assert_eq!(h.state().resolved.things[&ThingId(2)].slots[&SlotId::Bounce].module, folder_bounce);
+        h.get_by_label_contains("The Bounce graph doesn't compile, so the folder's module is used");
         let problem = h.state().resolved.problems.iter().find(|p| p.thing == ThingId(2)).cloned().unwrap();
         assert!(crate::tree::problem_words(&problem).contains(&message));
         // The panel shows the error where the status would say "Compiles".
@@ -759,7 +768,7 @@ mod tests {
         h.get_by_label(&message);
     }
 
-    /// A scene whose Scene defaults sound plays the blank patch.
+    /// A scene whose ball's sound plays the blank patch.
     fn patch_scene() -> (Scene, bpe_core::InstrumentId) {
         let mut scene = new_scene();
         let id = scene.add_instrument(bpe_core::Instrument {
@@ -768,8 +777,8 @@ mod tests {
             source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
             voices: Default::default(),
         });
-        let bpe_core::SlotLink::Linked { module, .. } = scene.things[&ThingId::ROOT].slots[&SlotId::Sound] else {
-            panic!("Scene defaults links a sound")
+        let bpe_core::SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Sound] else {
+            panic!("the ball links a sound")
         };
         scene
             .library
@@ -848,7 +857,7 @@ mod tests {
     #[test]
     fn edit_patch_opens_the_patch_in_the_panel() {
         let (scene, id) = patch_scene();
-        let mut h = harness(scene, Some(ThingId::ROOT));
+        let mut h = harness(scene, Some(ThingId(2)));
         open_patch(&mut h);
         assert_eq!(h.state().panel.open, Some(PanelTarget::Patch(id)));
         assert_eq!(h.state().inspector.nodes_open, None, "no card's Nodes switch is lit");
@@ -861,7 +870,7 @@ mod tests {
     #[test]
     fn wiring_blocks_in_the_panel_changes_the_instrument() {
         let (scene, id) = patch_scene();
-        let mut h = harness(scene, Some(ThingId::ROOT));
+        let mut h = harness(scene, Some(ThingId(2)));
         open_patch(&mut h);
         let (env, filter) = (block(&h, "adsr"), block(&h, "filter"));
         let pin = |h: &Harness<'_, State>, node: u32, pin: u8, output: bool| {
@@ -888,7 +897,7 @@ mod tests {
     #[test]
     fn removing_voice_out_shows_the_error() {
         let (scene, id) = patch_scene();
-        let mut h = harness(scene, Some(ThingId::ROOT));
+        let mut h = harness(scene, Some(ThingId(2)));
         open_patch(&mut h);
         let out = block(&h, "voice_out");
         let at = h.state().panel.editor.node_screen_pos(h.state().panel.graph().unwrap(), bpe_synth::catalog(), out);
@@ -910,7 +919,7 @@ mod tests {
         assert!(h.state().inspector.nodes_request.is_none());
     }
 
-    /// Rules linked on the scene run on the scene; a ball that inherits them still sees its
+    /// Rules linked on a folder run on the folder; a ball that follows them still sees its
     /// blocks glow.
     #[test]
     fn flashes_follow_the_rules_owner() {
@@ -922,15 +931,17 @@ mod tests {
         let simple = (grow.add)(&mut graph).into_iter().collect();
         scene.library.modules.get_mut(&m).unwrap().graph =
             Some(bpe_core::ModuleGraph { graph: graph.clone(), template: "rules.graph".into(), custom: true, simple });
-        scene.link(&kit.registry, ThingId::ROOT, SlotId::Rules, m).unwrap();
+        let folder = bpe_kit::add_thing(&mut scene, &kit.registry, "folder", ThingId::ROOT).unwrap();
+        scene.link(&kit.registry, folder, SlotId::Rules, m).unwrap();
+        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
         let resolved = resolve_scene(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        assert_eq!(resolved.things[&ThingId(2)].slots[&SlotId::Rules].from, ThingId::ROOT);
+        assert_eq!(resolved.things[&ThingId(2)].slots[&SlotId::Rules].from, folder);
         let mut world = World::build(&scene, &resolved, &kit.sims);
         world.advance_to(5.0, &kit.sims, &mut bpe_runtime::Log::default());
         let live = Flashes::gather(Some(&world), ThingId(2), SlotId::Rules, &resolved, &graph, &BTreeMap::new());
         let when = graph.nodes.iter().find(|n| n.kind == "when.hit").unwrap().id;
-        assert!(live.fired.contains_key(&when), "the ball's hits fired the scene's rule");
+        assert!(live.fired.contains_key(&when), "the ball's hits fired the folder's rule");
     }
 
     /// A stored, unedited graph is only a layout: the kind's template is what runs and what
@@ -939,7 +950,8 @@ mod tests {
     fn a_viewed_template_is_rebuilt_from_the_kind_and_keeps_its_layout() {
         let kit = bpe_kit::kit();
         let scene = new_scene();
-        let m = &scene.library.modules[&DEFAULT_BOUNCE];
+        let bounce = ball_bounce(&scene);
+        let m = &scene.library.modules[&bounce];
         let kind = kit.registry.module(&m.kind).unwrap();
         let fresh = module_graph(kind, m).unwrap();
         let first = fresh.graph.nodes[0].id;
@@ -949,7 +961,7 @@ mod tests {
         stale.graph.remove(&std::collections::BTreeSet::from([last]));
         let mut module = m.clone();
         module.graph = Some(stale);
-        let shown = Shown::load(DEFAULT_BOUNCE, SlotId::Bounce, &module, kind).unwrap();
+        let shown = Shown::load(bounce, SlotId::Bounce, &module, kind).unwrap();
         assert_eq!(shown.graph.nodes.len(), fresh.graph.nodes.len(), "the kind's template wins over a stale copy");
         assert!(shown.graph.node(last).is_some());
         assert_eq!(shown.graph.node(first).unwrap().pos, [-999.0, 42.0], "the layout is kept");

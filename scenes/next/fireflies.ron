@@ -4,29 +4,9 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -37,9 +17,15 @@
                 "radius": Number(500.0),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 13,
+                ),
+                Sound: Linked(
+                    module: 14,
+                ),
             },
         ),
         2: (
@@ -53,11 +39,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 15,
+                ),
+                Sound: Linked(
+                    module: 16,
+                ),
             },
         ),
         3: (
@@ -70,10 +62,10 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 11,
                 ),
                 Motion: Linked(
-                    module: 6,
+                    module: 12,
                 ),
             },
         ),
@@ -86,35 +78,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -129,10 +94,25 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
-                name: "Glowing dots",
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(1),
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            11: (
+                id: 11,
+                name: "Fireflies look",
                 slot: Look,
                 kind: "look.swarm",
                 params: {
@@ -155,15 +135,53 @@
                     )),
                     "follow": Choice("order"),
                 },
+                owner: Some(3),
             ),
-            6: (
-                id: 6,
-                name: "Flocking",
+            12: (
+                id: 12,
+                name: "Fireflies motion",
                 slot: Motion,
                 kind: "motion.flock",
                 params: {
                     "attraction": Number(1.2000000476837158),
                 },
+                owner: Some(3),
+            ),
+            13: (
+                id: 13,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            14: (
+                id: 14,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            15: (
+                id: 15,
+                name: "Ball bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            16: (
+                id: 16,
+                name: "Ball sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -345,7 +363,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 7,
+    next_module: 17,
     next_progression: 1,
     next_instrument: 1,
 )

@@ -229,7 +229,7 @@ mod tests {
     fn a_peg_riding_a_ball_follows_it() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let peg = scene.add_thing(&kit.registry, "obstacle", BALLS).unwrap();
+        let peg = crate::add_thing(&mut scene, &kit.registry, "obstacle", BALLS).unwrap();
         scene
             .set_attach(peg, Attach::Ride { offset: Vec2::new(0.0, 60.0), turn_with_parent: false, item: Some(0) })
             .unwrap();

@@ -1,6 +1,6 @@
 //! The scene's library of modules, which things link to and share.
 
-use crate::{Instrument, InstrumentId, KindId, ModuleId, Params, Progression, ProgressionId, SlotId};
+use crate::{Instrument, InstrumentId, KindId, ModuleId, Params, Progression, ProgressionId, SlotId, ThingId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +37,10 @@ pub struct Module {
     /// A sound module's channel in the mix: its effects and its sends.
     #[serde(skip_serializing_if = "ChannelStrip::is_default")]
     pub channel: ChannelStrip,
+    /// The thing this module was made for as its starter. It is named after the thing, renamed
+    /// with it, and removed with it when nothing else uses it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<ThingId>,
 }
 
 /// One return bus in a scene's mix. Never reused within a scene.
@@ -77,7 +81,7 @@ impl ChannelStrip {
 #[serde(default)]
 pub struct Library {
     pub modules: BTreeMap<ModuleId, Module>,
-    /// Chord progressions that sound modules and Scene defaults point at.
+    /// Chord progressions that sound modules point at.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub progressions: BTreeMap<ProgressionId, Progression>,
     /// Instruments that sound modules play through.

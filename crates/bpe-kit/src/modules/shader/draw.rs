@@ -19,10 +19,6 @@ impl ModuleDraw for EffectDraw {
     fn draw(&self, cx: &DrawCx, slot: bpe_core::SlotId, frame: &mut Frame) {
         let Some(rslot) = cx.resolved.slots.get(&slot) else { return };
         let root = cx.thing.id == ThingId::ROOT;
-        // The root's shader is a picture effect, which already covers every thing below it.
-        if !root && rslot.from == ThingId::ROOT {
-            return;
-        }
         let header = self.0.header();
         let blend = match rslot.params.get(BLEND) {
             Some(Value::Number(b)) => *b as f32,
@@ -118,11 +114,11 @@ mod tests {
         scene.link(reg, BALLS, SlotId::Shader, lava).unwrap();
         let resolved = resolve(&scene, reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        assert_eq!(resolved.things[&ARENA].slots[&SlotId::Shader].from, ThingId::ROOT, "the arena inherits");
+        assert!(!resolved.things[&ARENA].slots.contains_key(&SlotId::Shader), "Scene settings' effect isn't inherited");
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.5, &kit.draws, &mut frame);
-        assert_eq!(frame.effects.len(), 2, "the arena's inherited picture effect is not listed again");
+        assert_eq!(frame.effects.len(), 2, "one picture effect and one material");
         let picture = &frame.effects[0];
         assert_eq!((picture.apply_to, picture.stage, picture.blend), (0.0, Stage::Picture, 1.0));
         assert!(picture.wgsl.contains("name: Kaleidoscope"));

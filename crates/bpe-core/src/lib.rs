@@ -2,7 +2,7 @@
 //!
 //! A scene is a tree of things (balls, folders, arenas and so on). Each thing fills slots
 //! (Look, Sound, Bounce...) by linking modules from the scene's library, and anything it leaves
-//! alone comes from its parent, up to Scene defaults at the root. Every setting a thing or module
+//! alone comes from its parent, up to the scene settings at the root. Every setting a thing or module
 //! has is described once by a settings schema, which drives the inspector, keyframes, dice and
 //! pulses. Nothing here simulates, draws or plays sound.
 
@@ -34,7 +34,7 @@ pub use animation::{
 pub use blend::Blend;
 pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
-pub use edit::EditError;
+pub use edit::{EditError, starter_name};
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use instrument::{Instrument, InstrumentId, InstrumentRef, InstrumentSource, NoteLength, VoiceSettings};
 pub use library::{Bus, BusId, ChannelStrip, Library, Module, ModuleGraph};

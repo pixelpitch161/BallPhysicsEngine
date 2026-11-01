@@ -4,29 +4,9 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -39,9 +19,15 @@
                 "spin": Number(30.0),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 11,
+                ),
+                Sound: Linked(
+                    module: 12,
+                ),
             },
         ),
         2: (
@@ -63,11 +49,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 13,
+                ),
+                Sound: Linked(
+                    module: 14,
+                ),
             },
         ),
         3: (
@@ -98,38 +90,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-                params: {
-                    "pops_after": Int(40),
-                },
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -145,6 +107,63 @@
                     )),
                     "hue_per_hit": Number(12.0),
                 },
+                owner: Some(2),
+            ),
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(1),
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            11: (
+                id: 11,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "pops_after": Int(40),
+                },
+                owner: Some(1),
+            ),
+            12: (
+                id: 12,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            13: (
+                id: 13,
+                name: "Rim riders bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                params: {
+                    "pops_after": Int(40),
+                },
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
+                name: "Rim riders sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -326,7 +345,7 @@
         ],
     ),
     next_thing: 4,
-    next_module: 5,
+    next_module: 15,
     next_progression: 1,
     next_instrument: 1,
 )

@@ -54,7 +54,7 @@ impl Default for InstrumentSource {
     }
 }
 
-/// A setting that points at an instrument in the library, or at Scene defaults' instrument.
+/// A setting that points at an instrument in the library, or (`None`) at the built-in Pluck.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InstrumentRef(pub Option<InstrumentId>);
 

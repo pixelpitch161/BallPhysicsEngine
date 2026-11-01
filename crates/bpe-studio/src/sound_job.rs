@@ -281,8 +281,7 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     if let Some(root) = resolved.things.get(&ThingId::ROOT) {
         let s = SceneSettings::from_params(&root.params);
         mix(&format!(
-            "{:?} {:?} {} {:?} {} {} {:?} {} {} {} {}",
-            s.chords,
+            "{:?} {} {:?} {} {} {:?} {} {} {} {}",
             s.loudness,
             s.seed,
             s.duration,
@@ -347,7 +346,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let before = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
-        let look = module_named(&scene, "Plain look");
+        let look = module_named(&scene, "Ball look");
         let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
         scene.set_at(&kit.registry, &glow, Value::Number(1.0)).unwrap();
         assert_eq!(sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims), before);
@@ -411,7 +410,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let before = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
-        let sound = module_named(&scene, "Default sound");
+        let sound = module_named(&scene, "Ball sound");
         let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
         scene.set_at(&kit.registry, &volume, Value::Number(-6.0)).unwrap();
         let after = sound_fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
@@ -449,7 +448,7 @@ mod tests {
             source: bpe_core::InstrumentSource::Patch { graph },
             voices: Default::default(),
         });
-        let sound = module_named(&scene, "Default sound");
+        let sound = module_named(&scene, "Ball sound");
         scene
             .library
             .modules
@@ -495,7 +494,7 @@ mod tests {
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let reg = &kit.registry;
         let before = sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims);
-        let look = module_named(&scene, "Plain look");
+        let look = module_named(&scene, "Ball look");
         let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
         scene.set_key(reg, &glow, 1.0, Value::Number(1.0)).unwrap();
         assert_eq!(sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims), before);
@@ -504,7 +503,7 @@ mod tests {
         let with_tempo = sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims);
         assert_ne!(with_tempo, before);
         // A key on a Sound setting changes it too.
-        let sound = module_named(&scene, "Default sound");
+        let sound = module_named(&scene, "Ball sound");
         let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
         scene.set_key(reg, &volume, 3.0, Value::Number(-10.0)).unwrap();
         assert_ne!(sound_fingerprint(&scene, &resolve(&scene, reg), &kit.sims), with_tempo);
@@ -520,7 +519,7 @@ mod tests {
         };
         run(&scene, &mut memory);
         assert_eq!(memory.simulated, 1);
-        let sound = module_named(&scene, "Default sound");
+        let sound = module_named(&scene, "Ball sound");
         let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
         scene.set_at(&kit.registry, &volume, Value::Number(-9.0)).unwrap();
         let kept = run(&scene, &mut memory);
@@ -560,7 +559,7 @@ mod tests {
         job.generation += 1;
         job.wanted.store(job.generation, Ordering::Relaxed);
         let running = job.generation;
-        let sound = module_named(&scene, "Default sound");
+        let sound = module_named(&scene, "Ball sound");
         let volume = Address { owner: Owner::Module(sound), slot: None, key: "volume".into() };
         scene.set_at(&kit.registry, &volume, Value::Number(-9.0)).unwrap();
         job.mark(&scene, &resolve(&scene, &kit.registry), &kit.sims);

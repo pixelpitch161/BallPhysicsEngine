@@ -22,14 +22,8 @@ pub struct TargetChoices {
     pub kinds: Vec<(String, String)>,
     /// Chord progressions as (id, name, how many settings use it), in library order.
     pub progressions: Vec<(ProgressionId, String, usize)>,
-    /// The progression Scene defaults points at.
-    pub scene_chords: Option<ProgressionId>,
-    /// Leave out "Scene's" from Chords menus: on Scene defaults itself.
-    pub hide_scenes: bool,
     /// Instruments as (id, name, how many settings use it), in library order.
     pub instruments: Vec<(InstrumentId, String, usize)>,
-    /// The instrument Scene defaults' sound plays through.
-    pub scene_instrument: Option<InstrumentId>,
 }
 
 /// A Chords row's pick of "New progression": the inspector adds one and points the setting at it.
@@ -59,28 +53,13 @@ impl TargetChoices {
             .iter()
             .map(|(id, p)| (*id, p.name.clone(), scene.progression_users(reg, *id).len()))
             .collect();
-        let scene_chords = scene
-            .things
-            .get(&ThingId::ROOT)
-            .and_then(|t| t.params.get("chords"))
-            .and_then(ProgressionRef::from_value)
-            .and_then(|r| r.0);
         let instruments = scene
             .library
             .instruments
             .iter()
             .map(|(id, i)| (*id, i.name.clone(), scene.instrument_users(reg, *id).len()))
             .collect();
-        TargetChoices {
-            things,
-            tags: tags.into_iter().collect(),
-            kinds,
-            progressions,
-            scene_chords,
-            hide_scenes: false,
-            instruments,
-            scene_instrument: crate::instruments::scene_instrument(scene),
-        }
+        TargetChoices { things, tags: tags.into_iter().collect(), kinds, progressions, instruments }
     }
 }
 
@@ -641,8 +620,8 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
     }
 }
 
-/// A menu naming the chord progression a setting uses: Scene defaults' one, any in the library,
-/// a new one, or a copy of the one shown. Marked changed when something is picked; a new one or
+/// A menu naming the chord progression a setting uses: any in the library (none picked plays
+/// the starter chords), a new one, or a copy of the one shown. Marked changed when something is picked; a new one or
 /// a copy comes back as [`NEW_PROGRESSION`] or [`MAKE_UNIQUE`] for the inspector to make.
 fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetChoices) -> Response {
     let name_of = |id: ProgressionId| {
@@ -650,17 +629,10 @@ fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetC
     };
     let shown = match ProgressionRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
         Some(id) if choices.progressions.iter().any(|(p, ..)| *p == id) => name_of(id),
-        _ if !choices.hide_scenes => match choices.scene_chords {
-            Some(id) => format!("Scene's ({})", name_of(id)),
-            None => "Scene's".to_owned(),
-        },
-        _ => "None yet".to_owned(),
+        _ => "Starter (built in)".to_owned(),
     };
     let before = *x;
     let mut response = egui::ComboBox::from_id_salt(("progression", row)).selected_text(shown).show_ui(ui, |ui| {
-        if !choices.hide_scenes {
-            ui.selectable_value(x, -1, "Scene's").on_hover_text("Follow Scene defaults' chords");
-        }
         for (id, name, users) in &choices.progressions {
             let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
             ui.selectable_value(x, id.0 as i64, label);
@@ -679,8 +651,8 @@ fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetC
     response.response
 }
 
-/// A menu naming the instrument a sound plays: Scene defaults' one, the built-in sounds, the
-/// library's instruments, a new patch, a starter patch, or a copy of the one shown. Marked
+/// A menu naming the instrument a sound plays: the built-in sounds (none picked plays the
+/// built-in Pluck), the library's instruments, a new patch, a starter patch, or a copy of the one shown. Marked
 /// changed when something is picked; the picks the inspector has to make come back as
 /// [`NEW_PATCH`], [`MAKE_UNIQUE_INSTRUMENT`], or offsets from [`BUILT_IN_BASE`] and
 /// [`STARTER_BASE`].
@@ -690,15 +662,11 @@ fn instrument_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetCh
     };
     let shown = match InstrumentRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
         Some(id) if choices.instruments.iter().any(|(i, ..)| *i == id) => name_of(id),
-        _ => match choices.scene_instrument {
-            Some(id) => format!("Scene's ({})", name_of(id)),
-            None => "Scene's".to_owned(),
-        },
+        _ => "Pluck (built in)".to_owned(),
     };
     let before = *x;
     let mut response =
         egui::ComboBox::from_id_salt(("instrument", row)).selected_text(shown).height(480.0).show_ui(ui, |ui| {
-            ui.selectable_value(x, -1, "Scene's").on_hover_text("Play through Scene defaults' instrument");
             ui.label(RichText::new("Built-in").small().color(theme::MUTED));
             for (i, which) in bpe_mix::Instrument::ALL.iter().enumerate() {
                 if ui.selectable_label(false, which.label()).clicked() {
@@ -838,7 +806,7 @@ mod tests {
         assert_eq!(target_words(&Target::Kind("blob".into()), &c), "Kind: blob");
         assert_eq!(c.tags, vec!["walls".to_owned()]);
         assert!(c.kinds.iter().all(|(id, _)| id != "scene"));
-        assert_eq!(c.things[0], (ThingId::ROOT, "Scene defaults".to_owned()));
+        assert_eq!(c.things[0], (ThingId::ROOT, "Scene settings".to_owned()));
     }
 
     #[test]
@@ -1076,7 +1044,7 @@ mod tests {
         assert_eq!(all.iter().filter(|r| matches!(r, Row::Setting(_))).count(), defs.len());
         let headings: Vec<&str> =
             all.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Sound", "Video", "Grade", "Master", "Song", "Beat", "Camera sound"]);
+        assert_eq!(headings, ["Video", "Grade", "Master", "Sound", "Song", "Beat", "Camera sound"]);
         // A group whose settings all drop out loses its heading too.
         let no_song = rows_for(defs, &|d| d.group != "Song");
         assert!(!no_song.iter().any(|r| matches!(r, Row::Group("Song"))));

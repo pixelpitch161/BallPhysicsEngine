@@ -43,7 +43,7 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
     }
     let mut scene: Scene = ron::from_str(text).map_err(|e| LoadError::Broken(e.to_string()))?;
     if !scene.mend() {
-        return Err(LoadError::Broken("it has no Scene defaults".into()));
+        return Err(LoadError::Broken("it has no scene settings".into()));
     }
 
     for module in scene.library.modules.values_mut() {
@@ -111,6 +111,17 @@ mod tests {
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
         assert_eq!(load(&save(&s), &r).unwrap(), s);
+    }
+
+    #[test]
+    fn owner_survives_save_and_load() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_starter(&r, balls, "look.plain").unwrap();
+        let loaded = load(&save(&s), &r).unwrap();
+        assert_eq!(loaded.library.modules[&m].owner, Some(balls));
+        assert_eq!(loaded, s);
     }
 
     #[test]
@@ -186,7 +197,7 @@ mod tests {
         assert_eq!(back.things[&b].id, b);
         assert_eq!(back.next_thing, b.0 + 1);
         let e = load("(format: 2)", &r).unwrap_err();
-        assert_eq!(e.to_string(), "This scene file is damaged: it has no Scene defaults");
+        assert_eq!(e.to_string(), "This scene file is damaged: it has no scene settings");
     }
 
     #[test]

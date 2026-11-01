@@ -159,7 +159,7 @@ mod tests {
     fn glyphs_at_both(time: f64, video_time: f64, f: impl FnOnce(&mut Params)) -> usize {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let text = scene.add_thing(&kit.registry, "text", ThingId::ROOT).unwrap();
+        let text = crate::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
         f(&mut scene.things.get_mut(&text).unwrap().params);
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
@@ -220,7 +220,7 @@ mod tests {
     ) -> (Vec<GlyphInstance>, usize) {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let id = scene.add_thing(&kit.registry, "text", ThingId::ROOT).unwrap();
+        let id = crate::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
         let params = &mut scene.things.get_mut(&id).unwrap().params;
         params.set("text", Value::Text(text.into()));
         f(params);

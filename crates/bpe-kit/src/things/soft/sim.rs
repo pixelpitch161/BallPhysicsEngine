@@ -174,7 +174,7 @@ mod tests {
     fn scene_with_soft(at: Vec2, f: impl FnOnce(&mut bpe_core::Params)) -> (Scene, ThingId) {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let soft = scene.add_thing(&kit.registry, "soft", ThingId::ROOT).unwrap();
+        let soft = crate::add_thing(&mut scene, &kit.registry, "soft", ThingId::ROOT).unwrap();
         let thing = scene.things.get_mut(&soft).unwrap();
         thing.transform.position = at;
         f(&mut thing.params);

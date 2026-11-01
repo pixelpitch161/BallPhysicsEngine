@@ -8,12 +8,13 @@ pub use stage5::{stage5, stage5_with_twins};
 use bpe_core::{
     Address, Attach, Blend, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
     ModuleKind, MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue,
-    Settings, SlotId, Target, ThingId, Value,
+    Settings, SlotId, SlotLink, Target, ThingId, Value,
 };
 use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
 use bpe_vm::{Role, catalog};
 use glam::Vec2;
+use std::collections::BTreeMap;
 
 use crate::graphs::module_graph;
 use crate::modules::sound::{Order, PlaysWhen};
@@ -169,7 +170,7 @@ pub fn long_drop(reg: &Registry) -> Scene {
         ..crate::CameraSettings::default()
     };
     b.add("camera", ThingId::ROOT, "Camera", Vec2::ZERO, camera.to_params());
-    b.scene
+    b.finish()
 }
 
 /// The colour showcase: a block of balls painted by where they are at an angle with rings of the
@@ -272,7 +273,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         t.outline = 0.0;
     });
     b.scene.link(reg, caption, SlotId::Look, words).expect("text has a Look slot");
-    b.scene
+    b.finish()
 }
 
 /// The blend showcase over a background that runs from dark to light: four rows of overlapping
@@ -402,7 +403,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         t.outline = 6.0;
         t.outline_paint = Paint::solid(hex(0x05040f));
     });
-    b.scene
+    b.finish()
 }
 
 /// The palette and grade showcase: balls painted from the Sunset palette in a ring whose wall
@@ -504,7 +505,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         own(ThingId::ROOT, "grade_map_amount"),
         &[(0.0, Value::Number(0.0), Ease::Linear), (duration as f64, Value::Number(0.5), Ease::Linear)],
     );
-    b.scene
+    b.finish()
 }
 
 /// A ready-made rule's builder, by its menu name.
@@ -525,22 +526,106 @@ fn wire(g: &mut Graph, role: Role, from: (u32, u8), to: (u32, u8)) {
     assert!(g.connect(Link { from, to }, catalog(role)), "{from:?} can't wire into {to:?}");
 }
 
-/// A new scene with a name, and handles on its things and shared modules.
+/// A new scene with a name, and handles on its things and the modules its things share.
+/// Gives every thing its own modules: a module several things use becomes one copy each (with
+/// the same settings and keyframes), and one only a single thing uses becomes that thing's.
+/// Modules nothing uses are left in the library.
+pub(crate) fn own_everything(scene: &mut Scene) {
+    let links: Vec<(ThingId, SlotId, ModuleId)> = scene
+        .order
+        .iter()
+        .flat_map(|id| {
+            scene.things[id].slots.iter().filter_map(move |(slot, link)| match link {
+                SlotLink::Linked { module, .. } => Some((*id, *slot, *module)),
+                _ => None,
+            })
+        })
+        .collect();
+    let shared: std::collections::BTreeSet<ModuleId> =
+        links.iter().map(|l| l.2).filter(|m| scene.users_of(*m).len() > 1).collect();
+    let mut emptied = Vec::new();
+    for (id, slot, m) in links {
+        let Some(module) = scene.library.modules.get(&m) else { continue };
+        if module.owner == Some(id) {
+            continue;
+        }
+        if !shared.contains(&m) && module.owner.is_none() {
+            scene.library.modules.get_mut(&m).expect("checked").owner = Some(id);
+            continue;
+        }
+        scene.own_linked(id, slot).expect("the slot is linked");
+        if scene.users_of(m).is_empty() {
+            emptied.push(m);
+        }
+    }
+    for m in emptied {
+        let _ = scene.remove_module(m);
+    }
+}
+
 struct Builder<'a> {
     reg: &'a Registry,
     scene: Scene,
+    /// One module per slot that every thing of a fitting kind uses instead of its own starter,
+    /// so a scene's looks, motion, bounce and sound can be set in one place.
+    shared: BTreeMap<SlotId, ModuleId>,
 }
 
 impl<'a> Builder<'a> {
     fn new(reg: &'a Registry, name: &str) -> Builder<'a> {
         let mut scene = new_scene(reg);
         scene.name = name.into();
-        Builder { reg, scene }
+        let mut shared = BTreeMap::new();
+        for (slot, kind, module_name) in [
+            (SlotId::Look, "look.classic", "Plain look"),
+            (SlotId::Motion, "motion.basic", "Default motion"),
+            (SlotId::Bounce, "bounce.basic", "Default bounce"),
+            (SlotId::Sound, "sound.notes", "Default sound"),
+        ] {
+            let m = scene.add_module(reg, kind, module_name).expect("kit kinds are registered");
+            shared.insert(slot, m);
+        }
+        let (pluck, chords) =
+            (crate::starters::shared_pluck(&mut scene), crate::starters::shared_progression(&mut scene));
+        let sound = &mut scene.library.modules.get_mut(&shared[&SlotId::Sound]).expect("just added").params;
+        sound.set("instrument", pluck.to_value());
+        sound.set("chords", chords.to_value());
+        let mut b = Builder { reg, scene, shared };
+        b.share(ARENA, &SlotId::ALL);
+        b.share(BALLS, &[SlotId::Motion, SlotId::Bounce, SlotId::Sound]);
+        b
+    }
+
+    /// Swaps `thing`'s own starters in `slots` for the shared modules of the same kind, and
+    /// drops the starters.
+    fn share(&mut self, thing: ThingId, slots: &[SlotId]) {
+        // A liquid's and a swarm's starters are made for them, so they keep their own.
+        if matches!(self.scene.things[&thing].kind.as_str(), "liquid" | "swarm") {
+            return;
+        }
+        for slot in slots {
+            let Some(&shared) = self.shared.get(slot) else { continue };
+            let Some(SlotLink::Linked { module, .. }) = self.scene.things[&thing].slots.get(slot).cloned() else {
+                continue;
+            };
+            let own = &self.scene.library.modules[&module];
+            if own.owner != Some(thing) || own.kind != self.scene.library.modules[&shared].kind {
+                continue;
+            }
+            self.scene.link(self.reg, thing, *slot, shared).expect("the thing has the slot");
+            self.scene.remove_module(module).expect("nothing else uses a fresh starter");
+        }
+    }
+
+    /// The finished scene, with every thing owning the modules it uses.
+    fn finish(mut self) -> Scene {
+        own_everything(&mut self.scene);
+        self.scene
     }
 
     fn scene_settings(&mut self, f: impl FnOnce(&mut SceneSettings)) {
         let root = self.scene.things.get_mut(&ThingId::ROOT).expect("root");
-        // Keep what the new scene set, such as its chords.
+        // Keep what the new scene set.
         let mut s = SceneSettings::from_params(&root.params);
         f(&mut s);
         root.params = s.to_params();
@@ -576,10 +661,10 @@ impl<'a> Builder<'a> {
         })))
     }
 
-    /// Scene defaults' chords become the preset `name`, in the key on `root`.
+    /// The shared sound's chords become the preset `name`, in the key on `root`.
     fn chords(&mut self, name: &str, root: u8) {
         let preset = bpe_mix::PRESETS.iter().find(|p| p.name == name).expect("a known preset");
-        let a = own(ThingId::ROOT, "chords");
+        let a = of_module(self.shared[&SlotId::Sound], "chords");
         let id = self.scene.value_at(self.reg, &a).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0);
         let p = Progression {
             name: preset.name.into(),
@@ -605,10 +690,10 @@ impl<'a> Builder<'a> {
         thing.params = s.to_params();
     }
 
-    /// The module linked into `slot` on `thing` (the root's shared one when the thing inherits).
+    /// The module that fills `slot` on `thing`.
     fn module_of(&self, thing: ThingId, slot: SlotId) -> ModuleId {
         let resolved = bpe_core::resolve_slot(&self.scene, self.reg, thing, slot, &mut Vec::new());
-        resolved.expect("the new scene fills every slot").module
+        resolved.expect("the thing has a module in that slot").module
     }
 
     fn set_params(&mut self, m: ModuleId, params: bpe_core::Params) {
@@ -618,7 +703,7 @@ impl<'a> Builder<'a> {
     fn root_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
         let mut s = ClassicLook::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Look);
+        let m = self.shared[&SlotId::Look];
         self.set_params(m, s.to_params());
     }
 
@@ -654,30 +739,61 @@ impl<'a> Builder<'a> {
     fn motion(&mut self, f: impl FnOnce(&mut BasicMotion)) {
         let mut s = BasicMotion::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Motion);
+        let m = self.shared[&SlotId::Motion];
         self.set_params(m, s.to_params());
     }
 
     fn bounce(&mut self, f: impl FnOnce(&mut BasicBounce)) {
         let mut s = BasicBounce::default();
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Bounce);
+        let m = self.shared[&SlotId::Bounce];
         self.set_params(m, s.to_params());
     }
 
     fn sound(&mut self, f: impl FnOnce(&mut NoteSound)) {
-        let mut s = NoteSound::default();
+        // Every built-in scene plays the library Pluck and the shared chords unless it says.
+        let now = NoteSound::from_params(&self.scene.library.modules[&self.shared[&SlotId::Sound]].params);
+        let mut s = NoteSound { instrument: now.instrument, chords: now.chords, ..NoteSound::default() };
         f(&mut s);
-        let m = self.module_of(ThingId::ROOT, SlotId::Sound);
+        let m = self.shared[&SlotId::Sound];
         self.set_params(m, s.to_params());
     }
 
-    /// A new module linked onto one thing.
+    /// A new module linked onto one thing. On the scene settings it also takes the place of the
+    /// shared module for its slot, so every thing that used that one uses this instead (the way
+    /// they used to inherit it). On a folder, the things inside that used the shared module
+    /// follow the folder instead.
     fn own_module(&mut self, thing: ThingId, kind: &str, name: &str, params: bpe_core::Params) -> ModuleId {
         let m = self.scene.add_module(self.reg, kind, name).expect("kit kinds are registered");
         self.set_params(m, params);
         let slot = self.scene.library.modules[&m].slot;
+        let shared = self.shared.get(&slot).copied();
+        let users: Vec<ThingId> = self
+            .scene
+            .things
+            .values()
+            .filter(|t| matches!(t.slots.get(&slot), Some(SlotLink::Linked { module, .. }) if Some(*module) == shared))
+            .map(|t| t.id)
+            .collect();
+        if thing == ThingId::ROOT {
+            if self.reg.thing("scene").is_some_and(|k| k.accepts(slot, kind)) {
+                self.scene.link(self.reg, thing, slot, m).expect("the scene settings have the slot");
+            }
+            if let Some(old) = shared {
+                for user in users {
+                    self.scene.link(self.reg, user, slot, m).expect("the thing has the slot");
+                }
+                self.shared.insert(slot, m);
+                let _ = self.scene.remove_module(old);
+            }
+            return m;
+        }
         self.scene.link(self.reg, thing, slot, m).expect("the kind has the slot");
+        for user in users {
+            if self.scene.ancestors(user).contains(&thing) {
+                self.scene.things.get_mut(&user).expect("thing").slots.insert(slot, SlotLink::Inherit);
+            }
+        }
         m
     }
 
@@ -685,8 +801,9 @@ impl<'a> Builder<'a> {
     /// modules the kit gives that kind (a liquid's surface look, a swarm's flocking).
     fn add(&mut self, kind: &str, parent: ThingId, name: &str, position: Vec2, params: Params) -> ThingId {
         let id = crate::add_thing(&mut self.scene, self.reg, kind, parent).expect("kit kinds are registered");
+        self.scene.rename_thing(id, name);
+        self.share(id, &SlotId::ALL);
         let thing = self.scene.things.get_mut(&id).expect("just added");
-        thing.name = name.into();
         thing.transform.position = position;
         thing.params = params;
         id
@@ -739,11 +856,11 @@ impl<'a> Builder<'a> {
         self.scene.link(self.reg, thing, SlotId::Rules, m).expect("the thing has a Rules slot");
     }
 
-    /// Edits the root's shared module for `slot` as nodes, starting from its template with the
+    /// Edits the shared module for `slot` as nodes, starting from its template with the
     /// module's settings in.
     fn custom(&mut self, slot: SlotId, edit: impl FnOnce(&mut Graph)) {
         let reg = self.reg;
-        let m = self.module_of(ThingId::ROOT, slot);
+        let m = self.shared[&slot];
         let module = self.scene.library.modules.get_mut(&m).expect("module");
         let kind = reg.module(&module.kind).expect("a registered kind");
         let mut g = module_graph(kind, module).expect("the kind has a template");
@@ -769,7 +886,7 @@ fn obstacle(f: impl FnOnce(&mut ObstacleSettings)) -> Params {
 
 /// The new-scene default: a circle arena and one ball.
 fn one_ball(reg: &Registry) -> Scene {
-    Builder::new(reg, "One ball").scene
+    Builder::new(reg, "One ball").finish()
 }
 
 /// The reference reel: a block of 784 tiny balls in a big ring, coloured by row.
@@ -801,7 +918,7 @@ fn reel_block(reg: &Registry) -> Scene {
     let arena_look =
         ClassicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..ClassicLook::default() }.to_params();
     b.own_module(ARENA, "look.classic", "Arena look", arena_look);
-    b.scene
+    b.finish()
 }
 
 /// A box with a block of balls dropped in, losing a little speed on every hit.
@@ -823,7 +940,7 @@ fn box_drop(reg: &Registry) -> Scene {
     });
     b.bounce(|s| s.bounciness = 0.85);
     b.motion(|s| s.drag = 0.05);
-    b.scene
+    b.finish()
 }
 
 /// A turning hexagon with a ring of balls that gain a little speed on every hit.
@@ -847,7 +964,7 @@ fn spinning_hexagon(reg: &Registry) -> Scene {
         s.top_speed = 2500.0;
     });
     b.root_look(|l| l.glow = 0.5);
-    b.scene
+    b.finish()
 }
 
 /// A ring that closes in while one ball grows with every hit against a lively wall.
@@ -870,7 +987,7 @@ fn shrinking_ring(reg: &Registry) -> Scene {
     b.sound(|s| s.instrument = marimba);
     let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
     b.own_module(ARENA, "bounce.basic", "Lively wall", lively);
-    b.scene
+    b.finish()
 }
 
 // ---------- stage 7 ----------
@@ -895,7 +1012,7 @@ fn jelly_drop(reg: &Registry) -> Scene {
     });
     let look = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0xb0, 0x20)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(jelly, "look.classic", "Jelly look", look.to_params());
-    b.scene
+    b.finish()
 }
 
 /// A rope slung across a box with balls dropped onto it.
@@ -927,7 +1044,7 @@ fn rope_bridge(reg: &Registry) -> Scene {
     b.own_module(rope, "look.classic", "Rope look", look.to_params());
     let marimba = b.built_in(Instrument::Marimba);
     b.sound(|s| s.instrument = marimba);
-    b.scene
+    b.finish()
 }
 
 /// A cloth slung from its two top corners, swinging as a ring of balls lands in it.
@@ -957,7 +1074,7 @@ fn cloth_hammock(reg: &Registry) -> Scene {
     });
     let look = ClassicLook { fill: Paint::solid(Color::rgb(0x3e, 0x9b, 0xff)), ..ClassicLook::default() };
     b.own_module(cloth, "look.classic", "Cloth look", look.to_params());
-    b.scene
+    b.finish()
 }
 
 /// The reel's ring with a block of balls, a hit counter that jumps on hits, a countdown, and
@@ -1005,7 +1122,7 @@ fn captioned_reel(reg: &Registry) -> Scene {
         of_module(ball_look, "glow"),
         &[(0.0, Value::Number(0.1), Ease::EaseIn), (20.0, Value::Number(1.2), Ease::EaseIn)],
     );
-    b.scene
+    b.finish()
 }
 
 /// A spinning hexagon at 128 bpm: hits land on beats, the walls play drums and the beat keeps
@@ -1043,7 +1160,7 @@ fn drum_beat(reg: &Registry) -> Scene {
         t.size = 72.0;
         t.appear = Appear::Fade;
     });
-    b.scene
+    b.finish()
 }
 
 /// A Plinko board: a staggered grid of pegs that sound when hit, and a shower of balls that
@@ -1102,7 +1219,7 @@ fn peg_board(reg: &Registry) -> Scene {
             ..Paint::default()
         };
     });
-    b.scene
+    b.finish()
 }
 
 /// Three bars in a folder, turning together, with a ring of balls speeding up around them.
@@ -1137,7 +1254,7 @@ fn spinning_bars(reg: &Registry) -> Scene {
     let bar_look =
         ClassicLook { fill: Paint::solid(Color::rgb(0x7f, 0xe8, 0xff)), glow: 0.3, ..ClassicLook::default() };
     b.own_module(bars, "look.classic", "Bar look", bar_look.to_params());
-    b.scene
+    b.finish()
 }
 
 /// A capsule full of balls that pile up on each other, coloured by how often they have hit.
@@ -1178,7 +1295,7 @@ fn ball_pit(reg: &Registry) -> Scene {
         };
     });
     b.sound(|s| s.min_gap = 0.03);
-    b.scene
+    b.finish()
 }
 
 /// Balls and a peg riding a turning hexagon; the balls change hue with every hit and pop after
@@ -1203,7 +1320,7 @@ fn riders(reg: &Registry) -> Scene {
     b.ride(peg, ARENA, Vec2::new(0.0, 200.0), true);
     b.bounce(|s| s.pops_after = 40);
     b.ball_look(|l| l.hue_per_hit = 12.0);
-    b.scene
+    b.finish()
 }
 
 /// One ball blown sideways, playing a climbing note on every hit and barely bouncing off the
@@ -1241,7 +1358,7 @@ fn pitch_climb(reg: &Registry) -> Scene {
     });
     b.chords("Dreamy loop", 9);
     b.motion(|s| s.wind = Vec2::new(60.0, 0.0));
-    b.scene
+    b.finish()
 }
 
 /// Three balls that grow a little on every hit, counting their hits.
@@ -1261,7 +1378,7 @@ fn grow_on_hit(reg: &Registry) -> Scene {
         simple.extend(recipe("Count hits")(g));
         simple
     });
-    b.scene
+    b.finish()
 }
 
 /// One ball that splits in two on every hit, until there are 64.
@@ -1273,7 +1390,7 @@ fn split_on_hit(reg: &Registry) -> Scene {
     });
     b.bounce(|s| s.bounciness = 1.02);
     b.rules(BALLS, "Split", |g| recipe("Split on hit")(g));
-    b.scene
+    b.finish()
 }
 
 /// A block of balls, each tinted by how hard it last hit: blue for soft, red for hard.
@@ -1307,7 +1424,7 @@ fn colour_by_speed(reg: &Registry) -> Scene {
         wire(g, Role::Rules, (colour, 0), (tint, 2));
         vec![(tint, "amount".into())]
     });
-    b.scene
+    b.finish()
 }
 
 /// A bounce graph that keeps more speed on slow hits than on fast ones, so the ball settles
@@ -1338,7 +1455,7 @@ fn bouncy_when_slow(reg: &Registry) -> Scene {
         wire(g, Role::Bounce, (slow, 0), (keep, 0));
         wire(g, Role::Bounce, (keep, 0), (reflect, 2));
     });
-    b.scene
+    b.finish()
 }
 
 /// A motion graph with a wind that swings left and right, and a sound graph that walks up a
@@ -1398,7 +1515,7 @@ fn wind_and_melody(reg: &Registry) -> Scene {
         wire(g, Role::Sound, (step, 0), (key, 1));
         wire(g, Role::Sound, (key, 0), (output, 1));
     });
-    b.scene
+    b.finish()
 }
 
 /// Drops shot up from a spout, falling back through each other inside a ring.
@@ -1420,7 +1537,7 @@ fn fountain(reg: &Registry) -> Scene {
         ..EmitterSettings::default()
     };
     b.add("emitter", ThingId::ROOT, "Spout", Vec2::new(0.0, 380.0), spout.to_params());
-    b.scene
+    b.finish()
 }
 
 /// Light feathers blown across a tall box while heavy stones fall through a whirl that
@@ -1473,7 +1590,7 @@ fn wind_tunnel(reg: &Registry) -> Scene {
         ..FieldSettings::default()
     };
     b.add("field", ThingId::ROOT, "Whirl", Vec2::new(0.0, 200.0), whirl.to_params());
-    b.scene
+    b.finish()
 }
 
 /// A ball dropped into a small pool that runs on the processor.
@@ -1488,7 +1605,7 @@ fn small_pool(reg: &Registry) -> Scene {
     b.bounce(|s| s.bounciness = 0.6);
     let pool = LiquidSettings { count: 1500, fill: 0.4, ..LiquidSettings::default() };
     b.add("liquid", ThingId::ROOT, "Pool", Vec2::ZERO, pool.to_params());
-    b.scene
+    b.finish()
 }
 
 /// A block of balls dropped into a deep pool of twelve thousand particles on the graphics card.
@@ -1510,7 +1627,7 @@ fn deep_pool(reg: &Registry) -> Scene {
     });
     let deep = LiquidSettings { count: 12_000, ..LiquidSettings::default() };
     b.add("liquid", ThingId::ROOT, "Deep", Vec2::ZERO, deep.to_params());
-    b.scene
+    b.finish()
 }
 
 /// Twenty thousand points of light drawn to one ball bouncing round a ring.
@@ -1541,12 +1658,29 @@ fn fireflies(reg: &Registry) -> Scene {
     b.set_params(m, look.to_params());
     let m = b.module_of(swarm, SlotId::Motion);
     b.set_params(m, Flocking { attraction: 1.2, ..Flocking::default() }.to_params());
-    b.scene
+    b.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
+
+    #[test]
+    fn every_thing_in_a_built_in_scene_has_its_own_modules() {
+        let reg = registry();
+        let mut all = scenes::all(&reg);
+        all.push(("Long drop".into(), scenes::long_drop(&reg)));
+        for (name, scene) in &all {
+            for (id, thing) in &scene.things {
+                for (slot, link) in &thing.slots {
+                    let bpe_core::SlotLink::Linked { module, .. } = link else { continue };
+                    let m = &scene.library.modules[module];
+                    assert_eq!(scene.users_of(*module), [*id], "{name}: {} {slot:?} shares {}", thing.name, m.name);
+                    assert_eq!(m.owner, Some(*id), "{name}: {} {slot:?} uses {}", thing.name, m.name);
+                }
+            }
+        }
+    }
 
     #[test]
     fn starters_are_nine_named_scenes_from_the_collection() {

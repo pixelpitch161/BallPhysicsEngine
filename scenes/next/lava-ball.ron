@@ -4,29 +4,9 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -34,9 +14,15 @@
             kind: "arena",
             parent: Some(0),
             slots: {
-                Look: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Look: Linked(
+                    module: 7,
+                ),
+                Bounce: Linked(
+                    module: 11,
+                ),
+                Sound: Linked(
+                    module: 12,
+                ),
             },
         ),
         2: (
@@ -50,16 +36,22 @@
             ),
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 15,
                 ),
                 Trail: Linked(
-                    module: 7,
+                    module: 17,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 13,
+                ),
+                Sound: Linked(
+                    module: 14,
+                ),
                 Shader: Linked(
-                    module: 6,
+                    module: 16,
                 ),
             },
         ),
@@ -71,35 +63,58 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
+            7: (
+                id: 7,
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
-            1: (
-                id: 1,
+            8: (
+                id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
+                owner: Some(2),
             ),
-            2: (
-                id: 2,
-                name: "Default bounce",
+            11: (
+                id: 11,
+                name: "Arena bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
+                owner: Some(1),
             ),
-            3: (
-                id: 3,
-                name: "Default sound",
+            12: (
+                id: 12,
+                name: "Arena sound",
                 slot: Sound,
                 kind: "sound.notes",
                 params: {
+                    "chords": Int(0),
                     "instrument": Int(0),
                 },
+                owner: Some(1),
             ),
-            5: (
-                id: 5,
+            13: (
+                id: 13,
+                name: "Ball bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
+                name: "Ball sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            15: (
+                id: 15,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.styled",
@@ -125,9 +140,10 @@
                         transition: Smooth,
                     )),
                 },
+                owner: Some(2),
             ),
-            6: (
-                id: 6,
+            16: (
+                id: 16,
                 name: "Lava",
                 slot: Shader,
                 kind: "shader.lava",
@@ -135,9 +151,10 @@
                     "heat": Number(1.8),
                     "scale": Number(2.0),
                 },
+                owner: Some(2),
             ),
-            7: (
-                id: 7,
+            17: (
+                id: 17,
                 name: "Lava streak",
                 slot: Trail,
                 kind: "trail.streak",
@@ -156,6 +173,7 @@
                     "source": Choice("own"),
                     "width": Number(0.800000011920929),
                 },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -337,7 +355,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 8,
+    next_module: 18,
     next_progression: 1,
     next_instrument: 1,
 )

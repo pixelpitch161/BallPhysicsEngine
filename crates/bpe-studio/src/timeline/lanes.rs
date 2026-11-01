@@ -35,7 +35,7 @@ fn owners_of(scene: &Scene, resolved: &Resolved, id: ThingId) -> BTreeSet<Owner>
     owners
 }
 
-/// The lanes for `selected`: its tracks then its pulses, then the Scene defaults' when
+/// The lanes for `selected`: its tracks then its pulses, then the scene settings' when
 /// something else is selected, each setting at most once per kind of lane.
 pub fn lanes_for(scene: &Scene, kit: &Kit, resolved: &Resolved, selected: Option<ThingId>) -> Vec<Lane> {
     let mut lanes = Vec::new();
@@ -93,10 +93,10 @@ pub fn moves_physics(scene: &Scene, kit: &Kit, a: &Address) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{ModuleId, Value, resolve};
+    use bpe_core::{Value, resolve};
 
     #[test]
-    fn lanes_follow_the_selection_then_the_scene_defaults() {
+    fn lanes_follow_the_selection_then_the_scene_settings() {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let reg = &kit.registry;
@@ -104,31 +104,27 @@ mod tests {
         let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
         let ball_look = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().id;
         let glow = Address { owner: Owner::Module(ball_look), slot: None, key: "glow".into() };
-        let plain_glow = Address { owner: Owner::Module(ModuleId(0)), slot: None, key: "glow".into() };
         let bloom = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bloom".into() };
         scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         scene.set_key(reg, &size, 2.0, Value::Number(60.0)).unwrap();
         scene.set_key(reg, &glow, 0.0, Value::Number(0.5)).unwrap();
-        scene.set_key(reg, &plain_glow, 0.0, Value::Number(0.7)).unwrap();
         scene.set_pulse(reg, &bloom, bpe_core::PulseSource::Beat, Value::Number(0.3), 0.25).unwrap();
         let resolved = resolve(&scene, reg);
         let labels = |selected| {
             lanes_for(&scene, &kit, &resolved, selected).into_iter().map(|l| (l.label, l.pulse)).collect::<Vec<_>>()
         };
-        // The ball's own key first, then its look module's, then the scene's and the modules the
-        // scene's slots show (the ball doesn't use the plain look, its own look stands in).
+        // The ball's own key first, then its look module's, then the scene settings'.
         assert_eq!(
             labels(Some(ThingId(2))),
             [
                 ("Ball · Size".to_owned(), false),
                 ("Ball look · Glow".to_owned(), false),
-                ("Scene defaults · Gravity".to_owned(), false),
-                ("Plain look · Glow".to_owned(), false),
-                ("Scene defaults · Bloom".to_owned(), true),
+                ("Scene settings · Gravity".to_owned(), false),
+                ("Scene settings · Bloom".to_owned(), true),
             ]
         );
-        assert_eq!(labels(None).len(), 3, "nothing selected shows the scene's lanes");
-        assert_eq!(labels(Some(ThingId::ROOT)).len(), 3);
+        assert_eq!(labels(None).len(), 2, "nothing selected shows the scene's lanes");
+        assert_eq!(labels(Some(ThingId::ROOT)).len(), 2);
         let lanes = lanes_for(&scene, &kit, &resolved, Some(ThingId(2)));
         assert!(
             lanes[0].physics && !lanes[1].physics && lanes[2].physics && !lanes[3].physics,

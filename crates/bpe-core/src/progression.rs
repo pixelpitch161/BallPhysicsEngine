@@ -172,7 +172,7 @@ impl Progression {
     }
 }
 
-/// A setting that names a progression: `None` uses Scene defaults' one.
+/// A setting that names a progression: `None` uses the built-in starter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ProgressionRef(pub Option<ProgressionId>);
 

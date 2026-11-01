@@ -1,5 +1,6 @@
-//! Scene defaults: the root of every scene. Its settings are the video, the world and the song,
-//! and its slots are what every thing uses unless it sets its own.
+//! Scene settings: the root of every scene. Its settings are the video, the world and the song,
+//! and its slots (music, effects and rules) act on the whole scene; nothing under it inherits
+//! them.
 
 pub mod draw;
 pub mod sim;
@@ -7,7 +8,7 @@ pub mod sim;
 pub use sim::{SceneSim, SceneState};
 
 use crate::paint::Paint;
-use bpe_core::{Choice, Color, Gradient, ProgressionRef, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
@@ -56,9 +57,6 @@ pub struct SceneSettings {
     /// How much bright things bleed light around them.
     #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse)]
     pub bloom: f32,
-    /// The chord progression sound modules play from unless they pick their own.
-    #[setting(label = "Chords", simple, random, group = "Sound")]
-    pub chords: ProgressionRef,
     /// The video's width in pixels.
     #[setting(label = "Width", range(2, 7680), unit = "px", group = "Video")]
     pub width: u32,
@@ -167,7 +165,6 @@ impl Default for SceneSettings {
                 ..Paint::default()
             },
             bloom: 0.15,
-            chords: ProgressionRef(None),
             width: 1080,
             height: 1920,
             fps: 60,
@@ -225,28 +222,58 @@ impl ThingKind for SceneKind {
         "scene"
     }
     fn name(&self) -> &'static str {
-        "Scene defaults"
+        "Scene settings"
     }
     fn icon(&self) -> &'static str {
         "scene"
     }
     fn help(&self) -> &'static str {
-        "The video, the world and the song, and the modules every thing uses unless it sets its own."
+        "The video, the world and the song, plus effects, music and rules for the whole scene."
     }
     fn settings(&self) -> &'static [SettingDef] {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &SlotId::ALL
+        &[SlotId::Sound, SlotId::Shader, SlotId::Rules]
     }
     fn default_slots(&self) -> &'static [SlotId] {
-        &SlotId::ALL
+        &[]
+    }
+    fn passes_down(&self) -> bool {
+        false
+    }
+    fn slot_label(&self, slot: SlotId) -> &'static str {
+        match slot {
+            SlotId::Sound => "Music",
+            SlotId::Shader => "Effects",
+            other => other.name(),
+        }
+    }
+    /// Music plays on the beat, so only drums and melodies; hit sounds have no hits here.
+    fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
+        slot != SlotId::Sound || matches!(module_kind, "sound.drums" | "sound.melody")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_settings_holds_no_chords_and_keeps_its_slots_to_itself() {
+        let k = SceneKind;
+        assert_eq!(k.name(), "Scene settings");
+        assert!(!SceneSettings::defs().iter().any(|d| d.key == "chords"));
+        assert_eq!(k.slots(), &[SlotId::Sound, SlotId::Shader, SlotId::Rules]);
+        assert!(k.default_slots().is_empty() && !k.passes_down());
+        assert_eq!(
+            (k.slot_label(SlotId::Sound), k.slot_label(SlotId::Shader), k.slot_label(SlotId::Rules)),
+            ("Music", "Effects", "Rules")
+        );
+        assert!(k.accepts(SlotId::Sound, "sound.drums") && k.accepts(SlotId::Sound, "sound.melody"));
+        assert!(!k.accepts(SlotId::Sound, "sound.notes"));
+        assert!(k.accepts(SlotId::Shader, "shader.echo"));
+    }
 
     #[test]
     fn the_background_is_one_paint_that_follows_place_time_or_beat_on_the_screen() {

@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn the_library_lists_modules_by_slot_with_their_users() {
         let mut h = harness();
-        assert!(h.query_by_label_contains("Plain look").is_some());
+        assert!(h.query_by_label_contains("Arena look").is_some());
         assert!(h.query_by_label_contains("Ball look").is_some());
         h.get_by_label_contains("Ball look").click();
         h.run();
@@ -521,6 +521,7 @@ mod tests {
     #[test]
     fn delete_is_refused_while_in_use_and_names_the_users() {
         let mut h = harness();
+        let before = h.state().scene.library.modules.len();
         h.get_by_label_contains("Ball look").click();
         h.run();
         assert!(h.get_by_label("Delete").accesskit_node().is_disabled());
@@ -532,19 +533,20 @@ mod tests {
         h.run();
         h.get_by_label("Delete").click();
         h.run();
-        assert_eq!(h.state().scene.library.modules.len(), 4);
+        assert_eq!(h.state().scene.library.modules.len(), before - 1);
         assert_eq!(h.state().lib.selected, None);
     }
 
     #[test]
     fn new_module_buttons_add_one_per_slot_kind() {
         let mut h = harness();
+        let before = h.state().scene.library.modules.len();
         h.get_by_label("+ New Look").click();
         h.run();
         h.get_by_label("Classic").click();
         h.run();
         let s = h.state();
-        assert_eq!(s.scene.library.modules.len(), 6);
+        assert_eq!(s.scene.library.modules.len(), before + 1);
         let new = s.scene.library.modules.values().find(|m| m.name == "Classic").expect("named after its kind");
         assert_eq!(s.lib.selected, Some(new.id));
         assert_eq!(new.slot, SlotId::Look);
@@ -553,19 +555,20 @@ mod tests {
     #[test]
     fn double_clicking_a_module_renames_it() {
         let mut h = harness();
-        h.get_by_label_contains("Plain look").click();
+        let look = h.state().scene.library.modules.values().find(|m| m.name == "Arena look").unwrap().id;
+        h.get_by_label_contains("Arena look").click();
         h.step();
-        h.get_by_label_contains("Plain look").click();
+        h.get_by_label_contains("Arena look").click();
         h.run();
-        assert_eq!(h.state().lib.renaming, Some(ModuleId(0)));
+        assert_eq!(h.state().lib.renaming, Some(look));
         h.event(egui::Event::Text("Soft look".into()));
         h.key_press(Key::Enter);
         h.run();
-        assert_eq!(h.state().scene.library.modules[&ModuleId(0)].name, "Soft look");
+        assert_eq!(h.state().scene.library.modules[&look].name, "Soft look");
         assert_eq!(h.state().lib.renaming, None);
-        // The scene's defaults still link it.
+        // The arena still links it.
         assert!(
-            matches!(h.state().scene.things[&ThingId::ROOT].slots[&SlotId::Look], SlotLink::Linked { module, .. } if module == ModuleId(0))
+            matches!(h.state().scene.things[&ThingId(1)].slots[&SlotId::Look], SlotLink::Linked { module, .. } if module == look)
         );
     }
 
@@ -606,15 +609,15 @@ mod tests {
         let added = s.scene.library.modules.values().find(|m| m.name == "Neon").expect("added from the preset");
         assert_eq!(s.lib.selected, Some(added.id));
         // Back up the list, which scrolled down to the presets.
-        h.get_by_label_contains("Plain look").scroll_to_me();
+        h.get_by_label_contains("Arena look").scroll_to_me();
         h.run();
-        h.get_by_label_contains("Plain look").click();
+        h.get_by_label_contains("Arena look").click();
         h.run();
         h.get_by_label("Save as preset").click();
         h.run();
         let listed = crate::presets::list_in(&dir);
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|p| p.module.name == "Plain look"));
+        assert!(listed.iter().any(|p| p.module.name == "Arena look"));
         assert_eq!(h.query_all_by_label("Add to scene").count(), 2, "the list is read again after saving");
         let _ = std::fs::remove_dir_all(dir);
     }

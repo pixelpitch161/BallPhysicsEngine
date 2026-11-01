@@ -76,7 +76,7 @@ pub struct Thing {
     pub kind: KindId,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub tags: BTreeSet<String>,
-    /// `None` only for Scene defaults.
+    /// `None` only for the scene settings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ThingId>,
     #[serde(skip_serializing_if = "is_default")]
@@ -188,12 +188,12 @@ impl Scene {
         if locked { self.locks.insert(a) } else { self.locks.remove(&a) }
     }
 
-    /// A scene holding only Scene defaults. Panics if `reg` has no `"scene"` kind.
+    /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
         let kind = reg.thing("scene").expect("the registry needs a \"scene\" thing kind");
         let root = Thing {
             id: ThingId::ROOT,
-            name: "Scene defaults".into(),
+            name: kind.name().into(),
             kind: "scene".into(),
             slots: kind.default_slots().iter().map(|&s| (s, SlotLink::Inherit)).collect(),
             ..Thing::default()
@@ -256,10 +256,10 @@ impl Scene {
     }
 
     /// Puts a scene that was edited by hand back in shape, so every later step can trust it: ids
-    /// match their map keys, Scene defaults is the root with no parent, things whose parent is
-    /// missing or part of a loop move under Scene defaults, and `order` lists every thing once with
+    /// match their map keys, the scene settings are the root with no parent, things whose parent is
+    /// missing or part of a loop move under the scene settings, and `order` lists every thing once with
     /// each thing after its parent, keeping the old order among siblings. Returns `false` when there
-    /// is no Scene defaults to hang the tree on; the scene is then unusable.
+    /// are no scene settings to hang the tree on; the scene is then unusable.
     pub fn mend(&mut self) -> bool {
         for (id, t) in &mut self.things {
             t.id = *id;
@@ -374,7 +374,7 @@ mod tests {
     fn empty_scene_has_only_the_root() {
         let s = Scene::empty(&testkit::registry());
         assert_eq!(s.order, vec![ThingId::ROOT]);
-        assert_eq!(s.things[&ThingId::ROOT].name, "Scene defaults");
+        assert_eq!(s.things[&ThingId::ROOT].name, "Scene settings");
         assert_eq!(s.format, 2);
         assert_eq!(s.next_thing, 1);
     }

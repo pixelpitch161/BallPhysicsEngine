@@ -36,7 +36,7 @@ pub enum ValueType {
     /// A chord progression in the library, stored as `Value::Int`: its id, or -1 for Scene
     /// defaults' one.
     Progression,
-    /// An instrument in the library, stored as `Value::Int`: its id, or -1 for Scene defaults'
+    /// An instrument in the library, stored as `Value::Int`: its id, or -1 for the built-in
     /// one.
     Instrument,
 }

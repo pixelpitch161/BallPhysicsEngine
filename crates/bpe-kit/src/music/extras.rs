@@ -215,7 +215,7 @@ mod tests {
         let export = mix_scene_export(&scene, &resolved, &log, &kit, all());
         let file = bpe_music::midi::parse(export.midi.as_ref().unwrap()).unwrap();
         let names: Vec<&str> = file.parts.iter().map(|p| p.name.as_str()).collect();
-        assert!(names.iter().any(|n| n.starts_with("Default sound (") && n.contains("Ball")), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("Ball sound (") && n.contains("Ball")), "{names:?}");
         assert!(!file.notes.is_empty());
     }
 

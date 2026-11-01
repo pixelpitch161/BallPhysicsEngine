@@ -308,7 +308,7 @@ mod tests {
         let b = scene.things.get_mut(&BALLS).unwrap();
         b.transform.position = Vec2::new(-1500.0, 0.0);
         b.params.set("velocity", Value::Vec2([0.0, 0.0]));
-        let other = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
+        let other = crate::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         let b = scene.things.get_mut(&other).unwrap();
         b.transform.position = Vec2::new(1500.0, 0.0);
         b.params.set("velocity", Value::Vec2([0.0, 0.0]));

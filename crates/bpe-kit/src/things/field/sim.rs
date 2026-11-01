@@ -199,7 +199,7 @@ mod tests {
             p.set("shape", Value::Choice("everywhere".into()));
             p.set("targets", Value::Target(Target::Tag("light".into())));
         });
-        let other = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
+        let other = crate::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         scene.things.get_mut(&other).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
         scene.things.get_mut(&other).unwrap().transform.position = Vec2::new(100.0, 0.0);
         scene.things.get_mut(&BALLS).unwrap().tags.insert("light".into());
@@ -264,7 +264,7 @@ mod tests {
             p.set("shape", Value::Choice("everywhere".into()));
         });
         // A second set of balls, made silent once built, stands in for a liquid.
-        let drops = scene.add_thing(&kit.registry, "balls", ThingId::ROOT).unwrap();
+        let drops = crate::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         scene.things.get_mut(&drops).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);

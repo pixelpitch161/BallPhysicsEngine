@@ -28,6 +28,19 @@ pub trait ThingKind: Send + Sync + 'static {
     fn single(&self) -> bool {
         false
     }
+    /// Whether the things under one of these use its modules for slots they don't fill
+    /// themselves. A kind that says no keeps its slots to itself, like Scene settings.
+    fn passes_down(&self) -> bool {
+        true
+    }
+    /// What the editor calls `slot` on one of these, such as "Effects" for a shader.
+    fn slot_label(&self, slot: SlotId) -> &'static str {
+        slot.name()
+    }
+    /// Whether a module of `module_kind` may fill `slot` on one of these.
+    fn accepts(&self, _slot: SlotId, _module_kind: &str) -> bool {
+        true
+    }
 }
 
 /// A kind of module that fills one slot, such as a plain look or a pluck sound.

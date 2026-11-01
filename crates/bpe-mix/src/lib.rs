@@ -93,7 +93,7 @@ impl Soundtrack {
 /// What a note plays through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NoteInstrument {
-    /// A library instrument, or Scene defaults' one for `None`.
+    /// A library instrument, or the built-in Pluck for `None`.
     Library(Option<InstrumentId>),
     /// A built-in sound with its usual knobs, such as the drum machine's kit.
     BuiltIn(Instrument),
@@ -126,9 +126,9 @@ pub struct Note {
 pub struct PhysicsInputs {
     /// Filled only when some patch reads at-the-hit or live inputs.
     pub hits: BTreeMap<u64, std::sync::Arc<bpe_synth::HitPhysics>>,
-    /// The scene's series, with Scene defaults' chords and no channel levels.
+    /// The scene's series, with the built-in starter's chords and no channel levels.
     pub scene: bpe_synth::SceneSignals,
-    /// The chords of each channel whose progression isn't Scene defaults', by module id.
+    /// The chords of each channel whose progression isn't the built-in starter, by module id.
     pub chords: BTreeMap<u32, Vec<[f32; 2]>>,
 }
 
@@ -157,8 +157,10 @@ pub struct MixSettings {
     pub steps_per_second: u32,
     /// Every chord progression in the scene's library.
     pub progressions: BTreeMap<ProgressionId, Progression>,
-    /// The one Scene defaults points at; modules set to "Scene's" use it.
-    pub scene_chords: Option<ProgressionId>,
+    /// The chords the whole song follows (the MIDI file's Chords track, the scene's chord
+    /// series for patches): the first thing in the tree whose sound picks a progression, else
+    /// the library's first.
+    pub chords: ProgressionRef,
     /// The beat grid in video seconds, which chords are laid on.
     pub beats: Vec<f64>,
     /// How the master stage finishes the mix.
@@ -174,8 +176,6 @@ pub struct MixSettings {
     pub half_height: f32,
     /// Every instrument in the scene's library.
     pub instruments: BTreeMap<InstrumentId, bpe_core::Instrument>,
-    /// The one Scene defaults' sound plays through; modules set to "Scene's" use it.
-    pub scene_instrument: Option<InstrumentId>,
     /// Each sound module's own macro values for its instrument, by module id.
     pub macros: BTreeMap<u32, BTreeMap<String, f32>>,
     /// Each sound module's channel effects and sends, by module id.
@@ -189,13 +189,11 @@ pub struct MixSettings {
 }
 
 impl MixSettings {
-    /// The progression a setting points at: that one when it is in the library, else Scene
-    /// defaults' one, else the starter.
+    /// The progression a setting points at: that one when it is in the library, else the
+    /// starter.
     pub fn progression(&self, r: ProgressionRef) -> &Progression {
         static STARTER: std::sync::LazyLock<Progression> = std::sync::LazyLock::new(Progression::starter);
-        r.0.and_then(|id| self.progressions.get(&id))
-            .or_else(|| self.scene_chords.and_then(|id| self.progressions.get(&id)))
-            .unwrap_or(&STARTER)
+        r.0.and_then(|id| self.progressions.get(&id)).unwrap_or(&STARTER)
     }
 
     /// Seconds per beat: the middle gap of the beat grid, or half a second without one.
@@ -514,7 +512,7 @@ pub(crate) mod tests {
             duration: 5.0,
             steps_per_second: 240,
             progressions: Default::default(),
-            scene_chords: None,
+            chords: ProgressionRef(None),
             beats: Vec::new(),
             master: MasterSettings::default(),
             seed: 1,
@@ -523,7 +521,6 @@ pub(crate) mod tests {
             off_shot_fade: 0.0,
             half_height: 960.0,
             instruments: Default::default(),
-            scene_instrument: None,
             macros: Default::default(),
             strips: Default::default(),
             buses: Vec::new(),

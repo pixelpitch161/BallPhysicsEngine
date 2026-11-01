@@ -102,7 +102,7 @@ fn stuck_text_stays() {
     let kit = kit();
     let make = |camera: [f32; 2]| {
         let mut scene = still_ball(&kit, [5000.0, 5000.0], 10.0, &[("position", Value::Vec2(camera))]);
-        let text = scene.add_thing(&kit.registry, "text", ThingId::ROOT).unwrap();
+        let text = bpe_kit::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
         scene.things.get_mut(&text).unwrap().params.set("text", Value::Text("HELLO".into()));
         scene
     };
@@ -147,7 +147,7 @@ fn zero_fade_mix_is_unchanged() {
 fn a_shader_on_a_caption_still_runs() {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let text = scene.add_thing(&kit.registry, "text", ThingId::ROOT).unwrap();
+    let text = bpe_kit::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
     let m = scene.add_module(&kit.registry, "shader.kaleidoscope", "Kaleidoscope").unwrap();
     scene.link(&kit.registry, text, bpe_core::SlotId::Shader, m).unwrap();
     let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);

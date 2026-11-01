@@ -95,7 +95,10 @@ mod tests {
         let mut scene = new_scene(&kit.registry);
         let melody = scene.add_module(&kit.registry, "sound.melody", "Melody").unwrap();
         scene.library.modules.get_mut(&melody).unwrap().params.set("file", Value::Text(file.into()));
-        scene.link(&kit.registry, ThingId::ROOT, SlotId::Sound, melody).unwrap();
+        // Scene settings plays it on the beat; the arena and the ball play it on their hits.
+        for id in [ThingId::ROOT, ThingId(1), ThingId(2)] {
+            scene.link(&kit.registry, id, SlotId::Sound, melody).unwrap();
+        }
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         (scene, resolved)

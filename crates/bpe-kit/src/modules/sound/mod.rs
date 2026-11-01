@@ -52,7 +52,7 @@ pub enum PlaysWhen {
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct NoteSound {
-    /// What plays the notes: an instrument in the library, or Scene defaults' one.
+    /// What plays the notes: an instrument in the library, or the built-in Pluck when none is picked.
     #[setting(label = "Instrument", simple, random)]
     pub instrument: InstrumentRef,
     /// How loud these notes are.
@@ -67,7 +67,7 @@ pub struct NoteSound {
     /// The highest MIDI note a hit may play.
     #[setting(label = "Highest note", range(0, 127), simple)]
     pub high_note: u32,
-    /// The chord progression these notes follow: Scene defaults' one, or one of their own.
+    /// The chord progression these notes follow: one in the library, or the built-in starter when none is picked.
     #[setting(label = "Chords", simple, random)]
     pub chords: ProgressionRef,
     /// Which of the allowed notes a hit plays: random, by the hit's speed, by the ball's hits,

@@ -7,7 +7,6 @@ use crate::{
     Instrument, InstrumentChoice, MixSettings, Note, NoteInstrument, PhysicsInputs, SAMPLE_RATE, Soundtrack,
     instrument_for,
 };
-use bpe_core::ProgressionRef;
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 use std::collections::BTreeMap;
@@ -85,7 +84,7 @@ fn track<'a>(name: &'a str, mut events: Vec<At<'a>>) -> Vec<TrackEvent<'a>> {
     out
 }
 
-/// The played notes and Scene defaults' chords as a type 1 MIDI file: a tempo track, one track
+/// The played notes and the scene's chords as a type 1 MIDI file: a tempo track, one track
 /// per channel named from `names` (else the module's name), and a Chords track.
 pub fn midi_file(settings: &MixSettings, notes: &[Note], names: &BTreeMap<u32, String>) -> Vec<u8> {
     let spb = settings.seconds_per_beat().max(1e-3) as f64;
@@ -154,7 +153,7 @@ pub fn midi_file(settings: &MixSettings, notes: &[Note], names: &BTreeMap<u32, S
     }
 
     // Chords: a marker and the chord voiced around middle C at each change.
-    let progression = settings.progression(ProgressionRef(None));
+    let progression = settings.progression(settings.chords);
     let spans = ChordClock::new(progression, &settings.beats).spans(settings.duration as f64);
     let chord_names: Vec<String> = spans.iter().map(|(_, _, c)| chord_name(c, progression.key)).collect();
     let mut chord_events = Vec::new();
@@ -353,7 +352,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let progression = s.progression(ProgressionRef(None));
+        let progression = s.progression(s.chords);
         let spans = ChordClock::new(progression, &s.beats).spans(s.duration as f64);
         assert_eq!(markers.len(), spans.len());
         assert_eq!(markers[0], chord_name(&spans[0].2, progression.key));

@@ -258,7 +258,7 @@ mod tests {
         // still find its wall.
         let (mut scene, _, kit, me) = pool(500, |p| p.set("fill", Value::Number(0.3)));
         scene.remove_thing(ARENA).unwrap();
-        let later = scene.add_thing(&kit.registry, "arena", ThingId::ROOT).unwrap();
+        let later = crate::add_thing(&mut scene, &kit.registry, "arena", ThingId::ROOT).unwrap();
         assert!(later > me);
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let w = World::build(&scene, &resolved, &kit.sims);
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn an_emitter_fills_a_liquid_with_particle_sized_drops() {
         let (mut scene, _, kit, me) = pool(50, |_| {});
-        let spout = scene.add_thing(&kit.registry, "emitter", ThingId::ROOT).unwrap();
+        let spout = crate::add_thing(&mut scene, &kit.registry, "emitter", ThingId::ROOT).unwrap();
         let e = scene.things.get_mut(&spout).unwrap();
         e.transform.position = Vec2::new(0.0, -300.0);
         e.params.set("target", Value::Target(Target::Thing(me)));

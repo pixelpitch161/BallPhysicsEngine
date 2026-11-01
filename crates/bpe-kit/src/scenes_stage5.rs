@@ -30,6 +30,7 @@ pub fn stage5_with_twins(reg: &Registry) -> Vec<(String, Scene, String)> {
             let (twin_name, mut scene) = twins[*twin].clone();
             scene.name = (*name).into();
             build(reg, &mut scene);
+            super::own_everything(&mut scene);
             ((*name).to_owned(), scene, twin_name)
         })
         .collect()
@@ -40,12 +41,28 @@ pub fn stage5(reg: &Registry) -> Vec<(String, Scene)> {
     stage5_with_twins(reg).into_iter().map(|(name, scene, _)| (name, scene)).collect()
 }
 
-/// A new module linked onto one thing.
+/// A new module linked onto one thing. Asked of Scene settings for a slot it doesn't have
+/// (a burst or a trail), the module is shared by every thing that has the slot instead, as if
+/// they all used one scene-wide module.
 fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, name: &str, params: Params) {
     let m = scene.add_module(reg, kind, name).expect("kit kinds are registered");
     scene.library.modules.get_mut(&m).expect("just added").params = params;
     let slot = scene.library.modules[&m].slot;
-    scene.link(reg, thing, slot, m).expect("the kind has the slot");
+    let root_has = reg.thing("scene").is_some_and(|k| k.slots().contains(&slot));
+    if thing != ThingId::ROOT || root_has {
+        scene.link(reg, thing, slot, m).expect("the kind has the slot");
+        return;
+    }
+    let takers: Vec<ThingId> = scene
+        .order
+        .iter()
+        .copied()
+        .filter(|id| *id != ThingId::ROOT)
+        .filter(|id| reg.thing(&scene.things[id].kind).is_some_and(|k| k.slots().contains(&slot)))
+        .collect();
+    for id in takers {
+        scene.link(reg, id, slot, m).expect("the kind has the slot");
+    }
 }
 
 /// The ball's look module, replaced by a styled one.

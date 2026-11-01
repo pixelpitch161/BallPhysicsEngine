@@ -4,7 +4,7 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
                 "background_colours": Gradient((
@@ -26,7 +26,6 @@
                 )),
                 "background_span": Number(1900.0),
                 "bloom": Number(0.30000001192092896),
-                "chords": Int(0),
                 "grade_contrast": Number(0.20000000298023224),
                 "grade_map": Gradient((
                     stops: [
@@ -57,24 +56,7 @@
                 "grade_warmth": Number(0.30000001192092896),
                 "gravity": Vec2((0.0, 600.0)),
             },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -87,10 +69,14 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 11,
                 ),
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 19,
+                ),
+                Sound: Linked(
+                    module: 20,
+                ),
             },
         ),
         2: (
@@ -112,11 +98,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 21,
+                ),
+                Bounce: Linked(
+                    module: 22,
+                ),
+                Sound: Linked(
+                    module: 23,
+                ),
             },
         ),
         3: (
@@ -137,11 +129,17 @@
             },
             slots: {
                 Look: Linked(
-                    module: 6,
+                    module: 16,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 24,
+                ),
+                Bounce: Linked(
+                    module: 25,
+                ),
+                Sound: Linked(
+                    module: 26,
+                ),
             },
         ),
         4: (
@@ -168,7 +166,9 @@
                 "text": Text("Graded sunset"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 27,
+                ),
             },
         ),
         5: (
@@ -186,7 +186,9 @@
                 "text": Text("palette  triad  grade"),
             },
             slots: {
-                Look: Inherit,
+                Look: Linked(
+                    module: 28,
+                ),
             },
         ),
     },
@@ -200,35 +202,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -261,9 +236,10 @@
                     "follow": Choice("order"),
                     "glow": Number(0.20000000298023224),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            11: (
+                id: 11,
                 name: "Wall look",
                 slot: Look,
                 kind: "look.classic",
@@ -290,9 +266,10 @@
                     "repeat": Choice("mirror"),
                     "scroll": Number(0.07999999821186066),
                 },
+                owner: Some(1),
             ),
-            6: (
-                id: 6,
+            16: (
+                id: 16,
                 name: "Screen look",
                 slot: Look,
                 kind: "look.classic",
@@ -327,6 +304,89 @@
                     "follow": Choice("order"),
                     "glow": Number(0.0),
                 },
+                owner: Some(3),
+            ),
+            19: (
+                id: 19,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            20: (
+                id: 20,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            21: (
+                id: 21,
+                name: "Sunset balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            22: (
+                id: 22,
+                name: "Sunset balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            23: (
+                id: 23,
+                name: "Sunset balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            24: (
+                id: 24,
+                name: "Glow balls motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(3),
+            ),
+            25: (
+                id: 25,
+                name: "Glow balls bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(3),
+            ),
+            26: (
+                id: 26,
+                name: "Glow balls sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(3),
+            ),
+            27: (
+                id: 27,
+                name: "Title look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(4),
+            ),
+            28: (
+                id: 28,
+                name: "Caption look",
+                slot: Look,
+                kind: "look.classic",
+                owner: Some(5),
             ),
         },
         progressions: {
@@ -508,7 +568,7 @@
         ],
     ),
     next_thing: 6,
-    next_module: 7,
+    next_module: 29,
     next_progression: 1,
     next_instrument: 1,
     tracks: {

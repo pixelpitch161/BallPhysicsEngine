@@ -174,12 +174,8 @@ pub fn show(
         }
         Some(Action::Rename(id, name)) => {
             tree.renaming = None;
-            let name = name.trim();
-            if let Some(thing) = scene.things.get_mut(&id)
-                && !name.is_empty()
-                && thing.name != name
-            {
-                thing.name = name.to_owned();
+            // Its own starters are renamed with it.
+            if scene.rename_thing(id, &name) {
                 out.edited = true;
             }
         }
@@ -219,7 +215,7 @@ pub fn show(
             }
         }
         Some(Action::Add(kind)) => {
-            // Into a selected folder, beside any other selected thing, or under Scene defaults.
+            // Into a selected folder, beside any other selected thing, or under Scene settings.
             let parent = selection
                 .primary
                 .and_then(|s| scene.things.get(&s))
@@ -232,7 +228,7 @@ pub fn show(
                 out.added = Some(id);
             }
         }
-        Some(Action::Folder(ids)) => match scene.make_folder(reg, &ids) {
+        Some(Action::Folder(ids)) => match bpe_kit::make_folder(scene, reg, &ids) {
             Ok(folder) => {
                 selection.set(folder);
                 out.edited = true;
@@ -253,12 +249,12 @@ pub fn show(
         },
         Some(Action::AttachTo(id, parent)) => {
             let ride = Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None };
-            match apply_drop(scene, id, parent, Drop::Into(ride)) {
+            match apply_drop(scene, reg, id, parent, Drop::Into(ride)) {
                 Ok(()) => out.edited = true,
                 Err(e) => out.message = Some(refusal(&e)),
             }
         }
-        Some(Action::Drop(dragged, onto, drop)) => match apply_drop(scene, dragged, onto, drop) {
+        Some(Action::Drop(dragged, onto, drop)) => match apply_drop(scene, reg, dragged, onto, drop) {
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
         },
@@ -278,7 +274,10 @@ pub(crate) fn link_dropped(
     module: ModuleId,
 ) -> Result<(), EditError> {
     let slot = scene.library.modules.get(&module).ok_or(EditError::MissingModule(module))?.slot;
-    scene.link(reg, onto, slot, module)
+    let before = bpe_core::resolve(scene, reg);
+    scene.link(reg, onto, slot, module)?;
+    bpe_kit::keep_followers(scene, reg, &before);
+    Ok(())
 }
 
 /// Where in a row a drop lands: the top quarter puts the thing before the row, the bottom
@@ -299,7 +298,13 @@ pub fn drop_action(row: Rect, pointer: Pos2, alt: bool) -> Drop {
 /// Moves `dragged` where it was dropped. Before and after another row keep how the thing hangs
 /// off its parent; into a row groups or rides it there, and riding keeps the thing where it is
 /// on screen by measuring its offset from the new parent.
-pub fn apply_drop(scene: &mut Scene, dragged: ThingId, onto: ThingId, drop: Drop) -> Result<(), EditError> {
+pub fn apply_drop(
+    scene: &mut Scene,
+    reg: &Registry,
+    dragged: ThingId,
+    onto: ThingId,
+    drop: Drop,
+) -> Result<(), EditError> {
     if dragged == onto {
         return Ok(());
     }
@@ -312,7 +317,8 @@ pub fn apply_drop(scene: &mut Scene, dragged: ThingId, onto: ThingId, drop: Drop
         Drop::Into(attach) => (onto, attach),
     };
     let attach = keeping_place(scene, dragged, parent, attach, world);
-    scene.set_parent(dragged, parent, attach)?;
+    // Whatever the thing (and what hangs under it) followed, it still looks and sounds the same.
+    bpe_kit::move_thing(scene, reg, dragged, parent, attach)?;
     if attach == Attach::Group {
         // Grouped, the thing's own position is where it shows: the spot it had while riding.
         scene.things.get_mut(&dragged).expect("moved above").transform.position = world;
@@ -385,7 +391,7 @@ pub(crate) fn reattach(scene: &mut Scene, id: ThingId, attach: Attach) -> Result
 fn refusal(e: &EditError) -> String {
     match e {
         EditError::WouldLoop => "A thing can't go inside itself or its own children.".to_owned(),
-        EditError::Root => "Scene defaults stay at the top.".to_owned(),
+        EditError::Root => "Scene settings stay at the top.".to_owned(),
         other => format!("{other}"),
     }
 }
@@ -614,7 +620,7 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
         }
         ui.menu_button("Attach to", |ui| {
             ui.label(RichText::new("Ride on…").small().color(theme::MUTED));
-            // Everything but the thing itself, what hangs under it, and Scene defaults.
+            // Everything but the thing itself, what hangs under it, and Scene settings.
             let under = scene.descendants(id);
             for other in scene.order.iter().filter(|o| **o != id && **o != ThingId::ROOT && !under.contains(o)) {
                 let Some(name) = scene.things.get(other).map(|t| t.name.as_str()) else { continue };
@@ -863,6 +869,8 @@ pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<Thing
     thing.enabled = source.enabled;
     thing.params = source.params;
     thing.slots = source.slots;
+    // The copy gets its own copies of the original's starters rather than sharing them.
+    scene.copy_owned_starters(id, copy);
     // Right after the original, not at the end of the parent's children.
     let _ = scene.move_before(copy, next_sibling(scene, id).unwrap_or(copy));
     Some(copy)
@@ -886,7 +894,7 @@ pub fn problem_words(p: &Problem) -> String {
         ProblemKind::UnknownModuleKind(k) => format!("{slot} links a module whose kind \"{k}\" isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
         ProblemKind::BrokenGraph(msg) => {
-            format!("The {slot} graph doesn't compile, so the parent's module is used: {msg}")
+            format!("The {slot} graph doesn't compile, so the folder's module is used, if there is one: {msg}")
         }
     }
 }
@@ -1084,10 +1092,86 @@ mod tests {
         assert_eq!(copied.name, "Ball copy");
         assert_eq!(copied.parent, original.parent);
         assert_eq!(copied.params, original.params);
-        assert_eq!(copied.slots, original.slots);
+        assert!(copied.slots.keys().eq(original.slots.keys()), "the same slots, each with its own starter");
         assert_eq!(copied.transform, original.transform);
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(1), ThingId(2), ThingId(3)]);
         assert_eq!(duplicate(&mut scene, &kit.registry, ThingId::ROOT), None);
+    }
+
+    /// The module `id` links in `slot`.
+    fn linked(scene: &Scene, id: ThingId, slot: SlotId) -> ModuleId {
+        match &scene.things[&id].slots[&slot] {
+            bpe_core::SlotLink::Linked { module, .. } => *module,
+            other => panic!("{slot:?} is linked: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renaming_a_thing_renames_its_starters() {
+        let mut h = harness();
+        h.get_by_label("Ball").click();
+        h.step();
+        h.get_by_label("Ball").click();
+        h.run();
+        h.event(egui::Event::Text("Hero".into()));
+        h.key_press(Key::Enter);
+        h.run();
+        let s = h.state();
+        let look = linked(&s.scene, ThingId(2), SlotId::Look);
+        assert_eq!(s.scene.library.modules[&look].name, "Hero look");
+        assert!(h.query_by_label("Hero").is_some());
+    }
+
+    #[test]
+    fn duplicating_gives_the_copy_its_own_starters() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let copy = duplicate(&mut scene, &kit.registry, ThingId(2)).unwrap();
+        for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound] {
+            let (a, b) = (linked(&scene, ThingId(2), slot), linked(&scene, copy, slot));
+            assert_ne!(a, b, "{slot:?} is the copy's own");
+            assert_eq!(scene.library.modules[&b].owner, Some(copy));
+            assert_eq!(scene.library.modules[&b].params, scene.library.modules[&a].params);
+        }
+        assert_eq!(scene.library.modules[&linked(&scene, copy, SlotId::Look)].name, "Ball copy look");
+    }
+
+    #[test]
+    fn undo_after_delete_brings_starters_back() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let look = linked(&scene, ThingId(2), SlotId::Look);
+        let mut history = crate::history::History::default();
+        history.record(scene.clone(), true);
+        scene.remove_thing(ThingId(2)).unwrap();
+        assert!(!scene.library.modules.contains_key(&look), "the ball's own starters go with it");
+        assert!(history.undo(&mut scene));
+        assert_eq!(linked(&scene, ThingId(2), SlotId::Look), look);
+        assert_eq!(scene.library.modules[&look].owner, Some(ThingId(2)));
+    }
+
+    #[test]
+    fn moving_a_thing_out_of_a_folder_keeps_its_look() {
+        let mut h = harness();
+        let f = add_folder(&mut h);
+        let folder_look = {
+            let s = h.state_mut();
+            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Folder look").unwrap();
+            s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
+            s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
+            s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            m
+        };
+        h.run();
+        let from = h.get_by_label("Ball").rect().center();
+        let arena = h.get_by_label("Arena").rect();
+        drag(&mut h, from, egui::pos2(arena.center().x, arena.top() + 1.0), Modifiers::NONE);
+        let s = h.state();
+        assert_eq!(s.scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
+        let own = linked(&s.scene, ThingId(2), SlotId::Look);
+        assert_ne!(own, folder_look);
+        assert_eq!(s.scene.library.modules[&own].params, s.scene.library.modules[&folder_look].params);
     }
 
     #[test]
@@ -1101,7 +1185,7 @@ mod tests {
     #[test]
     fn the_root_has_no_eye_and_other_things_can_be_hidden() {
         let mut h = harness();
-        assert!(h.query_by_label("Hide Scene defaults").is_none());
+        assert!(h.query_by_label("Hide Scene settings").is_none());
         h.get_by_label("Hide Ball").click();
         h.run();
         assert!(!h.state().scene.things[&ThingId(2)].enabled);
@@ -1111,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_liquid_from_the_tree_links_liquid_surface() {
+    fn adding_a_liquid_from_the_tree_gives_it_a_liquid_look() {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
         h.run();
@@ -1123,7 +1207,8 @@ mod tests {
         let bpe_core::SlotLink::Linked { module, .. } = s.scene.things[&id].slots[&SlotId::Look] else {
             panic!("the liquid starts with its own look")
         };
-        assert_eq!(s.scene.library.modules[&module].name, "Liquid surface");
+        assert_eq!(s.scene.library.modules[&module].name, "Liquid look");
+        assert_eq!(s.scene.library.modules[&module].kind, "look.liquid");
         assert!(h.query_by_label("Liquid").is_some());
     }
 
@@ -1153,33 +1238,33 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let f = scene.add_thing(&kit.registry, "folder", ThingId::ROOT).unwrap();
-        apply_drop(&mut scene, ThingId(2), f, Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Into(Attach::Group)).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(f));
-        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Before).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Before).unwrap();
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(2), ThingId(1), f]);
-        apply_drop(&mut scene, f, ThingId(2), Drop::After).unwrap();
+        apply_drop(&mut scene, &kit.registry, f, ThingId(2), Drop::After).unwrap();
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(2), f, ThingId(1)]);
         scene.things.get_mut(&ThingId(2)).unwrap().transform.position = glam::Vec2::new(50.0, 0.0);
         let ride = Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None };
-        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
         assert!(
             matches!(scene.things[&ThingId(2)].attach, Attach::Ride { offset, .. } if offset == glam::Vec2::new(50.0, 0.0))
         );
         // Moved beside the folder, the rider keeps riding its new parent from the same spot.
-        apply_drop(&mut scene, ThingId(2), f, Drop::Before).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Before).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(50.0, 0.0));
         // Back under the arena, nothing can make the arena hang under it.
-        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(Attach::Group)).unwrap();
         assert!(matches!(
-            apply_drop(&mut scene, ThingId(1), ThingId(2), Drop::Into(Attach::Group)),
+            apply_drop(&mut scene, &kit.registry, ThingId(1), ThingId(2), Drop::Into(Attach::Group)),
             Err(EditError::WouldLoop)
         ));
-        assert!(matches!(apply_drop(&mut scene, f, ThingId::ROOT, Drop::Before), Err(EditError::Root)));
+        assert!(matches!(apply_drop(&mut scene, &kit.registry, f, ThingId::ROOT, Drop::Before), Err(EditError::Root)));
         // Dropping a thing on itself changes nothing.
         let before = scene.clone();
-        apply_drop(&mut scene, f, f, Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, &kit.registry, f, f, Drop::Into(Attach::Group)).unwrap();
         assert_eq!(scene, before);
     }
 
@@ -1213,20 +1298,20 @@ mod tests {
         let ride = Attach::Ride { offset: glam::Vec2::new(0.0, -50.0), turn_with_parent: true, item: None };
         scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
         // Dropped beside the folder at the top level, the balls stop riding where they were.
-        apply_drop(&mut scene, ThingId(2), f, Drop::Before).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Before).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(100.0, 50.0));
         // The arena is turned a quarter: riding it from (100, 50) is an offset of (-50, 0) before
         // the turn, which the turn puts above the centre.
         scene.things.get_mut(&ThingId(1)).unwrap().transform.rotation = std::f32::consts::FRAC_PI_2;
-        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
         let Attach::Ride { offset, .. } = scene.things[&ThingId(2)].attach else { panic!() };
         assert!((offset - glam::Vec2::new(-50.0, 0.0)).length() < 1e-3, "{offset:?}");
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
         // A folder riding the arena carries its own riders' places along.
-        apply_drop(&mut scene, f, ThingId(1), Drop::Into(ride)).unwrap();
-        apply_drop(&mut scene, ThingId(2), f, Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, &kit.registry, f, ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Into(ride)).unwrap();
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
     }
 
@@ -1268,7 +1353,7 @@ mod tests {
         drag(&mut h, from, egui::pos2(arena.center().x, arena.top() + 1.0), Modifiers::NONE);
         assert_eq!(h.state().scene.order, vec![ThingId::ROOT, ThingId(2), ThingId(1), f]);
         // A thing can't be dropped into itself: the status line says so.
-        let from = h.get_by_label("Scene defaults").rect().center();
+        let from = h.get_by_label("Scene settings").rect().center();
         let to = h.get_by_label("Folder").rect().center();
         drag(&mut h, from, to, Modifiers::NONE);
         assert_eq!(h.state().scene.things[&ThingId::ROOT].parent, None);
@@ -1290,8 +1375,8 @@ mod tests {
     fn dropping_a_module_on_a_thing_without_the_slot_is_refused() {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
-        let f = scene.add_thing(&kit.registry, "arena", ThingId::ROOT).unwrap();
-        let motion = scene.library.modules.values().find(|m| m.name == "Default motion").unwrap().id;
+        let f = bpe_kit::add_thing(&mut scene, &kit.registry, "arena", ThingId::ROOT).unwrap();
+        let motion = scene.library.modules.values().find(|m| m.name == "Ball motion").unwrap().id;
         let err = link_dropped(&mut scene, &kit.registry, f, motion).unwrap_err();
         assert_eq!(err.to_string(), "This kind of thing has no Motion slot");
         let look = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().id;
@@ -1300,6 +1385,49 @@ mod tests {
             matches!(scene.things[&f].slots[&SlotId::Look], bpe_core::SlotLink::Linked { module, .. } if module == look)
         );
         assert!(matches!(link_dropped(&mut scene, &kit.registry, f, ModuleId(99)), Err(EditError::MissingModule(_))));
+    }
+
+    #[test]
+    fn dropping_a_module_on_a_folder_keeps_its_followers_looks() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let folder = bpe_kit::add_thing(&mut scene, reg, "folder", ThingId::ROOT).unwrap();
+        bpe_kit::fill_slot(&mut scene, reg, folder, SlotId::Look).unwrap();
+        let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
+        let other = scene.add_module(reg, "look.classic", "Other").unwrap();
+        scene.library.modules.get_mut(&other).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
+        let look = |s: &Scene| bpe_core::resolve_slot(s, reg, balls, SlotId::Look, &mut Vec::new()).map(|r| r.params);
+        let before = look(&scene);
+        link_dropped(&mut scene, reg, folder, other).unwrap();
+        assert_eq!(look(&scene), before);
+    }
+
+    #[test]
+    fn making_a_folder_from_the_tree_keeps_looks() {
+        let mut h = harness();
+        let f = add_folder(&mut h);
+        let before = {
+            let s = h.state_mut();
+            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Folder look").unwrap();
+            s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
+            s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
+            s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            // The arena comes first, so the new folder goes where it is, outside the folder.
+            s.selection.set(ThingId(1));
+            s.selection.extra.insert(ThingId(2));
+            s.resolved.things[&ThingId(2)].slots[&SlotId::Look].params.clone()
+        };
+        h.run();
+        h.get_by_label("Arena").click_secondary();
+        h.run();
+        h.get_by_label("Make folder from selection").click();
+        h.run();
+        let s = h.state();
+        assert_ne!(s.scene.things[&ThingId(2)].parent, Some(f));
+        let now = bpe_core::resolve_slot(&s.scene, &s.kit.registry, ThingId(2), SlotId::Look, &mut Vec::new());
+        assert_eq!(now.map(|r| r.params), Some(before));
     }
 
     #[test]

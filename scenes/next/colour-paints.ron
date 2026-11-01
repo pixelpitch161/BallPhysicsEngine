@@ -4,7 +4,7 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
             params: {
                 "background_colours": Gradient((
@@ -27,27 +27,9 @@
                 "background_shape": Choice("centre"),
                 "background_span": Number(1150.0),
                 "bloom": Number(0.3499999940395355),
-                "chords": Int(0),
                 "gravity": Vec2((0.0, 700.0)),
             },
-            slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Inherit,
-                Rules: Inherit,
-                Shader: Inherit,
-            },
+            slots: {},
         ),
         1: (
             id: 1,
@@ -60,10 +42,14 @@
             },
             slots: {
                 Look: Linked(
-                    module: 5,
+                    module: 11,
                 ),
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 17,
+                ),
+                Sound: Linked(
+                    module: 18,
+                ),
             },
         ),
         2: (
@@ -85,16 +71,22 @@
             },
             slots: {
                 Look: Linked(
-                    module: 4,
+                    module: 3,
                 ),
                 Trail: Linked(
-                    module: 6,
+                    module: 12,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Motion: Linked(
+                    module: 8,
+                ),
+                Bounce: Linked(
+                    module: 19,
+                ),
+                Sound: Linked(
+                    module: 20,
+                ),
                 Particles: Linked(
-                    module: 7,
+                    module: 13,
                 ),
             },
         ),
@@ -123,7 +115,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 8,
+                    module: 21,
                 ),
             },
         ),
@@ -143,7 +135,7 @@
             },
             slots: {
                 Look: Linked(
-                    module: 8,
+                    module: 22,
                 ),
             },
         ),
@@ -157,35 +149,8 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
-                name: "Plain look",
-                slot: Look,
-                kind: "look.classic",
-            ),
-            1: (
-                id: 1,
-                name: "Default motion",
-                slot: Motion,
-                kind: "motion.basic",
-            ),
-            2: (
-                id: 2,
-                name: "Default bounce",
-                slot: Bounce,
-                kind: "bounce.basic",
-            ),
             3: (
                 id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(0),
-                },
-            ),
-            4: (
-                id: 4,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.classic",
@@ -223,9 +188,23 @@
                     "repeat": Choice("mirror"),
                     "span": Number(700.0),
                 },
+                owner: Some(2),
             ),
-            5: (
-                id: 5,
+            7: (
+                id: 7,
+                name: "Plain look",
+                slot: Look,
+                kind: "look.classic",
+            ),
+            8: (
+                id: 8,
+                name: "Default motion",
+                slot: Motion,
+                kind: "motion.basic",
+                owner: Some(2),
+            ),
+            11: (
+                id: 11,
                 name: "Ring look",
                 slot: Look,
                 kind: "look.classic",
@@ -260,9 +239,10 @@
                     "repeat": Choice("repeat"),
                     "scroll": Number(0.11999999731779099),
                 },
+                owner: Some(1),
             ),
-            6: (
-                id: 6,
+            12: (
+                id: 12,
                 name: "Life streak",
                 slot: Trail,
                 kind: "trail.streak",
@@ -293,9 +273,10 @@
                     "source": Choice("own"),
                     "width": Number(0.550000011920929),
                 },
+                owner: Some(2),
             ),
-            7: (
-                id: 7,
+            13: (
+                id: 13,
                 name: "Life sparks",
                 slot: Particles,
                 kind: "particles.burst",
@@ -328,9 +309,46 @@
                     "source": Choice("own"),
                     "speed": Number(360.0),
                 },
+                owner: Some(2),
             ),
-            8: (
-                id: 8,
+            17: (
+                id: 17,
+                name: "Arena bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(1),
+            ),
+            18: (
+                id: 18,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(1),
+            ),
+            19: (
+                id: 19,
+                name: "Block bounce",
+                slot: Bounce,
+                kind: "bounce.basic",
+                owner: Some(2),
+            ),
+            20: (
+                id: 20,
+                name: "Block sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(0),
+                },
+                owner: Some(2),
+            ),
+            21: (
+                id: 21,
                 name: "Title look",
                 slot: Look,
                 kind: "look.classic",
@@ -359,6 +377,39 @@
                     "follow": Choice("order"),
                     "glow": Number(0.0),
                 },
+                owner: Some(3),
+            ),
+            22: (
+                id: 22,
+                name: "Caption look",
+                slot: Look,
+                kind: "look.classic",
+                params: {
+                    "colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.33333334,
+                                color: "#ffb82e",
+                            ),
+                            (
+                                at: 0.6666667,
+                                color: "#3ee6ff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#8a4dff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "follow": Choice("order"),
+                    "glow": Number(0.0),
+                },
+                owner: Some(4),
             ),
         },
         progressions: {
@@ -540,7 +591,7 @@
         ],
     ),
     next_thing: 5,
-    next_module: 9,
+    next_module: 23,
     next_progression: 1,
     next_instrument: 1,
 )

@@ -4,31 +4,11 @@
     things: {
         0: (
             id: 0,
-            name: "Scene defaults",
+            name: "Scene settings",
             kind: "scene",
-            params: {
-                "chords": Int(0),
-            },
             slots: {
-                Look: Linked(
-                    module: 0,
-                ),
-                Trail: Inherit,
-                Motion: Linked(
-                    module: 1,
-                ),
-                Bounce: Linked(
-                    module: 2,
-                ),
-                Sound: Linked(
-                    module: 3,
-                ),
-                Particles: Linked(
-                    module: 7,
-                ),
-                Rules: Inherit,
                 Shader: Linked(
-                    module: 9,
+                    module: 17,
                 ),
             },
         ),
@@ -43,11 +23,18 @@
                 "shrink": Number(0.029999999329447746),
             },
             slots: {
-                Look: Inherit,
-                Bounce: Linked(
-                    module: 5,
+                Look: Linked(
+                    module: 7,
                 ),
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 11,
+                ),
+                Sound: Linked(
+                    module: 12,
+                ),
+                Particles: Linked(
+                    module: 18,
+                ),
             },
         ),
         2: (
@@ -65,14 +52,23 @@
             },
             slots: {
                 Look: Linked(
-                    module: 6,
+                    module: 14,
                 ),
                 Trail: Linked(
+                    module: 16,
+                ),
+                Motion: Linked(
                     module: 8,
                 ),
-                Motion: Inherit,
-                Bounce: Inherit,
-                Sound: Inherit,
+                Bounce: Linked(
+                    module: 9,
+                ),
+                Sound: Linked(
+                    module: 13,
+                ),
+                Particles: Linked(
+                    module: 19,
+                ),
             },
         ),
     },
@@ -83,20 +79,22 @@
     ],
     library: (
         modules: {
-            0: (
-                id: 0,
+            7: (
+                id: 7,
                 name: "Plain look",
                 slot: Look,
                 kind: "look.classic",
+                owner: Some(1),
             ),
-            1: (
-                id: 1,
+            8: (
+                id: 8,
                 name: "Default motion",
                 slot: Motion,
                 kind: "motion.basic",
+                owner: Some(2),
             ),
-            2: (
-                id: 2,
+            9: (
+                id: 9,
                 name: "Default bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
@@ -104,18 +102,10 @@
                     "grow": Number(1.5),
                     "max_size": Number(90.0),
                 },
+                owner: Some(2),
             ),
-            3: (
-                id: 3,
-                name: "Default sound",
-                slot: Sound,
-                kind: "sound.notes",
-                params: {
-                    "instrument": Int(1),
-                },
-            ),
-            5: (
-                id: 5,
+            11: (
+                id: 11,
                 name: "Lively wall",
                 slot: Bounce,
                 kind: "bounce.basic",
@@ -123,9 +113,32 @@
                     "bounciness": Number(1.0499999523162842),
                     "takes_over": Bool(true),
                 },
+                owner: Some(1),
             ),
-            6: (
-                id: 6,
+            12: (
+                id: 12,
+                name: "Arena sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(1),
+                },
+                owner: Some(1),
+            ),
+            13: (
+                id: 13,
+                name: "Ball sound",
+                slot: Sound,
+                kind: "sound.notes",
+                params: {
+                    "chords": Int(0),
+                    "instrument": Int(1),
+                },
+                owner: Some(2),
+            ),
+            14: (
+                id: 14,
                 name: "Ball look",
                 slot: Look,
                 kind: "look.styled",
@@ -153,10 +166,33 @@
                     )),
                     "stretch": Number(0.6000000238418579),
                 },
+                owner: Some(2),
             ),
-            7: (
-                id: 7,
-                name: "Rings",
+            16: (
+                id: 16,
+                name: "Neon streak",
+                slot: Trail,
+                kind: "trail.streak",
+                params: {
+                    "width": Number(1.0),
+                },
+                owner: Some(2),
+            ),
+            17: (
+                id: 17,
+                name: "Echo",
+                slot: Shader,
+                kind: "shader.echo",
+                params: {
+                    "fade": Number(0.85),
+                    "hue": Number(0.01),
+                    "zoom": Number(1.03),
+                },
+                owner: Some(0),
+            ),
+            18: (
+                id: 18,
+                name: "Arena particles",
                 slot: Particles,
                 kind: "particles.burst",
                 params: {
@@ -168,26 +204,23 @@
                     "preset": Choice("rings"),
                     "size": Number(90.0),
                 },
+                owner: Some(1),
             ),
-            8: (
-                id: 8,
-                name: "Neon streak",
-                slot: Trail,
-                kind: "trail.streak",
+            19: (
+                id: 19,
+                name: "Ball particles",
+                slot: Particles,
+                kind: "particles.burst",
                 params: {
-                    "width": Number(1.0),
+                    "count": Int(1),
+                    "drag": Number(0.0),
+                    "follow_impact": Bool(false),
+                    "gravity": Number(0.0),
+                    "life": Number(0.5),
+                    "preset": Choice("rings"),
+                    "size": Number(90.0),
                 },
-            ),
-            9: (
-                id: 9,
-                name: "Echo",
-                slot: Shader,
-                kind: "shader.echo",
-                params: {
-                    "fade": Number(0.85),
-                    "hue": Number(0.01),
-                    "zoom": Number(1.03),
-                },
+                owner: Some(2),
             ),
         },
         progressions: {
@@ -383,7 +416,7 @@
         ],
     ),
     next_thing: 3,
-    next_module: 10,
+    next_module: 20,
     next_progression: 1,
     next_instrument: 2,
 )

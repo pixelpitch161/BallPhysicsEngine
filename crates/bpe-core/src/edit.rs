@@ -16,7 +16,7 @@ pub enum EditError {
     UnknownKind(KindId),
     Missing(ThingId),
     MissingModule(ModuleId),
-    /// Scene defaults can't be removed or moved.
+    /// Scene settings can't be removed or moved.
     Root,
     WouldLoop,
     SlotNotSupported(SlotId),
@@ -34,6 +34,13 @@ pub enum EditError {
     InstrumentInUse(Vec<Address>),
     /// A scene has only one of these.
     OnlyOne(KindId),
+    /// The thing's kind doesn't take that kind of module in that slot.
+    NotAccepted,
+}
+
+/// What a thing's own starter in `slot` is called: "Ball look", "Ball 2 sound".
+pub fn starter_name(thing: &str, slot: SlotId) -> String {
+    format!("{thing} {}", slot.name().to_lowercase())
 }
 
 impl fmt::Display for EditError {
@@ -42,7 +49,7 @@ impl fmt::Display for EditError {
             EditError::UnknownKind(k) => write!(f, "This version of Ball Studio doesn't know \"{k}\""),
             EditError::Missing(_) => write!(f, "That thing isn't in the scene any more"),
             EditError::MissingModule(_) => write!(f, "That module isn't in the library any more"),
-            EditError::Root => write!(f, "Scene defaults can't be moved or removed"),
+            EditError::Root => write!(f, "Scene settings can't be moved or removed"),
             EditError::WouldLoop => write!(f, "A thing can't ride on itself or on something inside it"),
             EditError::SlotNotSupported(s) => write!(f, "This kind of thing has no {} slot", s.name()),
             EditError::WrongSlot => write!(f, "That module is made for a different slot"),
@@ -62,6 +69,7 @@ impl fmt::Display for EditError {
             EditError::InstrumentInUse(users) if users.len() == 1 => write!(f, "One sound still uses this instrument"),
             EditError::InstrumentInUse(users) => write!(f, "{} sounds still use this instrument", users.len()),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
+            EditError::NotAccepted => write!(f, "That kind of module can't go there"),
         }
     }
 }
@@ -185,6 +193,21 @@ impl Scene {
         self.tracks.retain(|a, _| !gone(a));
         self.pulses.retain(|a, _| !gone(a));
         self.locks.retain(|a| !gone(a));
+        // Their starters go too, unless something else now uses them.
+        let owned: Vec<ModuleId> = self
+            .library
+            .modules
+            .values()
+            .filter(|m| m.owner.is_some_and(|o| removed.contains(&o)))
+            .map(|m| m.id)
+            .collect();
+        for m in owned {
+            if self.remove_module(m).is_err()
+                && let Some(module) = self.library.modules.get_mut(&m)
+            {
+                module.owner = None;
+            }
+        }
         Ok(removed)
     }
 
@@ -209,6 +232,149 @@ impl Scene {
         Ok(id)
     }
 
+    /// Makes a module of `kind` for `thing` as its own starter, named after it, and links it
+    /// into the kind's slot.
+    pub fn add_starter(&mut self, reg: &Registry, thing: ThingId, kind: &str) -> Result<ModuleId, EditError> {
+        let name = self.things.get(&thing).ok_or(EditError::Missing(thing))?.name.clone();
+        let slot = reg.module(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?.slot();
+        let m = self.add_module(reg, kind, &starter_name(&name, slot))?;
+        self.library.modules.get_mut(&m).expect("just added").owner = Some(thing);
+        if let Err(e) = self.link(reg, thing, slot, m) {
+            self.library.modules.remove(&m);
+            return Err(e);
+        }
+        Ok(m)
+    }
+
+    /// Adds a copy of module `from`, changed by `change`, with its keyframes, pulses and locks.
+    /// The copy belongs to no thing unless `change` says so.
+    fn copy_module(&mut self, from: ModuleId, change: impl FnOnce(&mut Module)) -> Result<ModuleId, EditError> {
+        let source = self.library.modules.get(&from).ok_or(EditError::MissingModule(from))?;
+        let id = ModuleId(self.next_module);
+        let mut copy = Module { id, owner: None, ..source.clone() };
+        change(&mut copy);
+        self.next_module += 1;
+        self.library.modules.insert(id, copy);
+        let moved =
+            |a: &Address| (a.owner == Owner::Module(from)).then(|| Address { owner: Owner::Module(id), ..a.clone() });
+        let tracks: Vec<_> = self.tracks.iter().filter_map(|(a, t)| moved(a).map(|b| (b, t.clone()))).collect();
+        let pulses: Vec<_> = self.pulses.iter().filter_map(|(a, p)| moved(a).map(|b| (b, p.clone()))).collect();
+        let locks: Vec<_> = self.locks.iter().filter_map(moved).collect();
+        self.tracks.extend(tracks);
+        self.pulses.extend(pulses);
+        self.locks.extend(locks);
+        Ok(id)
+    }
+
+    /// Gives `id` its own copy of module `from` in `slot`, named after it as a starter, with
+    /// the settings in `params` (what the thing saw, a folder's changes included) written in
+    /// where they differ from the module's.
+    pub fn own_copy(
+        &mut self,
+        reg: &Registry,
+        id: ThingId,
+        slot: SlotId,
+        from: ModuleId,
+        params: Params,
+    ) -> Result<ModuleId, EditError> {
+        let name = self.things.get(&id).ok_or(EditError::Missing(id))?.name.clone();
+        let source = self.library.modules.get(&from).ok_or(EditError::MissingModule(from))?;
+        if source.slot != slot {
+            return Err(EditError::WrongSlot);
+        }
+        // Keep the module's own settings and add only what `params` changes from them, so the
+        // copy still follows the kind's defaults everywhere else.
+        let mut base = reg.module(&source.kind).map(|k| crate::resolve::defaults(k.settings())).unwrap_or_default();
+        base.apply(&source.params);
+        let changes: Vec<(String, Value)> =
+            params.iter().filter(|(k, v)| base.get(k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let copy = self.copy_module(from, |m| {
+            m.name = starter_name(&name, slot);
+            m.owner = Some(id);
+            for (k, v) in changes {
+                m.params.set(&k, v);
+            }
+        })?;
+        if let Err(e) = self.link(reg, id, slot, copy) {
+            self.library.modules.remove(&copy);
+            return Err(e);
+        }
+        Ok(copy)
+    }
+
+    /// Gives the thing its own copy of the module linked in `slot`, named after it as a
+    /// starter. Its changes stay changes (unlike [`Scene::make_unique`]).
+    pub fn own_linked(&mut self, id: ThingId, slot: SlotId) -> Result<ModuleId, EditError> {
+        let (m, _) = self.linked(id, slot)?;
+        let name = starter_name(&self.things[&id].name, slot);
+        let copy = self.copy_module(m, |c| {
+            c.name = name;
+            c.owner = Some(id);
+        })?;
+        if let Some(SlotLink::Linked { module, .. }) = self.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)) {
+            *module = copy;
+        }
+        Ok(copy)
+    }
+
+    /// Gives the thing its own copy of whatever fills `slot` now (usually a folder's module).
+    pub fn make_own(&mut self, reg: &Registry, id: ThingId, slot: SlotId) -> Result<ModuleId, EditError> {
+        let from = crate::resolve_slot(self, reg, id, slot, &mut Vec::new()).ok_or(EditError::NotLinked)?;
+        self.own_copy(reg, id, slot, from.module, from.params)
+    }
+
+    /// Sets a thing's name exactly as given (as it is typed) and renames the starters it owns
+    /// that still carry its old name.
+    pub fn set_thing_name(&mut self, id: ThingId, name: &str) {
+        let Some(thing) = self.things.get_mut(&id) else { return };
+        let old = std::mem::replace(&mut thing.name, name.to_owned());
+        for m in self.library.modules.values_mut() {
+            if m.owner == Some(id) && m.name == starter_name(&old, m.slot) {
+                m.name = starter_name(name, m.slot);
+            }
+        }
+    }
+
+    /// Renames a thing and the starters it owns that still carry its old name. A blank or
+    /// unchanged name changes nothing and returns false.
+    pub fn rename_thing(&mut self, id: ThingId, name: &str) -> bool {
+        let name = name.trim();
+        let Some(thing) = self.things.get(&id) else { return false };
+        if name.is_empty() || thing.name == name {
+            return false;
+        }
+        self.set_thing_name(id, name);
+        true
+    }
+
+    /// Links fresh copies, owned by `to`, of every module owned by `from` that `to` links, so a
+    /// duplicated thing doesn't share its original's starters. Each slot keeps its overrides.
+    pub fn copy_owned_starters(&mut self, from: ThingId, to: ThingId) {
+        let Some(thing) = self.things.get(&to) else { return };
+        let name = thing.name.clone();
+        let owned: Vec<(SlotId, ModuleId)> = thing
+            .slots
+            .iter()
+            .filter_map(|(slot, link)| match link {
+                SlotLink::Linked { module, .. } => Some((*slot, *module)),
+                _ => None,
+            })
+            .filter(|(_, m)| self.library.modules.get(m).is_some_and(|m| m.owner == Some(from)))
+            .collect();
+        for (slot, m) in owned {
+            let Ok(copy) = self.copy_module(m, |c| {
+                c.name = starter_name(&name, slot);
+                c.owner = Some(to);
+            }) else {
+                continue;
+            };
+            if let Some(SlotLink::Linked { module, .. }) = self.things.get_mut(&to).and_then(|t| t.slots.get_mut(&slot))
+            {
+                *module = copy;
+            }
+        }
+    }
+
     /// Fills the thing's `slot` with module `m`, with no changes of its own.
     pub fn link(&mut self, reg: &Registry, id: ThingId, slot: SlotId, m: ModuleId) -> Result<(), EditError> {
         let module = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
@@ -219,6 +385,9 @@ impl Scene {
         let kind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
         if !kind.slots().contains(&slot) {
             return Err(EditError::SlotNotSupported(slot));
+        }
+        if !kind.accepts(slot, &module.kind) {
+            return Err(EditError::NotAccepted);
         }
         thing.slots.insert(slot, SlotLink::Linked { module: m, overrides: Params::default() });
         Ok(())
@@ -257,16 +426,12 @@ impl Scene {
     /// Gives the thing its own copy of the linked module, with its changes baked in.
     pub fn make_unique(&mut self, id: ThingId, slot: SlotId) -> Result<ModuleId, EditError> {
         let (m, overrides) = self.linked(id, slot)?;
-        let source = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
-        let copy_id = ModuleId(self.next_module);
-        let copy = Module {
-            id: copy_id,
-            name: format!("{} ({})", source.name, self.things[&id].name),
-            params: source.params.merged(overrides),
-            ..source.clone()
-        };
-        self.next_module += 1;
-        self.library.modules.insert(copy_id, copy);
+        let overrides = overrides.clone();
+        let thing = self.things[&id].name.clone();
+        let copy_id = self.copy_module(m, |c| {
+            c.name = format!("{} ({thing})", c.name);
+            c.params = c.params.merged(&overrides);
+        })?;
         self.things
             .get_mut(&id)
             .expect("checked above")
@@ -301,12 +466,7 @@ impl Scene {
 
     /// Adds a copy of the module, named "<name> copy", that nothing links to yet.
     pub fn duplicate_module(&mut self, m: ModuleId) -> Result<ModuleId, EditError> {
-        let source = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
-        let id = ModuleId(self.next_module);
-        let copy = Module { id, name: format!("{} copy", source.name), ..source.clone() };
-        self.next_module += 1;
-        self.library.modules.insert(id, copy);
-        Ok(id)
+        self.copy_module(m, |c| c.name = format!("{} copy", c.name))
     }
 
     /// Puts a new folder where the first of `ids` was and moves them all into it, in their old
@@ -631,6 +791,231 @@ mod tests {
             [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
         );
         assert!(matches!(s.add_thing(&r, "magnet", ThingId::ROOT), Err(EditError::UnknownKind(_))));
+    }
+
+    #[test]
+    fn add_starter_names_owns_and_links() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_starter(&r, balls, "look.plain").unwrap();
+        let module = &s.library.modules[&m];
+        assert_eq!((module.name.as_str(), module.owner, module.slot), ("Balls look", Some(balls), SlotId::Look));
+        assert_eq!(s.users_of(m), [balls]);
+        assert!(matches!(s.things[&balls].slots[&SlotId::Look], SlotLink::Linked { module, .. } if module == m));
+        assert_eq!(starter_name("Ball 2", SlotId::Sound), "Ball 2 sound");
+    }
+
+    #[test]
+    fn rename_thing_renames_only_matching_starters() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, balls, "look.plain").unwrap();
+        let sound = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        s.rename_module(sound, "Mine").unwrap();
+        assert!(s.rename_thing(balls, "Red"));
+        assert_eq!(s.things[&balls].name, "Red");
+        assert_eq!(s.library.modules[&look].name, "Red look");
+        assert_eq!(s.library.modules[&sound].name, "Mine");
+        assert!(!s.rename_thing(balls, "   "));
+        assert!(!s.rename_thing(balls, " Red "));
+        assert!(!s.rename_thing(ThingId(99), "X"));
+        assert_eq!(s.things[&balls].name, "Red");
+    }
+
+    #[test]
+    fn removing_drops_unused_owned_starters_only() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, balls, "look.plain").unwrap();
+        let mine = s.add_module(&r, "sound.pluck", "Made in the Library").unwrap();
+        s.link(&r, balls, SlotId::Sound, mine).unwrap();
+        s.remove_thing(balls).unwrap();
+        assert!(!s.library.modules.contains_key(&look));
+        assert!(s.library.modules.contains_key(&mine));
+    }
+
+    #[test]
+    fn removing_keeps_shared_starters_and_clears_owner() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, a, "look.plain").unwrap();
+        s.link(&r, b, SlotId::Look, look).unwrap();
+        s.remove_thing(a).unwrap();
+        assert_eq!(s.library.modules[&look].owner, None);
+        assert_eq!(s.users_of(look), [b]);
+    }
+
+    #[test]
+    fn removing_a_folder_drops_its_childrens_starters() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let folder = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let balls = s.add_thing(&r, "balls", folder).unwrap();
+        let mine = s.add_starter(&r, folder, "look.plain").unwrap();
+        let theirs = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        s.remove_thing(folder).unwrap();
+        assert!(!s.library.modules.contains_key(&mine) && !s.library.modules.contains_key(&theirs));
+    }
+
+    #[test]
+    fn make_own_copies_the_followed_module() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let folder = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let balls = s.add_thing(&r, "balls", folder).unwrap();
+        assert_eq!(s.make_own(&r, balls, SlotId::Look), Err(EditError::NotLinked));
+        let f = s.add_starter(&r, folder, "look.plain").unwrap();
+        s.library.modules.get_mut(&f).unwrap().params.set("glow", Value::Number(2.0));
+        let own = s.make_own(&r, balls, SlotId::Look).unwrap();
+        assert_ne!(own, f);
+        let module = &s.library.modules[&own];
+        assert_eq!((module.name.as_str(), module.owner), ("Balls look", Some(balls)));
+        assert_eq!(module.params.get("glow"), Some(&Value::Number(2.0)));
+        assert_eq!(s.library.modules[&f].name, "Folder look");
+        assert_eq!(s.users_of(f), [folder]);
+        assert_eq!(s.users_of(own), [balls]);
+    }
+
+    fn module_address(m: ModuleId, key: &str) -> crate::Address {
+        crate::Address { owner: crate::Owner::Module(m), slot: None, key: key.into() }
+    }
+
+    /// Puts a key, a pulse and a lock on module `m`'s "glow".
+    fn animate(s: &mut Scene, m: ModuleId) {
+        let a = module_address(m, "glow");
+        s.tracks.entry(a.clone()).or_default().set_key(1.0, Value::Number(4.0));
+        s.pulses.insert(a.clone(), crate::Pulse::default());
+        s.locks.insert(a);
+    }
+
+    fn is_animated(s: &Scene, m: ModuleId) -> bool {
+        let a = module_address(m, "glow");
+        s.tracks.contains_key(&a) && s.pulses.contains_key(&a) && s.locks.contains(&a)
+    }
+
+    #[test]
+    fn make_own_keeps_the_folders_changes() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let folder = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let balls = s.add_thing(&r, "balls", folder).unwrap();
+        let shared = s.add_module(&r, "look.plain", "Shared").unwrap();
+        s.link(&r, folder, SlotId::Look, shared).unwrap();
+        s.set_override(&r, folder, SlotId::Look, "glow", Value::Number(1.5)).unwrap();
+        let own = s.make_own(&r, balls, SlotId::Look).unwrap();
+        assert_eq!(s.library.modules[&own].params.get("glow"), Some(&Value::Number(1.5)));
+    }
+
+    #[test]
+    fn copies_keep_the_modules_keyframes_pulses_and_locks() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let folder = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        let balls = s.add_thing(&r, "balls", folder).unwrap();
+        let f = s.add_starter(&r, folder, "look.plain").unwrap();
+        animate(&mut s, f);
+        let own = s.make_own(&r, balls, SlotId::Look).unwrap();
+        assert!(is_animated(&s, own), "make_own");
+        let dup = s.duplicate_module(f).unwrap();
+        assert!(is_animated(&s, dup), "duplicate_module");
+        let unique = s.make_unique(folder, SlotId::Look).unwrap();
+        assert!(is_animated(&s, unique), "make_unique");
+        let copy = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let mine = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        animate(&mut s, mine);
+        let theirs = s.things[&balls].slots.clone();
+        s.things.get_mut(&copy).unwrap().slots = theirs;
+        s.copy_owned_starters(balls, copy);
+        let Some(SlotLink::Linked { module, .. }) = s.things[&copy].slots.get(&SlotId::Sound) else { panic!() };
+        assert_ne!(*module, mine);
+        assert!(is_animated(&s, *module), "copy_owned_starters");
+        assert!(is_animated(&s, f) && is_animated(&s, mine), "the originals keep theirs");
+    }
+
+    #[test]
+    fn copies_made_by_hand_belong_to_no_thing() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, balls, "look.plain").unwrap();
+        let dup = s.duplicate_module(look).unwrap();
+        assert_eq!(s.library.modules[&dup].owner, None);
+        let unique = s.make_unique(balls, SlotId::Look).unwrap();
+        assert_eq!(s.library.modules[&unique].owner, None);
+    }
+
+    #[test]
+    fn setting_a_things_name_renames_its_starters_as_typed() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, balls, "look.plain").unwrap();
+        s.set_thing_name(balls, "Balls ");
+        assert_eq!(s.things[&balls].name, "Balls ");
+        assert_eq!(s.library.modules[&look].name, "Balls  look");
+        s.set_thing_name(balls, "Red");
+        assert_eq!(s.library.modules[&look].name, "Red look");
+    }
+
+    #[test]
+    fn own_linked_gives_the_thing_a_copy_and_keeps_its_changes() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let shared = s.add_module(&r, "look.plain", "Shared").unwrap();
+        s.library.modules.get_mut(&shared).unwrap().params.set("glow", Value::Number(1.0));
+        animate(&mut s, shared);
+        s.link(&r, a, SlotId::Look, shared).unwrap();
+        s.link(&r, b, SlotId::Look, shared).unwrap();
+        s.set_override(&r, b, SlotId::Look, "glow", Value::Number(0.5)).unwrap();
+        let own = s.own_linked(b, SlotId::Look).unwrap();
+        let module = &s.library.modules[&own];
+        assert_eq!((module.name.as_str(), module.owner), ("Balls 2 look", Some(b)));
+        assert_eq!(module.params.get("glow"), Some(&Value::Number(1.0)));
+        assert!(is_animated(&s, own));
+        let Some(SlotLink::Linked { module, overrides }) = s.things[&b].slots.get(&SlotId::Look) else { panic!() };
+        assert_eq!((*module, overrides.get("glow")), (own, Some(&Value::Number(0.5))));
+        assert_eq!(s.users_of(shared), [a]);
+        assert_eq!(s.own_linked(b, SlotId::Sound), Err(EditError::NotLinked));
+    }
+
+    #[test]
+    fn copy_owned_starters_gives_the_copy_its_own() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let look = s.add_starter(&r, a, "look.plain").unwrap();
+        s.library.modules.get_mut(&look).unwrap().params.set("glow", Value::Number(3.0));
+        let shared = s.add_module(&r, "sound.pluck", "Shared").unwrap();
+        s.link(&r, a, SlotId::Sound, shared).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.things.get_mut(&b).unwrap().name = "Copy".into();
+        s.things.get_mut(&b).unwrap().slots = s.things[&a].slots.clone();
+        s.copy_owned_starters(a, b);
+        let SlotLink::Linked { module: copy, .. } = s.things[&b].slots[&SlotId::Look] else { panic!("linked") };
+        assert_ne!(copy, look);
+        let module = &s.library.modules[&copy];
+        assert_eq!((module.name.as_str(), module.owner), ("Copy look", Some(b)));
+        assert_eq!(module.params.get("glow"), Some(&Value::Number(3.0)));
+        assert_eq!(s.users_of(shared), [a, b], "modules it doesn't own stay shared");
+    }
+
+    #[test]
+    fn link_refuses_a_module_kind_the_thing_does_not_accept() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let sealed = s.add_thing(&r, "sealed", ThingId::ROOT).unwrap();
+        let pluck = s.add_module(&r, "sound.pluck", "Pluck").unwrap();
+        assert_eq!(s.link(&r, sealed, SlotId::Sound, pluck), Err(EditError::NotAccepted));
+        assert!(!s.things[&sealed].slots.contains_key(&SlotId::Sound));
+        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        assert_eq!(s.link(&r, balls, SlotId::Sound, pluck), Ok(()));
     }
 
     #[test]
