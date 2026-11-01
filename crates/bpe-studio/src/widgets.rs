@@ -2,7 +2,7 @@
 
 use bpe_core::{
     Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ProgressionId, ProgressionRef, PulseSource, Registry,
-    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType,
+    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType, section_rank,
 };
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
@@ -127,7 +127,9 @@ pub enum Row<'a> {
 }
 
 /// The rows a settings grid shows: every setting that `applies`, ungrouped first, then the
-/// groups in the order they appear, each under its heading.
+/// groups each under its heading: the sections in [`SECTION_ORDER`](bpe_core::SECTION_ORDER),
+/// then any other groups (a thing kind's own) in the order they appear. A group with no row
+/// shown has no heading.
 pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
     let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
     let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).map(|d| Row::Setting(d)).collect();
@@ -137,6 +139,8 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
             groups.push(d.group);
         }
     }
+    // A stable sort, so a paint's own variation stays beside the others, in appearance order.
+    groups.sort_by_key(|g| section_rank(g).unwrap_or(usize::MAX));
     for group in groups {
         let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).map(|d| Row::Setting(d)).collect();
         if !members.is_empty() {
@@ -145,6 +149,55 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
         }
     }
     rows
+}
+
+/// The unit `def` shows. A gradient's "Colours end at" (a key ending in `span`) is a distance in
+/// pixels when its paint follows Place or Start; otherwise the def's own unit.
+pub fn unit_for(def: &SettingDef, value_of: &dyn Fn(&str) -> Option<Value>) -> &'static str {
+    if let Some(prefix) = def.key.strip_suffix("span")
+        && let Some(Value::Choice(follow)) = value_of(&format!("{prefix}follow"))
+        && matches!(follow.as_str(), "place" | "start")
+    {
+        return "px";
+    }
+    def.unit
+}
+
+/// Whether a group of `defs` holds changes: a shown row whose value differs from its default,
+/// or that has keys or a pulse.
+fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, cx: &GridCx) -> bool {
+    defs.iter()
+        .filter(|d| d.group == group && (cx.applies)(d))
+        .any(|d| get(d.key) != d.default || (cx.marks)(d.key).is_some_and(|m| m.keyed || m.pulsed))
+}
+
+/// A group's heading: its name, which folds and opens the group when `fold` is given (as does
+/// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
+/// True when the heading or its arrow was clicked.
+fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        if fold && fold_toggle(ui, !shut, group) {
+            clicked = true;
+        }
+        let heading = RichText::new(group).strong().color(theme::MUTED);
+        let label = egui::Label::new(heading).selectable(false);
+        let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        let dot = shut && changed;
+        if dot {
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{group} (changed)")));
+        }
+        if fold && response.clicked() {
+            clicked = true;
+        }
+        if dot {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Changes inside"));
+            ui.painter().circle_filled(rect.center(), 3.0, theme::ACCENT);
+            response.on_hover_text("Something in here is changed, keyed or pulsing.");
+        }
+    });
+    clicked
 }
 
 /// What a setting's keyframe diamond shows.
@@ -210,16 +263,13 @@ pub fn settings_grid_marked(
                 Row::Group(group) => {
                     empty_cell(ui);
                     shut = cx.folded.is_some_and(|folded| folded(group));
-                    let heading = RichText::new(group).strong().color(theme::MUTED);
+                    let changed = shut && group_changed(defs, group, &get, cx);
                     // A grid can't take spacing, so the heading carries its own air above.
                     ui.vertical(|ui| {
                         ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if cx.folded.is_some() && fold_toggle(ui, !shut, group) {
-                                out.folds.push((group, !shut));
-                            }
-                            ui.add(egui::Label::new(heading));
-                        });
+                        if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
+                            out.folds.push((group, !shut));
+                        }
                     });
                     ui.end_row();
                 }
@@ -237,7 +287,8 @@ pub fn settings_grid_marked(
                     let overridden = (cx.overridden)(def.key);
                     let inherited = (cx.inherited)(def.key);
                     let locked = (cx.locked)(def.key);
-                    let row = setting(ui, def, &mut value, inherited.as_ref(), overridden, locked, cx.choices);
+                    let unit = unit_for(def, &|k| Some(get(k)));
+                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx.choices);
                     match row {
                         RowAction::Nothing => {}
                         RowAction::Changed => out.changes.push((def.key, value)),
@@ -353,13 +404,15 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
     }
 }
 
-/// One grid row for `def`: the label (help on hover; a double-click or Alt+click puts the value
-/// back to `inherited`, or the setting's default), a dot when the setting is `overridden`, a
-/// padlock when it is `locked` against the dice, and the widget for its type. The label's menu
-/// offers the lock on any setting the dice may pick.
+/// One grid row for `def`, in `unit`: the label (help on hover; a double-click or Alt+click puts
+/// the value back to `inherited`, or the setting's default), a dot when the setting is
+/// `overridden`, a padlock when it is `locked` against the dice, and the widget for its type.
+/// The label's menu offers the lock on any setting the dice may pick.
+#[allow(clippy::too_many_arguments)]
 pub fn setting(
     ui: &mut Ui,
     def: &SettingDef,
+    unit: &str,
     value: &mut Value,
     inherited: Option<&Value>,
     overridden: bool,
@@ -422,7 +475,7 @@ pub fn setting(
     let mut changed = false;
     let response = ui
         .horizontal(|ui| {
-            let r = widget(ui, def, value, name.id, choices);
+            let r = widget(ui, def, unit, value, name.id, choices);
             changed |= r.changed();
             r
         })
@@ -554,8 +607,15 @@ fn number_slider<N: egui::emath::Numeric>(
     ui.add(slider)
 }
 
-fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choices: &TargetChoices) -> Response {
-    let unit = suffix(def.unit);
+fn widget(
+    ui: &mut Ui,
+    def: &SettingDef,
+    unit: &str,
+    value: &mut Value,
+    name: egui::Id,
+    choices: &TargetChoices,
+) -> Response {
+    let unit = suffix(unit);
     let feel = setting_feel(def);
     match (&def.ty, value) {
         (ValueType::Number, Value::Number(x)) => match def.range {
@@ -1058,7 +1118,90 @@ mod tests {
             rows.iter().filter_map(|r| if let Row::Setting(d) = r { Some(*d) } else { None }).collect();
         let colours: Vec<&str> = colours.iter().filter(|d| d.ty == ValueType::Gradient).map(|d| d.key).collect();
         // One row for the colours, one for the outline's, one for those inside each one.
-        assert_eq!(colours, ["colours", "in_colours", "outline_colours"]);
+        assert_eq!(colours, ["outline_colours", "colours", "in_colours"]);
+    }
+
+    fn headings<'a>(rows: &[Row<'a>]) -> Vec<&'static str> {
+        rows.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect()
+    }
+
+    #[test]
+    fn rows_follow_the_section_order() {
+        let base = &bpe_kit::modules::look::BasicLook::defs()[0];
+        let def = |key: &'static str, group: &'static str| SettingDef { key, group, ..base.clone() };
+        let defs = [def("a", "Blending"), def("b", "Light"), def("c", "Shape"), def("d", "")];
+        let rows = rows_for(&defs, &|_| true);
+        assert!(matches!(rows[0], Row::Setting(d) if d.key == "d"), "ungrouped rows come first");
+        assert_eq!(headings(&rows), ["Shape", "Light", "Blending"]);
+        // Groups that are not sections (a thing kind's own) keep their order, after the sections.
+        let defs = [def("a", "Video"), def("b", "Light"), def("c", "Grade")];
+        assert_eq!(headings(&rows_for(&defs, &|_| true)), ["Light", "Video", "Grade"]);
+    }
+
+    #[test]
+    fn the_look_cards_sections_come_in_order() {
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let headings = headings(&rows_for(defs, &|_| true));
+        assert_eq!(
+            headings,
+            [
+                "Shape",
+                "Style",
+                "Across the group",
+                "Inside each one",
+                "Light",
+                "Motion",
+                "Outline colours variation",
+                "Variation",
+                "Blending"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_section_with_no_shown_rows_has_no_heading() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let value = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
+        // On a liquid, every Shape row is hidden by its condition.
+        let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+        let rows = rows_for(defs, &applies);
+        assert!(!headings(&rows).contains(&"Shape"), "{:?}", headings(&rows));
+        let mut h = Harness::builder().with_size(egui::vec2(420.0, 1600.0)).allow_missing_glyphs().build_ui(|ui| {
+            let choices = TargetChoices::default();
+            let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+            let cx = GridCx {
+                choices: &choices,
+                overridden: &|_| false,
+                inherited: &|_| None,
+                marks: &|_| None,
+                locked: &|_| false,
+                applies: &applies,
+                folded: Some(&|_| false),
+            };
+            settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+        });
+        h.run();
+        assert!(h.query_by_label("Hide Shape").is_none(), "no fold arrow for an empty section");
+        assert!(h.query_by_label("Shape").is_none(), "no heading for an empty section");
+        assert!(h.query_by_label("Hide Blending").is_some(), "other sections keep theirs");
+    }
+
+    #[test]
+    fn span_reads_px_when_following_place() {
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let span = defs.iter().find(|d| d.key == "span").expect("the fill's span");
+        let outline_span = defs.iter().find(|d| d.key == "outline_span").expect("the outline's span");
+        let following = |follow: &'static str| move |k: &str| (k == "follow").then(|| Value::Choice(follow.into()));
+        assert_eq!(unit_for(span, &following("place")), "px");
+        assert_eq!(unit_for(span, &following("start")), "px");
+        assert_eq!(unit_for(span, &following("speed")), span.unit);
+        // The outline's span follows the outline's own follow, not the fill's.
+        assert_eq!(unit_for(outline_span, &following("place")), outline_span.unit);
+        let outline = |k: &str| (k == "outline_follow").then(|| Value::Choice("place".into()));
+        assert_eq!(unit_for(outline_span, &outline), "px");
+        let glow = defs.iter().find(|d| d.key == "glow_size").unwrap();
+        assert_eq!(unit_for(glow, &following("place")), glow.unit);
     }
 
     #[test]

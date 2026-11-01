@@ -14,9 +14,9 @@ use crate::widgets::{
     TargetChoices, fold_toggle, plays_built_in, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
-    Address, Attach, Bus, BusId, Chord, Color, Depth, InstrumentId, InstrumentRef, InstrumentSource, ModuleGraph,
-    ModuleId, ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene,
-    SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType,
+    Address, Attach, Bus, BusId, Chord, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
+    ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved,
+    SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType, section_rank,
 };
 use bpe_graph::Graph;
 use bpe_kit::Kit;
@@ -29,6 +29,9 @@ pub struct Inspector {
     /// What is folded shut, by thing: its kind's settings card (`None`) and each slot's card
     /// (the group `""`), and groups of settings inside them by their heading.
     pub collapsed: BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
+    /// The quiet sections ([`FOLDED_SECTIONS`](bpe_core::FOLDED_SECTIONS)) opened, which
+    /// otherwise stay folded.
+    pub opened: BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
     /// A keyed setting was edited this frame, so the key landed at the playhead; the studio
     /// pauses so a drag doesn't leave a key on every frame.
     pub keyed_edit: bool,
@@ -294,7 +297,7 @@ pub fn show(
                 mark_for(scene, def, &own(key), time, physics)
             };
             let locked = |key: &str| scene.is_locked(&own(key));
-            let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, None, group));
+            let folded = |group: &str| is_folded(inspector, (id, None), group);
             let cx = GridCx {
                 choices: &choices,
                 overridden: &|_| false,
@@ -305,7 +308,7 @@ pub fn show(
                 folded: Some(&folded),
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
-            fold_groups(&mut inspector.collapsed, (id, None), &out.folds);
+            fold_groups(inspector, (id, None), &out.folds);
             edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key, value)));
             edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
             edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
@@ -569,6 +572,12 @@ pub fn show(
                 let unbound: Vec<SettingDef> =
                     mkind.settings().iter().filter(|d| !bound.contains(d.key)).cloned().collect();
                 let defs: &[SettingDef] = if custom.is_some() { &unbound } else { mkind.settings() };
+                debug_assert!(
+                    unknown_groups(slot, defs).is_empty(),
+                    "{} has groups that are not sections: {:?}",
+                    m.kind,
+                    unknown_groups(slot, defs)
+                );
                 if let Some((mut g, role)) = custom {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
@@ -603,7 +612,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_module(k), time))
                         };
-                        let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, Some(slot), group));
+                        let folded = |group: &str| is_folded(inspector, (id, Some(slot)), group);
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &|_| false,
@@ -614,7 +623,7 @@ pub fn show(
                             folded: Some(&folded),
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        fold_groups(&mut inspector.collapsed, (id, Some(slot)), &out.folds);
+                        fold_groups(inspector, (id, Some(slot)), &out.folds);
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
@@ -658,7 +667,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_thing(k), time))
                         };
-                        let folded = |group: &str| inspector.collapsed.iter().any(|f| *f == (id, Some(slot), group));
+                        let folded = |group: &str| is_folded(inspector, (id, Some(slot)), group);
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &overridden,
@@ -669,7 +678,7 @@ pub fn show(
                             folded: Some(&folded),
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
-                        fold_groups(&mut inspector.collapsed, (id, Some(slot)), &out.folds);
+                        fold_groups(inspector, (id, Some(slot)), &out.folds);
                         if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
                             inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
                         }
@@ -1473,19 +1482,41 @@ pub(crate) fn fold_arrow<K: Ord + Copy>(ui: &mut Ui, collapsed: &mut BTreeSet<K>
     open
 }
 
-/// Folds shut or opens the groups of a card's settings, as their headings' arrows asked.
-fn fold_groups(
-    collapsed: &mut BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
-    (id, slot): (ThingId, Option<SlotId>),
-    folds: &[(&'static str, bool)],
-) {
+/// Whether a section stays folded until opened: one of [`FOLDED_SECTIONS`], or a paint's own
+/// variation, which ranks with Variation.
+fn quiet(group: &str) -> bool {
+    section_rank(group).is_some_and(|rank| FOLDED_SECTIONS.iter().any(|f| section_rank(f) == Some(rank)))
+}
+
+/// Whether a group of a card's settings is folded shut: a quiet section unless opened, any
+/// other group when folded.
+fn is_folded(inspector: &Inspector, (id, slot): (ThingId, Option<SlotId>), group: &str) -> bool {
+    let has = |set: &BTreeSet<(ThingId, Option<SlotId>, &'static str)>| {
+        set.iter().any(|&(i, s, g)| i == id && s == slot && g == group)
+    };
+    if quiet(group) { !has(&inspector.opened) } else { has(&inspector.collapsed) }
+}
+
+/// Folds shut or opens the groups of a card's settings, as their headings asked.
+fn fold_groups(inspector: &mut Inspector, (id, slot): (ThingId, Option<SlotId>), folds: &[(&'static str, bool)]) {
     for &(group, shut) in folds {
-        if shut {
-            collapsed.insert((id, slot, group));
-        } else {
-            collapsed.remove(&(id, slot, group));
-        }
+        let key = (id, slot, group);
+        match (quiet(group), shut) {
+            (true, true) => inspector.opened.remove(&key),
+            (true, false) => inspector.opened.insert(key),
+            (false, true) => inspector.collapsed.insert(key),
+            (false, false) => inspector.collapsed.remove(&key),
+        };
     }
+}
+
+/// The groups of a module's settings that are not sections. Sound modules have none yet, as
+/// their sections come later.
+fn unknown_groups(slot: SlotId, defs: &[SettingDef]) -> Vec<&'static str> {
+    if slot == SlotId::Sound {
+        return Vec::new();
+    }
+    defs.iter().map(|d| d.group).filter(|g| !g.is_empty() && section_rank(g).is_none()).collect()
 }
 
 /// The button an inherited card offers to link the module to the thing itself.
@@ -1647,11 +1678,11 @@ mod tests {
     fn a_paint_folds_under_its_heading() {
         let mut h = harness(Some(ThingId(2)));
         assert!(h.query_by_label("Add a colour").is_some());
-        h.get_by_label("Hide Colours").click();
+        h.get_by_label("Hide Across the group").click();
         h.run();
         assert!(h.query_by_label("Add a colour").is_none(), "the paint's rows fold away");
         assert!(h.query_by_role_and_label(Role::Label, "Glow").is_some(), "rows outside the group stay");
-        h.get_by_label("Show Colours").click();
+        h.get_by_label("Show Across the group").click();
         h.run();
         assert!(h.query_by_label("Add a colour").is_some());
     }
@@ -2272,6 +2303,9 @@ mod tests {
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
         h.run();
+        // Other balls starts folded, marked as holding the change.
+        h.get_by_label("Other balls (changed)").click();
+        h.run();
         // The picker is a button named by its row, reading "Anything" until something is picked.
         h.get_by_role_and_label(Role::Button, "Which balls").click();
         h.run();
@@ -2783,10 +2817,67 @@ mod tests {
         h.get_by_label("Ball look").click();
         h.run();
         assert!(h.query_all_by_label("Blending").next().is_some(), "a Blending group");
+        h.get_all_by_label("Blending").next().unwrap().click();
+        h.get_all_by_label("Variation").next().unwrap().click();
+        h.run();
         assert!(h.query_all_by_label("Blend").next().is_some(), "the Blend setting");
         assert!(h.query_all_by_label("Blend amount").next().is_some(), "the Blend amount setting");
         assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
+    }
+
+    #[test]
+    fn variation_and_blending_start_folded_and_open_when_clicked() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.query_all_by_label("Variation").next().is_some(), "the Variation heading");
+        assert!(h.query_all_by_label("Blending").next().is_some(), "the Blending heading");
+        assert!(h.query_by_label("Vary hue").is_none(), "Variation starts folded");
+        assert!(h.query_by_label("Blend amount").is_none(), "Blending starts folded");
+        h.get_all_by_label("Variation").next().unwrap().click();
+        h.run();
+        assert!(h.query_all_by_label("Vary hue").next().is_some(), "a click opens it");
+        assert!(h.query_by_label("Blend amount").is_none(), "Blending stays folded");
+        // It stays open after looking at another thing and coming back.
+        h.state_mut().selection.set(ThingId(1));
+        h.run();
+        h.state_mut().selection.set(ThingId(2));
+        h.run();
+        assert!(h.query_all_by_label("Vary hue").next().is_some());
+        // And a click on the heading folds it again.
+        h.get_all_by_label("Variation").next().unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Vary hue").is_none());
+    }
+
+    #[test]
+    fn a_folded_section_with_changes_shows_the_dot() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.query_all_by_label("Variation").next().is_some());
+        assert!(h.query_by_label("Variation (changed)").is_none(), "nothing changed yet");
+        assert!(h.query_by_label("Changes inside").is_none(), "no dot with defaults");
+        let (module, _) = ball_look(h.state());
+        h.state_mut().scene.library.modules.get_mut(&module).unwrap().params.set("vary_hue", Value::Number(20.0));
+        h.run();
+        assert!(h.query_by_label("Variation (changed)").is_some(), "the heading says it holds changes");
+        assert!(h.query_by_label("Changes inside").is_some(), "the dot is drawn");
+        // Open, the rows show for themselves, so the dot goes.
+        h.get_by_label("Variation (changed)").click();
+        h.run();
+        assert!(h.query_by_label("Changes inside").is_none());
+    }
+
+    #[test]
+    fn a_folded_section_with_a_keyframe_shows_the_dot() {
+        let mut h = harness(Some(ThingId(2)));
+        let (module, _) = ball_look(h.state());
+        let wobble = Address { owner: Owner::Module(module), slot: None, key: "wobble".into() };
+        let reg = bpe_kit::registry();
+        let default = h.state().scene.value_at(&reg, &wobble).unwrap();
+        h.state_mut().scene.set_key(&reg, &wobble, 0.0, default).unwrap();
+        h.run();
+        assert!(h.query_by_label("Variation (changed)").is_some(), "a key at the default still moves the video");
+        assert!(h.query_by_label("Changes inside").is_some());
+        assert!(h.query_by_label("Blending (changed)").is_none(), "only the section holding it");
     }
 
     #[test]
