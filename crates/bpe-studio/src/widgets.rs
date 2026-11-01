@@ -59,13 +59,7 @@ impl TargetChoices {
             .iter()
             .map(|(id, i)| (*id, i.name.clone(), scene.instrument_users(reg, *id).len()))
             .collect();
-        TargetChoices {
-            things,
-            tags: tags.into_iter().collect(),
-            kinds,
-            progressions,
-            instruments,
-        }
+        TargetChoices { things, tags: tags.into_iter().collect(), kinds, progressions, instruments }
     }
 }
 

@@ -5,7 +5,6 @@
 mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
-use std::collections::BTreeMap;
 use bpe_core::{
     Address, Attach, Blend, Choice, Color, Ease, Gradient, InstrumentRef, InstrumentSource, ModuleGraph, ModuleId,
     ModuleKind, MusicKey, Owner, Params, Progression, ProgressionRef, PulseSource, Registry, Scene, SettingValue,
@@ -15,6 +14,7 @@ use bpe_graph::{Catalog, Graph, Link, Param};
 use bpe_mix::Instrument;
 use bpe_vm::{Role, catalog};
 use glam::Vec2;
+use std::collections::BTreeMap;
 
 use crate::graphs::module_graph;
 use crate::modules::sound::{Order, PlaysWhen};
@@ -549,7 +549,8 @@ impl<'a> Builder<'a> {
             let m = scene.add_module(reg, kind, module_name).expect("kit kinds are registered");
             shared.insert(slot, m);
         }
-        let (pluck, chords) = (crate::starters::shared_pluck(&mut scene), crate::starters::shared_progression(&mut scene));
+        let (pluck, chords) =
+            (crate::starters::shared_pluck(&mut scene), crate::starters::shared_progression(&mut scene));
         let sound = &mut scene.library.modules.get_mut(&shared[&SlotId::Sound]).expect("just added").params;
         sound.set("instrument", pluck.to_value());
         sound.set("chords", chords.to_value());

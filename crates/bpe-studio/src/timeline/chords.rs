@@ -19,7 +19,9 @@ pub fn chord_spans(p: &bpe_core::Progression, beats: &[f64], duration: f64) -> V
 fn shown(studio: &Studio) -> Option<bpe_core::ProgressionId> {
     let chords_of = |id: &ThingId| {
         let params = &studio.resolved.things.get(id)?.slots.get(&SlotId::Sound)?.params;
-        ProgressionRef::from_value(params.get("chords")?)?.0.filter(|p| studio.scene.library.progressions.contains_key(p))
+        ProgressionRef::from_value(params.get("chords")?)?
+            .0
+            .filter(|p| studio.scene.library.progressions.contains_key(p))
     };
     studio.selection.primary.as_ref().and_then(chords_of).or_else(|| studio.scene.order.iter().find_map(chords_of))
 }

@@ -245,7 +245,12 @@ pub fn show(
 
         // ---------- the kind's own settings ----------
         card(ui, |ui| {
-            let title = format!("{} settings", kind.name());
+            // "Scene settings" already says it; other kinds read "Balls settings".
+            let title = if kind.name().ends_with("settings") {
+                kind.name().to_owned()
+            } else {
+                format!("{} settings", kind.name())
+            };
             let open = ui
                 .horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
@@ -305,10 +310,9 @@ pub fn show(
                         None => format!("Missing module (id {})", module.0),
                     },
                     SlotLink::Inherit => match rslot {
-                        Some(r) => format!(
-                            "Follow folder: {}",
-                            scene.things.get(&r.from).map_or("?", |t| t.name.as_str())
-                        ),
+                        Some(r) => {
+                            format!("Follow folder: {}", scene.things.get(&r.from).map_or("?", |t| t.name.as_str()))
+                        }
                         None => "Nothing (pick a module)".to_owned(),
                     },
                     SlotLink::Off => "Removed".to_owned(),
@@ -329,7 +333,9 @@ pub fn show(
                         ui.label(RichText::new(title).strong());
                         // The picker: a button that reads the slot's state and drops down the choices.
                         ui.menu_button(state, |ui| {
-                            for m in scene.library.modules.values().filter(|m| m.slot == slot && kind.accepts(slot, &m.kind)) {
+                            for m in
+                                scene.library.modules.values().filter(|m| m.slot == slot && kind.accepts(slot, &m.kind))
+                            {
                                 let current = matches!(link, SlotLink::Linked { module, .. } if *module == m.id);
                                 if ui.selectable_label(current, &m.name).clicked() {
                                     edits.push(Edit::Link(slot, m.id));
@@ -2031,6 +2037,7 @@ mod tests {
         let mut h = harness(Some(ThingId::ROOT));
         assert!(h.query_by_label("Chords").is_none());
         assert!(h.query_by_label_contains("Plays Scene").is_none());
+        assert!(h.query_by_label_contains("settings settings").is_none(), "the card isn't named twice");
         h.get_by_label("+ Add slot").click();
         h.run();
         for slot in ["Music", "Effects", "Rules"] {
@@ -2132,10 +2139,7 @@ mod tests {
             panic!("the arena links its look")
         };
         assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g > 1.0), "{overrides:?}");
-        assert!(
-            s.scene.library.modules[arena_module].params.get("glow").is_none(),
-            "the shared look is untouched"
-        );
+        assert!(s.scene.library.modules[arena_module].params.get("glow").is_none(), "the shared look is untouched");
     }
 
     #[test]

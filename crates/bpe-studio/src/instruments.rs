@@ -1,9 +1,7 @@
 //! Instruments in the inspector: what a sound module plays through.
 
 use crate::theme;
-use bpe_core::{
-    Choice, Instrument, InstrumentId, InstrumentSource, ModuleId, NoteLength, Scene, SlotId, VoiceSettings,
-};
+use bpe_core::{Choice, Instrument, InstrumentId, InstrumentSource, ModuleId, NoteLength, Scene, VoiceSettings};
 use bpe_mix::InstrumentChoice;
 use eframe::egui::{self, RichText, Sense, Ui};
 
@@ -246,7 +244,8 @@ mod tests {
         let mut graph = bpe_synth::blank_patch();
         graph.nodes.iter_mut().find(|n| n.kind == "filter").unwrap().exposed.insert("cutoff".into());
         scene.library.instruments.get_mut(&id).unwrap().source = InstrumentSource::Patch { graph };
-        let module = scene.library.modules.iter().find(|(_, m)| m.slot == SlotId::Sound).map(|(id, _)| *id).unwrap();
+        let module =
+            scene.library.modules.iter().find(|(_, m)| m.slot == bpe_core::SlotId::Sound).map(|(id, _)| *id).unwrap();
         let mut h = Harness::builder()
             .with_size(egui::vec2(420.0, 900.0))
             .with_step_dt(1.0 / 60.0)
