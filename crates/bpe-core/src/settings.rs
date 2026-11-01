@@ -372,7 +372,6 @@ mod tests {
         assert!(FOLDED_SECTIONS.iter().all(|f| section_rank(f).is_some()));
     }
 
-    use super::applies;
     use crate::{Color, Gradient, Value};
 
     fn get(key: &str) -> Option<Value> {

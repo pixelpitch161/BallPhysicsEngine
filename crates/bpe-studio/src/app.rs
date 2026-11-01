@@ -619,69 +619,18 @@ impl Studio {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("New").on_hover_text("Start a new scene, blank or from a starter (Ctrl+N)").clicked() {
-                self.clicked = Some(ToolbarClick::New);
-            }
-            if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
-                self.clicked = Some(ToolbarClick::Open);
-            }
-            if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
-                self.clicked = Some(ToolbarClick::Save);
-            }
-            if ui.button("Save as…").on_hover_text("Save this scene under a new name (Ctrl+Shift+S)").clicked() {
-                self.clicked = Some(ToolbarClick::SaveAs);
-            }
-            ui.separator();
-            let undo = egui::Button::new("Undo");
-            if ui.add_enabled(self.history.can_undo(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
-                self.clicked = Some(ToolbarClick::Undo);
-            }
-            let redo = egui::Button::new("Redo");
-            if ui.add_enabled(self.history.can_redo(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
-                self.clicked = Some(ToolbarClick::Redo);
-            }
-            ui.separator();
-            if dice::dice_button(ui, "Roll the dice").on_hover_text("Roll the dice on the whole scene").clicked() {
-                self.clicked = Some(ToolbarClick::Dice);
-            }
-            if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
-                self.clicked = Some(ToolbarClick::Randomize);
-            }
-            if ui
-                .button("Explore…")
-                .on_hover_text("See nine variations of this scene side by side and pick one")
-                .clicked()
-            {
-                self.clicked = Some(ToolbarClick::Explore);
-            }
-            if ui.button("Batch…").on_hover_text("Render many seeds of this scene and keep the best").clicked() {
-                self.clicked = Some(ToolbarClick::Batch);
-            }
-            ui.separator();
-            self.grid_controls(ui);
-            ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(150.0).hint_text("Scene name"))
-                .on_hover_text("The scene's name. Exported videos are named after it.");
-            let saved_label = match (&self.path, self.unsaved()) {
-                (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
-                (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
-                (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
-            };
-            // A slot of its own, so a long file name is cut short instead of running under Library.
-            let full = saved_label.text().to_owned();
-            let status = ui
-                .allocate_ui_with_layout(
-                    egui::vec2(SAVE_STATUS_WIDTH, ui.available_height()),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.set_width(SAVE_STATUS_WIDTH);
-                        ui.add(egui::Label::new(saved_label.small()).truncate().show_tooltip_when_elided(false))
-                    },
-                )
-                .inner;
-            status.on_hover_text(full);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Library and Export sit at the right, as wide as they were last drawn; everything else
+        // gets the room left of them and wraps onto a second line rather than running under them.
+        let right_id = ui.make_persistent_id("toolbar right");
+        let right_width = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(SAVE_STATUS_WIDTH);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            let left = egui::vec2((ui.available_width() - right_width).max(0.0), 0.0);
+            let wrap = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+            ui.allocate_ui_with_layout(left, wrap, |ui| {
+                ui.set_width(left.x);
+                self.toolbar_left(ui);
+            });
+            let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 let export = egui::Button::new(RichText::new("Export video…").strong().color(Color32::WHITE))
                     .fill(theme::ACCENT);
                 if ui.add(export).on_hover_text("Render the scene to an mp4 with sound").clicked() {
@@ -696,7 +645,78 @@ impl Studio {
                     self.panels.library.open = !self.panels.library.open;
                 }
             });
+            // The gap before Library counts as part of the right side.
+            let width = right.response.rect.width() + ui.spacing().item_spacing.x;
+            if (width - right_width).abs() > 0.5 {
+                ui.ctx().data_mut(|d| d.insert_temp(right_id, width));
+                ui.ctx().request_discard("the toolbar's right side changed width");
+            }
         });
+    }
+
+    /// The toolbar's buttons left of Library, ending with the scene's name and its save status.
+    fn toolbar_left(&mut self, ui: &mut egui::Ui) {
+        if ui.button("New").on_hover_text("Start a new scene, blank or from a starter (Ctrl+N)").clicked() {
+            self.clicked = Some(ToolbarClick::New);
+        }
+        if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
+            self.clicked = Some(ToolbarClick::Open);
+        }
+        if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
+            self.clicked = Some(ToolbarClick::Save);
+        }
+        if ui.button("Save as…").on_hover_text("Save this scene under a new name (Ctrl+Shift+S)").clicked() {
+            self.clicked = Some(ToolbarClick::SaveAs);
+        }
+        ui.separator();
+        let undo = egui::Button::new("Undo");
+        if ui.add_enabled(self.history.can_undo(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
+            self.clicked = Some(ToolbarClick::Undo);
+        }
+        let redo = egui::Button::new("Redo");
+        if ui.add_enabled(self.history.can_redo(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
+            self.clicked = Some(ToolbarClick::Redo);
+        }
+        ui.separator();
+        if dice::dice_button(ui, "Roll the dice").on_hover_text("Roll the dice on the whole scene").clicked() {
+            self.clicked = Some(ToolbarClick::Dice);
+        }
+        if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
+            self.clicked = Some(ToolbarClick::Randomize);
+        }
+        if ui.button("Explore…").on_hover_text("See nine variations of this scene side by side and pick one").clicked()
+        {
+            self.clicked = Some(ToolbarClick::Explore);
+        }
+        if ui.button("Batch…").on_hover_text("Render many seeds of this scene and keep the best").clicked() {
+            self.clicked = Some(ToolbarClick::Batch);
+        }
+        ui.separator();
+        self.grid_controls(ui);
+        ui.separator();
+        ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(150.0).hint_text("Scene name"))
+            .on_hover_text("The scene's name. Exported videos are named after it.");
+        let saved_label = match (&self.path, self.unsaved()) {
+            (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
+            (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
+            (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
+        };
+        // A slot of its own, so a long file name is cut short; with too little room on this
+        // line it goes to the next.
+        let full = saved_label.text().to_owned();
+        let room = ui.available_width();
+        let width = if room >= MIN_SAVE_STATUS_WIDTH { room.min(SAVE_STATUS_WIDTH) } else { SAVE_STATUS_WIDTH };
+        let status = ui
+            .allocate_ui_with_layout(
+                egui::vec2(width, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(width);
+                    ui.add(egui::Label::new(saved_label.small()).truncate().show_tooltip_when_elided(false))
+                },
+            )
+            .inner;
+        status.on_hover_text(full);
     }
 
     /// The inspector on the right, as wide as the user last dragged it. Returns its width.
@@ -1018,6 +1038,8 @@ pub(crate) fn clock(seconds: f64) -> String {
 
 /// How wide the toolbar's save status may be.
 const SAVE_STATUS_WIDTH: f32 = 180.0;
+/// The narrowest the save status is cut to before it goes to the toolbar's next line.
+const MIN_SAVE_STATUS_WIDTH: f32 = 90.0;
 
 fn file_label(path: &Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
@@ -1105,13 +1127,13 @@ mod tests {
         assert!(saved > 480.0 && saved == shown, "the dragged width {shown} is saved, got {saved}");
     }
 
-    #[test]
-    fn a_long_save_status_does_not_reach_library() {
+    /// Where the toolbar's save status ends and Library starts, for a scene saved as `name` in
+    /// a window `width` wide.
+    fn status_and_library(name: &str, width: f32) -> (f32, f32) {
         let mut studio = Studio::headless();
-        studio.path = Some(PathBuf::from(format!("/scenes/{}.ron", &"a long scene name ".repeat(7)[..116])));
-        assert_eq!(file_label(studio.path.as_ref().unwrap()).len(), 120);
+        studio.path = Some(PathBuf::from(format!("/scenes/{name}")));
         let mut h = Harness::builder()
-            .with_size(egui::vec2(1600.0, 60.0))
+            .with_size(egui::vec2(width, 80.0))
             .with_max_steps(20)
             .allow_missing_glyphs()
             .with_context_setup(theme::apply)
@@ -1123,12 +1145,61 @@ mod tests {
         };
         let status = h.root().children_recursive().find(saved).expect("the save status").rect();
         let library = h.get_by_label("Library").rect();
-        assert!(
-            status.right() < library.left(),
-            "the status ends at {} and Library starts at {}",
-            status.right(),
-            library.left()
-        );
+        (status.right(), library.left())
+    }
+
+    #[test]
+    fn a_long_save_status_does_not_reach_library() {
+        let long = format!("{}.ron", &"a long scene name ".repeat(7)[..116]);
+        assert_eq!(long.len(), 120);
+        // The app's narrowest window, the screenshots' width, and a wide one.
+        for width in [1000.0, 1440.0, 1600.0] {
+            for name in ["blend-modes.ron", long.as_str()] {
+                let (status, library) = status_and_library(name, width);
+                assert!(
+                    status < library,
+                    "at {width}, {name}: the status ends at {status} and Library starts at {library}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_narrowest_inspector_keeps_its_value_boxes_inside() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        studio.inspector_width = *settings::INSPECTOR_RANGE.start();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 2400.0))
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(theme::apply)
+            .build_ui_state(
+                |ui, (studio, width): &mut (Studio, f32)| {
+                    *width = studio.inspector_panel(ui);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                },
+                (studio, 0.0),
+            );
+        h.run();
+        let panel = h.state().1;
+        assert!((panel - 320.0).abs() <= 1.0, "the panel is at its minimum: {panel}");
+        let glow = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Glow").rect();
+        // The number box sits right of the slider, level with it.
+        let value = h
+            .root()
+            .children_recursive()
+            .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::SpinButton)
+            .map(|n| n.rect())
+            .find(|r| r.left() > glow.right() - 1.0 && (r.center().y - glow.center().y).abs() < 4.0)
+            .expect("Glow's number box");
+        assert!(value.right() <= 1000.0 - 10.0, "Glow's number box ends at {}, past the panel", value.right());
+        // Every slider row's number box fits, and so do the colours' buttons.
+        for button in ["Palette", "Smooth"] {
+            for node in h.query_all_by_label(button) {
+                assert!(node.rect().right() <= 1000.0 - 10.0, "{button} ends at {}", node.rect().right());
+            }
+        }
     }
 
     #[test]

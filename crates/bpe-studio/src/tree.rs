@@ -665,22 +665,29 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
                 }
             }
         });
-        ui.menu_button("Move into", |ui| {
-            // Scene settings and the folders, but not the thing itself, what hangs under it, or
-            // where it already is.
-            let under = scene.descendants(id);
-            let parent = thing.parent.unwrap_or(ThingId::ROOT);
-            for other in scene.order.iter().filter(|o| **o != id && **o != parent && !under.contains(o)) {
-                let Some(other_thing) = scene.things.get(other) else { continue };
-                if *other != ThingId::ROOT && other_thing.kind != "folder" {
-                    continue;
+        // Scene settings and the folders, but not the thing itself, what hangs under it, or
+        // where it already is.
+        let under = scene.descendants(id);
+        let parent = thing.parent.unwrap_or(ThingId::ROOT);
+        let places: Vec<(ThingId, &str)> = scene
+            .order
+            .iter()
+            .filter(|o| **o != id && **o != parent && !under.contains(o))
+            .filter_map(|o| scene.things.get(o).map(|t| (*o, t)))
+            .filter(|(o, t)| *o == ThingId::ROOT || t.kind == "folder")
+            .map(|(o, t)| (o, t.name.as_str()))
+            .collect();
+        ui.add_enabled_ui(!places.is_empty(), |ui| {
+            ui.menu_button("Move into", |ui| {
+                for (other, name) in &places {
+                    if ui.button(*name).clicked() {
+                        *action = Some(Action::MoveInto(id, *other));
+                        ui.close();
+                    }
                 }
-                let name = other_thing.name.as_str();
-                if ui.button(name).clicked() {
-                    *action = Some(Action::MoveInto(id, *other));
-                    ui.close();
-                }
-            }
+            })
+            .response
+            .on_disabled_hover_text("Make a folder first");
         });
     }
     let linked: Vec<(String, ModuleId)> = thing
@@ -956,7 +963,10 @@ mod tests {
     use super::*;
     use bpe_core::{ModuleId, Problem, ProblemKind, Resolved, SlotId, Value, resolve};
     use eframe::egui::{self, Key, PointerButton};
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
 
     struct State {
         tree: Tree,
@@ -1067,6 +1077,7 @@ mod tests {
         let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
         assert!(y(&h, "Bouncers") < y(&h, "Balls"));
         assert!(y(&h, "Balls") < y(&h, "Walls"));
+        assert!(y(&h, "On screen") < y(&h, "Folder"), "Folder comes after the families");
     }
 
     #[test]
@@ -1613,5 +1624,19 @@ mod tests {
         h.run();
         assert_eq!(rows(&h, "Scene settings"), root + 1, "a thing in a folder can go back to the top");
         assert_eq!(rows(&h, "Folder"), folder, "not the folder it is already in");
+    }
+
+    #[test]
+    fn move_into_is_off_with_no_folder_to_move_into() {
+        let mut h = harness();
+        let before = h.state().scene.clone();
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        let entry = h.get_by_label("Move into");
+        assert!(entry.accesskit_node().is_disabled(), "nothing to move into at the top with no folders");
+        entry.click();
+        h.run();
+        assert_eq!(h.query_all_by_label("Scene settings").count(), 1, "no submenu opens");
+        assert_eq!(h.state().scene, before);
     }
 }

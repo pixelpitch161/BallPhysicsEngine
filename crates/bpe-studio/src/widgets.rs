@@ -99,26 +99,52 @@ pub struct GridCx<'a> {
 }
 
 /// How wide the label column of every settings grid in a panel `panel` wide is. Every grid in
-/// the panel uses the same width, so the sliders line up from card to card.
+/// the panel uses the same width, so the sliders line up from card to card. In a narrow panel
+/// the labels give up their share faster, down to 96, so the widgets still fit beside them.
 pub fn label_width(panel: f32) -> f32 {
-    (0.38 * panel).max(120.0)
+    const NARROW: f32 = 380.0;
+    if panel >= NARROW {
+        0.38 * panel
+    } else {
+        // From 96 at a 300-wide panel (the inspector at its narrowest) up to the share at 380.
+        let at_narrow = 0.38 * NARROW;
+        (96.0 + (panel - 300.0) * (at_narrow - 96.0) / (NARROW - 300.0)).clamp(96.0, at_narrow)
+    }
 }
 
-/// A label in a grid's label column, `width` wide, wrapping when it is longer.
+/// The start of a row without a diamond in a [`settings_like_grid`]: an empty diamond cell,
+/// then a label in the label column, `width` wide, wrapping when it is longer.
 pub fn grid_label(ui: &mut Ui, width: f32, text: &str) -> Response {
+    empty_cell(ui);
     label_cell(ui, width, |ui| ui.add(egui::Label::new(text).wrap()))
 }
 
+/// A grid laid out like a settings grid (a diamond column, the label column, the widgets), so
+/// its labels and widgets line up with the settings' when its rows start with [`grid_label`].
+pub fn settings_like_grid(id: impl egui::AsIdSalt) -> egui::Grid {
+    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL)
+}
+
 /// A grid cell exactly `width` wide, laid out left to right. What it holds wraps rather than
-/// widening the column.
+/// widening the column, and makes its row as tall as it needs.
 pub fn label_cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    // A grid centres a cell in its row before the cell is drawn, so the cell asks for the
+    // height it took last time: a label that wraps then sits centred in a row tall enough for
+    // it, instead of hanging out of the bottom of its row into the next.
+    let id = ui.next_auto_id().with("label cell");
+    let height = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
     let layout = egui::Layout::left_to_right(egui::Align::Center);
-    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+    let cell = ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
         ui.set_min_width(width);
         ui.set_max_width(width);
         add(ui)
-    })
-    .inner
+    });
+    let took = cell.response.rect.height();
+    if (took - height).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(id, took));
+        ui.ctx().request_discard("a grid label's height changed");
+    }
+    cell.inner
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -282,7 +308,10 @@ pub fn settings_grid_marked(
     cx: &GridCx,
 ) -> GridOutcome {
     let mut out = GridOutcome::default();
-    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
+    // Where the widgets must end. A grid widens its last column to its widest row, so a row
+    // that can't shrink would otherwise push every slider under it past the panel's edge.
+    let right = ui.available_rect_before_wrap().right();
+    settings_like_grid(id).show(ui, |ui| {
         // Whether the group the rows are in is folded shut.
         let mut shut = false;
         for row in rows_for(defs, cx.applies) {
@@ -293,7 +322,8 @@ pub fn settings_grid_marked(
                     let changed = shut && group_changed(defs, group, &get, cx);
                     // A grid can't take spacing, so the heading carries its own air above.
                     label_cell(ui, cx.label_width, |ui| {
-                        ui.vertical(|ui| {
+                        let room = ui.available_size();
+                        ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.add_space(10.0);
                             if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
                                 out.folds.push((group, !shut));
@@ -317,7 +347,7 @@ pub fn settings_grid_marked(
                     let inherited = (cx.inherited)(def.key);
                     let locked = (cx.locked)(def.key);
                     let unit = unit_for(def, &|k| Some(get(k)));
-                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx);
+                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx, right);
                     match row {
                         RowAction::Nothing => {}
                         RowAction::Changed => out.changes.push((def.key, value)),
@@ -436,8 +466,8 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
 /// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on
 /// hover; a double-click or Alt+click puts the value back to `inherited`, or the setting's
 /// default), a dot when the setting is `overridden`, a padlock when it is `locked` against the
-/// dice, and the widget for its type. The label's menu offers the lock on any setting the dice
-/// may pick.
+/// dice, and the widget for its type, ending by `right`. The label's menu offers the lock on any
+/// setting the dice may pick.
 #[allow(clippy::too_many_arguments)]
 pub fn setting(
     ui: &mut Ui,
@@ -448,6 +478,7 @@ pub fn setting(
     overridden: bool,
     locked: bool,
     cx: &GridCx,
+    right: f32,
 ) -> RowAction {
     let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
     let mut action = RowAction::Nothing;
@@ -460,7 +491,8 @@ pub fn setting(
         }
         // The padlock keeps its room after a label that wraps.
         let padlock = if locked { 12.0 + ui.spacing().item_spacing.x } else { 0.0 };
-        let room = Vec2::new((ui.available_width() - padlock).max(0.0), 0.0);
+        // The cell's full height, so the label is centred in it rather than hanging from its middle.
+        let room = Vec2::new((ui.available_width() - padlock).max(0.0), ui.available_height());
         let name = ui
             .allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 label(ui, def.label, def.help)
@@ -510,6 +542,7 @@ pub fn setting(
     let mut changed = false;
     let response = ui
         .horizontal(|ui| {
+            ui.set_max_width((right - ui.max_rect().left()).max(0.0));
             let r = widget(ui, def, unit, value, name.id, cx.choices);
             changed |= r.changed();
             r
@@ -664,13 +697,18 @@ fn widget(
             None => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
         },
         (ValueType::Bool, Value::Bool(b)) => ui.checkbox(b, "").labelled_by(name),
+        // In a narrow panel y goes under x.
         (ValueType::Vec2, Value::Vec2(v)) => {
-            let (speed, decimals) = (feel.drag_speed, feel.decimals);
-            let x = DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
-            let x = ui.add(x).labelled_by(name);
-            let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
-            let y = ui.add(y).labelled_by(name);
-            x | y
+            ui.horizontal_wrapped(|ui| {
+                let (speed, decimals) = (feel.drag_speed, feel.decimals);
+                let x =
+                    DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
+                let x = ui.add(x).labelled_by(name);
+                let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
+                let y = ui.add(y).labelled_by(name);
+                x | y
+            })
+            .inner
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
         (ValueType::Gradient, Value::Gradient(g)) => {
@@ -889,8 +927,12 @@ mod tests {
 
     #[test]
     fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
-        assert_eq!(label_width(200.0), 120.0);
+        assert_eq!(label_width(200.0), 96.0);
+        assert_eq!(label_width(300.0), 96.0);
         assert_eq!(label_width(500.0), 190.0);
+        // It grows without a jump from narrow to wide.
+        assert!((label_width(379.9) - label_width(380.0)).abs() < 0.1);
+        assert!(label_width(340.0) > 96.0 && label_width(340.0) < label_width(380.0));
     }
 
     #[test]
@@ -1199,6 +1241,66 @@ mod tests {
                 "Blending"
             ]
         );
+    }
+
+    #[test]
+    fn the_trail_and_bounce_cards_sections_come_in_order() {
+        let trail = bpe_kit::modules::trail::StreakTrail::defs();
+        assert_eq!(headings(&rows_for(trail, &|_| true)), ["Shape", "Colours", "Light", "Variation", "Blending"]);
+        let bounce = bpe_kit::BasicBounce::defs();
+        assert_eq!(headings(&rows_for(bounce, &|_| true)), ["Basics", "Growing", "Other balls", "Against some things"]);
+    }
+
+    /// A grid of `defs` at their defaults, every section open, in a panel 420 wide.
+    fn open_grid(defs: &'static [SettingDef]) -> egui_kittest::Harness<'static> {
+        let value = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(420.0, 2400.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui(move |ui| {
+                let choices = TargetChoices::default();
+                let cx = GridCx {
+                    choices: &choices,
+                    overridden: &|_| false,
+                    inherited: &|_| None,
+                    marks: &|_| None,
+                    locked: &|_| false,
+                    applies: &|_| true,
+                    folded: Some(&|_| false),
+                    label_width: label_width(420.0),
+                };
+                settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+            });
+        h.run();
+        h
+    }
+
+    #[test]
+    fn a_heading_has_a_row_of_its_own() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = open_grid(bpe_kit::modules::look::BasicLook::defs());
+        let heading = h.get_by_role_and_label(Role::Label, "Light").rect();
+        let label = h.get_by_role_and_label(Role::Label, "Glow").rect();
+        let slider = h.get_by_role_and_label(Role::Slider, "Glow").rect();
+        assert!(heading.bottom() <= label.top(), "the heading {heading:?} is above the label {label:?}");
+        let (l, s) = (label.center().y, slider.center().y);
+        assert!((l - s).abs() <= 1.5, "the slider is level with its label: {l} and {s}");
+    }
+
+    #[test]
+    fn a_wrapped_label_makes_its_row_taller() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = open_grid(bpe_kit::SceneSettings::defs());
+        let wrapped = h.get_by_role_and_label(Role::Label, "Background stays on screen").rect();
+        assert!(wrapped.height() > 24.0, "the label wraps: {wrapped:?}");
+        let next = h.get_by_role_and_label(Role::Label, "Frame rate").rect();
+        assert!(wrapped.bottom() <= next.top(), "{wrapped:?} runs into the next row {next:?}");
+        let check = h.get_by_role_and_label(Role::CheckBox, "Background stays on screen").rect();
+        let (l, c) = (wrapped.center().y, check.center().y);
+        assert!((l - c).abs() <= 1.5, "the checkbox is level with its label: {l} and {c}");
     }
 
     #[test]

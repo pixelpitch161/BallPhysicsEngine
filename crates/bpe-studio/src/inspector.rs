@@ -12,6 +12,7 @@ use crate::theme;
 use crate::widgets::{
     BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
     TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid, settings_grid_marked,
+    settings_like_grid,
 };
 use bpe_core::{
     Address, Attach, Bus, BusId, Chord, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
@@ -55,6 +56,9 @@ pub struct Inspector {
     pub jump_to: Option<Card>,
     /// Each card header's top in the last frame, relative to the scroll area's top.
     pub card_tops: Vec<(Card, f32)>,
+    /// The card last jumped to from the bar. The bar marks it until the next scroll, even when
+    /// it is too short to reach the top.
+    pub jumped: Option<(ThingId, Card)>,
 }
 
 /// One of the inspector's cards, as the jump bar names it.
@@ -244,36 +248,40 @@ pub fn show(
         }
         // ---------- header ----------
         // Row 1: the name, the kind and the eye; row 2: the tags.
-        egui::Grid::new(("header", id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(lw).show(ui, |ui| {
-            let name_label = grid_label(ui, lw, "Name");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Hiding the root would hide the whole scene; its card already says what it is.
-                if id != ThingId::ROOT {
-                    if eye_toggle(ui, thing.enabled) {
-                        edits.push(Edit::Enabled(!thing.enabled));
+        // Indented like a card's insides, so its columns line up with the cards' settings.
+        let indent = egui::Frame::new().inner_margin(egui::Margin::symmetric(CARD_MARGIN, 0));
+        indent.show(ui, |ui| {
+            settings_like_grid(("header", id)).show(ui, |ui| {
+                let name_label = grid_label(ui, lw, "Name");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Hiding the root would hide the whole scene; its card already says what it is.
+                    if id != ThingId::ROOT {
+                        if eye_toggle(ui, thing.enabled) {
+                            edits.push(Edit::Enabled(!thing.enabled));
+                        }
+                        ui.label(RichText::new(kind.name()).small().color(theme::MUTED)).on_hover_text(kind.help());
                     }
-                    ui.label(RichText::new(kind.name()).small().color(theme::MUTED)).on_hover_text(kind.help());
+                    let mut name = thing.name.clone();
+                    let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
+                    if ui.add(edit).labelled_by(name_label.id).changed() {
+                        edits.push(Edit::Name(name));
+                    }
+                });
+                ui.end_row();
+                let tags_label = grid_label(ui, lw, "Tags")
+                    .on_hover_text("Words that rules and other things can pick this out by, separated by spaces");
+                let mut tags = thing.tags.iter().cloned().collect::<Vec<_>>().join(" ");
+                let tag_edit = ui
+                    .add(egui::TextEdit::singleline(&mut tags).desired_width(f32::INFINITY).hint_text("none"))
+                    .labelled_by(tags_label.id);
+                if tag_edit.lost_focus() {
+                    let set: BTreeSet<String> = tags.split_whitespace().map(str::to_owned).collect();
+                    if set != thing.tags {
+                        edits.push(Edit::Tags(set));
+                    }
                 }
-                let mut name = thing.name.clone();
-                let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
-                if ui.add(edit).labelled_by(name_label.id).changed() {
-                    edits.push(Edit::Name(name));
-                }
-            });
-            ui.end_row();
-            let tags_label = grid_label(ui, lw, "Tags")
-                .on_hover_text("Words that rules and other things can pick this out by, separated by spaces");
-            let mut tags = thing.tags.iter().cloned().collect::<Vec<_>>().join(" ");
-            let tag_edit = ui
-                .add(egui::TextEdit::singleline(&mut tags).desired_width(f32::INFINITY).hint_text("none"))
-                .labelled_by(tags_label.id);
-            if tag_edit.lost_focus() {
-                let set: BTreeSet<String> = tags.split_whitespace().map(str::to_owned).collect();
-                if set != thing.tags {
-                    edits.push(Edit::Tags(set));
-                }
-            }
-            ui.end_row();
+                ui.end_row();
+            })
         });
         ui.add_space(6.0);
 
@@ -804,7 +812,7 @@ pub fn show(
     inspector.jump_to = None;
     // The bar marked the card at the top as of the last frame; once scrolling has moved
     // another card there, draw again so the bar catches up.
-    if card_at_top(&inspector.card_tops) != marked {
+    if marked_card(inspector, id) != marked {
         ui.ctx().request_repaint();
     }
 
@@ -1051,7 +1059,7 @@ fn placement_rows(
     lw: f32,
     edits: &mut Vec<Edit>,
 ) {
-    egui::Grid::new(("placement", thing.id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(lw).show(ui, |ui| {
+    settings_like_grid(("placement", thing.id)).show(ui, |ui| {
         position_rows(ui, scene, thing, lw, edits);
         if !matches!(kind.id(), "liquid" | "swarm") {
             let label = grid_label(ui, lw, "Stick to screen")
@@ -1072,8 +1080,9 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, e
     if let Attach::Group = thing.attach {
         let position = grid_label(ui, lw, "Position")
             .on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
+        // In a narrow panel y goes under x.
         let moved = ui
-            .horizontal(|ui| {
+            .horizontal_wrapped(|ui| {
                 let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
                 x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
@@ -1111,7 +1120,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, e
         let mut o = offset;
         let label = grid_label(ui, lw, "Offset").on_hover_text("Where it sits from its parent, in video pixels");
         let moved = ui
-            .horizontal(|ui| {
+            .horizontal_wrapped(|ui| {
                 let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
                 x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
@@ -1571,9 +1580,9 @@ fn make_own(ui: &mut Ui) -> egui::Response {
 }
 
 /// The row of buttons above the inspector that jump to its cards: the thing's own card, then
-/// one per slot it has. The card whose header has scrolled to the top (or just past) is
-/// selected. A click unfolds the card and scrolls it to the top when it's next drawn. Returns
-/// the selected card.
+/// one per slot it has. The card last clicked is selected until the next scroll, then the card
+/// whose header has scrolled to the top (or just past). A click unfolds the card and scrolls
+/// it to the top when it's next drawn. Returns the selected card.
 fn jump_bar(
     ui: &mut Ui,
     inspector: &mut Inspector,
@@ -1581,9 +1590,15 @@ fn jump_bar(
     kind: &dyn bpe_core::ThingKind,
     thing: &bpe_core::Thing,
 ) -> Card {
-    let at_top = card_at_top(&inspector.card_tops);
-    // Placement has no button: it sits just under the thing's own card.
-    let cards = std::iter::once((Card::Thing, "Thing")).chain(
+    let scrolled = ui.input(|i| i.smooth_scroll_delta.y != 0.0) && ui.rect_contains_pointer(ui.max_rect());
+    if scrolled {
+        inspector.jumped = None;
+    }
+    let at_top = marked_card(inspector, id);
+    // Placement has no button: it sits just under the thing's own card. The root's own card
+    // is named for what it is.
+    let own = if id == ThingId::ROOT { kind.name() } else { "Thing" };
+    let cards = std::iter::once((Card::Thing, own)).chain(
         SlotId::ALL.into_iter().filter(|s| thing.slots.contains_key(s)).map(|s| (Card::Slot(s), kind.slot_label(s))),
     );
     ui.horizontal_wrapped(|ui| {
@@ -1591,11 +1606,20 @@ fn jump_bar(
             if ui.selectable_label(card == at_top, label).clicked() {
                 inspector.collapsed.remove(&card.fold_key(id));
                 inspector.jump_to = Some(card);
+                inspector.jumped = Some((id, card));
             }
         }
     });
     ui.add_space(4.0);
     at_top
+}
+
+/// The card the jump bar marks on `id`: the one last jumped to, else the one at the top.
+fn marked_card(inspector: &Inspector, id: ThingId) -> Card {
+    match inspector.jumped {
+        Some((thing, card)) if thing == id => card,
+        _ => card_at_top(&inspector.card_tops),
+    }
 }
 
 /// The last card whose header is at or above the scroll area's top, or the first card when
@@ -1619,9 +1643,15 @@ fn card_header(ui: &Ui, inspector: &mut Inspector, card: Card, header: &egui::Re
     }
 }
 
+/// The space inside a card's edge.
+const CARD_MARGIN: i8 = 10;
+
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(theme::CARD).corner_radius(8).inner_margin(10).show(ui, |ui| {
-        ui.set_width(ui.available_width());
+    egui::Frame::new().fill(theme::CARD).corner_radius(8).inner_margin(CARD_MARGIN).show(ui, |ui| {
+        // As wide as the scroll area shows, less the margin: a card above that couldn't fit
+        // stretches the scroll area's insides, and the cards under it mustn't follow.
+        let shown = ui.clip_rect().right() - f32::from(CARD_MARGIN) - ui.max_rect().left();
+        ui.set_width(ui.available_width().min(shown).max(0.0));
         add_contents(ui);
     });
 }
@@ -2979,6 +3009,35 @@ mod tests {
     }
 
     #[test]
+    fn a_folded_section_with_only_a_pulse_shows_the_dot() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Hide Light").click();
+        h.run();
+        assert!(h.query_by_label("Light (changed)").is_none(), "Light holds no changes yet");
+        let (module, _) = ball_look(h.state());
+        let def = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "opacity").unwrap();
+        assert!(def.flags.pulse && def.group == "Light");
+        let address = Address { owner: Owner::Module(module), slot: None, key: def.key.into() };
+        let reg = bpe_kit::registry();
+        h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Bass, pulse_amount(def), 0.25).unwrap();
+        h.run();
+        assert!(h.query_by_label("Light (changed)").is_some(), "a pulse moves the video");
+        assert!(h.query_by_label("Changes inside").is_some());
+    }
+
+    #[test]
+    fn the_header_eye_hides_and_shows_the_thing() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.state().scene.things[&ThingId(2)].enabled);
+        h.get_by_label("Shown").click();
+        h.run();
+        assert!(!h.state().scene.things[&ThingId(2)].enabled, "the eye hides it");
+        h.get_by_label("Shown").click();
+        h.run();
+        assert!(h.state().scene.things[&ThingId(2)].enabled, "and shows it again");
+    }
+
+    #[test]
     fn scene_card_shows_the_grade_group() {
         let reg = bpe_kit::registry();
         let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
@@ -3293,6 +3352,23 @@ mod tests {
     }
 
     #[test]
+    fn the_header_and_placement_line_up_with_the_settings() {
+        let h = harness(Some(ThingId(2)));
+        let label = |l: &str| h.get_by_role_and_label(Role::Label, l).rect().left();
+        let size = label("Size");
+        for row in ["Name", "Tags", "Position", "Rotation"] {
+            assert!((label(row) - size).abs() <= 1.0, "{row}'s label starts at {}, Size's at {size}", label(row));
+        }
+        let slider = slider_rect(&h, "Size").left();
+        let name = h.get_by_role_and_label(Role::TextInput, "Name").rect().left();
+        let position = h.get_all_by_role_and_label(Role::SpinButton, "Position").next().unwrap().rect().left();
+        let rotation = h.get_by_role_and_label(Role::SpinButton, "Rotation").rect().left();
+        for (row, x) in [("Name", name), ("Position", position), ("Rotation", rotation)] {
+            assert!((x - slider).abs() <= 1.0, "{row}'s field starts at {x}, Size's slider at {slider}");
+        }
+    }
+
+    #[test]
     fn the_jump_bar_lists_thing_then_the_slots_in_order() {
         let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
@@ -3319,6 +3395,45 @@ mod tests {
         assert!(header.top() > bar.bottom() && header.top() < bar.bottom() + 60.0, "{header:?} under {bar:?}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
         assert_eq!(selected, ["Sound"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
+    }
+
+    #[test]
+    fn the_roots_bar_names_its_card_scene_settings() {
+        let h = harness(Some(ThingId::ROOT));
+        let first = the_bar_button(&h, "Scene settings");
+        assert_eq!(first.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+        assert!(h.query_by_role_and_label(Role::Button, "Thing").is_none(), "no Thing button on the root");
+    }
+
+    fn selected_in_bar(h: &Harness<'_, State>) -> Vec<String> {
+        jump_bar(h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect()
+    }
+
+    fn wheel(h: &mut Harness<'_, State>, dy: f32) {
+        h.hover_at(egui::pos2(200.0, 400.0));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+    }
+
+    #[test]
+    fn a_short_last_card_stays_marked_after_jumping_to_it() {
+        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
+        the_bar_button(&h, "Rules").click();
+        h.run();
+        let tops = &h.state().inspector.card_tops;
+        let rules = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Rules)).expect("Rules' top").1;
+        assert!(rules > 1.0, "Rules is too short to reach the top, at {rules}");
+        assert_eq!(selected_in_bar(&h), ["Rules"], "the card jumped to stays marked");
+        // A scroll hands the mark back to the card at the top.
+        wheel(&mut h, 40.0);
+        assert_ne!(selected_in_bar(&h), ["Rules"]);
+        assert!(h.state().inspector.jumped.is_none());
     }
 
     #[test]
