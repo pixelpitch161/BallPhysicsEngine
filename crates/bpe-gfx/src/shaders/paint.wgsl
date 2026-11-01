@@ -94,7 +94,7 @@ fn paint_turn(q: vec2<f32>, degrees: f32) -> vec2<f32> {
 //   paint's Clamp mirroring them (`paint_pattern`). A path given here paints as it always has,
 //   a sweep centred on `p.t0`.
 // - dots to face: the mask `paint_mask` draws (0 or 1, softened at the edges), turned by
-//   `p.angle`.
+//   `p.angle`, always clamped whatever `p.repeat` says.
 // A gradient starts at `p.t0`. In shade mode (row -2) the place blends `base`, at 0, to `base`
 // shaded by `p.t0`, at 1, with no gradient and no variation. Uses `fwidth`: fragment code only.
 fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32, base: vec4<f32>) -> vec4<f32> {
@@ -103,6 +103,8 @@ fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32, base: vec4<f32>) -> ve
     var along = 0.0;
     if code > 6.5 {
         along = paint_mask(paint_turn(local, -p.angle), code - 1.0, p.scale * 2.0);
+        // A mask is already 0 to 1: wrapping would turn its fully-on 1 back to the start.
+        q.repeat = 0.0;
     } else if code > 5.5 {
         along = length(local) * p.scale;
         q.repeat = paint_mirrored(p.repeat);

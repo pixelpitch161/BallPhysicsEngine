@@ -584,11 +584,37 @@ fn inside_dots_mask_matches_the_old_fill_dots() {
     let dots = PaintGpu { row: row as f32, pattern: 7.0, scale: 2.0, ..PaintGpu::default() };
     frame.looks.push(look_ball(red, dots));
     let Some(new) = render("inside-dots-paint", &frame) else { return };
+    // Allow a few bytes of difference: the atlas holds the gradient in half floats, sampled
+    // between texels, where the old fill mixed the two colours exactly.
     let mut off = 0;
     for (i, (a, b)) in old.iter().zip(&new).enumerate() {
         if a.abs_diff(*b) > 3 {
             off += 1;
             assert!(off < 50, "byte {i}: old {a} vs new {b}");
         }
+    }
+}
+
+#[test]
+fn inside_masks_do_not_wrap_whatever_the_repeat() {
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let row_of =
+        |frame: &mut Frame| frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
+    for (name, shade) in [("own", false), ("shade", true)] {
+        let mut drawn = Vec::new();
+        for repeat in [0.0, 1.0] {
+            let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+            let row = row_of(&mut frame) as f32;
+            let (row, t0) = if shade { (-2.0, -1.0) } else { (row, 0.0) };
+            let dots = PaintGpu { row, t0, pattern: 7.0, scale: 2.0, repeat, ..PaintGpu::default() };
+            frame.looks.push(look_ball(red, dots));
+            let Some(pixels) = render(&format!("inside-dots-{name}-repeat-{repeat}"), &frame) else { return };
+            // The ball's centre is a dot's centre: the gradient's last colour, or the full shade.
+            let centre = linear_at(&pixels, W / 2, H / 2);
+            let want = if shade { [0.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] };
+            assert!(near(centre, want, 0.05), "{name}, repeat {repeat}: the dot's centre is {centre:?}");
+            drawn.push(pixels);
+        }
+        assert!(drawn[0] == drawn[1], "{name}: Repeat draws the dots as Clamp does");
     }
 }

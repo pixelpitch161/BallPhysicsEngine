@@ -176,7 +176,7 @@ pub struct PaintGpu {
     /// 7 dots, 8 checker, 9 halves, 10 slices, 11 swirl, 12 face. Linear runs 0 to 1 across the
     /// shape, radial 0 to 1 from its centre out, sweep 0 to 1 round it; these honour `repeat`.
     /// Stripes, rings and path never run off the gradient's end: Clamp mirrors them. Dots to
-    /// face paint their mask (0 or 1) along the gradient.
+    /// face paint their mask (0 or 1) along the gradient, clamped whatever the repeat.
     pub pattern: f32,
     /// 1 picks the nearest baked colour instead of blending neighbours.
     pub steps: f32,
