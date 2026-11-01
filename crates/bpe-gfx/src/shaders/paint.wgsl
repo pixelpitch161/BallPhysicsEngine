@@ -161,21 +161,14 @@ fn paint_inside_mask(d: f32) -> f32 {
     return clamp(-d / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
 }
 
-// How much of the second colour shows at `p` (unit radius, y down) for a fill pattern, 0 to 1.
-// Fills: 2 radial, 3 linear, 4 stripes, 5 rings, 6 dots, 7 checker, 8 halves, 9 slices,
-// 10 swirl, 11 face; `size` repeats are two across the shape. Uses `fwidth`: fragment code only.
+// How much of the second colour shows at `p` (unit radius, y down) for a mask pattern, 0 to 1.
+// Masks: 6 dots, 7 checker, 8 halves, 9 slices, 10 swirl, 11 face (`paint_colour` passes its
+// pattern code less one); `size` repeats are two across the shape. Uses `fwidth`: fragment
+// code only.
 fn paint_mask(p: vec2<f32>, fill: f32, size: f32) -> f32 {
     let r = length(p);
     let n = size * 0.5;
-    if fill < 2.5 {
-        return smoothstep(0.0, 1.0, r);
-    } else if fill < 3.5 {
-        return clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
-    } else if fill < 4.5 {
-        return bands(p.x * n + 0.25);
-    } else if fill < 5.5 {
-        return bands(r * n + 0.25);
-    } else if fill < 6.5 {
+    if fill < 6.5 {
         let cell = fract(p * n + 0.5) - 0.5;
         return paint_inside_mask(length(cell) - 0.28);
     } else if fill < 7.5 {

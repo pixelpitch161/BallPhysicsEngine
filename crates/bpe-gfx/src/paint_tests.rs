@@ -589,3 +589,95 @@ fn inside_masks_do_not_wrap_whatever_the_repeat() {
         assert!(drawn[0] == drawn[1], "{name}: Repeat draws the dots as Clamp does");
     }
 }
+
+/// How much of the second colour the old Styled look's Dots fill showed at `p` (unit radius,
+/// y down), copied from `pattern(p, 6, size)` in styled.wgsl before the Inside change, with the
+/// softened edge left out: 1 inside a dot, 0 outside, and how far the point is from the edge in
+/// cell units.
+fn old_fill_dots(p: [f32; 2], size: f32) -> (f32, f32) {
+    let n = size * 0.5;
+    let cell = |x: f32| {
+        let v = x * n + 0.5;
+        v - v.floor() - 0.5
+    };
+    let d = cell(p[0]).hypot(cell(p[1])) - 0.28;
+    (if d < 0.0 { 1.0 } else { 0.0 }, d.abs())
+}
+
+#[test]
+fn inside_dots_mask_matches_the_old_fill_dots() {
+    // The old Styled look drew Dots at its Pattern size (4 by default) as the mix of its two
+    // colours. Inside Dots at Size 2 (the shader doubles it for the masks) must put the same
+    // dots in the same places, the gradient's first colour between them and its last inside.
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
+    let dots = PaintGpu { row: row as f32, pattern: 7.0, scale: 2.0, ..PaintGpu::default() };
+    frame.looks.push(look_ball([0.0, 1.0, 0.0, 1.0], dots));
+    let Some(pixels) = render("inside-dots-as-old-fill-dots", &frame) else { return };
+    let (mut inside, mut outside) = (0, 0);
+    // The ball is 200 pixels round at the centre of the output, y down.
+    for y in (H / 2 - 190..H / 2 + 190).step_by(2) {
+        for x in (W / 2 - 190..W / 2 + 190).step_by(2) {
+            let p = [(x as f32 + 0.5 - W as f32 / 2.0) / 200.0, (y as f32 + 0.5 - H as f32 / 2.0) / 200.0];
+            // Inside the ball, and over 3 pixels (0.03 cell units at size 4) from a dot's edge.
+            let (dot, from_edge) = old_fill_dots(p, 4.0);
+            if p[0].hypot(p[1]) > 0.95 || from_edge < 0.03 {
+                continue;
+            }
+            let i = (y * W + x) as usize * 4;
+            let c = &pixels[i..i + 3];
+            if dot > 0.5 {
+                assert!(c[2] > 150 && c[0] < 60 && c[1] < 60, "({x}, {y}) {c:?}: inside an old dot is blue");
+                inside += 1;
+            } else {
+                assert!(c[0] > 150 && c[1] < 60 && c[2] < 60, "({x}, {y}) {c:?}: between old dots is red");
+                outside += 1;
+            }
+        }
+    }
+    assert!(inside > 2000 && outside > 2000, "{inside} {outside}: both dots and the gaps were checked");
+}
+
+#[test]
+fn a_glyph_paints_a_shade_of_its_own_colour_across_its_box() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let o = frame.overlay_mut();
+    // Red letters, Inside Linear with a shade toward white: the letter's own red at the left
+    // of the paint's box, white at the right.
+    let style = crate::text::TextStyle { color: [1.0, 0.0, 0.0, 1.0], ..crate::text::TextStyle::default() };
+    let (face, align) = (crate::text::FontFace::Anton, crate::text::TextAlign::Center);
+    crate::text::layout_text("H", face, 1200.0, glam::Vec2::ZERO, align, 0.0, usize::MAX, &style, &mut o.glyphs);
+    assert_eq!(o.glyphs.len(), 1);
+    let g = &mut o.glyphs[0];
+    g.paint = PaintGpu { row: -2.0, t0: 1.0, pattern: 1.0, angle: 0.0, ..PaintGpu::default() };
+    // Painted on its own: the pattern spans the letter's own box.
+    g.local = g.rect;
+    let span = g.local;
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, W, H);
+    renderer.render(&device, &queue, &frame);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    crate::pictures::save("paint-glyph-shade", &pixels, W, H);
+    // Where an output column sits across the paint's box, -1 to 1.
+    let (left, right) = (W as f32 / 2.0 + span[0] * 0.5, W as f32 / 2.0 + span[2] * 0.5);
+    let (mut lefts, mut rights) = (0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            let c = linear_at(&pixels, x, y);
+            // Only where the letter covers the whole pixel: its edges mix in the black behind.
+            if c[0] < 0.95 {
+                continue;
+            }
+            let u = (x as f32 + 0.5 - left) / (right - left) * 2.0 - 1.0;
+            let toward_white = u * 0.5 + 0.5;
+            let want = [1.0, toward_white, toward_white];
+            assert!(near(c, want, 0.06), "({x}, {y}) {c:?}: want {want:?}, {toward_white} of the way to white");
+            if u < 0.0 {
+                lefts += 1;
+            } else {
+                rights += 1;
+            }
+        }
+    }
+    assert!(lefts > 1000 && rights > 1000, "{lefts} {rights}: the letter shows both sides");
+}

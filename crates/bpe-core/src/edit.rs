@@ -224,10 +224,25 @@ impl Scene {
         Ok(())
     }
 
+    /// Whether every thing using module `m` would take a module of `kind` in the module's slot:
+    /// each accepts the kind there and the kind fits each, as `link` asks. A missing module or
+    /// kind, or a user of an unknown kind, takes nothing.
+    pub fn kind_suits_users(&self, reg: &Registry, m: ModuleId, kind: &str) -> bool {
+        let (Some(module), Some(new)) = (self.library.modules.get(&m), reg.module(kind)) else { return false };
+        self.users_of(m).iter().all(|t| {
+            self.things
+                .get(t)
+                .and_then(|t| reg.thing(&t.kind))
+                .is_some_and(|k| k.accepts(module.slot, kind) && new.fits(k.id()))
+        })
+    }
+
     /// Turns module `m` into a module of `kind` (of the same slot) in place. Settings, keyframes,
     /// pulses, locks and per-thing changes the new kind also has stay; the rest are set aside in
     /// the module's stash under the old kind, and anything stashed earlier under `kind` comes
-    /// back wherever the key is still free. Nothing changes if the edit is refused.
+    /// back wherever the key is still free. Refused with `NotAccepted` when a thing using the
+    /// module would not take `kind` (see `kind_suits_users`). Nothing changes if the edit is
+    /// refused.
     pub fn set_module_kind(&mut self, reg: &Registry, m: ModuleId, kind: &str) -> Result<(), EditError> {
         let module = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
         let new = reg.module(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
@@ -236,6 +251,9 @@ impl Scene {
         }
         if module.kind == kind {
             return Ok(());
+        }
+        if !self.kind_suits_users(reg, m, kind) {
+            return Err(EditError::NotAccepted);
         }
         let (slot, old_kind) = (module.slot, module.kind.clone());
         let users = self.users_of(m);
@@ -362,7 +380,13 @@ impl Scene {
         }
         module.kind = kind.into();
         module.graph = match module.graph.take() {
-            Some(g) if !g.custom => new.template().map(|graph| ModuleGraph { graph, template: kind.into(), ..g }),
+            Some(g) if !g.custom => new.template().map(|graph| ModuleGraph {
+                graph,
+                template: kind.into(),
+                custom: false,
+                // The old graph's node ids mean nothing in the new one.
+                simple: Default::default(),
+            }),
             _ => None,
         };
         Ok(())
@@ -1455,6 +1479,82 @@ mod tests {
     look_kind!(LookA, "look.a", LookASettings);
     look_kind!(LookB, "look.b", LookBSettings, bpe_graph::Graph::new("B template"));
     look_kind!(LookC, "look.c", LookBSettings);
+    // A look whose `glow` is a yes/no rather than a number, and one that fits no balls.
+    #[derive(Default, crate::Settings)]
+    struct LookDSettings {
+        #[setting(label = "Glow")]
+        glow: bool,
+    }
+    struct LookD;
+    look_kind!(LookD, "look.d", LookDSettings);
+    struct NoBalls;
+    impl crate::ModuleKind for NoBalls {
+        fn id(&self) -> &'static str {
+            "look.noballs"
+        }
+        fn name(&self) -> &'static str {
+            "No balls"
+        }
+        fn help(&self) -> &'static str {
+            "A test look that fits no balls."
+        }
+        fn slot(&self) -> SlotId {
+            SlotId::Look
+        }
+        fn settings(&self) -> &'static [crate::SettingDef] {
+            <LookBSettings as crate::Settings>::defs()
+        }
+        fn fits(&self, thing_kind: &str) -> bool {
+            thing_kind != "balls"
+        }
+    }
+
+    /// A scene root whose Sound slot (the Music) takes only `sound.drums`, like the kit's.
+    struct MusicRoot;
+    impl crate::ThingKind for MusicRoot {
+        fn id(&self) -> &'static str {
+            "scene"
+        }
+        fn name(&self) -> &'static str {
+            "Scene settings"
+        }
+        fn icon(&self) -> &'static str {
+            "scene"
+        }
+        fn help(&self) -> &'static str {
+            "A test root."
+        }
+        fn settings(&self) -> &'static [crate::SettingDef] {
+            &[]
+        }
+        fn slots(&self) -> &'static [SlotId] {
+            &SlotId::ALL
+        }
+        fn default_slots(&self) -> &'static [SlotId] {
+            &[]
+        }
+        fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
+            slot != SlotId::Sound || module_kind == "sound.drums"
+        }
+    }
+    struct Drums;
+    impl crate::ModuleKind for Drums {
+        fn id(&self) -> &'static str {
+            "sound.drums"
+        }
+        fn name(&self) -> &'static str {
+            "Drums"
+        }
+        fn help(&self) -> &'static str {
+            "A test drum beat."
+        }
+        fn slot(&self) -> SlotId {
+            SlotId::Sound
+        }
+        fn settings(&self) -> &'static [crate::SettingDef] {
+            <testkit::Pluck as crate::Settings>::defs()
+        }
+    }
 
     /// Two balls sharing a module of kind A with `glow` 1 and `ring` 2.
     fn switchable() -> (Registry, Scene, ThingId, ThingId, ModuleId) {
@@ -1462,6 +1562,8 @@ mod tests {
         r.add_module(LookA);
         r.add_module(LookB);
         r.add_module(LookC);
+        r.add_module(LookD);
+        r.add_module(NoBalls);
         let mut s = Scene::empty(&r);
         let t1 = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         let t2 = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
@@ -1615,5 +1717,60 @@ mod tests {
         s.set_module_kind(&r, m, "look.b").unwrap();
         let back: Scene = ron::from_str(&ron::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn a_kind_one_of_the_users_refuses_is_refused() {
+        // The root's Music shares a drums module with a ball's Sound. The ball would take a
+        // pluck, but the root would not, so the switch is refused and nothing changes.
+        let mut r = Registry::new();
+        r.add_thing(MusicRoot);
+        r.add_thing(testkit::BallsKind);
+        r.add_module(Drums);
+        r.add_module(testkit::PluckKind);
+        let mut s = Scene::empty(&r);
+        let ball = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "sound.drums", "Beat").unwrap();
+        s.add_slot(&r, ThingId::ROOT, SlotId::Sound).unwrap();
+        s.link(&r, ThingId::ROOT, SlotId::Sound, m).unwrap();
+        s.link(&r, ball, SlotId::Sound, m).unwrap();
+        s.library.modules.get_mut(&m).unwrap().params.set("volume", Value::Number(-3.0));
+        assert!(s.kind_suits_users(&r, m, "sound.drums"));
+        assert!(!s.kind_suits_users(&r, m, "sound.pluck"));
+        let before = s.clone();
+        assert!(matches!(s.set_module_kind(&r, m, "sound.pluck"), Err(EditError::NotAccepted)));
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn a_kind_that_does_not_fit_a_user_is_refused() {
+        let (r, mut s, _, _, m) = switchable();
+        let before = s.clone();
+        assert!(!s.kind_suits_users(&r, m, "look.noballs"));
+        assert!(matches!(s.set_module_kind(&r, m, "look.noballs"), Err(EditError::NotAccepted)));
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn a_key_both_kinds_have_with_another_type_is_stashed_not_carried() {
+        let (r, mut s, _, _, m) = switchable();
+        s.set_module_kind(&r, m, "look.d").unwrap();
+        let module = &s.library.modules[&m];
+        assert_eq!(module.params, Params::default(), "a number glow is no yes/no glow");
+        assert_eq!(module.stash["look.a"].params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        assert_eq!(s.library.modules[&m].params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
+    }
+
+    #[test]
+    fn a_template_graph_swapped_in_drops_the_old_simple_rows() {
+        let (r, mut s, _, _, m) = switchable();
+        let simple = [(7, "value".to_string())].into_iter().collect();
+        s.library.modules.get_mut(&m).unwrap().graph =
+            Some(crate::ModuleGraph { template: "look.a".into(), custom: false, simple, ..Default::default() });
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        let g = s.library.modules[&m].graph.clone().unwrap();
+        assert_eq!(g.template, "look.b");
+        assert!(g.simple.is_empty(), "node 7 was A's, not B's: {:?}", g.simple);
     }
 }

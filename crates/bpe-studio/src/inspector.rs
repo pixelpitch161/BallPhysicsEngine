@@ -163,6 +163,21 @@ pub(crate) fn write_target(scene: &Scene, resolved: &Resolved, id: ThingId, slot
     }
 }
 
+/// The modules a type switch on `slot` changes: the one `id` links there and, for each other
+/// selected thing, the module it links there when that is of the same kind.
+fn type_targets(scene: &Scene, selected: &[ThingId], id: ThingId, slot: SlotId) -> BTreeSet<ModuleId> {
+    let shown = |t: &ThingId| match scene.things.get(t).and_then(|t| t.slots.get(&slot)) {
+        Some(SlotLink::Linked { module, .. }) => Some(*module),
+        _ => None,
+    };
+    let mkind = shown(&id).and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.clone());
+    selected
+        .iter()
+        .filter_map(shown)
+        .filter(|m| scene.library.modules.get(m).map(|m| &m.kind) == mkind.as_ref())
+        .collect()
+}
+
 /// Draws the inspector for the selection's primary thing and applies its edits, to every
 /// selected thing where that makes sense. Values are shown as they are at `time` (the
 /// playhead), and an edit to a keyed setting writes a key there. True when the scene changed.
@@ -354,7 +369,13 @@ pub fn show(
                                                 .color(theme::MUTED),
                                         );
                                     }
-                                    for k in &fitting {
+                                    // Only kinds every thing using the changed modules takes.
+                                    let targets = type_targets(scene, &selected, id, slot);
+                                    let offered = fitting.iter().filter(|k| {
+                                        k.id() == current.id()
+                                            || targets.iter().all(|t| scene.kind_suits_users(reg, *t, k.id()))
+                                    });
+                                    for k in offered {
                                         if ui
                                             .selectable_label(k.id() == current.id(), k.name())
                                             .on_hover_text(k.help())
@@ -809,18 +830,8 @@ pub fn show(
                 any
             }
             Edit::SetKind(slot, kind) => {
-                let shown = |t: &ThingId| match scene.things.get(t).and_then(|t| t.slots.get(&slot)) {
-                    Some(SlotLink::Linked { module, .. }) => Some(*module),
-                    _ => None,
-                };
-                let mkind = shown(&id).and_then(|m| scene.library.modules.get(&m)).map(|m| m.kind.clone());
-                let modules: BTreeSet<ModuleId> = selected
-                    .iter()
-                    .filter_map(shown)
-                    .filter(|m| scene.library.modules.get(m).map(|m| &m.kind) == mkind.as_ref())
-                    .collect();
                 let mut any = false;
-                for m in modules {
+                for m in type_targets(scene, &selected, id, slot) {
                     any |= scene.set_module_kind(reg, m, kind).is_ok();
                 }
                 any
@@ -2922,5 +2933,77 @@ mod tests {
         let s = h.state();
         assert_eq!(s.scene.library.modules[&mine].kind, "sound.melody");
         assert_eq!(s.scene.library.modules[&theirs].kind, "sound.melody");
+    }
+
+    /// How many widgets read `name` with the Type menu open, less how many do with it shut.
+    fn offered(h: &mut Harness<'_, State>, name: &str) -> usize {
+        let shut = h.query_all_by_label(name).count();
+        open_type_menu(h);
+        let open = h.query_all_by_label(name).count();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        open - shut
+    }
+
+    /// A new scene where ball 2 has its own drum machine and a second ball shares the scene's
+    /// music, which takes only drums and melody.
+    fn a_ball_sharing_the_music() -> (Scene, ThingId, ModuleId, ModuleId) {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let music = scene.add_module(&reg, "sound.drums", "Music").unwrap();
+        scene.add_slot(&reg, ThingId::ROOT, SlotId::Sound).unwrap();
+        scene.link(&reg, ThingId::ROOT, SlotId::Sound, music).unwrap();
+        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        scene.link(&reg, other, SlotId::Sound, music).unwrap();
+        let mine = ball_sound(&scene);
+        scene.set_module_kind(&reg, mine, "sound.drums").unwrap();
+        (scene, other, mine, music)
+    }
+
+    #[test]
+    fn the_type_menu_offers_only_kinds_every_user_takes() {
+        let (scene, other, _, music) = a_ball_sharing_the_music();
+        let mut h = harness_of(scene, Some(other));
+        assert_eq!(offered(&mut h, "Notes"), 0, "the scene's music takes no notes");
+        assert_eq!(offered(&mut h, "Melody"), 1);
+        open_type_menu(&mut h);
+        h.get_all_by_label("Melody").last().unwrap().click();
+        h.run();
+        assert_eq!(h.state().scene.library.modules[&music].kind, "sound.melody");
+    }
+
+    #[test]
+    fn a_multi_select_type_menu_offers_only_kinds_every_selected_modules_users_take() {
+        let (scene, other, mine, music) = a_ball_sharing_the_music();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        assert_eq!(offered(&mut h, "Notes"), 1, "ball 2's own drums may become notes");
+        h.state_mut().selection.toggle(other);
+        h.run();
+        assert_eq!(offered(&mut h, "Notes"), 0, "the other ball's drums are the scene's music");
+        open_type_menu(&mut h);
+        h.get_all_by_label("Melody").last().unwrap().click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.library.modules[&mine].kind, "sound.melody");
+        assert_eq!(s.scene.library.modules[&music].kind, "sound.melody");
+    }
+
+    #[test]
+    fn the_type_button_is_disabled_on_a_slot_that_follows_a_folder() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let folder = bpe_kit::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
+        let sound = scene.add_module(&reg, "sound.notes", "Folder notes").unwrap();
+        scene.add_slot(&reg, folder, SlotId::Sound).unwrap();
+        scene.link(&reg, folder, SlotId::Sound, sound).unwrap();
+        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
+        scene.set_slot_inherit(ThingId(2), SlotId::Sound);
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        let button = h.get_by_role_and_label(Role::Button, "Type");
+        assert!(button.accesskit_node().is_disabled(), "an inherited slot's type is the folder's to change");
+        let before = h.state().scene.clone();
+        button.click();
+        h.run();
+        assert_eq!(h.state().scene, before);
     }
 }

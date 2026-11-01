@@ -69,8 +69,12 @@ impl SettingGroup for InsidePaint {
         let p = o.prefix;
         let (pat, from) = (format!("{p}pattern"), format!("{p}from"));
         let shown = also(o.when, &format!("{pat}!=none"));
-        let shade_when = also(o.when, &format!("{pat}!=none and {from}=shade_of_own_colour"));
-        let own_when = also(o.when, &format!("{pat}!=none and {from}=own_gradient"));
+        // Face draws in the shaded colour, so it has no Inside colours to pick.
+        let from_when = also(o.when, &format!("{pat}!=none|face"));
+        let shade_when = also(o.when, &format!("{pat}!=none|face and {from}=shade_of_own_colour"));
+        let own_when = also(o.when, &format!("{pat}!=none|face and {from}=own_gradient"));
+        // Only Linear, Radial and Sweep can run past the last colour.
+        let repeat_when = also(o.when, &format!("{pat}=linear|radial|sweep and {from}=own_gradient"));
         let def = |key: &str,
                    label: &'static str,
                    help: &'static str,
@@ -103,25 +107,28 @@ impl SettingGroup for InsidePaint {
         let num = |key, label, help, v: f32, when, range, unit| {
             def(key, label, help, ty(&v), val(&v), when, Some(range), unit, true)
         };
+        let mut pattern = def(
+            "pattern",
+            "Pattern",
+            "The pattern drawn inside each one.",
+            ty(&d.pattern),
+            val(&d.pattern),
+            o.when,
+            None,
+            "",
+            false,
+        );
+        // The dice may roll a pattern, as they did the old inside pattern.
+        pattern.flags.random = true;
         vec![
-            def(
-                "pattern",
-                "Pattern",
-                "The pattern drawn inside each one.",
-                ty(&d.pattern),
-                val(&d.pattern),
-                o.when,
-                None,
-                "",
-                false,
-            ),
+            pattern,
             def(
                 "from",
                 "Inside colours",
                 "Whether the pattern uses a shade of each one's own colour or a gradient of its own.",
                 ty(&d.from),
                 val(&d.from),
-                shown,
+                from_when,
                 None,
                 "",
                 false,
@@ -152,7 +159,7 @@ impl SettingGroup for InsidePaint {
                 "What the pattern's colours do beyond the last stop.",
                 ty(&d.repeat),
                 val(&d.repeat),
-                own_when,
+                repeat_when,
                 None,
                 "",
                 false,
@@ -266,8 +273,8 @@ mod tests {
         let get = |k: &str| defs.iter().find(|d| d.key == k).unwrap().when;
         assert_eq!(get("in_pattern"), "x=1");
         assert_eq!(get("in_angle"), "x=1 and in_pattern!=none");
-        assert_eq!(get("in_shade"), "x=1 and in_pattern!=none and in_from=shade_of_own_colour");
-        assert_eq!(get("in_colours"), "x=1 and in_pattern!=none and in_from=own_gradient");
+        assert_eq!(get("in_shade"), "x=1 and in_pattern!=none|face and in_from=shade_of_own_colour");
+        assert_eq!(get("in_colours"), "x=1 and in_pattern!=none|face and in_from=own_gradient");
     }
 
     #[test]
@@ -285,13 +292,14 @@ mod tests {
     fn inside_rows_and_conditions() {
         let defs = Holder::defs();
         let n = "in_pattern!=none";
+        let own = "in_pattern=linear|radial|sweep and in_from=own_gradient";
         #[allow(clippy::type_complexity)]
         let rows: [(&str, &str, &str, Option<(f64, f64)>, bool); 10] = [
             ("in_pattern", "Pattern", "", None, false),
-            ("in_from", "Inside colours", n, None, false),
-            ("in_shade", "Shade", "in_pattern!=none and in_from=shade_of_own_colour", Some((-1.0, 1.0)), true),
-            ("in_colours", "Colours", "in_pattern!=none and in_from=own_gradient", None, false),
-            ("in_repeat", "Beyond the last colour", "in_pattern!=none and in_from=own_gradient", None, false),
+            ("in_from", "Inside colours", "in_pattern!=none|face", None, false),
+            ("in_shade", "Shade", "in_pattern!=none|face and in_from=shade_of_own_colour", Some((-1.0, 1.0)), true),
+            ("in_colours", "Colours", "in_pattern!=none|face and in_from=own_gradient", None, false),
+            ("in_repeat", "Beyond the last colour", own, None, false),
             ("in_angle", "Angle", n, Some((-180.0, 180.0)), true),
             ("in_spin", "Spin", n, Some((-720.0, 720.0)), true),
             ("in_size", "Size", n, Some((0.1, 24.0)), true),
@@ -310,6 +318,36 @@ mod tests {
         }
         assert_eq!(defs.iter().find(|d| d.key == "in_shade").unwrap().default, Value::Number(-0.5));
         assert_eq!(defs.iter().find(|d| d.key == "in_pattern").unwrap().default, Value::Choice("none".into()));
+        let random: Vec<&str> = defs.iter().filter(|d| d.flags.random).map(|d| d.key).collect();
+        assert_eq!(random, ["in_pattern"], "the dice roll the pattern, as the old inside pattern");
+    }
+
+    #[test]
+    fn rows_that_would_do_nothing_are_hidden() {
+        let defs = Holder::defs();
+        let shows = |key: &str, pattern: &str, from: &str| {
+            let d = defs.iter().find(|d| d.key == key).unwrap();
+            let get = |k: &str| match k {
+                "in_pattern" => Some(Value::Choice(pattern.into())),
+                "in_from" => Some(Value::Choice(from.into())),
+                _ => None,
+            };
+            d.applies(Some("balls"), &get)
+        };
+        for p in ["linear", "radial", "sweep"] {
+            assert!(shows("in_repeat", p, "own_gradient"), "{p}");
+            assert!(!shows("in_repeat", p, "shade_of_own_colour"), "{p}");
+        }
+        for p in ["none", "stripes", "rings", "dots", "checker", "halves", "slices", "swirl", "face"] {
+            assert!(!shows("in_repeat", p, "own_gradient"), "{p}");
+        }
+        for key in ["in_from", "in_shade"] {
+            assert!(shows(key, "dots", "shade_of_own_colour"), "{key}");
+            assert!(!shows(key, "face", "shade_of_own_colour"), "{key}");
+        }
+        assert!(shows("in_colours", "dots", "own_gradient"));
+        assert!(!shows("in_colours", "face", "own_gradient"));
+        assert!(shows("in_angle", "face", "own_gradient"), "Face still turns and sizes");
     }
 
     #[test]
