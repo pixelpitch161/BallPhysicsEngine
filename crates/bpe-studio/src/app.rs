@@ -112,8 +112,10 @@ pub struct Studio {
     pub world_nav: crate::preview::WorldNav,
     /// The world point at the middle of the preview, where new things are added.
     pub view_centre: glam::Vec2,
-    /// Remember grid changes in the settings folder (off without a window, in tests).
-    persist_grid: bool,
+    /// Remember grid and panel changes in the settings folder (off without a window, in tests).
+    persist_settings: bool,
+    /// The inspector's width as last saved.
+    inspector_width: f32,
     /// The soundtrack no longer matches the scene.
     pub sound_dirty: bool,
     /// The speakers, when there are any.
@@ -146,7 +148,8 @@ impl Studio {
         studio.panels.explorer.weights = settings::load_weights();
         studio.panels.explorer.persist = true;
         studio.grid = Grid::load();
-        studio.persist_grid = true;
+        studio.inspector_width = settings::load_inspector_width();
+        studio.persist_settings = true;
         match scene_path {
             Some(path) => _ = studio.open_path(&path),
             None => {
@@ -191,7 +194,8 @@ impl Studio {
             preview_mode: Default::default(),
             world_nav: Default::default(),
             view_centre: glam::Vec2::ZERO,
-            persist_grid: false,
+            persist_settings: false,
+            inspector_width: settings::INSPECTOR_DEFAULT,
             sound_dirty: true,
             audio: None,
             audio_error: None,
@@ -658,7 +662,19 @@ impl Studio {
                 (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
                 (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
             };
-            ui.label(saved_label.small());
+            // A slot of its own, so a long file name is cut short instead of running under Library.
+            let full = saved_label.text().to_owned();
+            let status = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(SAVE_STATUS_WIDTH, ui.available_height()),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(SAVE_STATUS_WIDTH);
+                        ui.add(egui::Label::new(saved_label.small()).truncate().show_tooltip_when_elided(false))
+                    },
+                )
+                .inner;
+            status.on_hover_text(full);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let export = egui::Button::new(RichText::new("Export video…").strong().color(Color32::WHITE))
                     .fill(theme::ACCENT);
@@ -675,6 +691,48 @@ impl Studio {
                 }
             });
         });
+    }
+
+    /// The inspector on the right, as wide as the user last dragged it. Returns its width.
+    fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
+        let panel = egui::Panel::right("inspector")
+            .default_size(self.inspector_width)
+            .min_size(*settings::INSPECTOR_RANGE.start())
+            .max_size(*settings::INSPECTOR_RANGE.end())
+            .resizable(true)
+            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
+            .show(ui, |ui| {
+                // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
+                ui.set_min_width(ui.available_width());
+                // The contents go in a child that only reports the panel's own rect, so a row that
+                // is too wide for a frame (a grid's first frame lays out unmeasured) is clipped
+                // instead of widening the panel for good.
+                let rect = ui.available_rect_before_wrap();
+                let mut contents = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+                contents.shrink_clip_rect(rect);
+                self.panels.inspector.nodes_open = self.panels.nodes.slot_open();
+                let time = self.sim_time();
+                inspector::show(
+                    &mut contents,
+                    &mut self.panels.inspector,
+                    &mut self.scene,
+                    &self.kit,
+                    &self.resolved,
+                    &self.selection,
+                    time,
+                );
+                ui.advance_cursor_after_rect(rect);
+            });
+        let width = panel.response.rect.width();
+        // A drag is remembered once the mouse lets go, and only when the width really changed.
+        let released = !ui.input(|i| i.pointer.any_down());
+        if released && (width - self.inspector_width).abs() >= 0.5 {
+            self.inspector_width = width;
+            if self.persist_settings {
+                settings::save_inspector_width(width);
+            }
+        }
+        width
     }
 
     /// The grid buttons: show the lines, snap drags to them, and the size of one square.
@@ -698,7 +756,7 @@ impl Studio {
         )
         .labelled_by(grid.id)
         .on_hover_text("The size of one grid square, in video pixels");
-        if self.grid != before && self.persist_grid {
+        if self.grid != before && self.persist_settings {
             self.grid.save();
         }
     }
@@ -823,27 +881,7 @@ impl eframe::App for Studio {
             self.recorded = true;
             self.after_separate_edit(before.clone());
         }
-        egui::Panel::right("inspector")
-            .default_size(420.0)
-            .min_size(320.0)
-            .max_size(640.0)
-            .resizable(true)
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
-            .show(ui, |ui| {
-                // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
-                ui.set_min_width(ui.available_width());
-                self.panels.inspector.nodes_open = self.panels.nodes.slot_open();
-                let time = self.sim_time();
-                inspector::show(
-                    ui,
-                    &mut self.panels.inspector,
-                    &mut self.scene,
-                    &self.kit,
-                    &self.resolved,
-                    &self.selection,
-                    time,
-                )
-            });
+        self.inspector_panel(ui);
         if let Some(clip) = self.panels.inspector.clip.take()
             && let Some(audio) = &self.audio
         {
@@ -967,6 +1005,9 @@ pub(crate) fn clock(seconds: f64) -> String {
     format!("{}:{:02}.{:02}", hundredths / 6000, hundredths / 100 % 60, hundredths % 100)
 }
 
+/// How wide the toolbar's save status may be.
+const SAVE_STATUS_WIDTH: f32 = 180.0;
+
 fn file_label(path: &Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
@@ -978,6 +1019,68 @@ mod tests {
     use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
     use std::time::Duration;
+
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+
+    /// The studio's inspector beside an empty middle, in a wide window. The state keeps the
+    /// inspector's width as drawn.
+    fn inspector_harness(selected: ThingId) -> Harness<'static, (Studio, f32)> {
+        let mut studio = Studio::headless();
+        studio.selection.set(selected);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(theme::apply)
+            .build_ui_state(
+                |ui, (studio, width): &mut (Studio, f32)| {
+                    *width = studio.inspector_panel(ui);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                },
+                (studio, 0.0),
+            );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn the_inspector_width_holds_when_selecting_scene_settings() {
+        let mut h = inspector_harness(ThingId(2));
+        let ball = h.state().1;
+        h.state_mut().0.selection.set(ThingId::ROOT);
+        h.run();
+        let scene = h.state().1;
+        assert!((ball - scene).abs() <= 1.0, "a ball's inspector is {ball} wide, Scene settings' {scene}");
+    }
+
+    #[test]
+    fn a_long_save_status_does_not_reach_library() {
+        let mut studio = Studio::headless();
+        studio.path = Some(PathBuf::from(format!("/scenes/{}.ron", &"a long scene name ".repeat(7)[..116])));
+        assert_eq!(file_label(studio.path.as_ref().unwrap()).len(), 120);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1600.0, 60.0))
+            .with_max_steps(20)
+            .allow_missing_glyphs()
+            .with_context_setup(theme::apply)
+            .build_ui_state(|ui, studio: &mut Studio| studio.toolbar(ui), studio);
+        h.run();
+        let saved = |n: &egui_kittest::Node<'_>| {
+            n.accesskit_node().role() == egui::accesskit::Role::Label
+                && n.accesskit_node().value().is_some_and(|v| v.starts_with("Saved as"))
+        };
+        let status = h.root().children_recursive().find(saved).expect("the save status").rect();
+        let library = h.get_by_label("Library").rect();
+        assert!(
+            status.right() < library.left(),
+            "the status ends at {} and Library starts at {}",
+            status.right(),
+            library.left()
+        );
+    }
 
     #[test]
     fn a_new_caption_lands_in_the_middle_of_the_picture() {

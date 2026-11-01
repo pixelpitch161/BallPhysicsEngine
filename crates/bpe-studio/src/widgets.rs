@@ -94,6 +94,31 @@ pub struct GridCx<'a> {
     pub applies: &'a dyn Fn(&SettingDef) -> bool,
     /// Which group headings are folded shut. With none, headings have no fold arrow.
     pub folded: Option<&'a dyn Fn(&str) -> bool>,
+    /// How wide the label column is, from [`label_width`]. Labels wrap at it.
+    pub label_width: f32,
+}
+
+/// How wide the label column of every settings grid in a panel `panel` wide is. Every grid in
+/// the panel uses the same width, so the sliders line up from card to card.
+pub fn label_width(panel: f32) -> f32 {
+    (0.38 * panel).max(120.0)
+}
+
+/// A label in a grid's label column, `width` wide, wrapping when it is longer.
+pub fn grid_label(ui: &mut Ui, width: f32, text: &str) -> Response {
+    label_cell(ui, width, |ui| ui.add(egui::Label::new(text).wrap()))
+}
+
+/// A grid cell exactly `width` wide, laid out left to right. What it holds wraps rather than
+/// widening the column.
+pub fn label_cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), layout, |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        add(ui)
+    })
+    .inner
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -181,7 +206,7 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
             clicked = true;
         }
         let heading = RichText::new(group).strong().color(theme::MUTED);
-        let label = egui::Label::new(heading).selectable(false);
+        let label = egui::Label::new(heading).wrap().selectable(false);
         let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
         let dot = shut && changed;
         if dot {
@@ -228,6 +253,7 @@ pub fn settings_grid(
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
     applies: &dyn Fn(&SettingDef) -> bool,
+    label_width: f32,
     get: impl Fn(&str) -> Value,
 ) -> Vec<(&'static str, Value)> {
     let choices = TargetChoices::default();
@@ -239,6 +265,7 @@ pub fn settings_grid(
         locked: &|_| false,
         applies,
         folded: None,
+        label_width,
     };
     settings_grid_marked(ui, id, defs, get, &cx).changes
 }
@@ -265,11 +292,13 @@ pub fn settings_grid_marked(
                     shut = cx.folded.is_some_and(|folded| folded(group));
                     let changed = shut && group_changed(defs, group, &get, cx);
                     // A grid can't take spacing, so the heading carries its own air above.
-                    ui.vertical(|ui| {
-                        ui.add_space(10.0);
-                        if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
-                            out.folds.push((group, !shut));
-                        }
+                    label_cell(ui, cx.label_width, |ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(10.0);
+                            if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
+                                out.folds.push((group, !shut));
+                            }
+                        });
                     });
                     ui.end_row();
                 }
@@ -288,7 +317,7 @@ pub fn settings_grid_marked(
                     let inherited = (cx.inherited)(def.key);
                     let locked = (cx.locked)(def.key);
                     let unit = unit_for(def, &|k| Some(get(k)));
-                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx.choices);
+                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx);
                     match row {
                         RowAction::Nothing => {}
                         RowAction::Changed => out.changes.push((def.key, value)),
@@ -404,7 +433,7 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
     }
 }
 
-/// One grid row for `def`, in `unit`: the label (help on hover; a double-click or Alt+click puts
+/// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on hover; a double-click or Alt+click puts
 /// the value back to `inherited`, or the setting's default), a dot when the setting is
 /// `overridden`, a padlock when it is `locked` against the dice, and the widget for its type.
 /// The label's menu offers the lock on any setting the dice may pick.
@@ -417,65 +446,70 @@ pub fn setting(
     inherited: Option<&Value>,
     overridden: bool,
     locked: bool,
-    choices: &TargetChoices,
+    cx: &GridCx,
 ) -> RowAction {
     let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
     let mut action = RowAction::Nothing;
-    let name = ui
-        .horizontal(|ui| {
-            if overridden {
-                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
-                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
-                response.on_hover_text("Changed here: this thing's own value, not the module's.");
-            }
-            let name = label(ui, def.label, def.help);
-            if locked {
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
-                paint_padlock(ui.painter(), rect, theme::MUTED);
-                response.on_hover_text("Locked: the dice leave this setting alone.");
-            }
-            if overridden || def.flags.random {
-                name.context_menu(|ui| {
-                    if overridden {
-                        if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
-                            action = RowAction::Reset;
-                            ui.close();
-                        }
-                        if ui
-                            .button("Push to module")
-                            .on_hover_text("Give every thing using the module this value")
-                            .clicked()
-                        {
-                            action = RowAction::Push;
-                            ui.close();
-                        }
+    let name = label_cell(ui, cx.label_width, |ui| {
+        if overridden {
+            let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
+            ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
+            response.on_hover_text("Changed here: this thing's own value, not the module's.");
+        }
+        // The padlock keeps its room after a label that wraps.
+        let padlock = if locked { 12.0 + ui.spacing().item_spacing.x } else { 0.0 };
+        let room = Vec2::new((ui.available_width() - padlock).max(0.0), 0.0);
+        let name = ui
+            .allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                label(ui, def.label, def.help)
+            })
+            .inner;
+        if locked {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
+            paint_padlock(ui.painter(), rect, theme::MUTED);
+            response.on_hover_text("Locked: the dice leave this setting alone.");
+        }
+        if overridden || def.flags.random {
+            name.context_menu(|ui| {
+                if overridden {
+                    if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
+                        action = RowAction::Reset;
+                        ui.close();
                     }
-                    if def.flags.random {
-                        if locked {
-                            if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
-                                action = RowAction::Lock(false);
-                                ui.close();
-                            }
-                        } else if ui
-                            .button("Lock when randomizing")
-                            .on_hover_text("Keep this setting as it is when the dice roll")
-                            .clicked()
-                        {
-                            action = RowAction::Lock(true);
+                    if ui
+                        .button("Push to module")
+                        .on_hover_text("Give every thing using the module this value")
+                        .clicked()
+                    {
+                        action = RowAction::Push;
+                        ui.close();
+                    }
+                }
+                if def.flags.random {
+                    if locked {
+                        if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
+                            action = RowAction::Lock(false);
                             ui.close();
                         }
+                    } else if ui
+                        .button("Lock when randomizing")
+                        .on_hover_text("Keep this setting as it is when the dice roll")
+                        .clicked()
+                    {
+                        action = RowAction::Lock(true);
+                        ui.close();
                     }
-                });
-            }
-            name
-        })
-        .inner;
+                }
+            });
+        }
+        name
+    });
     let mut changed = false;
     let response = ui
         .horizontal(|ui| {
-            let r = widget(ui, def, unit, value, name.id, choices);
+            let r = widget(ui, def, unit, value, name.id, cx.choices);
             changed |= r.changed();
             r
         })
@@ -508,7 +542,7 @@ pub fn paint_padlock(painter: &egui::Painter, rect: egui::Rect, color: Color32) 
 
 /// The label cell, clickable for the reset shortcut.
 fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
-    let response = ui.add(egui::Label::new(text).selectable(false).sense(Sense::click()));
+    let response = ui.add(egui::Label::new(text).wrap().selectable(false).sense(Sense::click()));
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
 
@@ -849,6 +883,12 @@ pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
+        assert_eq!(label_width(200.0), 120.0);
+        assert_eq!(label_width(500.0), 190.0);
+    }
     use bpe_core::Settings;
 
     #[test]
@@ -1061,6 +1101,7 @@ mod tests {
                     locked: &|_| false,
                     applies: &|_| true,
                     folded: None,
+                    label_width: label_width(420.0),
                 };
                 let got = settings_grid_marked(
                     ui,
@@ -1178,6 +1219,7 @@ mod tests {
                 locked: &|_| false,
                 applies: &applies,
                 folded: Some(&|_| false),
+                label_width: label_width(420.0),
             };
             settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });

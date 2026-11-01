@@ -11,7 +11,7 @@ use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
     BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
-    TargetChoices, fold_toggle, plays_built_in, settings_grid, settings_grid_marked,
+    TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid, settings_grid_marked,
 };
 use bpe_core::{
     Address, Attach, Bus, BusId, Chord, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
@@ -216,6 +216,10 @@ pub fn show(
     selection: &Selection,
     time: f64,
 ) -> bool {
+    // Nothing inside may widen the panel: labels wrap at one width, the same in every card.
+    let panel = ui.available_width();
+    ui.set_max_width(panel);
+    let lw = label_width(panel);
     let reg = &kit.registry;
     let Some((id, thing)) = selection.primary.and_then(|id| scene.things.get(&id).map(|t| (id, t.clone()))) else {
         ui.add_space(8.0);
@@ -240,8 +244,8 @@ pub fn show(
         }
         // ---------- header ----------
         // Row 1: the name, the kind and the eye; row 2: the tags.
-        egui::Grid::new(("header", id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
-            let name_label = ui.label("Name");
+        egui::Grid::new(("header", id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(lw).show(ui, |ui| {
+            let name_label = grid_label(ui, lw, "Name");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Hiding the root would hide the whole scene; its card already says what it is.
                 if id != ThingId::ROOT {
@@ -257,8 +261,7 @@ pub fn show(
                 }
             });
             ui.end_row();
-            let tags_label = ui
-                .label("Tags")
+            let tags_label = grid_label(ui, lw, "Tags")
                 .on_hover_text("Words that rules and other things can pick this out by, separated by spaces");
             let mut tags = thing.tags.iter().cloned().collect::<Vec<_>>().join(" ");
             let tag_edit = ui
@@ -312,6 +315,7 @@ pub fn show(
                 locked: &locked,
                 applies: &applies,
                 folded: Some(&folded),
+                label_width: lw,
             };
             let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
             fold_groups(inspector, (id, None), &out.folds);
@@ -333,7 +337,7 @@ pub fn show(
                 });
                 card_header(ui, inspector, Card::Placement, &header.response);
                 if header.inner {
-                    placement_rows(ui, scene, kind, &thing, &mut edits);
+                    placement_rows(ui, scene, kind, &thing, lw, &mut edits);
                 }
             });
         }
@@ -636,6 +640,7 @@ pub fn show(
                             locked: &locked,
                             applies: &applies,
                             folded: Some(&folded),
+                            label_width: lw,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
@@ -691,6 +696,7 @@ pub fn show(
                             locked: &locked,
                             applies: &applies,
                             folded: Some(&folded),
+                            label_width: lw,
                         };
                         let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
@@ -745,7 +751,7 @@ pub fn show(
                         };
                         let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| Some(get(k)));
                         ui.add_enabled_ui(false, |ui| {
-                            settings_grid(ui, ("slot", id, slot), defs, &applies, get);
+                            settings_grid(ui, ("slot", id, slot), defs, &applies, lw, get);
                         });
                     }
                 }
@@ -1042,13 +1048,13 @@ fn placement_rows(
     scene: &Scene,
     kind: &dyn bpe_core::ThingKind,
     thing: &bpe_core::Thing,
+    lw: f32,
     edits: &mut Vec<Edit>,
 ) {
-    egui::Grid::new(("placement", thing.id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(96.0).show(ui, |ui| {
-        position_rows(ui, scene, thing, edits);
+    egui::Grid::new(("placement", thing.id)).num_columns(2).spacing([12.0, 6.0]).min_col_width(lw).show(ui, |ui| {
+        position_rows(ui, scene, thing, lw, edits);
         if !matches!(kind.id(), "liquid" | "swarm") {
-            let label = ui
-                .label("Stick to screen")
+            let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a caption");
             let mut on = thing.sticks_to_screen(kind);
             if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
@@ -1061,11 +1067,11 @@ fn placement_rows(
 
 /// Where the thing sits and how it hangs off its parent: Position (for a grouped thing),
 /// Rotation, Attach, and a rider's Offset, Turns with it and Item.
-fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mut Vec<Edit>) {
+fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, edits: &mut Vec<Edit>) {
     let mut t = thing.transform;
     if let Attach::Group = thing.attach {
-        let position =
-            ui.label("Position").on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
+        let position = grid_label(ui, lw, "Position")
+            .on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
         let moved = ui
             .horizontal(|ui| {
                 let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
@@ -1078,7 +1084,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mu
             edits.push(Edit::Transform(t));
         }
     }
-    let rotation = ui.label("Rotation").on_hover_text("How far it is turned, clockwise");
+    let rotation = grid_label(ui, lw, "Rotation").on_hover_text("How far it is turned, clockwise");
     let mut degrees = t.rotation.to_degrees();
     let turned = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
     if turned {
@@ -1089,7 +1095,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mu
 
     let parent = thing.parent.unwrap_or(ThingId::ROOT);
     let rides = thing.rides();
-    ui.label("Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");
+    grid_label(ui, lw, "Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");
     ui.horizontal(|ui| {
         if ui.selectable_label(!rides, "Grouped").clicked() && rides {
             edits.push(Edit::Attach(Attach::Group));
@@ -1103,7 +1109,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mu
 
     if let Attach::Ride { offset, turn_with_parent, item } = thing.attach {
         let mut o = offset;
-        let label = ui.label("Offset").on_hover_text("Where it sits from its parent, in video pixels");
+        let label = grid_label(ui, lw, "Offset").on_hover_text("Where it sits from its parent, in video pixels");
         let moved = ui
             .horizontal(|ui| {
                 let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
@@ -1112,14 +1118,15 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, edits: &mu
             })
             .inner;
         ui.end_row();
-        let label = ui.label("Turns with it").on_hover_text("Swing around as the parent turns");
+        let label = grid_label(ui, lw, "Turns with it").on_hover_text("Swing around as the parent turns");
         let mut turns = turn_with_parent;
         let turned = ui.checkbox(&mut turns, "").labelled_by(label.id).changed();
         ui.end_row();
         let mut picked = item;
         let mut item_changed = false;
         if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
-            let label = ui.label("Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
+            let label =
+                grid_label(ui, lw, "Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
             let mut n: i64 = item.map_or(-1, |i| i as i64);
             if ui.add(DragValue::new(&mut n).range(-1..=9999)).labelled_by(label.id).changed() {
                 picked = (n >= 0).then_some(n as u32);
@@ -3266,6 +3273,23 @@ mod tests {
             scene.add_slot(&reg, ThingId(2), slot).unwrap();
         }
         scene
+    }
+
+    #[test]
+    fn slider_columns_line_up_across_cards() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        h.get_by_label("Trail").click();
+        h.run();
+        let glow = slider_rect(&h, "Glow");
+        let length = slider_rect(&h, "Length");
+        assert!(
+            (glow.left() - length.left()).abs() <= 1.0,
+            "Glow starts at {}, Length at {}",
+            glow.left(),
+            length.left()
+        );
     }
 
     #[test]
