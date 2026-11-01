@@ -51,6 +51,30 @@ pub struct Inspector {
     pub octave: Option<i8>,
     /// An effects list's "Open nodes" was pressed: the node panel should open on those effects.
     pub fx_request: Option<FxPlace>,
+    /// The card the jump bar was clicked on, scrolled to when its header is next drawn.
+    pub jump_to: Option<Card>,
+    /// Each card header's top in the last frame, relative to the scroll area's top.
+    pub card_tops: Vec<(Card, f32)>,
+}
+
+/// One of the inspector's cards, as the jump bar names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Card {
+    /// The kind's own settings ("Scene settings" for the root).
+    Thing,
+    Placement,
+    Slot(SlotId),
+}
+
+impl Card {
+    /// The key that folds the card shut in [`Inspector::collapsed`].
+    fn fold_key(self, id: ThingId) -> (ThingId, Option<SlotId>, &'static str) {
+        match self {
+            Card::Thing => (id, None, ""),
+            Card::Placement => (id, None, "placement"),
+            Card::Slot(slot) => (id, Some(slot), ""),
+        }
+    }
 }
 
 /// A card's Nodes button.
@@ -207,6 +231,8 @@ pub fn show(
     let bpm = bpe_kit::music::root_settings(resolved).bpm;
     let mut edits = Vec::new();
 
+    let marked = jump_bar(ui, inspector, id, kind, &thing);
+    inspector.card_tops.clear();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if selected.len() > 1 {
             ui.label(RichText::new(format!("Editing {} things", selected.len())).color(theme::MUTED).small())
@@ -252,17 +278,17 @@ pub fn show(
         card(ui, |ui| {
             // The kind's name alone: "Balls", "Arena", and "Scene settings" for the root.
             let title = kind.name().to_owned();
-            let open = ui
-                .horizontal_wrapped(|ui| {
-                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
-                    ui.label(RichText::new(&title).strong());
-                    ui.add_space(8.0);
-                    if dice_button(ui, "Randomize these settings").clicked() {
-                        edits.push(Edit::RollCard(None));
-                    }
-                    open
-                })
-                .inner;
+            let header = ui.horizontal_wrapped(|ui| {
+                let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
+                ui.label(RichText::new(&title).strong());
+                ui.add_space(8.0);
+                if dice_button(ui, "Randomize these settings").clicked() {
+                    edits.push(Edit::RollCard(None));
+                }
+                open
+            });
+            card_header(ui, inspector, Card::Thing, &header.response);
+            let open = header.inner;
             if !open {
                 return;
             }
@@ -300,14 +326,13 @@ pub fn show(
         if id != ThingId::ROOT && kind.id() != "camera" {
             ui.add_space(6.0);
             card(ui, |ui| {
-                let open = ui
-                    .horizontal(|ui| {
-                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
-                        ui.label(RichText::new("Placement").strong());
-                        open
-                    })
-                    .inner;
-                if open {
+                let header = ui.horizontal(|ui| {
+                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
+                    ui.label(RichText::new("Placement").strong());
+                    open
+                });
+                card_header(ui, inspector, Card::Placement, &header.response);
+                if header.inner {
                     placement_rows(ui, scene, kind, &thing, &mut edits);
                 }
             });
@@ -345,169 +370,161 @@ pub fn show(
                     SlotLink::Linked { overrides, .. } => Some(overrides),
                     _ => None,
                 };
-                let open = ui
-                    .horizontal_wrapped(|ui| {
-                        let title = kind.slot_label(slot);
-                        let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), title);
-                        ui.label(RichText::new(title).strong());
-                        // The Type menu: what kind of module fills the slot, when more than one fits.
-                        let fitting: Vec<&dyn ModuleKind> = reg.kinds_fitting(slot, kind).collect();
-                        let shown = shown_module.and_then(|m| scene.library.modules.get(&m));
-                        if let Some(m) = shown
-                            && let Some(current) = reg.module(&m.kind)
-                            && fitting.len() > 1
+                let header = ui.horizontal_wrapped(|ui| {
+                    let title = kind.slot_label(slot);
+                    let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), title);
+                    ui.label(RichText::new(title).strong());
+                    // The Type menu: what kind of module fills the slot, when more than one fits.
+                    let fitting: Vec<&dyn ModuleKind> = reg.kinds_fitting(slot, kind).collect();
+                    let shown = shown_module.and_then(|m| scene.library.modules.get(&m));
+                    if let Some(m) = shown
+                        && let Some(current) = reg.module(&m.kind)
+                        && fitting.len() > 1
+                    {
+                        let inherited = matches!(link, SlotLink::Inherit);
+                        ui.add_space(4.0);
+                        let label = ui.label(RichText::new("Type").small().color(theme::MUTED));
+                        ui.add_enabled_ui(!inherited, |ui| {
+                            ui.menu_button(current.name(), |ui| {
+                                ui.set_min_width(180.0);
+                                let users = scene.users_of(m.id).len();
+                                if users > 1 {
+                                    ui.label(
+                                        RichText::new(format!("Changes all {users} things using {}", m.name))
+                                            .color(theme::MUTED),
+                                    );
+                                }
+                                // Only kinds every thing using the changed modules takes.
+                                let targets = type_targets(scene, &selected, id, slot);
+                                let offered = fitting.iter().filter(|k| {
+                                    k.id() == current.id()
+                                        || targets.iter().all(|t| scene.kind_suits_users(reg, *t, k.id()))
+                                });
+                                for k in offered {
+                                    if ui
+                                        .selectable_label(k.id() == current.id(), k.name())
+                                        .on_hover_text(k.help())
+                                        .clicked()
+                                    {
+                                        edits.push(Edit::SetKind(slot, k.id()));
+                                        ui.close();
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(label.id)
+                            .on_hover_text("What kind of module fills this slot")
+                            .on_disabled_hover_text("Make own first: this slot follows the folder above");
+                        });
+                    }
+                    // The picker: a button that reads the slot's state and drops down the choices.
+                    ui.menu_button(state, |ui| {
+                        for m in
+                            scene.library.modules.values().filter(|m| m.slot == slot && kind.accepts(slot, &m.kind))
                         {
-                            let inherited = matches!(link, SlotLink::Inherit);
-                            ui.add_space(4.0);
-                            let label = ui.label(RichText::new("Type").small().color(theme::MUTED));
-                            ui.add_enabled_ui(!inherited, |ui| {
-                                ui.menu_button(current.name(), |ui| {
-                                    ui.set_min_width(180.0);
-                                    let users = scene.users_of(m.id).len();
-                                    if users > 1 {
-                                        ui.label(
-                                            RichText::new(format!("Changes all {users} things using {}", m.name))
-                                                .color(theme::MUTED),
-                                        );
+                            let current = matches!(link, SlotLink::Linked { module, .. } if *module == m.id);
+                            if ui.selectable_label(current, &m.name).clicked() {
+                                edits.push(Edit::Link(slot, m.id));
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        // One kind: a plain button. Several: a submenu naming each kind. A new
+                        // module copies the shown one's settings, all of them when it is of the
+                        // same kind, else the ones both kinds have (a look's colour and glow).
+                        let kinds = &fitting;
+                        if let [only] = kinds[..] {
+                            if ui.button(format!("New {title} module…")).clicked() {
+                                edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
+                                ui.close();
+                            }
+                        } else if !kinds.is_empty() {
+                            ui.menu_button(format!("New {title} module"), |ui| {
+                                ui.set_min_width(180.0);
+                                for kind in kinds {
+                                    if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
+                                        edits.push(Edit::NewModule { slot, kind: kind.id(), copy_from: shown_module });
+                                        ui.close();
                                     }
-                                    // Only kinds every thing using the changed modules takes.
-                                    let targets = type_targets(scene, &selected, id, slot);
-                                    let offered = fitting.iter().filter(|k| {
-                                        k.id() == current.id()
-                                            || targets.iter().all(|t| scene.kind_suits_users(reg, *t, k.id()))
-                                    });
-                                    for k in offered {
-                                        if ui
-                                            .selectable_label(k.id() == current.id(), k.name())
-                                            .on_hover_text(k.help())
-                                            .clicked()
-                                        {
-                                            edits.push(Edit::SetKind(slot, k.id()));
-                                            ui.close();
-                                        }
-                                    }
-                                })
-                                .response
-                                .labelled_by(label.id)
-                                .on_hover_text("What kind of module fills this slot")
-                                .on_disabled_hover_text("Make own first: this slot follows the folder above");
+                                }
                             });
                         }
-                        // The picker: a button that reads the slot's state and drops down the choices.
-                        ui.menu_button(state, |ui| {
-                            for m in
-                                scene.library.modules.values().filter(|m| m.slot == slot && kind.accepts(slot, &m.kind))
-                            {
-                                let current = matches!(link, SlotLink::Linked { module, .. } if *module == m.id);
-                                if ui.selectable_label(current, &m.name).clicked() {
-                                    edits.push(Edit::Link(slot, m.id));
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            // One kind: a plain button. Several: a submenu naming each kind. A new
-                            // module copies the shown one's settings, all of them when it is of the
-                            // same kind, else the ones both kinds have (a look's colour and glow).
-                            let kinds = &fitting;
-                            if let [only] = kinds[..] {
-                                if ui.button(format!("New {title} module…")).clicked() {
-                                    edits.push(Edit::NewModule { slot, kind: only.id(), copy_from: shown_module });
-                                    ui.close();
-                                }
-                            } else if !kinds.is_empty() {
-                                ui.menu_button(format!("New {title} module"), |ui| {
-                                    ui.set_min_width(180.0);
-                                    for kind in kinds {
-                                        if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
-                                            edits.push(Edit::NewModule {
-                                                slot,
-                                                kind: kind.id(),
-                                                copy_from: shown_module,
-                                            });
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                            }
-                            if let SlotLink::Linked { .. } = link {
-                                if ui
-                                    .button("Make unique")
-                                    .on_hover_text(
-                                        "This thing gets its own copy of the module, with its changes baked in",
-                                    )
-                                    .clicked()
-                                {
-                                    edits.push(Edit::MakeUnique(slot));
-                                    ui.close();
-                                }
-                                if overrides.is_some_and(|o| !o.is_empty()) {
-                                    if ui
-                                        .button("Push all to module")
-                                        .on_hover_text("Every thing using the module gets this thing's changes")
-                                        .clicked()
-                                    {
-                                        edits.push(Edit::PushAll(slot));
-                                        ui.close();
-                                    }
-                                    if ui
-                                        .button("Reset all")
-                                        .on_hover_text("Drop this thing's changes and follow the module")
-                                        .clicked()
-                                    {
-                                        edits.push(Edit::ResetAll(slot));
-                                        ui.close();
-                                    }
-                                }
-                            }
-                            if let Some(m) = shown_module
-                                && ui.button("Open in Library").clicked()
-                            {
-                                inspector.open_library = Some(m);
-                                ui.close();
-                            }
-                            ui.separator();
-                            if folder_above(scene, reg, id, slot).is_some()
-                                && ui
-                                    .selectable_label(matches!(link, SlotLink::Inherit), "Follow folder")
-                                    .on_hover_text("Use whatever the folder above uses")
-                                    .clicked()
-                            {
-                                edits.push(Edit::Follow(slot));
-                                ui.close();
-                            }
+                        if let SlotLink::Linked { .. } = link {
                             if ui
-                                .selectable_label(matches!(link, SlotLink::Off), "Remove")
-                                .on_hover_text("Nothing fills this slot")
+                                .button("Make unique")
+                                .on_hover_text("This thing gets its own copy of the module, with its changes baked in")
                                 .clicked()
                             {
-                                edits.push(Edit::Off(slot));
+                                edits.push(Edit::MakeUnique(slot));
                                 ui.close();
                             }
-                        })
-                        .response
-                        .on_hover_text("Which module fills this slot");
-                        ui.add_space(8.0);
-                        let nodes = NodesSwitch {
-                            enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
-                            open: inspector.nodes_open == Some((id, slot)),
-                            hover: no_nodes_yet(slot),
-                        };
-                        if nodes_button(ui, nodes) {
-                            inspector.nodes_request = Some((id, slot));
-                        }
-                        let editable = matches!(
-                            write_target(scene, resolved, id, slot),
-                            Some(Write::Module(_) | Write::Override(..))
-                        );
-                        if editable && slot != SlotId::Rules {
-                            ui.add_space(8.0);
-                            if dice_button(ui, "Randomize these settings").clicked() {
-                                edits.push(Edit::RollCard(Some(slot)));
+                            if overrides.is_some_and(|o| !o.is_empty()) {
+                                if ui
+                                    .button("Push all to module")
+                                    .on_hover_text("Every thing using the module gets this thing's changes")
+                                    .clicked()
+                                {
+                                    edits.push(Edit::PushAll(slot));
+                                    ui.close();
+                                }
+                                if ui
+                                    .button("Reset all")
+                                    .on_hover_text("Drop this thing's changes and follow the module")
+                                    .clicked()
+                                {
+                                    edits.push(Edit::ResetAll(slot));
+                                    ui.close();
+                                }
                             }
                         }
-                        open
+                        if let Some(m) = shown_module
+                            && ui.button("Open in Library").clicked()
+                        {
+                            inspector.open_library = Some(m);
+                            ui.close();
+                        }
+                        ui.separator();
+                        if folder_above(scene, reg, id, slot).is_some()
+                            && ui
+                                .selectable_label(matches!(link, SlotLink::Inherit), "Follow folder")
+                                .on_hover_text("Use whatever the folder above uses")
+                                .clicked()
+                        {
+                            edits.push(Edit::Follow(slot));
+                            ui.close();
+                        }
+                        if ui
+                            .selectable_label(matches!(link, SlotLink::Off), "Remove")
+                            .on_hover_text("Nothing fills this slot")
+                            .clicked()
+                        {
+                            edits.push(Edit::Off(slot));
+                            ui.close();
+                        }
                     })
-                    .inner;
+                    .response
+                    .on_hover_text("Which module fills this slot");
+                    ui.add_space(8.0);
+                    let nodes = NodesSwitch {
+                        enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
+                        open: inspector.nodes_open == Some((id, slot)),
+                        hover: no_nodes_yet(slot),
+                    };
+                    if nodes_button(ui, nodes) {
+                        inspector.nodes_request = Some((id, slot));
+                    }
+                    let editable =
+                        matches!(write_target(scene, resolved, id, slot), Some(Write::Module(_) | Write::Override(..)));
+                    if editable && slot != SlotId::Rules {
+                        ui.add_space(8.0);
+                        if dice_button(ui, "Randomize these settings").clicked() {
+                            edits.push(Edit::RollCard(Some(slot)));
+                        }
+                    }
+                    open
+                });
+                card_header(ui, inspector, Card::Slot(slot), &header.response);
+                let open = header.inner;
                 let problems: Vec<String> = resolved
                     .problems
                     .iter()
@@ -777,6 +794,13 @@ pub fn show(
             .on_disabled_hover_text("Every slot this kind can use is already shown");
         });
     });
+    // A jump to a card that wasn't drawn (it went away) is dropped.
+    inspector.jump_to = None;
+    // The bar marked the card at the top as of the last frame; once scrolling has moved
+    // another card there, draw again so the bar catches up.
+    if card_at_top(&inspector.card_tops) != marked {
+        ui.ctx().request_repaint();
+    }
 
     let mut changed = false;
     for edit in edits {
@@ -1539,6 +1563,55 @@ fn make_own(ui: &mut Ui) -> egui::Response {
     ui.button("Make own").on_hover_text("Give this thing its own copy, so changes here are its own")
 }
 
+/// The row of buttons above the inspector that jump to its cards: the thing's own card, then
+/// one per slot it has. The card whose header has scrolled to the top (or just past) is
+/// selected. A click unfolds the card and scrolls it to the top when it's next drawn. Returns
+/// the selected card.
+fn jump_bar(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    id: ThingId,
+    kind: &dyn bpe_core::ThingKind,
+    thing: &bpe_core::Thing,
+) -> Card {
+    let at_top = card_at_top(&inspector.card_tops);
+    // Placement has no button: it sits just under the thing's own card.
+    let cards = std::iter::once((Card::Thing, "Thing")).chain(
+        SlotId::ALL.into_iter().filter(|s| thing.slots.contains_key(s)).map(|s| (Card::Slot(s), kind.slot_label(s))),
+    );
+    ui.horizontal_wrapped(|ui| {
+        for (card, label) in cards {
+            if ui.selectable_label(card == at_top, label).clicked() {
+                inspector.collapsed.remove(&card.fold_key(id));
+                inspector.jump_to = Some(card);
+            }
+        }
+    });
+    ui.add_space(4.0);
+    at_top
+}
+
+/// The last card whose header is at or above the scroll area's top, or the first card when
+/// none is. Placement counts as part of the thing's own card.
+fn card_at_top(tops: &[(Card, f32)]) -> Card {
+    match tops.iter().rfind(|(_, top)| *top <= 1.0).map_or(Card::Thing, |(c, _)| *c) {
+        Card::Placement => Card::Thing,
+        card => card,
+    }
+}
+
+/// Notes where a card's header was drawn, and scrolls it to the top when the jump bar asked to.
+fn card_header(ui: &Ui, inspector: &mut Inspector, card: Card, header: &egui::Response) {
+    inspector.card_tops.push((card, header.rect.top() - ui.clip_rect().top()));
+    if inspector.jump_to == Some(card) {
+        // egui leaves the item spacing above a rect scrolled to the top; shifting the rect down
+        // by that much puts the header's top right at the scroll area's top.
+        let gap = ui.spacing().item_spacing.y;
+        ui.scroll_to_rect(header.rect.translate(egui::vec2(0.0, gap)), Some(egui::Align::TOP));
+        inspector.jump_to = None;
+    }
+}
+
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     egui::Frame::new().fill(theme::CARD).corner_radius(8).inner_margin(10).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1580,6 +1653,10 @@ mod tests {
     }
 
     fn harness_of(scene: Scene, selected: Option<ThingId>) -> Harness<'static, State> {
+        harness_sized(scene, selected, 4000.0)
+    }
+
+    fn harness_sized(scene: Scene, selected: Option<ThingId>, height: f32) -> Harness<'static, State> {
         let kit = bpe_kit::kit();
         let resolved = resolve_scene(&scene, &kit.registry);
         let mut selection = Selection::default();
@@ -1588,7 +1665,7 @@ mod tests {
         }
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 4000.0))
+            .with_size(egui::vec2(420.0, height))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
@@ -2196,7 +2273,7 @@ mod tests {
         let s = h.state();
         let music = linked(&s.scene, ThingId::ROOT, SlotId::Sound);
         assert!(matches!(s.scene.library.modules[&music].kind.as_str(), "sound.drums" | "sound.melody"));
-        assert!(h.query_by_label("Music").is_some(), "the card is titled Music");
+        assert!(h.query_by_role_and_label(Role::Label, "Music").is_some(), "the card is titled Music");
         let state = s.scene.library.modules[&music].name.clone();
         h.get_by_label(&state).click();
         h.run();
@@ -2747,7 +2824,8 @@ mod tests {
         let mut h = harness_of(scene, Some(emitter));
         h.get_by_role_and_label(Role::Button, "Target").click();
         h.run();
-        h.get_by_label("Thing").hover();
+        // The Target menu's Thing, not the jump bar's.
+        h.get_all_by_label("Thing").last().expect("the Thing submenu").hover();
         h.run();
         assert!(h.query_by_label("Ball").is_some(), "the ball is offered by name");
         h.get_by_label("Tag").hover();
@@ -3158,5 +3236,92 @@ mod tests {
         h.get_by_label("Show Placement").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
+    }
+
+    const BAR_LABELS: [&str; 9] =
+        ["Thing", "Look", "Trail", "Motion", "Bounce", "Sound", "Particles", "Rules", "Shader"];
+
+    /// The jump bar's buttons, in order, each with whether it is selected.
+    fn jump_bar(h: &Harness<'_, State>) -> Vec<(String, bool)> {
+        h.get_all_by_role(Role::Button)
+            .filter_map(|n| {
+                let node = n.accesskit_node();
+                let label = node.label()?;
+                let toggled = node.toggled()?;
+                BAR_LABELS.contains(&label.as_str()).then(|| (label, toggled == egui::accesskit::Toggled::True))
+            })
+            .collect()
+    }
+
+    fn the_bar_button<'h>(h: &'h Harness<'_, State>, label: &'h str) -> egui_kittest::Node<'h> {
+        h.get_all_by_role_and_label(Role::Button, label)
+            .find(|n| n.accesskit_node().toggled().is_some())
+            .expect("the bar's button")
+    }
+
+    fn a_ball_with_every_slot() -> Scene {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        for slot in [SlotId::Trail, SlotId::Particles, SlotId::Rules] {
+            scene.add_slot(&reg, ThingId(2), slot).unwrap();
+        }
+        scene
+    }
+
+    #[test]
+    fn the_jump_bar_lists_thing_then_the_slots_in_order() {
+        let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
+        let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Sound", "Particles", "Rules"]);
+        assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
+    }
+
+    #[test]
+    fn the_jump_bar_unfolds_and_scrolls_to_sound() {
+        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
+        h.state_mut().inspector.collapsed.insert((ThingId(2), Some(SlotId::Sound), ""));
+        h.run();
+        assert!(h.query_by_label("Show Sound").is_some(), "the Sound card starts folded");
+        the_bar_button(&h, "Sound").click();
+        h.run();
+        let s = h.state();
+        assert!(!s.inspector.collapsed.contains(&(ThingId(2), Some(SlotId::Sound), "")), "the Sound card is open");
+        assert!(s.inspector.jump_to.is_none());
+        let top = s.inspector.card_tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Sound)).expect("Sound's top").1;
+        assert!(top.abs() <= 2.0, "Sound's header is at the top of the scroll area, at {top}");
+        // The header's own rect sits just under the bar, where the scroll area starts.
+        let header = h.get_by_label("Hide Sound").rect();
+        let bar = the_bar_button(&h, "Thing").rect();
+        assert!(header.top() > bar.bottom() && header.top() < bar.bottom() + 60.0, "{header:?} under {bar:?}");
+        let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
+        assert_eq!(selected, ["Sound"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
+    }
+
+    #[test]
+    fn the_jump_bar_marks_the_card_at_the_top_while_scrolling() {
+        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
+        // Scroll down until Look's header has passed the top but Trail's hasn't.
+        for _ in 0..200 {
+            let tops = &h.state().inspector.card_tops;
+            let top_of = |card| tops.iter().find(|(c, _)| *c == card).map(|(_, t)| *t);
+            if top_of(Card::Slot(SlotId::Look)).is_some_and(|t| t < -1.0) {
+                break;
+            }
+            h.hover_at(egui::pos2(200.0, 400.0));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: Modifiers::NONE,
+            });
+            h.run();
+        }
+        let tops = &h.state().inspector.card_tops;
+        let look = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Look)).unwrap().1;
+        let trail = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Trail)).unwrap().1;
+        assert!(look < -1.0 && trail > 1.0, "scrolled past Look's header but not Trail's: {look}, {trail}");
+        let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
+        assert_eq!(selected, ["Look"]);
     }
 }
