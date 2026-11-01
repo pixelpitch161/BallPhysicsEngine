@@ -176,9 +176,9 @@ It changes to:
   Which hits, Level, Chords, Other balls, Against some things, Variation, Channel, Blending. A
   prefixed paint's variation (for example "Outline colours variation") sorts with Variation.
   Unknown groups go last in appearance order, and a debug assert names them.
-- A new `SettingDef` flag, `folded: bool` (derive: `folded`), marks a group as folded when nobody
-  has opened it yet: Variation, Blending, Other balls, Against some things, Channel.
-  `Inspector.collapsed` keeps working, now seeded from the defaults with an explicit-open set.
+- A fixed list, `FOLDED_SECTIONS` (beside `SECTION_ORDER` in `bpe_core::settings`), names the
+  groups that start folded until someone opens them: Variation, Blending, Other balls, Against
+  some things, Channel. `Inspector.collapsed` keeps working, with an explicit-open set for these.
 - A folded group with any row not at its default (a value, a keyframe track or a pulse) shows a
   small accent dot after its heading.
 
