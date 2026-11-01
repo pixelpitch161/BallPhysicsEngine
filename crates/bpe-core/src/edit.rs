@@ -2,8 +2,9 @@
 //! nothing.
 
 use crate::{
-    Address, Attach, Instrument, InstrumentId, InstrumentRef, KindId, Module, ModuleId, Owner, Params, Progression,
-    ProgressionId, ProgressionRef, Registry, Scene, SettingValue, SlotId, SlotLink, Thing, ThingId, Value, ValueType,
+    Address, Attach, Instrument, InstrumentId, InstrumentRef, KindId, Module, ModuleGraph, ModuleId, Owner, Params,
+    Progression, ProgressionId, ProgressionRef, Registry, Scene, SettingValue, SlotId, SlotLink, Stash, Thing, ThingId,
+    Value, ValueType,
 };
 use glam::Vec2;
 use std::collections::BTreeSet;
@@ -20,6 +21,7 @@ pub enum EditError {
     Root,
     WouldLoop,
     SlotNotSupported(SlotId),
+    /// The module or kind is made for a different slot.
     WrongSlot,
     NotLinked,
     /// These things still link the module.
@@ -219,6 +221,150 @@ impl Scene {
             return Err(EditError::SlotNotSupported(slot));
         }
         thing.slots.entry(slot).or_insert(SlotLink::Inherit);
+        Ok(())
+    }
+
+    /// Turns module `m` into a module of `kind` (of the same slot) in place. Settings, keyframes,
+    /// pulses, locks and per-thing changes the new kind also has stay; the rest are set aside in
+    /// the module's stash under the old kind, and anything stashed earlier under `kind` comes
+    /// back wherever the key is still free. Nothing changes if the edit is refused.
+    pub fn set_module_kind(&mut self, reg: &Registry, m: ModuleId, kind: &str) -> Result<(), EditError> {
+        let module = self.library.modules.get(&m).ok_or(EditError::MissingModule(m))?;
+        let new = reg.module(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
+        if new.slot() != module.slot {
+            return Err(EditError::WrongSlot);
+        }
+        if module.kind == kind {
+            return Ok(());
+        }
+        let (slot, old_kind) = (module.slot, module.kind.clone());
+        let users = self.users_of(m);
+        let accepts = |key: &str, v: &Value| new.settings().iter().any(|d| d.key == key && d.ty.accepts(v));
+        let has = |key: &str| new.settings().iter().any(|d| d.key == key);
+        let mut out = Stash::default();
+
+        // 1. The module's own settings.
+        let module = self.library.modules.get_mut(&m).expect("checked above");
+        let kept = reg.carry_over(&module.params, kind);
+        for (k, v) in std::mem::take(&mut module.params).0 {
+            if kept.get(&k).is_none() {
+                out.params.set(&k, v);
+            }
+        }
+        module.params = kept;
+
+        // 3. Each linked thing's changes.
+        for &t in &users {
+            if let Some(SlotLink::Linked { overrides, .. }) =
+                self.things.get_mut(&t).and_then(|t| t.slots.get_mut(&slot))
+            {
+                let kept = reg.carry_over(overrides, kind);
+                let mut dropped = Params::default();
+                for (k, v) in std::mem::take(overrides).0 {
+                    if kept.get(&k).is_none() {
+                        dropped.set(&k, v);
+                    }
+                }
+                *overrides = kept;
+                if !dropped.is_empty() {
+                    out.overrides.insert(t, dropped);
+                }
+            }
+        }
+
+        // 2. Keyframes, pulses and locks on the module and on its linked things.
+        let whose = |a: &Address| match a.owner {
+            Owner::Module(id) if id == m && a.slot.is_none() => Some(None),
+            Owner::Thing(t) if a.slot == Some(slot) && users.contains(&t) => Some(Some(t)),
+            _ => None,
+        };
+        let gone_tracks: Vec<Address> = self
+            .tracks
+            .iter()
+            .filter(|(a, t)| whose(a).is_some() && !t.keys.first().is_some_and(|k| accepts(&a.key, &k.value)))
+            .map(|(a, _)| a.clone())
+            .collect();
+        for a in gone_tracks {
+            let track = self.tracks.remove(&a).expect("listed above");
+            match whose(&a).flatten() {
+                None => out.tracks.insert(a.key, track),
+                Some(t) => out.thing_tracks.insert((t, a.key), track),
+            };
+        }
+        let gone_pulses: Vec<Address> = self
+            .pulses
+            .iter()
+            .filter(|(a, p)| whose(a).is_some() && !accepts(&a.key, &p.amount))
+            .map(|(a, _)| a.clone())
+            .collect();
+        for a in gone_pulses {
+            let pulse = self.pulses.remove(&a).expect("listed above");
+            match whose(&a).flatten() {
+                None => out.pulses.insert(a.key, pulse),
+                Some(t) => out.thing_pulses.insert((t, a.key), pulse),
+            };
+        }
+        let gone_locks: Vec<Address> =
+            self.locks.iter().filter(|a| whose(a).is_some() && !has(&a.key)).cloned().collect();
+        for a in gone_locks {
+            self.locks.remove(&a);
+            match whose(&a).flatten() {
+                None => out.locks.insert(a.key),
+                Some(t) => out.thing_locks.insert((t, a.key)),
+            };
+        }
+
+        // 4. Put back what an earlier stay as `kind` set aside, where nothing holds the key now.
+        let back = self.library.modules.get_mut(&m).expect("checked above").stash.remove(kind).unwrap_or_default();
+        let module = self.library.modules.get_mut(&m).expect("checked above");
+        for (k, v) in back.params.0 {
+            if module.params.get(&k).is_none() {
+                module.params.set(&k, v);
+            }
+        }
+        let at = |owner, key: String| Address { owner, slot: None, key };
+        let thing_at = |t, key: String| Address { owner: Owner::Thing(t), slot: Some(slot), key };
+        for (k, v) in back.tracks {
+            self.tracks.entry(at(Owner::Module(m), k)).or_insert(v);
+        }
+        for (k, v) in back.pulses {
+            self.pulses.entry(at(Owner::Module(m), k)).or_insert(v);
+        }
+        for k in back.locks {
+            self.locks.insert(at(Owner::Module(m), k));
+        }
+        for (t, saved) in back.overrides {
+            if let Some(SlotLink::Linked { overrides, .. }) =
+                self.things.get_mut(&t).and_then(|t| t.slots.get_mut(&slot))
+                && users.contains(&t)
+            {
+                for (k, v) in saved.0 {
+                    if overrides.get(&k).is_none() {
+                        overrides.set(&k, v);
+                    }
+                }
+            }
+        }
+        for ((t, k), v) in back.thing_tracks.into_iter().filter(|((t, _), _)| users.contains(t)) {
+            self.tracks.entry(thing_at(t, k)).or_insert(v);
+        }
+        for ((t, k), v) in back.thing_pulses.into_iter().filter(|((t, _), _)| users.contains(t)) {
+            self.pulses.entry(thing_at(t, k)).or_insert(v);
+        }
+        for (t, k) in back.thing_locks.into_iter().filter(|(t, _)| users.contains(t)) {
+            self.locks.insert(thing_at(t, k));
+        }
+
+        // 5. The kind and its graph. `channel` and `macros` stay as they are.
+        let module = self.library.modules.get_mut(&m).expect("checked above");
+        if out != Stash::default() {
+            module.stash.insert(old_kind, out);
+        }
+        module.kind = kind.into();
+        module.graph = match module.graph.take() {
+            Some(g) if !g.custom => new.template().map(|graph| ModuleGraph { graph, template: kind.into(), ..g }),
+            _ => None,
+        };
         Ok(())
     }
 
@@ -1254,5 +1400,220 @@ mod tests {
     fn linking_into_the_wrong_slot_is_refused() {
         let (r, mut s, a, _, m) = shared_look();
         assert!(matches!(s.link(&r, a, SlotId::Sound, m), Err(EditError::WrongSlot)));
+    }
+
+    // Three look kinds that share `glow`: A also has `ring`; B has a template; C has neither.
+    #[derive(crate::Settings)]
+    struct LookASettings {
+        #[setting(label = "Glow", range(0, 9))]
+        glow: f32,
+        #[setting(label = "Ring", range(0, 9))]
+        ring: f32,
+    }
+    impl Default for LookASettings {
+        fn default() -> Self {
+            Self { glow: 0.0, ring: 0.0 }
+        }
+    }
+    #[derive(crate::Settings)]
+    struct LookBSettings {
+        #[setting(label = "Glow", range(0, 9))]
+        glow: f32,
+    }
+    impl Default for LookBSettings {
+        fn default() -> Self {
+            Self { glow: 0.0 }
+        }
+    }
+    struct LookA;
+    struct LookB;
+    struct LookC;
+    macro_rules! look_kind {
+        ($t:ident, $id:literal, $s:ty $(, $tpl:expr)?) => {
+            impl crate::ModuleKind for $t {
+                fn id(&self) -> &'static str {
+                    $id
+                }
+                fn name(&self) -> &'static str {
+                    $id
+                }
+                fn help(&self) -> &'static str {
+                    "A test look."
+                }
+                fn slot(&self) -> SlotId {
+                    SlotId::Look
+                }
+                fn settings(&self) -> &'static [crate::SettingDef] {
+                    <$s as crate::Settings>::defs()
+                }
+                $(fn template(&self) -> Option<bpe_graph::Graph> {
+                    Some($tpl)
+                })?
+            }
+        };
+    }
+    look_kind!(LookA, "look.a", LookASettings);
+    look_kind!(LookB, "look.b", LookBSettings, bpe_graph::Graph::new("B template"));
+    look_kind!(LookC, "look.c", LookBSettings);
+
+    /// Two balls sharing a module of kind A with `glow` 1 and `ring` 2.
+    fn switchable() -> (Registry, Scene, ThingId, ThingId, ModuleId) {
+        let mut r = testkit::registry();
+        r.add_module(LookA);
+        r.add_module(LookB);
+        r.add_module(LookC);
+        let mut s = Scene::empty(&r);
+        let t1 = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let t2 = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let m = s.add_module(&r, "look.a", "Shared").unwrap();
+        s.link(&r, t1, SlotId::Look, m).unwrap();
+        s.link(&r, t2, SlotId::Look, m).unwrap();
+        let p = &mut s.library.modules.get_mut(&m).unwrap().params;
+        p.set("glow", Value::Number(1.0));
+        p.set("ring", Value::Number(2.0));
+        (r, s, t1, t2, m)
+    }
+
+    fn params_of(pairs: &[(&str, f64)]) -> Params {
+        let mut p = Params::default();
+        for (k, v) in pairs {
+            p.set(k, Value::Number(*v));
+        }
+        p
+    }
+
+    fn module_addr(m: ModuleId, key: &str) -> Address {
+        Address { owner: Owner::Module(m), slot: None, key: key.into() }
+    }
+
+    fn thing_addr(t: ThingId, key: &str) -> Address {
+        Address { owner: Owner::Thing(t), slot: Some(SlotId::Look), key: key.into() }
+    }
+
+    fn track_at(v: f64) -> crate::Track {
+        crate::Track {
+            keys: vec![crate::animation::Key { time: 1.0, value: Value::Number(v), ease: Default::default() }],
+            range: None,
+        }
+    }
+
+    #[test]
+    fn set_module_kind_keeps_shared_keys_and_stashes_the_rest() {
+        let (r, mut s, _, _, m) = switchable();
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        let module = &s.library.modules[&m];
+        assert_eq!(module.kind, "look.b");
+        assert_eq!(module.params, params_of(&[("glow", 1.0)]));
+        assert_eq!(module.stash["look.a"].params, params_of(&[("ring", 2.0)]));
+    }
+
+    #[test]
+    fn switching_back_restores_the_stash_but_newer_shared_values_win() {
+        let (r, mut s, _, _, m) = switchable();
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        s.library.modules.get_mut(&m).unwrap().params.set("glow", Value::Number(5.0));
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        let module = &s.library.modules[&m];
+        assert_eq!(module.params, params_of(&[("glow", 5.0), ("ring", 2.0)]));
+        assert!(!module.stash.contains_key("look.a"));
+    }
+
+    #[test]
+    fn keyframes_pulses_and_locks_on_dropped_keys_are_stashed() {
+        let (r, mut s, _, _, m) = switchable();
+        let a = module_addr(m, "ring");
+        let keep = module_addr(m, "glow");
+        let pulse = crate::Pulse { decay: 0.5, ..Default::default() };
+        s.tracks.insert(a.clone(), track_at(3.0));
+        s.tracks.insert(keep.clone(), track_at(4.0));
+        s.pulses.insert(a.clone(), pulse.clone());
+        s.locks.insert(a.clone());
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        assert_eq!(s.tracks.keys().collect::<Vec<_>>(), vec![&keep]);
+        assert!(s.pulses.is_empty() && s.locks.is_empty());
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        assert_eq!(s.tracks[&a], track_at(3.0));
+        assert_eq!(s.tracks[&keep], track_at(4.0));
+        assert_eq!(s.pulses[&a], pulse);
+        assert!(s.locks.contains(&a));
+    }
+
+    #[test]
+    fn switching_a_shared_module_stashes_each_things_overrides_and_their_keys() {
+        let (r, mut s, t1, t2, m) = switchable();
+        for (t, key, v) in [(t1, "ring", 7.0), (t1, "glow", 8.0), (t2, "ring", 9.0)] {
+            if let Some(SlotLink::Linked { overrides, .. }) = s.things.get_mut(&t).unwrap().slots.get_mut(&SlotId::Look)
+            {
+                overrides.set(key, Value::Number(v));
+            }
+        }
+        let ring = thing_addr(t1, "ring");
+        let glow = thing_addr(t1, "glow");
+        s.tracks.insert(ring.clone(), track_at(3.0));
+        s.tracks.insert(glow.clone(), track_at(4.0));
+        s.pulses.insert(ring.clone(), crate::Pulse::default());
+        s.locks.insert(thing_addr(t2, "ring"));
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        let ov = |s: &Scene, t: ThingId| match &s.things[&t].slots[&SlotId::Look] {
+            SlotLink::Linked { overrides, .. } => overrides.clone(),
+            _ => panic!("not linked"),
+        };
+        assert_eq!(ov(&s, t1), params_of(&[("glow", 8.0)]));
+        assert_eq!(ov(&s, t2), Params::default());
+        assert_eq!(s.tracks.keys().collect::<Vec<_>>(), vec![&glow]);
+        assert!(s.pulses.is_empty() && s.locks.is_empty());
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        assert_eq!(ov(&s, t1), params_of(&[("glow", 8.0), ("ring", 7.0)]));
+        assert_eq!(ov(&s, t2), params_of(&[("ring", 9.0)]));
+        assert_eq!(s.tracks[&ring], track_at(3.0));
+        assert!(s.pulses.contains_key(&ring));
+        assert!(s.locks.contains(&thing_addr(t2, "ring")));
+        assert!(s.library.modules[&m].stash.is_empty());
+    }
+
+    #[test]
+    fn a_stash_survives_a_switch_to_a_third_kind() {
+        let (r, mut s, _, _, m) = switchable();
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        s.set_module_kind(&r, m, "look.c").unwrap();
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        assert_eq!(s.library.modules[&m].params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
+    }
+
+    #[test]
+    fn a_custom_graph_is_dropped_and_a_template_one_replaced() {
+        let (r, mut s, _, _, m) = switchable();
+        let graph = |custom| Some(crate::ModuleGraph { template: "look.a".into(), custom, ..Default::default() });
+        s.library.modules.get_mut(&m).unwrap().graph = graph(true);
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        assert_eq!(s.library.modules[&m].graph, None);
+        s.set_module_kind(&r, m, "look.a").unwrap();
+        s.library.modules.get_mut(&m).unwrap().graph = graph(false);
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        let g = s.library.modules[&m].graph.clone().unwrap();
+        assert_eq!((g.template.as_str(), g.custom), ("look.b", false));
+        assert_eq!(g.graph, bpe_graph::Graph::new("B template"));
+        s.set_module_kind(&r, m, "look.c").unwrap();
+        assert_eq!(s.library.modules[&m].graph, None);
+    }
+
+    #[test]
+    fn a_kind_of_another_slot_is_refused() {
+        let (r, mut s, _, _, m) = switchable();
+        let before = s.clone();
+        assert!(matches!(s.set_module_kind(&r, m, "sound.pluck"), Err(EditError::WrongSlot)));
+        assert!(matches!(s.set_module_kind(&r, m, "nope"), Err(EditError::UnknownKind(_))));
+        assert!(matches!(s.set_module_kind(&r, ModuleId(99), "look.b"), Err(EditError::MissingModule(_))));
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn a_stash_round_trips_through_ron() {
+        let (r, mut s, t1, _, m) = switchable();
+        s.tracks.insert(thing_addr(t1, "ring"), track_at(3.0));
+        s.locks.insert(thing_addr(t1, "ring"));
+        s.set_module_kind(&r, m, "look.b").unwrap();
+        let back: Scene = ron::from_str(&ron::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 }
