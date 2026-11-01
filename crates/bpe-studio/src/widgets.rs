@@ -128,21 +128,37 @@ pub fn settings_like_grid(id: impl egui::AsIdSalt) -> egui::Grid {
 /// A grid cell exactly `width` wide, laid out left to right. What it holds wraps rather than
 /// widening the column, and makes its row as tall as it needs.
 pub fn label_cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    // A grid centres a cell in its row before the cell is drawn, so the cell asks for the
-    // height it took last time: a label that wraps then sits centred in a row tall enough for
-    // it, instead of hanging out of the bottom of its row into the next.
-    let id = ui.next_auto_id().with("label cell");
-    let height = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
     let layout = egui::Layout::left_to_right(egui::Align::Center);
-    let cell = ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
+    grid_cell(ui, width, layout, |ui| {
         ui.set_min_width(width);
+        add(ui)
+    })
+}
+
+/// A grid row's widget cell, from where the grid has got to up to `right`, laid out left to
+/// right from its top. Something in it more than a line tall (x and y wrapped onto two lines)
+/// makes its row as tall as it needs.
+pub fn widget_cell<R>(ui: &mut Ui, right: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let width = (right - ui.cursor().left()).max(0.0);
+    grid_cell(ui, width, egui::Layout::left_to_right(egui::Align::Min), add)
+}
+
+/// A grid cell at most `width` wide. A grid centres a cell in its row before the cell is
+/// drawn, so the cell asks for the height it took last time: something taller than a line then
+/// sits centred in a row tall enough for it, instead of hanging out of the bottom of its row
+/// into the next.
+fn grid_cell<R>(ui: &mut Ui, width: f32, layout: egui::Layout, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let id = ui.next_auto_id().with("grid cell");
+    let height = ui.ctx().data(|d| d.get_temp::<f32>(id)).filter(|h| h.is_finite()).unwrap_or(0.0);
+    let cell = ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
         ui.set_max_width(width);
         add(ui)
     });
+    // An empty cell has no height to remember.
     let took = cell.response.rect.height();
-    if (took - height).abs() > 0.5 {
+    if took.is_finite() && (took - height).abs() > 0.5 {
         ui.ctx().data_mut(|d| d.insert_temp(id, took));
-        ui.ctx().request_discard("a grid label's height changed");
+        ui.ctx().request_discard("a grid cell's height changed");
     }
     cell.inner
 }
@@ -540,14 +556,11 @@ pub fn setting(
         name
     });
     let mut changed = false;
-    let response = ui
-        .horizontal(|ui| {
-            ui.set_max_width((right - ui.max_rect().left()).max(0.0));
-            let r = widget(ui, def, unit, value, name.id, cx.choices);
-            changed |= r.changed();
-            r
-        })
-        .inner;
+    let response = widget_cell(ui, right, |ui| {
+        let r = widget(ui, def, unit, value, name.id, cx.choices);
+        changed |= r.changed();
+        r
+    });
     // A gradient bar's clicks add and pick stops, so only its label resets it.
     let gradient = def.ty == ValueType::Gradient;
     if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {

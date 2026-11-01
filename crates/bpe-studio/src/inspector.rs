@@ -12,7 +12,7 @@ use crate::theme;
 use crate::widgets::{
     BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
     TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid, settings_grid_marked,
-    settings_like_grid,
+    settings_like_grid, widget_cell,
 };
 use bpe_core::{
     Address, Attach, Bus, BusId, Chord, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
@@ -1059,8 +1059,9 @@ fn placement_rows(
     lw: f32,
     edits: &mut Vec<Edit>,
 ) {
+    let right = ui.available_rect_before_wrap().right();
     settings_like_grid(("placement", thing.id)).show(ui, |ui| {
-        position_rows(ui, scene, thing, lw, edits);
+        position_rows(ui, scene, thing, lw, right, edits);
         if !matches!(kind.id(), "liquid" | "swarm") {
             let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a caption");
@@ -1075,19 +1076,20 @@ fn placement_rows(
 
 /// Where the thing sits and how it hangs off its parent: Position (for a grouped thing),
 /// Rotation, Attach, and a rider's Offset, Turns with it and Item.
-fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, edits: &mut Vec<Edit>) {
+fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, right: f32, edits: &mut Vec<Edit>) {
     let mut t = thing.transform;
     if let Attach::Group = thing.attach {
         let position = grid_label(ui, lw, "Position")
             .on_hover_text("Where it sits in the world. At Zoom 1 the shot is 1080 across");
         // In a narrow panel y goes under x.
-        let moved = ui
-            .horizontal_wrapped(|ui| {
+        let moved = widget_cell(ui, right, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
                 x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
             })
-            .inner;
+            .inner
+        });
         ui.end_row();
         if moved {
             edits.push(Edit::Transform(t));
@@ -1105,27 +1107,32 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, e
     let parent = thing.parent.unwrap_or(ThingId::ROOT);
     let rides = thing.rides();
     grid_label(ui, lw, "Attach").on_hover_text("Grouped things keep their own place; a rider follows its parent");
-    ui.horizontal(|ui| {
-        if ui.selectable_label(!rides, "Grouped").clicked() && rides {
-            edits.push(Edit::Attach(Attach::Group));
-        }
-        let ride = ui.add_enabled(parent != ThingId::ROOT, egui::Button::selectable(rides, "Rides on it"));
-        if ride.on_disabled_hover_text("Scene settings don't move, so there is nothing to ride").clicked() && !rides {
-            edits.push(Edit::Attach(Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None }));
-        }
+    widget_cell(ui, right, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui.selectable_label(!rides, "Grouped").clicked() && rides {
+                edits.push(Edit::Attach(Attach::Group));
+            }
+            let ride = ui.add_enabled(parent != ThingId::ROOT, egui::Button::selectable(rides, "Rides on it"));
+            let why = "Scene settings don't move, so there is nothing to ride";
+            if ride.on_disabled_hover_text(why).clicked() && !rides {
+                let ride = Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None };
+                edits.push(Edit::Attach(ride));
+            }
+        });
     });
     ui.end_row();
 
     if let Attach::Ride { offset, turn_with_parent, item } = thing.attach {
         let mut o = offset;
         let label = grid_label(ui, lw, "Offset").on_hover_text("Where it sits from its parent, in video pixels");
-        let moved = ui
-            .horizontal_wrapped(|ui| {
+        let moved = widget_cell(ui, right, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
                 x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
             })
-            .inner;
+            .inner
+        });
         ui.end_row();
         let label = grid_label(ui, lw, "Turns with it").on_hover_text("Swing around as the parent turns");
         let mut turns = turn_with_parent;

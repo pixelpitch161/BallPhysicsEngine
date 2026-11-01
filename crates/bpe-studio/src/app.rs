@@ -704,7 +704,8 @@ impl Studio {
         // A slot of its own, so a long file name is cut short; with too little room on this
         // line it goes to the next.
         let full = saved_label.text().to_owned();
-        let room = ui.available_width();
+        // What is left of this line (a wrapping layout's available width is a whole line).
+        let room = ui.max_rect().right() - ui.cursor().left();
         let width = if room >= MIN_SAVE_STATUS_WIDTH { room.min(SAVE_STATUS_WIDTH) } else { SAVE_STATUS_WIDTH };
         let status = ui
             .allocate_ui_with_layout(
@@ -1129,7 +1130,7 @@ mod tests {
 
     /// Where the toolbar's save status ends and Library starts, for a scene saved as `name` in
     /// a window `width` wide.
-    fn status_and_library(name: &str, width: f32) -> (f32, f32) {
+    fn status_and_library(name: &str, width: f32) -> (egui::Rect, egui::Rect) {
         let mut studio = Studio::headless();
         studio.path = Some(PathBuf::from(format!("/scenes/{name}")));
         let mut h = Harness::builder()
@@ -1145,7 +1146,7 @@ mod tests {
         };
         let status = h.root().children_recursive().find(saved).expect("the save status").rect();
         let library = h.get_by_label("Library").rect();
-        (status.right(), library.left())
+        (status, library)
     }
 
     #[test]
@@ -1156,10 +1157,15 @@ mod tests {
         for width in [1000.0, 1440.0, 1600.0] {
             for name in ["blend-modes.ron", long.as_str()] {
                 let (status, library) = status_and_library(name, width);
+                // On Library's line it ends before Library; at a narrow width it may go to the next.
+                let beside = status.top() < library.bottom();
                 assert!(
-                    status < library,
-                    "at {width}, {name}: the status ends at {status} and Library starts at {library}"
+                    !beside || status.right() < library.left(),
+                    "at {width}, {name}: the status {status:?} runs into Library {library:?}"
                 );
+                if width >= 1440.0 {
+                    assert!(beside, "at {width} the toolbar is one line: {status:?}, Library {library:?}");
+                }
             }
         }
     }
@@ -1194,6 +1200,20 @@ mod tests {
             .find(|r| r.left() > glow.right() - 1.0 && (r.center().y - glow.center().y).abs() < 4.0)
             .expect("Glow's number box");
         assert!(value.right() <= 1000.0 - 10.0, "Glow's number box ends at {}, past the panel", value.right());
+        // An x and y pair that can't fit side by side goes onto two lines, inside its row.
+        let speed: Vec<egui::Rect> =
+            h.get_all_by_role_and_label(egui::accesskit::Role::SpinButton, "Launch speed").map(|n| n.rect()).collect();
+        assert_eq!(speed.len(), 2);
+        let labels: Vec<egui::Rect> = h
+            .root()
+            .children_recursive()
+            .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::Label)
+            .map(|n| n.rect())
+            .collect();
+        for r in &speed {
+            assert!(r.right() <= 1000.0 - 10.0, "Launch speed {r:?} runs past the panel");
+            assert!(!labels.iter().any(|l| l.intersects(r.shrink(1.0))), "Launch speed {r:?} runs into another row");
+        }
         // Every slider row's number box fits, and so do the colours' buttons.
         for button in ["Palette", "Smooth"] {
             for node in h.query_all_by_label(button) {
