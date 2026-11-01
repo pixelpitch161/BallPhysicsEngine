@@ -75,6 +75,9 @@ impl ThingKind for BallsKind {
     fn id(&self) -> &'static str {
         "balls"
     }
+    fn family(&self) -> &'static str {
+        "Bouncers"
+    }
     fn name(&self) -> &'static str {
         "Balls"
     }

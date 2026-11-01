@@ -65,6 +65,40 @@ pub fn remember_scene_in(dir: &Path, path: &Path) {
     let _ = std::fs::write(dir.join(RECENT_SCENES), text.join("\n"));
 }
 
+const INSPECTOR_WIDTH: &str = "inspector-width-next.txt";
+
+/// The inspector's width when nothing is saved.
+pub const INSPECTOR_DEFAULT: f32 = 420.0;
+/// The narrowest and widest the inspector can be dragged.
+pub const INSPECTOR_RANGE: std::ops::RangeInclusive<f32> = 320.0..=640.0;
+
+/// The inspector width the user dragged to last time, or the default.
+pub fn load_inspector_width() -> f32 {
+    settings_dir().map_or(INSPECTOR_DEFAULT, |d| load_inspector_width_in(&d))
+}
+
+/// The saved inspector width in `dir`: the default when the file is missing or unreadable,
+/// and kept between the narrowest and widest otherwise.
+pub fn load_inspector_width_in(dir: &Path) -> f32 {
+    let text = std::fs::read_to_string(dir.join(INSPECTOR_WIDTH)).unwrap_or_default();
+    match text.trim().parse::<f32>() {
+        Ok(w) if w.is_finite() => w.clamp(*INSPECTOR_RANGE.start(), *INSPECTOR_RANGE.end()),
+        _ => INSPECTOR_DEFAULT,
+    }
+}
+
+/// Remembers the inspector's width for next time.
+pub fn save_inspector_width(w: f32) {
+    if let Some(dir) = settings_dir() {
+        save_inspector_width_in(&dir, w);
+    }
+}
+
+pub fn save_inspector_width_in(dir: &Path, w: f32) {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(INSPECTOR_WIDTH), format!("{}", w.round()));
+}
+
 /// Where "My presets" live.
 pub fn presets_dir() -> Option<PathBuf> {
     settings_dir().map(|d| d.join("presets"))
@@ -121,6 +155,21 @@ mod tests {
         std::fs::remove_file(&files[9]).unwrap();
         assert!(!recent_scenes_in(&dir).contains(&files[9]), "a file that is gone is left out");
         assert_eq!(last_scene_in(&dir), Some(files[5].clone()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_width_is_clamped_and_garbage_ignored() {
+        let dir = std::env::temp_dir().join(format!("ball-studio-width-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(load_inspector_width_in(&dir), 420.0, "a missing file");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(INSPECTOR_WIDTH), "1000").unwrap();
+        assert_eq!(load_inspector_width_in(&dir), 640.0);
+        std::fs::write(dir.join(INSPECTOR_WIDTH), "abc").unwrap();
+        assert_eq!(load_inspector_width_in(&dir), 420.0);
+        save_inspector_width_in(&dir, 500.0);
+        assert_eq!(load_inspector_width_in(&dir), 500.0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

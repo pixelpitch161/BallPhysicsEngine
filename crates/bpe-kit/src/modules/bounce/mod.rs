@@ -12,6 +12,7 @@ pub struct BasicBounce {
     /// How much of its speed into the wall the ball keeps. Above 1 it speeds up.
     #[setting(
         label = "Bounciness",
+        group = "Basics",
         when = "thing!=arena|obstacle or takes_over",
         range(0, 1.5),
         simple,
@@ -23,6 +24,7 @@ pub struct BasicBounce {
     /// The whole speed is multiplied by this on every hit.
     #[setting(
         label = "Speed gain",
+        group = "Basics",
         when = "thing!=arena|obstacle or takes_over",
         range(0.5, 1.5),
         simple,
@@ -33,6 +35,7 @@ pub struct BasicBounce {
     /// The ball never goes faster than this.
     #[setting(
         label = "Top speed",
+        group = "Basics",
         when = "thing!=arena|obstacle or takes_over",
         range(50, 20000),
         unit = "px/s",
@@ -40,27 +43,40 @@ pub struct BasicBounce {
         keyframe
     )]
     pub top_speed: f32,
-    /// How much bigger the ball gets on every hit. Negative shrinks it.
-    #[setting(label = "Grow per hit", when = "thing!=arena|obstacle or takes_over", range(-20, 20), unit = "px", simple, keyframe, random)]
-    pub grow: f32,
-    /// These balls bump into other balls instead of passing through them.
-    #[setting(label = "Hits other balls", when = "thing!=arena|obstacle", simple)]
-    pub hit_balls: bool,
-    /// The ball never grows past this.
-    #[setting(label = "Biggest size", when = "thing!=arena|obstacle or takes_over", range(0.5, 400), unit = "px")]
-    pub max_size: f32,
+    /// How much sideways speed rubs off when the ball touches walls, obstacles or other balls.
+    #[setting(
+        label = "Friction",
+        group = "Basics",
+        when = "thing!=arena|obstacle or takes_over",
+        range(0, 1),
+        keyframe,
+        random
+    )]
+    pub friction: f32,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
-    #[setting(label = "Takes over", when = "thing=arena|obstacle")]
+    #[setting(label = "Takes over", group = "Basics", when = "thing=arena|obstacle")]
     pub takes_over: bool,
+    /// How much bigger the ball gets on every hit. Negative shrinks it.
+    #[setting(label = "Grow per hit", group = "Growing", when = "thing!=arena|obstacle or takes_over", range(-20, 20), unit = "px", simple, keyframe, random)]
+    pub grow: f32,
+    /// The ball never grows past this.
+    #[setting(
+        label = "Biggest size",
+        group = "Growing",
+        when = "thing!=arena|obstacle or takes_over",
+        range(0.5, 400),
+        unit = "px"
+    )]
+    pub max_size: f32,
     /// The ball disappears after this many hits. 0 never pops it.
-    #[setting(label = "Pops after", when = "thing!=arena|obstacle", range(0, 1000), unit = "hits")]
+    #[setting(label = "Pops after", group = "Growing", when = "thing!=arena|obstacle", range(0, 1000), unit = "hits")]
     pub pops_after: u32,
+    /// These balls bump into other balls instead of passing through them.
+    #[setting(label = "Hits other balls", group = "Other balls", when = "thing!=arena|obstacle", simple)]
+    pub hit_balls: bool,
     /// Only balls on these things are bumped into; both sides have to agree.
     #[setting(label = "Which balls", when = "thing!=arena|obstacle and hit_balls", group = "Other balls")]
     pub balls_to_hit: Target,
-    /// How much sideways speed rubs off when the ball touches walls, obstacles or other balls.
-    #[setting(label = "Friction", when = "thing!=arena|obstacle or takes_over", range(0, 1), keyframe, random)]
-    pub friction: f32,
     /// Use the settings below when hitting the things picked here.
     #[setting(label = "Different against some things", when = "thing!=arena|obstacle", group = "Against some things")]
     pub special: bool,

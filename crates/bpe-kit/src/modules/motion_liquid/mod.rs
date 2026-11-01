@@ -9,17 +9,17 @@ pub struct FlowingKind;
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct Flowing {
-    /// How much of the scene's gravity pulls on the liquid. Negative floats it.
-    #[setting(label = "Gravity", range(-5, 5), simple, keyframe, random, pulse)]
+    /// How strongly the scene's gravity pulls these, as a multiple.
+    #[setting(label = "Gravity ×", group = "Basics", range(-5, 5), simple, keyframe, random, pulse)]
     pub gravity_scale: f32,
     /// How thick and slow it flows.
-    #[setting(label = "Viscosity", range(0, 1), simple, keyframe, random)]
+    #[setting(label = "Viscosity", group = "Basics", range(0, 1), simple, keyframe, random)]
     pub viscosity: f32,
     /// How hard it resists being squashed.
-    #[setting(label = "Stiffness", range(0, 1), simple, keyframe, random)]
+    #[setting(label = "Stiffness", group = "Basics", range(0, 1), simple, keyframe, random)]
     pub stiffness: f32,
     /// How strongly balls shove the liquid aside.
-    #[setting(label = "Ball push", range(0, 3), simple, keyframe, random)]
+    #[setting(label = "Ball push", group = "Basics", range(0, 3), simple, keyframe, random)]
     pub ball_push: f32,
 }
 

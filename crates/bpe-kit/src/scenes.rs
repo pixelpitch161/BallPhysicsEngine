@@ -184,7 +184,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         s.bloom = 0.35;
         s.background = Paint {
             colours: Gradient::even(&[hex(0x2b1458), hex(0x140a33), hex(0x05040f)]),
-            shape: PlaceShape::Centre,
+            shape: PlaceShape::Round,
             span: 1150.0,
             ..Paint::default()
         };

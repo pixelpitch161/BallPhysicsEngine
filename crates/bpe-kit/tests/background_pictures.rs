@@ -106,7 +106,7 @@ fn the_background_runs_at_any_angle_or_from_the_centre() {
     assert!(left[0] > left[2] + 60 && right[2] > right[0] + 60, "{left:?} {right:?}");
     assert_eq!(px(&sideways, 135, 5), px(&sideways, 135, H - 5), "nothing changes top to bottom");
     // From the centre outward: red in the middle, blue at the corners.
-    set(&mut scene, "background_shape", Value::Choice("centre".into()));
+    set(&mut scene, "background_shape", Value::Choice("round".into()));
     set(&mut scene, "background_span", Value::Number(400.0));
     let rings = draw(&device, &queue, &kit, &scene, 0.0);
     let (middle, corner) = (px(&rings, 135, 240), px(&rings, 2, 2));

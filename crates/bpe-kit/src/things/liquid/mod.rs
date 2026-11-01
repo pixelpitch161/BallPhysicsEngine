@@ -68,6 +68,9 @@ impl ThingKind for LiquidKind {
     fn id(&self) -> &'static str {
         "liquid"
     }
+    fn family(&self) -> &'static str {
+        "Flowing"
+    }
     fn name(&self) -> &'static str {
         "Liquid"
     }

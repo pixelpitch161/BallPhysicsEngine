@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::presets::{self, Preset};
 use crate::settings;
 use crate::theme;
-use crate::widgets::{GridCx, TargetChoices, settings_grid_marked};
+use crate::widgets::{GridCx, TargetChoices, label_width, settings_grid_marked};
 use bpe_core::{Address, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Key, RichText, Sense, Ui};
@@ -444,6 +444,7 @@ fn details(
         locked: &locked,
         applies: &applies,
         folded: None,
+        label_width: label_width(ui.available_width()),
     };
     let out = settings_grid_marked(ui, ("library", id), kind.settings(), get, &cx);
     if let Some((key, lock)) = out.locks.into_iter().next() {
