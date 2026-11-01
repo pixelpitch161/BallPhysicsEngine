@@ -72,7 +72,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "centre": Vec2((37.0, -127.0)),
                     "colours": Gradient((
@@ -109,7 +109,7 @@
                 id: 7,
                 name: "Plain look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
             ),
             8: (
                 id: 8,
@@ -122,7 +122,7 @@
                 id: 11,
                 name: "Arena look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [

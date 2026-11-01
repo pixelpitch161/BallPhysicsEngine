@@ -38,7 +38,6 @@ pub(crate) fn save(name: &str, pixels: &[u8], w: u32, h: u32) {
 }
 
 const PINK: [f32; 4] = [1.0, 0.1046, 0.3813, 1.0];
-const BLUE: [f32; 4] = [0.01, 0.025, 1.0, 1.0];
 const CYAN: [f32; 4] = [0.01, 0.6, 1.0, 1.0];
 
 fn look(center: Vec2, radius: f32) -> LookInstance {
@@ -47,7 +46,6 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
         radius,
         seed: 0.3,
         color: PINK,
-        color2: BLUE,
         outline_color: CYAN,
         form: [0.0, 0.0, 4.0, 0.15],
         look: [0.0, 0.0, 1.0, 0.0],
@@ -58,7 +56,7 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
 }
 
 #[test]
-fn every_shape_and_fill_draws_a_styled_ball() {
+fn every_shape_and_style_draws_a_styled_ball() {
     const W: u32 = 540;
     const H: u32 = 960;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
@@ -69,9 +67,9 @@ fn every_shape_and_fill_draws_a_styled_ball() {
         l.look[0] = 4.0;
         frame.looks.push(l);
     }
-    for fill in 0..12 {
-        let mut l = look(at(8 + fill), 80.0);
-        l.form[1] = fill as f32;
+    for style in 0..2 {
+        let mut l = look(at(8 + style), 80.0);
+        l.form[1] = style as f32;
         l.look[1] = 0.3;
         frame.looks.push(l);
     }
@@ -83,7 +81,7 @@ fn every_shape_and_fill_draws_a_styled_ball() {
             assert!(p[0] < 60, "the donut should have a hole: {p:?}");
             continue;
         }
-        assert!(p[0] > 120 || p[2] > 120, "ball {i} (shape {}, fill {}) is missing: {p:?}", l.form[0], l.form[1]);
+        assert!(p[0] > 120 || p[2] > 120, "ball {i} (shape {}, style {}) is missing: {p:?}", l.form[0], l.form[1]);
     }
     let corner = Vec2::new(58.0, 58.0);
     let square = pixel_sized(&pixels, W, H, at(1) + corner);
@@ -94,6 +92,40 @@ fn every_shape_and_fill_draws_a_styled_ball() {
     let edge = pixel_sized(&pixels, W, H, at(0) + Vec2::new(0.0, 77.0));
     assert!(edge[2] > 150 && edge[1] > 100 && edge[0] < 100, "{edge:?}");
 }
+
+#[test]
+fn a_styled_shiny_circle_looks_like_the_classic_ball() {
+    use crate::BallInstance;
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let (center, radius, glow) = (Vec2::new(0.0, 0.0), 200.0, 0.3);
+    let mut classic = Frame { bloom: 0.0, ..Frame::default() };
+    classic.balls.push(BallInstance {
+        center: center.into(),
+        radius,
+        glow,
+        color: PINK,
+        code: [3.0, 0.3, 0.0, 0.0],
+        paint: PaintGpu::default(),
+    });
+    let mut styled = Frame { bloom: 0.0, ..Frame::default() };
+    let mut l = look(center, radius);
+    l.form[1] = 1.0;
+    l.look[1] = glow;
+    styled.looks.push(l);
+    let Some(a) = render_sized(&classic, W, H) else { return };
+    let b = render_sized(&styled, W, H).unwrap();
+    save("shiny-classic", &a, W, H);
+    save("shiny-styled", &b, W, H);
+    let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+    assert!(worst <= TOLERANCE, "worst byte difference {worst}");
+}
+
+/// How far, in output bytes, a styled shiny circle may stray from the classic ball: the two
+/// shade the same, but the rim's antialiased pixels are lit from just past the edge by the
+/// classic ball and from the edge itself by the styled one, and the classic quad cuts the halo
+/// off at 3 radii where the styled one reaches a little further. Both show as at most 2 bytes.
+const TOLERANCE: u8 = 2;
 
 #[test]
 fn a_stretched_ball_reaches_further_along_its_motion() {

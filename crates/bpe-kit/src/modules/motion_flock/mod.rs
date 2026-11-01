@@ -70,6 +70,9 @@ impl ModuleKind for FlockingKind {
     fn help(&self) -> &'static str {
         "Swirls with the air, keeps together, follows the balls and avoids the walls."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind == "swarm"
+    }
     fn slot(&self) -> SlotId {
         SlotId::Motion
     }

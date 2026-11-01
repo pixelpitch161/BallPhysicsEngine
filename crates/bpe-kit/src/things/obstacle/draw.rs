@@ -85,7 +85,7 @@ mod tests {
             p.set("columns", Value::Int(3));
             p.set("rows", Value::Int(2));
         });
-        let look = scene.add_module(&kit.registry, "look.classic", "Peg colours").unwrap();
+        let look = scene.add_module(&kit.registry, "look.basic", "Peg colours").unwrap();
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
         params.set("follow", Value::Choice("order".into()));
@@ -118,7 +118,7 @@ mod tests {
             p.set("columns", Value::Int(3));
             p.set("rows", Value::Int(2));
         });
-        let look = scene.add_module(&kit.registry, "look.classic", "Peg colours").unwrap();
+        let look = scene.add_module(&kit.registry, "look.basic", "Peg colours").unwrap();
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
         params.set("follow", Value::Choice("step".into()));
@@ -182,7 +182,7 @@ mod tests {
             p.set("columns", Value::Int(4));
             p.set("rows", Value::Int(2));
         });
-        let look = scene.add_module(&kit.registry, "look.classic", "Peg colours").unwrap();
+        let look = scene.add_module(&kit.registry, "look.basic", "Peg colours").unwrap();
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
         params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0)])));
         params.set("vary_hue", Value::Number(60.0));

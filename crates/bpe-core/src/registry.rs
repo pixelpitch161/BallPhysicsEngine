@@ -58,6 +58,11 @@ pub trait ModuleKind: Send + Sync + 'static {
     fn template(&self) -> Option<bpe_graph::Graph> {
         None
     }
+    /// Whether this kind makes sense on things of `thing_kind`, so the editor lists only the
+    /// kinds that fit. Most fit every thing.
+    fn fits(&self, _thing_kind: &str) -> bool {
+        true
+    }
 }
 
 /// Every registered kind, by id.
@@ -116,6 +121,16 @@ impl Registry {
     /// The module kinds that fill `slot`, in id order.
     pub fn modules_for(&self, slot: SlotId) -> impl Iterator<Item = &dyn ModuleKind> {
         self.modules().filter(move |m| m.slot() == slot)
+    }
+
+    /// The module kinds that fill `slot` on `thing`: ones the thing accepts and that fit it,
+    /// in id order.
+    pub fn kinds_fitting<'a>(
+        &'a self,
+        slot: SlotId,
+        thing: &'a dyn ThingKind,
+    ) -> impl Iterator<Item = &'a dyn ModuleKind> {
+        self.modules().filter(move |m| m.slot() == slot && thing.accepts(slot, m.id()) && m.fits(thing.id()))
     }
 
     /// The values of `params` that module kind `to` also has, with the same type: what a module

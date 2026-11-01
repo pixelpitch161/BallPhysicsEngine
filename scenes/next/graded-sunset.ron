@@ -206,7 +206,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -242,7 +242,7 @@
                 id: 11,
                 name: "Wall look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -272,7 +272,7 @@
                 id: 16,
                 name: "Screen look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("screen"),
                     "blend_each": Bool(true),
@@ -378,14 +378,14 @@
                 id: 27,
                 name: "Title look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(4),
             ),
             28: (
                 id: 28,
                 name: "Caption look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(5),
             ),
         },

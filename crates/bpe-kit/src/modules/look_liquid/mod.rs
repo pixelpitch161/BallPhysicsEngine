@@ -63,6 +63,9 @@ impl ModuleKind for LiquidLookKind {
     fn help(&self) -> &'static str {
         "A smooth, lit, see-through surface over the particles."
     }
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind == "liquid"
+    }
     fn slot(&self) -> SlotId {
         SlotId::Look
     }

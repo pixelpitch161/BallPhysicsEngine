@@ -137,8 +137,9 @@ fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
     let (mut scene, kit) = ball_blended("normal", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
     let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
-    params.set("inside", Value::Choice("stripes".into()));
-    params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
+    params.set("in_pattern", Value::Choice("stripes".into()));
+    params.set("in_from", Value::Choice("own_gradient".into()));
+    params.set("in_colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
     let plain = frame_at(&scene, &kit, 0.0);
     let want = plain.gradients.rows()[plain.balls[0].paint.row as usize];
     set_blend(&mut scene, look, "overlay", 1.0);

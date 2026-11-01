@@ -404,7 +404,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -422,14 +422,14 @@
                 id: 11,
                 name: "Rim look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(1),
             ),
             16: (
                 id: 16,
                 name: "Screen look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("screen"),
                     "colours": Gradient((
@@ -457,7 +457,7 @@
                 id: 22,
                 name: "Difference look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("difference"),
                     "colours": Gradient((
@@ -485,7 +485,7 @@
                 id: 28,
                 name: "Overlay look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("overlay"),
                     "colours": Gradient((
@@ -513,7 +513,7 @@
                 id: 34,
                 name: "Multiply look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("multiply"),
                     "colours": Gradient((
@@ -541,7 +541,7 @@
                 id: 39,
                 name: "Subtract look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "blend": Choice("subtract"),
                     "colours": Gradient((
@@ -560,7 +560,7 @@
                 id: 44,
                 name: "Comet look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "glow": Number(0.6000000238418579),
                 },
@@ -600,7 +600,7 @@
                 id: 46,
                 name: "Drift look",
                 slot: Look,
-                kind: "look.styled",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -688,7 +688,7 @@
                 id: 56,
                 name: "Screen label look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(4),
             ),
             57: (
@@ -720,7 +720,7 @@
                 id: 60,
                 name: "Difference label look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(6),
             ),
             61: (
@@ -752,7 +752,7 @@
                 id: 64,
                 name: "Overlay label look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(8),
             ),
             65: (
@@ -784,7 +784,7 @@
                 id: 68,
                 name: "Multiply label look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(10),
             ),
             69: (
@@ -834,7 +834,7 @@
                 id: 74,
                 name: "Title look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 owner: Some(13),
             ),
         },

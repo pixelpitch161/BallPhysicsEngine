@@ -55,7 +55,7 @@ pub struct BallInstance {
     pub paint: PaintGpu,
 }
 
-/// A ball with its own style: a shape, a fill, an outline and a halo.
+/// A ball with its own style: a shape, a style, an outline and a halo.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct LookInstance {
@@ -65,10 +65,8 @@ pub struct LookInstance {
     pub seed: f32,
     /// Linear light; alpha -1 is additive, see [`blend_alpha`].
     pub color: [f32; 4],
-    /// The pattern's or gradient's other colour.
-    pub color2: [f32; 4],
     pub outline_color: [f32; 4],
-    /// Shape code, fill code, pattern size, roundness.
+    /// Shape code, style code (0 flat, 1 shiny: lit like a sphere), one spare, roundness.
     pub form: [f32; 4],
     /// Outline width in pixels, glow brightness, opacity, angle in radians.
     pub look: [f32; 4],
@@ -76,7 +74,7 @@ pub struct LookInstance {
     pub stretch: [f32; 4],
     /// Glow size as a fraction of the radius, the thing code, two spare.
     pub extent: [f32; 4],
-    /// A gradient painted inside the fill in place of its colours, when its row is not -1.
+    /// What is painted inside in place of its colour, when its row is not -1.
     pub paint: PaintGpu,
 }
 
@@ -1613,7 +1611,7 @@ mod tests {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 176);
+        assert_eq!(std::mem::size_of::<LookInstance>(), 160);
         assert_eq!(std::mem::size_of::<BallInstance>(), 96);
     }
 

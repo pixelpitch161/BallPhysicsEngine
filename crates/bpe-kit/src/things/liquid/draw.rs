@@ -8,7 +8,7 @@ use bpe_runtime::state;
 
 use super::sim::LiquidState;
 use crate::modules::bounce::sim::BounceState;
-use crate::modules::look::ClassicLook;
+use crate::modules::look::BasicLook;
 use crate::modules::look_liquid::LiquidLook;
 use crate::modules::motion_liquid::Flowing;
 use crate::paint::gpu::{along_gpu, place_in_world};
@@ -17,13 +17,13 @@ use crate::paint::{Follow, Inputs, Paint, PlaceShape, beats_at, colour_at};
 pub struct LiquidDraw;
 
 /// The surface look: the Liquid surface module's settings, or that module's defaults in the
-/// classic look's colour when the liquid wears any other look.
+/// ball look's colour when the liquid wears any other look.
 fn surface_look(cx: &DrawCx) -> Option<LiquidLook> {
     let look = cx.resolved.slots.get(&SlotId::Look)?;
     Some(if look.kind == "look.liquid" {
         LiquidLook::from_params(&look.params)
     } else {
-        let colour = ClassicLook::from_params(&look.params).fill.colours.first();
+        let colour = BasicLook::from_params(&look.params).fill.colours.first();
         LiquidLook { colour: Paint::solid(colour), ..LiquidLook::default() }
     })
 }
@@ -124,7 +124,7 @@ impl ThingDraw for LiquidDraw {
             let radius = bodies.radius.first().copied().unwrap_or(0.0);
             frame.liquids.push(layer(cx, &look, points, radius, &mut frame.gradients));
         } else {
-            let color = ClassicLook::from_params(&look.params).first_colour();
+            let color = BasicLook::from_params(&look.params).first_colour();
             let code = bpe_gfx::thing_code(cx.thing.id);
             frame.balls.extend(alive.map(|i| BallInstance {
                 center: bodies.position[i].into(),
@@ -218,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn a_liquid_with_a_classic_look_draws_plain_dots() {
-        let (frame, world, me) = pool_with_look("look.classic");
+    fn a_liquid_with_a_ball_look_draws_plain_dots() {
+        let (frame, world, me) = pool_with_look("look.basic");
         assert!(frame.liquids.is_empty());
         assert_eq!(frame.balls.len(), 1 + 100, "the ball and every particle");
         let dot = frame.balls[1];

@@ -12,7 +12,7 @@ use glam::Vec2;
 
 use crate::modules::sound::NoteSound;
 use crate::paint::{Inputs, colour_at};
-use crate::{ClassicLook, StyledLook, music};
+use crate::{BasicLook, music};
 
 /// How far back Hits per second counts, in seconds.
 const HIT_RATE_WINDOW: f64 = 0.5;
@@ -69,13 +69,12 @@ fn angle(velocity: Vec2, normal: Vec2) -> f32 {
     along.abs().atan2(across).to_degrees()
 }
 
-/// The fill paint of a thing's classic or styled look.
+/// The fill paint of a thing's look.
 fn fill_of(resolved: &Resolved, thing: ThingId) -> Option<(crate::paint::Paint, bool)> {
     let r = resolved.things.get(&thing)?;
     let slot = r.slots.get(&SlotId::Look)?;
     let fill = match slot.kind.as_str() {
-        "look.classic" => ClassicLook::from_params(&slot.params).fill,
-        "look.styled" => StyledLook::from_params(&slot.params).fill,
+        "look.basic" => BasicLook::from_params(&slot.params).fill,
         _ => return None,
     };
     Some((crate::modules::look::draw::for_balls(fill), r.screen))

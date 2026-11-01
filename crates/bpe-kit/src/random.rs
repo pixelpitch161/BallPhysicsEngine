@@ -621,7 +621,7 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        let gradient = def(&reg, "look.classic", "colours");
+        let gradient = def(&reg, "look.basic", "colours");
         let red = Color::rgb(255, 0, 0);
         let one = rolls(&gradient, &Value::Gradient(Gradient::solid(red)), 1.0, 20);
         assert_eq!(one.len(), 20);
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn a_little_gradient_dice_moves_the_end_stops_part_way_to_the_ends() {
         let reg = registry();
-        let gradient = def(&reg, "look.classic", "colours");
+        let gradient = def(&reg, "look.basic", "colours");
         let inset = Gradient {
             stops: [0.2, 0.5, 0.8].iter().map(|&at| bpe_core::Stop { at, color: Color::rgb(200, 40, 40) }).collect(),
             transition: bpe_core::Transition::Smooth,
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn gradient_dice_keep_stop_count_and_sorted_stops() {
         let reg = registry();
-        let gradient = def(&reg, "look.classic", "colours");
+        let gradient = def(&reg, "look.basic", "colours");
         let four = Gradient {
             stops: [0.0, 0.05, 0.1, 1.0]
                 .iter()
@@ -701,7 +701,7 @@ mod tests {
         }
         // What the colours follow, their angle, span and scroll roll inside their dice ranges.
         for key in ["angle", "span", "scroll"] {
-            let d = def(&reg, "look.classic", key);
+            let d = def(&reg, "look.basic", key);
             let (lo, hi) = d.dice_range().unwrap_or_else(|| panic!("{key} has a dice range"));
             let now = d.default.clone();
             let rolled = rolls(&d, &now, 1.0, 50);
@@ -711,7 +711,7 @@ mod tests {
                 assert!((lo..=hi).contains(&x), "{key} {x} inside {lo}..{hi}");
             }
         }
-        let follow = def(&reg, "look.classic", "follow");
+        let follow = def(&reg, "look.basic", "follow");
         let ValueType::Choice(names) = follow.ty else { panic!("follow is a choice") };
         let picked: std::collections::BTreeSet<String> = rolls(&follow, &follow.default, 1.0, 50)
             .into_iter()
@@ -768,7 +768,7 @@ mod tests {
         let reg = registry();
         let glow = Color::additive(255, 136, 0);
         let top = def(&reg, "scene", "background_colours");
-        let gradient = def(&reg, "look.classic", "colours");
+        let gradient = def(&reg, "look.basic", "colours");
         for amount in [0.3, 1.0] {
             for v in rolls(&top, &Value::Color(glow), amount, 20) {
                 let Value::Color(c) = v else { panic!("{v:?}") };
@@ -797,7 +797,7 @@ mod tests {
             assert!((value - dark).abs() < 0.02, "a dark background stays dark: {c:?}");
             assert_eq!(c.a, 200, "and keeps its transparency");
         }
-        let gradient = def(&reg, "look.classic", "colours");
+        let gradient = def(&reg, "look.basic", "colours");
         let list = [Color { r: 20, g: 20, b: 60, a: 128 }, Color::rgb(255, 200, 0)];
         for v in rolls(&gradient, &Value::Gradient(Gradient::even(&list)), 1.0, 30) {
             let Value::Gradient(new) = v else { panic!("{v:?}") };
@@ -920,7 +920,7 @@ mod tests {
         let mut scene = new_scene(&reg);
         let a = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
         let b = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let neon = scene.add_module(&reg, "look.classic", "Neon").unwrap();
+        let neon = scene.add_module(&reg, "look.basic", "Neon").unwrap();
         scene.link(&reg, a, SlotId::Look, neon).unwrap();
         let glow = Address { owner: Owner::Thing(a), slot: Some(SlotId::Look), key: "glow".into() };
         scene.set_at(&reg, &glow, Value::Number(1.5)).unwrap();
@@ -949,7 +949,7 @@ mod tests {
         let reg = registry();
         let mut scene = new_scene(&reg);
         let a = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let neon = scene.add_module(&reg, "look.classic", "Neon").unwrap();
+        let neon = scene.add_module(&reg, "look.basic", "Neon").unwrap();
         scene.link(&reg, a, SlotId::Look, neon).unwrap();
         let params_before = scene.library.modules[&neon].params.clone();
         let rolled =

@@ -84,9 +84,10 @@ fn inside_rings_draw_on_classic_balls() {
     assert!(edge[0] > 20 && edge[2] > 20, "{edge:?}: the same colour, lit darker");
 
     let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
-    params.set("inside", Value::Choice("rings".into()));
-    // Starting from red at the middle whatever the ball's place.
-    params.set("follow", Value::Choice("order".into()));
+    // Rings of their own gradient, from red at the middle to blue at the edge.
+    params.set("in_pattern", Value::Choice("rings".into()));
+    params.set("in_from", Value::Choice("own_gradient".into()));
+    params.set("in_colours", Value::Gradient(Gradient::even(&[red, blue])));
     let rings = draw(&scene);
     if std::env::var_os("BPE_SAVE_RENDERS").is_some() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");

@@ -8,12 +8,12 @@ use bpe_gfx::{DrawCx, GradientAtlas, PaintGpu};
 use bpe_runtime::{Bodies, CameraView};
 use glam::Vec2;
 
-use super::ClassicLook;
+use super::BasicLook;
 use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, paint_gpu, seed_of};
 
-/// The thing's classic look, when its Look slot is filled.
-pub fn look_of(cx: &DrawCx) -> Option<ClassicLook> {
-    cx.resolved.slots.get(&SlotId::Look).map(|s| ClassicLook::from_params(&s.params))
+/// The thing's look, when its Look slot is filled.
+pub fn look_of(cx: &DrawCx) -> Option<BasicLook> {
+    cx.resolved.slots.get(&SlotId::Look).map(|s| BasicLook::from_params(&s.params))
 }
 
 /// `p` as a ball reads it: a ball has no path of its own, so Path reads as Place.
@@ -134,7 +134,7 @@ impl<'a> StillColours<'a> {
             let r = self.scene.things.get(&other)?;
             #[cfg(test)]
             LOOK_READS.with(|n| n.set(n.get() + 1));
-            Some((for_balls(ClassicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill), r.screen))
+            Some((for_balls(BasicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill), r.screen))
         });
         let (fill, screen) = look.as_ref()?;
         let place_screen = if *screen { point } else { self.camera.to_screen(point) };
@@ -228,7 +228,7 @@ impl<'a> WallInputs<'a> {
     /// where nothing is painted on it) and the gradient painted on its line, baked into `atlas`.
     pub fn paint(&self, p: &Paint, i: usize, place: Vec2, atlas: &mut GradientAtlas) -> ([f32; 4], PaintGpu) {
         let inputs = self.get(p, i, place);
-        (colour_at(p, &inputs), paint_gpu(p, &inputs, atlas, self.time as f32))
+        (colour_at(p, &inputs), paint_gpu(p, &inputs, atlas))
     }
 }
 
@@ -236,7 +236,7 @@ impl<'a> WallInputs<'a> {
 /// follows (place, start, order, speed, hits, steps, beats or time), then turned round the colour
 /// wheel by "Hue shift per hit" for every hit the ball has taken. The closure owns the look and
 /// borrows the bodies and what `cx` borrows.
-pub fn colors<'a>(look: ClassicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + 'a {
+pub fn colors<'a>(look: BasicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + 'a {
     let fill = for_balls(look.fill);
     let inputs = BallInputs::new(cx, bodies, &[&fill]);
     let hue_per_hit = look.hue_per_hit;
@@ -252,6 +252,6 @@ pub fn colors<'a>(look: ClassicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> imp
 }
 
 /// The glow a wall gets from a look: the old renderer's wall glow at the default ball glow.
-pub fn wall_glow(look: &ClassicLook) -> f32 {
+pub fn wall_glow(look: &BasicLook) -> f32 {
     0.015 * look.glow / 0.12
 }
