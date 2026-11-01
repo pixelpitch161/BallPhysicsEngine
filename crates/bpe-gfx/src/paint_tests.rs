@@ -36,7 +36,6 @@ fn striped_ball(row: u32) -> LookInstance {
         seed: 0.0,
         // Green, so a ball that ignores its paint fails.
         color: [0.0, 1.0, 0.0, 1.0],
-        color2: [0.0, 1.0, 0.0, 1.0],
         outline_color: [0.0; 4],
         form: [0.0, 0.0, 4.0, 0.0],
         look: [0.0, 0.0, 1.0, 0.0],
@@ -489,7 +488,7 @@ fn inside_pattern_varies_per_ball() {
 
 /// A big styled circle at the centre, `color` its own colour, painting `paint` inside.
 fn look_ball(color: [f32; 4], paint: PaintGpu) -> LookInstance {
-    LookInstance { color, color2: color, paint, ..striped_ball(0) }
+    LookInstance { color, paint, ..striped_ball(0) }
 }
 
 /// The linear-light scene colour an output byte shows: sRGB decoded, and the post pass's
@@ -563,34 +562,6 @@ fn inside_linear_with_one_colour_is_flat() {
                 let p = linear_at(&pixels, x, y);
                 assert!(near(p, middle, 0.02), "{name}: ({x}, {y}) {p:?} vs the middle {middle:?}");
             }
-        }
-    }
-}
-
-#[test]
-fn inside_dots_mask_matches_the_old_fill_dots() {
-    let (red, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    // The old fill: dots of the second colour, size 4.
-    frame.looks.push(LookInstance {
-        color: red,
-        color2: blue,
-        form: [0.0, 6.0, 4.0, 0.0],
-        ..look_ball(red, PaintGpu::default())
-    });
-    let Some(old) = render("inside-dots-old-fill", &frame) else { return };
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
-    let dots = PaintGpu { row: row as f32, pattern: 7.0, scale: 2.0, ..PaintGpu::default() };
-    frame.looks.push(look_ball(red, dots));
-    let Some(new) = render("inside-dots-paint", &frame) else { return };
-    // Allow a few bytes of difference: the atlas holds the gradient in half floats, sampled
-    // between texels, where the old fill mixed the two colours exactly.
-    let mut off = 0;
-    for (i, (a, b)) in old.iter().zip(&new).enumerate() {
-        if a.abs_diff(*b) > 3 {
-            off += 1;
-            assert!(off < 50, "byte {i}: old {a} vs new {b}");
         }
     }
 }

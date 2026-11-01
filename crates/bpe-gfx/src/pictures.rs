@@ -38,7 +38,6 @@ pub(crate) fn save(name: &str, pixels: &[u8], w: u32, h: u32) {
 }
 
 const PINK: [f32; 4] = [1.0, 0.1046, 0.3813, 1.0];
-const BLUE: [f32; 4] = [0.01, 0.025, 1.0, 1.0];
 const CYAN: [f32; 4] = [0.01, 0.6, 1.0, 1.0];
 
 fn look(center: Vec2, radius: f32) -> LookInstance {
@@ -47,7 +46,6 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
         radius,
         seed: 0.3,
         color: PINK,
-        color2: BLUE,
         outline_color: CYAN,
         form: [0.0, 0.0, 4.0, 0.15],
         look: [0.0, 0.0, 1.0, 0.0],
@@ -58,7 +56,7 @@ fn look(center: Vec2, radius: f32) -> LookInstance {
 }
 
 #[test]
-fn every_shape_and_fill_draws_a_styled_ball() {
+fn every_shape_and_style_draws_a_styled_ball() {
     const W: u32 = 540;
     const H: u32 = 960;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
@@ -69,9 +67,9 @@ fn every_shape_and_fill_draws_a_styled_ball() {
         l.look[0] = 4.0;
         frame.looks.push(l);
     }
-    for fill in 0..12 {
-        let mut l = look(at(8 + fill), 80.0);
-        l.form[1] = fill as f32;
+    for style in 0..2 {
+        let mut l = look(at(8 + style), 80.0);
+        l.form[1] = style as f32;
         l.look[1] = 0.3;
         frame.looks.push(l);
     }
@@ -83,7 +81,7 @@ fn every_shape_and_fill_draws_a_styled_ball() {
             assert!(p[0] < 60, "the donut should have a hole: {p:?}");
             continue;
         }
-        assert!(p[0] > 120 || p[2] > 120, "ball {i} (shape {}, fill {}) is missing: {p:?}", l.form[0], l.form[1]);
+        assert!(p[0] > 120 || p[2] > 120, "ball {i} (shape {}, style {}) is missing: {p:?}", l.form[0], l.form[1]);
     }
     let corner = Vec2::new(58.0, 58.0);
     let square = pixel_sized(&pixels, W, H, at(1) + corner);

@@ -1,4 +1,4 @@
-// Styled balls: a shape, a fill, an outline and a halo per ball, stretched along the way it
+// Styled balls: a shape, a style, an outline and a halo per ball, stretched along the way it
 // moves. Appended to scene.wgsl's module (and ball_look.wgsl's shapes and patterns, and
 // paint.wgsl's gradients).
 
@@ -7,20 +7,19 @@ struct LookIn {
     @location(1) radius: f32,
     @location(2) seed: f32,
     @location(3) color: vec4<f32>,
-    @location(4) color2: vec4<f32>,
-    @location(5) outline_color: vec4<f32>,
-    // Shape, fill, pattern size, roundness.
-    @location(6) form: vec4<f32>,
+    @location(4) outline_color: vec4<f32>,
+    // Shape, style (1 lights it like a sphere), spare, roundness.
+    @location(5) form: vec4<f32>,
     // Outline width in pixels, glow, opacity, angle.
-    @location(7) look: vec4<f32>,
+    @location(6) look: vec4<f32>,
     // Stretch direction, scale along it and across it.
-    @location(8) stretch: vec4<f32>,
+    @location(7) stretch: vec4<f32>,
     // Glow size in radii, thing code.
-    @location(9) extent: vec4<f32>,
-    // The gradient painted inside, as `PaintGpu`.
-    @location(10) paint_a: vec4<f32>,
-    @location(11) paint_b: vec4<f32>,
-    @location(12) paint_c: vec4<f32>,
+    @location(8) extent: vec4<f32>,
+    // What is painted inside, as `PaintGpu`.
+    @location(9) paint_a: vec4<f32>,
+    @location(10) paint_b: vec4<f32>,
+    @location(11) paint_c: vec4<f32>,
 };
 
 struct LookOut {
@@ -28,17 +27,16 @@ struct LookOut {
     @location(0) local: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) radius_px: f32,
-    @location(3) @interpolate(flat) color2: vec4<f32>,
-    @location(4) @interpolate(flat) outline_color: vec4<f32>,
-    @location(5) @interpolate(flat) form: vec4<f32>,
-    @location(6) @interpolate(flat) look: vec4<f32>,
+    @location(3) @interpolate(flat) outline_color: vec4<f32>,
+    @location(4) @interpolate(flat) form: vec4<f32>,
+    @location(5) @interpolate(flat) look: vec4<f32>,
     // Stretch direction, glow size in radii, outline width in radii.
-    @location(7) @interpolate(flat) misc: vec4<f32>,
+    @location(6) @interpolate(flat) misc: vec4<f32>,
     // Thing code and seed, for the object picture.
-    @location(8) @interpolate(flat) code: vec2<f32>,
-    @location(9) @interpolate(flat) paint_a: vec4<f32>,
-    @location(10) @interpolate(flat) paint_b: vec4<f32>,
-    @location(11) @interpolate(flat) paint_c: vec4<f32>,
+    @location(7) @interpolate(flat) code: vec2<f32>,
+    @location(8) @interpolate(flat) paint_a: vec4<f32>,
+    @location(9) @interpolate(flat) paint_b: vec4<f32>,
+    @location(10) @interpolate(flat) paint_c: vec4<f32>,
 };
 
 // How far past the shape's edge the halo reaches, in glow sizes.
@@ -63,7 +61,6 @@ fn vs_look(@builtin(vertex_index) i: u32, b: LookIn) -> LookOut {
     out.local = corner;
     out.color = b.color;
     out.radius_px = b.radius / g.view.z;
-    out.color2 = b.color2;
     out.outline_color = b.outline_color;
     out.form = b.form;
     out.look = b.look;
@@ -83,16 +80,13 @@ fn shade_look(in: LookOut) -> vec4<f32> {
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
 
-    let fill = in.form.y;
     var color = in.color.rgb;
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
     if paint_paints(paint) {
-        // A gradient painted inside takes the place of the fill's own colours.
+        // What is painted inside takes the place of the ball's own colour.
         color = paint_colour(paint, p, g.view.w, in.color).rgb;
-    } else if fill > 1.5 {
-        color = mix(in.color.rgb, in.color2.rgb, paint_mask(p, fill, in.form.z));
     }
-    if fill > 0.5 && fill < 1.5 {
+    if in.form.y > 0.5 {
         // Lit as the ball sits on screen, whichever way it is stretched.
         let dir = in.misc.xy;
         let screen = dir * in.local.x + vec2<f32>(-dir.y, dir.x) * in.local.y;

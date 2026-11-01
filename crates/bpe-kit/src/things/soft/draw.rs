@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::sim::SoftState;
 use super::{SoftShape, SoftWorld};
 use crate::modules::look::draw::{WallInputs, for_walls, look_of};
-use crate::paint::{Inside, colour_at, paint_gpu};
+use crate::paint::{Pattern, colour_at, inside_gpu, vary_gpu};
 
 pub struct SoftDraw;
 
@@ -80,14 +80,13 @@ impl ThingDraw for SoftDraw {
         for v in body.iter_mut() {
             v.local = ((Vec2::from(v.position) - centre) / reach).into();
         }
-        if fill.inside == Inside::None {
+        if look.inside.pattern == Pattern::None {
             return;
         }
-        // The pattern starts where the paint puts the first point, read at the body's centre.
-        let mut at = point_inputs(0);
-        at.place = centre;
-        at.place_screen = inputs.get(&fill, 0, centre).place_screen;
-        let paint = paint_gpu(&fill, &at, &mut frame.gradients, cx.time as f32);
+        // The pattern is laid across the body's box; its own gradient varies as the first point.
+        let at = point_inputs(0);
+        let vary = vary_gpu(&fill, at.seed, at.time);
+        let paint = inside_gpu(&look.inside, vary, &mut frame.gradients, cx.time as f32);
         for v in &mut frame.soft[first..] {
             v.paint = paint;
         }
@@ -227,7 +226,7 @@ mod tests {
         assert_eq!(frame.shapes[1].c[1], 4.0, "half the default thickness");
     }
 
-    /// A soft body of `shape` wearing a classic look with `colours`, set up by `f`.
+    /// A soft body of `shape` wearing a look with `colours`, set up by `f`.
     fn painted_frame(shape: &str, detail: i64, f: impl FnOnce(&mut bpe_core::Params)) -> Frame {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
@@ -235,7 +234,7 @@ mod tests {
         let thing = scene.things.get_mut(&soft).unwrap();
         thing.params.set("shape", Value::Choice(shape.into()));
         thing.params.set("detail", Value::Int(detail));
-        let look = scene.add_module(&kit.registry, "look.classic", "Soft colours").unwrap();
+        let look = scene.add_module(&kit.registry, "look.basic", "Soft colours").unwrap();
         f(&mut scene.library.modules.get_mut(&look).unwrap().params);
         scene.link(&kit.registry, soft, bpe_core::SlotId::Look, look).unwrap();
         let resolved = resolve(&scene, &kit.registry);
@@ -281,10 +280,9 @@ mod tests {
     fn an_inside_pattern_paints_across_the_body_s_box() {
         let frame = painted_frame("cloth", 5, |p| {
             p.set("colours", Value::Gradient(Gradient::even(&[RED, BLUE])));
-            p.set("inside", Value::Choice("stripes".into()));
+            p.set("in_pattern", Value::Choice("stripes".into()));
         });
-        assert_eq!(frame.gradients.len(), 2);
-        assert!(frame.soft.iter().all(|v| v.paint.row == 1.0 && v.paint.pattern == 5.0));
+        assert!(frame.soft.iter().all(|v| v.paint.row == -2.0 && v.paint.pattern == 5.0));
         let (lo, hi) = frame.soft.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| {
             ([lo[0].min(v.local[0]), lo[1].min(v.local[1])], [hi[0].max(v.local[0]), hi[1].max(v.local[1])])
         });

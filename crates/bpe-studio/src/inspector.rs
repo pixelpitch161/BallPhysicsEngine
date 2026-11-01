@@ -1475,7 +1475,7 @@ mod tests {
         }
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 3000.0))
+            .with_size(egui::vec2(420.0, 4000.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
@@ -1753,13 +1753,14 @@ mod tests {
         h.run();
         h.get_by_label("New Look module").click();
         h.run();
-        h.get_by_label("Classic").click();
+        // The kind's name, in the menu just opened (the card's own heading says Look too).
+        h.get_all_by_label("Look").last().expect("the Look kind").click();
         h.run();
         let s = h.state();
         let module = linked(&s.scene, ThingId(1), SlotId::Look);
         assert_ne!(module, starter);
         assert_eq!(s.scene.library.modules[&module].name, "Arena Look");
-        assert_eq!(s.scene.library.modules[&module].kind, "look.classic");
+        assert_eq!(s.scene.library.modules[&module].kind, "look.basic");
         assert_eq!(s.scene.library.modules[&module].params, s.scene.library.modules[&starter].params);
     }
 
@@ -1780,21 +1781,21 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
         assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
         assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
-        // The ball's Look has two kinds: the submenu names them, and a different kind keeps only
-        // the settings both kinds share, such as the colour.
+        // The ball's Look has several kinds: the submenu names them, and a different kind keeps
+        // only the settings both kinds share, such as the colour.
         let classic = s.scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().params.clone();
         h.get_by_label("Ball look").click();
         h.run();
         h.get_by_label("New Look module").click();
         h.run();
-        h.get_by_label("Styled").click();
+        h.get_by_label("Liquid surface").click();
         h.run();
         let s = h.state();
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Look] else { panic!() };
         let m = &s.scene.library.modules[module];
-        assert_eq!(m.kind, "look.styled");
+        assert_eq!(m.kind, "look.liquid");
         assert_eq!(m.params.get("colours"), classic.get("colours"), "{:?}", m.params);
-        assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.styled"));
+        assert_eq!(m.params, s.kit.registry.carry_over(&classic, "look.liquid"));
     }
 
     #[test]
@@ -1812,7 +1813,8 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Trail").is_some());
         assert!(h.query_by_label("Shader").is_some());
-        h.get_by_label("Motion").click();
+        // The menu's Motion, not the look's Motion heading.
+        h.get_all_by_label("Motion").last().expect("the Motion slot").click();
         h.run();
         let s = h.state();
         let motion = linked(&s.scene, ThingId(2), SlotId::Motion);
@@ -1827,8 +1829,8 @@ mod tests {
         h.run();
         h.get_by_label("New Look module").click();
         h.run();
-        for name in ["Classic", "Liquid surface", "Glowing dots"] {
-            assert!(h.query_by_label(name).is_some(), "{name} is offered");
+        for name in ["Look", "Liquid surface", "Glowing dots"] {
+            assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
         }
         h.get_by_label("Glowing dots").click();
         h.run();
@@ -1956,7 +1958,7 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         let folder = bpe_kit::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
-        let look = scene.add_module(&reg, "look.classic", "Folder look").unwrap();
+        let look = scene.add_module(&reg, "look.basic", "Folder look").unwrap();
         scene.library.modules.get_mut(&look).unwrap().params.set("glow", Value::Number(1.25));
         scene.link(&reg, folder, SlotId::Look, look).unwrap();
         scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
@@ -2658,14 +2660,14 @@ mod tests {
         h.run();
         h.get_by_label("New Look module").hover();
         h.run();
-        h.get_by_label("Styled").click();
+        h.get_by_label("Liquid surface").click();
         h.run();
         let (new, _) = ball_look(h.state());
         assert_ne!(new, module);
-        let styled = &h.state().scene.library.modules[&new];
-        assert_eq!(styled.kind, "look.styled");
-        assert_eq!(styled.params.get("colours"), Some(&colour), "the colour comes along");
-        assert_eq!(styled.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
+        let liquid = &h.state().scene.library.modules[&new];
+        assert_eq!(liquid.kind, "look.liquid");
+        assert_eq!(liquid.params.get("colours"), Some(&colour), "the colour comes along");
+        assert_eq!(liquid.params.get("glow"), Some(&Value::Number(0.7)), "and the glow");
     }
 
     /// The Colours row's name, after the Colours heading over it.

@@ -113,8 +113,6 @@ pub struct GroupOpts {
     pub when: &'static str,
     /// The names of the choices the group may offer.
     pub follows: &'static [&'static str],
-    /// Whether the group has its inside pattern settings.
-    pub inside: bool,
     /// No `space` setting: positions are always read from the screen.
     pub screen_only: bool,
     /// The group's main setting shows in the simple view.

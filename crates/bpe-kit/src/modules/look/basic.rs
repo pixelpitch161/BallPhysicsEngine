@@ -1,16 +1,16 @@
-//! The styled look: a shape, a fill pattern, an outline and a halo per ball, with the classic
-//! look's flash. Shares the classic look's keys (colours, glow, flash) so the balls' hit flashes
-//! and colours work the same whichever look they wear.
+//! The look: a ball's colours, its shape and style (a glowing ball, one flat colour, or lit like
+//! a sphere), a pattern inside each one, an outline, a halo and a flash where it hits. Other
+//! things wear the same look and read only its colours, its inside pattern and its glow.
 
 use std::f32::consts::FRAC_PI_2;
 
-use bpe_core::{Blend, Choice, Color, Gradient, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Blend, Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_gfx::{LookInstance, PaintGpu, blend_alpha};
 use glam::Vec2;
 
-use crate::paint::Paint;
+use crate::paint::{InsidePaint, Paint};
 
-pub struct StyledLookKind;
+pub struct BasicLookKind;
 
 /// The outline a ball is drawn with. Physics still treats every ball as a circle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -42,75 +42,53 @@ impl BallShape {
     }
 }
 
-/// How a ball is coloured in: one colour, lit like a sphere, or a pattern of two colours.
+/// How a ball is lit: a glowing ball, one flat colour, or lit like a shiny sphere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum BallFill {
-    Solid,
+pub enum Style {
     #[default]
+    Glow,
+    Flat,
     Shiny,
-    Radial,
-    Linear,
-    Stripes,
-    Rings,
-    Dots,
-    Checker,
-    Halves,
-    Slices,
-    Swirl,
-    Face,
 }
 
-impl BallFill {
-    /// The fill's number in ball_look.wgsl.
+impl Style {
+    /// The style's number in styled.wgsl's `form.y`: 1 lights the shape like a sphere.
     pub fn code(self) -> f32 {
         match self {
-            Self::Solid => 0.0,
+            Self::Glow | Self::Flat => 0.0,
             Self::Shiny => 1.0,
-            Self::Radial => 2.0,
-            Self::Linear => 3.0,
-            Self::Stripes => 4.0,
-            Self::Rings => 5.0,
-            Self::Dots => 6.0,
-            Self::Checker => 7.0,
-            Self::Halves => 8.0,
-            Self::Slices => 9.0,
-            Self::Swirl => 10.0,
-            Self::Face => 11.0,
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Settings)]
-pub struct StyledLook {
-    /// The ball's colours and what spreads them across the balls, with an optional pattern
-    /// painted inside each one.
+pub struct BasicLook {
+    /// The colours and what spreads them across the balls (or letters, or points).
     #[setting(
         paint,
         label = "Colours",
         prefix = "",
         group = "Colours",
         follows = "place|start|order|speed|hits|step|beat|time|path",
-        inside,
         simple
     )]
     pub fill: Paint,
+    /// How the colour is laid out inside each ball, letter or body.
+    #[setting(
+        paint,
+        label = "Inside each one",
+        prefix = "in_",
+        group = "Inside each one",
+        when = "thing=balls|text|soft"
+    )]
+    pub inside: InsidePaint,
     /// The outline the ball is drawn with; it still bounces as a circle.
     #[setting(label = "Shape", when = "thing=balls", simple, random)]
     pub ball_shape: BallShape,
-    /// How the ball is coloured in: one colour, lit like a sphere, or a pattern of two colours.
-    #[setting(label = "Fill", when = "thing=balls", simple, random)]
-    pub finish: BallFill,
-    /// The pattern's other colours.
-    #[setting(
-        paint,
-        label = "Pattern colours",
-        prefix = "pattern_",
-        group = "Pattern",
-        when = "thing=balls and finish!=solid|shiny",
-        follows = "place|start|order|speed|hits|step|beat|time|path",
-        simple
-    )]
-    pub pattern: Paint,
+    /// How the ball is lit: Glow is a lit ball with a soft halo, Flat is one even colour and
+    /// Shiny is lit like a sphere.
+    #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
+    pub style: Style,
     /// How wide the outline just inside the edge is; 0 means none.
     #[setting(label = "Outline", when = "thing=balls", range(0, 24), unit = "px", simple, keyframe, random)]
     pub outline: f32,
@@ -137,25 +115,12 @@ pub struct StyledLook {
         random
     )]
     pub roundness: f32,
-    /// How many stripes, rings, dots or slices fit across the ball.
-    #[setting(
-        label = "Pattern size",
-        when = "thing=balls and finish=stripes|rings|dots|checker|slices|swirl",
-        range(0.5, 24),
-        group = "Shape",
-        keyframe,
-        random
-    )]
-    pub pattern_size: f32,
-    /// The shape's and pattern's starting angle.
+    /// The shape's starting angle; the pattern inside turns with it.
     #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Shape", keyframe, random)]
     pub turn: f32,
-    /// How fast the shape and pattern turn.
+    /// How fast the shape turns; the pattern inside turns with it.
     #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Shape", keyframe, random)]
     pub spin: f32,
-    /// Turns the shape to point the way the ball is going.
-    #[setting(label = "Face motion", when = "thing=balls", group = "Shape", random)]
-    pub face_motion: bool,
     /// How far the halo reaches, in ball radii.
     #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe, random)]
     pub glow_size: f32,
@@ -205,21 +170,19 @@ pub struct StyledLook {
     pub blend_each: bool,
 }
 
-impl Default for StyledLook {
+impl Default for BasicLook {
     fn default() -> Self {
         Self {
             fill: Paint::default(),
+            inside: InsidePaint::default(),
             ball_shape: BallShape::Circle,
-            finish: BallFill::Shiny,
-            pattern: Paint { colours: Gradient::solid(Color::rgb(0x20, 0x20, 0x40)), ..Paint::default() },
+            style: Style::Glow,
             outline: 0.0,
             glow: 0.12,
             outline_paint: Paint::default(),
             roundness: 0.15,
-            pattern_size: 4.0,
             turn: 0.0,
             spin: 0.0,
-            face_motion: false,
             glow_size: 0.8,
             opacity: 1.0,
             rainbow: 0.0,
@@ -235,15 +198,39 @@ impl Default for StyledLook {
     }
 }
 
-impl ModuleKind for StyledLookKind {
+impl BasicLook {
+    /// The look's first colour, in linear light: what things that paint one colour show.
+    pub fn first_colour(&self) -> [f32; 4] {
+        self.fill.colours.first().to_linear()
+    }
+
+    /// Whether a ball wearing this look is drawn as the classic glowing ball rather than a
+    /// styled shape: a glowing circle.
+    pub fn is_classic_ball(&self) -> bool {
+        self.style == Style::Glow && self.ball_shape == BallShape::Circle
+    }
+
+    /// The angle in degrees the pattern inside a classic ball moving at `velocity` turns by at
+    /// `time` seconds, the way a styled ball's pattern turns with its shape: the shape's own
+    /// Turn and Spin, and the way the ball goes when the pattern turns with the ball.
+    pub fn inside_turn(&self, velocity: Vec2, time: f32) -> f32 {
+        let mut angle = self.turn + self.spin * time;
+        if self.inside.turns {
+            angle += heading(velocity).to_angle().to_degrees() + 90.0;
+        }
+        angle
+    }
+}
+
+impl ModuleKind for BasicLookKind {
     fn id(&self) -> &'static str {
-        "look.styled"
+        "look.basic"
     }
     fn name(&self) -> &'static str {
-        "Styled"
+        "Look"
     }
     fn help(&self) -> &'static str {
-        "A ball with its own shape, fill pattern, outline and halo, stretched as it speeds up."
+        "Colours, with a shape, a style, a pattern inside each one, an outline and a halo."
     }
     fn fits(&self, thing_kind: &str) -> bool {
         !matches!(thing_kind, "liquid" | "swarm")
@@ -252,12 +239,18 @@ impl ModuleKind for StyledLookKind {
         SlotId::Look
     }
     fn settings(&self) -> &'static [SettingDef] {
-        StyledLook::defs()
+        BasicLook::defs()
     }
 }
 
 /// The speed at which a ball stretches to twice its length at full Stretch.
 pub const STRETCH_SPEED: f32 = 900.0;
+
+/// The way something moving at `velocity` goes; a still one faces right.
+fn heading(velocity: Vec2) -> Vec2 {
+    let speed = velocity.length();
+    if speed > 1e-3 { velocity / speed } else { Vec2::X }
+}
 
 /// Turns a linear-light colour `turn` of the way around the colour wheel.
 fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
@@ -265,26 +258,19 @@ fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
     [shifted[0], shifted[1], shifted[2], color[3]]
 }
 
-/// The colours one styled ball is painted with, in linear light: its fill, its pattern's other
-/// colour, its outline, and the gradient painted inside it (row -1 for none).
+/// The colours one styled ball is painted with, in linear light: its fill, its outline, and
+/// what is painted inside it (row -1 for nothing).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BallColours {
     pub fill: [f32; 4],
-    pub pattern: [f32; 4],
     pub outline: [f32; 4],
     pub paint: PaintGpu,
 }
 
 impl BallColours {
-    /// `fill`, with the look's pattern and outline in their first colours and nothing painted
-    /// inside.
-    pub fn plain(look: &StyledLook, fill: [f32; 4]) -> Self {
-        Self {
-            fill,
-            pattern: look.pattern.colours.first().to_linear(),
-            outline: look.outline_paint.colours.first().to_linear(),
-            paint: PaintGpu::default(),
-        }
+    /// `fill`, with the look's outline in its first colour and nothing painted inside.
+    pub fn plain(look: &BasicLook, fill: [f32; 4]) -> Self {
+        Self { fill, outline: look.outline_paint.colours.first().to_linear(), paint: PaintGpu::default() }
     }
 }
 
@@ -292,7 +278,7 @@ impl BallColours {
 /// number.
 #[allow(clippy::too_many_arguments)]
 pub fn instance(
-    look: &StyledLook,
+    look: &BasicLook,
     colours: BallColours,
     center: Vec2,
     velocity: Vec2,
@@ -302,26 +288,24 @@ pub fn instance(
     seed: f32,
 ) -> LookInstance {
     let mut color = colours.fill;
-    let mut color2 = colours.pattern;
     if look.rainbow != 0.0 {
-        let turn = look.rainbow * time;
-        color = shift_linear_hue(color, turn);
-        color2 = shift_linear_hue(color2, turn);
+        color = shift_linear_hue(color, look.rainbow * time);
     }
     let speed = velocity.length();
-    let heading = if speed > 1e-3 { velocity / speed } else { Vec2::X };
+    let heading = heading(velocity);
     // Fast balls stretch along their path and thin out across it, keeping about the same area.
     let amount = look.stretch.clamp(0.0, 1.0) * (speed / STRETCH_SPEED).min(1.5);
     let along = 1.0 + amount;
     let across = 1.0 / along.sqrt();
-    let stretches = amount > 1e-4 || look.face_motion;
+    let turns = look.inside.turns;
+    let stretches = amount > 1e-4 || turns;
     let dir = if stretches { heading } else { Vec2::X };
     let mut angle = (look.turn + look.spin * time).to_radians();
-    if look.face_motion {
+    if turns {
         // Shapes point up at no turn; a quarter turn points them along the motion.
         angle += FRAC_PI_2;
     } else if stretches {
-        // Keep the pattern still on screen while the quad lines up with the motion.
+        // Keep the shape and pattern still on screen while the quad lines up with the motion.
         angle -= heading.to_angle();
     }
     LookInstance {
@@ -329,9 +313,8 @@ pub fn instance(
         radius,
         seed,
         color: blend_alpha(color),
-        color2: blend_alpha(color2),
         outline_color: blend_alpha(colours.outline),
-        form: [look.ball_shape.code(), look.finish.code(), look.pattern_size.max(0.1), look.roundness.clamp(0.0, 1.0)],
+        form: [look.ball_shape.code(), look.style.code(), 0.0, look.roundness.clamp(0.0, 1.0)],
         look: [look.outline.max(0.0), look.glow.max(0.0), look.opacity.clamp(0.0, 1.0), angle],
         stretch: [dir.x, dir.y, along, across],
         extent: [look.glow_size.max(0.05), code, 0.0, 0.0],
@@ -342,37 +325,36 @@ pub fn instance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::look::ClassicLook;
-    use bpe_core::Depth;
+    use bpe_core::{Depth, Value};
 
     #[test]
-    fn a_styled_look_has_six_simple_settings_and_shares_the_classic_keys() {
-        let defs = StyledLook::defs();
+    fn a_look_has_five_simple_settings() {
+        let defs = BasicLook::defs();
         let simple: Vec<&str> = defs.iter().filter(|d| d.depth == Depth::Simple).map(|d| d.key).collect();
-        assert_eq!(simple, ["colours", "ball_shape", "finish", "pattern_colours", "outline", "glow"]);
-        for classic in ClassicLook::defs() {
-            let styled = defs.iter().find(|d| d.key == classic.key).unwrap_or_else(|| panic!("{}", classic.key));
-            assert_eq!(styled.ty, classic.ty, "{}", classic.key);
-            assert_eq!(styled.default, classic.default, "{}", classic.key);
+        assert_eq!(simple, ["colours", "ball_shape", "style", "outline", "glow"]);
+        let style = defs.iter().find(|d| d.key == "style").unwrap();
+        assert_eq!((style.label, style.group, style.when), ("Style", "Style", "thing=balls"));
+        assert_eq!(style.default, Value::Choice("glow".into()));
+        assert_eq!(Style::NAMES, ["glow", "flat", "shiny"]);
+        let pattern = defs.iter().find(|d| d.key == "in_pattern").unwrap();
+        assert_eq!((pattern.label, pattern.group), ("Pattern", "Inside each one"));
+        for gone in ["finish", "pattern_colours", "pattern_size", "face_motion", "inside", "inside_angle"] {
+            assert!(defs.iter().all(|d| d.key != gone), "{gone} is gone");
         }
-        // The classic look reads a styled look's flash settings as its own.
-        let params = StyledLook { flash: 2.0, glow: 0.5, ..StyledLook::default() }.to_params();
-        let classic = ClassicLook::from_params(&params);
-        assert_eq!((classic.flash, classic.glow), (2.0, 0.5));
     }
 
     #[test]
     fn no_saved_settings_read_as_the_default_look() {
-        assert_eq!(StyledLook::from_params(&bpe_core::Params::default()), StyledLook::default());
-        assert!(StyledLook::default().to_params().0.is_empty(), "the defaults are not saved");
-        // The pattern's own navy is its setting's default too.
-        let pattern = StyledLook::defs().iter().find(|d| d.key == "pattern_colours").unwrap();
-        assert_eq!(pattern.default, bpe_core::Value::Gradient(Gradient::solid(Color::rgb(0x20, 0x20, 0x40))));
+        assert_eq!(BasicLook::from_params(&bpe_core::Params::default()), BasicLook::default());
+        assert!(BasicLook::default().to_params().0.is_empty(), "the defaults are not saved");
+        let d = BasicLook::default();
+        assert!(d.is_classic_ball(), "a new look is a glowing circle");
+        assert_eq!(d.inside.pattern, crate::paint::Pattern::None);
     }
 
     #[test]
     fn a_fast_ball_stretches_along_its_motion() {
-        let look = StyledLook { stretch: 1.0, ..StyledLook::default() };
+        let look = BasicLook { stretch: 1.0, ..BasicLook::default() };
         let still = instance(&look, BallColours::plain(&look, [1.0; 4]), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.5);
         assert_eq!(still.stretch, [1.0, 0.0, 1.0, 1.0]);
         assert_eq!(still.extent, [0.8, 3.0, 0.0, 0.0]);
@@ -393,8 +375,9 @@ mod tests {
         // The pattern stays still on screen: the quad turned a quarter turn, the pattern turns
         // back.
         assert!((fast.look[3] + FRAC_PI_2).abs() < 1e-6);
-        // Facing the motion turns the shape's tip along the way it goes instead.
-        let facing = StyledLook { face_motion: true, ..StyledLook::default() };
+        // Turning with the ball points the shape's tip along the way it goes instead.
+        let mut facing = BasicLook::default();
+        facing.inside.turns = true;
         let faced = instance(
             &facing,
             BallColours::plain(&facing, [1.0; 4]),
@@ -407,23 +390,32 @@ mod tests {
         );
         assert_eq!(faced.stretch, [0.0, 1.0, 1.0, 1.0]);
         assert!((faced.look[3] - FRAC_PI_2).abs() < 1e-6);
+        // A classic ball's pattern turns the same way on screen: a quarter turn for the heading
+        // and a quarter turn more.
+        assert!((facing.inside_turn(Vec2::new(0.0, 10.0), 0.0) - 180.0).abs() < 1e-4);
+        assert_eq!(BasicLook { turn: 30.0, spin: 10.0, ..BasicLook::default() }.inside_turn(Vec2::X, 2.0), 50.0);
     }
 
     #[test]
     fn the_rainbow_turns_the_colours_with_time_and_shapes_keep_their_codes() {
-        let look =
-            StyledLook { rainbow: 0.5, ball_shape: BallShape::Star, finish: BallFill::Dots, ..StyledLook::default() };
+        let look = BasicLook { rainbow: 0.5, ball_shape: BallShape::Star, style: Style::Shiny, ..BasicLook::default() };
         let red = Color::rgb(255, 0, 0).to_linear();
         let at0 = instance(&look, BallColours::plain(&look, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
         let at1 = instance(&look, BallColours::plain(&look, red), Vec2::ZERO, Vec2::ZERO, 20.0, 1.0, 3.0, 0.0);
         assert_eq!(at0.color, red);
         // Half a turn around the wheel from red is cyan.
         assert_eq!(Color::from_linear(at1.color), Color::rgb(0, 255, 255));
-        assert_eq!(at0.form[..2], [5.0, 6.0]);
+        assert_eq!(at0.form[..2], [5.0, 1.0]);
+        let flat = BasicLook { style: Style::Flat, ..look.clone() };
+        let glow = BasicLook { style: Style::Glow, ..look };
+        for l in [flat, glow] {
+            let i = instance(&l, BallColours::plain(&l, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
+            assert_eq!(i.form[1], 0.0, "{:?} is unlit", l.style);
+        }
         // An additive colour keeps its mark.
         let add = instance(
-            &look,
-            BallColours::plain(&look, [1.0, 0.0, 0.0, 0.0]),
+            &BasicLook::default(),
+            BallColours::plain(&BasicLook::default(), [1.0, 0.0, 0.0, 0.0]),
             Vec2::ZERO,
             Vec2::ZERO,
             20.0,

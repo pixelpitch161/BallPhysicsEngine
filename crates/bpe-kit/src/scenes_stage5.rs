@@ -4,10 +4,8 @@
 
 use bpe_core::{Blend, Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
 
-use crate::{
-    BallFill, BallShape, BurstPreset, ClassicLook, HitBurst, StreakTrail, StyledLook, TrailSource, paint::Paint,
-    scenes::stage2,
-};
+use crate::paint::{InsideFrom, InsidePaint, Paint, Pattern};
+use crate::{BallShape, BasicLook, BurstPreset, HitBurst, StreakTrail, Style, TrailSource, scenes::stage2};
 
 const BALLS: ThingId = ThingId(2);
 
@@ -65,13 +63,15 @@ fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, nam
     }
 }
 
-/// The ball's look module, replaced by a styled one.
-fn style_balls(scene: &mut Scene, reg: &Registry, look: StyledLook) {
+/// The ball's look module, replaced by a styled one: `look` with the twin's colours, then
+/// finished by `f`, which sees them.
+fn style_balls(scene: &mut Scene, reg: &Registry, look: BasicLook, f: impl FnOnce(&mut BasicLook)) {
     let m = bpe_core::resolve_slot(scene, reg, BALLS, SlotId::Look, &mut Vec::new()).expect("a look").module;
     let old = scene.library.modules[&m].clone();
     // Keep the twin's colours.
-    let look = StyledLook { fill: ClassicLook::from_params(&old.params).fill, ..look };
-    own_module(scene, reg, BALLS, "look.styled", &old.name, look.to_params());
+    let mut look = BasicLook { fill: BasicLook::from_params(&old.params).fill, ..look };
+    f(&mut look);
+    own_module(scene, reg, BALLS, "look.basic", &old.name, look.to_params());
     if scene.users_of(m).is_empty() {
         scene.library.modules.remove(&m);
     }
@@ -94,12 +94,8 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
     style_balls(
         scene,
         reg,
-        StyledLook {
-            glow: 0.6,
-            glow_size: 1.4,
-            pattern: Paint::solid(Color::rgb(0xff, 0xbf, 0x26)),
-            ..StyledLook::default()
-        },
+        BasicLook { style: Style::Shiny, glow: 0.6, glow_size: 1.4, ..BasicLook::default() },
+        |_| {},
     );
     own_module(scene, reg, BALLS, "shader.lava", "Lava", params([number("heat", 1.8), number("scale", 2.0)]));
     let trail = StreakTrail {
@@ -145,15 +141,25 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
     style_balls(
         scene,
         reg,
-        StyledLook {
+        BasicLook {
             ball_shape: BallShape::Hexagon,
-            finish: BallFill::Slices,
-            pattern: Paint::solid(Color::rgb(0x10, 0x10, 0x30)),
+            style: Style::Flat,
             outline: 2.0,
             outline_paint: Paint::solid(Color::rgb(0xff, 0xff, 0xff)),
             rainbow: 0.15,
             spin: 90.0,
-            ..StyledLook::default()
+            ..BasicLook::default()
+        },
+        // Slices of the ball's own colour and navy.
+        |l| {
+            let colours = Gradient::even(&[l.fill.colours.first(), Color::rgb(0x10, 0x10, 0x30)]);
+            l.inside = InsidePaint {
+                pattern: Pattern::Slices,
+                from: InsideFrom::OwnGradient,
+                colours,
+                size: 4.0,
+                ..InsidePaint::default()
+            };
         },
     );
     let trail = StreakTrail { seconds: 0.4, width: 0.5, brightness: 0.6, ..StreakTrail::default() };
@@ -168,14 +174,16 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
     style_balls(
         scene,
         reg,
-        StyledLook {
+        BasicLook {
+            style: Style::Shiny,
             glow: 1.2,
             glow_size: 1.6,
             outline: 4.0,
             outline_paint: Paint::solid(Color::rgb(0x40, 0xff, 0xff)),
             stretch: 0.6,
-            ..StyledLook::default()
+            ..BasicLook::default()
         },
+        |_| {},
     );
     let burst = HitBurst {
         preset: BurstPreset::Rings,
@@ -230,12 +238,15 @@ mod tests {
         let reg = registry();
         for (name, scene) in stage5(&reg) {
             let kinds: Vec<&str> = scene.library.modules.values().map(|m| m.kind.as_str()).collect();
-            let new = kinds.iter().any(|k| {
-                k.starts_with("shader.")
-                    || k.starts_with("trail.")
-                    || k.starts_with("particles.")
-                    || *k == "look.styled"
-            });
+            let styled = scene
+                .library
+                .modules
+                .values()
+                .any(|m| m.kind == "look.basic" && !BasicLook::from_params(&m.params).is_classic_ball());
+            let new = styled
+                || kinds
+                    .iter()
+                    .any(|k| k.starts_with("shader.") || k.starts_with("trail.") || k.starts_with("particles."));
             assert!(new, "{name}: {kinds:?}");
         }
     }

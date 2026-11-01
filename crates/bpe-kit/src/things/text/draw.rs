@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::fill::{Values, fill};
 use super::{Appear, TextSettings};
 use crate::modules::look::draw::look_of;
-use crate::paint::{Follow, Inputs, Inside, Paint, beats_at, colour_at, paint_gpu, seed_of};
+use crate::paint::{Follow, Inputs, Paint, Pattern, beats_at, colour_at, inside_gpu, seed_of, vary_gpu};
 
 pub struct TextDraw;
 
@@ -126,8 +126,9 @@ impl ThingDraw for TextDraw {
             g.color = blend_alpha(faded(colour_at(&fill, &inputs)));
             g.outline_color = blend_alpha(faded(colour_at(&outline, &inputs)));
             g.local = local;
-            if fill.inside != Inside::None {
-                g.paint = paint_gpu(&fill, &inputs, &mut frame.gradients, cx.time as f32);
+            if look.inside.pattern != Pattern::None {
+                let vary = vary_gpu(&fill, inputs.seed, inputs.time);
+                g.paint = inside_gpu(&look.inside, vary, &mut frame.gradients, cx.time as f32);
             }
         }
     }
@@ -211,7 +212,7 @@ mod tests {
     const GREEN: Color = Color::rgb(0, 255, 0);
     const BLUE: Color = Color::rgb(0, 0, 255);
 
-    /// The glyphs of a text saying `text` in a classic look set up by `look`, its own settings
+    /// The glyphs of a text saying `text` in a look set up by `look`, its own settings
     /// set up by `f`, one second in.
     fn painted_glyphs(
         text: &str,
@@ -224,7 +225,7 @@ mod tests {
         let params = &mut scene.things.get_mut(&id).unwrap().params;
         params.set("text", Value::Text(text.into()));
         f(params);
-        let module = scene.add_module(&kit.registry, "look.classic", "Text colours").unwrap();
+        let module = scene.add_module(&kit.registry, "look.basic", "Text colours").unwrap();
         look(&mut scene.library.modules.get_mut(&module).unwrap().params);
         scene.link(&kit.registry, id, SlotId::Look, module).unwrap();
         let resolved = resolve(&scene, &kit.registry);
@@ -273,16 +274,15 @@ mod tests {
     fn text_outline_and_inside_pattern_paint_too() {
         let striped = |p: &mut Params| {
             rgb_order(p);
-            p.set("inside", Value::Choice("stripes".into()));
+            p.set("in_pattern", Value::Choice("stripes".into()));
         };
         let outlined = |p: &mut Params| {
             p.set("outline_colours", Value::Gradient(Gradient::even(&[BLUE, RED])));
             p.set("outline_follow", Value::Choice("order".into()));
         };
         let (glyphs, rows) = painted_glyphs("AB", striped, outlined);
-        assert_eq!(rows, 1);
-        assert!(glyphs.iter().all(|g| g.paint.row == 0.0 && g.paint.pattern == 5.0));
-        assert_eq!((glyphs[0].paint.t0, glyphs[1].paint.t0), (0.0, 1.0), "each letter starts at its own place");
+        assert_eq!(rows, 0, "a shade of each letter's own colour bakes no gradient");
+        assert!(glyphs.iter().all(|g| g.paint.row == -2.0 && g.paint.pattern == 5.0));
         assert_eq!(glyphs[0].outline_color, BLUE.to_linear());
         assert_eq!(glyphs[1].outline_color, RED.to_linear());
     }

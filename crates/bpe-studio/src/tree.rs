@@ -1156,7 +1156,7 @@ mod tests {
         let f = add_folder(&mut h);
         let folder_look = {
             let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Folder look").unwrap();
+            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Folder look").unwrap();
             s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
             s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
             s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
@@ -1395,7 +1395,7 @@ mod tests {
         let folder = bpe_kit::add_thing(&mut scene, reg, "folder", ThingId::ROOT).unwrap();
         bpe_kit::fill_slot(&mut scene, reg, folder, SlotId::Look).unwrap();
         let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
-        let other = scene.add_module(reg, "look.classic", "Other").unwrap();
+        let other = scene.add_module(reg, "look.basic", "Other").unwrap();
         scene.library.modules.get_mut(&other).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
         let look = |s: &Scene| bpe_core::resolve_slot(s, reg, balls, SlotId::Look, &mut Vec::new()).map(|r| r.params);
         let before = look(&scene);
@@ -1409,7 +1409,7 @@ mod tests {
         let f = add_folder(&mut h);
         let before = {
             let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Folder look").unwrap();
+            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Folder look").unwrap();
             s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
             s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
             s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
@@ -1435,7 +1435,7 @@ mod tests {
         let mut h = harness();
         let m = {
             let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.classic", "Red look").unwrap();
+            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Red look").unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
             m
         };

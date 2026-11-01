@@ -32,8 +32,7 @@ pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::drums::mix::DrumSoundMix;
 pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
-pub use modules::look::styled::{BallFill, BallShape, StyledLook, StyledLookKind};
-pub use modules::look::{ClassicLook, ClassicLookKind};
+pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::melody::mix::MelodySoundMix;
@@ -163,7 +162,7 @@ pub fn flow_source<'a>(
         .filter(|(_, r)| r.kind == "balls")
         .filter_map(|(id, r)| {
             let look = r.slots.get(&SlotId::Look)?;
-            (look.kind == "look.classic").then(|| (*id, ClassicLook::from_params(&look.params).first_colour()))
+            (look.kind == "look.basic").then(|| (*id, BasicLook::from_params(&look.params).first_colour()))
         })
         .collect();
     FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
@@ -319,8 +318,7 @@ pub fn registry() -> Registry {
     r.add_thing(CameraKind);
     r.add_thing(LiquidKind);
     r.add_thing(SwarmKind);
-    r.add_module(ClassicLookKind);
-    r.add_module(StyledLookKind);
+    r.add_module(BasicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
     r.add_module(StreakTrailKind);
@@ -353,7 +351,7 @@ pub fn new_scene(reg: &Registry) -> Scene {
         unreachable!("a new ball owns its look")
     };
     scene.library.modules.get_mut(&look).expect("just added").params =
-        ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() }.to_params();
+        BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..BasicLook::default() }.to_params();
     scene.things.get_mut(&ball).expect("just added").transform.position = Vec2::new(0.0, -200.0);
     scene
 }
@@ -497,8 +495,7 @@ mod tests {
             let t = reg.thing(thing).unwrap();
             reg.kinds_fitting(slot, t).map(|m| m.id()).collect()
         };
-        // Task 5 merges these two into "look.basic".
-        assert_eq!(ids("balls", SlotId::Look), ["look.classic", "look.styled"]);
+        assert_eq!(ids("balls", SlotId::Look), ["look.basic"]);
         assert_eq!(ids("liquid", SlotId::Look), ["look.liquid"]);
         assert_eq!(ids("swarm", SlotId::Look), ["look.swarm"]);
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
@@ -509,10 +506,18 @@ mod tests {
     }
 
     #[test]
+    fn the_look_registry_has_one_ball_look() {
+        let reg = registry();
+        let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
+        assert_eq!(looks, ["look.basic", "look.liquid", "look.swarm"]);
+        assert_eq!(reg.module("look.basic").unwrap().name(), "Look");
+    }
+
+    #[test]
     fn the_new_module_kinds_are_registered_on_their_slots() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.classic", "look.liquid", "look.styled", "look.swarm"]);
+        assert_eq!(looks, ["look.basic", "look.liquid", "look.swarm"]);
         let motions: Vec<&str> = reg.modules_for(SlotId::Motion).map(|m| m.id()).collect();
         assert_eq!(motions, ["motion.basic", "motion.flock", "motion.liquid"]);
         assert_eq!(reg.module("look.liquid").unwrap().name(), "Liquid surface");

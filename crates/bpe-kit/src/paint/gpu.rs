@@ -1,27 +1,15 @@
-//! Handing a paint's inside pattern to the graphics card: the gradient baked into the frame's
-//! atlas and the pattern's numbers in a [`PaintGpu`].
+//! Handing what is painted inside a shape to the graphics card: the gradient baked into the
+//! frame's atlas and the pattern's numbers in a [`PaintGpu`].
 
 use bpe_core::Transition;
 use bpe_gfx::{BackgroundPaint, GradientAtlas, PaintGpu};
 use bpe_runtime::CameraView;
 
-use super::{
-    Follow, Inputs, Inside, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat, Space, offset, vary_gpu,
-};
+use super::{Follow, Inputs, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat, Space, offset, vary_gpu};
 
 /// Pattern 4 in paint.wgsl: a gradient along a wall's line, the shape working out how far round
 /// it each pixel is.
 pub const PATH_PATTERN: f32 = 4.0;
-
-/// An old [`Paint`] inside pattern's number in paint.wgsl.
-fn pattern_code(inside: Inside) -> f32 {
-    match inside {
-        Inside::None => 0.0,
-        Inside::Stripes => 5.0,
-        Inside::Rings => 6.0,
-        Inside::Sweep => 3.0,
-    }
-}
 
 /// An [`InsidePaint`] pattern's number in paint.wgsl.
 fn inside_code(pattern: Pattern) -> f32 {
@@ -81,54 +69,23 @@ pub(crate) fn repeat_code(repeat: Repeat) -> f32 {
     }
 }
 
-/// How `p` paints inside one shape at `time` seconds: its gradient's row in `atlas`, centred
-/// where the paint puts this shape (`offset`), with the inside pattern's angle (turned by its
-/// spin), repeats across the shape and scroll. No inside pattern paints nothing (row -1) and
-/// bakes nothing, so the shape keeps its own colour; except a paint that follows Path, which
-/// paints along the wall's line (pattern 4) from start to end, moving by the paint's scroll. A
-/// pattern or path never runs off its gradient's end: the paint's Clamp mirrors it instead. An
-/// inside pattern wins over Path, which then only gives the start (`Inputs::path`, 0 for a
-/// wall). The paint's variation for this instance (`Inputs::seed`, at `Inputs::time`) goes in
-/// `vary`, turning what the pattern paints the way [`super::colour_at`] turns the one colour.
-pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas, time: f32) -> PaintGpu {
+/// How `p` paints along a wall's line: a paint that follows Path paints its gradient's row in
+/// `atlas` from the line's start to its end (pattern 4), moving by the paint's scroll, with the
+/// paint's variation for this instance (`Inputs::seed`, at `Inputs::time`) in `vary`. Any other
+/// paint paints nothing (row -1) and bakes nothing, so the shape keeps its own colour.
+pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> PaintGpu {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
-    let steps = if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 };
-    if p.inside == Inside::None {
-        if p.follow != Follow::Path {
-            return PaintGpu::default();
-        }
-        return PaintGpu {
-            row: atlas.row(&p.colours) as f32,
-            pattern: PATH_PATTERN,
-            steps,
-            scroll: finite(p.scroll),
-            repeat: repeat_code(p.repeat),
-            vary: vary_gpu(p, inputs.seed, inputs.time),
-            ..PaintGpu::default()
-        };
+    if p.follow != Follow::Path {
+        return PaintGpu::default();
     }
-    let gpu = PaintGpu {
+    PaintGpu {
         row: atlas.row(&p.colours) as f32,
-        t0: offset(p, inputs),
-        pattern: pattern_code(p.inside),
-        steps,
-        angle: finite(p.inside_angle + p.inside_spin * time),
-        scale: finite(p.inside_scale),
-        scroll: finite(p.inside_scroll),
+        pattern: PATH_PATTERN,
+        steps: if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 },
+        scroll: finite(p.scroll),
         repeat: repeat_code(p.repeat),
         vary: vary_gpu(p, inputs.seed, inputs.time),
-    };
-    if p.inside != Inside::Sweep {
-        return gpu;
-    }
-    // The old sweep was centred on its start half way round from its angle, and mirrored on
-    // Clamp; pattern 3 starts at 0 at its angle and honours the repeat. Turned half way, started
-    // half a sweep back and mirrored, it paints the same.
-    PaintGpu {
-        t0: gpu.t0 - 0.5 * gpu.scale,
-        angle: gpu.angle + 180.0,
-        repeat: if p.repeat == Repeat::Clamp { repeat_code(Repeat::Mirror) } else { gpu.repeat },
-        ..gpu
+        ..PaintGpu::default()
     }
 }
 
@@ -306,51 +263,15 @@ mod tests {
     }
 
     #[test]
-    fn no_inside_pattern_paints_nothing_and_bakes_nothing() {
+    fn a_paint_off_the_path_paints_nothing_and_bakes_nothing() {
         let mut atlas = GradientAtlas::default();
         let p = Paint { colours: Gradient::even(&[Color::rgb(255, 0, 0), Color::WHITE]), ..Paint::default() };
-        assert_eq!(paint_gpu(&p, &Inputs::default(), &mut atlas, 1.0), PaintGpu::default());
+        assert_eq!(paint_gpu(&p, &Inputs::default(), &mut atlas), PaintGpu::default());
         assert!(atlas.is_empty());
     }
 
     #[test]
-    fn rings_spin_and_start_where_the_paint_puts_the_ball() {
-        let mut atlas = GradientAtlas::default();
-        let p = Paint {
-            colours: Gradient::even(&[Color::rgb(255, 0, 0), Color::WHITE]),
-            follow: Follow::Order,
-            inside: Inside::Rings,
-            inside_angle: 10.0,
-            inside_spin: 90.0,
-            inside_scale: 3.0,
-            inside_scroll: 0.5,
-            repeat: Repeat::Mirror,
-            ..Paint::default()
-        };
-        let inputs = Inputs { index: 1, count: 3, ..Inputs::default() };
-        let gpu = paint_gpu(&p, &inputs, &mut atlas, 2.0);
-        assert_eq!(
-            gpu,
-            PaintGpu {
-                row: 0.0,
-                t0: 0.5,
-                pattern: 6.0,
-                steps: 0.0,
-                angle: 190.0,
-                scale: 3.0,
-                scroll: 0.5,
-                repeat: 2.0,
-                vary: bpe_gfx::NO_VARY
-            }
-        );
-        assert_eq!(atlas.len(), 1);
-        // The same gradient on the next ball shares the row.
-        assert_eq!(paint_gpu(&p, &Inputs { index: 2, ..inputs }, &mut atlas, 2.0).row, 0.0);
-        assert_eq!(atlas.len(), 1);
-    }
-
-    #[test]
-    fn path_paints_along_the_line_without_an_inside_pattern() {
+    fn path_paints_along_the_line() {
         let mut atlas = GradientAtlas::default();
         let p = Paint {
             colours: Gradient::even(&[Color::rgb(255, 0, 0), Color::WHITE]),
@@ -359,12 +280,8 @@ mod tests {
             repeat: Repeat::Repeat,
             ..Paint::default()
         };
-        let gpu = paint_gpu(&p, &Inputs::default(), &mut atlas, 3.0);
+        let gpu = paint_gpu(&p, &Inputs::default(), &mut atlas);
         assert_eq!(gpu, PaintGpu { row: 0.0, pattern: PATH_PATTERN, scroll: 0.25, repeat: 1.0, ..PaintGpu::default() });
-        // An inside pattern wins: Path only places its start.
-        let rings = Paint { inside: Inside::Rings, ..p };
-        let gpu = paint_gpu(&rings, &Inputs { path: 0.5, ..Inputs::default() }, &mut atlas, 0.0);
-        assert_eq!((gpu.pattern, gpu.t0), (6.0, 0.5));
         assert_eq!(atlas.len(), 1);
     }
 

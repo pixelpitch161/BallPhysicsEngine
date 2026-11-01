@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 
 use crate::graphs::module_graph;
 use crate::modules::sound::{Order, PlaysWhen};
-use crate::paint::{Follow, Inside, Paint, PlaceShape, Repeat};
+use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
-    Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicMotion, BeatSync,
-    BurstSource, ClassicLook, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
+    Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion,
+    BeatSync, BurstSource, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
     HitBurst, LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
-    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, StyledLook, SwarmLook, SwarmSettings, TextSettings,
+    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings,
     TrailSource, new_scene, recipes,
 };
 
@@ -194,7 +194,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         a.thickness = 12.0;
     });
     let neon = [hex(0xff3ec8), hex(0xffb82e), hex(0x3ee6ff), hex(0x8a4dff), hex(0xff3ec8)];
-    let ring = ClassicLook {
+    let ring = BasicLook {
         fill: Paint {
             colours: Gradient::even(&neon),
             follow: Follow::Path,
@@ -203,9 +203,9 @@ pub fn colour_demo(reg: &Registry) -> Scene {
             ..Paint::default()
         },
         glow: 0.7,
-        ..ClassicLook::default()
+        ..BasicLook::default()
     };
-    b.own_module(ARENA, "look.classic", "Ring look", ring.to_params());
+    b.own_module(ARENA, "look.basic", "Ring look", ring.to_params());
     b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
         s.arrangement = Arrangement::Block;
         s.columns = 8;
@@ -215,15 +215,17 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         s.velocity = Vec2::new(-420.0, 220.0);
     });
     b.ball_look(|l| {
-        l.fill = Paint {
-            colours: Gradient::even(&[hex(0xffd23e), hex(0xff6a5c), hex(0xff3ec8), hex(0x8a4dff), hex(0x3e9bff)]),
-            angle: 45.0,
-            span: 700.0,
+        let colours = Gradient::even(&[hex(0xffd23e), hex(0xff6a5c), hex(0xff3ec8), hex(0x8a4dff), hex(0x3e9bff)]);
+        l.fill =
+            Paint { colours: colours.clone(), angle: 45.0, span: 700.0, repeat: Repeat::Mirror, ..Paint::default() };
+        l.inside = InsidePaint {
+            pattern: Pattern::Rings,
+            from: InsideFrom::OwnGradient,
+            colours,
             repeat: Repeat::Mirror,
-            inside: Inside::Rings,
-            inside_scale: 1.2,
-            inside_scroll: 0.25,
-            ..Paint::default()
+            size: 1.2,
+            scroll: 0.25,
+            ..InsidePaint::default()
         };
         l.glow = 0.3;
     });
@@ -261,12 +263,12 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         t.outline = 6.0;
         t.outline_paint = Paint::solid(hex(0x05040f));
     });
-    let title_look = ClassicLook {
+    let title_look = BasicLook {
         fill: Paint { colours: Gradient::even(&neon[..4]), follow: Follow::Order, ..Paint::default() },
         glow: 0.0,
-        ..ClassicLook::default()
+        ..BasicLook::default()
     };
-    let words = b.own_module(title, "look.classic", "Title look", title_look.to_params());
+    let words = b.own_module(title, "look.basic", "Title look", title_look.to_params());
     let caption = b.text("Caption", Vec2::new(0.0, 700.0), |t| {
         t.text = "place  path  life  centre".into();
         t.size = 56.0;
@@ -297,8 +299,8 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         a.height = 1400.0;
         a.thickness = 8.0;
     });
-    let rim = ClassicLook { fill: Paint::solid(hex(0xffffff)), ..ClassicLook::default() };
-    b.own_module(ARENA, "look.classic", "Rim look", rim.to_params());
+    let rim = BasicLook { fill: Paint::solid(hex(0xffffff)), ..BasicLook::default() };
+    b.own_module(ARENA, "look.basic", "Rim look", rim.to_params());
     // Screen suits the dark top, Multiply the light bottom.
     let rows = [
         ("Screen", Blend::Screen, [0x3ee6ff, 0x4d7bff, 0xff3ec8], -170.0),
@@ -324,12 +326,12 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             }
             .to_params(),
         );
-        let look = ClassicLook {
+        let look = BasicLook {
             fill: Paint { colours: Gradient::even(&colours.map(hex)), follow: Follow::Order, ..Paint::default() },
             blend,
-            ..ClassicLook::default()
+            ..BasicLook::default()
         };
-        b.own_module(id, "look.classic", &format!("{name} look"), look.to_params());
+        b.own_module(id, "look.basic", &format!("{name} look"), look.to_params());
         b.text(&format!("{name} label"), Vec2::new(0.0, y), |t| {
             t.text = name.into();
             t.size = 44.0;
@@ -349,8 +351,8 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             o.thickness = 56.0;
         }),
     );
-    let subtract = ClassicLook { fill: Paint::solid(hex(0x66c8ff)), blend: Blend::Subtract, ..ClassicLook::default() };
-    b.own_module(bar, "look.classic", "Subtract look", subtract.to_params());
+    let subtract = BasicLook { fill: Paint::solid(hex(0x66c8ff)), blend: Blend::Subtract, ..BasicLook::default() };
+    b.own_module(bar, "look.basic", "Subtract look", subtract.to_params());
     // Streaks that add their light.
     let comets = b.add(
         "balls",
@@ -367,8 +369,8 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         }
         .to_params(),
     );
-    let comet_look = ClassicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..ClassicLook::default() };
-    b.own_module(comets, "look.classic", "Comet look", comet_look.to_params());
+    let comet_look = BasicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..BasicLook::default() };
+    b.own_module(comets, "look.basic", "Comet look", comet_look.to_params());
     let streak = StreakTrail {
         seconds: 0.6,
         width: 0.8,
@@ -392,11 +394,12 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         s.radius = 22.0;
         s.velocity = Vec2::new(160.0, -90.0);
     });
-    let drift = StyledLook {
+    let drift = BasicLook {
         fill: Paint { colours: Gradient::even(&[hex(0xff7a3e)]), vary_hue: 25.0, wobble: 0.5, ..Paint::default() },
-        ..StyledLook::default()
+        style: Style::Shiny,
+        ..BasicLook::default()
     };
-    b.own_module(BALLS, "look.styled", "Drift look", drift.to_params());
+    b.own_module(BALLS, "look.basic", "Drift look", drift.to_params());
     b.text("Title", Vec2::new(0.0, -640.0 - 150.0), |t| {
         t.text = "Blend modes".into();
         t.size = 120.0;
@@ -441,7 +444,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
     });
     // The wall: the Sunset coral and the two colours a third of the way round the wheel from it.
     let coral = Gradient::even(&[sunset.stops[3].color]);
-    let wall = ClassicLook {
+    let wall = BasicLook {
         fill: Paint {
             colours: add_matching(&coral, Harmony::Triad),
             follow: Follow::Path,
@@ -450,9 +453,9 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
             ..Paint::default()
         },
         glow: 0.5,
-        ..ClassicLook::default()
+        ..BasicLook::default()
     };
-    b.own_module(ARENA, "look.classic", "Wall look", wall.to_params());
+    b.own_module(ARENA, "look.basic", "Wall look", wall.to_params());
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
         s.arrangement = Arrangement::Block;
         s.columns = 7;
@@ -482,14 +485,14 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         }
         .to_params(),
     );
-    let screen = ClassicLook {
+    let screen = BasicLook {
         fill: Paint { colours: sunset.clone(), follow: Follow::Order, ..Paint::default() },
         glow: 0.0,
         blend: Blend::Screen,
         blend_each: true,
-        ..ClassicLook::default()
+        ..BasicLook::default()
     };
-    b.own_module(glow, "look.classic", "Screen look", screen.to_params());
+    b.own_module(glow, "look.basic", "Screen look", screen.to_params());
     b.text("Title", Vec2::new(0.0, -740.0), |t| {
         t.text = "Graded sunset".into();
         t.size = 120.0;
@@ -577,7 +580,7 @@ impl<'a> Builder<'a> {
         scene.name = name.into();
         let mut shared = BTreeMap::new();
         for (slot, kind, module_name) in [
-            (SlotId::Look, "look.classic", "Plain look"),
+            (SlotId::Look, "look.basic", "Plain look"),
             (SlotId::Motion, "motion.basic", "Default motion"),
             (SlotId::Bounce, "bounce.basic", "Default bounce"),
             (SlotId::Sound, "sound.notes", "Default sound"),
@@ -700,8 +703,8 @@ impl<'a> Builder<'a> {
         self.scene.library.modules.get_mut(&m).expect("module").params = params;
     }
 
-    fn root_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
-        let mut s = ClassicLook::default();
+    fn root_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
+        let mut s = BasicLook::default();
         f(&mut s);
         let m = self.shared[&SlotId::Look];
         self.set_params(m, s.to_params());
@@ -729,8 +732,8 @@ impl<'a> Builder<'a> {
         self.ball_look(|l| l.fill = fill);
     }
 
-    fn ball_look(&mut self, f: impl FnOnce(&mut ClassicLook)) {
-        let mut s = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..ClassicLook::default() };
+    fn ball_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
+        let mut s = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..BasicLook::default() };
         f(&mut s);
         let m = self.module_of(BALLS, SlotId::Look);
         self.set_params(m, s.to_params());
@@ -915,9 +918,8 @@ fn reel_block(reg: &Registry) -> Scene {
         Color::rgb(0xff, 0x6a, 0x5c),
         Color::rgb(0xff, 0xb8, 0x2e),
     ]);
-    let arena_look =
-        ClassicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..ClassicLook::default() }.to_params();
-    b.own_module(ARENA, "look.classic", "Arena look", arena_look);
+    let arena_look = BasicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..BasicLook::default() }.to_params();
+    b.own_module(ARENA, "look.basic", "Arena look", arena_look);
     b.finish()
 }
 
@@ -1010,8 +1012,8 @@ fn jelly_drop(reg: &Registry) -> Scene {
         s.softness = 0.6;
         s.velocity = Vec2::new(220.0, 0.0);
     });
-    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xff, 0xb0, 0x20)), glow: 0.3, ..ClassicLook::default() };
-    b.own_module(jelly, "look.classic", "Jelly look", look.to_params());
+    let look = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0xb0, 0x20)), glow: 0.3, ..BasicLook::default() };
+    b.own_module(jelly, "look.basic", "Jelly look", look.to_params());
     b.finish()
 }
 
@@ -1040,8 +1042,8 @@ fn rope_bridge(reg: &Registry) -> Scene {
         s.thickness = 10.0;
         s.pinned = Pinned::BothEnds;
     });
-    let look = ClassicLook { fill: Paint::solid(Color::rgb(0xe8, 0xe8, 0xe8)), ..ClassicLook::default() };
-    b.own_module(rope, "look.classic", "Rope look", look.to_params());
+    let look = BasicLook { fill: Paint::solid(Color::rgb(0xe8, 0xe8, 0xe8)), ..BasicLook::default() };
+    b.own_module(rope, "look.basic", "Rope look", look.to_params());
     let marimba = b.built_in(Instrument::Marimba);
     b.sound(|s| s.instrument = marimba);
     b.finish()
@@ -1072,8 +1074,8 @@ fn cloth_hammock(reg: &Registry) -> Scene {
         s.softness = 0.45;
         s.pinned = Pinned::TopCorners;
     });
-    let look = ClassicLook { fill: Paint::solid(Color::rgb(0x3e, 0x9b, 0xff)), ..ClassicLook::default() };
-    b.own_module(cloth, "look.classic", "Cloth look", look.to_params());
+    let look = BasicLook { fill: Paint::solid(Color::rgb(0x3e, 0x9b, 0xff)), ..BasicLook::default() };
+    b.own_module(cloth, "look.basic", "Cloth look", look.to_params());
     b.finish()
 }
 
@@ -1251,9 +1253,8 @@ fn spinning_bars(reg: &Registry) -> Scene {
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| s.speed_gain = 1.01);
-    let bar_look =
-        ClassicLook { fill: Paint::solid(Color::rgb(0x7f, 0xe8, 0xff)), glow: 0.3, ..ClassicLook::default() };
-    b.own_module(bars, "look.classic", "Bar look", bar_look.to_params());
+    let bar_look = BasicLook { fill: Paint::solid(Color::rgb(0x7f, 0xe8, 0xff)), glow: 0.3, ..BasicLook::default() };
+    b.own_module(bars, "look.basic", "Bar look", bar_look.to_params());
     b.finish()
 }
 
