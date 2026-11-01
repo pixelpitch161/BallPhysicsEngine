@@ -69,6 +69,9 @@ enum Action {
     Link(ThingId, ModuleId),
 }
 
+/// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
+const FAMILIES: [&str; 5] = ["Bouncers", "Walls", "Flowing", "Forces", "On screen"];
+
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
     ui: &mut Ui,
@@ -91,11 +94,31 @@ pub fn show(
         );
         ui.menu_button("+ Add thing", |ui| {
             let present = |k: &str| scene.things.values().any(|t| t.kind == k);
-            for kind in reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))) {
+            let kinds: Vec<_> =
+                reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
+            let mut button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
                 if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
                     action = Some(Action::Add(kind.id()));
                     ui.close();
                 }
+            };
+            for family in FAMILIES {
+                let mut in_family = kinds.iter().filter(|k| k.family() == family).peekable();
+                if in_family.peek().is_none() {
+                    continue;
+                }
+                ui.label(RichText::new(family).small().color(theme::MUTED));
+                for kind in in_family {
+                    button(ui, *kind);
+                }
+            }
+            ui.separator();
+            let other = |k: &&&dyn bpe_core::ThingKind| !FAMILIES.contains(&k.family());
+            for kind in kinds.iter().filter(other).filter(|k| k.id() == "folder") {
+                button(ui, *kind);
+            }
+            for kind in kinds.iter().filter(other).filter(|k| k.id() != "folder") {
+                button(ui, *kind);
             }
         });
         ui.add_space(4.0);
@@ -1031,6 +1054,19 @@ mod tests {
         assert_eq!(s.scene.things[&ThingId(3)].name, "Balls");
         assert_eq!(s.scene.things[&ThingId(3)].parent, Some(ThingId::ROOT));
         assert!(h.query_by_label("Balls").is_some());
+    }
+
+    #[test]
+    fn add_thing_groups_kinds_under_headings() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        for f in FAMILIES {
+            assert!(h.query_by_label(f).is_some(), "{f} heading");
+        }
+        let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
+        assert!(y(&h, "Bouncers") < y(&h, "Balls"));
+        assert!(y(&h, "Balls") < y(&h, "Walls"));
     }
 
     #[test]

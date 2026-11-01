@@ -105,6 +105,9 @@ impl ThingKind for ObstacleKind {
     fn id(&self) -> &'static str {
         "obstacle"
     }
+    fn family(&self) -> &'static str {
+        "Walls"
+    }
     fn name(&self) -> &'static str {
         "Obstacle"
     }

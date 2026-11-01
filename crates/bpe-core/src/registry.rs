@@ -28,6 +28,10 @@ pub trait ThingKind: Send + Sync + 'static {
     fn single(&self) -> bool {
         false
     }
+    /// The heading the editor's "Add thing" menu lists this kind under.
+    fn family(&self) -> &'static str {
+        "Other"
+    }
     /// Whether the things under one of these use its modules for slots they don't fill
     /// themselves. A kind that says no keeps its slots to itself, like Scene settings.
     fn passes_down(&self) -> bool {

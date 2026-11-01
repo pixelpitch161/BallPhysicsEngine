@@ -386,6 +386,15 @@ mod tests {
     use bpe_runtime::{Log, World};
 
     #[test]
+    fn every_addable_thing_has_a_family() {
+        let families = ["Bouncers", "Walls", "Flowing", "Forces", "On screen"];
+        let reg = registry();
+        for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
+            assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
+        }
+    }
+
+    #[test]
     fn new_scenes_have_reverb_and_delay_buses() {
         let scene = new_scene(&registry());
         let names: Vec<&str> = scene.library.buses.iter().map(|b| b.name.as_str()).collect();
