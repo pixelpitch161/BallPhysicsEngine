@@ -59,6 +59,7 @@ impl ThingDraw for BallsDraw {
         let inputs = BallInputs::new(cx, bodies, &[&fill, &outline]);
         let time = cx.time as f32;
         let painted = look.inside.pattern != Pattern::None;
+        let inside = if painted { look.inside_at(time) } else { look.inside.clone() };
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
                 continue;
@@ -69,7 +70,7 @@ impl ThingDraw for BallsDraw {
             let mut paint = bpe_gfx::PaintGpu::default();
             if painted {
                 let at = inputs.get(&fill, i);
-                paint = inside_gpu(&look.inside, vary_gpu(&fill, at.seed, at.time), &mut frame.gradients, time);
+                paint = inside_gpu(&inside, vary_gpu(&fill, at.seed, at.time), &mut frame.gradients, time);
             }
             if !classic {
                 if painted {

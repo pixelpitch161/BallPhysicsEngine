@@ -223,6 +223,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
             from: InsideFrom::OwnGradient,
             colours,
             repeat: Repeat::Mirror,
+            angle: 0.0,
             size: 1.2,
             scroll: 0.25,
             ..InsidePaint::default()

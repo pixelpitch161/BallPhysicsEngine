@@ -8,7 +8,7 @@ use bpe_core::{Blend, Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
 use bpe_gfx::{LookInstance, PaintGpu, blend_alpha};
 use glam::Vec2;
 
-use crate::paint::{InsidePaint, Paint};
+use crate::paint::{InsideFrom, InsidePaint, Paint};
 
 pub struct BasicLookKind;
 
@@ -227,6 +227,20 @@ impl BasicLook {
         self.face_motion && self.ball_shape != BallShape::Circle
     }
 
+    /// What is painted inside a ball at `time` seconds: an own gradient turns round the colour
+    /// wheel with Rainbow, as the ball's own colour does (a shade of its own colour follows it
+    /// already).
+    pub fn inside_at(&self, time: f32) -> InsidePaint {
+        let mut inside = self.inside.clone();
+        let turn = self.rainbow * time;
+        if turn != 0.0 && inside.from == InsideFrom::OwnGradient {
+            for stop in &mut inside.colours.stops {
+                stop.color = stop.color.shift_hue(turn);
+            }
+        }
+        inside
+    }
+
     /// The angle in degrees the pattern inside a ball moving at `velocity` turns by on screen at
     /// `time` seconds, on top of its own angle and spin: the shape's Turn and Spin, and the way
     /// the ball goes when the pattern turns with the ball. A classic ball adds it to its paint.
@@ -376,6 +390,25 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_style_that_is_gone_loads_as_the_default() {
+        let reg = crate::registry();
+        let mut scene = crate::scenes::all(&reg).swap_remove(0).1;
+        let looks: Vec<_> =
+            scene.library.modules.iter().filter(|(_, m)| m.kind == "look.basic").map(|(id, _)| *id).collect();
+        assert!(!looks.is_empty());
+        for id in &looks {
+            let m = scene.library.modules.get_mut(id).unwrap();
+            m.params.set("style", Value::Choice("glow".into()));
+        }
+        let loaded = bpe_core::load(&bpe_core::save(&scene), &reg).expect("an unknown style still loads");
+        for id in &looks {
+            let params = &loaded.library.modules[id].params;
+            assert!(params.get("style").is_none(), "the unknown style is dropped");
+            assert_eq!(BasicLook::from_params(params).style, Style::Shiny);
+        }
+    }
+
+    #[test]
     fn no_saved_settings_read_as_the_default_look() {
         assert_eq!(BasicLook::from_params(&bpe_core::Params::default()), BasicLook::default());
         assert!(BasicLook::default().to_params().0.is_empty(), "the defaults are not saved");
@@ -462,6 +495,26 @@ mod tests {
         let both = BasicLook { face_motion: true, ball_shape: BallShape::Star, ..turning };
         assert!(both.inside_turn_on_shape(down).abs() < 1e-4, "the pattern turns with the shape");
         assert_eq!(BasicLook { turn: 30.0, spin: 10.0, ..BasicLook::default() }.inside_turn(Vec2::X, 2.0), 50.0);
+    }
+
+    #[test]
+    fn the_rainbow_turns_an_own_gradient_inside_too() {
+        let red = Color::rgb(255, 0, 0);
+        let inside = InsidePaint {
+            pattern: crate::paint::Pattern::Slices,
+            from: InsideFrom::OwnGradient,
+            colours: bpe_core::Gradient::even(&[red, Color::rgb(0, 0, 255)]),
+            ..InsidePaint::default()
+        };
+        let look = BasicLook { rainbow: 0.5, inside, ..BasicLook::default() };
+        assert_eq!(look.inside_at(0.0), look.inside);
+        let turned = look.inside_at(1.0);
+        assert_eq!(turned.colours.stops[0].color, Color::rgb(0, 255, 255));
+        assert_eq!(turned.colours.stops[1].color, Color::rgb(255, 255, 0));
+        // A shade of its own colour follows the ball's colour already.
+        let shade =
+            BasicLook { inside: InsidePaint { from: InsideFrom::ShadeOfOwnColour, ..look.inside.clone() }, ..look };
+        assert_eq!(shade.inside_at(1.0), shade.inside);
     }
 
     #[test]

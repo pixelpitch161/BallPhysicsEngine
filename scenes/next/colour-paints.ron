@@ -153,7 +153,7 @@
                 id: 3,
                 name: "Ball look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "angle": Number(45.0),
                     "colours": Gradient((
@@ -182,9 +182,37 @@
                         transition: Smooth,
                     )),
                     "glow": Number(0.30000001192092896),
-                    "inside": Choice("rings"),
-                    "inside_scale": Number(1.2000000476837158),
-                    "inside_scroll": Number(0.25),
+                    "in_angle": Number(0.0),
+                    "in_colours": Gradient((
+                        stops: [
+                            (
+                                at: 0.0,
+                                color: "#ffd23e",
+                            ),
+                            (
+                                at: 0.25,
+                                color: "#ff6a5c",
+                            ),
+                            (
+                                at: 0.5,
+                                color: "#ff3ec8",
+                            ),
+                            (
+                                at: 0.75,
+                                color: "#8a4dff",
+                            ),
+                            (
+                                at: 1.0,
+                                color: "#3e9bff",
+                            ),
+                        ],
+                        transition: Smooth,
+                    )),
+                    "in_from": Choice("own_gradient"),
+                    "in_pattern": Choice("rings"),
+                    "in_repeat": Choice("mirror"),
+                    "in_scroll": Number(0.25),
+                    "in_size": Number(1.2000000476837158),
                     "repeat": Choice("mirror"),
                     "span": Number(700.0),
                 },
@@ -194,7 +222,7 @@
                 id: 7,
                 name: "Plain look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
             ),
             8: (
                 id: 8,
@@ -207,7 +235,7 @@
                 id: 11,
                 name: "Ring look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -351,7 +379,7 @@
                 id: 21,
                 name: "Title look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [
@@ -383,7 +411,7 @@
                 id: 22,
                 name: "Caption look",
                 slot: Look,
-                kind: "look.classic",
+                kind: "look.basic",
                 params: {
                     "colours": Gradient((
                         stops: [

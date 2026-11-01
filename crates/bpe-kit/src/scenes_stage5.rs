@@ -150,14 +150,18 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
             spin: 90.0,
             ..BasicLook::default()
         },
-        // Slices of the ball's own colour and navy.
+        // Slices of the ball's own colour and navy. An inside mask's Size counts half as many
+        // repeats as the old Pattern size did, so the old 4 is 2; the look's Spin still turns
+        // the shape and the slices together.
         |l| {
             let colours = Gradient::even(&[l.fill.colours.first(), Color::rgb(0x10, 0x10, 0x30)]);
             l.inside = InsidePaint {
                 pattern: Pattern::Slices,
                 from: InsideFrom::OwnGradient,
                 colours,
-                size: 4.0,
+                // The old pattern started at the shape's own turn; Inside's default Angle is 90.
+                angle: 0.0,
+                size: 2.0,
                 ..InsidePaint::default()
             };
         },
