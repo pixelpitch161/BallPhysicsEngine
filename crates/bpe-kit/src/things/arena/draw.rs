@@ -59,7 +59,7 @@ mod tests {
         // An inside pattern wins over Path.
         scene.library.modules.get_mut(&look).unwrap().params.set("inside", Value::Choice("stripes".into()));
         let wall = draw(&scene).shapes[0];
-        assert_eq!((wall.paint.row, wall.paint.pattern), (1.0, 1.0));
+        assert_eq!((wall.paint.row, wall.paint.pattern), (1.0, 5.0));
 
         // One colour paints nothing on the line, as before.
         let params = &mut scene.library.modules.get_mut(&look).unwrap().params;

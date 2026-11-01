@@ -1,15 +1,18 @@
 // Gradient paint inside a shape: the frame's gradients baked one per row of an atlas texture
 // (see gradients.rs), and a pattern that turns a point inside the shape into a place along one.
-// Prepended to the scene, glyph and particle shaders; `paint_wgsl` in gradients.rs fills in the
+// Prepended to the scene, glyph, particle and flow shaders; `paint_wgsl` in gradients.rs fills in the
 // bind group each of them reads the atlas from.
 
 // Matches `PaintGpu` in gradients.rs.
 struct PaintGpu {
-    // The atlas row; below 0 paints nothing.
+    // The atlas row; -1 paints nothing, -2 paints a shade of the instance's own colour (see
+    // `paint_paints`).
     row: f32,
+    // Where along the gradient the pattern starts; in shade mode the shade, -1 to 1.
     t0: f32,
-    // 0 none, 1 stripes, 2 rings, 3 sweep, 4 path (along a wall's outline; the shape works the
-    // place along it out and calls `paint_pattern`).
+    // 0 none, 1 linear, 2 radial, 3 sweep, 4 path (along a wall's outline; the shape works the
+    // place along it out and calls `paint_pattern`), 5 stripes, 6 rings, 7 dots, 8 checker,
+    // 9 halves, 10 slices, 11 swirl, 12 face.
     pattern: f32,
     // 1 picks the nearest baked colour.
     steps: f32,
@@ -54,33 +57,147 @@ fn paint_wrap(x: f32, repeat: f32) -> f32 {
     return clamp(t, 0.0, 1.0);
 }
 
+// Whether `p` paints anything: a gradient row, or a shade of the instance's own colour.
+fn paint_paints(p: PaintGpu) -> bool {
+    return p.row >= 0.0 || paint_is_shade(p);
+}
+
+// Whether `p` paints a shade of the instance's own colour (row -2) instead of a gradient.
+fn paint_is_shade(p: PaintGpu) -> bool {
+    return p.row < -1.5 && p.row > -2.5;
+}
+
+// `base` (linear light) shaded by `s`: toward black below 0 (all black at -1), toward white
+// above (all white at 1). Alpha is kept.
+fn paint_shaded(base: vec4<f32>, s_in: f32) -> vec4<f32> {
+    let s = clamp(s_in, -1.0, 1.0);
+    if s < 0.0 {
+        return vec4<f32>(base.rgb * (1.0 + s), base.a);
+    }
+    return vec4<f32>(mix(base.rgb, vec3<f32>(1.0), s), base.a);
+}
+
+// `q` turned by `degrees`, from +x towards +y.
+fn paint_turn(q: vec2<f32>, degrees: f32) -> vec2<f32> {
+    let a = radians(degrees);
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(c * q.x - s * q.y, s * q.x + c * q.y);
+}
+
 // The linear-light colour `p` paints at `local`, the point in the instance's own space (-1 to 1
-// across it), `time` seconds in. A pattern runs `p.scale` gradients across the shape (stripes
-// across it at `p.angle`, rings out from its centre, sweep round it from `p.angle`), with `p.t0`
-// in its middle: on the stripes' centre line, at the rings' centre, half way round the sweep.
-fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32) -> vec4<f32> {
+// across it, y down), `time` seconds in, on an instance whose own colour is `base`. How far
+// along the gradient each pattern is, at size `p.scale`:
+// - linear: 0 to 1 across the shape at `p.angle`; radial: 0 at the centre to 1 at the edge;
+//   sweep: 0 to 1 round it from `p.angle`. These honour `p.repeat` as given.
+// - stripes (across at `p.angle`) and rings: `p.t0` on the centre line or at the centre, the
+//   paint's Clamp mirroring them (`paint_pattern`). A path given here paints as it always has,
+//   a sweep centred on `p.t0`.
+// - dots to face: the mask `paint_mask` draws (0 or 1, softened at the edges), turned by
+//   `p.angle`.
+// A gradient starts at `p.t0`. In shade mode (row -2) the place blends `base`, at 0, to `base`
+// shaded by `p.t0`, at 1, with no gradient and no variation. Uses `fwidth`: fragment code only.
+fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32, base: vec4<f32>) -> vec4<f32> {
+    let code = p.pattern;
+    var q = p;
     var along = 0.0;
-    if p.pattern > 2.5 {
-        // `fract` so the seam can sit at any angle.
-        along = (fract(atan2(local.y, local.x) / PAINT_TAU + 0.5 - p.angle / 360.0) - 0.5) * p.scale;
-    } else if p.pattern > 1.5 {
+    if code > 6.5 {
+        along = paint_mask(paint_turn(local, -p.angle), code - 1.0, p.scale * 2.0);
+    } else if code > 5.5 {
         along = length(local) * p.scale;
-    } else if p.pattern > 0.5 {
+        q.repeat = paint_mirrored(p.repeat);
+    } else if code > 4.5 {
         let a = radians(p.angle);
         along = dot(local, vec2<f32>(cos(a), sin(a))) * 0.5 * p.scale;
+        q.repeat = paint_mirrored(p.repeat);
+    } else if code > 3.5 {
+        // `fract` so the seam can sit at any angle.
+        along = (fract(atan2(local.y, local.x) / PAINT_TAU + 0.5 - p.angle / 360.0) - 0.5) * p.scale;
+        q.repeat = paint_mirrored(p.repeat);
+    } else if code > 2.5 {
+        along = fract(atan2(local.y, local.x) / PAINT_TAU - p.angle / 360.0) * p.scale;
+    } else if code > 1.5 {
+        along = length(local) * p.scale;
+    } else if code > 0.5 {
+        let a = radians(p.angle);
+        along = dot(local, vec2<f32>(cos(a), sin(a))) * 0.5 * p.scale + 0.5;
     }
-    if p.pattern < 0.5 {
-        return paint_along(p, 0.0, time);
+    if paint_is_shade(p) {
+        let t = paint_wrap(along + time * p.scroll, q.repeat);
+        return vec4<f32>(mix(base.rgb, paint_shaded(base, p.t0).rgb, t), base.a);
     }
-    return paint_pattern(p, along, time);
+    return paint_along(q, along, time);
+}
+
+// The repeat a pattern that never runs off its gradient's end uses: Clamp mirrors.
+fn paint_mirrored(repeat: f32) -> f32 {
+    return select(repeat, 2.0, repeat < 0.5);
 }
 
 // The linear-light colour of an inside pattern or a path `along` from its start, `time` seconds
 // in. A pattern never runs off the end of its gradient: the paint's Clamp mirrors it instead.
 fn paint_pattern(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
     var q = p;
-    q.repeat = select(p.repeat, 2.0, p.repeat < 0.5);
+    q.repeat = paint_mirrored(p.repeat);
     return paint_along(q, along, time);
+}
+
+// 0 or 1 in alternating bands of `x`, softened over a pixel.
+fn bands(x: f32) -> f32 {
+    return bands_over(x, fwidth(x));
+}
+
+// The same, softened over `w`, for values that jump where an angle wraps around.
+fn bands_over(x: f32, w_in: f32) -> f32 {
+    let w = max(w_in, 1e-4);
+    let f = fract(x);
+    return clamp((abs(f - 0.5) - 0.25) / w + 0.5, 0.0, 1.0);
+}
+
+// 1 inside where signed distance `d` is negative, softened over a pixel.
+fn paint_inside_mask(d: f32) -> f32 {
+    return clamp(-d / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
+}
+
+// How much of the second colour shows at `p` (unit radius, y down) for a fill pattern, 0 to 1.
+// Fills: 2 radial, 3 linear, 4 stripes, 5 rings, 6 dots, 7 checker, 8 halves, 9 slices,
+// 10 swirl, 11 face; `size` repeats are two across the shape. Uses `fwidth`: fragment code only.
+fn paint_mask(p: vec2<f32>, fill: f32, size: f32) -> f32 {
+    let r = length(p);
+    let n = size * 0.5;
+    if fill < 2.5 {
+        return smoothstep(0.0, 1.0, r);
+    } else if fill < 3.5 {
+        return clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
+    } else if fill < 4.5 {
+        return bands(p.x * n + 0.25);
+    } else if fill < 5.5 {
+        return bands(r * n + 0.25);
+    } else if fill < 6.5 {
+        let cell = fract(p * n + 0.5) - 0.5;
+        return paint_inside_mask(length(cell) - 0.28);
+    } else if fill < 7.5 {
+        let a = bands(p.x * n + 0.25);
+        let b = bands(p.y * n + 0.25);
+        return a + b - 2.0 * a * b;
+    } else if fill < 8.5 {
+        return paint_inside_mask(-p.y);
+    }
+    // Patterns around the middle: a whole number of slice pairs, so the seam where the angle
+    // wraps doesn't show.
+    let turns = atan2(p.y, p.x) / PAINT_TAU;
+    let turn_width = length(fwidth(p)) / max(r, 1e-3) / PAINT_TAU;
+    let m = max(round(n), 1.0);
+    if fill < 9.5 {
+        return bands_over(turns * m, turn_width * m);
+    } else if fill < 10.5 {
+        return bands_over(turns * m + r * 1.2, turn_width * m + fwidth(r) * 1.2);
+    }
+    // A smiley face: two eyes and a grin.
+    let eyes = length(vec2<f32>(abs(p.x) - 0.32, p.y + 0.22) / vec2<f32>(1.0, 1.4)) - 0.11;
+    let mouth_ring = abs(length(p - vec2<f32>(0.0, -0.1)) - 0.5) - 0.065;
+    let mouth = max(mouth_ring, 0.18 - p.y);
+    return paint_inside_mask(min(eyes, mouth));
 }
 
 // The linear-light colour `p` paints `along` its pattern (0 to 1 is one gradient), `time` seconds

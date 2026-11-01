@@ -281,7 +281,7 @@ mod tests {
         };
         let (glyphs, rows) = painted_glyphs("AB", striped, outlined);
         assert_eq!(rows, 1);
-        assert!(glyphs.iter().all(|g| g.paint.row == 0.0 && g.paint.pattern == 1.0));
+        assert!(glyphs.iter().all(|g| g.paint.row == 0.0 && g.paint.pattern == 5.0));
         assert_eq!((glyphs[0].paint.t0, glyphs[1].paint.t0), (0.0, 1.0), "each letter starts at its own place");
         assert_eq!(glyphs[0].outline_color, BLUE.to_linear());
         assert_eq!(glyphs[1].outline_color, RED.to_linear());

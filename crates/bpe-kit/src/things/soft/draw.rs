@@ -284,7 +284,7 @@ mod tests {
             p.set("inside", Value::Choice("stripes".into()));
         });
         assert_eq!(frame.gradients.len(), 2);
-        assert!(frame.soft.iter().all(|v| v.paint.row == 1.0 && v.paint.pattern == 1.0));
+        assert!(frame.soft.iter().all(|v| v.paint.row == 1.0 && v.paint.pattern == 5.0));
         let (lo, hi) = frame.soft.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| {
             ([lo[0].min(v.local[0]), lo[1].min(v.local[1])], [hi[0].max(v.local[0]), hi[1].max(v.local[1])])
         });

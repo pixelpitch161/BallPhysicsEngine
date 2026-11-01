@@ -86,11 +86,11 @@ fn shade_look(in: LookOut) -> vec4<f32> {
     let fill = in.form.y;
     var color = in.color.rgb;
     let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint.row >= 0.0 {
+    if paint_paints(paint) {
         // A gradient painted inside takes the place of the fill's own colours.
-        color = paint_colour(paint, p, g.view.w).rgb;
+        color = paint_colour(paint, p, g.view.w, in.color).rgb;
     } else if fill > 1.5 {
-        color = mix(in.color.rgb, in.color2.rgb, pattern(p, fill, in.form.z));
+        color = mix(in.color.rgb, in.color2.rgb, paint_mask(p, fill, in.form.z));
     }
     if fill > 0.5 && fill < 1.5 {
         // Lit as the ball sits on screen, whichever way it is stretched.

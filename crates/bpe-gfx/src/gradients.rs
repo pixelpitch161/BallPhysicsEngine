@@ -164,17 +164,27 @@ fn f16_bits(x: f32) -> u16 {
 #[repr(C)]
 #[derive(Pod, Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct PaintGpu {
-    /// The gradient's atlas row; -1 paints nothing and the instance keeps its own colours.
+    /// The gradient's atlas row; -1 paints nothing and the instance keeps its own colours. -2
+    /// is shade mode: the pattern blends the instance's own colour, at 0, to that colour shaded
+    /// by `t0` (toward black below 0, toward white above, in linear light), at 1, with no
+    /// gradient and no variation.
     pub row: f32,
-    /// Where along the gradient the pattern is centred (a path starts), 0 to 1.
+    /// Where along the gradient the pattern starts (stripes and rings are centred on it, a path
+    /// starts there), 0 to 1. In shade mode the shade, -1 to 1.
     pub t0: f32,
-    /// 0 none (the colour at `t0`), 1 stripes, 2 rings, 3 sweep.
+    /// 0 none (the colour at `t0`), 1 linear, 2 radial, 3 sweep, 4 path, 5 stripes, 6 rings,
+    /// 7 dots, 8 checker, 9 halves, 10 slices, 11 swirl, 12 face. Linear runs 0 to 1 across the
+    /// shape, radial 0 to 1 from its centre out, sweep 0 to 1 round it; these honour `repeat`.
+    /// Stripes, rings and path never run off the gradient's end: Clamp mirrors them. Dots to
+    /// face paint their mask (0 or 1) along the gradient.
     pub pattern: f32,
     /// 1 picks the nearest baked colour instead of blending neighbours.
     pub steps: f32,
-    /// The stripes' direction in degrees, from +x towards +y.
+    /// The pattern's turn in degrees, from +x towards +y: where linear and stripes point, where
+    /// sweep starts, and how far the masks are turned.
     pub angle: f32,
-    /// Stripes: gradients across the shape; rings: from its centre out; sweep: round it.
+    /// The pattern's size: gradients across the shape (linear, stripes), from its centre out
+    /// (radial, rings) or round it (sweep); repeats across it for the masks.
     pub scale: f32,
     /// Gradients per second the pattern moves along.
     pub scroll: f32,
