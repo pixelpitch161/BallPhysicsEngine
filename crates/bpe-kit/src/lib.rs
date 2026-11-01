@@ -445,6 +445,93 @@ mod tests {
         assert_eq!(settings.progression(missing).name, "Starter", "a missing one falls back to the scene's");
     }
 
+    fn defs_of(reg: &Registry, kind: &str) -> &'static [bpe_core::SettingDef] {
+        reg.module(kind).unwrap_or_else(|| panic!("no module {kind}")).settings()
+    }
+
+    fn group_of(reg: &Registry, kind: &str, key: &str) -> &'static str {
+        defs_of(reg, kind).iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{kind} has no {key}")).group
+    }
+
+    #[test]
+    fn every_module_setting_has_a_known_section() {
+        let reg = registry();
+        for m in reg.modules().filter(|m| m.slot() != SlotId::Sound) {
+            for d in m.settings() {
+                assert!(
+                    !d.group.is_empty() && bpe_core::section_rank(d.group).is_some(),
+                    "{} setting {} has group {:?}, which is not a section",
+                    m.id(),
+                    d.key,
+                    d.group
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_look_card_reads_in_section_order() {
+        let reg = registry();
+        let defs = defs_of(&reg, "look.basic");
+        // A paint's variation rows sit inside the paint, so the inspector places them by rank.
+        let mut seen: Vec<&str> = Vec::new();
+        for d in defs.iter().filter(|d| bpe_core::section_rank(d.group) != bpe_core::section_rank("Variation")) {
+            if !seen.contains(&d.group) {
+                seen.push(d.group);
+            }
+        }
+        let ranks: Vec<_> = seen.iter().map(|g| bpe_core::section_rank(g).unwrap()).collect();
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]), "out of order: {seen:?}");
+        assert_eq!(seen, ["Shape", "Style", "Across the group", "Inside each one", "Light", "Motion", "Blending"]);
+        for key in ["glow", "flash", "flash_size", "flash_seconds"] {
+            assert_eq!(group_of(&reg, "look.basic", key), "Light", "{key}");
+        }
+        for key in ["turn", "spin"] {
+            assert_eq!(group_of(&reg, "look.basic", key), "Motion", "{key}");
+        }
+        for key in ["ball_shape", "outline", "outline_colours", "outline_follow"] {
+            assert_eq!(group_of(&reg, "look.basic", key), "Shape", "{key}");
+        }
+    }
+
+    #[test]
+    fn bounce_sections() {
+        let reg = registry();
+        let keys_in = |group: &str| -> Vec<&str> {
+            let mut k: Vec<_> =
+                defs_of(&reg, "bounce.basic").iter().filter(|d| d.group == group).map(|d| d.key).collect();
+            k.sort_unstable();
+            k
+        };
+        let sorted = |mut v: Vec<&'static str>| {
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(keys_in("Basics"), sorted(vec!["bounciness", "speed_gain", "top_speed", "friction", "takes_over"]));
+        assert_eq!(keys_in("Growing"), sorted(vec!["grow", "max_size", "pops_after"]));
+        assert_eq!(keys_in("Other balls"), sorted(vec!["hit_balls", "balls_to_hit"]));
+    }
+
+    #[test]
+    fn the_place_choice_reads_straight_or_round() {
+        let reg = registry();
+        let defs = defs_of(&reg, "look.basic");
+        let shape = defs.iter().find(|d| d.key == "shape").unwrap();
+        assert_eq!(shape.label, "Gradient");
+        assert_eq!(shape.ty, bpe_core::ValueType::Choice(&["straight", "round"]));
+        assert_eq!(defs.iter().find(|d| d.key == "repeat").unwrap().label, "Beyond the last colour");
+    }
+
+    #[test]
+    fn motion_gravity_is_a_multiple() {
+        let reg = registry();
+        for kind in ["motion.basic", "motion.flock", "motion.liquid"] {
+            let d = defs_of(&reg, kind).iter().find(|d| d.key == "gravity_scale").unwrap();
+            assert_eq!(d.label, "Gravity ×", "{kind}");
+            assert_eq!(d.help, "How strongly the scene's gravity pulls these, as a multiple.", "{kind}");
+        }
+    }
+
     #[test]
     fn dice_ranges_are_sensible() {
         let reg = registry();

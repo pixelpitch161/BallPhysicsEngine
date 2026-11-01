@@ -70,8 +70,8 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
                 (_, Space::Screen) => i.place_screen,
             };
             match p.shape {
-                PlaceShape::Direction => (pos - p.centre).dot(dir(p.angle)) / s + 0.5,
-                PlaceShape::Centre => (pos - p.centre).length() / s,
+                PlaceShape::Straight => (pos - p.centre).dot(dir(p.angle)) / s + 0.5,
+                PlaceShape::Round => (pos - p.centre).length() / s,
             }
         }
         Follow::Order => {
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn centre_shape_measures_distance() {
-        let p = Paint { shape: PlaceShape::Centre, centre: Vec2::new(10.0, 0.0), span: 100.0, ..paint(Follow::Place) };
+        let p = Paint { shape: PlaceShape::Round, centre: Vec2::new(10.0, 0.0), span: 100.0, ..paint(Follow::Place) };
         assert!(near(offset(&p, &Inputs { place: Vec2::new(60.0, 0.0), ..Inputs::default() }), 0.5));
     }
 

@@ -74,6 +74,42 @@ impl SettingDef {
     }
 }
 
+/// The inspector's sections, in the order they read down a card.
+pub const SECTION_ORDER: &[&str] = &[
+    "Basics",
+    "Shape",
+    "Style",
+    "Burst",
+    "Each particle",
+    "Across the group",
+    "Colours",
+    "Inside each one",
+    "Surface",
+    "Light",
+    "Motion",
+    "Growing",
+    "Instrument",
+    "Notes",
+    "Which hits",
+    "Level",
+    "Chords",
+    "Other balls",
+    "Against some things",
+    "Variation",
+    "Channel",
+    "Blending",
+];
+
+/// The sections that stay folded until opened.
+pub const FOLDED_SECTIONS: &[&str] = &["Variation", "Blending", "Other balls", "Against some things", "Channel"];
+
+/// Where a group sits in [`SECTION_ORDER`]; a group ending in " variation" (a paint's own
+/// variation rows) ranks with "Variation". `None` for a group that is not a section.
+pub fn section_rank(group: &str) -> Option<usize> {
+    let name = if group.ends_with(" variation") { "Variation" } else { group };
+    SECTION_ORDER.iter().position(|s| *s == name)
+}
+
 /// A Rust type a setting can hold.
 pub trait SettingValue: Sized {
     fn value_type() -> ValueType;
@@ -325,6 +361,17 @@ fn is_on(v: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn sections_rank_in_order_and_variations_rank_together() {
+        assert_eq!(section_rank("Basics"), Some(0));
+        assert_eq!(section_rank("Outline variation"), section_rank("Variation"));
+        assert!(section_rank("Variation") < section_rank("Blending"));
+        assert_eq!(section_rank("Flash"), None);
+        assert!(FOLDED_SECTIONS.iter().all(|f| section_rank(f).is_some()));
+    }
+
     use super::applies;
     use crate::{Color, Gradient, Value};
 

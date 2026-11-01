@@ -119,7 +119,7 @@
                                 pos: (40.0, 440.0),
                                 params: {
                                     "key": Text("gravity_scale"),
-                                    "label": Text("Gravity"),
+                                    "label": Text("Gravity ×"),
                                     "max": Number(5.0),
                                     "min": Number(-5.0),
                                     "value": Number(1.0),
