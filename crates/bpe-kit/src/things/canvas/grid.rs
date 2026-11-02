@@ -542,11 +542,6 @@ impl CanvasGrid {
         (tile as usize, slot as usize)
     }
 
-    /// World position to 16.16 cell units, with the grid centred on the origin.
-    fn to_fixed(&self, p: Vec2) -> (i64, i64) {
-        self.geom().to_fixed(p)
-    }
-
     /// Marks `tile` as painted at full tick `tick` when that is news.
     fn wake(&mut self, tile: usize, tick: u32) {
         let old = self.tile_tick[tile];

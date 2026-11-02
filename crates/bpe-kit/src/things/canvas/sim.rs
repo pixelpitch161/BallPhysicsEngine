@@ -12,12 +12,14 @@ use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, Thin
 use glam::Vec2;
 
 use super::evolve::{self, Evolve, Runner, Tick};
-use super::grid::{CanvasGrid, painter, tick_every};
+use super::grid::{CanvasGrid, REST_COVER, REST_FOG, REST_POWDER, painter, tick_every};
 use super::ribbon::{Piece, Ribbon, Tune};
-use super::{CanvasSettings, Fit};
+use super::{CanvasKind, CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
-use crate::modules::marks::{MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy};
+use crate::modules::marks::{
+    ChipShape, MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy,
+};
 use crate::paint::{Follow, Inputs, colour_at};
 use crate::things::liquid::sim::bounds;
 
@@ -35,6 +37,8 @@ pub struct CanvasState {
     pub centre: Vec2,
     /// Per brush thing and item: its trail's ribbon (last point, width, paint left in its load).
     pub ribbons: BTreeMap<(ThingId, u32), Ribbon>,
+    /// Per brush thing and item: its scrape's ribbon.
+    pub scrapes: BTreeMap<(ThingId, u32), Ribbon>,
     /// Steps between strokes: 60 strokes a second.
     pub every: u64,
     /// Steps between wet-paint ticks: 30 a second.
@@ -85,9 +89,19 @@ impl ThingSim for CanvasSim {
         let size = size.max(Vec2::ONE);
         let every = (world.steps_per_second / 60).max(1) as u64;
         let tick_every = tick_every(world.steps_per_second);
-        let grid = CanvasGrid::new(size);
+        let grid = match settings.kind {
+            CanvasKind::Paint => CanvasGrid::new(size),
+            CanvasKind::Cover => CanvasGrid::surface(size, REST_COVER, 2.0, 600_000),
+            CanvasKind::Powder => CanvasGrid::surface(size, REST_POWDER, 4.0, 300_000),
+            CanvasKind::Fog => CanvasGrid::surface(size, REST_FOG, 4.0, 300_000),
+        };
         world.state_memory.insert(thing.id, grid.bytes());
-        let evolve = Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second);
+        // Only paint dries, bleeds and drips.
+        let evolve = if settings.kind == CanvasKind::Paint {
+            Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second)
+        } else {
+            Evolve::new(0.0, 0.0, 0.0, world.steps_per_second)
+        };
         world.states.insert(
             thing.id,
             Box::new(CanvasState {
@@ -96,6 +110,7 @@ impl ThingSim for CanvasSim {
                 size,
                 centre,
                 ribbons: BTreeMap::new(),
+                scrapes: BTreeMap::new(),
                 every,
                 tick_every,
                 evolve,
@@ -113,8 +128,9 @@ impl ThingSim for CanvasSim {
             let Some(st) = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>()) else {
                 return;
             };
-            super::skin::brushes(world)
-                .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
+            st.settings.kind == CanvasKind::Paint
+                && super::skin::brushes(world)
+                    .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
         };
         if let Some(st) = world.states.get_mut(&thing).and_then(|s| s.as_any_mut().downcast_mut::<CanvasState>()) {
             st.evolve.pickup = pickup;
@@ -218,15 +234,25 @@ fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec
     for &thing in world.order() {
         let Some((_, brush)) = world.module_state(thing, SlotId::Marks) else { continue };
         let Some(b) = brush.as_any().downcast_ref::<MarksBrushes>() else { continue };
-        if !(b.paint_on || b.splat_on) || !world.matches(canvas, thing, &st.settings.brushes_from) {
+        if !(b.paint_on || b.splat_on || b.scrape_on || b.chip_on)
+            || !world.matches(canvas, thing, &st.settings.brushes_from)
+        {
             continue;
         }
-        if b.paint_on && paint_now {
+        // Only a Paint canvas takes paint; the other kinds only lose what the brushes scrape.
+        let paints = st.settings.kind == CanvasKind::Paint;
+        if b.paint_on && paint_now && paints {
             cx.strokes(st, thing, b);
         }
+        if b.scrape_on && paint_now {
+            cx.scrape_strokes(st, thing, b);
+        }
         // Splats meant for the thing hit come here too when it has no skin to take them.
-        if b.splat_on {
+        if b.splat_on && paints {
             cx.splats(st, thing, b);
+        }
+        if b.chip_on {
+            cx.chips(st, thing, b);
         }
     }
     cx.out
@@ -415,6 +441,105 @@ impl Cx<'_> {
         }
     }
 
+    /// Each living ball of `thing` that scrapes: its ribbon grows like a paint trail's, but each
+    /// piece takes paint or cover away instead. Only Paint canvases log the pieces (to replay on
+    /// the graphics card); the others draw straight from the grid.
+    fn scrape_strokes(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let Some(bodies) = self.world.bodies.get(&thing) else { return };
+        let tune = Tune { taper: 0.0, follow: 1.0 };
+        for i in 0..bodies.len() {
+            let key = (thing, i as u32);
+            let hits = bodies.hits[i];
+            let mut ribbon = st.scrapes.remove(&key).unwrap_or_else(|| Ribbon::new(0.0, hits));
+            let end = (to_local(self.pose, bodies.position[i]), bodies.radius[i]);
+            if !bodies.alive[i] {
+                let pieces = ribbon.finish(end.0, end.1, &tune, true);
+                self.wipes(st, b, &pieces);
+                continue;
+            }
+            let here = end.0;
+            let speed = bodies.velocity[i].length();
+            let velocity = Vec2::from_angle(-self.pose.angle).rotate(bodies.velocity[i]);
+            let radius = match b.scrape_width_by {
+                WidthBy::Size => b.scrape_width * bodies.radius[i],
+                WidthBy::Fixed => b.scrape_width * 10.0 * 0.5,
+                WidthBy::Speed => b.scrape_width * speed / 100.0 * 0.5,
+            };
+            match ribbon.point {
+                None => ribbon.begin(here, velocity, radius),
+                Some(from) if (here - from).length() < MIN_STROKE => {}
+                Some(_) => {
+                    let pieces = ribbon.advance(here, velocity, radius, &tune, true);
+                    self.wipes(st, b, &pieces);
+                }
+            }
+            st.scrapes.insert(key, ribbon);
+        }
+    }
+
+    /// Takes away what `pieces` of a scrape cover, and logs them on a Paint canvas.
+    fn wipes(&mut self, st: &mut CanvasState, b: &MarksBrushes, pieces: &[Piece]) {
+        let strength = b.scrape_strength.clamp(0.0, 1.0);
+        for p in pieces {
+            if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
+                continue;
+            }
+            let mark = Mark {
+                step: self.world.step,
+                target: MarkTarget::Canvas(self.canvas),
+                shape: MarkShape::Scrape,
+                from: p.from,
+                to: p.to,
+                radius: p.radius,
+                radius_to: p.radius_to,
+                angle: p.joins_at,
+                within: p.within,
+                variant: p.joints,
+                colour: [0.0, 0.0, 0.0, strength],
+                colour_to: [0.0, 0.0, 0.0, strength],
+            };
+            st.grid.scrape(&mark, st.settings.ridges);
+            if st.settings.kind == CanvasKind::Paint {
+                self.out.push(mark);
+            }
+        }
+    }
+
+    /// A chip knocked out at each of this step's hits that `thing` made or took, fast enough.
+    fn chips(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let (world, log) = (self.world, self.log);
+        let strength = b.scrape_strength.clamp(0.0, 1.0);
+        for e in log.since(world.step) {
+            let ours = e.a.thing == thing || e.b.is_some_and(|p| p.thing == thing);
+            if e.kind != EventKind::Hit || !ours || e.speed < b.chip_min_speed {
+                continue;
+            }
+            let at = to_local(self.pose, e.point);
+            let (radius, angle, variant) = chip_stamp(world, e, b, self.pose.angle);
+            if !reaches(st.size, at, at, radius) {
+                continue;
+            }
+            let mark = Mark {
+                step: world.step,
+                target: MarkTarget::Canvas(self.canvas),
+                shape: MarkShape::Chip,
+                from: at,
+                to: at,
+                radius,
+                radius_to: radius,
+                angle,
+                within: [1.0, 1.0],
+                variant,
+                colour: [0.0, 0.0, 0.0, strength],
+                colour_to: [0.0, 0.0, 0.0, strength],
+            };
+            st.grid.scrape(&mark, st.settings.ridges);
+            if st.settings.kind == CanvasKind::Paint {
+                self.out.push(mark);
+            }
+        }
+    }
+
     /// A splat at each of this step's hits that `thing` made or took, fast enough to count, and
     /// meant for canvases (see [`SplatOnto`](crate::SplatOnto)).
     fn splats(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
@@ -505,6 +630,28 @@ pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: 
         (angle, variant & 7)
     };
     Stamp { shape, radius, angle, variant }
+}
+
+/// The size, turn and variant of the chip brush `b` knocks out at hit `e`, in the frame of a
+/// thing turned by `pose_angle`. The variant is the layout (bits 0-4, as a splat's) and the shape
+/// (bits 5-7). Only a splat leans with the ball; the other shapes face the hit.
+pub(crate) fn chip_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> (f32, f32, u8) {
+    let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+    let (radius, angle, layout) = splat_look(e, mover, b.chip_size, b.chip_by_speed, 8, Turn::FaceHit, pose_angle);
+    let (shape, angle, layout) = match b.chip_shape {
+        ChipShape::Splat => (0u8, angle, layout),
+        other => {
+            let n = match other {
+                ChipShape::Ring => 1u8,
+                ChipShape::Star => 2,
+                ChipShape::Crack => 3,
+                ChipShape::Burst => 4,
+                _ => 5,
+            };
+            (n, e.normal.y.atan2(e.normal.x) - pose_angle, layout & 7)
+        }
+    };
+    (radius, angle, layout | shape << 5)
 }
 
 /// How fast a hit squashes its splat at least (level 1 at 1000 px/s) and at most (level 3).
@@ -1317,5 +1464,133 @@ mod tests {
         assert_eq!(canvas_state(straight.world(), CANVAS).grid.hash(), canvas_state(jumpy.world(), CANVAS).grid.hash());
         assert_eq!(straight.log().marks(), jumpy.log().marks());
         assert_eq!(straight.log().hash(), jumpy.log().hash());
+    }
+
+    /// `painted(true, brush)` with the canvas turned into `kind` (and `canvas`'s changes).
+    fn surface_scene(
+        kind: &str,
+        canvas: impl FnOnce(&mut Params),
+        brush: impl FnOnce(&mut Params),
+    ) -> (Scene, Resolved, Kit) {
+        let (mut scene, _, kit) = painted(true, brush);
+        let params = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+        params.set("kind", Value::Choice(kind.into()));
+        canvas(params);
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        (scene, resolved, kit)
+    }
+
+    fn scraping(p: &mut Params) {
+        p.set("paint_on", Value::Bool(false));
+        p.set("scrape_on", Value::Bool(true));
+    }
+
+    #[test]
+    fn paint_trails_do_not_paint_covers() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("splat_on", Value::Bool(true));
+                p.set("splat_onto", Value::Choice("canvases".into()));
+                p.set("splat_min_speed", Value::Number(0.0));
+            },
+        );
+        let (world, log) = run(&scene, &resolved, &kit, 2.0);
+        assert_eq!(canvas_state(&world, CANVAS).grid.off_cells(), 0);
+        assert_eq!(log.marks_for(MarkTarget::Canvas(CANVAS)).count(), 0);
+    }
+
+    #[test]
+    fn scraping_reveals_a_cover() {
+        let (scene, resolved, kit) = surface_scene("cover", |_| {}, scraping);
+        let (world, log) = run(&scene, &resolved, &kit, 2.0);
+        let st = canvas_state(&world, CANVAS);
+        assert!(st.grid.revealed() > 0.0);
+        assert_eq!(log.marks_for(MarkTarget::Canvas(CANVAS)).count(), 0, "covers are drawn from the grid");
+        let at = to_local(world.poses[&CANVAS], world.bodies[&BALLS].position[0]);
+        // The ribbon trails a little behind the ball, so look within a ball's width of it.
+        let r = world.bodies[&BALLS].radius[0] * 2.0;
+        let mut found = false;
+        for dy in -5..=5 {
+            for dx in -5..=5 {
+                let p = at + Vec2::new(dx as f32, dy as f32) * (r / 5.0);
+                if let Some((x, y)) = st.grid.cell_at(p) {
+                    found |= st.grid.get(x, y).amount == 0;
+                }
+            }
+        }
+        assert!(found, "nothing scraped near the ball");
+    }
+
+    #[test]
+    fn scraping_logs_wipes_on_paint() {
+        let (scene, resolved, kit) = surface_scene("paint", |_| {}, |p| p.set("scrape_on", Value::Bool(true)));
+        let (_, log) = run(&scene, &resolved, &kit, 1.0);
+        let marks: Vec<&Mark> = log.marks_for(MarkTarget::Canvas(CANVAS)).collect();
+        assert!(marks.iter().any(|m| m.shape == MarkShape::Scrape));
+        let mut last: Option<(u64, MarkShape)> = None;
+        for m in &marks {
+            if let Some((step, shape)) = last
+                && step == m.step
+            {
+                assert!(
+                    !(shape == MarkShape::Scrape && m.shape == MarkShape::Stroke),
+                    "strokes come before scrapes within a step"
+                );
+            }
+            last = Some((m.step, m.shape));
+        }
+    }
+
+    #[test]
+    fn chips_follow_hits() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("chip_on", Value::Bool(true));
+                p.set("chip_min_speed", Value::Number(0.0));
+            },
+        );
+        let (world, log) = run(&scene, &resolved, &kit, 3.0);
+        let st = canvas_state(&world, CANVAS);
+        let pose = world.poses[&CANVAS];
+        let hits: Vec<_> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == BALLS).collect();
+        assert!(!hits.is_empty());
+        for e in hits {
+            let at = to_local(pose, e.point);
+            let box_r = 90.0;
+            let mut found = false;
+            let mut y = at.y - box_r;
+            while y <= at.y + box_r && !found {
+                let mut x = at.x - box_r;
+                while x <= at.x + box_r && !found {
+                    if let Some((cx, cy)) = st.grid.cell_at(Vec2::new(x, y)) {
+                        found = st.grid.get(cx, cy).amount == 0;
+                    }
+                    x += 4.0;
+                }
+                y += 4.0;
+            }
+            assert!(found, "no chip near the hit at {at:?}");
+        }
+    }
+
+    #[test]
+    fn slow_hits_do_not_chip() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("chip_on", Value::Bool(true));
+                p.set("chip_min_speed", Value::Number(100000.0));
+            },
+        );
+        let (world, _) = run(&scene, &resolved, &kit, 3.0);
+        assert_eq!(canvas_state(&world, CANVAS).grid.revealed(), 0.0);
     }
 }

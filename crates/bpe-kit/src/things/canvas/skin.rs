@@ -395,6 +395,7 @@ pub fn build(thing: ThingId, world: &mut World) {
         size,
         centre: Vec2::ZERO,
         ribbons: BTreeMap::new(),
+        scrapes: BTreeMap::new(),
         every,
         tick_every,
         evolve,
