@@ -80,7 +80,8 @@ pub struct MarksBrushes {
     /// What sets the trail's width.
     #[setting(label = "Width from", when = "paint_on", group = "Paint trail", random)]
     pub paint_width_by: WidthBy,
-    /// The trail's width: ball radii for Size, hundredths of a pixel per pixel for Fixed and Speed.
+    /// The trail's width. Size: half the width is this many ball radii. Fixed: the width is this
+    /// many times 10 px. Speed: the width in px is this times the speed in px/s, over 100.
     #[setting(label = "Width", when = "paint_on", range(0.1, 4), group = "Paint trail", keyframe, random)]
     pub paint_width: f32,
     /// The shape of the brush tip.

@@ -79,6 +79,9 @@ pub struct World {
     pub video: Vec2,
     /// What the rules asked for in the last step, applied at the start of the next.
     pub pending: Vec<Action>,
+    /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
+    /// (a canvas's grid). Their sims note it; [`World::memory`] counts it for playback budgets.
+    pub state_memory: BTreeMap<ThingId, usize>,
     /// The kind of every built thing, in id order.
     kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
@@ -147,6 +150,7 @@ impl World {
             camera: CameraView::default(),
             video: Vec2::new(1080.0, 1920.0),
             pending: Vec::new(),
+            state_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
@@ -383,6 +387,7 @@ impl World {
     pub fn memory(&self) -> usize {
         self.bodies.values().map(Bodies::memory).sum::<usize>()
             + self.history.values().map(History::memory).sum::<usize>()
+            + self.state_memory.values().sum::<usize>()
             + std::mem::size_of::<World>()
     }
 

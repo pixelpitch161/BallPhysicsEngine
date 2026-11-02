@@ -6,7 +6,7 @@ use bpe_runtime::{Log, World};
 
 use super::BasicLook;
 use super::draw::{ball_inputs, for_balls, hue_shifted};
-use crate::paint::{Follow, beats_at, colour_at};
+use crate::paint::{Follow, Paint, beats_at, colour_at};
 
 /// The linear-light colour ball `i` of `thing` has right now under `look` (a Look slot's
 /// settings), with any tint a rule gave it laid over it as strongly as the tint's alpha says.
@@ -14,18 +14,37 @@ use crate::paint::{Follow, beats_at, colour_at};
 /// Known gap: a Step colour that takes the colour of what was hit reads as the ball's own
 /// colour here, and a thing stuck to the screen is read as a world thing.
 pub fn ball_colour_in_sim(look: &Params, world: &World, log: &Log, thing: ThingId, i: usize) -> [f32; 4] {
-    let Some(bodies) = world.bodies.get(&thing) else { return [0.0; 4] };
-    let look = BasicLook::from_params(look);
-    let fill = for_balls(look.fill);
-    let time = world.time();
-    // Only a fill that follows the beat needs the beats, and counting them scans the log.
-    let beats = if fill.follow == Follow::Beat { beats_at(log, time, world.steps_per_second) } else { 0.0 };
-    let place = bodies.position.get(i).copied().unwrap_or_default();
-    let inputs = ball_inputs(thing, bodies, i, world.camera.to_screen(place), time, beats);
-    let base = colour_at(&fill, &inputs);
-    let c = hue_shifted(base, look.hue_per_hit, bodies.hits.get(i).copied().unwrap_or(0));
-    let Some(t) = bodies.tint.get(i) else { return c };
-    [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]]
+    SimLook::new(look, world, log).colour(world, thing, i)
+}
+
+/// A look's settings read once for a step, so many balls' colours can be worked out from it
+/// without reading them again: see [`ball_colour_in_sim`].
+#[derive(Clone, Debug)]
+pub struct SimLook {
+    fill: Paint,
+    hue_per_hit: f32,
+    beats: f32,
+}
+
+impl SimLook {
+    pub fn new(look: &Params, world: &World, log: &Log) -> Self {
+        let look = BasicLook::from_params(look);
+        let fill = for_balls(look.fill);
+        // Only a fill that follows the beat needs the beats, and counting them scans the log.
+        let beats = if fill.follow == Follow::Beat { beats_at(log, world.time(), world.steps_per_second) } else { 0.0 };
+        Self { fill, hue_per_hit: look.hue_per_hit, beats }
+    }
+
+    /// The colour ball `i` of `thing` has under this look right now.
+    pub fn colour(&self, world: &World, thing: ThingId, i: usize) -> [f32; 4] {
+        let Some(bodies) = world.bodies.get(&thing) else { return [0.0; 4] };
+        let place = bodies.position.get(i).copied().unwrap_or_default();
+        let inputs = ball_inputs(thing, bodies, i, world.camera.to_screen(place), world.time(), self.beats);
+        let base = colour_at(&self.fill, &inputs);
+        let c = hue_shifted(base, self.hue_per_hit, bodies.hits.get(i).copied().unwrap_or(0));
+        let Some(t) = bodies.tint.get(i) else { return c };
+        [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]]
+    }
 }
 
 #[cfg(test)]
