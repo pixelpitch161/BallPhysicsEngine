@@ -227,7 +227,7 @@ impl CanvasGrid {
                 if cut_after && dd > 0 && dot >= dd {
                     continue;
                 }
-                self.paint(x as u32, y as u32, colour, alpha, ink, tick, by);
+                self.paint(x as u32, y as u32, colour, alpha, ink, tick, by, m.shape == MarkShape::Drip);
             }
         }
     }
@@ -332,9 +332,11 @@ impl CanvasGrid {
         }
     }
 
-    /// Lays fresh paint on a cell: new paint covers old by its alpha, ink adds up.
+    /// Lays fresh paint on a cell: new paint covers old by its alpha, ink adds up. A drip running
+    /// over paint that is already there (`keep_date`) leaves its date alone, so a drip never
+    /// makes the paint it runs from wet again: paint dries on schedule and dripping stops.
     #[allow(clippy::too_many_arguments)]
-    fn paint(&mut self, x: u32, y: u32, colour: Color, alpha: i32, ink: u8, tick: u32, by: u8) {
+    fn paint(&mut self, x: u32, y: u32, colour: Color, alpha: i32, ink: u8, tick: u32, by: u8, keep_date: bool) {
         let (tile, slot) = self.locate(x, y);
         let old = self.tiles[tile][slot];
         let new = [colour.r, colour.g, colour.b];
@@ -346,11 +348,15 @@ impl CanvasGrid {
                 (o + ((n - o) * alpha + 127).div_euclid(255)) as u8
             })
         };
-        let next = Cell { rgb, amount: old.amount.saturating_add(ink), painted: tick as u16, team: old.team, by };
+        let keep = keep_date && old.amount > 0;
+        let painted = if keep { old.painted } else { tick as u16 };
+        let next = Cell { rgb, amount: old.amount.saturating_add(ink), painted, team: old.team, by };
         if next != old {
             Arc::make_mut(&mut self.tiles[tile])[slot] = next;
         }
-        self.wake(tile, tick);
+        if !keep {
+            self.wake(tile, tick);
+        }
     }
 }
 
@@ -568,5 +574,16 @@ mod tests {
         g.stamp(&mark(MarkShape::Bleed, Vec2::new(-50.0, -50.0), Vec2::new(50.0, 50.0), 2.0), 0, 1);
         assert_eq!(g.hash(), before);
         assert!(g.wet_tiles(0, 30).is_empty());
+    }
+
+    #[test]
+    fn a_drip_never_makes_old_paint_wet_again() {
+        let mut g = CanvasGrid::new(Vec2::new(400.0, 400.0));
+        g.stamp(&mark(MarkShape::Splat, Vec2::ZERO, Vec2::ZERO, 20.0), 5, 1);
+        let drip = mark(MarkShape::Drip, Vec2::new(0.0, -10.0), Vec2::new(0.0, 60.0), 3.0);
+        g.stamp(&drip, 50, 0);
+        // Inside the old paint: dated as it was. Beyond it: fresh.
+        assert_eq!(at(&g, 0.0, 0.0).painted, 5);
+        assert_eq!(at(&g, 0.0, 40.0).painted, 50);
     }
 }

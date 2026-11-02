@@ -5,12 +5,12 @@
 
 use std::collections::BTreeMap;
 
-use bpe_core::ThingId;
+use bpe_core::{Color, ThingId};
 use bpe_runtime::{Mark, MarkShape, MarkTarget, Picked, World};
 use glam::Vec2;
 
-use super::grid::{Cell, wet};
-use super::sim::CanvasState;
+use super::grid::{Cell, DRIP_JOINED, wet};
+use super::sim::{CanvasState, mix, reaches};
 
 /// How a canvas or skin changes over time, fixed at build.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -80,7 +80,6 @@ pub(crate) struct Tick<'a> {
     /// Ticks a second: steps_per_second / tick_every.
     pub per_second: f32,
     /// Gravity in the canvas's or thing's own frame.
-    #[allow(dead_code)] // Drips read it (Task 6).
     pub gravity: Vec2,
 }
 
@@ -91,16 +90,153 @@ pub(crate) fn tick(
     cx: &Tick,
     st: &mut CanvasState,
     _picked: &mut BTreeMap<ThingId, Vec<Picked>>,
-    _outline: Option<&[Vec<Vec2>]>,
+    outline: Option<&[Vec<Vec2>]>,
 ) -> Vec<Mark> {
     let mut out = Vec::new();
     st.ticks_run += 1;
-    // drips: Task 6
+    if st.evolve.drips > 0.0 {
+        run_drips(cx, st, outline, &mut out);
+        if cx.gravity.length() > 1e-3 {
+            start_drips(cx, st, outline);
+        }
+    }
     // pickup: Task 8
     if st.evolve.bleed > 0.0 {
         bleed(cx, st, &mut out);
     }
     out
+}
+
+/// Most drips running on one canvas or skin at once.
+pub const MAX_RUNNERS: usize = 96;
+/// Most drips one tile starts in one tick.
+const STARTS_PER_TILE: usize = 2;
+
+/// A drip's radius in pixels: (1 + 2.5·drips)·√load.
+fn drip_radius(drips: f32, load: f32) -> f32 {
+    (1.0 + 2.5 * drips) * load.max(0.0).sqrt()
+}
+
+/// A number from the target, for hashes.
+fn salt(target: MarkTarget) -> u64 {
+    match target {
+        MarkTarget::Canvas(id) => id.0 as u64,
+        MarkTarget::Skin(id) => 1 << 32 | id.0 as u64,
+    }
+}
+
+/// A hash as a number from 0 to 1.
+fn unit(h: u64) -> f32 {
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Moves every runner one tick (canvas: `outline` None), logging and stamping its pieces.
+fn run_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>, out: &mut Vec<Mark>) {
+    if cx.gravity.length() <= 1e-3 || st.runners.is_empty() {
+        return;
+    }
+    // Skin drips run along the outline: Task 7.
+    if outline.is_some() || matches!(cx.target, MarkTarget::Skin(_)) {
+        return;
+    }
+    let drips = st.evolve.drips;
+    let g = cx.gravity.normalize();
+    let per_px = 1.0 / (60.0 + 200.0 * drips);
+    let mut alive = Vec::with_capacity(st.runners.len());
+    for mut r in std::mem::take(&mut st.runners) {
+        let wobble = (unit(mix(r.seed, cx.now)) - 0.5) * 0.3;
+        let dir = Vec2::from_angle(wobble).rotate(g);
+        let mut dist = (30.0 + 150.0 * r.load) / cx.per_second;
+        let mut load_after = r.load - dist * per_px;
+        let done = load_after <= 0.0;
+        if done {
+            dist = r.load / per_px;
+            load_after = 0.0;
+        }
+        let r0 = drip_radius(drips, r.load);
+        let r1 = if done { 0.0 } else { drip_radius(drips, load_after) };
+        let to = r.at + dir * dist;
+        let colour = Color::rgb(r.rgb[0], r.rgb[1], r.rgb[2]).to_linear();
+        let piece = Mark {
+            step: cx.world.step,
+            target: cx.target,
+            shape: MarkShape::Drip,
+            from: r.at,
+            to,
+            radius: r0,
+            radius_to: r1,
+            angle: r.heading.unwrap_or(0.0),
+            within: [1.0, 1.0],
+            variant: if r.heading.is_some() { DRIP_JOINED } else { 0 },
+            colour,
+            colour_to: colour,
+        };
+        if reaches(st.size, piece.from, piece.to, r0.max(r1)) {
+            st.grid.stamp(&piece, cx.now, 0);
+            out.push(piece);
+        }
+        r.heading = Some((to - r.at).to_angle());
+        r.at = to;
+        r.load = load_after;
+        let outside = to.x.abs() > st.size.x * 0.5 || to.y.abs() > st.size.y * 0.5;
+        if !done && !outside {
+            alive.push(r);
+        }
+    }
+    st.runners = alive;
+}
+
+/// Starts new runners in wet tiles.
+fn start_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>) {
+    // Skin drips start on the outline: Task 7.
+    if outline.is_some() || matches!(cx.target, MarkTarget::Skin(_)) {
+        return;
+    }
+    let drips = st.evolve.drips;
+    let thr = 255.0 - 150.0 * drips;
+    let chance = 0.08 + 0.25 * drips;
+    let g = cx.gravity;
+    let (dx, dy): (i32, i32) =
+        if g.x.abs() > g.y.abs() { (if g.x > 0.0 { 1 } else { -1 }, 0) } else { (0, if g.y > 0.0 { 1 } else { -1 }) };
+    let salt = salt(cx.target);
+    let (width, height) = st.grid.dims();
+    for t in st.grid.wet_tiles(cx.now, st.evolve.dry_ticks) {
+        let (x0, x1, y0, y1) = st.grid.tile_cells(t);
+        let mut starts = 0;
+        'tile: for y in y0..y1 {
+            for x in x0..x1 {
+                if starts >= STARTS_PER_TILE {
+                    break 'tile;
+                }
+                if st.runners.len() >= MAX_RUNNERS {
+                    return;
+                }
+                let c = st.grid.get(x, y);
+                if !wet(&c, cx.now, st.evolve.dry_ticks) || (c.amount as f32) < thr {
+                    continue;
+                }
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                let off = nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32;
+                if !off && st.grid.get(nx as u32, ny as u32).amount as f32 >= thr {
+                    continue;
+                }
+                let index = y * width + x;
+                if unit(mix(salt ^ ((cx.now as u64) << 20), index)) >= chance {
+                    continue;
+                }
+                st.grid.set(x, y, Cell { amount: c.amount.saturating_sub(48), ..c }, None);
+                st.runners.push(Runner {
+                    at: st.grid.centre_of(x, y),
+                    load: ((c.amount as f32 - thr / 2.0) / 255.0).clamp(0.2, 1.0),
+                    rgb: c.rgb,
+                    heading: None,
+                    seed: mix(salt, cx.now ^ index),
+                    on: None,
+                });
+                starts += 1;
+            }
+        }
+    }
 }
 
 /// The four neighbours of (x, y) inside a grid of `width` x `height`, in the order left, right,
@@ -244,9 +380,14 @@ mod tests {
 
     /// Runs ticks `1..=n` on `st`, with `gravity`, and gives the marks they made.
     fn ticks(world: &World, st: &mut CanvasState, n: u32, gravity: Vec2) -> Vec<Mark> {
+        ticks_from(world, st, 1, n, gravity)
+    }
+
+    /// Runs ticks `from..=to`.
+    fn ticks_from(world: &World, st: &mut CanvasState, from: u32, to: u32, gravity: Vec2) -> Vec<Mark> {
         let mut out = Vec::new();
         let mut picked = BTreeMap::new();
-        for now in 1..=n {
+        for now in from..=to {
             let cx = Tick { target: MarkTarget::Canvas(CANVAS), world, now, per_second: 30.0, gravity };
             if st.evolve.on() {
                 st.ticks_run += 1;
@@ -421,5 +562,184 @@ mod tests {
         assert_eq!(canvas_state(straight.world(), CANVAS).grid.hash(), canvas_state(jumpy.world(), CANVAS).grid.hash());
         assert_eq!(straight.log().marks(), jumpy.log().marks());
         assert_eq!(straight.log().hash(), jumpy.log().hash());
+    }
+
+    /// A canvas with a thick wet blob at (0, -100) and `drips`, painted at tick 0.
+    fn drip_canvas(drips: f32) -> (World, CanvasState) {
+        let (world, mut st) = rig(0.0, drips, 4.0);
+        for _ in 0..2 {
+            st.grid.stamp(&splat(Vec2::new(0.0, -100.0), 30.0, [0.0, 0.3, 1.0, 1.0]), 0, 1);
+        }
+        (world, st)
+    }
+
+    fn drips_of(marks: &[Mark]) -> Vec<&Mark> {
+        marks.iter().filter(|m| m.shape == MarkShape::Drip).collect()
+    }
+
+    #[test]
+    fn drips_run_along_gravity() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks(&world, &mut st, 30, Vec2::new(0.0, 900.0));
+        let drips = drips_of(&marks);
+        assert!(!drips.is_empty());
+        for m in drips {
+            let d = m.to - m.from;
+            assert!(d.y > 0.0 && d.x.abs() <= 0.16 * d.length(), "{d:?}");
+        }
+    }
+
+    #[test]
+    fn drips_follow_sideways_gravity() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks(&world, &mut st, 30, Vec2::new(900.0, 0.0));
+        let drips = drips_of(&marks);
+        assert!(!drips.is_empty());
+        assert!(drips.iter().all(|m| m.to.x > m.from.x));
+    }
+
+    #[test]
+    fn no_gravity_no_drips() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks(&world, &mut st, 30, Vec2::ZERO);
+        assert!(drips_of(&marks).is_empty() && st.runners.is_empty());
+    }
+
+    #[test]
+    fn dry_or_thin_paint_never_drips() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks_from(&world, &mut st, 200, 260, Vec2::new(0.0, 900.0));
+        assert!(drips_of(&marks).is_empty());
+        let (world, mut st) = rig(0.0, 0.3, 4.0);
+        let mut line = splat(Vec2::new(-60.0, 0.0), 6.0, [1.0, 0.0, 0.0, 1.0]);
+        line.shape = MarkShape::Stroke;
+        line.to = Vec2::new(60.0, 0.0);
+        st.grid.stamp(&line, 0, 1);
+        let marks = ticks(&world, &mut st, 100, Vec2::new(0.0, 900.0));
+        assert!(drips_of(&marks).is_empty());
+    }
+
+    #[test]
+    fn drips_end_tapered() {
+        let (world, mut st) = drip_canvas(0.8);
+        let g = Vec2::new(0.0, 900.0);
+        let mut marks = Vec::new();
+        let mut picked = BTreeMap::new();
+        for now in 1..=600 {
+            let cx = Tick { target: MarkTarget::Canvas(CANVAS), world: &world, now, per_second: 30.0, gravity: g };
+            marks.extend(tick(&cx, &mut st, &mut picked, None));
+            if now > 125 && st.runners.is_empty() {
+                break;
+            }
+        }
+        assert!(st.runners.is_empty());
+        let drips = drips_of(&marks);
+        assert!(drips.iter().any(|m| m.radius_to == 0.0));
+        // Every chain that ended inside the canvas ended with a point.
+        for m in &drips {
+            let continued = drips.iter().any(|n| n.from == m.to && n.variant & DRIP_JOINED != 0);
+            let inside = m.to.x.abs() <= st.size.x * 0.5 && m.to.y.abs() <= st.size.y * 0.5;
+            assert!(continued || !inside || m.radius_to == 0.0, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn drip_pieces_join_without_beads() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks(&world, &mut st, 60, Vec2::new(0.0, 900.0));
+        let drips = drips_of(&marks);
+        let mut joined = 0;
+        for m in &drips {
+            if m.variant & DRIP_JOINED == 0 {
+                assert_eq!(m.variant, 0);
+                continue;
+            }
+            // Its predecessor is the piece that ended where this one starts.
+            let before = drips.iter().find(|n| n.to == m.from).expect("a piece before");
+            assert_eq!(m.angle.to_bits(), (before.to - before.from).to_angle().to_bits());
+            joined += 1;
+        }
+        assert!(joined > 0);
+    }
+
+    #[test]
+    fn runners_are_capped() {
+        let (world, mut st) = rig(0.0, 1.0, 20.0);
+        let (w, h) = st.grid.dims();
+        let size = st.size;
+        let mut y = -size.y * 0.5;
+        while y < size.y * 0.5 + 20.0 {
+            let mut x = -size.x * 0.5;
+            while x < size.x * 0.5 + 20.0 {
+                st.grid.stamp(&splat(Vec2::new(x, y), 20.0, [1.0, 0.0, 0.0, 1.0]), 0, 1);
+                x += 20.0;
+            }
+            y += 20.0;
+        }
+        assert!(st.grid.covered() > 0.99, "{w}x{h}");
+        let mut picked = BTreeMap::new();
+        let (tiles_x, _) = st.grid.tile_dims();
+        for now in 1..=60 {
+            let cx = Tick {
+                target: MarkTarget::Canvas(CANVAS),
+                world: &world,
+                now,
+                per_second: 30.0,
+                gravity: Vec2::new(0.0, 900.0),
+            };
+            tick(&cx, &mut st, &mut picked, None);
+            assert!(st.runners.len() <= MAX_RUNNERS);
+            let mut per_tile: BTreeMap<usize, usize> = BTreeMap::new();
+            for r in st.runners.iter().filter(|r| r.heading.is_none()) {
+                let (cx, cy) = st.grid.cell_at(r.at).unwrap();
+                *per_tile.entry((cy / 32 * tiles_x + cx / 32) as usize).or_default() += 1;
+            }
+            assert!(per_tile.values().all(|&n| n <= STARTS_PER_TILE), "{per_tile:?}");
+        }
+    }
+
+    #[test]
+    fn drip_streaks_are_wet_paint() {
+        let (world, mut st) = drip_canvas(0.8);
+        let marks = ticks(&world, &mut st, 10, Vec2::new(0.0, 900.0));
+        let drips = drips_of(&marks);
+        assert!(!drips.is_empty());
+        let found = drips.iter().any(|m| {
+            let c = cell_at(&st, (m.from.x + m.to.x) * 0.5, (m.from.y + m.to.y) * 0.5);
+            c.by == 0 && c.amount >= 40 && wet(&c, 10, st.evolve.dry_ticks)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn drips_leave_the_canvas_and_are_dropped() {
+        let (world, mut st) = rig(0.0, 0.8, 2.0);
+        let low = st.size.y * 0.5 - 40.0;
+        for _ in 0..2 {
+            st.grid.stamp(&splat(Vec2::new(0.0, low), 30.0, [0.0, 0.3, 1.0, 1.0]), 0, 1);
+        }
+        let marks = ticks(&world, &mut st, 200, Vec2::new(0.0, 900.0));
+        assert!(!drips_of(&marks).is_empty());
+        assert!(st.runners.is_empty(), "{} runners", st.runners.len());
+        for m in drips_of(&marks) {
+            assert!(reaches(st.size, m.from, m.to, m.radius.max(m.radius_to)));
+        }
+    }
+
+    #[test]
+    fn same_run_same_runners() {
+        let (mut scene, _, kit) = busy();
+        let p = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+        p.set("drips", Value::Number(0.6));
+        p.set("dry_time", Value::Number(3.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut a = Playback::new(&scene, &resolved, kit.sims.clone());
+        let mut b = Playback::new(&scene, &resolved, kit.sims.clone());
+        a.seek(6.0);
+        b.seek(6.0);
+        let (sa, sb) = (canvas_state(a.world(), CANVAS), canvas_state(b.world(), CANVAS));
+        assert_eq!(sa.runners, sb.runners);
+        assert_eq!(sa.grid.hash(), sb.grid.hash());
+        assert_eq!(a.log().marks(), b.log().marks());
     }
 }
