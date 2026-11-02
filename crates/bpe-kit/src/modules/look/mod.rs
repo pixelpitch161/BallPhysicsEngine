@@ -2,8 +2,10 @@
 
 pub mod basic;
 pub mod draw;
+pub mod sim_colour;
 
 pub use basic::{BallColours, BallShape, BasicLook, BasicLookKind, Style};
+pub use sim_colour::ball_colour_in_sim;
 
 #[cfg(test)]
 mod tests {

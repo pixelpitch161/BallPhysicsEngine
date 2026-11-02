@@ -41,7 +41,7 @@ pub(crate) struct Slotted {
 pub(crate) type Prepared = BTreeMap<SlotId, Slotted>;
 
 /// Which slots the runtime asks a `ModuleSim` about.
-const SIM_SLOTS: [SlotId; 3] = [SlotId::Motion, SlotId::Bounce, SlotId::Rules];
+const SIM_SLOTS: [SlotId; 4] = [SlotId::Motion, SlotId::Bounce, SlotId::Rules, SlotId::Marks];
 
 /// Everything that moves, and what it moves against.
 #[derive(Clone)]
@@ -62,6 +62,10 @@ pub struct World {
     /// Where every placed thing is right now. Sims write it in `build` and `scripted`; riders
     /// read their parent's through [`World::anchor`].
     pub poses: BTreeMap<ThingId, Pose>,
+    /// The Look settings of every thing whose Marks slot is filled, so marks can take the balls'
+    /// colours in the simulation. Only these looks are kept, and only these count in the
+    /// fingerprint.
+    pub looks: BTreeMap<ThingId, Params>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
     /// Where the balls of a thing have been, for the things whose sim asked for it (trails).
@@ -136,6 +140,7 @@ impl World {
             solids: BTreeMap::new(),
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
+            looks: BTreeMap::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
@@ -191,6 +196,11 @@ impl World {
                         let state = msim.prepare_graph(&s.params, graph.as_ref());
                         prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), graph, state });
                     }
+                }
+                if prepared.contains_key(&SlotId::Marks)
+                    && let Some(look) = r.slots.get(&SlotId::Look)
+                {
+                    world.looks.insert(*id, look.params.clone());
                 }
                 if !prepared.is_empty() {
                     world.modules.insert(*id, prepared);
@@ -782,6 +792,17 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 {
                     h.graph(g);
                 }
+            }
+        }
+        // What a thing paints with its marks depends on its colours, so a colour change restarts
+        // the canvas; things without marks keep looks out of the fingerprint.
+        if r.slots.get(&SlotId::Marks).is_some_and(|s| sims.module(&s.kind).is_some())
+            && let Some(look) = r.slots.get(&SlotId::Look)
+        {
+            h.bytes(b"look");
+            for (key, value) in look.params.iter() {
+                h.bytes(key.as_bytes());
+                h.value(value);
             }
         }
     }

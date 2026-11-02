@@ -68,6 +68,7 @@ const SLOTS: &[SlotId] = &[
     SlotId::Particles,
     SlotId::Rules,
     SlotId::Shader,
+    SlotId::Marks,
 ];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound];
 

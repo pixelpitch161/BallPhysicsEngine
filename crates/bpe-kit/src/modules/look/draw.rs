@@ -79,19 +79,7 @@ impl<'a> BallInputs<'a> {
         let b = self.bodies;
         let place = b.position.get(i).copied().unwrap_or_default();
         let hits = b.hits.get(i).copied().unwrap_or(0);
-        let mut inputs = Inputs {
-            index: i,
-            count: b.len(),
-            place,
-            place_screen: self.on_screen(place),
-            start: b.spawn.get(i).copied().unwrap_or(place),
-            speed: b.velocity.get(i).map_or(0.0, |v| v.length()),
-            hits,
-            beats: self.beats,
-            time: self.time as f32,
-            seed: seed_of(self.thing, i),
-            ..Inputs::default()
-        };
+        let mut inputs = ball_inputs(self.thing, b, i, self.on_screen(place), self.time, self.beats);
         if p.follow == Follow::Step
             && hits > 0
             && let Some(&Some((at, other, point))) = self.last.get(i)
@@ -102,6 +90,35 @@ impl<'a> BallInputs<'a> {
             }
         }
         inputs
+    }
+}
+
+/// What a paint reads about ball `i` of `bodies` before any hit is looked at: its index, place
+/// (and `place_screen`, where that is on the screen), start, speed, hits, the beats so far, the
+/// time and its own variation seed. Drawing and the marks layer both build their inputs here.
+pub fn ball_inputs(thing: ThingId, bodies: &Bodies, i: usize, place_screen: Vec2, time: f64, beats: f32) -> Inputs {
+    let place = bodies.position.get(i).copied().unwrap_or_default();
+    Inputs {
+        index: i,
+        count: bodies.len(),
+        place,
+        place_screen,
+        start: bodies.spawn.get(i).copied().unwrap_or(place),
+        speed: bodies.velocity.get(i).map_or(0.0, |v| v.length()),
+        hits: bodies.hits.get(i).copied().unwrap_or(0),
+        beats,
+        time: time as f32,
+        seed: seed_of(thing, i),
+        ..Inputs::default()
+    }
+}
+
+/// `base` turned round the colour wheel by `hue_per_hit` degrees for each of `hits`.
+pub fn hue_shifted(base: [f32; 4], hue_per_hit: f32, hits: u32) -> [f32; 4] {
+    if hue_per_hit == 0.0 || hits == 0 {
+        base
+    } else {
+        Color::from_linear(base).shift_hue(hue_per_hit * hits as f32 / 360.0).to_linear()
     }
 }
 
@@ -242,12 +259,7 @@ pub fn colors<'a>(look: BasicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl 
     let hue_per_hit = look.hue_per_hit;
     move |i| {
         let base = colour_at(&fill, &inputs.get(&fill, i));
-        let hits = bodies.hits.get(i).copied().unwrap_or(0);
-        if hue_per_hit == 0.0 || hits == 0 {
-            base
-        } else {
-            Color::from_linear(base).shift_hue(hue_per_hit * hits as f32 / 360.0).to_linear()
-        }
+        hue_shifted(base, hue_per_hit, bodies.hits.get(i).copied().unwrap_or(0))
     }
 }
 
