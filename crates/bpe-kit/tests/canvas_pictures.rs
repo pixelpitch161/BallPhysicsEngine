@@ -71,13 +71,17 @@ fn draw(
 }
 
 fn save(name: &str, pixels: &[u8]) {
+    save_sized(name, pixels, W, H);
+}
+
+fn save_sized(name: &str, pixels: &[u8], width: u32, height: u32) {
     if std::env::var_os("BPE_SAVE_RENDERS").is_none() {
         return;
     }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");
     std::fs::create_dir_all(&dir).unwrap();
     let file = std::fs::File::create(dir.join(format!("{name}.png"))).unwrap();
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header().unwrap().write_image_data(pixels).unwrap();
@@ -285,4 +289,89 @@ fn fade_clears_old_marks() {
     let bare =
         draw(&device, &queue, &mut Renderer::new(&device, W, H), &scene, &resolved, &kit, &mut playback, 2.0, false);
     assert_eq!(pixel(&faded, p), pixel(&bare, p), "{p}: the stroke has faded away");
+}
+
+#[test]
+fn trail_edges_are_smooth() {
+    let Some((device, queue)) = gpu() else { return };
+    // Two balls side by side fall along the same curve, each painting a stroke twice its width,
+    // so the two strokes overlap along the way, painted in the same steps. Where they meet, the
+    // later paint lies on top: the line between them runs along the middle, as smooth as the
+    // strokes' outer edges.
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let canvas = add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap();
+    // On top, so the balls never hide the paint.
+    scene.things.get_mut(&canvas).unwrap().params.set("layer", Value::Choice("on_top".into()));
+    let balls = scene.things.get_mut(&BALLS).unwrap();
+    balls.transform.position = Vec2::new(-400.0, -300.0);
+    balls.params.set("arrangement", Value::Choice("block".into()));
+    balls.params.set("columns", Value::Int(1));
+    balls.params.set("rows", Value::Int(2));
+    balls.params.set("spacing", Value::Number(60.0));
+    balls.params.set("velocity", Value::Vec2([700.0, -100.0]));
+    let (red, blue) = (Color::rgb(230, 60, 60), Color::rgb(60, 90, 230));
+    brushes(&mut scene, &kit, BALLS, |p| {
+        p.set("paint_on", Value::Bool(true));
+        p.set("paint_width", Value::Number(2.0));
+        p.set("colour_from", Value::Choice("own".into()));
+        p.set("colour_colours", Value::Gradient(Gradient::even(&[red, blue])));
+        p.set("colour_follow", Value::Choice("order".into()));
+    });
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+
+    let time = 0.7;
+    let (w, h) = (1080, 1920);
+    playback.seek(time);
+    let mut frame = Frame::default();
+    build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+    frame.bloom = 0.0;
+    let source = flow_source(&scene, &resolved, &kit.sims, None);
+    let mut renderer = Renderer::new(&device, w, h);
+    assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    save_sized("canvas-trail-edges", &pixels, w, h);
+
+    let pose = canvas_area(playback.world(), canvas).unwrap().0;
+    // The picture at world point `p`, blended between the four nearest pixels, so an edge's
+    // place is measured finer than a pixel.
+    let at = |p: Vec2| {
+        let q = p + Vec2::new(540.0, 960.0) - 0.5;
+        let (x, y) = (q.x.floor(), q.y.floor());
+        let (fx, fy) = (q.x - x, q.y - y);
+        let texel =
+            |dx: usize, dy: usize, c: usize| pixels[((y as usize + dy) * w as usize + x as usize + dx) * 4 + c] as f32;
+        [0, 1, 2].map(|c| {
+            let top = texel(0, 0, c) * (1.0 - fx) + texel(1, 0, c) * fx;
+            let bottom = texel(0, 1, c) * (1.0 - fx) + texel(1, 1, c) * fx;
+            (top * (1.0 - fy) + bottom * fy).round() as i32
+        })
+    };
+    let marks = playback.log().marks();
+    let first = shown(&marks[0]);
+    // How wide the first ball's stroke shows across it, every quarter of each piece along it.
+    let widths: Vec<f32> = marks
+        .iter()
+        .filter(|m| shown(m) == first && (0.15..time - 0.15).contains(&time_of(m, &playback)))
+        .flat_map(|m| (0..4).map(move |q| (m, q as f32 / 4.0)))
+        .map(|(m, t)| {
+            let across = (m.to - m.from).normalize().perp();
+            let middle = m.from.lerp(m.to, t);
+            let covered = (-400..=400)
+                .filter(|k| near(at(world_of(pose, middle + across * (*k as f32 * 0.25))), first, 40))
+                .count();
+            covered as f32 * 0.25
+        })
+        .collect();
+    assert!(widths.len() >= 20, "{} samples", widths.len());
+    for pair in widths.windows(2) {
+        assert!(
+            (pair[1] - pair[0]).abs() < 1.5,
+            "the stroke's width jumps from {} px to {} px: {widths:?}",
+            pair[0],
+            pair[1]
+        );
+    }
 }

@@ -2,6 +2,11 @@
 // marks were made. The paint texture takes each mark premultiplied over what is there; the aux
 // texture's r is replaced by the mark's time wherever the mark covers at least half a texel. Shapes are signed
 // distances in canvas pixels with a soft edge one texel wide.
+//
+// One pass draws the marks of a few world steps, and its depth says when in the pass each texel
+// was last touched: a stroke is a ball's disc moving from its start to its end over its step, so
+// where two balls paint the same texels in the same pass, the one that left a texel later stays
+// on top, whichever was drawn first. Other shapes land at their step's end.
 
 struct Canvas {
     // Width and height in canvas pixels, then the texture's width and height in texels.
@@ -18,7 +23,8 @@ struct MarkIn {
     @location(1) look: vec4<f32>,
     // Linear light, straight alpha.
     @location(2) colour: vec4<f32>,
-    // x: when the mark was made, in seconds.
+    // x: when the mark was made, in seconds; y: its world step counted from the pass's first;
+    // z: how many world steps the pass's marks span.
     @location(3) clock: vec4<f32>,
 };
 
@@ -171,9 +177,26 @@ fn dots(q: vec2<f32>, r: f32, v: u32) -> f32 {
     return d;
 }
 
+// When in its step (0 its start, 1 its end) a disc of radius `r` moving from `a` to `b` last
+// touches `p`: the later of the two times its edge crosses `p`, or its nearest pass for a point
+// just beyond its edge.
+fn last_touch(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let d = b - a;
+    let dd = dot(d, d);
+    if dd < 1e-8 {
+        return 1.0;
+    }
+    let e = p - a;
+    let along = dot(e, d) / dd;
+    let off = max(dot(e, e) - along * along * dd, 0.0);
+    let half = sqrt(max(r * r - off, 0.0) / dd);
+    return clamp(along + half, 0.0, 1.0);
+}
+
 struct StampTargets {
     @location(0) paint: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
 };
 
 @fragment
@@ -206,5 +229,10 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     out.paint = vec4<f32>(max(in.colour.rgb, vec3<f32>(0.0)) * amount, amount);
     // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
     out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
+    var touch = 1.0;
+    if shape == 0u {
+        touch = last_touch(in.local, start, in.ends.zw, r);
+    }
+    out.depth = (in.clock.y + touch) / max(in.clock.z, 1.0);
     return out;
 }
