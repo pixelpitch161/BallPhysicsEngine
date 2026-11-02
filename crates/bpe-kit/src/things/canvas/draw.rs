@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bpe_core::{Blend, Settings, ThingId};
 use bpe_gfx::{
-    CanvasLayer, CanvasPlace, DrawCx, Frame, MAX_MASK_SHAPES, MaskShape, PaintLook, PaintStyle, ThingDraw, clamp_texels,
+    CanvasLayer, CanvasPlace, DrawCx, Frame, MAX_MASK_SHAPES, MaskShape, PaintLook, PaintStyle, Surface, ThingDraw,
+    clamp_texels,
 };
 use bpe_runtime::{MarkTarget, Solid, World};
 use glam::Vec2;
@@ -111,6 +112,10 @@ impl ThingDraw for CanvasDraw {
             look: paint_look_of(&settings),
             time: cx.time as f32,
             mask: Vec::new(),
+            surface: Surface::Paint,
+            grid: None,
+            border: 0.0,
+            under_glyphs: Vec::new(),
         });
     }
 }
@@ -138,6 +143,10 @@ pub fn draw_skin(cx: &DrawCx, frame: &mut Frame) {
         look: skin_look_of(&skin),
         time: cx.time as f32,
         mask: skin_mask(cx.world, thing, &skin),
+        surface: Surface::Paint,
+        grid: None,
+        border: 0.0,
+        under_glyphs: Vec::new(),
     });
 }
 

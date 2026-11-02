@@ -228,6 +228,59 @@ pub struct CanvasLayer {
     /// inside these shapes (at most [`MAX_MASK_SHAPES`]; none shows nothing). A canvas has none
     /// and shows its whole rectangle.
     pub mask: Vec<MaskShape>,
+    /// What kind of surface this is: paint, or a cover, powder or fog drawn from `grid`.
+    pub surface: Surface,
+    /// Covers, powder and fog: the amounts. Paint: claimed ground. None: nothing.
+    pub grid: Option<GridImage>,
+    /// How dark the lines between teams are, 0 to 1.
+    pub border: f32,
+    /// The text under a cover, laid out in world pixels.
+    pub under_glyphs: Vec<GlyphInstance>,
+}
+
+/// What a canvas is made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Surface {
+    /// Marks of paint, drawn from the marks' textures.
+    #[default]
+    Paint,
+    /// A cover that balls scrape off to show what is underneath.
+    Cover { foil: bool, under: Under },
+    /// Sand or snow that balls plough through.
+    Powder { snow: bool, ridges: f32, light_angle: f32 },
+    /// Mist on glass that balls wipe clear; blurs what is behind it.
+    Fog { steam: bool, blur: f32, density: f32 },
+}
+
+/// What shows where a cover is scraped away.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Under {
+    /// Whatever is behind the canvas.
+    #[default]
+    Scene,
+    /// Linear light.
+    Colour([f32; 4]),
+    /// 16 stops, top to bottom, linear light.
+    Gradient([[f32; 4]; 16]),
+    /// A slot of the scene's picture table (`World::pictures`); 31 = missing.
+    Picture(u32),
+    /// The colour behind the text; the glyphs are the layer's `under_glyphs`.
+    Text([f32; 4]),
+}
+
+/// A canvas grid copied for drawing: RGBA8, one texel per cell.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridImage {
+    pub size: [u32; 2],
+    pub pixels: std::sync::Arc<Vec<u8>>,
+    /// The texels are sRGB colours (claimed ground), not amounts.
+    pub srgb: bool,
+    /// Sampled nearest (tiles), not filtered.
+    pub nearest: bool,
+    /// World pixels per texel.
+    pub cell: f32,
 }
 
 /// How a canvas's paint is drawn.

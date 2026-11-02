@@ -4,7 +4,7 @@
 
 use glam::Vec2;
 
-const TAU: f32 = 6.283185307;
+const TAU: f32 = std::f32::consts::TAU;
 
 /// A well-mixed number from 0 to 1 for a variant, an index and a salt (PCG).
 fn hash(variant: u32, k: u32, salt: u32) -> f32 {
@@ -63,7 +63,7 @@ fn ring(q: Vec2, r: f32) -> f32 {
 }
 
 fn star(q: Vec2, r: f32) -> f32 {
-    let k1 = Vec2::new(0.809016994, -0.587785252);
+    let k1 = Vec2::new(0.809_017, -0.587_785_25);
     let k2 = Vec2::new(-k1.x, k1.y);
     let mut p = Vec2::new(q.x.abs(), -q.y);
     p -= 2.0 * k1.dot(p).max(0.0) * k1;

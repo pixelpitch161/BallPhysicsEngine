@@ -29,10 +29,10 @@ use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, CanvasLayer, CanvasPlace, DrawCx, Draws, EffectCall,
-    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, MAX_MASK_SHAPES,
-    MaskShape, ModuleDraw, PaintLook, PaintStyle, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook,
-    SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak,
-    push_streak_colours, thing_code,
+    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, GridImage, HitMark, LiquidLayer, LookInstance,
+    MAX_MASK_SHAPES, MaskShape, ModuleDraw, PaintLook, PaintStyle, Points, ShapeInstance, SoftVertex, Stage, Surface,
+    SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, Under, blend_alpha, build_frame, build_frame_at,
+    hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
@@ -1184,13 +1184,20 @@ impl Renderer {
         place: CanvasPlace,
         slot: &mut usize,
     ) {
-        for (i, c) in frame.canvases.iter().enumerate().filter(|(_, c)| c.place == place) {
+        // Fog is drawn by its own pass (not yet), so it is left out here.
+        for (i, c) in frame
+            .canvases
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.place == place && !matches!(c.surface, Surface::Fog { .. }))
+        {
             // Read from the flow layers directly (see `canvas_textures`) to borrow alongside
             // the composite.
             let textures = self.flow.as_ref().and_then(|flow| flow.canvas_textures(c.key));
+            let atlas = self.flow.as_ref().and_then(|flow| flow.picture_atlas());
             if canvas::composite::Composite::direct(c.blend) {
                 let mut pass = begin_pass(encoder, &self.targets.hdr, "canvas", wgpu::LoadOp::Load);
-                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures, atlas, 0);
                 continue;
             }
             self.targets.ensure_layer(device);
@@ -1199,7 +1206,7 @@ impl Renderer {
             {
                 let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
                 let mut pass = begin_pass(encoder, &layer, "canvas layer", clear);
-                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures, atlas, 0);
             }
             // The opacity is in the layer's coverage already.
             let (under, hdr) = (&self.targets.behind_view, &self.targets.hdr);
