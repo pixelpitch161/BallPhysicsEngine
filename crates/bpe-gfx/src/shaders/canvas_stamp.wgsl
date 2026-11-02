@@ -63,6 +63,10 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
     var mid = start;
     var along = vec2<f32>(1.0, 0.0);
     var half = vec2<f32>(r + margin);
+    if m.look.w > 0.5 && m.look.w < 1.5 {
+        // A splat's droplets reach 1.6 r, spread wider by its squash.
+        half = vec2<f32>(2.6 * r + margin);
+    }
     if m.look.w < 0.5 || m.look.w > 6.5 {
         // A stroke's box runs along it, past both ends by the radius.
         let d = to - start;
@@ -132,11 +136,50 @@ fn along_part(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return clamp(dot(p - a, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
 }
 
-// A blob of 7 lobes, their size and phase perturbed by the variant.
+// Polynomial smooth minimum: the union of two distances with a rounded join `k` wide.
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+
+// Paint thrown against a wall, for stamps and skins alike. `q` is in the splat's own frame:
+// the ball was travelling along +x. The variant's low 3 bits pick the layout and bits 3 and 4
+// the squash (0 to 3) of a fast hit, which flattens the blob along the travel and spreads it
+// across. A body of 3 to 5 smoothly joined discs, a short streak along the travel and 4 to 9
+// droplets thrown 0.9 to 1.6 r forward within 50 degrees of it; nothing reaches past 1.8 r.
+fn splat_paint(q: vec2<f32>, r: f32, variant: u32) -> f32 {
+    let v = variant & 7u;
+    let squash = f32((variant >> 3u) & 3u);
+    let flat = 1.0 + squash / 6.0;
+    let wide = 1.0 + squash * 0.12;
+    // The blob's frame, squashed.
+    let p = vec2<f32>(q.x * flat, q.y / wide);
+    let scale = 0.5 * (1.0 / flat + wide);
+    let k = 0.25 * r;
+    var d = 1e6;
+    let discs = 3u + u32(hash(v, 0u, 11u) * 2.999);
+    for (var i = 0u; i < discs; i++) {
+        let a = hash(v, i, 12u) * TAU;
+        let off = hash(v, i, 13u) * 0.25 * r;
+        let radius = (0.4 + 0.15 * hash(v, i, 14u)) * r;
+        d = smin(d, length(p - vec2<f32>(cos(a), sin(a)) * off) - radius, k);
+    }
+    // The streak runs along the travel.
+    let reach = (0.55 + 0.25 * hash(v, 0u, 15u)) * r;
+    d = smin(d, segment(p, vec2<f32>(-0.2 * r, 0.0), vec2<f32>(reach, 0.0)) - 0.2 * r, k);
+    // Droplets, bigger the nearer they land.
+    let drops = 4u + u32(hash(v, 0u, 16u) * 5.999);
+    for (var i = 0u; i < drops; i++) {
+        let a = (hash(v, i, 17u) - 0.5) * 1.7453293;
+        let far = 0.9 + 0.7 * hash(v, i, 18u);
+        let radius = (0.16 - 0.09 * (far - 0.9) / 0.7) * r * (0.8 + 0.4 * hash(v, i, 19u));
+        d = min(d, length(p - vec2<f32>(cos(a), sin(a)) * far * r) - radius);
+    }
+    return d * scale;
+}
+
 fn splat(q: vec2<f32>, r: f32, v: u32) -> f32 {
-    let a = atan2(q.y, q.x);
-    let edge = 0.74 + 0.18 * cos(7.0 * a + hash(v, 0u, 1u) * TAU) + 0.08 * cos(3.0 * a + hash(v, 0u, 2u) * TAU);
-    return (length(q) - r * edge) * 0.8;
+    return splat_paint(q, r, v);
 }
 
 fn ring(q: vec2<f32>, r: f32) -> f32 {

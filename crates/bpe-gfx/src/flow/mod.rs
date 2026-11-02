@@ -1575,6 +1575,144 @@ mod tests {
         assert!(clear(v(98.0, 3.0)) && clear(v(110.0, 0.0)), "nothing at the tip");
     }
 
+    /// Where the splat tests put their splats: three columns by three rows, 128 apart.
+    fn slot(k: usize) -> Vec2 {
+        Vec2::new((k % 3) as f32 - 1.0, (k / 3) as f32 - 1.0) * 128.0
+    }
+
+    /// A splat of radius 30 in slot `k`.
+    fn splat_in(k: usize, angle: f32, variant: u8) -> bpe_runtime::Mark {
+        let mut m = mark(1, bpe_runtime::MarkShape::Splat, slot(k), slot(k), 30.0);
+        m.angle = angle;
+        m.variant = variant;
+        m
+    }
+
+    /// The coverage (paint alpha) of the 128 by 128 texels around slot `k`, row by row.
+    fn slot_cover(paint: &[u8], k: usize) -> Vec<f32> {
+        let from = slot(k) - Vec2::splat(64.0);
+        (0..128)
+            .flat_map(|y| (0..128).map(move |x| (x, y)))
+            .map(|(x, y)| texel(paint, from + Vec2::new(x as f32 + 0.5, y as f32 + 0.5))[3])
+            .collect()
+    }
+
+    /// The blobs of 128 by 128 `cover` that are mostly covered, as lists of texels (x, y).
+    fn blobs(cover: &[f32]) -> Vec<Vec<(i32, i32)>> {
+        let mut seen = vec![false; cover.len()];
+        let mut found = Vec::new();
+        for start in 0..cover.len() {
+            if seen[start] || cover[start] <= 0.5 {
+                continue;
+            }
+            let mut stack = vec![start];
+            let mut blob = Vec::new();
+            seen[start] = true;
+            while let Some(i) = stack.pop() {
+                let (x, y) = ((i % 128) as i32, (i / 128) as i32);
+                blob.push((x, y));
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !(0..128).contains(&nx) || !(0..128).contains(&ny) {
+                        continue;
+                    }
+                    let j = (ny * 128 + nx) as usize;
+                    if !seen[j] && cover[j] > 0.5 {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            found.push(blob);
+        }
+        found
+    }
+
+    #[test]
+    fn splat_has_droplets() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            (0..8).map(|v| splat_in(v, 0.0, v as u8)).collect()
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        for v in 0..8 {
+            let found = blobs(&slot_cover(&paint, v));
+            assert!(found.len() > 1, "variant {v}: {} blob", found.len());
+        }
+    }
+
+    #[test]
+    fn splat_droplets_lean_forward() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            vec![splat_in(0, 0.0, 0), splat_in(1, std::f32::consts::FRAC_PI_2, 0), splat_in(2, std::f32::consts::PI, 3)]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let centroid = |k: usize| {
+            let cover = slot_cover(&paint, k);
+            let total: f32 = cover.iter().sum();
+            let (mut x, mut y) = (0.0, 0.0);
+            for (i, c) in cover.iter().enumerate() {
+                x += c * ((i % 128) as f32 + 0.5 - 64.0);
+                y += c * ((i / 128) as f32 + 0.5 - 64.0);
+            }
+            Vec2::new(x, y) / total
+        };
+        assert!(centroid(0).x > 3.0, "along +x: {}", centroid(0));
+        assert!(centroid(1).y > 3.0, "along +y: {}", centroid(1));
+        assert!(centroid(2).x < -3.0, "along -x: {}", centroid(2));
+    }
+
+    #[test]
+    fn squashed_splat_is_flatter() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            vec![splat_in(0, 0.0, 1), splat_in(1, 0.0, 1 | 3 << 3)]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        // The main blob is the one under the middle; droplets stand apart from it.
+        let extents = |k: usize| {
+            let blob = blobs(&slot_cover(&paint, k)).into_iter().find(|b| b.contains(&(64, 64))).expect("a blob at the middle");
+            let span = |f: fn(&(i32, i32)) -> i32| {
+                let (lo, hi) = (blob.iter().map(f).min().unwrap(), blob.iter().map(f).max().unwrap());
+                (hi - lo + 1) as f32
+            };
+            (span(|p| p.0), span(|p| p.1))
+        };
+        let (along, across) = extents(0);
+        assert!((across / along) < 1.25, "a round splat: {along} by {across}");
+        let (along, across) = extents(1);
+        assert!(across / along >= 1.4, "a squashed splat is {along} along and {across} across");
+    }
+
+    #[test]
+    fn splat_edges_are_antialiased() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| if step == 1 { vec![splat_in(4, 0.3, 2)] } else { Vec::new() }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let cover = slot_cover(&paint, 4);
+        let soft = cover.iter().filter(|c| **c > 0.1 && **c < 0.9).count();
+        let solid = cover.iter().filter(|c| **c >= 0.9).count();
+        assert!(soft > 20 && solid > 200, "{soft} soft texels, {solid} solid");
+    }
+
     #[test]
     fn joined_pieces_leave_no_seam() {
         let Some((device, queue)) = gpu() else { return };

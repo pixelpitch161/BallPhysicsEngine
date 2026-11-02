@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use bpe_core::{Color, ResolvedThing, Settings, SlotId, Thing, ThingId};
-use bpe_runtime::{EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
+use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
 use super::grid::{CanvasGrid, Cell};
@@ -307,16 +307,22 @@ impl Cx<'_> {
                 continue;
             }
             let at = to_local(self.pose, e.point);
-            let radius = b.splat_size * (1.0 + b.splat_by_speed * (e.speed / 1000.0).min(2.0));
+            let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+            let (radius, angle, variant) =
+                splat_look(e, mover, b.splat_size, b.splat_by_speed, b.splat_variants, b.splat_turn, self.pose.angle);
             if !reaches(st.size, at, at, radius) {
                 continue;
             }
-            let h = mix(e.step, e.a.item);
-            let angle = match b.splat_turn {
-                Turn::FaceHit => e.normal.y.atan2(e.normal.x) - self.pose.angle,
-                Turn::Random => (h >> 40) as f32 / (1u64 << 24) as f32 * TAU,
+            // Only a splat leans with the ball and squashes; the other shapes face the hit.
+            let (angle, variant) = if shape == MarkShape::Splat {
+                (angle, variant)
+            } else {
+                let angle = match b.splat_turn {
+                    Turn::FaceHit => e.normal.y.atan2(e.normal.x) - self.pose.angle,
+                    Turn::Random => angle,
+                };
+                (angle, variant & 7)
             };
-            let variant = (h % b.splat_variants.max(1) as u64) as u8;
             // The mover's colour, whoever owns the brush.
             let colour = self.colour(b, e.a.thing, e.a.item as usize);
             st.grid.stamp_disc(at, radius, cell_of(colour));
@@ -336,6 +342,44 @@ impl Cx<'_> {
             });
         }
     }
+}
+
+/// How fast a hit squashes its splat at least (level 1 at 1000 px/s) and at most (level 3).
+const SQUASH_FROM: f32 = 600.0;
+const SQUASH_STEP: f32 = 400.0;
+
+/// The size, turn and look of the splat a hit leaves, in the owning thing's frame (`pose_angle`
+/// is its turn). The turn of a Face-hit splat is the ball's direction of travel: the mover's
+/// velocity (already bounced by now) reflected about the hit normal, or against the normal when
+/// the mover has no body. The variant is the layout (low 3 bits, one of `variants`) and the
+/// squash level 0 to 3 (bits 3 and 4: 0 under 600 px/s, 3 from 1800 px/s). A Random turn picks
+/// its own turn from the hit. Skins reuse this.
+pub fn splat_look(
+    e: &Event,
+    mover_velocity: Option<Vec2>,
+    size: f32,
+    by_speed: f32,
+    variants: u32,
+    turn: Turn,
+    pose_angle: f32,
+) -> (f32, f32, u8) {
+    let radius = size * (1.0 + by_speed * (e.speed / 1000.0).min(2.0));
+    let h = mix(e.step, e.a.item);
+    let angle = match turn {
+        Turn::FaceHit => {
+            let n = e.normal.normalize_or_zero();
+            let travel = match mover_velocity.filter(|v| v.length_squared() > 1e-6) {
+                Some(v) if n != Vec2::ZERO => v - 2.0 * v.dot(n) * n,
+                Some(v) => v,
+                None => -n,
+            };
+            travel.y.atan2(travel.x) - pose_angle
+        }
+        Turn::Random => (h >> 40) as f32 / (1u64 << 24) as f32 * TAU,
+    };
+    let squash = ((e.speed - SQUASH_FROM) / SQUASH_STEP).floor().clamp(0.0, 3.0) as u8;
+    let variant = (h % variants.max(1) as u64) as u8 | squash << 3;
+    (radius, angle, variant)
 }
 
 /// A well-mixed 64-bit number from a step and an item (SplitMix64's finaliser).
@@ -717,6 +761,43 @@ mod tests {
         assert!(gaps >= 1, "the paint ran out and came back");
     }
 
+    fn hit(speed: f32, normal: Vec2) -> bpe_runtime::Event {
+        use bpe_runtime::Party;
+        bpe_runtime::Event {
+            step: 7,
+            kind: EventKind::Hit,
+            a: Party { thing: BALLS, item: 0 },
+            b: None,
+            point: Vec2::ZERO,
+            normal,
+            speed,
+        }
+    }
+
+    #[test]
+    fn a_splat_faces_the_way_the_ball_was_going() {
+        // Bounced off a floor (normal up, y down on screen is positive: up is -y), now going up
+        // and right; it came in going down and right.
+        let e = hit(500.0, Vec2::new(0.0, -1.0));
+        let (_, angle, _) = splat_look(&e, Some(Vec2::new(300.0, -400.0)), 30.0, 0.5, 4, Turn::FaceHit, 0.0);
+        let want = Vec2::new(300.0, 400.0).to_angle();
+        assert!((angle - want).abs() < 1e-4, "{angle} vs {want}");
+        // In a turned canvas the angle is relative to it.
+        let (_, turned, _) = splat_look(&e, Some(Vec2::new(300.0, -400.0)), 30.0, 0.5, 4, Turn::FaceHit, 0.5);
+        assert!((turned - (want - 0.5)).abs() < 1e-4);
+        // No body: against the normal.
+        let (_, none, _) = splat_look(&e, None, 30.0, 0.5, 4, Turn::FaceHit, 0.0);
+        assert!((none - Vec2::new(0.0, 1.0).to_angle()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fast_hits_squash_their_splat() {
+        let level = |speed: f32| splat_look(&hit(speed, Vec2::Y), None, 30.0, 0.0, 4, Turn::FaceHit, 0.0).2 >> 3;
+        assert_eq!([level(100.0), level(599.0), level(1000.0), level(1400.0), level(1800.0), level(5000.0)], [0, 0, 1, 2, 3, 3]);
+        let (_, _, v) = splat_look(&hit(1800.0, Vec2::Y), None, 30.0, 0.0, 4, Turn::FaceHit, 0.0);
+        assert!(v & 7 < 4);
+    }
+
     #[test]
     fn splat_at_each_hit() {
         let (scene, resolved, kit) = painted(true, |p| {
@@ -740,7 +821,7 @@ mod tests {
             assert_eq!((m.from, m.to), (local(pose, e.point), local(pose, e.point)));
             let radius = 30.0 * (1.0 + 0.5 * (e.speed / 1000.0).min(2.0));
             assert!((m.radius - radius).abs() < 1e-3, "{} vs {radius}", m.radius);
-            assert!(m.variant < 4);
+            assert!(m.variant & 7 < 4);
         }
     }
 
