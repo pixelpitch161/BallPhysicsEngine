@@ -419,6 +419,43 @@ mod tests {
         assert_eq!(canvas_area(&w, CANVAS).unwrap().1, w.video);
     }
 
+    /// A keyframed brush Width widens the trail as the video goes on, and moving its keys
+    /// restarts the canvas.
+    #[test]
+    fn keyframed_width_changes_the_stroke() {
+        let (mut scene, resolved, kit) = painted(true, |p| p.set("paint_width_by", Value::Choice("fixed".into())));
+        let before = bpe_runtime::fingerprint(&scene, &resolved, &kit.sims);
+        let m = module_of(&scene, &kit.registry, BALLS, SlotId::Marks);
+        let a = bpe_core::Address { owner: bpe_core::Owner::Module(m), slot: None, key: "paint_width".into() };
+        scene.set_key(&kit.registry, &a, 0.0, Value::Number(0.5)).unwrap();
+        scene.set_key(&kit.registry, &a, 1.0, Value::Number(3.0)).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        assert_ne!(bpe_runtime::fingerprint(&scene, &resolved, &kit.sims), before);
+        let (_, log) = run(&scene, &resolved, &kit, 1.5);
+        let marks = log.marks();
+        // Fixed: the radius is Width times 5 px.
+        assert!((marks[0].radius - 2.5).abs() < 0.2, "first {}", marks[0].radius);
+        assert_eq!(marks.last().unwrap().radius, 15.0);
+        assert!(marks.windows(2).all(|w| w[1].radius >= w[0].radius), "the width only grows");
+    }
+
+    /// A ball whose Look colours are keyframed paints with the colour it has at that moment.
+    #[test]
+    fn keyframed_ball_colour_changes_the_mark_colour() {
+        let (mut scene, _, kit) = painted(true, |_| {});
+        let look = module_of(&scene, &kit.registry, BALLS, SlotId::Look);
+        let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        let a = bpe_core::Address { owner: bpe_core::Owner::Module(look), slot: None, key: "colours".into() };
+        scene.set_key(&kit.registry, &a, 0.0, Value::Gradient(bpe_core::Gradient::solid(red))).unwrap();
+        scene.set_key(&kit.registry, &a, 1.0, Value::Gradient(bpe_core::Gradient::solid(blue))).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let (_, log) = run(&scene, &resolved, &kit, 1.5);
+        let marks = log.marks();
+        let close = |c: [f32; 4], to: Color| c.iter().zip(to.to_linear()).all(|(a, b)| (a - b).abs() < 0.02);
+        assert!(close(marks[0].colour, red), "first {:?}", marks[0].colour);
+        assert!(close(marks.last().unwrap().colour, blue), "last {:?}", marks.last().unwrap().colour);
+    }
+
     #[test]
     fn paint_trail_logs_strokes_at_60_hz() {
         let (scene, resolved, kit) = painted(true, |_| {});

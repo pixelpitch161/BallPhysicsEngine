@@ -114,13 +114,16 @@ struct Animated {
     resolved: Resolved,
 }
 
-/// The scene's tracks and pulses that change how it simulates: those on Motion and Bounce
-/// modules, and those on a thing's own settings that its sim says affect the physics. `None`
+/// The scene's tracks and pulses that change how it simulates: those on Motion, Bounce and
+/// Marks modules, those on Look modules when the scene has a Marks module (marks take the balls'
+/// colours), and those on a thing's own settings that its sim says affect the physics. `None`
 /// when there are none.
 pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Option<Animation> {
     let mut animation = Animation::new(scene, resolved);
+    let any_marks = scene_has_marks(resolved, sims);
     animation.retain(|thing, slot, key| match slot {
         Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
+        Some(SlotId::Marks) | Some(SlotId::Look) => any_marks,
         Some(_) => false,
         None => resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)).is_some_and(|s| s.affects_physics(key)),
     });
@@ -216,8 +219,9 @@ impl World {
     }
 
     /// Writes this step's keyframed and pulsed physics settings and hands them to the sims:
-    /// Motion and Bounce modules are prepared again, things hear `settings_changed`. Pulses
-    /// follow the beat and the song only; hits never move the physics.
+    /// Motion, Bounce and Marks modules are prepared again, looks the marks read are written
+    /// into [`World::looks`], things hear `settings_changed`. Pulses follow the beat and the
+    /// song only; hits never move the physics.
     fn animate(&mut self, sims: &Sims) {
         let Some(mut animated) = self.animated.take() else { return };
         let time = self.time();
@@ -233,6 +237,13 @@ impl World {
             }
             let Some(r) = animated.resolved.things.get(&thing) else { continue };
             match slot {
+                Some(SlotId::Look) => {
+                    if let Some(s) = r.slots.get(&SlotId::Look)
+                        && let Some(look) = self.looks.get_mut(&thing)
+                    {
+                        look.clone_from(&s.params);
+                    }
+                }
                 Some(slot) => {
                     if let Some(s) = r.slots.get(&slot)
                         && let Some(msim) = sims.module(&s.kind)
