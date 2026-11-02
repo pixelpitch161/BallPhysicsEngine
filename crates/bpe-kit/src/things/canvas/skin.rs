@@ -403,6 +403,7 @@ pub fn build(thing: ThingId, world: &mut World) {
         ticks_run: 0,
         drops: Vec::new(),
         edges: Vec::new(),
+        claims: None,
     };
     world.skins.insert(thing, Box::new(st));
 }
