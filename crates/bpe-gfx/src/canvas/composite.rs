@@ -129,6 +129,10 @@ pub(crate) struct Composite {
     over: wgpu::RenderPipeline,
     /// Light added on top: Add.
     add: wgpu::RenderPipeline,
+    /// Fog: writes the final colour, mixing in a copy of what was there (group 2).
+    fog: wgpu::RenderPipeline,
+    fog_layout: wgpu::BindGroupLayout,
+    fog_sampler: wgpu::Sampler,
     sampler: wgpu::Sampler,
     /// Cleared 1×1 textures for a canvas whose own are not made yet: only its start colour shows.
     blank: CanvasTextures,
@@ -228,6 +232,54 @@ impl Composite {
         };
         let over = make("canvas over", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let add = make("canvas add", util::ADDITIVE);
+        let fog_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fog layout"),
+            entries: &[
+                util::float_texture_entry(0, S::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let fog_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fog"),
+            bind_group_layouts: &[Some(&globals), Some(&layout), Some(&fog_layout)],
+            immediate_size: 0,
+        });
+        let fog = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fog"),
+            layout: Some(&fog_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_canvas"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_fog"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fog"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("canvas"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -264,6 +316,9 @@ impl Composite {
             layout,
             over,
             add,
+            fog,
+            fog_layout,
+            fog_sampler,
             sampler,
             blank,
             uniforms: Vec::new(),
@@ -356,6 +411,51 @@ impl Composite {
         atlas: Option<&PictureAtlas>,
         part: u32,
     ) {
+        self.record(device, queue, pass, globals, slot, canvas, textures, atlas, part, None);
+    }
+
+    /// The bind group (group 2) that lets a fog canvas read `behind`, a copy of the picture.
+    pub(crate) fn fog_group(&self, device: &wgpu::Device, behind: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fog"),
+            layout: &self.fog_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(behind) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.fog_sampler) },
+            ],
+        })
+    }
+
+    /// Records a fog canvas: it writes the final colour of its pixels from `behind_group`'s copy
+    /// of the picture (see [`Self::fog_group`]), so it ignores blend.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_fog(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        slot: usize,
+        canvas: &CanvasLayer,
+        behind_group: &wgpu::BindGroup,
+    ) {
+        self.record(device, queue, pass, globals, slot, canvas, None, None, 0, Some(behind_group));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        slot: usize,
+        canvas: &CanvasLayer,
+        textures: Option<&CanvasTextures>,
+        atlas: Option<&PictureAtlas>,
+        part: u32,
+        fog: Option<&wgpu::BindGroup>,
+    ) {
         while self.uniforms.len() <= slot {
             let buffer = |label, size, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -422,9 +522,16 @@ impl Composite {
             });
             &fresh
         };
-        pass.set_pipeline(if canvas.blend == Blend::Add { &self.add } else { &self.over });
+        pass.set_pipeline(match fog {
+            Some(_) => &self.fog,
+            None if canvas.blend == Blend::Add => &self.add,
+            None => &self.over,
+        });
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, group, &[]);
+        if let Some(behind) = fog {
+            pass.set_bind_group(2, behind, &[]);
+        }
         pass.draw(0..4, 0..1);
     }
 }
@@ -945,6 +1052,110 @@ mod tests {
         let right = read(44, 32);
         assert!(right[1] > 0.5 && right[0] < 0.2, "{right:?}: the picture shows where scraped");
         assert!(read(20, 32)[0] > 0.8, "the cover is still whole on the left");
+    }
+
+    /// How many pixels along y = 0 of a frame are strictly between the dark and the bright side.
+    fn soft_pixels(pixels: &[u8]) -> usize {
+        (-540..540).step_by(4).filter(|x| (30..225).contains(&pixel(pixels, *x as f32, 0.0)[0])).count()
+    }
+
+    /// A left half white, right half black picture under any fog (a white canvas behind balls).
+    fn edge_frame() -> Frame {
+        let mut frame = Frame::default();
+        let mut white = canvas(CanvasPlace::BehindEverything, Some([1.0, 1.0, 1.0, 1.0]));
+        white.center = [-270.0, 0.0];
+        white.size = [540.0, 1920.0];
+        frame.canvases.push(white);
+        frame
+    }
+
+    fn fog_over(amount: u8, blur: f32) -> CanvasLayer {
+        let mut fog = canvas(CanvasPlace::OnTop, Some([0.5, 0.5, 0.5, 1.0]));
+        fog.size = [1080.0, 1920.0];
+        fog.surface = crate::Surface::Fog { steam: false, blur, density: 0.0 };
+        fog.grid = grid2([amount, 0, 0, 255], [amount, 0, 0, 255], false);
+        if let Some(g) = fog.grid.as_mut() {
+            g.cell = 540.0;
+        }
+        fog
+    }
+
+    #[test]
+    fn fog_blurs_what_is_behind() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut frame = edge_frame();
+        let sharp = soft_pixels(&render(&device, &queue, &frame));
+        frame.canvases.push(fog_over(255, 80.0));
+        let blurred = soft_pixels(&render(&device, &queue, &frame));
+        assert!(sharp <= 2 && blurred > 10, "the edge spreads from {sharp} to {blurred} px");
+        let mut clear = edge_frame();
+        let plain = render(&device, &queue, &clear);
+        clear.canvases.push(fog_over(0, 80.0));
+        assert_eq!(render(&device, &queue, &clear), plain, "wiped fog changes nothing");
+    }
+
+    #[test]
+    fn fog_is_drawn_over_balls() {
+        let Some((device, queue)) = gpu() else { return };
+        let ball = BallInstance {
+            center: [0.0, 0.0],
+            radius: 100.0,
+            glow: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            code: [0.0; 4],
+            paint: PaintGpu::default(),
+        };
+        let mut frame = Frame::default();
+        frame.balls.push(ball);
+        let soft = |pixels: &[u8]| {
+            (0..400).step_by(4).filter(|x| (30..225).contains(&pixel(pixels, *x as f32, 0.0)[0])).count()
+        };
+        let before = soft(&render(&device, &queue, &frame));
+        let mut fog = fog_over(255, 80.0);
+        fog.place = CanvasPlace::BehindBalls;
+        frame.canvases.push(fog);
+        let after = soft(&render(&device, &queue, &frame));
+        assert!(after > before + 4, "a ball under fog has a softer edge ({before} soft px before, {after} after)");
+    }
+
+    #[test]
+    fn text_shows_under_a_cover_only_where_revealed() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut frame = Frame::default();
+        let mut cover = canvas(CanvasPlace::OnTop, Some([1.0, 0.0, 0.0, 1.0]));
+        cover.size = [800.0, 800.0];
+        cover.surface = crate::Surface::Cover { foil: false, under: crate::Under::Text([0.0, 0.0, 1.0, 1.0]) };
+        cover.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        if let Some(g) = cover.grid.as_mut() {
+            g.cell = 400.0;
+        }
+        let style = crate::text::TextStyle { color: [1.0; 4], outline: 0.0, outline_color: [0.0; 4], glow: 0.0 };
+        crate::text::layout_text(
+            "HELLO",
+            crate::text::FontFace::Anton,
+            300.0,
+            glam::Vec2::ZERO,
+            crate::text::TextAlign::Center,
+            0.0,
+            usize::MAX,
+            &style,
+            &mut cover.under_glyphs,
+        );
+        frame.canvases.push(cover);
+        let pixels = render(&device, &queue, &frame);
+        let white = |p: [u8; 4]| p[0] > 150 && p[1] > 150 && p[2] > 150;
+        let count = |lo: i32, hi: i32| {
+            (lo..hi)
+                .step_by(4)
+                .flat_map(|x| (-100..100).step_by(4).map(move |y| (x, y)))
+                .filter(|(x, y)| white(pixel(&pixels, *x as f32, *y as f32)))
+                .count()
+        };
+        assert!(count(10, 380) > 20, "the glyphs show where the cover is scraped");
+        assert_eq!(count(-380, -10), 0, "and not where the cover is whole");
+        assert!(pixel(&pixels, -300.0, 0.0)[0] > 200, "the cover colour covers the left");
+        let corner = pixel(&pixels, 380.0, 380.0);
+        assert!(corner[2] > 200 && corner[0] < 40, "{corner:?}: the text's own background shows when scraped");
     }
 
     const BEFORE: [u64; 4] = [16326282278750507301, 12348260933151833957, 7236297003248527420, 17745117802717598613];

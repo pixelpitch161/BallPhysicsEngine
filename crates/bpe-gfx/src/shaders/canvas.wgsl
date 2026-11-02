@@ -541,6 +541,36 @@ fn powder(in: CanvasOut) -> vec4<f32> {
     return vec4<f32>(c * k * o, k * o);
 }
 
+// Fog's view of the picture so far (a copy), and how to sample it.
+@group(2) @binding(0) var behind: texture_2d<f32>;
+@group(2) @binding(1) var behind_sampler: sampler;
+
+// Mist on glass: blurs what is behind it more where the grid's amount is high.
+@fragment
+fn fs_fog(in: CanvasOut) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(behind));
+    let uv = in.pos.xy / dims;
+    let sharp = textureSampleLevel(behind, behind_sampler, uv, 0.0);
+    let f = grid_amount(in.local);
+    let radius = canvas.surface.z * f / max(g.view.z, 1e-4);
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < 12u; i++) {
+        let ring = select(1.0, 0.5, i < 6u);
+        let a = f32(i % 6u) / 6.0 * TAU + select(0.0, 0.5236, i >= 6u);
+        let off = vec2<f32>(cos(a), sin(a)) * radius * ring / dims;
+        sum += textureSampleLevel(behind, behind_sampler, uv + off, 0.0).rgb;
+    }
+    let blurred = sum / 12.0;
+    let density = canvas.surface.w;
+    let grain = hash2f(floor(in.local * 0.6)) - 0.5;
+    var fogged = mix(blurred, canvas.start.rgb, 0.35 * density) + vec3<f32>(0.04 * grain);
+    if canvas.surface.y > 0.5 {
+        fogged = mix(blurred, canvas.start.rgb, 0.25 * density) + vec3<f32>(0.05);
+    }
+    let amount = clamp(f * clamp(canvas.size.w, 0.0, 1.0), 0.0, 1.0);
+    return vec4<f32>(mix(sharp.rgb, fogged, amount), sharp.a);
+}
+
 @fragment
 fn fs_canvas(in: CanvasOut) -> @location(0) vec4<f32> {
     if canvas.surface.x > 1.5 {
