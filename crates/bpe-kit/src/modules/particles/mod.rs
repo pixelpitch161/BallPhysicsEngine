@@ -47,48 +47,58 @@ pub enum BurstSource {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct HitBurst {
     /// What the burst is made of.
-    #[setting(label = "Preset", simple, random)]
+    #[setting(label = "Preset", group = "Burst", simple, random)]
     pub preset: BurstPreset,
     /// How many particles each hit lets off.
-    #[setting(label = "Count", range(1, 200), simple, keyframe, random(5, 80))]
+    #[setting(label = "Count", group = "Burst", range(1, 200), simple, keyframe, random(5, 80))]
     pub count: i32,
     /// How fast the particles fly.
-    #[setting(label = "Speed", range(0, 2000), unit = "px/s", simple, keyframe, random(100, 900), pulse)]
+    #[setting(
+        label = "Speed",
+        group = "Burst",
+        range(0, 2000),
+        unit = "px/s",
+        simple,
+        keyframe,
+        random(100, 900),
+        pulse
+    )]
     pub speed: f32,
+    /// How wide the burst fans out from the direction of the bounce.
+    #[setting(label = "Spread", group = "Burst", range(0, 360), unit = "°", keyframe, random)]
+    pub spread: f32,
+    /// Hits slower than this let off nothing.
+    #[setting(label = "Least speed", group = "Burst", range(0, 2000), unit = "px/s")]
+    pub least_speed: f32,
+    /// Harder hits let off faster particles.
+    #[setting(label = "Follow impact", group = "Burst", random)]
+    pub follow_impact: bool,
     /// How big each particle is; for rings, how big the ring grows.
-    #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe, random(2, 20))]
+    #[setting(label = "Size", group = "Each particle", range(0.5, 200), unit = "px", simple, keyframe, random(2, 20))]
     pub size: f32,
     /// How long the particles last.
-    #[setting(label = "Life", range(0.05, 3), unit = "s", simple, keyframe, random)]
+    #[setting(label = "Life", group = "Each particle", range(0.05, 3), unit = "s", simple, keyframe, random)]
     pub life: f32,
+    /// How fast the particles fall; negative makes them rise.
+    #[setting(label = "Gravity", group = "Each particle", range(-2000, 2000), unit = "px/s²", keyframe, random(-800, 800))]
+    pub gravity: f32,
+    /// How quickly the particles slow down.
+    #[setting(label = "Drag", group = "Each particle", range(0, 10), keyframe, random(0, 4))]
+    pub drag: f32,
     /// The colour of the ball that hit, or the Colours below.
-    #[setting(label = "Colour from", simple, random)]
+    #[setting(label = "Colour from", group = "Colours", simple, random)]
     pub source: BurstSource,
     /// The particles' own colours: over each one's life, a stop picked at random for each, or
     /// by where, how fast or when the hit was.
     #[setting(
         paint,
         label = "Colours",
+        group = "Colours",
         prefix = "",
         when = "source=own",
         follows = "life|order|place|speed|time|beat"
     )]
     pub colour: Paint,
-    /// How wide the burst fans out from the direction of the bounce.
-    #[setting(label = "Spread", range(0, 360), unit = "°", keyframe, random)]
-    pub spread: f32,
-    /// How fast the particles fall; negative makes them rise.
-    #[setting(label = "Gravity", range(-2000, 2000), unit = "px/s²", keyframe, random(-800, 800))]
-    pub gravity: f32,
-    /// How quickly the particles slow down.
-    #[setting(label = "Drag", range(0, 10), keyframe, random(0, 4))]
-    pub drag: f32,
-    /// Harder hits let off faster particles.
-    #[setting(label = "Follow impact", random)]
-    pub follow_impact: bool,
-    /// Hits slower than this let off nothing.
-    #[setting(label = "Least speed", range(0, 2000), unit = "px/s")]
-    pub least_speed: f32,
     /// How the particles mix with what is under them: Add glows and adds their light, Normal
     /// paints over it, the others mix with it. With the others, everything with the same Blend
     /// and amount is mixed in once, as one picture, so where particles overlap they do not stack.

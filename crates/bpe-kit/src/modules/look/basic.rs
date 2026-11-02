@@ -62,38 +62,21 @@ impl Style {
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BasicLook {
-    /// The colours and what spreads them across the balls (or letters, or points).
-    #[setting(
-        paint,
-        label = "Colours",
-        prefix = "",
-        group = "Colours",
-        follows = "place|start|order|speed|hits|step|beat|time|path",
-        simple
-    )]
-    pub fill: Paint,
-    /// How the colour is laid out inside each ball, letter or body.
-    #[setting(
-        paint,
-        label = "Inside each one",
-        prefix = "in_",
-        group = "Inside each one",
-        when = "thing=balls|text|soft"
-    )]
-    pub inside: InsidePaint,
     /// The outline the ball is drawn with; it still bounces as a circle.
-    #[setting(label = "Shape", when = "thing=balls", simple, random)]
+    #[setting(label = "Shape", group = "Shape", when = "thing=balls", simple, random)]
     pub ball_shape: BallShape,
-    /// How the ball is lit: Shiny is lit like a sphere; Flat is one even colour. Either way, the
-    /// halo is as bright as Glow says.
-    #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
-    pub style: Style,
     /// How wide the outline just inside the edge is; 0 means none.
-    #[setting(label = "Outline", when = "thing=balls", range(0, 24), unit = "px", simple, keyframe, random)]
+    #[setting(
+        label = "Outline",
+        group = "Shape",
+        when = "thing=balls",
+        range(0, 24),
+        unit = "px",
+        simple,
+        keyframe,
+        random
+    )]
     pub outline: f32,
-    /// How brightly the halo shines.
-    #[setting(label = "Glow", when = "thing!=liquid", range(0, 2), simple, keyframe, random, pulse)]
-    pub glow: f32,
     /// The outline's colours.
     #[setting(
         paint,
@@ -117,12 +100,32 @@ pub struct BasicLook {
     /// Turns the shape to point the way the ball is going.
     #[setting(label = "Face motion", when = "thing=balls and ball_shape!=circle", group = "Shape", random)]
     pub face_motion: bool,
-    /// The shape's starting angle; the pattern inside turns with it.
-    #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Shape", keyframe, random)]
-    pub turn: f32,
-    /// How fast the shape turns; the pattern inside turns with it.
-    #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Shape", keyframe, random)]
-    pub spin: f32,
+    /// How the ball is lit: Shiny is lit like a sphere; Flat is one even colour. Either way, the
+    /// halo is as bright as Glow says.
+    #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
+    pub style: Style,
+    /// The colours and what spreads them across the balls (or letters, or points).
+    #[setting(
+        paint,
+        label = "Colours",
+        prefix = "",
+        group = "Across the group",
+        follows = "place|start|order|speed|hits|step|beat|time|path",
+        simple
+    )]
+    pub fill: Paint,
+    /// How the colour is laid out inside each ball, letter or body.
+    #[setting(
+        paint,
+        label = "Inside each one",
+        prefix = "in_",
+        group = "Inside each one",
+        when = "thing=balls|text|soft"
+    )]
+    pub inside: InsidePaint,
+    /// How brightly the halo shines.
+    #[setting(label = "Glow", group = "Light", when = "thing!=liquid", range(0, 2), simple, keyframe, random, pulse)]
+    pub glow: f32,
     /// How far the halo reaches, in ball radii.
     #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe, random)]
     pub glow_size: f32,
@@ -135,11 +138,8 @@ pub struct BasicLook {
     /// Every hit turns the colour this far round the colour wheel.
     #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Light", keyframe, random)]
     pub hue_per_hit: f32,
-    /// How much fast balls stretch along their path and thin out across it.
-    #[setting(label = "Stretch", when = "thing=balls", range(0, 1), group = "Motion", keyframe, random)]
-    pub stretch: f32,
     /// How bright the flash on each hit is.
-    #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Flash", keyframe, random)]
+    #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Light", keyframe, random)]
     pub flash: f32,
     /// How big the flash is.
     #[setting(
@@ -147,13 +147,22 @@ pub struct BasicLook {
         when = "thing=balls and flash",
         range(0, 300),
         unit = "px",
-        group = "Flash",
+        group = "Light",
         keyframe
     )]
     pub flash_size: f32,
     /// How long the flash lasts.
-    #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s", group = "Flash")]
+    #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s", group = "Light")]
     pub flash_seconds: f32,
+    /// How much fast balls stretch along their path and thin out across it.
+    #[setting(label = "Stretch", when = "thing=balls", range(0, 1), group = "Motion", keyframe, random)]
+    pub stretch: f32,
+    /// The shape's starting angle; the pattern inside turns with it.
+    #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Motion", keyframe, random)]
+    pub turn: f32,
+    /// How fast the shape turns; the pattern inside turns with it.
+    #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Motion", keyframe, random)]
+    pub spin: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
     /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
     /// parts overlap they do not stack, unless Blend with each other is on.
@@ -377,7 +386,7 @@ mod tests {
     fn a_look_has_five_simple_settings() {
         let defs = BasicLook::defs();
         let simple: Vec<&str> = defs.iter().filter(|d| d.depth == Depth::Simple).map(|d| d.key).collect();
-        assert_eq!(simple, ["colours", "ball_shape", "style", "outline", "glow"]);
+        assert_eq!(simple, ["ball_shape", "outline", "style", "colours", "glow"]);
         let style = defs.iter().find(|d| d.key == "style").unwrap();
         assert_eq!((style.label, style.group, style.when), ("Style", "Style", "thing=balls"));
         assert_eq!(style.default, Value::Choice("shiny".into()));

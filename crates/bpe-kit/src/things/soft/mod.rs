@@ -99,6 +99,9 @@ impl ThingKind for SoftKind {
     fn id(&self) -> &'static str {
         "soft"
     }
+    fn family(&self) -> &'static str {
+        "Flowing"
+    }
     fn name(&self) -> &'static str {
         "Soft body"
     }

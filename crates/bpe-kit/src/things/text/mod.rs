@@ -135,6 +135,9 @@ impl ThingKind for TextKind {
     fn id(&self) -> &'static str {
         "text"
     }
+    fn family(&self) -> &'static str {
+        "On screen"
+    }
     fn name(&self) -> &'static str {
         "Text"
     }

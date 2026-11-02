@@ -57,8 +57,8 @@ pub enum Repeat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum PlaceShape {
     #[default]
-    Direction,
-    Centre,
+    Straight,
+    Round,
 }
 
 /// A gradient and how it is applied.
@@ -90,7 +90,7 @@ impl Default for Paint {
         Self {
             colours: Gradient::solid(bpe_core::Color::WHITE),
             follow: Follow::Place,
-            shape: PlaceShape::Direction,
+            shape: PlaceShape::Straight,
             angle: 90.0,
             centre: Vec2::ZERO,
             space: Space::World,
@@ -221,7 +221,7 @@ impl SettingGroup for Paint {
         let near = on(&format!(" and {f}=place|start"));
         v.push(def(
             "shape",
-            "Place from",
+            "Gradient",
             "Whether the colours run along a direction or outward from a centre.",
             ty(&d.shape),
             val(&d.shape),
@@ -234,7 +234,7 @@ impl SettingGroup for Paint {
                 "The direction the colours run in, in degrees.",
                 ty(&d.angle),
                 val(&d.angle),
-                on(&format!(" and {f}=place|start and {shape}=direction")),
+                on(&format!(" and {f}=place|start and {shape}=straight")),
             ),
             (-180.0, 180.0),
             "deg",
@@ -247,7 +247,7 @@ impl SettingGroup for Paint {
             "The point the colours spread outward from.",
             ty(&d.centre),
             val(&d.centre),
-            on(&format!(" and {f}=place|start and {shape}=centre")),
+            on(&format!(" and {f}=place|start and {shape}=round")),
         );
         centre.flags.keyframe = true;
         v.push(centre);
@@ -279,7 +279,7 @@ impl SettingGroup for Paint {
         v.push(span);
         let mut repeat = def(
             "repeat",
-            "Past the end",
+            "Beyond the last colour",
             "What the colours do beyond the last stop.",
             ty(&d.repeat),
             val(&d.repeat),

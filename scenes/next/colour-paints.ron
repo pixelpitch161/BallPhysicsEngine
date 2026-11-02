@@ -24,7 +24,7 @@
                     ],
                     transition: Smooth,
                 )),
-                "background_shape": Choice("centre"),
+                "background_shape": Choice("round"),
                 "background_span": Number(1150.0),
                 "bloom": Number(0.3499999940395355),
                 "gravity": Vec2((0.0, 700.0)),

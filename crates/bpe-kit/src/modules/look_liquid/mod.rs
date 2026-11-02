@@ -10,22 +10,30 @@ pub struct LiquidLookKind;
 pub struct LiquidLook {
     /// The liquid's colours: by place (how deep or high), by how fast it flows there, or over
     /// time or the beat.
-    #[setting(paint, label = "Colours", prefix = "", follows = "place|speed|time|beat", simple, no_vary)]
+    #[setting(
+        paint,
+        label = "Colours",
+        group = "Colours",
+        prefix = "",
+        follows = "place|speed|time|beat",
+        simple,
+        no_vary
+    )]
     pub colour: Paint,
     /// How see-through it is.
-    #[setting(label = "Clarity", range(0, 1), simple, keyframe, random)]
+    #[setting(label = "Clarity", group = "Surface", range(0, 1), simple, keyframe, random)]
     pub clarity: f32,
     /// How much it bends what is behind it.
-    #[setting(label = "Refraction", range(0, 1), simple, keyframe, random)]
+    #[setting(label = "Refraction", group = "Surface", range(0, 1), simple, keyframe, random)]
     pub refraction: f32,
     /// How bright the light on its surface is.
-    #[setting(label = "Highlight", range(0, 2), simple, keyframe, random)]
+    #[setting(label = "Highlight", group = "Surface", range(0, 2), simple, keyframe, random)]
     pub highlight: f32,
     /// How far the surface is smoothed, hiding the particles.
-    #[setting(label = "Smoothing", range(0, 20), unit = "px", keyframe)]
+    #[setting(label = "Smoothing", group = "Surface", range(0, 20), unit = "px", keyframe)]
     pub smoothing: f32,
     /// Light the liquid gives off.
-    #[setting(label = "Glow", range(0, 2), keyframe, pulse)]
+    #[setting(label = "Glow", group = "Surface", range(0, 2), keyframe, pulse)]
     pub glow: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
     /// Everything with the same Blend and amount is mixed in once, as one picture, so where its

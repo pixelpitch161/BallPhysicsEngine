@@ -47,6 +47,9 @@ impl ThingKind for SwarmKind {
     fn id(&self) -> &'static str {
         "swarm"
     }
+    fn family(&self) -> &'static str {
+        "Flowing"
+    }
     fn name(&self) -> &'static str {
         "Swarm"
     }

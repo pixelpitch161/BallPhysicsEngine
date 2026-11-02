@@ -9,16 +9,23 @@ pub struct SwarmLookKind;
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SwarmLook {
     /// How big each point is.
-    #[setting(label = "Size", range(0.5, 8), unit = "px", simple, keyframe, random)]
+    #[setting(label = "Size", group = "Shape", range(0.5, 8), unit = "px", simple, keyframe, random)]
     pub size: f32,
-    /// How much light each point gives.
-    #[setting(label = "Brightness", range(0, 2), simple, keyframe, random, pulse)]
-    pub brightness: f32,
     /// The points' colours: slow points take the first and points at the span's speed the last;
     /// or each takes the colour of the ball nearest to it, a place along the colours at random
     /// (Order), its place, or the time or the beat.
-    #[setting(paint, label = "Colours", prefix = "", follows = "speed|nearest_ball|place|order|time|beat", simple)]
+    #[setting(
+        paint,
+        label = "Colours",
+        group = "Colours",
+        prefix = "",
+        follows = "speed|nearest_ball|place|order|time|beat",
+        simple
+    )]
     pub colours: Paint,
+    /// How much light each point gives.
+    #[setting(label = "Brightness", group = "Light", range(0, 2), simple, keyframe, random, pulse)]
+    pub brightness: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
     /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
     /// parts overlap they do not stack, unless Blend with each other is on.

@@ -108,6 +108,9 @@ impl ThingKind for FieldKind {
     fn id(&self) -> &'static str {
         "field"
     }
+    fn family(&self) -> &'static str {
+        "Forces"
+    }
     fn name(&self) -> &'static str {
         "Field"
     }

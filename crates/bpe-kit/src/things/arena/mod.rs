@@ -86,6 +86,9 @@ impl ThingKind for ArenaKind {
     fn id(&self) -> &'static str {
         "arena"
     }
+    fn family(&self) -> &'static str {
+        "Walls"
+    }
     fn name(&self) -> &'static str {
         "Arena"
     }

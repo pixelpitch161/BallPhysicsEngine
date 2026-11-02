@@ -106,7 +106,7 @@ pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> 
     };
     let place = [finite(p.angle), finite(p.span).max(1e-3), finite(p.centre.x), finite(p.centre.y)];
     if p.follow == Follow::Place {
-        let mode = if p.shape == PlaceShape::Centre { 2.0 } else { 1.0 };
+        let mode = if p.shape == PlaceShape::Round { 2.0 } else { 1.0 };
         return BackgroundPaint {
             row,
             place,
@@ -171,7 +171,7 @@ mod tests {
         use super::super::PlaceShape;
         use glam::Vec2;
         let camera = CameraView { center: Vec2::new(120.0, -40.0), zoom: 1.7, turn: 0.6 };
-        for shape in [PlaceShape::Direction, PlaceShape::Centre] {
+        for shape in [PlaceShape::Straight, PlaceShape::Round] {
             for space in [Space::World, Space::Screen] {
                 let p = Paint {
                     shape,
@@ -188,8 +188,8 @@ mod tests {
                     // What the shaders work out from the world place.
                     let d = world - Vec2::new(cx, cy);
                     let raw = match shape {
-                        PlaceShape::Direction => d.dot(Vec2::from_angle(angle.to_radians())) / span + 0.5,
-                        PlaceShape::Centre => d.length() / span,
+                        PlaceShape::Straight => d.dot(Vec2::from_angle(angle.to_radians())) / span + 0.5,
+                        PlaceShape::Round => d.length() / span,
                     };
                     let want = offset(&p, &inputs);
                     let got = raw - raw.floor();
@@ -293,7 +293,7 @@ mod tests {
         let gpu = background_gpu(&place, &Inputs::default(), &mut atlas);
         assert_eq!((gpu.mode, gpu.scroll, gpu.t0, gpu.place), (1.0, 0.5, 0.0, [30.0, 800.0, 0.0, 0.0]));
         assert_eq!(gpu.ends, Some([Color::rgb(255, 0, 0).to_linear(), Color::WHITE.to_linear()]));
-        let centre = Paint { shape: PlaceShape::Centre, ..place.clone() };
+        let centre = Paint { shape: PlaceShape::Round, ..place.clone() };
         assert_eq!(background_gpu(&centre, &Inputs::default(), &mut atlas).mode, 2.0);
 
         let time = Paint { follow: Follow::Time, scroll: 0.5, ..place.clone() };

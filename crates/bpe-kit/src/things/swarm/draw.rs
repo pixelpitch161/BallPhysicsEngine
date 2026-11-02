@@ -35,7 +35,7 @@ fn swarm_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, Paint
             (0, along_gpu(p, time, atlas), [0.0, span, 0.0, 0.0], first)
         }
         Follow::Order => along(2),
-        Follow::Place if p.shape == PlaceShape::Centre => along(4),
+        Follow::Place if p.shape == PlaceShape::Round => along(4),
         Follow::Place => along(3),
         Follow::Time | Follow::Beat => {
             let beats =
@@ -153,7 +153,7 @@ mod tests {
             let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
             params.set("colours", Value::Gradient(colours));
             params.set("follow", Value::Choice(follow.into()));
-            params.set("shape", Value::Choice("centre".into()));
+            params.set("shape", Value::Choice("round".into()));
             params.set("centre", Value::Vec2([10.0, 20.0]));
             let resolved = bpe_core::resolve(&scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);

@@ -171,14 +171,14 @@ It changes to:
 
 - Every `SettingDef` of a module kind names a `group`. Ungrouped rows are allowed only in a thing
   kind's own card, and show first there.
-- Groups are ordered by a fixed list, `widgets::SECTION_ORDER`: Basics, Shape, Style, Burst, Each
-  particle, Across the group, Colours, Inside each one, Light, Motion, Growing, Instrument, Notes,
+- Groups are ordered by a fixed list, `bpe_core::settings::SECTION_ORDER`: Basics, Shape, Style, Burst, Each
+  particle, Across the group, Colours, Inside each one, Surface (Liquid surface), Light, Motion, Growing, Instrument, Notes,
   Which hits, Level, Chords, Other balls, Against some things, Variation, Channel, Blending. A
   prefixed paint's variation (for example "Outline colours variation") sorts with Variation.
   Unknown groups go last in appearance order, and a debug assert names them.
-- A new `SettingDef` flag, `folded: bool` (derive: `folded`), marks a group as folded when nobody
-  has opened it yet: Variation, Blending, Other balls, Against some things, Channel.
-  `Inspector.collapsed` keeps working, now seeded from the defaults with an explicit-open set.
+- A fixed list, `FOLDED_SECTIONS` (beside `SECTION_ORDER` in `bpe_core::settings`), names the
+  groups that start folded until someone opens them: Variation, Blending, Other balls, Against
+  some things, Channel. `Inspector.collapsed` keeps working, with an explicit-open set for these.
 - A folded group with any row not at its default (a value, a keyframe track or a pulse) shows a
   small accent dot after its heading.
 

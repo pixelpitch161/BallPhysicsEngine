@@ -124,14 +124,14 @@ pub struct MarksBrushes {
     #[setting(label = "Hit speed", when = "splat_on", range(0, 2000), unit = "px/s", group = "Splat")]
     pub splat_min_speed: f32,
     /// The ball's own colour, or the Colours below.
-    #[setting(label = "Colour from", group = "Colour", simple, random)]
+    #[setting(label = "Colour from", group = "Colours", simple, random)]
     pub colour_from: MarkColour,
     /// The marks' own colours, by where, in what order, how fast or when they were made.
     #[setting(
         paint,
         label = "Colours",
         prefix = "colour_",
-        group = "Colour",
+        group = "Colours",
         when = "colour_from=own",
         follows = "place|order|speed|time|beat",
         simple

@@ -40,7 +40,7 @@ fn liquid_paint(cx: &DrawCx, p: &Paint, atlas: &mut GradientAtlas) -> (u32, Pain
     let time = cx.time as f32;
     match p.follow {
         Follow::Place => {
-            let follow = if p.shape == PlaceShape::Centre { 2 } else { 1 };
+            let follow = if p.shape == PlaceShape::Round { 2 } else { 1 };
             (follow, along_gpu(p, time, atlas), place_in_world(p, &cx.world.camera), first)
         }
         Follow::Speed => {
@@ -200,17 +200,17 @@ mod tests {
             build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
             frame
         };
-        let frame = draw("place", "direction");
+        let frame = draw("place", "straight");
         let layer = &frame.liquids[0];
         assert_eq!((layer.follow, layer.paint.row, layer.paint.t0), (1, 1.0, 1.0), "scrolled half a cycle a second");
         assert_eq!(layer.paint_place, [90.0, 500.0, 0.0, 0.0]);
         assert_eq!(frame.gradients.rows()[1][0], red.to_linear());
-        assert_eq!(draw("place", "centre").liquids[0].follow, 2);
-        let frame = draw("speed", "direction");
+        assert_eq!(draw("place", "round").liquids[0].follow, 2);
+        let frame = draw("speed", "straight");
         assert_eq!((frame.liquids[0].follow, frame.liquids[0].paint_place[1]), (3, 500.0));
         // Time is one colour for the whole liquid, worked out here: 2 s at half a cycle a second
         // reaches the end of the colours.
-        let frame = draw("time", "direction");
+        let frame = draw("time", "straight");
         let layer = &frame.liquids[0];
         assert_eq!((layer.follow, layer.paint), (0, bpe_gfx::PaintGpu::default()));
         assert!(frame.gradients.len() == 1);

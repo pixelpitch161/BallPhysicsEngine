@@ -89,6 +89,9 @@ impl ThingKind for EmitterKind {
     fn id(&self) -> &'static str {
         "emitter"
     }
+    fn family(&self) -> &'static str {
+        "Bouncers"
+    }
     fn name(&self) -> &'static str {
         "Emitter"
     }

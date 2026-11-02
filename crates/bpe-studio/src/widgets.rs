@@ -2,7 +2,7 @@
 
 use bpe_core::{
     Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ProgressionId, ProgressionRef, PulseSource, Registry,
-    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType,
+    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType, section_rank,
 };
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
@@ -94,6 +94,73 @@ pub struct GridCx<'a> {
     pub applies: &'a dyn Fn(&SettingDef) -> bool,
     /// Which group headings are folded shut. With none, headings have no fold arrow.
     pub folded: Option<&'a dyn Fn(&str) -> bool>,
+    /// How wide the label column is, from [`label_width`]. Labels wrap at it.
+    pub label_width: f32,
+}
+
+/// How wide the label column of every settings grid in a panel `panel` wide is. Every grid in
+/// the panel uses the same width, so the sliders line up from card to card. In a narrow panel
+/// the labels give up their share faster, down to 96, so the widgets still fit beside them.
+pub fn label_width(panel: f32) -> f32 {
+    const NARROW: f32 = 380.0;
+    if panel >= NARROW {
+        0.38 * panel
+    } else {
+        // From 96 at a 300-wide panel (the inspector at its narrowest) up to the share at 380.
+        let at_narrow = 0.38 * NARROW;
+        (96.0 + (panel - 300.0) * (at_narrow - 96.0) / (NARROW - 300.0)).clamp(96.0, at_narrow)
+    }
+}
+
+/// The start of a row without a diamond in a [`settings_like_grid`]: an empty diamond cell,
+/// then a label in the label column, `width` wide, wrapping when it is longer.
+pub fn grid_label(ui: &mut Ui, width: f32, text: &str) -> Response {
+    empty_cell(ui);
+    label_cell(ui, width, |ui| ui.add(egui::Label::new(text).wrap()))
+}
+
+/// A grid laid out like a settings grid (a diamond column, the label column, the widgets), so
+/// its labels and widgets line up with the settings' when its rows start with [`grid_label`].
+pub fn settings_like_grid(id: impl egui::AsIdSalt) -> egui::Grid {
+    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL)
+}
+
+/// A grid cell exactly `width` wide, laid out left to right. What it holds wraps rather than
+/// widening the column, and makes its row as tall as it needs.
+pub fn label_cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    grid_cell(ui, width, layout, |ui| {
+        ui.set_min_width(width);
+        add(ui)
+    })
+}
+
+/// A grid row's widget cell, from where the grid has got to up to `right`, laid out left to
+/// right from its top. Something in it more than a line tall (x and y wrapped onto two lines)
+/// makes its row as tall as it needs.
+pub fn widget_cell<R>(ui: &mut Ui, right: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let width = (right - ui.cursor().left()).max(0.0);
+    grid_cell(ui, width, egui::Layout::left_to_right(egui::Align::Min), add)
+}
+
+/// A grid cell at most `width` wide. A grid centres a cell in its row before the cell is
+/// drawn, so the cell asks for the height it took last time: something taller than a line then
+/// sits centred in a row tall enough for it, instead of hanging out of the bottom of its row
+/// into the next.
+fn grid_cell<R>(ui: &mut Ui, width: f32, layout: egui::Layout, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let id = ui.next_auto_id().with("grid cell");
+    let height = ui.ctx().data(|d| d.get_temp::<f32>(id)).filter(|h| h.is_finite()).unwrap_or(0.0);
+    let cell = ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
+        ui.set_max_width(width);
+        add(ui)
+    });
+    // An empty cell has no height to remember.
+    let took = cell.response.rect.height();
+    if took.is_finite() && (took - height).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(id, took));
+        ui.ctx().request_discard("a grid cell's height changed");
+    }
+    cell.inner
 }
 
 /// What the user did in a marked grid: values changed, overrides reset to the module, overrides
@@ -127,7 +194,9 @@ pub enum Row<'a> {
 }
 
 /// The rows a settings grid shows: every setting that `applies`, ungrouped first, then the
-/// groups in the order they appear, each under its heading.
+/// groups each under its heading: the sections in [`SECTION_ORDER`](bpe_core::SECTION_ORDER),
+/// then any other groups (a thing kind's own) in the order they appear. A group with no row
+/// shown has no heading.
 pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> bool) -> Vec<Row<'a>> {
     let shown: Vec<&SettingDef> = defs.iter().filter(|d| applies(d)).collect();
     let mut rows: Vec<Row<'a>> = shown.iter().filter(|d| d.group.is_empty()).map(|d| Row::Setting(d)).collect();
@@ -137,6 +206,8 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
             groups.push(d.group);
         }
     }
+    // A stable sort, so a paint's own variation stays beside the others, in appearance order.
+    groups.sort_by_key(|g| section_rank(g).unwrap_or(usize::MAX));
     for group in groups {
         let members: Vec<Row<'a>> = shown.iter().filter(|d| d.group == group).map(|d| Row::Setting(d)).collect();
         if !members.is_empty() {
@@ -145,6 +216,55 @@ pub fn rows_for<'a>(defs: &'a [SettingDef], applies: &dyn Fn(&SettingDef) -> boo
         }
     }
     rows
+}
+
+/// The unit `def` shows. A gradient's "Colours end at" (a key ending in `span`) is a distance in
+/// pixels when its paint follows Place or Start; otherwise the def's own unit.
+pub fn unit_for(def: &SettingDef, value_of: &dyn Fn(&str) -> Option<Value>) -> &'static str {
+    if let Some(prefix) = def.key.strip_suffix("span")
+        && let Some(Value::Choice(follow)) = value_of(&format!("{prefix}follow"))
+        && matches!(follow.as_str(), "place" | "start")
+    {
+        return "px";
+    }
+    def.unit
+}
+
+/// Whether a group of `defs` holds changes: a shown row whose value differs from its default,
+/// or that has keys or a pulse.
+fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, cx: &GridCx) -> bool {
+    defs.iter()
+        .filter(|d| d.group == group && (cx.applies)(d))
+        .any(|d| get(d.key) != d.default || (cx.marks)(d.key).is_some_and(|m| m.keyed || m.pulsed))
+}
+
+/// A group's heading: its name, which folds and opens the group when `fold` is given (as does
+/// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
+/// True when the heading or its arrow was clicked.
+fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        if fold && fold_toggle(ui, !shut, group) {
+            clicked = true;
+        }
+        let heading = RichText::new(group).strong().color(theme::MUTED);
+        let label = egui::Label::new(heading).wrap().selectable(false);
+        let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        let dot = shut && changed;
+        if dot {
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{group} (changed)")));
+        }
+        if fold && response.clicked() {
+            clicked = true;
+        }
+        if dot {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Changes inside"));
+            ui.painter().circle_filled(rect.center(), 3.0, theme::ACCENT);
+            response.on_hover_text("Something in here is changed, keyed or pulsing.");
+        }
+    });
+    clicked
 }
 
 /// What a setting's keyframe diamond shows.
@@ -175,6 +295,7 @@ pub fn settings_grid(
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
     applies: &dyn Fn(&SettingDef) -> bool,
+    label_width: f32,
     get: impl Fn(&str) -> Value,
 ) -> Vec<(&'static str, Value)> {
     let choices = TargetChoices::default();
@@ -186,6 +307,7 @@ pub fn settings_grid(
         locked: &|_| false,
         applies,
         folded: None,
+        label_width,
     };
     settings_grid_marked(ui, id, defs, get, &cx).changes
 }
@@ -202,7 +324,10 @@ pub fn settings_grid_marked(
     cx: &GridCx,
 ) -> GridOutcome {
     let mut out = GridOutcome::default();
-    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL).show(ui, |ui| {
+    // Where the widgets must end. A grid widens its last column to its widest row, so a row
+    // that can't shrink would otherwise push every slider under it past the panel's edge.
+    let right = ui.available_rect_before_wrap().right();
+    settings_like_grid(id).show(ui, |ui| {
         // Whether the group the rows are in is folded shut.
         let mut shut = false;
         for row in rows_for(defs, cx.applies) {
@@ -210,15 +335,15 @@ pub fn settings_grid_marked(
                 Row::Group(group) => {
                     empty_cell(ui);
                     shut = cx.folded.is_some_and(|folded| folded(group));
-                    let heading = RichText::new(group).strong().color(theme::MUTED);
+                    let changed = shut && group_changed(defs, group, &get, cx);
                     // A grid can't take spacing, so the heading carries its own air above.
-                    ui.vertical(|ui| {
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if cx.folded.is_some() && fold_toggle(ui, !shut, group) {
+                    label_cell(ui, cx.label_width, |ui| {
+                        let room = ui.available_size();
+                        ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.add_space(10.0);
+                            if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
                                 out.folds.push((group, !shut));
                             }
-                            ui.add(egui::Label::new(heading));
                         });
                     });
                     ui.end_row();
@@ -237,7 +362,8 @@ pub fn settings_grid_marked(
                     let overridden = (cx.overridden)(def.key);
                     let inherited = (cx.inherited)(def.key);
                     let locked = (cx.locked)(def.key);
-                    let row = setting(ui, def, &mut value, inherited.as_ref(), overridden, locked, cx.choices);
+                    let unit = unit_for(def, &|k| Some(get(k)));
+                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx, right);
                     match row {
                         RowAction::Nothing => {}
                         RowAction::Changed => out.changes.push((def.key, value)),
@@ -353,80 +479,88 @@ pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: b
     }
 }
 
-/// One grid row for `def`: the label (help on hover; a double-click or Alt+click puts the value
-/// back to `inherited`, or the setting's default), a dot when the setting is `overridden`, a
-/// padlock when it is `locked` against the dice, and the widget for its type. The label's menu
-/// offers the lock on any setting the dice may pick.
+/// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on
+/// hover; a double-click or Alt+click puts the value back to `inherited`, or the setting's
+/// default), a dot when the setting is `overridden`, a padlock when it is `locked` against the
+/// dice, and the widget for its type, ending by `right`. The label's menu offers the lock on any
+/// setting the dice may pick.
+#[allow(clippy::too_many_arguments)]
 pub fn setting(
     ui: &mut Ui,
     def: &SettingDef,
+    unit: &str,
     value: &mut Value,
     inherited: Option<&Value>,
     overridden: bool,
     locked: bool,
-    choices: &TargetChoices,
+    cx: &GridCx,
+    right: f32,
 ) -> RowAction {
     let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
     let mut action = RowAction::Nothing;
-    let name = ui
-        .horizontal(|ui| {
-            if overridden {
-                let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
-                ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
-                response.on_hover_text("Changed here: this thing's own value, not the module's.");
-            }
-            let name = label(ui, def.label, def.help);
-            if locked {
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
-                paint_padlock(ui.painter(), rect, theme::MUTED);
-                response.on_hover_text("Locked: the dice leave this setting alone.");
-            }
-            if overridden || def.flags.random {
-                name.context_menu(|ui| {
-                    if overridden {
-                        if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
-                            action = RowAction::Reset;
-                            ui.close();
-                        }
-                        if ui
-                            .button("Push to module")
-                            .on_hover_text("Give every thing using the module this value")
-                            .clicked()
-                        {
-                            action = RowAction::Push;
-                            ui.close();
-                        }
+    let name = label_cell(ui, cx.label_width, |ui| {
+        if overridden {
+            let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
+            ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
+            response.on_hover_text("Changed here: this thing's own value, not the module's.");
+        }
+        // The padlock keeps its room after a label that wraps.
+        let padlock = if locked { 12.0 + ui.spacing().item_spacing.x } else { 0.0 };
+        // The cell's full height, so the label is centred in it rather than hanging from its middle.
+        let room = Vec2::new((ui.available_width() - padlock).max(0.0), ui.available_height());
+        let name = ui
+            .allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                label(ui, def.label, def.help)
+            })
+            .inner;
+        if locked {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
+            paint_padlock(ui.painter(), rect, theme::MUTED);
+            response.on_hover_text("Locked: the dice leave this setting alone.");
+        }
+        if overridden || def.flags.random {
+            name.context_menu(|ui| {
+                if overridden {
+                    if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
+                        action = RowAction::Reset;
+                        ui.close();
                     }
-                    if def.flags.random {
-                        if locked {
-                            if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
-                                action = RowAction::Lock(false);
-                                ui.close();
-                            }
-                        } else if ui
-                            .button("Lock when randomizing")
-                            .on_hover_text("Keep this setting as it is when the dice roll")
-                            .clicked()
-                        {
-                            action = RowAction::Lock(true);
+                    if ui
+                        .button("Push to module")
+                        .on_hover_text("Give every thing using the module this value")
+                        .clicked()
+                    {
+                        action = RowAction::Push;
+                        ui.close();
+                    }
+                }
+                if def.flags.random {
+                    if locked {
+                        if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
+                            action = RowAction::Lock(false);
                             ui.close();
                         }
+                    } else if ui
+                        .button("Lock when randomizing")
+                        .on_hover_text("Keep this setting as it is when the dice roll")
+                        .clicked()
+                    {
+                        action = RowAction::Lock(true);
+                        ui.close();
                     }
-                });
-            }
-            name
-        })
-        .inner;
+                }
+            });
+        }
+        name
+    });
     let mut changed = false;
-    let response = ui
-        .horizontal(|ui| {
-            let r = widget(ui, def, value, name.id, choices);
-            changed |= r.changed();
-            r
-        })
-        .inner;
+    let response = widget_cell(ui, right, |ui| {
+        let r = widget(ui, def, unit, value, name.id, cx.choices);
+        changed |= r.changed();
+        r
+    });
     // A gradient bar's clicks add and pick stops, so only its label resets it.
     let gradient = def.ty == ValueType::Gradient;
     if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
@@ -455,7 +589,7 @@ pub fn paint_padlock(painter: &egui::Painter, rect: egui::Rect, color: Color32) 
 
 /// The label cell, clickable for the reset shortcut.
 fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
-    let response = ui.add(egui::Label::new(text).selectable(false).sense(Sense::click()));
+    let response = ui.add(egui::Label::new(text).wrap().selectable(false).sense(Sense::click()));
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
 
@@ -554,8 +688,15 @@ fn number_slider<N: egui::emath::Numeric>(
     ui.add(slider)
 }
 
-fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choices: &TargetChoices) -> Response {
-    let unit = suffix(def.unit);
+fn widget(
+    ui: &mut Ui,
+    def: &SettingDef,
+    unit: &str,
+    value: &mut Value,
+    name: egui::Id,
+    choices: &TargetChoices,
+) -> Response {
+    let unit = suffix(unit);
     let feel = setting_feel(def);
     match (&def.ty, value) {
         (ValueType::Number, Value::Number(x)) => match def.range {
@@ -569,13 +710,18 @@ fn widget(ui: &mut Ui, def: &SettingDef, value: &mut Value, name: egui::Id, choi
             None => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
         },
         (ValueType::Bool, Value::Bool(b)) => ui.checkbox(b, "").labelled_by(name),
+        // In a narrow panel y goes under x.
         (ValueType::Vec2, Value::Vec2(v)) => {
-            let (speed, decimals) = (feel.drag_speed, feel.decimals);
-            let x = DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
-            let x = ui.add(x).labelled_by(name);
-            let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
-            let y = ui.add(y).labelled_by(name);
-            x | y
+            ui.horizontal_wrapped(|ui| {
+                let (speed, decimals) = (feel.drag_speed, feel.decimals);
+                let x =
+                    DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
+                let x = ui.add(x).labelled_by(name);
+                let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
+                let y = ui.add(y).labelled_by(name);
+                x | y
+            })
+            .inner
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
         (ValueType::Gradient, Value::Gradient(g)) => {
@@ -789,7 +935,18 @@ pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use bpe_core::Settings;
+
+    #[test]
+    fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
+        assert_eq!(label_width(200.0), 96.0);
+        assert_eq!(label_width(300.0), 96.0);
+        assert_eq!(label_width(500.0), 190.0);
+        // It grows without a jump from narrow to wide.
+        assert!((label_width(379.9) - label_width(380.0)).abs() < 0.1);
+        assert!(label_width(340.0) > 96.0 && label_width(340.0) < label_width(380.0));
+    }
 
     #[test]
     fn target_words_name_things_tags_and_kinds() {
@@ -1001,6 +1158,7 @@ mod tests {
                     locked: &|_| false,
                     applies: &|_| true,
                     folded: None,
+                    label_width: label_width(420.0),
                 };
                 let got = settings_grid_marked(
                     ui,
@@ -1058,7 +1216,151 @@ mod tests {
             rows.iter().filter_map(|r| if let Row::Setting(d) = r { Some(*d) } else { None }).collect();
         let colours: Vec<&str> = colours.iter().filter(|d| d.ty == ValueType::Gradient).map(|d| d.key).collect();
         // One row for the colours, one for the outline's, one for those inside each one.
-        assert_eq!(colours, ["colours", "in_colours", "outline_colours"]);
+        assert_eq!(colours, ["outline_colours", "colours", "in_colours"]);
+    }
+
+    fn headings<'a>(rows: &[Row<'a>]) -> Vec<&'static str> {
+        rows.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect()
+    }
+
+    #[test]
+    fn rows_follow_the_section_order() {
+        let base = &bpe_kit::modules::look::BasicLook::defs()[0];
+        let def = |key: &'static str, group: &'static str| SettingDef { key, group, ..base.clone() };
+        let defs = [def("a", "Blending"), def("b", "Light"), def("c", "Shape"), def("d", "")];
+        let rows = rows_for(&defs, &|_| true);
+        assert!(matches!(rows[0], Row::Setting(d) if d.key == "d"), "ungrouped rows come first");
+        assert_eq!(headings(&rows), ["Shape", "Light", "Blending"]);
+        // Groups that are not sections (a thing kind's own) keep their order, after the sections.
+        let defs = [def("a", "Video"), def("b", "Light"), def("c", "Grade")];
+        assert_eq!(headings(&rows_for(&defs, &|_| true)), ["Light", "Video", "Grade"]);
+    }
+
+    #[test]
+    fn the_look_cards_sections_come_in_order() {
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let headings = headings(&rows_for(defs, &|_| true));
+        assert_eq!(
+            headings,
+            [
+                "Shape",
+                "Style",
+                "Across the group",
+                "Inside each one",
+                "Light",
+                "Motion",
+                "Outline colours variation",
+                "Variation",
+                "Blending"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_trail_and_bounce_cards_sections_come_in_order() {
+        let trail = bpe_kit::modules::trail::StreakTrail::defs();
+        assert_eq!(headings(&rows_for(trail, &|_| true)), ["Shape", "Colours", "Light", "Variation", "Blending"]);
+        let bounce = bpe_kit::BasicBounce::defs();
+        assert_eq!(headings(&rows_for(bounce, &|_| true)), ["Basics", "Growing", "Other balls", "Against some things"]);
+    }
+
+    /// A grid of `defs` at their defaults, every section open, in a panel 420 wide.
+    fn open_grid(defs: &'static [SettingDef]) -> egui_kittest::Harness<'static> {
+        let value = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(420.0, 2400.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui(move |ui| {
+                let choices = TargetChoices::default();
+                let cx = GridCx {
+                    choices: &choices,
+                    overridden: &|_| false,
+                    inherited: &|_| None,
+                    marks: &|_| None,
+                    locked: &|_| false,
+                    applies: &|_| true,
+                    folded: Some(&|_| false),
+                    label_width: label_width(420.0),
+                };
+                settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+            });
+        h.run();
+        h
+    }
+
+    #[test]
+    fn a_heading_has_a_row_of_its_own() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = open_grid(bpe_kit::modules::look::BasicLook::defs());
+        let heading = h.get_by_role_and_label(Role::Label, "Light").rect();
+        let label = h.get_by_role_and_label(Role::Label, "Glow").rect();
+        let slider = h.get_by_role_and_label(Role::Slider, "Glow").rect();
+        assert!(heading.bottom() <= label.top(), "the heading {heading:?} is above the label {label:?}");
+        let (l, s) = (label.center().y, slider.center().y);
+        assert!((l - s).abs() <= 1.5, "the slider is level with its label: {l} and {s}");
+    }
+
+    #[test]
+    fn a_wrapped_label_makes_its_row_taller() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = open_grid(bpe_kit::SceneSettings::defs());
+        let wrapped = h.get_by_role_and_label(Role::Label, "Background stays on screen").rect();
+        assert!(wrapped.height() > 24.0, "the label wraps: {wrapped:?}");
+        let next = h.get_by_role_and_label(Role::Label, "Frame rate").rect();
+        assert!(wrapped.bottom() <= next.top(), "{wrapped:?} runs into the next row {next:?}");
+        let check = h.get_by_role_and_label(Role::CheckBox, "Background stays on screen").rect();
+        let (l, c) = (wrapped.center().y, check.center().y);
+        assert!((l - c).abs() <= 1.5, "the checkbox is level with its label: {l} and {c}");
+    }
+
+    #[test]
+    fn a_section_with_no_shown_rows_has_no_heading() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let value = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
+        // On a liquid, every Shape row is hidden by its condition.
+        let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+        let rows = rows_for(defs, &applies);
+        assert!(!headings(&rows).contains(&"Shape"), "{:?}", headings(&rows));
+        let mut h = Harness::builder().with_size(egui::vec2(420.0, 1600.0)).allow_missing_glyphs().build_ui(|ui| {
+            let choices = TargetChoices::default();
+            let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+            let cx = GridCx {
+                choices: &choices,
+                overridden: &|_| false,
+                inherited: &|_| None,
+                marks: &|_| None,
+                locked: &|_| false,
+                applies: &applies,
+                folded: Some(&|_| false),
+                label_width: label_width(420.0),
+            };
+            settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+        });
+        h.run();
+        assert!(h.query_by_label("Hide Shape").is_none(), "no fold arrow for an empty section");
+        assert!(h.query_by_label("Shape").is_none(), "no heading for an empty section");
+        assert!(h.query_by_label("Hide Blending").is_some(), "other sections keep theirs");
+    }
+
+    #[test]
+    fn span_reads_px_when_following_place() {
+        let defs = bpe_kit::modules::look::BasicLook::defs();
+        let span = defs.iter().find(|d| d.key == "span").expect("the fill's span");
+        let outline_span = defs.iter().find(|d| d.key == "outline_span").expect("the outline's span");
+        let following = |follow: &'static str| move |k: &str| (k == "follow").then(|| Value::Choice(follow.into()));
+        assert_eq!(unit_for(span, &following("place")), "px");
+        assert_eq!(unit_for(span, &following("start")), "px");
+        assert_eq!(unit_for(span, &following("speed")), span.unit);
+        // The outline's span follows the outline's own follow, not the fill's.
+        assert_eq!(unit_for(outline_span, &following("place")), outline_span.unit);
+        let outline = |k: &str| (k == "outline_follow").then(|| Value::Choice("place".into()));
+        assert_eq!(unit_for(outline_span, &outline), "px");
+        let glow = defs.iter().find(|d| d.key == "glow_size").unwrap();
+        assert_eq!(unit_for(glow, &following("place")), glow.unit);
     }
 
     #[test]

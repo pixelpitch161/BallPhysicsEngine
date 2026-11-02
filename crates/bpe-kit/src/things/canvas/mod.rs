@@ -123,6 +123,9 @@ impl ThingKind for CanvasThingKind {
     fn id(&self) -> &'static str {
         "canvas"
     }
+    fn family(&self) -> &'static str {
+        "Walls"
+    }
     fn name(&self) -> &'static str {
         "Canvas"
     }

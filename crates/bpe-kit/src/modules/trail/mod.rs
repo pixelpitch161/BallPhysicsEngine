@@ -21,31 +21,32 @@ pub enum TrailSource {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct StreakTrail {
     /// How far back the streak reaches.
-    #[setting(label = "Length", range(0.05, 2), unit = "s", simple, keyframe, random)]
+    #[setting(label = "Length", group = "Shape", range(0.05, 2), unit = "s", simple, keyframe, random)]
     pub seconds: f32,
     /// How wide the streak is at the ball, in ball radii.
-    #[setting(label = "Width", range(0.05, 2), simple, keyframe, random)]
+    #[setting(label = "Width", group = "Shape", range(0.05, 2), simple, keyframe, random)]
     pub width: f32,
-    /// How bright the streak is at the ball.
-    #[setting(label = "Brightness", range(0, 2), simple, keyframe, random, pulse)]
-    pub brightness: f32,
+    /// How much the streak narrows towards its tail: 0 keeps its width, 1 ends in a point.
+    #[setting(label = "Taper", group = "Shape", range(0, 1), keyframe, random)]
+    pub taper: f32,
     /// The ball's own colour, or the Colours below.
-    #[setting(label = "Colour from", simple, random)]
+    #[setting(label = "Colour from", group = "Colours", simple, random)]
     pub source: TrailSource,
     /// The streak's own colours: over its life from the ball to the tail, or by where, how fast
     /// or when each part of it was drawn.
     #[setting(
         paint,
         label = "Colours",
+        group = "Colours",
         prefix = "",
         when = "source=own",
         follows = "life|place|speed|time|beat",
         simple
     )]
     pub colour: Paint,
-    /// How much the streak narrows towards its tail: 0 keeps its width, 1 ends in a point.
-    #[setting(label = "Taper", range(0, 1), keyframe, random)]
-    pub taper: f32,
+    /// How bright the streak is at the ball.
+    #[setting(label = "Brightness", group = "Light", range(0, 2), simple, keyframe, random, pulse)]
+    pub brightness: f32,
     /// How the streak mixes with what is under it: Add glows and adds its light, Normal paints
     /// over it, the others mix with it. With the others, everything with the same Blend and
     /// amount is mixed in once, as one picture, so where streaks overlap they do not stack.
