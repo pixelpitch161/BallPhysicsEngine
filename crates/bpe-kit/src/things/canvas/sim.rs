@@ -11,10 +11,11 @@ use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
+use super::drops::{self, FogDrop};
 use super::evolve::{self, Evolve, Runner, Tick};
 use super::grid::{CanvasGrid, REST_COVER, REST_FOG, REST_POWDER, painter, tick_every};
 use super::ribbon::{Piece, Ribbon, Tune};
-use super::{CanvasKind, CanvasSettings, Fit};
+use super::{CanvasKind, CanvasSettings, Fit, FogLook};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
 use crate::modules::marks::{
@@ -49,6 +50,25 @@ pub struct CanvasState {
     pub runners: Vec<Runner>,
     /// Ticks that did work; for tests, never hashed.
     pub ticks_run: u64,
+    /// Steam drops that are running down the glass.
+    pub drops: Vec<FogDrop>,
+    /// Edges wiped since the last tick that a drop may start from: a point and its hash seed.
+    pub edges: Vec<(Vec2, u64)>,
+}
+
+impl CanvasState {
+    /// Notes the two sides of a wiped piece (at `at`, `radius` wide, running along `dir`) as
+    /// places a steam drop may start from. Only steam fog with drops keeps them.
+    fn note_edge(&mut self, step: u64, key: (ThingId, u32), at: Vec2, radius: f32, dir: Vec2) {
+        let s = &self.settings;
+        if s.kind != CanvasKind::Fog || s.fog_look != FogLook::Steam || s.drops <= 0.0 || dir == Vec2::ZERO {
+            return;
+        }
+        let side = Vec2::new(-dir.y, dir.x) * radius;
+        for (k, sign) in [(0u32, 1.0), (1, -1.0)] {
+            self.edges.push((at + side * sign, mix(step, painter(key.0, key.1) as u32 * 2 + k)));
+        }
+    }
 }
 
 /// Where a canvas is and how big it is: its pose (middle and turn) and its width and height.
@@ -116,6 +136,8 @@ impl ThingSim for CanvasSim {
                 evolve,
                 runners: Vec::new(),
                 ticks_run: 0,
+                drops: Vec::new(),
+                edges: Vec::new(),
             }),
         );
         self.place(thing.id, world);
@@ -152,20 +174,40 @@ impl ThingSim for CanvasSim {
             for m in marks(canvas, st, world, log) {
                 log.push_mark(m);
             }
-            if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
-                let mut picked = std::mem::take(&mut world.picked);
+            if world.step.is_multiple_of(st.tick_every) {
                 let pose = world.poses.get(&canvas).copied().unwrap_or_default();
-                let cx = Tick {
-                    target: MarkTarget::Canvas(canvas),
-                    world,
-                    now: (world.step / st.tick_every) as u32,
-                    per_second: world.steps_per_second as f32 / st.tick_every as f32,
-                    gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
-                };
-                for m in evolve::tick(&cx, st, &mut picked, None) {
-                    log.push_mark(m);
+                let per_second = world.steps_per_second as f32 / st.tick_every as f32;
+                let gravity = Vec2::from_angle(-pose.angle).rotate(world.gravity);
+                if st.evolve.on() {
+                    let mut picked = std::mem::take(&mut world.picked);
+                    let cx = Tick {
+                        target: MarkTarget::Canvas(canvas),
+                        world,
+                        now: (world.step / st.tick_every) as u32,
+                        per_second,
+                        gravity,
+                    };
+                    for m in evolve::tick(&cx, st, &mut picked, None) {
+                        log.push_mark(m);
+                    }
+                    world.picked = picked;
                 }
-                world.picked = picked;
+                if st.settings.kind != CanvasKind::Paint {
+                    let s = &st.settings;
+                    if s.grows_back > 0.0 {
+                        let rest = st.grid.rest() as f32;
+                        st.grid.grow_back((rest / (s.grows_back * 30.0)).ceil().clamp(1.0, 255.0) as u8);
+                    }
+                    if s.kind == CanvasKind::Fog
+                        && s.fog_look == FogLook::Steam
+                        && s.drops > 0.0
+                        && gravity != Vec2::ZERO
+                    {
+                        let (chance, half) = (s.drops * 0.15, st.size * 0.5);
+                        drops::tick(&mut st.grid, &mut st.drops, &st.edges, chance, gravity, per_second, half);
+                    }
+                }
+                st.edges.clear();
             }
         }
         world.states.insert(canvas, boxed);
@@ -454,7 +496,7 @@ impl Cx<'_> {
             let end = (to_local(self.pose, bodies.position[i]), bodies.radius[i]);
             if !bodies.alive[i] {
                 let pieces = ribbon.finish(end.0, end.1, &tune, true);
-                self.wipes(st, b, &pieces);
+                self.wipes(st, b, key, &pieces);
                 continue;
             }
             let here = end.0;
@@ -470,7 +512,7 @@ impl Cx<'_> {
                 Some(from) if (here - from).length() < MIN_STROKE => {}
                 Some(_) => {
                     let pieces = ribbon.advance(here, velocity, radius, &tune, true);
-                    self.wipes(st, b, &pieces);
+                    self.wipes(st, b, key, &pieces);
                 }
             }
             st.scrapes.insert(key, ribbon);
@@ -478,7 +520,7 @@ impl Cx<'_> {
     }
 
     /// Takes away what `pieces` of a scrape cover, and logs them on a Paint canvas.
-    fn wipes(&mut self, st: &mut CanvasState, b: &MarksBrushes, pieces: &[Piece]) {
+    fn wipes(&mut self, st: &mut CanvasState, b: &MarksBrushes, key: (ThingId, u32), pieces: &[Piece]) {
         let strength = b.scrape_strength.clamp(0.0, 1.0);
         for p in pieces {
             if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
@@ -499,6 +541,7 @@ impl Cx<'_> {
                 colour_to: [0.0, 0.0, 0.0, strength],
             };
             st.grid.scrape(&mark, st.settings.ridges);
+            st.note_edge(self.world.step, key, p.to, p.radius_to, (p.to - p.from).normalize_or_zero());
             if st.settings.kind == CanvasKind::Paint {
                 self.out.push(mark);
             }
@@ -1592,5 +1635,103 @@ mod tests {
         );
         let (world, _) = run(&scene, &resolved, &kit, 3.0);
         assert_eq!(canvas_state(&world, CANVAS).grid.revealed(), 0.0);
+    }
+
+    fn steam(drops: f32) -> (Scene, Resolved, Kit) {
+        surface_scene(
+            "fog",
+            |c| {
+                c.set("fog_look", Value::Choice("steam".into()));
+                c.set("drops", Value::Number(drops as f64));
+            },
+            scraping,
+        )
+    }
+
+    /// The drops running at each quarter second up to `seconds`, and the world at the end.
+    fn drops_over_time(
+        scene: &Scene,
+        resolved: &Resolved,
+        kit: &Kit,
+        seconds: f64,
+    ) -> (Vec<usize>, bpe_runtime::World) {
+        let mut world = World::build(scene, resolved, &kit.sims);
+        let mut log = Log::default();
+        let mut seen = Vec::new();
+        let mut t = 0.25;
+        while t <= seconds {
+            world.advance_to(t, &kit.sims, &mut log);
+            seen.push(canvas_state(&world, CANVAS).drops.len());
+            t += 0.25;
+        }
+        (seen, world)
+    }
+
+    #[test]
+    fn a_scraped_cover_grows_back() {
+        let (scene, resolved, kit) = surface_scene("cover", |c| c.set("grows_back", Value::Number(1.0)), |_| {});
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        {
+            let st = bpe_runtime::state_mut::<CanvasState>(world.states.get_mut(&CANVAS).unwrap().as_mut());
+            let m = Mark {
+                step: 0,
+                target: MarkTarget::Canvas(CANVAS),
+                shape: MarkShape::Scrape,
+                from: Vec2::new(-60.0, 0.0),
+                to: Vec2::new(60.0, 0.0),
+                radius: 20.0,
+                radius_to: 20.0,
+                angle: 0.0,
+                within: [1.0, 1.0],
+                variant: 0,
+                colour: [0.0, 0.0, 0.0, 1.0],
+                colour_to: [0.0, 0.0, 0.0, 1.0],
+            };
+            st.grid.scrape(&m, 0.0);
+            assert!(st.grid.revealed() > 0.0);
+        }
+        world.advance_to(1.1, &kit.sims, &mut log);
+        assert_eq!(canvas_state(&world, CANVAS).grid.revealed(), 0.0);
+    }
+
+    #[test]
+    fn steam_drops_run_down() {
+        let (scene, resolved, kit) = steam(1.0);
+        let (seen, world) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        assert!(seen.iter().any(|&n| n > 0), "drops never started: {seen:?}");
+        assert!(seen.iter().all(|&n| n <= drops::MAX_DROPS), "{seen:?}");
+        let (scene0, resolved0, kit0) = steam(0.0);
+        let (_, world0) = drops_over_time(&scene0, &resolved0, &kit0, 4.0);
+        assert!(
+            canvas_state(&world, CANVAS).grid.revealed() > canvas_state(&world0, CANVAS).grid.revealed(),
+            "drops wipe extra glass"
+        );
+    }
+
+    #[test]
+    fn frost_has_no_drops() {
+        let (scene, resolved, kit) = surface_scene("fog", |c| c.set("drops", Value::Number(1.0)), scraping);
+        let (seen, _) = drops_over_time(&scene, &resolved, &kit, 3.0);
+        assert!(seen.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn no_gravity_no_drops() {
+        let (mut scene, _, kit) = steam(1.0);
+        scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let resolved = resolve(&scene, &kit.registry);
+        let (seen, _) = drops_over_time(&scene, &resolved, &kit, 3.0);
+        assert!(seen.iter().all(|&n| n == 0), "{seen:?}");
+    }
+
+    #[test]
+    fn drops_are_deterministic() {
+        let (scene, resolved, kit) = steam(1.0);
+        let (_, a) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        let (_, b) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        let (a, b) = (canvas_state(&a, CANVAS), canvas_state(&b, CANVAS));
+        assert_eq!(a.drops, b.drops);
+        assert_eq!(a.grid.hash(), b.grid.hash());
     }
 }

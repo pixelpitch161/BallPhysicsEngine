@@ -401,6 +401,8 @@ pub fn build(thing: ThingId, world: &mut World) {
         evolve,
         runners: Vec::new(),
         ticks_run: 0,
+        drops: Vec::new(),
+        edges: Vec::new(),
     };
     world.skins.insert(thing, Box::new(st));
 }
