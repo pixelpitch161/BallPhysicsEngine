@@ -145,7 +145,7 @@ impl ThingKind for TextKind {
         "text"
     }
     fn help(&self) -> &'static str {
-        "A caption. {time}, {seconds}, {countdown}, {hits} and {balls} fill in as the video plays."
+        "A caption. {time}, {seconds}, {countdown}, {hits} and {balls} fill in as the video plays, and so do a canvas's numbers: {Canvas.revealed}, {Canvas.covered}, {Canvas.wet}, {Canvas.share Red}, {Canvas.leader}."
     }
     fn settings(&self) -> &'static [SettingDef] {
         TextSettings::defs()

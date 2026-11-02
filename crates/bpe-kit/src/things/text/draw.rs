@@ -3,10 +3,10 @@
 use bpe_core::{Ease, Settings, ThingId, Value};
 use bpe_gfx::text::{TextStyle, layout_text};
 use bpe_gfx::{DrawCx, Frame, ThingDraw, blend_alpha, hit_strength};
-use bpe_runtime::EventKind;
+use bpe_runtime::{CanvasRef, EventKind, Log, World};
 use glam::Vec2;
 
-use super::fill::{Values, fill};
+use super::fill::{Values, fill_with};
 use super::{Appear, TextSettings};
 use crate::modules::look::draw::look_of;
 use crate::paint::{Follow, Inputs, Paint, Pattern, beats_at, colour_at, inside_gpu, seed_of, vary_gpu};
@@ -73,7 +73,8 @@ impl ThingDraw for TextDraw {
             .filter(|e| e.kind == EventKind::Hit)
             .count() as u32;
         let balls = cx.world.bodies.values().map(|b| b.alive_count() as u32).sum();
-        let text = fill(&s.text, &Values { time, duration, hits, balls });
+        let lookup = |token: &str| canvas_token(cx.world, cx.log, last_step, token);
+        let text = fill_with(&s.text, &Values { time, duration, hits, balls }, &lookup);
         let faded = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * alpha];
         // The colours are painted on each glyph below.
         let style = TextStyle { color: [1.0; 4], outline: s.outline, outline_color: [1.0; 4], glow: look.glow };
@@ -145,12 +146,25 @@ fn for_text(mut p: Paint) -> Paint {
     p
 }
 
+/// What a caption token naming a canvas's number (`Card.revealed`, `Card.share Red`,
+/// `Card.leader`) says at run step `step`, read from the log (what was true at the drawn moment,
+/// not the live world). `None` when the token isn't one or no such canvas exists, so the token
+/// stays as written. A team that hasn't claimed yet reads 0.
+pub(crate) fn canvas_token(world: &World, log: &Log, step: u64, token: &str) -> Option<String> {
+    let r = CanvasRef::parse(token)?;
+    let canvas = world.canvas_named(&r.canvas)?;
+    let teams = log.teams_of(canvas);
+    let numbers = log.canvas_at(canvas, step).cloned().unwrap_or_default();
+    Some(r.text(&numbers, teams).unwrap_or_else(|| "0".into()))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::canvas_token;
     use crate::{kit, new_scene};
     use bpe_core::{Color, Gradient, Params, SlotId, ThingId, Value, resolve};
     use bpe_gfx::{Frame, GlyphInstance, PaintGpu, build_frame_at};
-    use bpe_runtime::{Log, World};
+    use bpe_runtime::{CanvasNumbers, CanvasSample, Log, Team, World};
 
     fn glyphs_at(time: f64, f: impl FnOnce(&mut Params)) -> usize {
         glyphs_at_both(time, time, f)
@@ -319,5 +333,55 @@ mod tests {
             let colours: Vec<[f32; 4]> = glyphs.iter().map(|g| g.color).collect();
             assert!(distinct(&colours) >= 5, "per letter {per_letter}: {colours:?}");
         }
+    }
+
+    /// A world with a canvas thing called "Card" and a log with its numbers and teams written by hand.
+    fn card_world() -> (World, Log, ThingId) {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let card = crate::add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap();
+        scene.things.get_mut(&card).unwrap().name = "Card".into();
+        let resolved = resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        let n = |revealed: f32, shares: Vec<f32>| CanvasNumbers { revealed, shares, ..Default::default() };
+        log.push_canvas(CanvasSample { step: 0, canvas: card, numbers: n(0.1, vec![]) });
+        log.push_canvas(CanvasSample { step: 240, canvas: card, numbers: n(0.9, vec![0.2, 0.5]) });
+        log.set_teams(
+            card,
+            vec![
+                Team { name: "Red".into(), colour: [1.0, 0.0, 0.0, 1.0] },
+                Team { name: "Blue".into(), colour: [0.0, 0.0, 1.0, 1.0] },
+            ],
+        );
+        (world, log, card)
+    }
+
+    #[test]
+    fn canvas_tokens_fill_from_the_log() {
+        let (world, log, _) = card_world();
+        let get = |t: &str| canvas_token(&world, &log, 240, t);
+        assert_eq!(get("Card.revealed").as_deref(), Some("90"));
+        assert_eq!(get("Card.leader").as_deref(), Some("Blue"));
+        assert_eq!(get("Card.share Red").as_deref(), Some("20"));
+        assert_eq!(get("Card.share Green").as_deref(), Some("0"));
+        assert_eq!(get("Nope.revealed"), None);
+        assert_eq!(get("card.REVEALED").as_deref(), Some("90"));
+        assert_eq!(get("time"), None);
+    }
+
+    #[test]
+    fn caption_reads_the_log_at_the_drawn_step() {
+        let (world, log, _) = card_world();
+        assert_eq!(canvas_token(&world, &log, 120, "Card.revealed").as_deref(), Some("10"));
+        assert_eq!(canvas_token(&world, &log, 240, "Card.revealed").as_deref(), Some("90"));
+    }
+
+    #[test]
+    fn canvas_tokens_before_any_sample_read_zero() {
+        let (world, _, _) = card_world();
+        let empty = Log::default();
+        assert_eq!(canvas_token(&world, &empty, 0, "Card.revealed").as_deref(), Some("0"));
+        assert_eq!(canvas_token(&world, &empty, 0, "Card.leader").as_deref(), Some(""));
     }
 }
