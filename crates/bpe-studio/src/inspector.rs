@@ -28,7 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Default)]
 pub struct Inspector {
     /// What is folded shut, by thing: its kind's settings card (`None`) and each slot's card
-    /// (the group `""`), and groups of settings inside them by their heading.
+    /// (the group `""`), the root's cards by name, and groups of settings inside them by their
+    /// heading.
     pub collapsed: BTreeSet<(ThingId, Option<SlotId>, &'static str)>,
     /// The quiet sections ([`FOLDED_SECTIONS`](bpe_core::FOLDED_SECTIONS)) opened, which
     /// otherwise stay folded.
@@ -64,9 +65,11 @@ pub struct Inspector {
 /// One of the inspector's cards, as the jump bar names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Card {
-    /// The kind's own settings ("Scene settings" for the root).
+    /// The kind's own settings, on every thing but the root.
     Thing,
     Placement,
+    /// One of the root's cards of its own settings, by name: one of [`bpe_kit::ROOT_CARDS`].
+    Section(&'static str),
     Slot(SlotId),
 }
 
@@ -76,6 +79,7 @@ impl Card {
         match self {
             Card::Thing => (id, None, ""),
             Card::Placement => (id, None, "placement"),
+            Card::Section(name) => (id, None, name),
             Card::Slot(slot) => (id, Some(slot), ""),
         }
     }
@@ -143,6 +147,8 @@ enum Edit {
     Lock(Address, bool),
     /// Roll the dice on one card: the kind's own settings (`None`) or one slot.
     RollCard(Option<SlotId>),
+    /// Roll the dice on one of the root's cards: its own settings in that group.
+    RollGroup(&'static str),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
     /// A chord editor changed a progression in the library.
@@ -286,52 +292,41 @@ pub fn show(
         ui.add_space(6.0);
 
         // ---------- the kind's own settings ----------
-        card(ui, |ui| {
-            // The kind's name alone: "Balls", "Arena", and "Scene settings" for the root.
-            let title = kind.name().to_owned();
-            let header = ui.horizontal_wrapped(|ui| {
-                let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, ""), &title);
-                ui.label(RichText::new(&title).strong());
-                ui.add_space(8.0);
-                if dice_button(ui, "Randomize these settings").clicked() {
-                    edits.push(Edit::RollCard(None));
+        let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
+        let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
+        let cx = OwnCx { scene, kit, choices: &choices, id, thing: &thing, time, label_width: lw, applies: &applies };
+        if id == ThingId::ROOT {
+            // The root's settings are six cards, one per group; the mix's buses and master
+            // effects sit in the last.
+            for (i, name) in bpe_kit::ROOT_CARDS.into_iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(6.0);
                 }
-                open
-            });
-            card_header(ui, inspector, Card::Thing, &header.response);
-            let open = header.inner;
-            if !open {
-                return;
+                root_card(ui, inspector, &cx, name, &mut edits, |ui, inspector, edits| {
+                    if name == "Mix" {
+                        mix_sections(ui, scene, edits, &mut inspector.fx_request);
+                    }
+                });
             }
-            let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
-            let get =
-                |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
-            let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
-            let sim = kit.sims.thing(&thing.kind);
-            let marks = |key: &str| {
-                let def = kind.settings().iter().find(|d| d.key == key)?;
-                let physics = sim.is_some_and(|s| s.affects_physics(key));
-                mark_for(scene, def, &own(key), time, physics)
-            };
-            let locked = |key: &str| scene.is_locked(&own(key));
-            let folded = |group: &str| is_folded(inspector, (id, None), group);
-            let cx = GridCx {
-                choices: &choices,
-                overridden: &|_| false,
-                inherited: &|_| None,
-                marks: &marks,
-                locked: &locked,
-                applies: &applies,
-                folded: Some(&folded),
-                label_width: lw,
-            };
-            let out = settings_grid_marked(ui, ("kind", id), kind.settings(), get, &cx);
-            fold_groups(inspector, (id, None), &out.folds);
-            edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key, value)));
-            edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
-            edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
-            edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(own(key), lock)));
-        });
+        } else {
+            card(ui, |ui| {
+                // The kind's name alone: "Balls", "Arena".
+                let title = kind.name().to_owned();
+                let header = ui.horizontal_wrapped(|ui| {
+                    let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
+                    ui.label(RichText::new(&title).strong());
+                    ui.add_space(8.0);
+                    if dice_button(ui, "Randomize these settings").clicked() {
+                        edits.push(Edit::RollCard(None));
+                    }
+                    open
+                });
+                card_header(ui, inspector, Card::Thing, &header.response);
+                if header.inner {
+                    own_grid(ui, inspector, &cx, ("kind", id), kind.settings(), &mut edits);
+                }
+            });
+        }
 
         // ---------- placement ----------
         // The camera's place is its own Position setting, which can be keyframed.
@@ -766,27 +761,6 @@ pub fn show(
             });
         }
 
-        // ---------- the mix: buses and master, on Scene settings ----------
-        if id == ThingId::ROOT {
-            ui.add_space(6.0);
-            card(ui, |ui| buses_section(ui, scene, &mut edits, &mut inspector.fx_request));
-            ui.add_space(6.0);
-            card(ui, |ui| {
-                ui.label(RichText::new("Master effects").strong())
-                    .on_hover_text("Run over the whole mix, before the loudness and the limiter");
-                match crate::fx_list::show(
-                    ui,
-                    &scene.library.master_fx,
-                    "master fx",
-                    &crate::follow_menu::channel_names(scene, None),
-                ) {
-                    FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
-                    FxEdit::OpenNodes => inspector.fx_request = Some(FxPlace::Master),
-                    FxEdit::None => {}
-                }
-            });
-        }
-
         // ---------- + Add slot ----------
         ui.add_space(8.0);
         let missing: Vec<SlotId> = kind
@@ -979,6 +953,11 @@ pub fn show(
             Edit::RollCard(slot) => {
                 use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
                 let scope = Scope::Card { thing: id, slot };
+                !roll(scene, reg, &scope, Roll { seed: fresh_seed(), amount: 1.0 }).changed.is_empty()
+            }
+            Edit::RollGroup(group) => {
+                use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
+                let scope = Scope::Group { thing: id, group };
                 !roll(scene, reg, &scope, Roll { seed: fresh_seed(), amount: 1.0 }).changed.is_empty()
             }
         };
@@ -1342,6 +1321,111 @@ fn channel_section(
     });
 }
 
+/// What drawing a thing's own settings reads.
+struct OwnCx<'a> {
+    scene: &'a Scene,
+    kit: &'a Kit,
+    choices: &'a TargetChoices,
+    id: ThingId,
+    thing: &'a bpe_core::Thing,
+    time: f64,
+    label_width: f32,
+    /// Whether a setting does anything here; rows that don't are left out.
+    applies: &'a dyn Fn(&SettingDef) -> bool,
+}
+
+/// A grid of some of a thing's own settings, with their keys, pulses and locks, and folding
+/// groups. Its edits are pushed to `edits`.
+fn own_grid(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    grid: impl std::hash::Hash + std::fmt::Debug,
+    defs: &[SettingDef],
+    edits: &mut Vec<Edit>,
+) {
+    let (scene, reg, id, time) = (cx.scene, &cx.kit.registry, cx.id, cx.time);
+    let own = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
+    let get = |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
+    let sim = cx.kit.sims.thing(&cx.thing.kind);
+    let marks = |key: &str| {
+        let def = defs.iter().find(|d| d.key == key)?;
+        let physics = sim.is_some_and(|s| s.affects_physics(key));
+        mark_for(scene, def, &own(key), time, physics)
+    };
+    let locked = |key: &str| scene.is_locked(&own(key));
+    let folded = |group: &str| is_folded(inspector, (id, None), group);
+    let grid_cx = GridCx {
+        choices: cx.choices,
+        overridden: &|_| false,
+        inherited: &|_| None,
+        marks: &marks,
+        locked: &locked,
+        applies: cx.applies,
+        folded: Some(&folded),
+        label_width: cx.label_width,
+    };
+    let out = settings_grid_marked(ui, grid, defs, get, &grid_cx);
+    fold_groups(inspector, (id, None), &out.folds);
+    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key, value)));
+    edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(own(key))));
+    edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(own(key), source)));
+    edits.extend(out.locks.into_iter().map(|(key, lock)| Edit::Lock(own(key), lock)));
+}
+
+/// One of the root's cards: the root's own settings whose group is `name`, under a title that
+/// folds them away, with dice when any of them can be rolled. `under` draws what the card holds
+/// beneath its settings.
+fn root_card(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    name: &'static str,
+    edits: &mut Vec<Edit>,
+    under: impl FnOnce(&mut Ui, &mut Inspector, &mut Vec<Edit>),
+) {
+    let Some(kind) = cx.kit.registry.thing(&cx.thing.kind) else { return };
+    // Blanked, so no heading inside repeats the card's title.
+    let defs: Vec<SettingDef> =
+        kind.settings().iter().filter(|d| d.group == name).map(|d| SettingDef { group: "", ..d.clone() }).collect();
+    let card_kind = Card::Section(name);
+    card(ui, |ui| {
+        let header = ui.horizontal_wrapped(|ui| {
+            let open = fold_arrow(ui, &mut inspector.collapsed, card_kind.fold_key(cx.id), name);
+            ui.label(RichText::new(name).strong());
+            ui.add_space(8.0);
+            if defs.iter().any(|d| d.flags.random) && dice_button(ui, "Randomize these settings").clicked() {
+                edits.push(Edit::RollGroup(name));
+            }
+            open
+        });
+        card_header(ui, inspector, card_kind, &header.response);
+        if header.inner {
+            own_grid(ui, inspector, cx, ("kind", cx.id, name), &defs, edits);
+            under(ui, inspector, edits);
+        }
+    });
+}
+
+/// The Mix card's sections under its settings: the buses, then the master effects.
+fn mix_sections(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
+    ui.add_space(8.0);
+    buses_section(ui, scene, edits, fx_request);
+    ui.add_space(8.0);
+    ui.label(RichText::new("Master effects").strong())
+        .on_hover_text("Run over the whole mix, before the loudness and the limiter");
+    match crate::fx_list::show(
+        ui,
+        &scene.library.master_fx,
+        "master fx",
+        &crate::follow_menu::channel_names(scene, None),
+    ) {
+        FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
+        FxEdit::OpenNodes => *fx_request = Some(FxPlace::Master),
+        FxEdit::None => {}
+    }
+}
+
 /// The scene's buses: each one's name, volume and effects, with Add bus at the end.
 fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
     ui.label(RichText::new("Buses").strong())
@@ -1586,8 +1670,8 @@ fn make_own(ui: &mut Ui) -> egui::Response {
     ui.button("Make own").on_hover_text("Give this thing its own copy, so changes here are its own")
 }
 
-/// The row of buttons above the inspector that jump to its cards: the thing's own card, then
-/// one per slot it has. The card last clicked is selected until the next scroll, then the card
+/// The row of buttons above the inspector that jump to its cards: the thing's own card (the
+/// root's six cards), then one per slot it has. The card last clicked is selected until the next scroll, then the card
 /// whose header has scrolled to the top (or just past). A click unfolds the card and scrolls
 /// it to the top when it's next drawn. Returns the selected card.
 fn jump_bar(
@@ -1602,10 +1686,14 @@ fn jump_bar(
         inspector.jumped = None;
     }
     let at_top = marked_card(inspector, id);
-    // Placement has no button: it sits just under the thing's own card. The root's own card
-    // is named for what it is.
-    let own = if id == ThingId::ROOT { kind.name() } else { "Thing" };
-    let cards = std::iter::once((Card::Thing, own)).chain(
+    // Placement has no button: it sits just under the thing's own card. The root's own
+    // settings are six cards, each with its own button.
+    let own: Vec<(Card, &str)> = if id == ThingId::ROOT {
+        bpe_kit::ROOT_CARDS.into_iter().map(|name| (Card::Section(name), name)).collect()
+    } else {
+        vec![(Card::Thing, "Thing")]
+    };
+    let cards = own.into_iter().chain(
         SlotId::ALL.into_iter().filter(|s| thing.slots.contains_key(s)).map(|s| (Card::Slot(s), kind.slot_label(s))),
     );
     ui.horizontal_wrapped(|ui| {
@@ -1629,10 +1717,11 @@ fn marked_card(inspector: &Inspector, id: ThingId) -> Card {
     }
 }
 
-/// The last card whose header is at or above the scroll area's top, or the first card when
-/// none is. Placement counts as part of the thing's own card.
+/// The last card whose header is at or above the scroll area's top, or the first card drawn
+/// when none is. Placement counts as part of the thing's own card.
 fn card_at_top(tops: &[(Card, f32)]) -> Card {
-    match tops.iter().rfind(|(_, top)| *top <= 1.0).map_or(Card::Thing, |(c, _)| *c) {
+    let first = tops.first().map_or(Card::Thing, |(c, _)| *c);
+    match tops.iter().rfind(|(_, top)| *top <= 1.0).map_or(first, |(c, _)| *c) {
         Card::Placement => Card::Thing,
         card => card,
     }
@@ -1937,7 +2026,8 @@ mod tests {
         let bloom = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bloom".into() };
         let pulse = &h.state().scene.pulses[&bloom];
         assert_eq!((pulse.source, &pulse.amount), (PulseSource::Beat, &Value::Number(0.25)));
-        assert_eq!(pulse_amount(&bpe_kit::SceneSettings::defs()[1]), Value::Vec2([0.0, 125.0]), "gravity");
+        let gravity = bpe_kit::SceneSettings::defs().iter().find(|d| d.key == "gravity").unwrap();
+        assert_eq!(pulse_amount(gravity), Value::Vec2([0.0, 125.0]), "gravity");
         h.get_by_label("Keyframe Bloom").click_secondary();
         h.run();
         h.get_by_label("No pulse").click();
@@ -2297,14 +2387,16 @@ mod tests {
         assert!(h.query_by_label_contains("settings settings").is_none(), "the card isn't named twice");
         h.get_by_label("+ Add slot").click();
         h.run();
-        for slot in ["Music", "Effects", "Rules"] {
+        for slot in ["Sound", "Effects", "Rules"] {
             assert!(h.query_by_label(slot).is_some(), "{slot} can be added");
         }
         for slot in ["Look", "Motion", "Bounce", "Shader", "Trail", "Particles"] {
             assert!(h.query_by_label(slot).is_none(), "{slot} is not on Scene settings");
         }
-        // "Sound" is also a heading among the scene's settings; it isn't offered as a slot.
-        assert!(h.query_by_role_and_label(Role::Button, "Sound").is_none());
+        // "Music" is the card of the scene's music settings; the menu doesn't offer it as a slot.
+        let menu_music =
+            h.get_all_by_role_and_label(Role::Button, "Music").filter(|n| n.accesskit_node().toggled().is_none());
+        assert_eq!(menu_music.count(), 0);
     }
 
     #[test]
@@ -2312,17 +2404,17 @@ mod tests {
         let mut h = harness(Some(ThingId::ROOT));
         h.get_by_label("+ Add slot").click();
         h.run();
-        h.get_by_label("Music").click();
+        h.get_by_label("Sound").click();
         h.run();
         let s = h.state();
         let music = linked(&s.scene, ThingId::ROOT, SlotId::Sound);
         assert!(matches!(s.scene.library.modules[&music].kind.as_str(), "sound.drums" | "sound.melody"));
-        assert!(h.query_by_role_and_label(Role::Label, "Music").is_some(), "the card is titled Music");
+        assert!(h.query_by_role_and_label(Role::Label, "Sound").is_some(), "the card is titled Sound");
         let state = s.scene.library.modules[&music].name.clone();
         h.get_by_label(&state).click();
         h.run();
         assert!(h.query_by_label_contains("Ball sound").is_none(), "a Notes module can't go there");
-        h.get_by_label("New Music module").click();
+        h.get_by_label("New Sound module").click();
         h.run();
         assert!(h.query_by_label("Drum machine").is_some());
         assert!(h.query_by_label("Melody").is_some());
@@ -3045,7 +3137,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_card_shows_the_grade_group() {
+    fn the_picture_card_shows_the_grade() {
         let reg = bpe_kit::registry();
         let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
         // At the start the map amount is 0, yet the map still shows.
@@ -3053,15 +3145,16 @@ mod tests {
         // The sound's pluck has a Brightness slider too.
         let slider =
             |h: &Harness<'_, State>, label: &str| h.query_all_by_role_and_label(Role::Slider, label).count() > 0;
-        assert!(h.query_by_role_and_label(Role::Label, "Grade").is_some(), "a Grade heading");
+        assert!(h.query_by_role_and_label(Role::Label, "Picture").is_some(), "a Picture card");
         assert!(slider(&h, "Brightness"), "the Brightness setting");
         assert!(slider(&h, "Vignette"), "the Vignette setting");
         assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting at t=0");
-        // The group folds like the others.
-        h.get_by_label("Hide Grade").click();
+        // The card folds like the others.
+        h.get_by_label("Hide Picture").click();
         h.run();
         assert!(!slider(&h, "Vignette"), "the grade's rows fold away");
-        h.get_by_label("Show Grade").click();
+        assert!(h.state().inspector.collapsed.contains(&(ThingId::ROOT, None, "Picture")));
+        h.get_by_label("Show Picture").click();
         h.run();
         assert!(slider(&h, "Vignette"));
     }
@@ -3289,7 +3382,7 @@ mod tests {
         let root = harness(Some(ThingId::ROOT));
         assert!(root.query_by_role_and_label(Role::Label, "Placement").is_none());
         assert!(root.query_by_role_and_label(Role::Label, "Shown").is_none(), "the root has no eye");
-        assert!(root.query_by_label("Hide Scene settings").is_some(), "the root keeps its card title");
+        assert!(root.query_by_label("Hide Video").is_some(), "the root's first card keeps its title");
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         let camera = bpe_kit::add_thing(&mut scene, &reg, "camera", ThingId::ROOT).unwrap();
@@ -3311,8 +3404,24 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 9] =
-        ["Thing", "Look", "Trail", "Motion", "Bounce", "Sound", "Particles", "Rules", "Shader"];
+    const BAR_LABELS: [&str; 16] = [
+        "Thing",
+        "Look",
+        "Trail",
+        "Motion",
+        "Bounce",
+        "Sound",
+        "Particles",
+        "Rules",
+        "Shader",
+        "Effects",
+        "Video",
+        "World",
+        "Background",
+        "Picture",
+        "Music",
+        "Mix",
+    ];
 
     /// The jump bar's buttons, in order, each with whether it is selected.
     fn jump_bar(h: &Harness<'_, State>) -> Vec<(String, bool)> {
@@ -3404,12 +3513,146 @@ mod tests {
         assert_eq!(selected, ["Sound"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
     }
 
+    /// Scene settings with every slot it can have, so its cards run well past one screen.
+    fn a_root_with_every_slot() -> Scene {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        for slot in [SlotId::Sound, SlotId::Shader, SlotId::Rules] {
+            scene.add_slot(&reg, ThingId::ROOT, slot).unwrap();
+        }
+        scene
+    }
+
+    /// The top of a root card's strong title.
+    fn heading_top(h: &Harness<'_, State>, name: &str) -> f32 {
+        h.get_by_role_and_label(Role::Label, name).rect().top()
+    }
+
     #[test]
-    fn the_roots_bar_names_its_card_scene_settings() {
+    fn scene_settings_shows_six_cards() {
         let h = harness(Some(ThingId::ROOT));
-        let first = the_bar_button(&h, "Scene settings");
-        assert_eq!(first.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+        let mut last = f32::NEG_INFINITY;
+        for name in bpe_kit::ROOT_CARDS {
+            assert!(h.query_by_label(&format!("Hide {name}")).is_some(), "{name} has a fold arrow");
+            let top = heading_top(&h, name);
+            assert!(top > last, "{name} comes after the card before it");
+            last = top;
+        }
+        let tops: Vec<Card> = h.state().inspector.card_tops.iter().map(|(c, _)| *c).collect();
+        assert_eq!(tops, bpe_kit::ROOT_CARDS.map(Card::Section), "the cards in order, and nothing else");
+        assert!(h.query_by_label("Hide Scene settings").is_none(), "no single Scene settings card");
+    }
+
+    #[test]
+    fn the_root_jump_bar_lists_the_cards_then_the_slots() {
+        let h = harness(Some(ThingId::ROOT));
+        let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(labels, bpe_kit::ROOT_CARDS);
+        assert_eq!(jump_bar(&h)[0], ("Video".to_owned(), true), "at the top, Video is selected");
         assert!(h.query_by_role_and_label(Role::Button, "Thing").is_none(), "no Thing button on the root");
+        assert!(h.query_by_role_and_label(Role::Button, "Scene settings").is_none());
+        // Its slots follow, in the order their cards are drawn.
+        let h = harness_of(a_root_with_every_slot(), Some(ThingId::ROOT));
+        let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
+        let mut want: Vec<&str> = bpe_kit::ROOT_CARDS.to_vec();
+        want.extend(["Sound", "Rules", "Effects"]);
+        assert_eq!(labels, want);
+    }
+
+    #[test]
+    fn master_effects_sit_in_the_mix_card() {
+        let h = harness_of(a_root_with_every_slot(), Some(ThingId::ROOT));
+        let mix = heading_top(&h, "Mix");
+        let master = h.get_by_role_and_label(Role::Label, "Master effects").rect().top();
+        let buses = h.get_by_role_and_label(Role::Label, "Buses").rect().top();
+        assert!(mix < buses && buses < master, "Buses then Master effects under Mix: {mix}, {buses}, {master}");
+        // No other card's title, the root's or a slot's, comes between them.
+        for card in bpe_kit::ROOT_CARDS.into_iter().chain(["Sound", "Rules", "Effects"]).filter(|c| *c != "Mix") {
+            let top = h.get_by_label(&format!("Hide {card}")).rect().top();
+            assert!(!(mix < top && top < master), "{card} sits between Mix and Master effects");
+        }
+    }
+
+    #[test]
+    fn jumping_to_mix_scrolls_it_to_the_top() {
+        let mut h = harness_sized(a_root_with_every_slot(), Some(ThingId::ROOT), 600.0);
+        the_bar_button(&h, "Mix").click();
+        h.run();
+        let s = h.state();
+        let top = s.inspector.card_tops.iter().find(|(c, _)| *c == Card::Section("Mix")).expect("Mix's top").1;
+        assert!(top.abs() <= 1.0, "Mix's header is at the top of the scroll area, at {top}");
+        assert_eq!(selected_in_bar(&h), ["Mix"]);
+    }
+
+    #[test]
+    fn a_root_card_with_no_shown_rows_still_has_its_title() {
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = resolve_scene(&scene, &kit.registry);
+        let state =
+            State { inspector: Inspector::default(), scene, kit, resolved, selection: Selection::default(), time: 0.0 };
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(420.0, 800.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                |ui, s: &mut State| {
+                    let choices = TargetChoices::from_scene(&s.scene, &s.kit.registry);
+                    let thing = s.scene.things[&ThingId::ROOT].clone();
+                    let cx = OwnCx {
+                        scene: &s.scene,
+                        kit: &s.kit,
+                        choices: &choices,
+                        id: ThingId::ROOT,
+                        thing: &thing,
+                        time: s.time,
+                        label_width: label_width(420.0),
+                        applies: &|_| false,
+                    };
+                    let mut edits = Vec::new();
+                    root_card(ui, &mut s.inspector, &cx, "Music", &mut edits, |_, _, _| {});
+                },
+                state,
+            );
+        h.run();
+        assert!(h.query_by_label("Hide Music").is_some(), "the card keeps its fold arrow");
+        assert!(h.query_by_role_and_label(Role::Label, "Music").is_some(), "and its title");
+        assert!(h.query_by_role_and_label(Role::Label, "Tempo").is_none(), "no rows");
+        assert!(h.query_by_role_and_label(Role::Label, "Seed").is_none(), "no rows");
+        assert!(h.query_all_by_role(Role::Slider).next().is_none(), "no grid row is drawn");
+    }
+
+    #[test]
+    fn music_card_dice_rolls_only_music() {
+        let mut h = harness(Some(ThingId::ROOT));
+        let headings: Vec<(&str, f32)> = bpe_kit::ROOT_CARDS.iter().map(|n| (*n, heading_top(&h, n))).collect();
+        // Which card each dice button sits in: the last heading above it.
+        let cards: Vec<&str> = h
+            .get_all_by_role_and_label(Role::Button, "Randomize these settings")
+            .map(|n| {
+                let at = n.rect().center().y;
+                headings.iter().rfind(|(_, top)| *top <= at + 12.0).expect("under a card").0
+            })
+            .collect();
+        // The background's paint rolls its colours, so Background has dice too.
+        assert_eq!(cards, ["Background", "Picture", "Music"], "only cards with something random have dice");
+        let reg = bpe_kit::registry();
+        let values = |s: &State| -> Vec<(&str, Value)> {
+            bpe_kit::SceneSettings::defs()
+                .iter()
+                .map(|d| {
+                    let a = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: d.key.into() };
+                    (d.key, s.scene.value_at(&reg, &a).unwrap())
+                })
+                .collect()
+        };
+        let before = values(h.state());
+        let music = cards.iter().position(|c| *c == "Music").unwrap();
+        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(music).unwrap().click();
+        h.run();
+        let after = values(h.state());
+        let changed: Vec<&str> = before.iter().zip(&after).filter(|(b, a)| b != a).map(|(b, _)| b.0).collect();
+        assert_eq!(changed, ["seed"]);
     }
 
     fn selected_in_bar(h: &Harness<'_, State>) -> Vec<String> {

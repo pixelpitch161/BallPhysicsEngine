@@ -1202,10 +1202,15 @@ mod tests {
         assert_eq!(all.iter().filter(|r| matches!(r, Row::Setting(_))).count(), defs.len());
         let headings: Vec<&str> =
             all.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Video", "Grade", "Master", "Sound", "Song", "Beat", "Camera sound"]);
+        // Each card's name heads its rows once (in the order the fields first name them).
+        let mut sorted = headings.clone();
+        sorted.sort_unstable();
+        let mut cards = bpe_kit::ROOT_CARDS.to_vec();
+        cards.sort_unstable();
+        assert_eq!(sorted, cards);
         // A group whose settings all drop out loses its heading too.
-        let no_song = rows_for(defs, &|d| d.group != "Song");
-        assert!(!no_song.iter().any(|r| matches!(r, Row::Group("Song"))));
+        let no_music = rows_for(defs, &|d| d.group != "Music");
+        assert!(!no_music.iter().any(|r| matches!(r, Row::Group("Music"))));
     }
 
     #[test]
@@ -1309,7 +1314,8 @@ mod tests {
         let h = open_grid(bpe_kit::SceneSettings::defs());
         let wrapped = h.get_by_role_and_label(Role::Label, "Background stays on screen").rect();
         assert!(wrapped.height() > 24.0, "the label wraps: {wrapped:?}");
-        let next = h.get_by_role_and_label(Role::Label, "Frame rate").rect();
+        // The Background group's last row; the Picture heading comes next.
+        let next = h.get_by_role_and_label(Role::Label, "Picture").rect();
         assert!(wrapped.bottom() <= next.top(), "{wrapped:?} runs into the next row {next:?}");
         let check = h.get_by_role_and_label(Role::CheckBox, "Background stays on screen").rect();
         let (l, c) = (wrapped.center().y, check.center().y);
