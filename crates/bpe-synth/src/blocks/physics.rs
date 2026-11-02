@@ -29,6 +29,8 @@ pub struct PhysicsIn {
     input: String,
     tag: String,
     channel: String,
+    /// For Canvas number: the canvas and number it reads, like `Card.revealed`.
+    reads_text: String,
     low: f32,
     high: f32,
     curve: Curve,
@@ -65,6 +67,7 @@ impl PhysicsIn {
             input: table[index].name.to_string(),
             tag: k.text("tag").to_string(),
             channel: k.text("channel").to_string(),
+            reads_text: k.text("reads").to_string(),
             low: k.number("low", 0.0),
             high: k.number("high", 1.0),
             curve,
@@ -85,7 +88,10 @@ impl PhysicsIn {
                 let since = cx.since_on - self.track_start;
                 self.sources.hit.as_ref().and_then(|h| h.track.as_ref()).map_or(0.0, |t| t.at(since)[self.index])
             }
-            Reads::Scene => self.sources.scene.as_ref().map_or(0.0, |s| s.value(&self.input, &self.channel, cx.time)),
+            Reads::Scene => {
+                let channel = if self.input == "canvas" { &self.reads_text } else { &self.channel };
+                self.sources.scene.as_ref().map_or(0.0, |s| s.value(&self.input, channel, cx.time))
+            }
         }
     }
 
@@ -256,6 +262,34 @@ mod tests {
         };
         assert_eq!(with("Kick"), 1.0);
         assert_eq!(with("Snare"), 0.0);
+    }
+
+    #[test]
+    fn canvas_input_reads_its_series() {
+        let scene = SceneSignals {
+            rate: 2.0,
+            canvas: [("Card.revealed".to_string(), Arc::new(vec![0.0, 0.5, 1.0]))].into(),
+            ..SceneSignals::default()
+        };
+        assert_eq!(scene.value("canvas", "Card.revealed", 0.5), 0.5);
+        assert_eq!(scene.value("canvas", " Card.revealed ", 1.0), 1.0, "the text is trimmed");
+        assert_eq!(scene.value("canvas", "Other.revealed", 0.5), 0.0, "unknown text reads 0");
+        let sources = Sources { hit: None, scene: Some(Arc::new(scene)) };
+        let k = knobs("canvas", 0.0, 1.0).with("reads", Param::Text("Card.revealed".into()));
+        let got = once(k, Reads::Scene, &sources, Ctx { time: 0.5, ..Ctx::default() });
+        assert!((got - 0.5).abs() < 1e-5, "{got}");
+    }
+
+    #[test]
+    fn uses_collects_canvas_reads() {
+        let g = crate::blank_patch();
+        let mut g = g;
+        let c = crate::catalog();
+        let id = bpe_graph::Catalog::spec(c, "scene_input").map(|s| g.add(s, [0.0, 0.0])).unwrap();
+        let n = g.node_mut(id).unwrap();
+        n.params.insert("input".into(), Param::Choice("canvas".into()));
+        n.params.insert("reads".into(), Param::Text(" Card.revealed ".into()));
+        assert_eq!(crate::uses(&g).canvas, ["Card.revealed".to_string()].into());
     }
 
     #[test]

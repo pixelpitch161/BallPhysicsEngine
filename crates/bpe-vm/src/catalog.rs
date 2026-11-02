@@ -643,6 +643,8 @@ fn rules() -> Vec<NodeSpec> {
             &[("ball", Ball), ("loudness", Number)],
         )
         .param(number("loudness", "Loudness", 600.0, 0.0, 10000.0)),
+        act("do.end", "End the video", "Ends the video a little after this: export and the timeline stop there.", &[])
+            .param(number("after", "After (s)", 2.0, 0.0, 30.0)),
         act("do.counter", "Count", "Adds to a counter.", &[("add", Number)])
             .param(number("id", "Counter", 0.0, 0.0, 15.0))
             .param(number("add", "Add", 1.0, -1000.0, 1000.0)),

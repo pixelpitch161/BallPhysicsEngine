@@ -266,8 +266,59 @@ fn chord_series(p: &bpe_core::Progression, settings: &MixSettings, n: usize, rat
     (0..n).map(|k| chord_value(clock.at(k as f64 / rate).1)).collect()
 }
 
+/// Every canvas number some Canvas number block reads, as a series at `rate` on the video clock,
+/// by its Reads text (trimmed, as written). A text that names no canvas is left out (it reads 0).
+fn canvas_series(
+    scene: &Scene,
+    log: &Log,
+    settings: &MixSettings,
+    video_time: &dyn Fn(f64) -> f64,
+    n: usize,
+) -> BTreeMap<String, Arc<Vec<f32>>> {
+    let mut reads = std::collections::BTreeSet::new();
+    for i in settings.instruments.values() {
+        if let bpe_core::InstrumentSource::Patch { graph } = &i.source {
+            reads.extend(bpe_synth::uses(graph).canvas);
+        }
+        reads.extend(bpe_synth::uses(&i.fx).canvas);
+    }
+    for strip in settings.strips.values() {
+        reads.extend(bpe_synth::uses(&strip.inserts).canvas);
+    }
+    for bus in &settings.buses {
+        reads.extend(bpe_synth::uses(&bus.fx).canvas);
+    }
+    reads.extend(bpe_synth::uses(&settings.master_fx).canvas);
+    reads.extend(patches(scene).flat_map(|g| bpe_synth::uses(g).canvas));
+    let rate = MOTION_RATE as f64;
+    let sps = settings.steps_per_second.max(1) as f64;
+    let mut out = BTreeMap::new();
+    for text in reads {
+        let Some(r) = bpe_runtime::CanvasRef::parse(&text) else { continue };
+        let name = r.canvas.trim();
+        let Some(id) = scene.order.iter().copied().find(|id| {
+            scene
+                .things
+                .get(id)
+                .is_some_and(|t| t.kind.as_str() == "canvas" && t.name.trim().eq_ignore_ascii_case(name))
+        }) else {
+            continue;
+        };
+        let teams = log.teams_of(id);
+        let points: Vec<(f64, [f32; 4])> = log
+            .canvas_samples_of(id)
+            .map(|s| (video_time(s.step as f64 / sps), [r.value(&s.numbers, teams).unwrap_or(0.0), 0.0, 0.0, 0.0]))
+            .collect();
+        let samples = resample(&points, 0.0, rate, f64::INFINITY);
+        let held = |k: usize| samples.get(k).or(samples.last()).map_or(0.0, |v| v[0]);
+        out.insert(text, Arc::new((0..n).map(held).collect()));
+    }
+    out
+}
+
 /// The scene's series at [`MOTION_RATE`] on the video clock.
 fn scene_series(
+    scene: &Scene,
     resolved: &Resolved,
     log: &Log,
     settings: &MixSettings,
@@ -306,6 +357,7 @@ fn scene_series(
         beats: settings.beats.clone(),
         chords: chord_series(settings.progression(settings.chords), settings, n, rate),
         levels: BTreeMap::new(),
+        canvas: canvas_series(scene, log, settings, video_time, n),
     }
 }
 
@@ -322,7 +374,7 @@ pub fn physics_inputs(
     } else {
         BTreeMap::new()
     };
-    let signals = scene_series(resolved, log, settings, video_time);
+    let signals = scene_series(scene, resolved, log, settings, video_time);
     let n = signals.chords.len();
     let scene_progression = settings.progression(settings.chords);
     let mut chords = BTreeMap::new();
@@ -436,6 +488,34 @@ mod tests {
         let at_one = p.scene.value("hit_rate", "", 1.0);
         assert!((at_one - 10.0).abs() <= 2.0, "{at_one}");
         assert_eq!(p.scene.value("hit_rate", "", 3.0), 0.0);
+    }
+
+    #[test]
+    fn scene_series_has_canvas_numbers() {
+        use bpe_runtime::{CanvasNumbers, CanvasSample};
+        let kit = kit();
+        let mut scene = with_input("scene_input", "canvas");
+        // A canvas called Card, and the block reading its Revealed.
+        let card = crate::add_thing(&mut scene, &kit.registry, "canvas", bpe_core::ThingId::ROOT).unwrap();
+        scene.things.get_mut(&card).unwrap().name = "Card".into();
+        for i in scene.library.instruments.values_mut() {
+            if let bpe_core::InstrumentSource::Patch { graph } = &mut i.source {
+                let block = graph.nodes.iter_mut().find(|n| n.kind == "scene_input").unwrap();
+                block.params.insert("reads".into(), Param::Text("Card.revealed".into()));
+            }
+        }
+        let resolved = resolve(&scene, &kit.registry);
+        let settings = mix_settings(&scene, &resolved);
+        let mut log = Log::default();
+        let n = |revealed: f32| CanvasNumbers { revealed, ..Default::default() };
+        let sps = settings.steps_per_second as u64;
+        log.push_canvas(CanvasSample { step: 0, canvas: card, numbers: n(0.0) });
+        log.push_canvas(CanvasSample { step: sps, canvas: card, numbers: n(1.0) });
+        let p = physics_inputs(&scene, &resolved, &log, &settings, &same);
+        assert!((p.scene.value("canvas", "Card.revealed", 1.0) - 1.0).abs() < 1e-5);
+        assert!(p.scene.value("canvas", "Card.revealed", 0.0).abs() < 1e-5);
+        assert!((p.scene.value("canvas", "Card.revealed", 0.5) - 0.5).abs() < 0.05);
+        assert_eq!(p.scene.value("canvas", "Nope.revealed", 1.0), 0.0);
     }
 
     #[test]

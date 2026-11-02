@@ -536,7 +536,13 @@ mod tests {
         let node = g.node_mut(s).unwrap();
         node.params.insert("input".into(), Param::Choice("channel".into()));
         node.params.insert("channel".into(), Param::Text("Kick".into()));
-        let expected = crate::Uses { hit: false, live: true, scene: true, channels: ["Kick".to_string()].into() };
+        let expected = crate::Uses {
+            hit: false,
+            live: true,
+            scene: true,
+            channels: ["Kick".to_string()].into(),
+            canvas: Default::default(),
+        };
         assert_eq!(crate::uses(&g), expected);
     }
 

@@ -1332,7 +1332,7 @@ fn channel_section(
             ui,
             &m.channel.inserts,
             "inserts",
-            &crate::follow_menu::channel_names(scene, Some(module)),
+            &crate::follow_menu::follow_names(scene, Some(module)),
         ) {
             FxEdit::Set(g) => edits.push(Edit::ChannelInserts(module, g)),
             FxEdit::OpenNodes => *fx_request = Some(FxPlace::Channel(module)),
@@ -1465,7 +1465,7 @@ fn mix_sections(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &
         ui,
         &scene.library.master_fx,
         "master fx",
-        &crate::follow_menu::channel_names(scene, None),
+        &crate::follow_menu::follow_names(scene, None),
     ) {
         FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
         FxEdit::OpenNodes => *fx_request = Some(FxPlace::Master),
@@ -1477,7 +1477,7 @@ fn mix_sections(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &
 fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
     ui.label(RichText::new("Buses").strong())
         .on_hover_text("Shared effects, like one reverb, that sounds send to by their Sends");
-    let channels = crate::follow_menu::channel_names(scene, None);
+    let channels = crate::follow_menu::follow_names(scene, None);
     let mut buses = scene.library.buses.clone();
     let mut changed = false;
     let mut remove = None;

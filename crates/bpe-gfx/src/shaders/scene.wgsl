@@ -113,7 +113,8 @@ struct ShapeIn {
     @location(0) a: vec4<f32>,
     // Ring: radius, sides. Box: half size, corner radius. Capsule: half length.
     @location(1) b: vec4<f32>,
-    // Kind (0 ring/polygon, 1 box, 2 capsule), half line width, glow.
+    // Kind (0 ring/polygon, 1 box, 2 capsule, 3 filled box, 4 filled arc band), half line width,
+    // glow.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
     // The gradient painted on the line, as `PaintGpu`.
@@ -143,7 +144,10 @@ fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
         reach += GLOW_REACH;
     }
     var extent = s.b.x;
-    if s.c.x > 0.5 {
+    if s.c.x > 3.5 {
+        // An arc band reaches its radius plus its half width.
+        extent = s.b.x + s.b.y;
+    } else if s.c.x > 0.5 {
         // A box's half size, or a capsule's half length (its b.y is 0).
         extent = length(s.b.xy);
     }
@@ -265,7 +269,38 @@ fn shape_local(in: ShapeOut) -> vec2<f32> {
 }
 
 // What `fs_shape` and `fs_shape_each` draw.
+// Kinds 3 and 4: filled shapes with no line and no glow, edges a pixel soft.
+// Kind 3 is a box (a: centre, angle, clip low; b: half size, corner, clip high) shown only where
+// its own x is within the clip. Kind 4 is a band of a ring (a: centre, middle direction; b: radius,
+// half width, half sweep).
+fn shade_fill(in: ShapeOut) -> vec4<f32> {
+    let px = g.view.z;
+    let local = rotate(in.world - in.a.xy, -in.a.z);
+    var d = 0.0;
+    if in.c.x < 3.5 {
+        let corner = in.b.z;
+        let q = abs(local) - (in.b.xy - vec2<f32>(corner));
+        d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner;
+        d = max(d, max(in.a.w - local.x, local.x - in.b.w));
+    } else {
+        d = abs(length(local) - in.b.x) - in.b.y;
+        let half_sweep = in.b.z;
+        if half_sweep < 3.14159 {
+            // Past the sweep's two edges, which run out from the centre at +-half_sweep.
+            d = max(d, dot(vec2<f32>(local.x, abs(local.y)), vec2<f32>(-sin(half_sweep), cos(half_sweep))));
+        }
+    }
+    let cover = clamp(0.5 - d / px, 0.0, 1.0) * abs(in.color.a);
+    if cover <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb * cover, covering(cover, in.color.a));
+}
+
 fn shade_shape(in: ShapeOut) -> vec4<f32> {
+    if in.c.x > 2.5 {
+        return shade_fill(in);
+    }
     let px = g.view.z;
     let d = shape_distance(in);
     let width = in.c.y * 2.0;

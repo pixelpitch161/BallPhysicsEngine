@@ -48,7 +48,9 @@ pub fn follow(graph: &Graph, node: u32, param: &str, with: &FollowInput) -> Opti
     n.params.insert("low".into(), Param::Number(def.low));
     n.params.insert("high".into(), Param::Number(def.high));
     if !with.channel.is_empty() {
-        n.params.insert("channel".into(), Param::Text(with.channel.clone()));
+        // A Canvas number keeps what it reads (like `Card.revealed`) in Reads, not Channel.
+        let key = if with.input == "canvas" { "reads" } else { "channel" };
+        n.params.insert(key.into(), Param::Text(with.channel.clone()));
     }
     let scale = g.add(cat.spec("scale")?, [at[0] - 190.0, y]);
     g.node_mut(scale)?.params.insert("scale".into(), Param::Number(depth));
@@ -92,8 +94,9 @@ pub fn followed(graph: &Graph, node: u32, param: &str) -> Option<String> {
                 _ => table[0].name,
             };
             let def = table.iter().find(|d| d.name == name).unwrap_or(&table[0]);
-            return Some(match n.params.get("channel") {
-                Some(Param::Text(c)) if def.name == "channel" && !c.is_empty() => format!("{} ({c})", def.label),
+            return Some(match (def.name, n.params.get("channel"), n.params.get("reads")) {
+                ("channel", Some(Param::Text(c)), _) if !c.is_empty() => format!("{} ({c})", def.label),
+                ("canvas", _, Some(Param::Text(r))) if !r.trim().is_empty() => format!("{} ({})", def.label, r.trim()),
                 _ => def.label.to_string(),
             });
         }
@@ -148,6 +151,20 @@ mod tests {
         let f = follow(&g, amp, "gain", &with).unwrap();
         assert_eq!(followed(&f, amp, "gain").as_deref(), Some("Channel level (Kick)"));
         assert_eq!(crate::uses(&f).channels, ["Kick".to_string()].into());
+    }
+
+    #[test]
+    fn follow_puts_canvas_reads_in_reads() {
+        let g = blank_patch();
+        let amp = g.nodes.iter().find(|n| n.kind == "amp").unwrap().id;
+        let with = FollowInput { kind: "scene_input".into(), input: "canvas".into(), channel: "Card.revealed".into() };
+        let f = follow(&g, amp, "gain", &with).unwrap();
+        let block = f.nodes.iter().find(|n| n.kind == "scene_input").unwrap();
+        assert_eq!(block.params.get("reads"), Some(&Param::Text("Card.revealed".into())));
+        assert_eq!(block.params.get("channel"), Some(&Param::Text(String::new())), "Channel is left alone");
+        assert_eq!(block.params.get("input"), Some(&Param::Choice("canvas".into())));
+        assert_eq!(followed(&f, amp, "gain").as_deref(), Some("Canvas number (Card.revealed)"));
+        assert_eq!(crate::uses(&f).canvas, ["Card.revealed".to_string()].into());
     }
 
     #[test]

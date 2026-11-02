@@ -1,6 +1,7 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
 //! its settings, its simulation, its drawing and its sound side by side.
 
+pub mod ending;
 pub mod gizmo;
 pub mod graphs;
 #[cfg(test)]
@@ -83,6 +84,7 @@ pub use things::liquid::draw::LiquidDraw;
 pub use things::liquid::pbf::Rect;
 pub use things::liquid::sim::{LiquidSim, LiquidState};
 pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
+pub use things::meter::{MeterDraw, MeterKind, MeterLook, MeterReads, MeterSettings};
 pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::ROOT_CARDS;
@@ -128,6 +130,7 @@ pub fn draws() -> Draws {
     d.add(SwarmDraw);
     d.add(SoftDraw);
     d.add(TextDraw);
+    d.add(MeterDraw);
     d.add(ObstacleDraw);
     d.add(CanvasDraw);
     for b in &bpe_gfx::effects::BUILTINS {
@@ -332,6 +335,7 @@ pub fn registry() -> Registry {
     r.add_thing(BallsKind);
     r.add_thing(SoftKind);
     r.add_thing(TextKind);
+    r.add_thing(MeterKind);
     r.add_thing(FolderKind);
     r.add_thing(ObstacleKind);
     r.add_thing(EmitterKind);

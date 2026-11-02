@@ -99,6 +99,9 @@ pub struct Log {
     pub(crate) canvas: Vec<crate::canvas_numbers::CanvasSample>,
     /// Each canvas's colour-war teams, as last noted. Not in the hash.
     pub(crate) teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
+    /// When a rule ended the video: `(step it was asked at, step the video ends at)`. Forgotten
+    /// when a rewind goes before the step it was asked at. Not in the hash.
+    pub(crate) end: Option<(u64, u64)>,
 }
 
 /// The shape a mark stamps onto a canvas.
@@ -237,6 +240,24 @@ impl Log {
         self.tracks.retain(|_, t| !t.is_empty());
         self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
         self.canvas.truncate(self.canvas.partition_point(|s| s.step <= step));
+        if self.end.is_some_and(|(asked, _)| asked > step) {
+            self.end = None;
+        }
+    }
+
+    /// Notes that a rule asked at `asked` for the video to end at step `at`.
+    pub fn set_end(&mut self, asked: u64, at: u64) {
+        self.end = Some((asked, at));
+    }
+
+    /// The step a rule ended the video at, if one has.
+    pub fn end(&self) -> Option<u64> {
+        self.end.map(|(_, at)| at)
+    }
+
+    /// The time (run seconds) a rule ended the video at, if one has.
+    pub fn end_time(&self, steps_per_second: u32) -> Option<f64> {
+        self.end().map(|at| at as f64 / steps_per_second.max(1) as f64)
     }
 
     /// Adds a mark. Marks must arrive in step order.

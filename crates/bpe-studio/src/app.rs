@@ -230,6 +230,31 @@ impl Studio {
         self.settings().duration.max(0.0) as f64
     }
 
+    /// The video time a rule ended the video at ("End the video"), once the preview has run far
+    /// enough to know: the first frame at or after the end, as export draws it. `None` while no
+    /// rule has asked, or when the end is past the clip's own length.
+    pub fn end_time(&self) -> Option<f64> {
+        let end = self.playback.log().end_time(self.playback.world().steps_per_second)?;
+        let fps = self.settings().fps.max(1) as f64;
+        let frames = (self.duration() * fps).ceil() as u64;
+        // The warp only moves forward, so the first frame at or past the end can be bisected.
+        let (mut low, mut high) = (0u64, frames);
+        while low < high {
+            let mid = (low + high) / 2;
+            if self.warp.sim_time(mid as f64 / fps) >= end {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        (low < frames).then(|| low as f64 / fps)
+    }
+
+    /// Where playing stops: the end a rule asked for, else the clip's length.
+    fn stop_time(&self) -> f64 {
+        self.end_time().map_or(self.duration(), |e| e.min(self.duration()))
+    }
+
     /// The moment of the run the playhead shows, through the beat sync's time warp.
     pub fn sim_time(&self) -> f64 {
         self.warp.sim_time(self.time)
@@ -417,7 +442,7 @@ impl Studio {
     }
 
     pub fn set_playing(&mut self, playing: bool) {
-        if playing && self.time >= self.duration() {
+        if playing && self.time >= self.stop_time() {
             self.time = 0.0;
         }
         self.playing = playing;
@@ -446,7 +471,7 @@ impl Studio {
         if !self.playing {
             return;
         }
-        let duration = self.duration();
+        let duration = self.stop_time();
         let mut next = self.time + dt;
         if let Some(audio) = &self.audio {
             // The speakers move in buffer-sized steps; follow them only when the frame clock has
@@ -1373,6 +1398,51 @@ mod tests {
         assert_eq!(studio.time, 1.0, "the playhead stays in video time");
         assert!((studio.sim_time() - 1.1).abs() < 1e-6);
         assert!((studio.playback.time() - 1.1).abs() < 1.0 / 240.0 + 1e-9, "{}", studio.playback.time());
+    }
+
+    /// A studio on a scene whose rules end the video at about 3 s, with the preview run past the ask.
+    fn ending_studio() -> Studio {
+        let mut studio = Studio::headless();
+        let scene = bpe_kit::ending::scene_that_ends(&studio.kit.registry, 1.0, 2.0);
+        studio.replace_scene(scene, None);
+        studio.seek(2.0);
+        studio
+    }
+
+    #[test]
+    fn the_preview_stops_where_a_rule_ended_the_video() {
+        let mut studio = ending_studio();
+        let end = studio.end_time().expect("the preview has run past the rule");
+        assert!((end - 3.0).abs() < 0.05, "{end}");
+        studio.time = end - 0.01;
+        studio.looping = false;
+        studio.playing = true;
+        studio.last_tick = Some(Instant::now() - std::time::Duration::from_millis(100));
+        studio.tick();
+        assert!(!studio.playing, "play stops at the end");
+        assert!(studio.time <= end + 1.0 / 60.0, "{}", studio.time);
+        // Playing again from the end starts over.
+        studio.set_playing(true);
+        assert_eq!(studio.time, 0.0);
+    }
+
+    #[test]
+    fn the_timeline_marks_where_the_video_ends() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let studio = ending_studio();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 300.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(5)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(|ui, s: &mut Studio| crate::timeline::show(ui, s), studio);
+        h.run();
+        assert!(h.query_all_by_label("Video ends here").next().is_some());
+        // Before the rule has asked there is no mark.
+        h.state_mut().seek(0.5);
+        h.run();
+        assert!(h.query_all_by_label("Video ends here").next().is_none());
     }
 
     #[test]

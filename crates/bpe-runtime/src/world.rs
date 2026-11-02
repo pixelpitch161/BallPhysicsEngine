@@ -84,6 +84,9 @@ pub struct World {
     /// Each canvas's colour-war teams, in the order they first claimed (see
     /// [`World::set_teams`]). Cloned with the world; never in the fingerprint or the log hash.
     pub teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
+    /// The step the video ends at, when a rule ended it. Cloned with the world; never in the
+    /// fingerprint.
+    pub end_step: Option<u64>,
     /// Every built thing's name, as the scene names it, for things that are named by captions,
     /// rules and the synth (a canvas).
     pub names: BTreeMap<ThingId, String>,
@@ -176,6 +179,7 @@ impl World {
             pictures: Vec::new(),
             canvas_numbers: BTreeMap::new(),
             teams: BTreeMap::new(),
+            end_step: None,
             names: BTreeMap::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),

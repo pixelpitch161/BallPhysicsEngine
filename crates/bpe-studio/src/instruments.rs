@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, scene: &Scene, module: ModuleId, id: InstrumentId, labe
     let Some(instrument) = scene.library.instruments.get(&id) else { return edits };
     let mut i = instrument.clone();
     let own = scene.library.modules.get(&module).map(|m| &m.macros);
-    let channels = crate::follow_menu::channel_names(scene, Some(module));
+    let channels = crate::follow_menu::follow_names(scene, Some(module));
     ui.push_id(("instrument", module, id), |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&i.name).strong());
@@ -303,5 +303,22 @@ mod tests {
         h.get_by_label("Follows Height in the frame");
         click_through(&mut h, &["Stop following"]);
         assert!(!patch(h.state()).nodes.iter().any(|n| n.kind == "live_input"));
+    }
+
+    #[test]
+    fn follow_a_canvas_number() {
+        let mut h = harness();
+        let kit = bpe_kit::kit();
+        {
+            let scene = &mut h.state_mut().scene;
+            let card = bpe_kit::add_thing(scene, &kit.registry, "canvas", bpe_core::ThingId::ROOT).unwrap();
+            scene.things.get_mut(&card).unwrap().name = "Card".into();
+        }
+        h.run();
+        click_through(&mut h, &["Follow…", "Scene", "Canvas number", "Card", "Revealed"]);
+        let block = patch(h.state()).nodes.iter().find(|n| n.kind == "scene_input").expect("a Scene block");
+        assert_eq!(block.params.get("reads"), Some(&bpe_graph::Param::Text("Card.revealed".into())));
+        assert_eq!(block.params.get("input"), Some(&bpe_graph::Param::Choice("canvas".into())));
+        h.get_by_label("Follows Canvas number (Card.revealed)");
     }
 }

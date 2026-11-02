@@ -346,6 +346,7 @@ pub fn action(act: Act, point: Vec2) -> Action {
         Act::Set { thing, slot, key, value } => Action::Set { thing, slot, key, value: Value::Number(value as f64) },
         Act::Fire { name, ball } => Action::Fire { name, ball: party(ball), point },
         Act::Note { ball, loudness } => Action::Note { ball: party(ball), loudness },
+        Act::EndVideo { after } => Action::EndVideo { after },
     }
 }
 

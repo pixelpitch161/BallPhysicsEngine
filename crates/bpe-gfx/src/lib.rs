@@ -1826,6 +1826,7 @@ mod surface_tests {
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         match headless_device() {
             Ok(pair) => Some(pair),
+            Err(_) if std::env::var_os("BPE_REQUIRE_GPU").is_some() => panic!("no GPU adapter"),
             Err(_) => {
                 eprintln!("no GPU adapter available, skipping");
                 None
@@ -2011,5 +2012,64 @@ mod surface_tests {
         let clear = pixel(&render(&mut renderer, &device, &queue, &frame), 0.0, 300.0);
         assert!(opaque[2] > 150, "{opaque:?}");
         assert!(clear[2] < opaque[2] / 2, "{clear:?} over black shows mostly the black behind");
+    }
+
+    /// One shape on black, rendered.
+    fn shape_pixels(shape: ShapeInstance) -> Option<Vec<u8>> {
+        let (device, queue) = gpu()?;
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = Frame::default();
+        frame.shapes.push(shape);
+        Some(render(&mut renderer, &device, &queue, &frame))
+    }
+
+    const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+    #[test]
+    fn filled_box_clips_to_its_range() {
+        // Half size (100, 20), corners 20 round, shown only left of x = -2.
+        let box_to = |clip_high: f32| {
+            ShapeInstance::fill_box(
+                glam::Vec2::ZERO,
+                0.0,
+                glam::Vec2::new(100.0, 20.0),
+                20.0,
+                [-100.0, clip_high],
+                WHITE,
+            )
+        };
+        let Some(pixels) = shape_pixels(box_to(-2.0)) else { return };
+        assert!(pixel(&pixels, -50.0, 0.0)[0] > 240, "inside the range");
+        assert!(pixel(&pixels, 50.0, 0.0)[0] < 10, "right of the range");
+        assert!(pixel(&pixels, -99.0, 18.0)[0] < 10, "the rounded corner is cut away");
+        assert!(pixel(&pixels, -50.0, 30.0)[0] < 10, "above the box");
+        // The pixel whose centre is on the clip edge is half covered.
+        let edge = pixel(&pixels, -2.0, 0.0)[0];
+        assert!((30..=230).contains(&edge), "partly covered: {edge}");
+        // The whole box when the range is open.
+        let open = shape_pixels(box_to(1e9)).unwrap();
+        assert!(pixel(&open, 50.0, 0.0)[0] > 240);
+    }
+
+    #[test]
+    fn arc_band_covers_its_sweep() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        // Straight up is -y on screen; the band sweeps a quarter turn either side of it.
+        let band =
+            |half_sweep: f32| ShapeInstance::arc_band(glam::Vec2::ZERO, 100.0, 10.0, -FRAC_PI_2, half_sweep, WHITE);
+        let Some(pixels) = shape_pixels(band(FRAC_PI_4)) else { return };
+        assert!(pixel(&pixels, 0.0, -100.0)[0] > 240, "on the band, straight up");
+        assert!(pixel(&pixels, 100.0, 0.0)[0] < 10, "a quarter turn round is past the sweep");
+        assert!(pixel(&pixels, 0.0, -70.0)[0] < 10, "inside the band's radius");
+        assert!(pixel(&pixels, 0.0, -130.0)[0] < 10, "outside the band's radius");
+        // Just inside and just outside the sweep's edge (45 degrees from up) at the band's radius.
+        let at = |degrees_from_up: f32| {
+            let a = -FRAC_PI_2 + degrees_from_up.to_radians();
+            pixel(&pixels, 100.0 * a.cos(), 100.0 * a.sin())[0]
+        };
+        assert!(at(35.0) > 240 && at(-35.0) > 240, "inside the sweep on both sides");
+        assert!(at(55.0) < 10 && at(-55.0) < 10, "outside the sweep on both sides");
+        let whole = shape_pixels(band(PI)).unwrap();
+        assert!(pixel(&whole, 100.0, 0.0)[0] > 240 && pixel(&whole, -100.0, 0.0)[0] > 240);
     }
 }

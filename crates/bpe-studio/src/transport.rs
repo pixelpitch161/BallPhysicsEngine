@@ -114,6 +114,19 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, theme::ACCENT));
     painter.circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, theme::ACCENT);
 
+    // Where a rule ended the video, with a small handle to hover for the reason.
+    if let Some(end) = studio.end_time() {
+        let x = track.left() + (end / duration) as f32 * track.width();
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(2.0, theme::ACCENT_TEXT),
+        );
+        let handle = Rect::from_center_size(Pos2::new(x, rect.center().y), egui::vec2(10.0, rect.height()));
+        let marker = ui.interact(handle, ui.scope_id().with("video-end"), Sense::hover());
+        marker.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Video ends here"));
+        marker.on_hover_text("The video ends here (a rule ended it)");
+    }
+
     if response.drag_started() {
         studio.resume_after_scrub = studio.playing;
         studio.set_playing(false);

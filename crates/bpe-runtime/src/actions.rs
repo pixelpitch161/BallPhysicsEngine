@@ -69,6 +69,11 @@ pub enum Action {
         ball: Party,
         point: Vec2,
     },
+    /// End the video `after` seconds from now; the first one counts. Nothing moves differently:
+    /// export and the timeline stop at that moment.
+    EndVideo {
+        after: f32,
+    },
     /// Log a note event the thing's sound plays, as loud as a hit at `loudness` px/s.
     Note {
         ball: Party,
@@ -177,6 +182,13 @@ impl World {
             Action::Fire { name, ball, point } => {
                 if point.is_finite() {
                     log.push(event(EventKind::Custom(name), ball, point, 0.0));
+                }
+            }
+            Action::EndVideo { after } => {
+                if self.end_step.is_none() && after.is_finite() {
+                    let at = step + (after.max(0.0) as f64 * self.steps_per_second as f64).round() as u64;
+                    self.end_step = Some(at);
+                    log.set_end(step, at);
                 }
             }
             Action::Note { ball, loudness } => {
@@ -330,6 +342,34 @@ mod tests {
         assert!(w.gravity.is_finite());
         w.apply(vec![Action::Gravity(Vec2::new(0.0, 50.0))], &sims, &mut log);
         assert_eq!(w.gravity, Vec2::new(0.0, 50.0));
+    }
+
+    #[test]
+    fn the_first_end_counts() {
+        let (mut w, sims) = world();
+        let mut log = Log::default();
+        w.step = 240;
+        w.apply(vec![Action::EndVideo { after: 2.0 }], &sims, &mut log);
+        assert_eq!(w.end_step, Some(240 * 3));
+        assert_eq!(log.end(), Some(240 * 3));
+        w.step = 480;
+        w.apply(vec![Action::EndVideo { after: 0.0 }, Action::EndVideo { after: f32::NAN }], &sims, &mut log);
+        assert_eq!(w.end_step, Some(240 * 3), "the first one counts");
+        assert_eq!(log.end_time(240), Some(3.0));
+    }
+
+    #[test]
+    fn end_is_not_in_the_hash() {
+        let plain = Log::default();
+        let mut ended = Log::default();
+        ended.set_end(10, 100);
+        assert_eq!(plain.hash(), ended.hash());
+        assert_eq!(plain.len(), ended.len());
+        // A rewind to before the step it was asked at forgets it; to after keeps it.
+        ended.truncate_motion(10);
+        assert_eq!(ended.end(), Some(100));
+        ended.truncate_motion(9);
+        assert_eq!(ended.end(), None);
     }
 
     #[test]

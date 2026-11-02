@@ -2,6 +2,7 @@
 //! bypass switch and buttons to move or remove it, for the inspector. A graph that isn't a
 //! straight chain is edited in the node panel instead.
 
+use crate::follow_menu::FollowNames;
 use crate::theme;
 use bpe_core::{BusId, InstrumentId, ModuleId, Scene};
 use bpe_graph::{Catalog, Graph, Param, ParamSpec};
@@ -70,12 +71,12 @@ pub enum FxEdit {
 }
 
 /// Shows `graph` as a list of blocks, or as "Custom routing" when it isn't a straight chain.
-/// `channels` names the sounds a knob's Channel level can follow.
-pub fn show(ui: &mut Ui, graph: &Graph, salt: impl Hash + std::fmt::Debug, channels: &[String]) -> FxEdit {
-    ui.push_id(salt, |ui| list(ui, graph, channels)).inner
+/// `names` are the sounds and canvases a knob can follow by name.
+pub fn show(ui: &mut Ui, graph: &Graph, salt: impl Hash + std::fmt::Debug, names: &FollowNames) -> FxEdit {
+    ui.push_id(salt, |ui| list(ui, graph, names)).inner
 }
 
-fn list(ui: &mut Ui, graph: &Graph, channels: &[String]) -> FxEdit {
+fn list(ui: &mut Ui, graph: &Graph, names: &FollowNames) -> FxEdit {
     let cat = bpe_synth::catalog();
     let Some(ids) = bpe_synth::straight_chain(graph) else {
         let mut edit = FxEdit::None;
@@ -134,7 +135,7 @@ fn list(ui: &mut Ui, graph: &Graph, channels: &[String]) -> FxEdit {
                         }
                         if let Some(n) = node {
                             label.context_menu(|ui| {
-                                if let Some(with) = crate::follow_menu::menu(ui, false, channels) {
+                                if let Some(with) = crate::follow_menu::menu(ui, false, names) {
                                     follow = bpe_synth::follow(graph, n, &p.name, &with);
                                 }
                                 if follows.is_some() && ui.button("Stop following").clicked() {
@@ -254,10 +255,17 @@ mod tests {
             .with_context_setup(crate::theme::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
-                    egui::ScrollArea::vertical().show(ui, |ui| match show(ui, &s.graph, "test", &["Kick".into()]) {
-                        FxEdit::Set(g) => s.graph = g,
-                        FxEdit::OpenNodes => s.opened = true,
-                        FxEdit::None => {}
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        match show(
+                            ui,
+                            &s.graph,
+                            "test",
+                            &FollowNames { channels: vec!["Kick".into()], canvases: vec!["Card".into()] },
+                        ) {
+                            FxEdit::Set(g) => s.graph = g,
+                            FxEdit::OpenNodes => s.opened = true,
+                            FxEdit::None => {}
+                        }
                     });
                 },
                 State { graph, opened: false },

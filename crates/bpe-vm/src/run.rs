@@ -88,6 +88,10 @@ pub enum Act {
         ball: Ball,
         loudness: f32,
     },
+    /// End the video `after` seconds from now.
+    EndVideo {
+        after: f32,
+    },
 }
 
 /// What an output block collected: one entry per input pin, `None` where nothing is wired.
@@ -487,6 +491,7 @@ impl Vm {
                         walk.push(Act::Note { ball, loudness: cx.num(block, 2, 0) });
                     }
                 }
+                "end" => walk.push(Act::EndVideo { after: b.num("after").max(0.0) }),
                 "counter" => {
                     let add = cx.num(block, 1, 0);
                     *cx.counters.borrow_mut().entry(b.num("id") as u32).or_insert(0.0) += add;
@@ -1218,6 +1223,14 @@ mod rules_tests {
         // The first value never fires, even when it is already above.
         assert_eq!(canvas_fires(&s(&[0.7, 0.3, 0.6]), 50.0, "Up"), vec![2]);
         assert_eq!(canvas_fires(&s(&[0.7, 0.8]), 50.0, "Up"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn end_block_asks_to_end() {
+        let (p, _) = chain(&["when.start", "do.end"], |g, ids| param(g, ids[1], "after", Param::Number(2.5)));
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[], &mut acts);
+        assert_eq!(acts, vec![Act::EndVideo { after: 2.5 }]);
     }
 
     #[test]
