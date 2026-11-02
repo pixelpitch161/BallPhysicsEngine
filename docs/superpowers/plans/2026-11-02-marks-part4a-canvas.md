@@ -23,7 +23,7 @@
 ```sh
 git fetch origin claude/project-thread-bv0ih5
 git checkout -B <your designated branch> FETCH_HEAD
-git log --oneline -2   # faf76d3 the spec and plans, then 90f729b the shared canvas numbers interface
+git log --oneline -3   # the plan commits on top, then 90f729b (the shared canvas numbers interface)
 ```
 
 - **Golden logs.** Every existing line of `crates/bpe-kit/tests/golden.txt`, `golden-debug.txt`, `golden7.txt`, `golden7-debug.txt`, and the old engine's goldens, stays byte-identical. Only the five new demo lines may be added, at the end of `golden.txt` and `golden-debug.txt` (Task 14). Grids, claims, drops, numbers and teams never enter the log hash or the fingerprint.

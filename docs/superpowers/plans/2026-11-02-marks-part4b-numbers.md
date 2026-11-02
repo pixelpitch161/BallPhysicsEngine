@@ -22,7 +22,7 @@
 ```sh
 git fetch origin claude/project-thread-bv0ih5
 git checkout -B <your designated branch> FETCH_HEAD
-git log --oneline -2   # faf76d3 the spec and plans, then 90f729b the shared canvas numbers interface
+git log --oneline -3   # the plan commits on top, then 90f729b (the shared canvas numbers interface)
 ```
 
 - **Golden logs are byte-identical, all of them, in this stream.** You add no golden lines. Rule blocks and End the video change no physics and log no events. After Task 7 the only golden lines that differ from main are stream A's five added lines.
