@@ -21,11 +21,10 @@ use crate::modules::sound::{Order, PlaysWhen};
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion,
-    BeatSync, BurstSource, CanvasLayerPos, CanvasSettings, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings,
-    FieldShape, Fit, Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound,
-    ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatOnto,
-    SplatShape, StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene,
-    recipes,
+    BeatSync, BurstSource, CanvasSettings, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape,
+    Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound, ObstacleSettings,
+    ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatOnto, SplatShape, SplatSkin,
+    StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -68,9 +67,10 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat])
 }
 
-/// The two Marks scenes: balls painting a canvas, and balls splatting a canvas that turns.
+/// The three Marks scenes: trails on a canvas, paint thrown onto a ring and a spinning bar, and
+/// pegs that take paint.
 pub fn marks(reg: &Registry) -> Vec<(String, Scene)> {
-    build_all(reg, &[paint_pour, splat_ring])
+    build_all(reg, &[paint_pour, splat_ring, peg_paint])
 }
 
 /// Every shipped scene, stage by stage.
@@ -1711,19 +1711,24 @@ fn paint_pour(reg: &Registry) -> Scene {
     let brushes = b.module_of(BALLS, SlotId::Marks);
     b.set_params(
         brushes,
-        MarksBrushes { paint_on: true, paint_width_by: WidthBy::Size, ..MarksBrushes::default() }.to_params(),
+        MarksBrushes { paint_on: true, paint_width_by: WidthBy::Size, paint_taper: 0.3, ..MarksBrushes::default() }
+            .to_params(),
     );
     b.finish()
 }
 
-/// Balls in a ring arena splat a canvas that rides a spinning bar: the splats turn with it.
+/// Balls in a ring arena throw paint at the ring, which smears it along its line, and at a
+/// spinning bar, which wears the prints and carries them round. No canvas: the things hold it.
 fn splat_ring(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Splat ring");
     b.scene_settings(|s| {
         s.gravity = Vec2::new(0.0, 300.0);
         s.duration = 20.0;
     });
-    b.arena(|a| a.radius = 480.0);
+    b.arena(|a| {
+        a.radius = 480.0;
+        a.thickness = 22.0;
+    });
     let bar = b.add(
         "obstacle",
         ThingId::ROOT,
@@ -1732,7 +1737,7 @@ fn splat_ring(reg: &Registry) -> Scene {
         obstacle(|o| {
             o.shape = ObstacleShape::Bar;
             o.length = 560.0;
-            o.thickness = 14.0;
+            o.thickness = 40.0;
             o.spin = 25.0;
         }),
     );
@@ -1755,33 +1760,100 @@ fn splat_ring(reg: &Registry) -> Scene {
             ..Paint::default()
         };
     });
-    // The canvas is a square around the bar's middle that turns with it, on top of the balls.
-    let canvas = CanvasSettings {
-        fit: Fit::Custom,
-        size: Vec2::new(900.0, 900.0),
-        layer: CanvasLayerPos::OnTop,
-        ..CanvasSettings::default()
+    // The balls carry the colour; the ring and the bar each have a brush of their own that
+    // decides how they take it.
+    let ring_brush = MarksBrushes {
+        paint_on: false,
+        splat_on: true,
+        splat_size: 70.0,
+        splat_by_speed: 0.5,
+        splat_skin: SplatSkin::Spread,
+        ..MarksBrushes::default()
     };
-    let canvas = b.add("canvas", bar, "Canvas", Vec2::ZERO, canvas.to_params());
-    b.ride(canvas, bar, Vec2::ZERO, true);
-    let brushes = b.module_of(BALLS, SlotId::Marks);
-    let splat = MarksBrushes {
+    b.own_module(ARENA, "marks.brushes", "Ring paint", ring_brush.to_params());
+    let bar_brush = MarksBrushes {
         paint_on: false,
         splat_on: true,
         splat_shape: SplatShape::Splat,
-        splat_onto: SplatOnto::Canvases,
         splat_turn: Turn::FaceHit,
-        splat_size: 60.0,
+        splat_size: 45.0,
+        splat_skin: SplatSkin::Print,
         ..MarksBrushes::default()
     };
-    b.set_params(brushes, splat.to_params());
+    b.own_module(bar, "marks.brushes", "Bar paint", bar_brush.to_params());
+    b.finish()
+}
+
+/// Peg board where the pegs take the paint: every ball splats the pegs it hits, and its trail
+/// stays on a canvas behind.
+fn peg_paint(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Peg paint");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 900.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+        a.corner = 60.0;
+    });
+    let pegs = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Pegs",
+        Vec2::new(0.0, 100.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::PegGrid;
+            o.columns = 7;
+            o.rows = 9;
+            o.spacing = 100.0;
+            o.radius = 24.0;
+        }),
+    );
+    b.tag(pegs, "pegs");
+    b.balls("Drops", Vec2::new(0.0, -650.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 5;
+        s.rows = 2;
+        s.spacing = 44.0;
+        s.radius = 9.0;
+        s.velocity = Vec2::ZERO;
+    });
+    let bumpy = BasicBounce { bounciness: 0.7, ..BasicBounce::default() };
+    b.own_module(BALLS, "bounce.basic", "Bumpy", bumpy.to_params());
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0x5c, 0xa8),
+                Color::rgb(0xff, 0xd2, 0x3e),
+                Color::rgb(0x3e, 0xe0, 0xd0),
+                Color::rgb(0x8a, 0x6d, 0xff),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        };
+    });
+    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, CanvasSettings::default().to_params());
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    let brush = MarksBrushes {
+        paint_on: true,
+        paint_width_by: WidthBy::Size,
+        splat_on: true,
+        splat_shape: SplatShape::Splat,
+        splat_size: 36.0,
+        splat_onto: SplatOnto::ThingHit,
+        splat_skin: SplatSkin::Print,
+        ..MarksBrushes::default()
+    };
+    b.set_params(brushes, brush.to_params());
     b.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
-    use bpe_core::{Attach, SlotId, Value};
+    use bpe_core::{SlotId, Value};
 
     #[test]
     fn every_thing_in_a_built_in_scene_has_its_own_modules() {
@@ -1820,7 +1892,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 35);
+        assert_eq!(scenes.len(), 36);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1850,7 +1922,10 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
-        assert_eq!(names[30..], ["Colour paints", "Blend modes", "Graded sunset", "Paint pour", "Splat ring"]);
+        assert_eq!(
+            names[30..],
+            ["Colour paints", "Blend modes", "Graded sunset", "Paint pour", "Splat ring", "Peg paint"]
+        );
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
@@ -1871,20 +1946,31 @@ mod tests {
         let reg = registry();
         let marks = scenes::marks(&reg);
         let names: Vec<&str> = marks.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["Paint pour", "Splat ring"]);
+        assert_eq!(names, ["Paint pour", "Splat ring", "Peg paint"]);
         for (name, scene) in &marks {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
-            let canvases: Vec<_> = scene.things.values().filter(|t| t.kind == "canvas").collect();
-            assert_eq!(canvases.len(), 1, "{name}: one canvas");
+            let canvases = scene.things.values().filter(|t| t.kind == "canvas").count();
             let brushed = scene.things.values().filter(|t| t.slots.contains_key(&SlotId::Marks)).count();
             assert!(brushed > 0, "{name}: something paints");
+            // The splat ring has no canvas: the ring and the bar hold the paint themselves.
+            assert_eq!(canvases, usize::from(name != "Splat ring"), "{name}: canvases");
         }
         let ring = &marks[1].1;
-        let canvas = ring.things.values().find(|t| t.kind == "canvas").unwrap();
-        assert!(matches!(canvas.attach, Attach::Ride { .. }), "the splat ring's canvas rides a bar");
-        let parent = ring.things[&canvas.parent.expect("a parent")].params.clone();
-        assert_eq!(parent.get("shape"), Some(&Value::Choice("bar".into())));
+        let brush = |name: &str| {
+            let thing = ring
+                .things
+                .values()
+                .find(|t| t.id == bpe_core::ThingId(1) && name == "Arena" || t.name == name)
+                .expect(name);
+            let bpe_core::SlotLink::Linked { module, .. } = &thing.slots[&SlotId::Marks] else { panic!("{name}") };
+            ring.library.modules[module].params.clone()
+        };
+        assert_eq!(brush("Arena").get("splat_skin"), Some(&Value::Choice("spread".into())));
+        // Print is the default, so the bar's brush doesn't store it.
+        assert_ne!(brush("Spinning bar").get("splat_skin"), Some(&Value::Choice("spread".into())));
+        let peg = &marks[2].1;
+        assert!(peg.things.values().any(|t| t.kind == "obstacle"), "pegs");
     }
 
     #[test]

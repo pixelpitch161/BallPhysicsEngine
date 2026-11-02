@@ -18,16 +18,20 @@
             parent: Some(0),
             params: {
                 "radius": Number(480.0),
+                "thickness": Number(22.0),
             },
             slots: {
                 Look: Linked(
-                    module: 15,
-                ),
-                Bounce: Linked(
                     module: 16,
                 ),
-                Sound: Linked(
+                Bounce: Linked(
                     module: 17,
+                ),
+                Sound: Linked(
+                    module: 18,
+                ),
+                Marks: Linked(
+                    module: 14,
                 ),
             },
         ),
@@ -54,13 +58,10 @@
                     module: 8,
                 ),
                 Bounce: Linked(
-                    module: 18,
-                ),
-                Sound: Linked(
                     module: 19,
                 ),
-                Marks: Linked(
-                    module: 14,
+                Sound: Linked(
+                    module: 20,
                 ),
             },
         ),
@@ -73,36 +74,22 @@
                 "length": Number(560.0),
                 "shape": Choice("bar"),
                 "spin": Number(25.0),
-                "thickness": Number(14.0),
+                "thickness": Number(40.0),
             },
             slots: {
                 Look: Linked(
-                    module: 20,
-                ),
-                Bounce: Linked(
                     module: 21,
                 ),
-                Sound: Linked(
+                Bounce: Linked(
                     module: 22,
                 ),
+                Sound: Linked(
+                    module: 23,
+                ),
+                Marks: Linked(
+                    module: 15,
+                ),
             },
-        ),
-        4: (
-            id: 4,
-            name: "Canvas",
-            kind: "canvas",
-            parent: Some(3),
-            attach: Ride(
-                offset: (0.0, 0.0),
-                turn_with_parent: true,
-                item: None,
-            ),
-            params: {
-                "fit": Choice("custom"),
-                "layer": Choice("on_top"),
-                "size": Vec2((900.0, 900.0)),
-            },
-            slots: {},
         ),
     },
     order: [
@@ -110,7 +97,6 @@
         1,
         2,
         3,
-        4,
     ],
     library: (
         modules: {
@@ -150,33 +136,45 @@
             ),
             14: (
                 id: 14,
-                name: "Splatters marks",
+                name: "Ring paint",
                 slot: Marks,
                 kind: "marks.brushes",
                 params: {
                     "paint_on": Bool(false),
                     "splat_on": Bool(true),
-                    "splat_onto": Choice("canvases"),
-                    "splat_size": Number(60.0),
+                    "splat_size": Number(70.0),
+                    "splat_skin": Choice("spread"),
                 },
-                owner: Some(2),
+                owner: Some(1),
             ),
             15: (
                 id: 15,
+                name: "Bar paint",
+                slot: Marks,
+                kind: "marks.brushes",
+                params: {
+                    "paint_on": Bool(false),
+                    "splat_on": Bool(true),
+                    "splat_size": Number(45.0),
+                },
+                owner: Some(3),
+            ),
+            16: (
+                id: 16,
                 name: "Arena look",
                 slot: Look,
                 kind: "look.basic",
                 owner: Some(1),
             ),
-            16: (
-                id: 16,
+            17: (
+                id: 17,
                 name: "Arena bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
                 owner: Some(1),
             ),
-            17: (
-                id: 17,
+            18: (
+                id: 18,
                 name: "Arena sound",
                 slot: Sound,
                 kind: "sound.notes",
@@ -186,15 +184,15 @@
                 },
                 owner: Some(1),
             ),
-            18: (
-                id: 18,
+            19: (
+                id: 19,
                 name: "Splatters bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
                 owner: Some(2),
             ),
-            19: (
-                id: 19,
+            20: (
+                id: 20,
                 name: "Splatters sound",
                 slot: Sound,
                 kind: "sound.notes",
@@ -204,22 +202,22 @@
                 },
                 owner: Some(2),
             ),
-            20: (
-                id: 20,
+            21: (
+                id: 21,
                 name: "Spinning bar look",
                 slot: Look,
                 kind: "look.basic",
                 owner: Some(3),
             ),
-            21: (
-                id: 21,
+            22: (
+                id: 22,
                 name: "Spinning bar bounce",
                 slot: Bounce,
                 kind: "bounce.basic",
                 owner: Some(3),
             ),
-            22: (
-                id: 22,
+            23: (
+                id: 23,
                 name: "Spinning bar sound",
                 slot: Sound,
                 kind: "sound.notes",
@@ -408,8 +406,8 @@
             ),
         ],
     ),
-    next_thing: 5,
-    next_module: 23,
+    next_thing: 4,
+    next_module: 24,
     next_progression: 1,
     next_instrument: 1,
 )

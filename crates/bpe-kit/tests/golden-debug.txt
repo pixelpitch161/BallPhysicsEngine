@@ -33,4 +33,5 @@ Colour paints	1237	bb4e9bb93c15fab4
 Blend modes	315	0ec14308a276ccac
 Graded sunset	601	42e25326433241b1
 Paint pour	63	c624cfb82d43796a
-Splat ring	125	bdb683813fac6ff9
+Splat ring	135	6738568001f25edf
+Peg paint	514	d9dc9a3675db2051
