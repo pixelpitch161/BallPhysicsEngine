@@ -368,7 +368,10 @@ mod tests {
         let kit = kit();
         let k = kit.registry.thing("canvas").expect("canvas kind");
         assert_eq!((k.name(), k.icon()), ("Canvas", "canvas"));
-        assert!(k.slots().is_empty() && !k.sticks_to_screen());
+        assert!(k.slots().is_empty() && !k.sticks_to_screen() && !k.can_stick_to_screen());
+        // A detail that could move during the video would restart the canvas's GPU layer.
+        let detail = super::CanvasSettings::defs().iter().find(|d| d.key == "detail").unwrap();
+        assert!(!detail.flags.keyframe && !detail.flags.pulse);
         let sim = kit.sims.thing("canvas").expect("canvas sim");
         assert!(sim.needs_walls());
         for key in ["layer", "style", "detail", "fade", "blend", "opacity", "start_colour"] {

@@ -118,6 +118,25 @@ impl Composite {
         matches!(blend, Blend::Normal | Blend::Add)
     }
 
+    /// Keeps the cached bind groups of this frame's canvases only, `current[slot]` being the
+    /// textures slot `slot` draws (none: the blank ones): a slot past the end, or one whose
+    /// textures changed, lets its old textures go.
+    pub(crate) fn keep(&mut self, current: &[Option<&CanvasTextures>]) {
+        self.groups.truncate(current.len());
+        for (cached, textures) in self.groups.iter_mut().zip(current) {
+            let paint = &textures.unwrap_or(&self.blank).paint;
+            if cached.as_ref().is_some_and(|(held, _)| held != paint) {
+                *cached = None;
+            }
+        }
+    }
+
+    /// Bind groups cached, for tests.
+    #[cfg(test)]
+    fn cached(&self) -> usize {
+        self.groups.iter().flatten().count()
+    }
+
     /// Records `canvas` into `pass`, seen through `globals`, sampling `textures` (none: only its
     /// start colour). Add adds its light; every other blend paints over what is there by its
     /// coverage. `slot` tells the canvases of one frame apart.
@@ -433,5 +452,52 @@ mod tests {
         let (left, right) = (read(30, 32), read(33, 32));
         assert!(left[0] < 0.01, "{left:?}: the old mark has faded");
         assert!(right[0] > 0.99, "{right:?}: the new mark is whole up to its edge");
+    }
+
+    #[test]
+    fn canvas_cache_lets_go_of_gone_canvases() {
+        let Some((device, queue)) = gpu() else { return };
+        let frame = Frame { width: 8, height: 8, ..Frame::default() };
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: std::mem::size_of::<crate::Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&globals, 0, bytemuck::bytes_of(&crate::Globals::new(&frame, &frame.camera, 8)));
+        let globals = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &util::globals_layout(&device),
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+        });
+        let picture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = picture.create_view(&Default::default());
+        let (a, b) = (CanvasTextures::new(&device, [4, 4]), CanvasTextures::new(&device, [4, 4]));
+        let mut composite = Composite::new(&device);
+        let c = canvas(CanvasPlace::BehindBalls, None);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = crate::begin_pass(&mut encoder, &view, "test", wgpu::LoadOp::Load);
+            composite.draw(&device, &queue, &mut pass, &globals, 0, &c, Some(&a));
+            composite.draw(&device, &queue, &mut pass, &globals, 1, &c, Some(&b));
+        }
+        queue.submit([encoder.finish()]);
+        assert_eq!(composite.cached(), 2);
+        composite.keep(&[Some(&a), Some(&b)]);
+        assert_eq!(composite.cached(), 2, "the same canvases keep theirs");
+        composite.keep(&[Some(&b)]);
+        assert_eq!(composite.cached(), 0, "slot 0 draws other textures now, and slot 1 is gone");
+        assert!(composite.groups.len() <= 1);
+        composite.keep(&[]);
+        assert!(composite.groups.is_empty(), "no canvases, nothing held");
     }
 }

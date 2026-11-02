@@ -101,8 +101,13 @@ impl StampPipeline {
                         blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
-                    // The time painted: replaced wherever a mark covers.
-                    Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                    // The time painted: replaced where the shader says (alpha 1), kept where
+                    // it does not (alpha 0). Either way the blend is exact.
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(REPLACE_BY_ALPHA),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
                 ],
             }),
             multiview_mask: None,
@@ -111,6 +116,20 @@ impl StampPipeline {
         Self { layout, pipeline }
     }
 }
+
+/// The new colour where its alpha is 1, the old where it is 0; the old alpha stays.
+const REPLACE_BY_ALPHA: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
 
 /// Marks held in a mark buffer before it is made bigger.
 const FIRST_MARKS: u64 = 256;

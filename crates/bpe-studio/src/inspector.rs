@@ -227,7 +227,7 @@ pub fn show(
                 if kind.id() != "camera" {
                     tree_rows(ui, scene, &thing, &mut edits);
                 }
-                if !matches!(kind.id(), "liquid" | "swarm" | "camera") {
+                if kind.can_stick_to_screen() && !matches!(kind.id(), "liquid" | "swarm" | "camera") {
                     let label = ui
                         .label("Stick to screen")
                         .on_hover_text("Stay put on the screen while the camera moves, like a caption");

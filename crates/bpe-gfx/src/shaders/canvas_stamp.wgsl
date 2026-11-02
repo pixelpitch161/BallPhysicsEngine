@@ -1,6 +1,6 @@
 // Stamping marks into a canvas's two textures: one instanced quad per mark, in the order the
 // marks were made. The paint texture takes each mark premultiplied over what is there; the aux
-// texture's r is replaced by the mark's time wherever the mark covers. Shapes are signed
+// texture's r is replaced by the mark's time wherever the mark covers at least half a texel. Shapes are signed
 // distances in canvas pixels with a soft edge one texel wide.
 
 struct Canvas {
@@ -204,6 +204,7 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     let amount = clamp(in.colour.a, 0.0, 1.0) * cover;
     var out: StampTargets;
     out.paint = vec4<f32>(max(in.colour.rgb, vec3<f32>(0.0)) * amount, amount);
-    out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, 1.0);
+    // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
+    out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
     return out;
 }

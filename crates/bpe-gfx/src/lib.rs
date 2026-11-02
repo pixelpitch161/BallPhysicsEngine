@@ -1033,6 +1033,10 @@ impl Renderer {
         };
         // Counts the blend composites this frame: canvases' and blend layers'.
         let mut slot = 0;
+        // The composite lets go of the textures of canvases gone since the last frame.
+        let flow = self.flow.as_ref();
+        let current: Vec<_> = frame.canvases.iter().map(|c| flow.and_then(|f| f.canvas_textures(c.thing))).collect();
+        self.canvas.keep(&current);
         {
             let mut pass =
                 begin_pass(&mut encoder, &self.targets.hdr, "background", wgpu::LoadOp::Clear(wgpu::Color::BLACK));

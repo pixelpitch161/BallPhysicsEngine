@@ -1528,6 +1528,33 @@ mod tests {
     }
 
     #[test]
+    fn canvas_soft_edges_keep_the_time_under_them() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // A wide stroke, then a thin one whose soft edge just reaches texel (0, 0).
+        sims.add_thing(Marking(|step| match step {
+            1 => vec![mark(1, bpe_runtime::MarkShape::Stroke, Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0), 20.0)],
+            2 => vec![mark(2, bpe_runtime::MarkShape::Stroke, Vec2::new(-10.0, -4.8), Vec2::new(10.0, -4.8), 5.0)],
+            _ => Vec::new(),
+        }));
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(&scene, &resolved, &sims);
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 0.1, &source);
+        let aux = read_texture(&device, &queue, &flow.canvas_textures(CANVAS).unwrap().aux);
+        let second = 2.0 / World::build(&scene, &resolved, &sims).steps_per_second as f32;
+        let first = second / 2.0;
+        // Texel (0, 0)'s centre is 5.3 from the thin stroke's middle line: a fifth covered.
+        let edge = texel(&aux, Vec2::new(0.5, 0.5))[0];
+        assert!((edge - first).abs() < 1e-5, "{edge}: the soft edge keeps the older time");
+        let inside = texel(&aux, Vec2::new(0.5, -4.5))[0];
+        assert!((inside - second).abs() < 1e-5, "{inside}: the thin stroke re-dates what it covers");
+    }
+
+    #[test]
     fn canvas_checkpoints_restore_its_textures() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();

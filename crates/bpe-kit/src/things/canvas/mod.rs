@@ -141,4 +141,8 @@ impl ThingKind for CanvasThingKind {
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
     }
+    // The renderer draws only the world's canvases, never the screen's.
+    fn can_stick_to_screen(&self) -> bool {
+        false
+    }
 }
