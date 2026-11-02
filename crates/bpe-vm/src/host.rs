@@ -31,6 +31,12 @@ pub trait Host {
     fn things_of(&self, _target: &Target) -> Vec<ThingId> {
         Vec::new()
     }
+    /// A number of the first canvas `canvas` names (Covered, Revealed, Wet, or Share of `team`),
+    /// 0 to 1, as it stands this step; `None` when there is no such canvas, it has not reported
+    /// yet, or the team is unknown.
+    fn canvas_number(&self, _canvas: &Target, _number: &str, _team: &str) -> Option<f32> {
+        None
+    }
     /// A note (MIDI key) of the chord playing at `time`, picked by `index`.
     fn chord_note(&self, _time: f32, _index: u64) -> Option<f32> {
         None

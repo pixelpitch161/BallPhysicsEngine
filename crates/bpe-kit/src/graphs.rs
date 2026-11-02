@@ -9,7 +9,7 @@ use bpe_core::{
     SlotId, Target, ThingId, Value, ValueType, resolve_with,
 };
 use bpe_graph::{Graph, Link, Param};
-use bpe_runtime::{Action, Event, EventKind, Party, World};
+use bpe_runtime::{Action, CanvasRef, Event, EventKind, Party, World};
 use bpe_vm::{Act, Ball, BallInfo, Happening, Host, Program, Role, Trigger, is_setting};
 use glam::Vec2;
 
@@ -282,6 +282,13 @@ impl Host for WorldHost<'_> {
         let (with, without): (Vec<ThingId>, Vec<ThingId>) =
             all.into_iter().partition(|t| self.world.bodies.contains_key(t));
         with.into_iter().chain(without).collect()
+    }
+
+    fn canvas_number(&self, canvas: &Target, number: &str, team: &str) -> Option<f32> {
+        let id =
+            self.world.things_of(self.me, canvas).into_iter().find(|id| self.world.kind_of(*id) == Some("canvas"))?;
+        let r = CanvasRef { canvas: String::new(), number: number.to_lowercase(), team: team.trim().into() };
+        r.value(self.world.canvas_numbers_of(id)?, self.world.teams_of(id))
     }
 }
 
@@ -574,5 +581,34 @@ mod tests {
             assert_eq!((forced.0, forced.1), (native.0, native.1), "{name}: the event log changed");
             assert_eq!(forced.2, native.2, "{name}: the soundtrack changed");
         }
+    }
+
+    #[test]
+    fn world_host_reads_canvas_numbers() {
+        use bpe_runtime::{CanvasNumbers, Log, Team};
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let id = crate::add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        fn host(w: &World) -> WorldHost<'_> {
+            WorldHost { world: w, me: ThingId::ROOT }
+        }
+        assert_eq!(host(&world).canvas_number(&Target::Anything, "Revealed", ""), None, "not reported yet");
+        world.report_canvas(
+            id,
+            CanvasNumbers { revealed: 0.3, shares: vec![0.1, 0.4], ..Default::default() },
+            &mut log,
+        );
+        let teams = vec![
+            Team { name: "Red".into(), colour: [1.0, 0.0, 0.0, 1.0] },
+            Team { name: "Blue".into(), colour: [0.0, 0.0, 1.0, 1.0] },
+        ];
+        world.set_teams(id, teams, &mut log);
+        let h = host(&world);
+        assert_eq!(h.canvas_number(&Target::Anything, "Revealed", ""), Some(0.3));
+        assert_eq!(h.canvas_number(&Target::Anything, "Share", "blue"), Some(0.4));
+        assert_eq!(h.canvas_number(&Target::Anything, "Share", "Green"), None);
     }
 }
