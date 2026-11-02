@@ -84,6 +84,29 @@ pub fn wet(c: &Cell, now: u32, dry_ticks: u32) -> bool {
     c.amount > 0 && ((now as u16).wrapping_sub(c.painted) as u32) < dry_ticks.min(MAX_DRY_TICKS)
 }
 
+/// What a cover, powder or fog canvas's cells hold when nothing has touched them.
+pub const REST_COVER: u8 = 255;
+pub const REST_POWDER: u8 = 160;
+pub const REST_FOG: u8 = 255;
+
+/// The size of a grid, copied out so cells can be visited while the grid is written.
+#[derive(Clone, Copy)]
+struct Geom {
+    cell_size: f32,
+    width: u32,
+    height: u32,
+}
+
+impl Geom {
+    /// World position to 16.16 cell units, with the grid centred on the origin.
+    fn to_fixed(self, p: Vec2) -> (i64, i64) {
+        let p = p.clamp(Vec2::splat(-WORLD_LIMIT), Vec2::splat(WORLD_LIMIT));
+        let cs = self.cell_size as f64;
+        let conv = |v: f32, n: u32| ((v as f64 / cs + n as f64 / 2.0) * ONE as f64).round() as i64;
+        (conv(p.x, self.width), conv(p.y, self.height))
+    }
+}
+
 /// A grid of paint cells with copy-on-write tiles.
 #[derive(Clone)]
 pub struct CanvasGrid {
@@ -94,18 +117,32 @@ pub struct CanvasGrid {
     tiles: Vec<Arc<[Cell; TILE_CELLS]>>,
     /// Per tile, the full tick it was last painted at, or [`NEVER`]. Not hashed.
     tile_tick: Vec<u32>,
+    /// What an untouched cell's amount is: 0 for paint, more for the surfaces balls remove.
+    rest: u8,
+    /// Per tile, how many real cells have an amount other than `rest`. Not hashed.
+    tile_off: Vec<u16>,
+    /// Per tile, the sum over real cells of how far the amount is below `rest`. Not hashed.
+    tile_deficit: Vec<u32>,
+    off_total: u64,
+    deficit_total: u64,
 }
 
 impl CanvasGrid {
     /// An empty grid covering `size` world pixels, centred on the origin.
     /// Cells start at 4 px and double until there are at most 300,000.
     pub fn new(size: Vec2) -> Self {
+        Self::surface(size, 0, START_CELL_SIZE, MAX_CELLS)
+    }
+
+    /// A grid covering `size` world pixels whose untouched cells hold `rest`. Cells start at
+    /// `start_cell` px and double until there are at most `max_cells`.
+    pub fn surface(size: Vec2, rest: u8, start_cell: f32, max_cells: u64) -> Self {
         let size = size.max(Vec2::ONE);
-        let mut cell_size = START_CELL_SIZE;
+        let mut cell_size = start_cell;
         let dims = |cs: f32| ((size.x / cs).ceil().max(1.0) as u64, (size.y / cs).ceil().max(1.0) as u64);
         loop {
             let (w, h) = dims(cell_size);
-            if w * h <= MAX_CELLS {
+            if w * h <= max_cells {
                 break;
             }
             cell_size *= 2.0;
@@ -114,9 +151,88 @@ impl CanvasGrid {
         let (width, height) = (w as u32, h as u32);
         let tiles_x = width.div_ceil(TILE);
         let tiles_y = height.div_ceil(TILE);
-        let blank = Arc::new([Cell::default(); TILE_CELLS]);
+        let blank = Arc::new([Cell { amount: rest, ..Cell::default() }; TILE_CELLS]);
         let count = (tiles_x * tiles_y) as usize;
-        CanvasGrid { cell_size, width, height, tiles_x, tiles: vec![blank; count], tile_tick: vec![NEVER; count] }
+        CanvasGrid {
+            cell_size,
+            width,
+            height,
+            tiles_x,
+            tiles: vec![blank; count],
+            tile_tick: vec![NEVER; count],
+            rest,
+            tile_off: vec![0; count],
+            tile_deficit: vec![0; count],
+            off_total: 0,
+            deficit_total: 0,
+        }
+    }
+
+    /// What an untouched cell holds.
+    pub fn rest(&self) -> u8 {
+        self.rest
+    }
+
+    /// Cells that are really on the canvas (not the padding of the last tiles).
+    pub fn real_cells(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+
+    /// Cells whose amount is not `rest`.
+    pub fn off_cells(&self) -> u64 {
+        self.off_total
+    }
+
+    /// The sum over cells of how far the amount is below `rest`.
+    pub fn deficit(&self) -> u64 {
+        self.deficit_total
+    }
+
+    /// How much of a cover, powder or fog has been taken away, 0 to 1; 0 for paint.
+    pub fn revealed(&self) -> f32 {
+        if self.rest == 0 {
+            return 0.0;
+        }
+        self.deficit_total as f32 / (self.rest as f32 * self.real_cells() as f32)
+    }
+
+    /// Paint: the share of cells painted. Other surfaces: the share still there.
+    pub fn covered(&self) -> f32 {
+        if self.rest == 0 { self.off_total as f32 / self.real_cells() as f32 } else { 1.0 - self.revealed() }
+    }
+
+    /// The amounts as an image: RGBA8, one pixel per real cell, row by row, `[amount, 0, 0, 255]`.
+    pub fn image(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.real_cells() as usize * 4);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                out.extend_from_slice(&[self.get(x, y).amount, 0, 0, 255]);
+            }
+        }
+        out
+    }
+
+    fn geom(&self) -> Geom {
+        Geom { cell_size: self.cell_size, width: self.width, height: self.height }
+    }
+
+    /// Writes `new` into `slot` of `tile`, keeping the tile's and the grid's counters, and only
+    /// un-sharing the tile when the cell changes.
+    fn write(&mut self, tile: usize, slot: usize, new: Cell) {
+        let old = self.tiles[tile][slot];
+        if old == new {
+            return;
+        }
+        let rest = self.rest;
+        let off = |c: Cell| (c.amount != rest) as i64;
+        let short = |c: Cell| (rest as i64 - c.amount as i64).max(0);
+        let d_off = off(new) - off(old);
+        let d_def = short(new) - short(old);
+        self.tile_off[tile] = (self.tile_off[tile] as i64 + d_off) as u16;
+        self.tile_deficit[tile] = (self.tile_deficit[tile] as i64 + d_def) as u32;
+        self.off_total = (self.off_total as i64 + d_off) as u64;
+        self.deficit_total = (self.deficit_total as i64 + d_def) as u64;
+        Arc::make_mut(&mut self.tiles[tile])[slot] = new;
     }
 
     /// World pixels along one side of a cell.
@@ -176,27 +292,42 @@ impl CanvasGrid {
         };
         let colour = Color::from_linear(m.colour);
         let alpha = colour.a as i32;
-        let a = self.to_fixed(m.from);
-        let b = self.to_fixed(to);
-        let r = (radius.clamp(0.0, WORLD_LIMIT) / self.cell_size * ONE as f32) as i64;
+        let drip = m.shape == MarkShape::Drip;
+        let mut cells = Vec::new();
+        Self::capsule_cells(self.geom(), m, to, radius, radius, &mut |x, y, _| cells.push((x, y)));
+        for (x, y) in cells {
+            self.paint(x, y, colour, alpha, ink, tick, by, drip);
+        }
+    }
+
+    /// Visits every grid cell whose centre is within `reach` (canvas px) of the segment
+    /// m.from → to, with the ribbon and drip cuts of `m` applied. Passes the cell and whether it
+    /// is also inside `radius`.
+    fn capsule_cells(g: Geom, m: &Mark, to: Vec2, radius: f32, reach: f32, f: &mut dyn FnMut(u32, u32, bool)) {
+        let a = g.to_fixed(m.from);
+        let b = g.to_fixed(to);
+        let to_cells = |v: f32| (v.clamp(0.0, WORLD_LIMIT) / g.cell_size * ONE as f32) as i64;
+        let r = to_cells(radius);
         let r2 = r as i128 * r as i128;
+        let reach_r = to_cells(reach).max(r);
+        let reach2 = reach_r as i128 * reach_r as i128;
         // The ribbon cuts, in fixed point as the shader does them.
-        let ribbon = matches!(m.shape, MarkShape::Stroke | MarkShape::Smear);
+        let ribbon = matches!(m.shape, MarkShape::Stroke | MarkShape::Smear | MarkShape::Scrape);
         let joined = m.shape == MarkShape::Drip && m.variant & DRIP_JOINED != 0;
         let before =
             ((m.angle.cos() as f64 * ONE as f64).round() as i128, (m.angle.sin() as f64 * ONE as f64).round() as i128);
         let cut_before = (ribbon && m.variant & 2 != 0) || joined;
         let cut_after = ribbon && m.variant & 4 != 0;
-        let start_r = (m.radius.clamp(0.0, WORLD_LIMIT) / self.cell_size * ONE as f32) as i64;
+        let start_r = to_cells(m.radius);
         let start_r2 = start_r as i128 * start_r as i128;
 
         // Bounding box of cells, clipped to the grid.
-        let lo = |v: i64| (v - r).div_euclid(ONE);
-        let hi = |v: i64| (v + r).div_euclid(ONE);
+        let lo = |v: i64| (v - reach_r).div_euclid(ONE);
+        let hi = |v: i64| (v + reach_r).div_euclid(ONE);
         let x0 = lo(a.0.min(b.0)).max(0);
-        let x1 = hi(a.0.max(b.0)).min(self.width as i64 - 1);
+        let x1 = hi(a.0.max(b.0)).min(g.width as i64 - 1);
         let y0 = lo(a.1.min(b.1)).max(0);
-        let y1 = hi(a.1.max(b.1)).min(self.height as i64 - 1);
+        let y1 = hi(a.1.max(b.1)).min(g.height as i64 - 1);
         if x0 > x1 || y0 > y1 {
             return;
         }
@@ -215,7 +346,8 @@ impl CanvasGrid {
                 } else {
                     (p.0 - d.0 * dot / dd, p.1 - d.1 * dot / dd)
                 };
-                if ox * ox + oy * oy > r2 {
+                let dist2 = ox * ox + oy * oy;
+                if dist2 > reach2 {
                     continue;
                 }
                 if cut_before && p.0 * before.0 + p.1 * before.1 < 0 {
@@ -227,7 +359,107 @@ impl CanvasGrid {
                 if cut_after && dd > 0 && dot >= dd {
                     continue;
                 }
-                self.paint(x as u32, y as u32, colour, alpha, ink, tick, by, m.shape == MarkShape::Drip);
+                f(x as u32, y as u32, dist2 <= r2);
+            }
+        }
+    }
+
+    /// Takes away what a Scrape or Chip mark `m` (canvas pixels) covers; other marks do nothing.
+    /// `ridges` (powder only) piles a ridge of up to 35 % of the rest height beside the track.
+    /// Colour, date, team and painter of a cell are left alone, and no tile wakes.
+    pub fn scrape(&mut self, m: &Mark, ridges: f32) {
+        let s = (m.colour[3].clamp(0.0, 1.0) * 255.0).round() as u32;
+        if s == 0 {
+            return;
+        }
+        let material = self.rest > 0;
+        let take = ((s * self.rest as u32 + 127) / 255) as u8;
+        let ridge = if self.rest == REST_POWDER {
+            (ridges.clamp(0.0, 1.0) * s as f32 / 255.0 * self.rest as f32 * 0.35).round() as u8
+        } else {
+            0
+        };
+        let wipe = |c: Cell, inside: bool| -> Cell {
+            let amount = if inside {
+                if material { c.amount.saturating_sub(take) } else { (c.amount as u32 * (255 - s) / 255) as u8 }
+            } else {
+                c.amount.saturating_add(ridge)
+            };
+            Cell { amount, ..c }
+        };
+        let mut cells: Vec<(u32, u32, bool)> = Vec::new();
+        match m.shape {
+            MarkShape::Scrape => {
+                let radius = (m.radius + m.radius_to) * 0.5;
+                let reach = if ridge > 0 { radius * 1.6 } else { radius };
+                Self::capsule_cells(self.geom(), m, m.to, radius, reach, &mut |x, y, inside| {
+                    cells.push((x, y, inside))
+                });
+            }
+            MarkShape::Chip => {
+                let r = m.radius.clamp(0.0, WORLD_LIMIT);
+                let (c, sn) = (m.angle.cos(), m.angle.sin());
+                let shape = ((m.variant >> 5) & 7) as u32;
+                let reach = 2.4 * r;
+                let lo = self.cell_at_clamped(m.from - Vec2::splat(reach));
+                let hi = self.cell_at_clamped(m.from + Vec2::splat(reach));
+                for y in lo.1..=hi.1 {
+                    for x in lo.0..=hi.0 {
+                        let o = self.centre_of(x, y) - m.from;
+                        let q = Vec2::new(c * o.x + sn * o.y, -sn * o.x + c * o.y);
+                        let d = bpe_gfx::chip_distance(shape, q, r, (m.variant & 31) as u32);
+                        if d <= 0.0 {
+                            cells.push((x, y, true));
+                        } else if d <= 0.6 * r {
+                            cells.push((x, y, false));
+                        }
+                    }
+                }
+            }
+            _ => return,
+        }
+        for (x, y, inside) in cells {
+            if !inside && ridge == 0 {
+                continue;
+            }
+            let (tile, slot) = self.locate(x, y);
+            let old = self.tiles[tile][slot];
+            self.write(tile, slot, wipe(old, inside));
+        }
+    }
+
+    /// The cell holding canvas point `p`, pulled onto the grid.
+    fn cell_at_clamped(&self, p: Vec2) -> (u32, u32) {
+        let p = p.clamp(Vec2::splat(-WORLD_LIMIT), Vec2::splat(WORLD_LIMIT));
+        let x = (p.x / self.cell_size + self.width as f32 / 2.0).floor().clamp(0.0, self.width as f32 - 1.0);
+        let y = (p.y / self.cell_size + self.height as f32 / 2.0).floor().clamp(0.0, self.height as f32 - 1.0);
+        (x as u32, y as u32)
+    }
+
+    /// Moves every changed cell toward `rest` by at most `step_amount`, up or down.
+    pub fn grow_back(&mut self, step_amount: u8) {
+        if step_amount == 0 {
+            return;
+        }
+        for t in 0..self.tiles.len() {
+            if self.tile_off[t] == 0 {
+                continue;
+            }
+            let (x0, x1, y0, y1) = self.tile_cells(t);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (tile, slot) = self.locate(x, y);
+                    let old = self.tiles[tile][slot];
+                    if old.amount == self.rest {
+                        continue;
+                    }
+                    let amount = if old.amount < self.rest {
+                        old.amount.saturating_add(step_amount).min(self.rest)
+                    } else {
+                        old.amount.saturating_sub(step_amount).max(self.rest)
+                    };
+                    self.write(tile, slot, Cell { amount, ..old });
+                }
             }
         }
     }
@@ -237,9 +469,7 @@ impl CanvasGrid {
     /// tile's tick becomes `dated` when the tile was NEVER painted or `dated` is newer.
     pub fn set(&mut self, x: u32, y: u32, cell: Cell, dated: Option<u32>) {
         let (tile, slot) = self.locate(x, y);
-        if self.tiles[tile][slot] != cell {
-            Arc::make_mut(&mut self.tiles[tile])[slot] = cell;
-        }
+        self.write(tile, slot, cell);
         if let Some(tick) = dated {
             self.wake(tile, tick);
         }
@@ -269,16 +499,12 @@ impl CanvasGrid {
             .collect()
     }
 
-    /// The share of cells that have been painted (`amount > 0`), 0 to 1.
-    pub fn covered(&self) -> f32 {
-        let painted: usize = self.tiles.iter().map(|t| t.iter().filter(|c| c.amount > 0).count()).sum();
-        // Padding cells past the edge are never painted, so count real cells.
-        painted as f32 / (self.width as f32 * self.height as f32)
-    }
-
     /// Memory the cells take, counting every tile as if unshared.
     pub fn bytes(&self) -> usize {
-        self.tiles.len() * TILE_CELLS * std::mem::size_of::<Cell>() + self.tile_tick.len() * 4
+        self.tiles.len() * TILE_CELLS * std::mem::size_of::<Cell>()
+            + self.tile_tick.len() * 4
+            + self.tile_off.len() * 2
+            + self.tile_deficit.len() * 4
     }
 
     /// A 64-bit FNV-1a hash of the grid size and every cell.
@@ -318,10 +544,7 @@ impl CanvasGrid {
 
     /// World position to 16.16 cell units, with the grid centred on the origin.
     fn to_fixed(&self, p: Vec2) -> (i64, i64) {
-        let p = p.clamp(Vec2::splat(-WORLD_LIMIT), Vec2::splat(WORLD_LIMIT));
-        let cs = self.cell_size as f64;
-        let conv = |v: f32, n: u32| ((v as f64 / cs + n as f64 / 2.0) * ONE as f64).round() as i64;
-        (conv(p.x, self.width), conv(p.y, self.height))
+        self.geom().to_fixed(p)
     }
 
     /// Marks `tile` as painted at full tick `tick` when that is news.
@@ -351,9 +574,7 @@ impl CanvasGrid {
         let keep = keep_date && old.amount > 0;
         let painted = if keep { old.painted } else { tick as u16 };
         let next = Cell { rgb, amount: old.amount.saturating_add(ink), painted, team: old.team, by };
-        if next != old {
-            Arc::make_mut(&mut self.tiles[tile])[slot] = next;
-        }
+        self.write(tile, slot, next);
         if !keep {
             self.wake(tile, tick);
         }
@@ -585,5 +806,219 @@ mod tests {
         // Inside the old paint: dated as it was. Beyond it: fresh.
         assert_eq!(at(&g, 0.0, 0.0).painted, 5);
         assert_eq!(at(&g, 0.0, 40.0).painted, 50);
+    }
+
+    /// The stamps of the capsule and splat tests, one grid.
+    fn paint_baseline() -> CanvasGrid {
+        let mut g = CanvasGrid::new(Vec2::new(400.0, 400.0));
+        g.stamp(&mark(MarkShape::Stroke, Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0), 1, 1);
+        g.stamp(&mark(MarkShape::Splat, Vec2::new(10.0, 10.0), Vec2::new(10.0, 10.0), 15.0), 2, 2);
+        let one = Mark { variant: 4, ..mark(MarkShape::Stroke, Vec2::new(-40.0, 60.0), Vec2::new(0.0, 60.0), 8.0) };
+        let two = Mark { variant: 2, ..mark(MarkShape::Stroke, Vec2::new(0.0, 60.0), Vec2::new(40.0, 80.0), 8.0) };
+        g.stamp(&one, 3, 3);
+        g.stamp(&two, 3, 3);
+        g.stamp(&mark(MarkShape::Drip, Vec2::new(0.0, -20.0), Vec2::new(0.0, 60.0), 3.0), 4, 0);
+        g.stamp(&mark(MarkShape::Picture, Vec2::new(-80.0, -80.0), Vec2::new(-80.0, -80.0), 40.0), 5, 4);
+        g
+    }
+
+    #[test]
+    fn paint_grid_is_unchanged_by_the_rest_value() {
+        let g = paint_baseline();
+        assert_eq!(g.hash(), 8373683792163834270, "baseline");
+    }
+
+    fn scrape_mark(from: Vec2, to: Vec2, radius: f32, strength: f32) -> Mark {
+        Mark {
+            colour: [0.0, 0.0, 0.0, strength],
+            colour_to: [0.0, 0.0, 0.0, strength],
+            ..mark(MarkShape::Scrape, from, to, radius)
+        }
+    }
+
+    fn chip_mark(at: Vec2, radius: f32, variant: u8, strength: f32) -> Mark {
+        Mark {
+            variant,
+            colour: [0.0, 0.0, 0.0, strength],
+            colour_to: [0.0, 0.0, 0.0, strength],
+            ..mark(MarkShape::Chip, at, at, radius)
+        }
+    }
+
+    fn cover(size: f32) -> CanvasGrid {
+        CanvasGrid::surface(Vec2::splat(size), REST_COVER, 2.0, 600_000)
+    }
+
+    #[test]
+    fn surface_starts_at_rest() {
+        let g = cover(400.0);
+        assert_eq!(g.cell_size(), 2.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 255);
+        assert_eq!(at(&g, 150.0, -150.0).amount, 255);
+        assert_eq!((g.off_cells(), g.deficit()), (0, 0));
+        assert_eq!((g.revealed(), g.covered()), (0.0, 1.0));
+    }
+
+    #[test]
+    fn surface_cell_size_doubles_past_its_cap() {
+        let g = CanvasGrid::surface(Vec2::new(1080.0, 1920.0), 255, 2.0, 600_000);
+        assert_eq!((g.cell_size(), g.dims()), (2.0, (540, 960)));
+        assert_eq!(CanvasGrid::surface(Vec2::new(1080.0, 4000.0), 255, 2.0, 600_000).cell_size(), 4.0);
+    }
+
+    #[test]
+    fn scrape_takes_cover_away() {
+        let mut g = cover(400.0);
+        g.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0, 1.0), 0.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 0);
+        assert_eq!(at(&g, 90.0, 0.0).amount, 0);
+        assert_eq!(at(&g, 0.0, 20.0).amount, 255);
+        let changed = g.off_cells();
+        assert!(changed > 0 && g.revealed() > 0.0);
+        let want = (changed * 255) as f32 / (255.0 * g.real_cells() as f32);
+        assert!((g.revealed() - want).abs() < 1e-6);
+        assert!((g.covered() + g.revealed() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn half_strength_takes_half() {
+        let mut g = cover(400.0);
+        let m = scrape_mark(Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0), 10.0, 0.5);
+        g.scrape(&m, 0.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 127);
+        g.scrape(&m, 0.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 0);
+    }
+
+    #[test]
+    fn scrape_wipes_paint() {
+        let mut g = CanvasGrid::new(Vec2::new(400.0, 400.0));
+        let red = mark(MarkShape::Splat, Vec2::ZERO, Vec2::ZERO, 30.0);
+        g.stamp(&red, 0, 1);
+        g.stamp(&red, 0, 1);
+        g.stamp(&mark(MarkShape::Stroke, Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0), 8.0), 0, 1);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 255);
+        let before = at(&g, 0.0, 0.0);
+        g.scrape(&scrape_mark(Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0), 10.0, 0.5), 0.0);
+        let c = at(&g, 0.0, 0.0);
+        assert_eq!(c.amount as u32, 255 * 127 / 255);
+        assert_eq!((c.rgb, c.painted, c.by), (before.rgb, before.painted, before.by));
+        g.scrape(&scrape_mark(Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0), 10.0, 1.0), 0.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 0);
+    }
+
+    #[test]
+    fn ridges_rise_beside_the_track() {
+        let powder = || CanvasGrid::surface(Vec2::splat(400.0), REST_POWDER, 4.0, 300_000);
+        let mut g = powder();
+        g.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 20.0, 1.0), 1.0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 0);
+        assert_eq!(at(&g, 0.0, 26.0).amount, 216);
+        assert_eq!(at(&g, 0.0, 40.0).amount, 160);
+        let mut flat = powder();
+        flat.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 20.0, 1.0), 0.0);
+        assert_eq!(at(&flat, 0.0, 26.0).amount, 160);
+        // A ridge never passes 255, even when scraped over again.
+        for _ in 0..10 {
+            g.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 20.0, 1.0), 1.0);
+        }
+        assert_eq!(at(&g, 0.0, 26.0).amount, 255);
+        // A cover has no ridges.
+        let mut c = cover(400.0);
+        c.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 20.0, 1.0), 1.0);
+        assert_eq!(at(&c, 0.0, 26.0).amount, 255);
+    }
+
+    #[test]
+    fn ridges_respect_the_ribbon_cut() {
+        let mut g = CanvasGrid::surface(Vec2::splat(400.0), REST_POWDER, 4.0, 300_000);
+        let m = Mark { variant: 2, angle: 0.0, ..scrape_mark(Vec2::ZERO, Vec2::new(100.0, 0.0), 20.0, 1.0) };
+        g.scrape(&m, 1.0);
+        assert_eq!(at(&g, -26.0, 0.0).amount, 160);
+        assert_eq!(at(&g, 50.0, 26.0).amount, 216);
+    }
+
+    #[test]
+    fn chip_covers_its_shape() {
+        let mut g = cover(400.0);
+        g.scrape(&chip_mark(Vec2::ZERO, 40.0, 1 << 5, 1.0), 0.0);
+        assert_eq!(at(&g, 34.0, 0.0).amount, 0);
+        assert_eq!(at(&g, 0.0, 0.0).amount, 255);
+    }
+
+    #[test]
+    fn grow_back_returns_to_rest() {
+        let mut g = cover(400.0);
+        g.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0, 1.0), 0.0);
+        let step = (255.0f32 / (2.0 * 30.0)).ceil() as u8;
+        for _ in 0..60 {
+            g.grow_back(step);
+        }
+        assert_eq!((g.off_cells(), g.deficit()), (0, 0));
+        assert_eq!(at(&g, 0.0, 0.0).amount, 255);
+        let mut p = CanvasGrid::surface(Vec2::splat(400.0), REST_POWDER, 4.0, 300_000);
+        p.scrape(&scrape_mark(Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 20.0, 1.0), 1.0);
+        assert_eq!(at(&p, 0.0, 26.0).amount, 216);
+        for _ in 0..60 {
+            p.grow_back(10);
+        }
+        assert_eq!(at(&p, 0.0, 26.0).amount, 160);
+        assert_eq!((p.off_cells(), p.deficit()), (0, 0));
+        g.grow_back(0);
+    }
+
+    #[test]
+    fn counters_match_a_full_scan() {
+        let mut g = CanvasGrid::surface(Vec2::splat(300.0), REST_POWDER, 4.0, 300_000);
+        let unit = |k: u64, i: u64| (mix(k, i) >> 40) as f32 / (1u64 << 24) as f32;
+        let check = |g: &CanvasGrid, what: &str| {
+            let (w, h) = g.dims();
+            let (mut off, mut def) = (0u64, 0u64);
+            for y in 0..h {
+                for x in 0..w {
+                    let a = g.get(x, y).amount;
+                    off += (a != g.rest()) as u64;
+                    def += g.rest().saturating_sub(a) as u64;
+                }
+            }
+            assert_eq!((g.off_cells(), g.deficit()), (off, def), "{what}");
+        };
+        for k in 0..500u64 {
+            let at = Vec2::new(unit(k, 0) * 300.0 - 150.0, unit(k, 1) * 300.0 - 150.0);
+            let r = 2.0 + unit(k, 2) * 38.0;
+            let strength = unit(k, 3);
+            if k % 2 == 0 {
+                let to = at + Vec2::new(unit(k, 4) * 80.0 - 40.0, unit(k, 5) * 80.0 - 40.0);
+                g.scrape(&scrape_mark(at, to, r, strength), 0.7);
+            } else {
+                g.scrape(&chip_mark(at, r, ((k % 6) as u8) << 5 | (k % 8) as u8, strength), 0.7);
+            }
+            if k % 25 == 0 {
+                g.grow_back(9);
+            }
+            check(&g, &format!("op {k}"));
+        }
+    }
+
+    /// A SplitMix-style mix of two numbers, for test positions.
+    fn mix(a: u64, b: u64) -> u64 {
+        let mut z =
+            a.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(b.wrapping_mul(0xbf58_476d_1ce4_e5b9)).wrapping_add(1);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    #[test]
+    fn image_has_one_pixel_per_cell() {
+        let mut g = cover(100.0);
+        g.scrape(&scrape_mark(Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0), 3.0, 1.0), 0.0);
+        let img = g.image();
+        let (w, h) = g.dims();
+        assert_eq!(img.len(), (w * h * 4) as usize);
+        let (cx, cy) = g.cell_at(Vec2::ZERO).unwrap();
+        let i = ((cy * w + cx) * 4) as usize;
+        assert_eq!(&img[i..i + 4], &[0, 0, 0, 255]);
+        assert_eq!(&img[0..4], &[255, 0, 0, 255]);
     }
 }
