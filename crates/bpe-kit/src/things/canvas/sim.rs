@@ -16,7 +16,7 @@ use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
-use crate::modules::marks::{MarkColour, MarksBrushes, SplatShape, Tip, Turn, When, WidthBy};
+use crate::modules::marks::{MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy};
 use crate::paint::{Follow, Inputs, colour_at};
 use crate::things::liquid::sim::bounds;
 
@@ -85,6 +85,10 @@ impl ThingSim for CanvasSim {
             Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every, tick_every }),
         );
         self.place(thing.id, world);
+    }
+
+    fn after_build(&self, _thing: ThingId, world: &mut World) {
+        crate::pictures::fill(world);
     }
 
     fn needs_walls(&self) -> bool {
@@ -406,8 +410,23 @@ pub(crate) struct Stamp {
 /// shape, size, turn and variant. Only a splat leans with the ball and squashes; the other
 /// shapes face the hit.
 pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> Stamp {
+    if b.splat_shape == SplatShape::Picture && !b.splat_picture.trim().is_empty() {
+        let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+        let (radius, random_angle, _) =
+            splat_look(e, mover, b.splat_size, b.splat_by_speed, b.splat_variants, b.splat_turn, pose_angle);
+        // A facing picture stands with its up (-y) along the hit normal, away from the surface.
+        let angle = match b.splat_turn {
+            Turn::FaceHit => {
+                let n = e.normal.normalize_or_zero();
+                n.x.atan2(-n.y) - pose_angle
+            }
+            Turn::Random => random_angle,
+        };
+        let tint = if b.splat_picture_colours == PictureColours::Tinted { crate::pictures::TINTED } else { 0 };
+        let variant = crate::pictures::slot_of(world, &b.splat_picture) | tint;
+        return Stamp { shape: MarkShape::Picture, radius, angle, variant };
+    }
     let shape = match b.splat_shape {
-        // Task 4 gives Picture its own mark.
         SplatShape::Splat | SplatShape::Picture => MarkShape::Splat,
         SplatShape::Ring => MarkShape::Ring,
         SplatShape::Star => MarkShape::Star,

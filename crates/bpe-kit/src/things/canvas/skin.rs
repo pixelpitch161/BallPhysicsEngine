@@ -350,7 +350,7 @@ fn splats_things(b: &MarksBrushes) -> bool {
 }
 
 /// The brushes in the world, in the world's order, with their owners.
-fn brushes(world: &World) -> impl Iterator<Item = (ThingId, &MarksBrushes)> {
+pub(crate) fn brushes(world: &World) -> impl Iterator<Item = (ThingId, &MarksBrushes)> {
     world.order().iter().filter_map(|&thing| {
         let (_, brush) = world.module_state(thing, SlotId::Marks)?;
         Some((thing, brush.as_any().downcast_ref::<MarksBrushes>()?))
@@ -361,6 +361,8 @@ fn brushes(world: &World) -> impl Iterator<Item = (ThingId, &MarksBrushes)> {
 /// The skin covers the thing's outline, centred on the thing, with room for the biggest splat
 /// and the widest line paint around it. Arenas and obstacles call it once everything is built.
 pub fn build(thing: ThingId, world: &mut World) {
+    // A scene with only skins still gets its picture table.
+    crate::pictures::fill(world);
     let Some(skin) = skin_settings(world, thing).filter(|s| s.skin_on).cloned() else { return };
     let splat = brushes(world)
         .filter(|(_, b)| splats_things(b))
