@@ -3,7 +3,7 @@
 use bpe_core::{Params, Resolved, Scene, Settings, SlotId, ThingId, Value, resolve};
 use glam::Vec2;
 
-use crate::{Kit, kit, new_scene};
+use crate::{Kit, add_thing, fill_slot, kit, new_scene};
 
 pub const ARENA: ThingId = ThingId(1);
 pub const BALLS: ThingId = ThingId(2);
@@ -143,4 +143,49 @@ pub fn log_hash_and_samples(scene: &Scene, kit: &Kit) -> (u64, usize, Vec<f32>) 
     playback.seek(root.duration as f64);
     let log = playback.log();
     (log.hash(), log.len(), crate::mix_scene(scene, &resolved, log, kit).samples)
+}
+
+/// The canvas the marks tests add after the arena and the ball.
+pub const CANVAS: ThingId = ThingId(3);
+
+/// Gives `thing` a Marks module and applies `f` to its settings.
+pub fn brushes(scene: &mut Scene, kit: &Kit, thing: ThingId, f: impl FnOnce(&mut Params)) {
+    fill_slot(scene, &kit.registry, thing, SlotId::Marks).unwrap();
+    let m = module_of(scene, &kit.registry, thing, SlotId::Marks);
+    f(&mut scene.library.modules.get_mut(&m).unwrap().params);
+}
+
+/// Takes the brushes a new canvas gave the ball away again.
+pub fn bare_ball(scene: &mut Scene) {
+    scene.things.get_mut(&BALLS).unwrap().slots.remove(&SlotId::Marks);
+}
+
+/// The new scene with a canvas fitting the arena and, when `brush` says so, a Marks module on the
+/// ball, with `f`'s changes.
+pub fn painted(brush: bool, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    assert_eq!(add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap(), CANVAS);
+    if brush {
+        brushes(&mut scene, &kit, BALLS, f);
+    } else {
+        bare_ball(&mut scene);
+    }
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
+}
+
+/// The canvas thing's state in `world`.
+pub fn canvas_state(world: &bpe_runtime::World, canvas: ThingId) -> &crate::CanvasState {
+    bpe_runtime::state::<crate::CanvasState>(world.states[&canvas].as_ref())
+}
+
+/// A ball painting a trail and splatting random-turned hits onto the canvas.
+pub fn busy() -> (Scene, Resolved, Kit) {
+    painted(true, |p| {
+        p.set("splat_on", Value::Bool(true));
+        p.set("splat_onto", Value::Choice("canvases".into()));
+        p.set("splat_turn", Value::Choice("random".into()));
+    })
 }

@@ -22,6 +22,7 @@ use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Mark, MarkTarget, Outline, Sims, World};
 
 use crate::canvas::CanvasTextures;
+use crate::canvas::pictures::{AtlasKey, PictureAtlas};
 use crate::canvas::stamp::{CanvasGpu, StampPipeline};
 use crate::canvas::texture_bytes;
 use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
@@ -55,6 +56,8 @@ pub struct FlowSource<'a> {
     pub budget: Option<Duration>,
     /// The linear-light colour of each ball thing, for layers that colour by the nearest ball.
     pub ball_colors: BTreeMap<ThingId, [f32; 4]>,
+    /// The folder relative picture paths are read from: the scene file's folder.
+    pub picture_folder: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +226,10 @@ pub struct FlowLayers {
     steps_run: u64,
     /// Most bytes the checkpoints may hold together; [`CHECKPOINT_BYTES`] unless changed.
     checkpoint_bytes: u64,
+    /// The scene's picture files that could not be read, as the scene gave them.
+    missing_pictures: Vec<String>,
+    /// The picture atlas of the running scene and what it was made from.
+    atlas: Option<(AtlasKey, PictureAtlas)>,
 }
 
 /// The frame's swarms, then those of its blend layers: all of them are stepped here.
@@ -276,10 +283,17 @@ impl FlowLayers {
             sdf,
             pipelines,
             driver: None,
+            missing_pictures: Vec::new(),
+            atlas: None,
             layers: BTreeMap::new(),
             steps_run: 0,
             checkpoint_bytes: CHECKPOINT_BYTES,
         }
+    }
+
+    /// The picture files the running scene names that could not be read.
+    pub fn missing_pictures(&self) -> &[String] {
+        &self.missing_pictures
     }
 
     /// Changes how many bytes the checkpoints may hold together.
@@ -393,6 +407,20 @@ impl FlowLayers {
     /// Builds the private world afresh and every layer at step 0.
     fn restart(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
         let world = World::build(source.scene, source.resolved, source.sims);
+        // The pictures are read here, once, never in the frame loop. The canvases' bind groups
+        // keep the atlas alive.
+        // Decoding is slow, so an atlas is kept while its files and their times stay the same:
+        // a physics change restarts the layers but does not read the pictures again.
+        let key = AtlasKey::new(&world.pictures, source.picture_folder.as_deref());
+        let atlas = match &self.atlas {
+            Some((kept, atlas)) if *kept == key => atlas.clone(),
+            _ => {
+                let atlas = PictureAtlas::load(device, queue, &world.pictures, source.picture_folder.as_deref());
+                self.atlas = Some((key, atlas.clone()));
+                atlas
+            }
+        };
+        self.missing_pictures = atlas.missing.clone();
         let video = frame.video;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow start") });
         let wall = first_wall(&world);
@@ -416,7 +444,7 @@ impl FlowLayers {
             Points::Cpu(_) => None,
         });
         let canvases = frame.canvases.iter().map(|c| {
-            let canvas = CanvasGpu::new(device, queue, &pipelines.stamp, c.key, c.size, c.texels);
+            let canvas = CanvasGpu::new(device, queue, &pipelines.stamp, &atlas, c.key, c.size, c.texels);
             (LayerKey::Marks(c.key), Layer::Canvas(Box::new(canvas)))
         });
         self.layers = liquids.collect();
@@ -518,7 +546,7 @@ impl FlowLayers {
 
     /// Runs up to [`BATCH_STEPS`] steps towards `target` and sends them to the GPU.
     fn run_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: u64, source: &FlowSource) {
-        let Self { inputs, sdf, pipelines, driver, layers, steps_run, checkpoint_bytes } = self;
+        let Self { inputs, sdf, pipelines, driver, layers, steps_run, checkpoint_bytes, .. } = self;
         let driver = driver.as_mut().unwrap();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow steps") });
         let mut slot = 0;
@@ -573,6 +601,9 @@ impl FlowLayers {
 }
 
 #[cfg(test)]
+mod canvas_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -588,7 +619,7 @@ mod tests {
     use bpe_runtime::{Bodies, Outline, Sims, World};
     use glam::Vec2;
 
-    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    pub(super) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         match headless_device() {
             Ok(pair) => Some(pair),
             Err(_) => {
@@ -657,7 +688,7 @@ mod tests {
         }
     }
 
-    fn tiny_scene() -> (Scene, Resolved) {
+    pub(super) fn tiny_scene() -> (Scene, Resolved) {
         let reg = testkit::registry();
         let mut scene = Scene::empty(&reg);
         testkit::push(&mut scene, "balls", ThingId::ROOT);
@@ -772,6 +803,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.swarms.push(swarm_layer(ThingId(1)));
         let mut source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -875,6 +907,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = Sims::default();
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -901,6 +934,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = Sims::default();
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -924,6 +958,7 @@ mod tests {
         layer.count = 20_000;
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -953,6 +988,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -980,6 +1016,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1012,6 +1049,7 @@ mod tests {
         layer.look.size = 2.0;
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1060,6 +1098,7 @@ mod tests {
         assert_eq!(frame.layers[0].each, each);
         assert!(frame.swarms.is_empty());
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1084,6 +1123,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.swarms.push(swarm_layer(ThingId(1)));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1113,6 +1153,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 12_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1147,6 +1188,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 4_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1174,6 +1216,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 10_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1219,6 +1262,7 @@ mod tests {
         pool.paint_place = [90.0, 490.0, 0.0, 455.0];
         frame.liquids.push(pool);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1256,6 +1300,7 @@ mod tests {
         layer.look.color = [0.5, 0.0, 0.0, 1.0];
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1311,6 +1356,7 @@ mod tests {
         layer.look.paint = paint_of(&mut frame, &[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0)]);
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1335,6 +1381,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1374,12 +1421,12 @@ mod tests {
     }
 
     /// The canvas the marking sims below mark.
-    const CANVAS: ThingId = ThingId(9);
+    pub(super) const CANVAS: ThingId = ThingId(9);
     /// Its side in world pixels and texels: rows of 384 Rgba16Float texels read back unpadded.
-    const SIDE: u32 = 384;
+    pub(super) const SIDE: u32 = 384;
 
     /// Leaves `marks(step)` on [`CANVAS`] after every step, standing in for the canvas sim.
-    struct Marking(fn(u64) -> Vec<bpe_runtime::Mark>);
+    pub(super) struct Marking(pub(super) fn(u64) -> Vec<bpe_runtime::Mark>);
     impl bpe_runtime::ThingSim for Marking {
         fn kind(&self) -> &'static str {
             "balls"
@@ -1392,7 +1439,13 @@ mod tests {
         }
     }
 
-    fn mark(step: u64, shape: bpe_runtime::MarkShape, from: Vec2, to: Vec2, radius: f32) -> bpe_runtime::Mark {
+    pub(super) fn mark(
+        step: u64,
+        shape: bpe_runtime::MarkShape,
+        from: Vec2,
+        to: Vec2,
+        radius: f32,
+    ) -> bpe_runtime::Mark {
         bpe_runtime::Mark {
             step,
             target: bpe_runtime::MarkTarget::Canvas(CANVAS),
@@ -1409,7 +1462,7 @@ mod tests {
         }
     }
 
-    fn canvas_layer() -> crate::CanvasLayer {
+    pub(super) fn canvas_layer() -> crate::CanvasLayer {
         crate::CanvasLayer {
             key: MarkTarget::Canvas(CANVAS),
             center: [0.0; 2],
@@ -1421,12 +1474,13 @@ mod tests {
             fade: 0.0,
             blend: bpe_core::Blend::Normal,
             opacity: 1.0,
+            look: crate::PaintLook::default(),
             time: 0.0,
             mask: Vec::new(),
         }
     }
 
-    fn f16_to_f32(bits: u16) -> f32 {
+    pub(super) fn f16_to_f32(bits: u16) -> f32 {
         let exponent = ((bits >> 10) & 0x1f) as i32;
         let mantissa = (bits & 0x3ff) as f32;
         let value = if exponent == 0 {
@@ -1438,7 +1492,7 @@ mod tests {
     }
 
     /// The raw bytes of a [`SIDE`]-square Rgba16Float texture.
-    fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+    pub(super) fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
         let row = SIDE * 8;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1462,14 +1516,14 @@ mod tests {
     }
 
     /// The texel under canvas point `p` (from the canvas's middle) of a read-back texture.
-    fn texel(bytes: &[u8], p: Vec2) -> [f32; 4] {
+    pub(super) fn texel(bytes: &[u8], p: Vec2) -> [f32; 4] {
         let (x, y) = ((p.x + SIDE as f32 / 2.0) as usize, (p.y + SIDE as f32 / 2.0) as usize);
         let i = (y * SIDE as usize + x) * 8;
         std::array::from_fn(|c| f16_to_f32(u16::from_le_bytes([bytes[i + c * 2], bytes[i + c * 2 + 1]])))
     }
 
-    fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
-        FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new() }
+    pub(super) fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
+        FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new(), picture_folder: None }
     }
 
     #[test]

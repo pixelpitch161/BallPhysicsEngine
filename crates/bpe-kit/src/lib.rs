@@ -8,6 +8,7 @@ mod layer_tests;
 pub mod modules;
 pub mod music;
 pub mod paint;
+pub mod pictures;
 pub mod random;
 pub mod rng;
 pub mod scenes;
@@ -36,7 +37,8 @@ pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::marks::{
-    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, SplatOnto, SplatShape, SplatSkin, Tip, Turn, WidthBy,
+    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape, SplatSkin, Tip, Turn,
+    WidthBy,
 };
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
@@ -176,7 +178,15 @@ pub fn flow_source<'a>(
             (look.kind == "look.basic").then(|| (*id, BasicLook::from_params(&look.params).first_colour()))
         })
         .collect();
-    FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
+    FlowSource {
+        scene,
+        resolved,
+        sims,
+        key: bpe_runtime::fingerprint(scene, resolved, sims),
+        budget,
+        ball_colors,
+        picture_folder: None,
+    }
 }
 
 /// What the mixer needs from the root's settings, and every thing's tags.

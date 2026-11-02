@@ -220,12 +220,59 @@ pub struct CanvasLayer {
     pub blend: Blend,
     /// 0 to 1.
     pub opacity: f32,
+    /// How the paint looks: flat, or wet, watercolour or neon.
+    pub look: PaintLook,
     /// The scene time in seconds, which the fade counts from the time each mark was painted.
     pub time: f32,
     /// A skin's thing as it is this frame, in the skin's own pixels: the paint shows only
     /// inside these shapes (at most [`MAX_MASK_SHAPES`]; none shows nothing). A canvas has none
     /// and shows its whole rectangle.
     pub mask: Vec<MaskShape>,
+}
+
+/// How a canvas's paint is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaintStyle {
+    /// The marks' own colours, as they were put down.
+    #[default]
+    Flat,
+    /// A glossy skin lit from a side, shiny while it is wet.
+    WetPaint,
+    /// Soft, grainy washes that shrink as they dry.
+    Watercolour,
+    /// A bright line with a glow that goes as it dries.
+    NeonInk,
+}
+
+/// How a canvas's or skin's paint looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintLook {
+    pub style: PaintStyle,
+    /// Seconds paint stays wet; 0 is always dry.
+    pub dry_time: f32,
+    /// Degrees clockwise from straight up, in the world.
+    pub light_angle: f32,
+    pub gloss: f32,
+    pub grain: f32,
+    pub edge_dark: f32,
+    /// World pixels.
+    pub glow_size: f32,
+    pub glow_strength: f32,
+}
+
+impl Default for PaintLook {
+    fn default() -> Self {
+        Self {
+            style: PaintStyle::Flat,
+            dry_time: 1.0,
+            light_angle: 315.0,
+            gloss: 0.6,
+            grain: 0.5,
+            edge_dark: 0.5,
+            glow_size: 18.0,
+            glow_strength: 1.0,
+        }
+    }
 }
 
 /// Most shapes a skin's mask may hold.

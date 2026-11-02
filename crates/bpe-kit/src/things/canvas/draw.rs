@@ -6,13 +6,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bpe_core::{Blend, Settings, ThingId};
-use bpe_gfx::{CanvasLayer, CanvasPlace, DrawCx, Frame, MAX_MASK_SHAPES, MaskShape, ThingDraw, clamp_texels};
+use bpe_gfx::{
+    CanvasLayer, CanvasPlace, DrawCx, Frame, MAX_MASK_SHAPES, MaskShape, PaintLook, PaintStyle, ThingDraw, clamp_texels,
+};
 use bpe_runtime::{MarkTarget, Solid, World};
 use glam::Vec2;
 
 use super::sim::canvas_area;
 use super::skin::{SkinSettings, is_solid, line_reach, parts_local, skin_area, wall_local};
-use super::{CanvasLayerPos, CanvasSettings, StartsAs};
+use super::{CanvasLayerPos, CanvasSettings, CanvasStyle, StartsAs};
 
 pub struct CanvasDraw;
 
@@ -23,6 +25,63 @@ fn place(layer: CanvasLayerPos) -> CanvasPlace {
         CanvasLayerPos::BehindBalls => CanvasPlace::BehindBalls,
         CanvasLayerPos::OnTop => CanvasPlace::OnTop,
     }
+}
+
+fn style_of(style: CanvasStyle) -> PaintStyle {
+    match style {
+        CanvasStyle::Flat => PaintStyle::Flat,
+        CanvasStyle::WetPaint => PaintStyle::WetPaint,
+        CanvasStyle::Watercolour => PaintStyle::Watercolour,
+        CanvasStyle::NeonInk => PaintStyle::NeonInk,
+    }
+}
+
+/// `value` held to `lo..=hi`; a number that is not finite becomes `default`.
+fn within(value: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if value.is_finite() { value.clamp(lo, hi) } else { default }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn look_from(
+    style: CanvasStyle,
+    dry_time: f32,
+    light_angle: f32,
+    gloss: f32,
+    grain: f32,
+    edge_dark: f32,
+    glow_size: f32,
+    glow_strength: f32,
+) -> PaintLook {
+    let d = PaintLook::default();
+    PaintLook {
+        style: style_of(style),
+        dry_time: within(dry_time, 0.0, 60.0, d.dry_time),
+        light_angle: within(light_angle, 0.0, 360.0, d.light_angle),
+        gloss: within(gloss, 0.0, 1.0, d.gloss),
+        grain: within(grain, 0.0, 1.0, d.grain),
+        edge_dark: within(edge_dark, 0.0, 1.0, d.edge_dark),
+        glow_size: within(glow_size, 1.0, 200.0, d.glow_size),
+        glow_strength: within(glow_strength, 0.0, 4.0, d.glow_strength),
+    }
+}
+
+/// How a canvas's paint looks, from its settings.
+pub(crate) fn paint_look_of(s: &CanvasSettings) -> PaintLook {
+    look_from(s.style, s.dry_time, s.light_angle, s.gloss, s.grain, s.edge_dark, s.glow_size, s.glow_strength)
+}
+
+/// How a skin's paint looks, from its settings.
+pub(crate) fn skin_look_of(s: &SkinSettings) -> PaintLook {
+    look_from(
+        s.skin_style,
+        s.skin_dry_time,
+        s.skin_light_angle,
+        s.skin_gloss,
+        s.skin_grain,
+        s.skin_edge_dark,
+        s.skin_glow_size,
+        s.skin_glow_strength,
+    )
 }
 
 impl ThingDraw for CanvasDraw {
@@ -49,6 +108,7 @@ impl ThingDraw for CanvasDraw {
             fade: settings.fade.max(0.0),
             blend: settings.blend,
             opacity: settings.opacity.clamp(0.0, 1.0),
+            look: paint_look_of(&settings),
             time: cx.time as f32,
             mask: Vec::new(),
         });
@@ -75,6 +135,7 @@ pub fn draw_skin(cx: &DrawCx, frame: &mut Frame) {
         fade: skin.skin_fade.max(0.0),
         blend: Blend::Normal,
         opacity: skin.skin_opacity.clamp(0.0, 1.0),
+        look: skin_look_of(&skin),
         time: cx.time as f32,
         mask: skin_mask(cx.world, thing, &skin),
     });
@@ -173,7 +234,7 @@ mod tests {
         assert_eq!(peg.len(), 1);
         assert_eq!((peg[0].kind, peg[0].a[2]), (MaskShape::DISC, 30.0));
 
-        // A polygon's sides are thin lines, reaching 4 x (1 + 2) by the default Skin width; a
+        // A polygon's sides are thin lines, reaching 4 x (1 + 0.5) by the default Skin width; a
         // bar is solid.
         let (mut scene, kit) = obstacle(|p| {
             p.set("shape", Value::Choice("polygon".into()));
@@ -182,7 +243,7 @@ mod tests {
         });
         let sides = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!(sides.len(), 5);
-        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 12.0), "{sides:?}");
+        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 6.0), "{sides:?}");
         let (mut scene, kit) = obstacle(|p| p.set("shape", Value::Choice("bar".into())));
         let bar = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!((bar.len(), bar[0].kind, bar[0].b[0]), (1, MaskShape::CAPSULE, 4.0));
@@ -225,5 +286,46 @@ mod tests {
             assert!(f.layers.iter().all(|l| l.frame.canvases.is_empty()), "{blend} {amount}");
             assert!(f.overlay.as_ref().is_none_or(|o| o.canvases.is_empty()), "{screen}");
         }
+    }
+
+    #[test]
+    fn canvas_style_reaches_the_frame() {
+        use crate::testing::{CANVAS, painted};
+        use bpe_gfx::{PaintLook, PaintStyle};
+        let (mut scene, _, kit) = painted(false, |_| {});
+        let params = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+        params.set("style", Value::Choice("wet_paint".into()));
+        params.set("gloss", Value::Number(0.3));
+        params.set("dry_time", Value::Number(2.0));
+        let f = frame(&mut scene, &kit, false);
+        let look = f.canvases.iter().find(|c| c.key == MarkTarget::Canvas(CANVAS)).unwrap().look;
+        assert_eq!(look, PaintLook { style: PaintStyle::WetPaint, gloss: 0.3, dry_time: 2.0, ..PaintLook::default() });
+    }
+
+    #[test]
+    fn skin_style_reaches_the_frame() {
+        use bpe_gfx::PaintStyle;
+        let (mut scene, kit) = obstacle(|_| {});
+        let params = &mut scene.things.get_mut(&ARENA).unwrap().params;
+        params.set("skin_style", Value::Choice("neon_ink".into()));
+        params.set("skin_glow_size", Value::Number(30.0));
+        let f = frame(&mut scene, &kit, true);
+        let look = f.canvases.iter().find(|c| c.key == MarkTarget::Skin(ARENA)).unwrap().look;
+        assert_eq!((look.style, look.glow_size), (PaintStyle::NeonInk, 30.0));
+    }
+
+    #[test]
+    fn looks_are_held_to_their_ranges() {
+        use super::{paint_look_of, skin_look_of};
+        use crate::things::canvas::{CanvasSettings, SkinSettings};
+        use bpe_core::Settings;
+        let mut p = Params::default();
+        p.set("gloss", Value::Number(9.0));
+        p.set("glow_size", Value::Number(f64::NAN));
+        p.set("dry_time", Value::Number(-3.0));
+        let look = paint_look_of(&CanvasSettings::from_params(&p));
+        assert_eq!((look.gloss, look.dry_time), (1.0, 0.0));
+        assert_eq!(look.glow_size, bpe_gfx::PaintLook::default().glow_size);
+        let _ = skin_look_of(&SkinSettings::from_params(&Params::default()));
     }
 }

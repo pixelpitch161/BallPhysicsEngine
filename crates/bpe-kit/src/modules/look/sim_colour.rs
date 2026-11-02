@@ -2,7 +2,7 @@
 //! shift the drawing uses, read from the world instead of a frame.
 
 use bpe_core::{Params, Settings, ThingId};
-use bpe_runtime::World;
+use bpe_runtime::{World, with_picked};
 
 use super::BasicLook;
 use super::draw::{ball_inputs, for_balls, hue_shifted};
@@ -43,8 +43,12 @@ impl SimLook {
         let inputs = ball_inputs(thing, bodies, i, world.camera.to_screen(place), world.time(), self.beats);
         let base = colour_at(&self.fill, &inputs);
         let c = hue_shifted(base, self.hue_per_hit, bodies.hits.get(i).copied().unwrap_or(0));
-        let Some(t) = bodies.tint.get(i) else { return c };
-        [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]]
+        let tinted = match bodies.tint.get(i) {
+            Some(t) => [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]],
+            None => c,
+        };
+        // Paint picked up from wet paint goes over the rule's tint.
+        with_picked(world, thing, i, tinted)
     }
 }
 
@@ -96,5 +100,31 @@ mod tests {
             }
         }
         assert!(distinct.len() > 1, "the speed should vary the colours");
+    }
+
+    #[test]
+    fn drawn_colour_equals_sim_colour_with_pickup() {
+        let (scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
+            p.set("columns", Value::Int(2));
+            p.set("rows", Value::Int(1));
+        });
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let log = bpe_runtime::Log::default();
+        let thing = &scene.things[&ThingId(2)];
+        let r = &resolved.things[&ThingId(2)];
+        let look = &r.slots[&SlotId::Look].params;
+        let plain = ball_colour_in_sim(look, &world, ThingId(2), 0);
+        world
+            .picked
+            .insert(ThingId(2), vec![bpe_runtime::Picked { rgb: [0.0, 0.2, 1.0], amount: 0.6, step: 0, fade: 0.0 }]);
+        let world = &world;
+        let cx = DrawCx { thing, resolved: r, scene: &resolved, world, log: &log, time: 0.0, video_time: 0.0 };
+        let drawn = ball_colors(&cx).unwrap();
+        let sim = ball_colour_in_sim(look, world, ThingId(2), 0);
+        assert_eq!(drawn(0), sim);
+        assert_ne!(sim, plain);
+        // The ball with no entry is unchanged.
+        assert_eq!(drawn(1), ball_colour_in_sim(look, world, ThingId(2), 1));
     }
 }

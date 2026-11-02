@@ -71,6 +71,13 @@ pub struct World {
     /// thing's own frame), written by the thing's sim. Cloned with the world, so checkpoints
     /// rewind it.
     pub skins: BTreeMap<ThingId, Box<dyn ThingState>>,
+    /// Paint each ball has picked up from wet paint, per ball thing, one entry per ball row
+    /// (grown when first written). Cloned with the world, so checkpoints rewind it. Never in the
+    /// fingerprint or the log hash.
+    pub picked: BTreeMap<ThingId, Vec<crate::picked::Picked>>,
+    /// The picture files the scene's brushes splat, sorted, at most 16: a Picture mark names one
+    /// by its index here. Filled by the kit at build.
+    pub pictures: Vec<String>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
     /// Where the balls of a thing have been, for the things whose sim asked for it (trails).
@@ -156,6 +163,8 @@ impl World {
             poses: BTreeMap::new(),
             looks: BTreeMap::new(),
             skins: BTreeMap::new(),
+            picked: BTreeMap::new(),
+            pictures: Vec::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
@@ -414,6 +423,7 @@ impl World {
         self.bodies.values().map(Bodies::memory).sum::<usize>()
             + self.history.values().map(History::memory).sum::<usize>()
             + self.state_memory.values().sum::<usize>()
+            + self.picked.values().map(|v| v.len() * std::mem::size_of::<crate::picked::Picked>()).sum::<usize>()
             + std::mem::size_of::<World>()
     }
 
@@ -966,6 +976,14 @@ mod tests {
         let mut log = Log::default();
         w.advance_to(seconds, &sims, &mut log);
         (w, log)
+    }
+
+    #[test]
+    fn world_starts_with_no_picked_paint_or_pictures() {
+        let (scene, resolved, sims) = dots_in_ring(1);
+        let w = World::build(&scene, &resolved, &sims);
+        assert!(w.picked.is_empty());
+        assert!(w.pictures.is_empty());
     }
 
     #[test]

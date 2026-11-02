@@ -109,6 +109,14 @@ fn canvas_step_is_quick() {
     let canvas_params = &mut scene.things.get_mut(&canvas).unwrap().params;
     canvas_params.set("fit", Value::Choice("custom".into()));
     canvas_params.set("size", Value::Vec2([1080.0, 1920.0]));
+    // Wet paint that bleeds and drips, and brushes that pick it up.
+    canvas_params.set("bleed", Value::Number(0.5));
+    canvas_params.set("drips", Value::Number(0.5));
+    canvas_params.set("dry_time", Value::Number(2.0));
+    let brushes = bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Marks, &mut Vec::new())
+        .expect("the balls' brushes")
+        .module;
+    scene.library.modules.get_mut(&brushes).unwrap().params.set("paint_pickup", Value::Number(0.5));
     assert!(scene.things[&ThingId(2)].slots.contains_key(&SlotId::Marks), "the balls paint");
     let resolved = resolve(&scene, &kit.registry);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
@@ -156,7 +164,10 @@ fn skin_step_is_quick() {
     let module = scene.add_module(&kit.registry, "marks.brushes", "Spread").expect("the brushes kind");
     scene.library.modules.get_mut(&module).unwrap().params = brush.to_params();
     scene.link(&kit.registry, ThingId(2), SlotId::Marks, module).expect("the balls take brushes");
-    scene.things.get_mut(&ThingId(1)).unwrap().params.set("skin_on", Value::Bool(true));
+    let arena = &mut scene.things.get_mut(&ThingId(1)).unwrap().params;
+    arena.set("skin_on", Value::Bool(true));
+    arena.set("skin_drips", Value::Number(0.5));
+    arena.set("skin_dry_time", Value::Number(2.0));
     let resolved = resolve(&scene, &kit.registry);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
 

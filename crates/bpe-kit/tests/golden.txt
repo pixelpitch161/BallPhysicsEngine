@@ -35,3 +35,7 @@ Graded sunset	601	42e25326433241b1
 Paint pour	63	c624cfb82d43796a
 Splat ring	135	6738568001f25edf
 Peg paint	514	d9dc9a3675db2051
+Wet pour	63	c624cfb82d43796a
+Watercolour garden	72	69345aba6916daa9
+Neon splat ring	135	6738568001f25edf
+Colour mixing	34	6817708b229b13ba

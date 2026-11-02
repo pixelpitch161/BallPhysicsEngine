@@ -118,6 +118,7 @@ fn run() -> anyhow::Result<()> {
     options.preset = preset;
     options.encoder = encoder;
     options.extras = extras;
+    options.picture_folder = scene_path.as_ref().and_then(|p| p.parent()).map(PathBuf::from);
     if let Some(ffmpeg) = ffmpeg {
         options.ffmpeg = ffmpeg;
     }
@@ -182,7 +183,11 @@ fn run_batch(args: &[String]) -> anyhow::Result<()> {
         i += 1;
     }
     let [scene_path, folder] = paths.as_slice() else { bail!("batch needs a scene file and a folder\n\n{USAGE}") };
-    let scene = load_scene(scene_path, &kit)?;
+    let mut scene = load_scene(scene_path, &kit)?;
+    // The batch writes its scenes elsewhere, so pictures are found by their full paths.
+    if let Some(dir) = scene_path.parent() {
+        bpe_kit::pictures::absolutize(&mut scene, dir);
+    }
     let ffmpeg = ffmpeg.or_else(bpe_cli::find_ffmpeg).context("ffmpeg not found: install it or pass --ffmpeg")?;
     let (device, queue) = bpe_gfx::headless_device().context("no graphics device for rendering")?;
     let mut manifest = batch::open(folder, &spec, &scene)?;

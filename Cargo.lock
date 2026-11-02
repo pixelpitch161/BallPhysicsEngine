@@ -299,6 +299,7 @@ dependencies = [
  "bytemuck",
  "fontdue",
  "glam",
+ "image",
  "naga",
  "pollster 1.0.1",
  "wgpu",

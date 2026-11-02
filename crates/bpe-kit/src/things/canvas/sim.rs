@@ -7,16 +7,17 @@
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
-use bpe_core::{Color, ResolvedThing, Settings, SlotId, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
-use super::grid::{CanvasGrid, Cell};
+use super::evolve::{self, Evolve, Runner, Tick};
+use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
-use crate::modules::marks::{MarkColour, MarksBrushes, SplatShape, Tip, Turn, When, WidthBy};
+use crate::modules::marks::{MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy};
 use crate::paint::{Follow, Inputs, colour_at};
 use crate::things::liquid::sim::bounds;
 
@@ -36,6 +37,14 @@ pub struct CanvasState {
     pub ribbons: BTreeMap<(ThingId, u32), Ribbon>,
     /// Steps between strokes: 60 strokes a second.
     pub every: u64,
+    /// Steps between wet-paint ticks: 30 a second.
+    pub tick_every: u64,
+    /// How the paint changes over time.
+    pub evolve: Evolve,
+    /// The drips that are running.
+    pub runners: Vec<Runner>,
+    /// Ticks that did work; for tests, never hashed.
+    pub ticks_run: u64,
 }
 
 /// Where a canvas is and how big it is: its pose (middle and turn) and its width and height.
@@ -75,12 +84,41 @@ impl ThingSim for CanvasSim {
         };
         let size = size.max(Vec2::ONE);
         let every = (world.steps_per_second / 60).max(1) as u64;
+        let tick_every = tick_every(world.steps_per_second);
         let grid = CanvasGrid::new(size);
         world.state_memory.insert(thing.id, grid.bytes());
-        world
-            .states
-            .insert(thing.id, Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every }));
+        let evolve = Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second);
+        world.states.insert(
+            thing.id,
+            Box::new(CanvasState {
+                settings,
+                grid,
+                size,
+                centre,
+                ribbons: BTreeMap::new(),
+                every,
+                tick_every,
+                evolve,
+                runners: Vec::new(),
+                ticks_run: 0,
+            }),
+        );
         self.place(thing.id, world);
+    }
+
+    fn after_build(&self, thing: ThingId, world: &mut World) {
+        crate::pictures::fill(world);
+        // Whether some brush that marks this canvas picks up wet paint.
+        let pickup = {
+            let Some(st) = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>()) else {
+                return;
+            };
+            super::skin::brushes(world)
+                .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
+        };
+        if let Some(st) = world.states.get_mut(&thing).and_then(|s| s.as_any_mut().downcast_mut::<CanvasState>()) {
+            st.evolve.pickup = pickup;
+        }
     }
 
     fn needs_walls(&self) -> bool {
@@ -98,12 +136,42 @@ impl ThingSim for CanvasSim {
             for m in marks(canvas, st, world, log) {
                 log.push_mark(m);
             }
+            if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
+                let mut picked = std::mem::take(&mut world.picked);
+                let pose = world.poses.get(&canvas).copied().unwrap_or_default();
+                let cx = Tick {
+                    target: MarkTarget::Canvas(canvas),
+                    world,
+                    now: (world.step / st.tick_every) as u32,
+                    per_second: world.steps_per_second as f32 / st.tick_every as f32,
+                    gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
+                };
+                for m in evolve::tick(&cx, st, &mut picked, None) {
+                    log.push_mark(m);
+                }
+                world.picked = picked;
+            }
         }
         world.states.insert(canvas, boxed);
     }
 
     fn affects_physics(&self, key: &str) -> bool {
-        !matches!(key, "layer" | "style" | "detail" | "fade" | "blend" | "opacity" | "start_colour")
+        !matches!(
+            key,
+            "layer"
+                | "style"
+                | "detail"
+                | "fade"
+                | "blend"
+                | "opacity"
+                | "start_colour"
+                | "light_angle"
+                | "gloss"
+                | "grain"
+                | "edge_dark"
+                | "glow_size"
+                | "glow_strength"
+        )
     }
 }
 
@@ -183,12 +251,6 @@ pub(crate) fn reaches(size: Vec2, a: Vec2, b: Vec2, radius: f32) -> bool {
     true
 }
 
-/// A grid cell fully painted in a linear-light colour.
-pub(crate) fn cell_of(colour: [f32; 4]) -> Cell {
-    let c = Color::from_linear(colour);
-    Cell { rgb: [c.r, c.g, c.b], amount: 255, ..Cell::default() }
-}
-
 impl<'a> Colours<'a> {
     pub(crate) fn new(world: &'a World) -> Self {
         Colours { world, looks: BTreeMap::new() }
@@ -214,7 +276,7 @@ impl<'a> Colours<'a> {
             }
             None => Inputs { time: time as f32, ..Inputs::default() },
         };
-        colour_at(&b.colour, &inputs)
+        bpe_runtime::with_picked(world, thing, i, colour_at(&b.colour, &inputs))
     }
 }
 
@@ -277,7 +339,7 @@ impl Cx<'_> {
                     let now = self.colours.of(b, thing, i);
                     let was = ribbon.colour.unwrap_or(now);
                     let pieces = ribbon.advance(here, velocity, radius, &tune, endless);
-                    self.pieces(st, b, &pieces, [was, now]);
+                    self.pieces(st, b, key, &pieces, [was, now]);
                     ribbon.colour = Some(now);
                 }
             }
@@ -292,12 +354,20 @@ impl Cx<'_> {
             return;
         }
         let colour = ribbon.colour.unwrap_or_else(|| self.colours.of(b, key.0, key.1 as usize));
-        self.pieces(st, b, pieces, [colour, colour]);
+        self.pieces(st, b, key, pieces, [colour, colour]);
     }
 
     /// Logs and stamps `pieces` of a trail, its colour blending from `was` to `now` over the
     /// move (by each piece's [`Piece::within`]).
-    fn pieces(&mut self, st: &mut CanvasState, b: &MarksBrushes, pieces: &[Piece], [was, now]: [[f32; 4]; 2]) {
+    fn pieces(
+        &mut self,
+        st: &mut CanvasState,
+        b: &MarksBrushes,
+        key: (ThingId, u32),
+        pieces: &[Piece],
+        [was, now]: [[f32; 4]; 2],
+    ) {
+        let (tick, by) = ((self.world.step / st.tick_every) as u32, painter(key.0, key.1));
         let at = |t: f32| -> [f32; 4] {
             if t >= 1.0 {
                 now
@@ -312,8 +382,7 @@ impl Cx<'_> {
                 continue;
             }
             let (colour, colour_to) = (at(p.within[0]), at(p.within[1]));
-            st.grid.stamp_capsule(p.from, p.to, (p.radius + p.radius_to) * 0.5, cell_of(colour));
-            self.out.push(Mark {
+            let mark = Mark {
                 step: self.world.step,
                 target: MarkTarget::Canvas(self.canvas),
                 shape: MarkShape::Stroke,
@@ -327,7 +396,9 @@ impl Cx<'_> {
                 variant: (b.paint_tip == Tip::Square) as u8 | p.joints,
                 colour,
                 colour_to,
-            });
+            };
+            st.grid.stamp(&mark, tick, by);
+            self.out.push(mark);
         }
     }
 
@@ -352,8 +423,7 @@ impl Cx<'_> {
             }
             // The mover's colour, whoever owns the brush.
             let colour = self.colours.of(b, e.a.thing, e.a.item as usize);
-            st.grid.stamp_disc(at, radius, cell_of(colour));
-            self.out.push(Mark {
+            let mark = Mark {
                 step: world.step,
                 target: MarkTarget::Canvas(self.canvas),
                 shape,
@@ -366,7 +436,9 @@ impl Cx<'_> {
                 variant,
                 colour,
                 colour_to: colour,
-            });
+            };
+            st.grid.stamp(&mark, (world.step / st.tick_every) as u32, painter(e.a.thing, e.a.item));
+            self.out.push(mark);
         }
     }
 }
@@ -383,8 +455,24 @@ pub(crate) struct Stamp {
 /// shape, size, turn and variant. Only a splat leans with the ball and squashes; the other
 /// shapes face the hit.
 pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> Stamp {
+    if b.splat_shape == SplatShape::Picture && !b.splat_picture.trim().is_empty() {
+        let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+        let (radius, random_angle, _) =
+            splat_look(e, mover, b.splat_size, b.splat_by_speed, b.splat_variants, b.splat_turn, pose_angle);
+        // A facing picture stands with its up (-y) along the hit normal, away from the surface.
+        let angle = match b.splat_turn {
+            Turn::FaceHit => {
+                let n = e.normal.normalize_or_zero();
+                n.x.atan2(-n.y) - pose_angle
+            }
+            Turn::Random => random_angle,
+        };
+        let tint = if b.splat_picture_colours == PictureColours::Tinted { crate::pictures::TINTED } else { 0 };
+        let variant = crate::pictures::slot_of(world, &b.splat_picture) | tint;
+        return Stamp { shape: MarkShape::Picture, radius, angle, variant };
+    }
     let shape = match b.splat_shape {
-        SplatShape::Splat => MarkShape::Splat,
+        SplatShape::Splat | SplatShape::Picture => MarkShape::Splat,
         SplatShape::Ring => MarkShape::Ring,
         SplatShape::Star => MarkShape::Star,
         SplatShape::Crack => MarkShape::Crack,
@@ -445,7 +533,7 @@ pub fn splat_look(
 }
 
 /// A well-mixed 64-bit number from a step and an item (SplitMix64's finaliser).
-fn mix(step: u64, item: u32) -> u64 {
+pub(crate) fn mix(step: u64, item: u32) -> u64 {
     let mut z = (step << 32 ^ item as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -454,51 +542,52 @@ fn mix(step: u64, item: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use bpe_core::{Attach, Params, Resolved, Scene, SlotId, Target, Value, resolve};
+    use bpe_core::{Attach, Color, Params, Resolved, Scene, SlotId, Target, Value, resolve};
     use bpe_runtime::{EventKind, MarkShape, MarkTarget, Playback};
 
     use super::*;
-    use crate::testing::{ARENA, BALLS, OBSTACLE, module_of, run, scene_with_obstacle};
-    use crate::{Kit, add_thing, fill_slot, kit, new_scene};
-
-    /// The canvas the tests add after the arena and the ball.
-    const CANVAS: ThingId = ThingId(3);
-
-    /// Gives `thing` a Marks module and applies `f` to its settings.
-    fn brushes(scene: &mut Scene, kit: &Kit, thing: ThingId, f: impl FnOnce(&mut Params)) {
-        fill_slot(scene, &kit.registry, thing, SlotId::Marks).unwrap();
-        let m = module_of(scene, &kit.registry, thing, SlotId::Marks);
-        f(&mut scene.library.modules.get_mut(&m).unwrap().params);
-    }
-
-    /// Takes the brushes a new canvas gave the ball away again.
-    fn bare_ball(scene: &mut Scene) {
-        scene.things.get_mut(&BALLS).unwrap().slots.remove(&SlotId::Marks);
-    }
-
-    /// The new scene with a canvas fitting the arena and, when `brush` says so, a Marks module
-    /// on the ball, with `f`'s changes.
-    fn painted(brush: bool, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
-        let kit = kit();
-        let mut scene = new_scene(&kit.registry);
-        assert_eq!(add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap(), CANVAS);
-        if brush {
-            brushes(&mut scene, &kit, BALLS, f);
-        } else {
-            bare_ball(&mut scene);
-        }
-        let resolved = resolve(&scene, &kit.registry);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        (scene, resolved, kit)
-    }
-
-    fn canvas_state(world: &World, canvas: ThingId) -> &CanvasState {
-        state::<CanvasState>(world.states[&canvas].as_ref())
-    }
+    use crate::testing::{
+        ARENA, BALLS, CANVAS, OBSTACLE, bare_ball, brushes, busy, canvas_state, module_of, painted, run,
+        scene_with_obstacle,
+    };
+    use crate::{Kit, add_thing, kit, new_scene};
 
     /// `p` in the canvas's own pixels.
     fn local(pose: Pose, p: Vec2) -> Vec2 {
         Vec2::from_angle(-pose.angle).rotate(p - pose.position)
+    }
+
+    #[test]
+    fn cells_remember_the_painting_ball() {
+        let (scene, resolved, kit) = painted(true, |_| {});
+        let mut pb = Playback::new(&scene, &resolved, kit.sims.clone());
+        pb.seek(1.0);
+        let grid = &canvas_state(pb.world(), CANVAS).grid;
+        let (w, h) = grid.dims();
+        let want = painter(BALLS, 0);
+        let (mut mine, mut anonymous) = (false, false);
+        for y in 0..h {
+            for x in 0..w {
+                let c = grid.get(x, y);
+                if c.amount == 0 {
+                    continue;
+                }
+                mine |= c.by == want && c.amount >= 96;
+                anonymous |= c.by == 0;
+            }
+        }
+        assert!(mine && !anonymous);
+    }
+
+    #[test]
+    fn look_keys_never_restart_the_canvas() {
+        let sim = CanvasSim;
+        for k in ["light_angle", "gloss", "grain", "edge_dark", "glow_size", "glow_strength", "style"] {
+            assert!(!sim.affects_physics(k), "{k}");
+        }
+        for k in ["dry_time", "bleed", "drips", "fit"] {
+            assert!(sim.affects_physics(k), "{k}");
+        }
     }
 
     #[test]
@@ -1188,15 +1277,6 @@ mod tests {
                 m.colour
             );
         }
-    }
-
-    /// A ball that paints and splats, for the determinism tests.
-    fn busy() -> (Scene, Resolved, Kit) {
-        painted(true, |p| {
-            p.set("splat_on", Value::Bool(true));
-            p.set("splat_onto", Value::Choice("canvases".into()));
-            p.set("splat_turn", Value::Choice("random".into()));
-        })
     }
 
     #[test]

@@ -553,7 +553,7 @@ fn line_distance(outline: &Outline, p: Vec2) -> f32 {
     }
 }
 
-/// How far paint may reach from the middle of a line `thickness` wide with Skin width 2 (the
+/// How far paint may reach from the middle of a line `thickness` wide with the default Skin width (the
 /// default).
 fn reach(thickness: f32) -> f32 {
     thickness * 0.5 * 3.0
@@ -906,4 +906,120 @@ fn seek_back_shows_the_same_skin() {
     assert!(straight != bare, "the skin shows paint");
     let differ = seeked.iter().zip(&straight).filter(|(a, b)| a != b).count();
     assert_eq!(differ, 0, "{differ} bytes differ between seeking back and a straight run");
+}
+
+/// A scene with a canvas whose ball splats picture `file` onto it at its hits, and a camera of
+/// nothing else: `(scene, resolved, kit)`.
+fn picture_scene(file: &str) -> (Scene, Resolved, Kit) {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap();
+    brushes(&mut scene, &kit, BALLS, |p| {
+        p.set("paint_on", Value::Bool(false));
+        p.set("splat_on", Value::Bool(true));
+        p.set("splat_onto", Value::Choice("canvases".into()));
+        p.set("splat_shape", Value::Choice("picture".into()));
+        p.set("splat_picture", Value::Text(file.into()));
+        p.set("splat_picture_colours", Value::Choice("own".into()));
+        p.set("splat_size", Value::Number(60.0));
+    });
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    (scene, resolved, kit)
+}
+
+/// The output pixel at the middle of the last picture mark by `time`, drawn with pictures read
+/// from `folder`.
+fn picture_pixel(folder: &std::path::Path, file: &str) -> [i32; 3] {
+    let Some((device, queue)) = gpu() else { return [-1; 3] };
+    let (scene, resolved, kit) = picture_scene(file);
+    let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+    playback.seek(4.0);
+    let mut frame = Frame::default();
+    build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
+    frame.bloom = 0.0;
+    let mark = playback
+        .log()
+        .marks()
+        .iter()
+        .rev()
+        .find(|m| m.shape == bpe_runtime::MarkShape::Picture)
+        .copied()
+        .expect("a ball hit a wall");
+    let mut source = flow_source(&scene, &resolved, &kit.sims, None);
+    source.picture_folder = Some(folder.to_path_buf());
+    let mut renderer = Renderer::new(&device, W, H);
+    assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    let MarkTarget::Canvas(id) = mark.target else { panic!("a canvas mark") };
+    let (pose, _) = canvas_area(playback.world(), id).unwrap();
+    pixel(&pixels, pose.position + Vec2::from_angle(pose.angle).rotate(mark.from))
+}
+
+fn temp_folder(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bpe-kit-pic-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn picture_splat_shows_on_a_canvas() {
+    if gpu().is_none() {
+        return;
+    }
+    let dir = temp_folder("green");
+    let file = std::fs::File::create(dir.join("g.png")).unwrap();
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 64, 64);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let green = [0u8, 255, 0, 255].repeat(64 * 64);
+    encoder.write_header().unwrap().write_image_data(&green).unwrap();
+    let [r, g, b] = picture_pixel(&dir, "g.png");
+    assert!(g > r + 60 && g > b + 60, "{:?}", [r, g, b]);
+}
+
+#[test]
+fn a_missing_picture_shows_the_checker_end_to_end() {
+    if gpu().is_none() {
+        return;
+    }
+    let dir = temp_folder("none");
+    let [r, g, b] = picture_pixel(&dir, "gone.png");
+    // Pink (red and blue well over green) or dark grey, whatever the picture's tone curve does.
+    let pink = r > g + 30 && b > g + 20;
+    let dark = r.max(g).max(b) < 70 && r.abs_diff(g) < 10 && g.abs_diff(b) < 10;
+    assert!(pink || dark, "{:?}", [r, g, b]);
+}
+
+#[test]
+fn wet_pour_seek_back_matches_straight_run() {
+    let Some((device, queue)) = gpu() else { return };
+    let (mut scene, _, kit, id) = painting(|p| {
+        p.set("style", Value::Choice("wet_paint".into()));
+        p.set("dry_time", Value::Number(2.5));
+        p.set("drips", Value::Number(0.6));
+        p.set("bleed", Value::Number(0.15));
+    });
+    brushes(&mut scene, &kit, BALLS, |p| {
+        p.set("paint_on", Value::Bool(true));
+        p.set("splat_on", Value::Bool(true));
+        p.set("splat_onto", Value::Choice("canvases".into()));
+    });
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+    let straight = {
+        let mut renderer = Renderer::new(&device, W, H);
+        draw(&device, &queue, &mut renderer, &scene, &resolved, &kit, &mut playback, 6.0, true)
+    };
+    let mut renderer = Renderer::new(&device, W, H);
+    draw(&device, &queue, &mut renderer, &scene, &resolved, &kit, &mut playback, 9.0, true);
+    let seeked = draw(&device, &queue, &mut renderer, &scene, &resolved, &kit, &mut playback, 6.0, true);
+    let differ = seeked.iter().zip(&straight).filter(|(a, b)| a != b).count();
+    assert_eq!(differ, 0, "{differ} bytes differ between seeking back and a straight run");
+    let marks = playback.log().marks();
+    assert!(marks.iter().any(|m| m.target == MarkTarget::Canvas(id)), "the canvas got marks");
+    for shape in [bpe_runtime::MarkShape::Drip, bpe_runtime::MarkShape::Bleed] {
+        assert!(marks.iter().any(|m| m.shape == shape), "{shape:?} marks were drawn");
+    }
 }

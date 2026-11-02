@@ -402,7 +402,8 @@ fn draw_picture(
         frame.cull();
         // Liquids and swarms on the graphics card step towards the playhead within the same
         // budget as the physics; until they are there the picture is drawn again next frame.
-        let source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
+        let mut source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
+        source.picture_folder = studio.base_dir();
         let status = renderer.render_with_flow(device, queue, frame, &source);
         if status.caught_up {
             *drawn = Some(now);

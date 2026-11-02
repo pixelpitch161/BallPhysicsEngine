@@ -357,7 +357,8 @@ impl ExportWindow {
         if let Some(folder) = path.parent() {
             let _ = std::fs::create_dir_all(folder);
         }
-        let options = self.options(&path, ffmpeg);
+        let mut options = self.options(&path, ffmpeg);
+        options.picture_folder = base_dir.map(Path::to_path_buf);
         let (scene, kit, ctx) = (scene.clone(), kit.clone(), ctx.clone());
         let (done, total, cancel) = (
             Arc::new(AtomicU32::new(0)),

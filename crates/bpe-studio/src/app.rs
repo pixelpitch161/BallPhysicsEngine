@@ -102,6 +102,9 @@ pub struct Studio {
     pub status: String,
     /// What is wrong with a shader module the preview skipped, shown in the status line.
     pub shader_problem: Option<String>,
+    /// What the status line says about the scene's picture files, kept so it is worked out once
+    /// per edit and not every frame.
+    picture_note: Option<String>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
@@ -192,6 +195,7 @@ impl Studio {
             history: History::default(),
             status: "Ready.".into(),
             shader_problem: None,
+            picture_note: None,
             confirm: None,
             panels: Panels::default(),
             grid: Grid::default(),
@@ -269,6 +273,13 @@ impl Studio {
             return;
         }
         self.history.record(before, separate);
+        // A picture picked now is copied beside the scene file at once, so it travels with it.
+        let from = self.base_dir();
+        if let Some(path) = self.path.clone()
+            && let Err(message) = bpe_kit::pictures::adopt(&mut self.scene, from.as_deref(), &path)
+        {
+            self.status = message;
+        }
         self.scene_changed();
     }
 
@@ -284,6 +295,7 @@ impl Studio {
         }
         self.sound_dirty = true;
         self.time = self.time.min(self.duration());
+        self.picture_note = bpe_kit::pictures::picture_note(&self.scene, self.base_dir().as_deref());
         self.revision += 1;
     }
 
@@ -304,7 +316,18 @@ impl Studio {
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.sound_dirty = true;
+        self.picture_note = bpe_kit::pictures::picture_note(&self.scene, self.base_dir().as_deref());
         self.revision += 1;
+    }
+
+    /// `scene` with its picture paths made full, so a window that works on a copy (the batch)
+    /// finds them wherever it writes.
+    fn with_full_picture_paths(&self, scene: &Scene) -> Scene {
+        let mut scene = scene.clone();
+        if let Some(dir) = self.base_dir() {
+            bpe_kit::pictures::absolutize(&mut scene, &dir);
+        }
+        scene
     }
 
     /// Starts decoding the scene's song on a thread of its own before the run is built, so the
@@ -467,7 +490,7 @@ impl Studio {
 
     // ---------- files ----------
 
-    fn base_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn base_dir(&self) -> Option<PathBuf> {
         self.path.as_ref().and_then(|p| p.parent()).map(PathBuf::from)
     }
 
@@ -563,12 +586,31 @@ impl Studio {
             }
         };
         let Some(path) = path else { return false };
-        match std::fs::write(&path, bpe_core::save(&self.scene)) {
+        // A first save, or Save As somewhere else, brings the pictures along. The copy of the
+        // scene with its new picture paths is only kept once the file is written.
+        let mut scene = self.scene.clone();
+        let mut adopted = false;
+        let mut picture_problem = None;
+        if self.path.as_ref() != Some(&path) {
+            let from = self.base_dir();
+            match bpe_kit::pictures::adopt(&mut scene, from.as_deref(), &path) {
+                Ok(count) => adopted = count > 0,
+                Err(message) => picture_problem = Some(message),
+            }
+        }
+        match std::fs::write(&path, bpe_core::save(&scene)) {
             Ok(()) => {
                 self.status = format!("Saved {}.", file_label(&path));
-                self.saved = self.scene.clone();
+                if let Some(message) = picture_problem {
+                    self.status = format!("{} {message}", self.status);
+                }
                 settings::remember_scene(&path);
                 self.path = Some(path);
+                if adopted {
+                    self.scene = scene;
+                    self.scene_changed();
+                }
+                self.saved = self.scene.clone();
                 true
             }
             Err(error) => {
@@ -808,6 +850,9 @@ impl Studio {
             if self.panels.export.busy() {
                 ui.label(RichText::new("· Exporting…").small().color(theme::MUTED));
             }
+            if let Some(note) = &self.picture_note {
+                ui.label(RichText::new(format!("· {note}")).small().color(theme::WARNING));
+            }
             if let Some(error) = &self.audio_error {
                 ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
             }
@@ -986,6 +1031,7 @@ impl eframe::App for Studio {
         dice::show(&ctx, self);
         if let explorer::Outcome::Batch { base, amount } = explorer::show(&ctx, self, frame.wgpu_render_state()) {
             self.panels.explorer.close();
+            let base = self.with_full_picture_paths(&base);
             self.panels.batch.open_with(&base, amount);
         }
         let weights = self.panels.explorer.weights;
@@ -1010,7 +1056,8 @@ impl eframe::App for Studio {
             Some(ToolbarClick::Explore) => self.panels.explorer.open_from(&self.scene, &self.kit),
             Some(ToolbarClick::Batch) => {
                 let amount = self.panels.batch.spec.amount;
-                self.panels.batch.open_with(&self.scene, amount);
+                let scene = self.with_full_picture_paths(&self.scene);
+                self.panels.batch.open_with(&scene, amount);
             }
             None => {}
         }

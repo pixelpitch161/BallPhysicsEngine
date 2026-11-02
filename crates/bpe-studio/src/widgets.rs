@@ -868,6 +868,19 @@ fn widget(
             }
             response.response.labelled_by(name)
         }
+        (ValueType::Text, Value::Text(text)) if def.unit == "picture" => {
+            let width = (ui.available_width() - 40.0).max(80.0);
+            let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(width)).labelled_by(name);
+            let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a picture (PNG or JPG)");
+            browse.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Browse {}", def.label)));
+            if browse.clicked()
+                && let Some(path) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+            {
+                *text = path.to_string_lossy().into_owned();
+                response.mark_changed();
+            }
+            response
+        }
         (ValueType::Text, Value::Text(text)) if def.unit == "file" => {
             // Leave room for the browse button, or the row grows past the panel.
             let width = (ui.available_width() - 40.0).max(80.0);

@@ -89,3 +89,17 @@ pub fn float_texture_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu
         count: None,
     }
 }
+
+/// A float texture read with `textureLoad` only, so it needs no sampler.
+pub fn float_texture_entry_unfiltered(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
