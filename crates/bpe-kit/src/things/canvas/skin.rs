@@ -404,6 +404,7 @@ pub fn build(thing: ThingId, world: &mut World) {
         drops: Vec::new(),
         edges: Vec::new(),
         claims: None,
+        wet: 0.0,
     };
     world.skins.insert(thing, Box::new(st));
 }

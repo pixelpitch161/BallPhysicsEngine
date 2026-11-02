@@ -8,13 +8,13 @@ use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
-use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
+use bpe_runtime::{CanvasNumbers, Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
 use super::claims::{ClaimMap, Claims, TeamKey, colour_key};
 use super::drops::{self, FogDrop};
 use super::evolve::{self, Evolve, Runner, Tick};
-use super::grid::{CanvasGrid, REST_COVER, REST_FOG, REST_POWDER, painter, tick_every};
+use super::grid::{CanvasGrid, REST_COVER, REST_FOG, REST_POWDER, painter, tick_every, wet};
 use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasKind, CanvasSettings, Fit, FogLook};
 use crate::modules::look::SimLook;
@@ -57,6 +57,8 @@ pub struct CanvasState {
     pub edges: Vec<(Vec2, u64)>,
     /// The colour war, when some claiming brush marks this Paint canvas.
     pub claims: Option<Claims>,
+    /// The share of painted cells still wet, as of the last tick. Never hashed.
+    pub wet: f32,
 }
 
 impl CanvasState {
@@ -142,6 +144,7 @@ impl ThingSim for CanvasSim {
                 drops: Vec::new(),
                 edges: Vec::new(),
                 claims: None,
+                wet: 0.0,
             }),
         );
         self.place(thing.id, world);
@@ -188,6 +191,7 @@ impl ThingSim for CanvasSim {
     fn after_step(&self, canvas: ThingId, world: &mut World, log: &mut Log) {
         // The state comes out while the brushes read the world, and goes back after.
         let Some(mut boxed) = world.states.remove(&canvas) else { return };
+        let mut numbers = None;
         if let Some(st) = boxed.as_any_mut().downcast_mut::<CanvasState>() {
             for m in marks(canvas, st, world, log) {
                 log.push_mark(m);
@@ -216,6 +220,21 @@ impl ThingSim for CanvasSim {
                     }
                     world.picked = picked;
                 }
+                if st.settings.kind == CanvasKind::Paint && st.evolve.dry_ticks > 0 {
+                    // Only reads the grid: it never wakes a tile or changes a cell.
+                    let now = (world.step / st.tick_every) as u32;
+                    let mut count = 0u64;
+                    for t in st.grid.wet_tiles(now, st.evolve.dry_ticks) {
+                        let (x0, x1, y0, y1) = st.grid.tile_cells(t);
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                count += wet(&st.grid.get(x, y), now, st.evolve.dry_ticks) as u64;
+                            }
+                        }
+                    }
+                    let painted = st.grid.off_cells();
+                    st.wet = if painted > 0 { count as f32 / painted as f32 } else { 0.0 };
+                }
                 if let Some(claims) = st.claims.as_mut() {
                     let tick = (world.step / st.tick_every) as u32;
                     claims.map.grow(st.settings.grow, st.settings.take_over, tick);
@@ -237,8 +256,18 @@ impl ThingSim for CanvasSim {
                 }
                 st.edges.clear();
             }
+            numbers = Some(CanvasNumbers {
+                covered: st.grid.covered(),
+                revealed: st.grid.revealed(),
+                wet: if st.settings.kind == CanvasKind::Paint { st.wet } else { 0.0 },
+                shares: st.claims.as_ref().map_or_else(Vec::new, |c| c.map.shares(c.teams.len())),
+            });
         }
         world.states.insert(canvas, boxed);
+        // After the state is back and the teams are told: this step's numbers.
+        if let Some(numbers) = numbers {
+            world.report_canvas(canvas, numbers, log);
+        }
     }
 
     fn affects_physics(&self, key: &str) -> bool {
