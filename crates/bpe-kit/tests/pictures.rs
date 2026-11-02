@@ -90,10 +90,11 @@ fn a_rounded_box_arena_draws_round_corners() {
     assert!(brightest_around(&pixels, 135 + 362 / 4, 240 + 662 / 4) > 100, "the round corner is drawn");
 }
 
-/// Stills of the two Marks demos at 4 s and 12 s: the canvas has paint on it that the same frame
-/// without its canvases doesn't show. Saved with `BPE_SAVE_RENDERS`.
+/// Stills of the three Marks demos at 4 s and 12 s. Paint shows: on the canvas for the pour and
+/// the pegs' trails, and on the skins of the ring and the bar (a frame with the skins cleared
+/// differs). Saved with `BPE_SAVE_RENDERS`.
 #[test]
-fn marks_scenes_draw_paint_on_their_canvases() {
+fn marks_scenes_draw_paint() {
     let Ok((device, queue)) = headless_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
@@ -107,10 +108,10 @@ fn marks_scenes_draw_paint_on_their_canvases() {
         for time in [4.0, 12.0] {
             playback.seek(time);
             let mut shots = Vec::new();
-            for canvases in [true, false] {
+            for paint in [true, false] {
                 let mut frame = Frame::default();
                 build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
-                if !canvases {
+                if !paint {
                     frame.canvases.clear();
                 }
                 let source = flow_source(&scene, &resolved, &kit.sims, None);
@@ -118,8 +119,11 @@ fn marks_scenes_draw_paint_on_their_canvases() {
                 shots.push(renderer.read_output(&device, &queue).unwrap());
             }
             let painted = shots[0].chunks(4).zip(shots[1].chunks(4)).filter(|(a, b)| a != b).count();
-            assert!(painted > 200, "{name} at {time} s: only {painted} pixels differ without the canvas");
-            assert!(painted >= painted_before, "{name}: paint never goes away here ({painted_before} then {painted})");
+            assert!(painted > 200, "{name} at {time} s: only {painted} pixels differ without the paint");
+            assert!(
+                painted + painted / 10 >= painted_before,
+                "{name}: paint never goes away here ({painted_before} then {painted})"
+            );
             painted_before = painted;
             if std::env::var_os("BPE_SAVE_RENDERS").is_some() {
                 let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");

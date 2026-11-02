@@ -17,6 +17,8 @@ impl ThingDraw for ObstacleDraw {
     /// each piece's line (Path) or across it (an inside pattern), turning as the obstacle turns.
     /// The glow keeps each piece's one colour.
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
+        // The paint the thing carries, drawn over its shapes (even with no look of its own).
+        crate::things::canvas::draw::draw_skin(cx, frame);
         let Some(solids) = cx.world.solids.get(&cx.thing.id) else { return };
         let Some(look) = look_of(cx) else { return };
         let fill = for_walls(look.fill.clone());

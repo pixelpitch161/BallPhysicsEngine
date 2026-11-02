@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use bpe_core::{Resolved, Scene, ThingId};
-use bpe_runtime::{Log, Mark, Outline, Sims, World};
+use bpe_runtime::{Log, Mark, MarkTarget, Outline, Sims, World};
 
 use crate::canvas::CanvasTextures;
 use crate::canvas::stamp::{CanvasGpu, StampPipeline};
@@ -68,6 +68,13 @@ struct Pipelines {
     swarm: SwarmPipelines,
     liquid: LiquidPipelines,
     stamp: StampPipeline,
+}
+
+/// What a layer belongs to: a swarm or liquid thing, or the marks of a canvas or a skin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LayerKey {
+    Thing(ThingId),
+    Marks(MarkTarget),
 }
 
 /// One GPU-stepped layer.
@@ -184,7 +191,7 @@ struct Checkpoint {
     step: u64,
     world: World,
     log: Log,
-    layers: BTreeMap<ThingId, Snapshot>,
+    layers: BTreeMap<LayerKey, Snapshot>,
 }
 
 impl Checkpoint {
@@ -212,7 +219,7 @@ pub struct FlowLayers {
     sdf: Sdf,
     pipelines: Pipelines,
     driver: Option<Driver>,
-    layers: BTreeMap<ThingId, Layer>,
+    layers: BTreeMap<LayerKey, Layer>,
     steps_run: u64,
     /// Most bytes the checkpoints may hold together; [`CHECKPOINT_BYTES`] unless changed.
     checkpoint_bytes: u64,
@@ -291,7 +298,7 @@ impl FlowLayers {
     /// One swarm's GPU state, for tests.
     #[cfg(test)]
     pub(crate) fn swarm(&self, thing: ThingId) -> Option<&SwarmGpu> {
-        match self.layers.get(&thing)? {
+        match self.layers.get(&LayerKey::Thing(thing))? {
             Layer::Swarm(s) => Some(s.as_ref()),
             _ => None,
         }
@@ -300,15 +307,15 @@ impl FlowLayers {
     /// One liquid's GPU state, for tests.
     #[cfg(test)]
     pub(crate) fn liquid(&self, thing: ThingId) -> Option<&LiquidGpu> {
-        match self.layers.get(&thing)? {
+        match self.layers.get(&LayerKey::Thing(thing))? {
             Layer::Liquid(l) => Some(l),
             _ => None,
         }
     }
 
-    /// The textures `thing`'s canvas marks are painted into; `None` until its layer runs.
-    pub fn canvas_textures(&self, thing: ThingId) -> Option<&CanvasTextures> {
-        match self.layers.get(&thing)? {
+    /// The textures a canvas's or skin's marks are painted into; `None` until its layer runs.
+    pub fn canvas_textures(&self, key: MarkTarget) -> Option<&CanvasTextures> {
+        match self.layers.get(&LayerKey::Marks(key))? {
             Layer::Canvas(c) => Some(&c.textures),
             _ => None,
         }
@@ -317,7 +324,7 @@ impl FlowLayers {
     /// Where a GPU liquid's particles are, for the surface pass; `None` when the frame's
     /// layer is not (yet) running.
     pub(crate) fn gpu_points(&self, thing: ThingId) -> Option<surface::PointsBinding<'_>> {
-        match self.layers.get(&thing)? {
+        match self.layers.get(&LayerKey::Thing(thing))? {
             Layer::Liquid(l) => Some(surface::PointsBinding::Gpu {
                 buffer: l.positions_buffer(),
                 count: l.count(),
@@ -348,10 +355,10 @@ impl FlowLayers {
             Points::Gpu(desc) => Some((l.thing, desc)),
             Points::Cpu(_) => None,
         });
-        let wanted: BTreeSet<ThingId> = all_swarms(frame)
-            .map(|s| s.thing)
-            .chain(gpu_liquids.clone().map(|(id, _)| id))
-            .chain(frame.canvases.iter().map(|c| c.thing))
+        let wanted: BTreeSet<LayerKey> = all_swarms(frame)
+            .map(|s| LayerKey::Thing(s.thing))
+            .chain(gpu_liquids.clone().map(|(id, _)| LayerKey::Thing(id)))
+            .chain(frame.canvases.iter().map(|c| LayerKey::Marks(c.key)))
             .collect();
         if wanted.is_empty() {
             self.driver = None;
@@ -360,15 +367,15 @@ impl FlowLayers {
         }
         let same = self.driver.as_ref().is_some_and(|d| d.key == source.key && d.video == frame.video)
             && self.layers.keys().eq(wanted.iter())
-            && all_swarms(frame).all(|l| match self.layers.get(&l.thing) {
+            && all_swarms(frame).all(|l| match self.layers.get(&LayerKey::Thing(l.thing)) {
                 Some(Layer::Swarm(s)) => *s.sim() == SwarmSim::of(l),
                 _ => false,
             })
-            && gpu_liquids.clone().all(|(id, desc)| match self.layers.get(&id) {
+            && gpu_liquids.clone().all(|(id, desc)| match self.layers.get(&LayerKey::Thing(id)) {
                 Some(Layer::Liquid(l)) => l.desc() == desc,
                 _ => false,
             })
-            && frame.canvases.iter().all(|c| match self.layers.get(&c.thing) {
+            && frame.canvases.iter().all(|c| match self.layers.get(&LayerKey::Marks(c.key)) {
                 Some(Layer::Canvas(g)) => g.size == c.size && g.texels == c.texels,
                 _ => false,
             });
@@ -377,7 +384,7 @@ impl FlowLayers {
             return;
         }
         for l in all_swarms(frame) {
-            if let Some(Layer::Swarm(s)) = self.layers.get_mut(&l.thing) {
+            if let Some(Layer::Swarm(s)) = self.layers.get_mut(&LayerKey::Thing(l.thing)) {
                 s.set_look(queue, l);
             }
         }
@@ -399,20 +406,18 @@ impl FlowLayers {
         let (pipelines, inputs, sdf) = (&self.pipelines, &self.inputs, &self.sdf);
         let swarms = all_swarms(frame).map(|l| {
             let swarm = SwarmGpu::new(device, queue, &mut encoder, &pipelines.swarm, inputs, sdf, l, video, arena);
-            (l.thing, Layer::Swarm(Box::new(swarm)))
+            (LayerKey::Thing(l.thing), Layer::Swarm(Box::new(swarm)))
         });
         let liquids = all_liquids(frame).filter_map(|l| match &l.points {
             Points::Gpu(desc) => {
                 let liquid = LiquidGpu::new(device, queue, &pipelines.liquid, desc, wall.as_ref(), video);
-                Some((l.thing, Layer::Liquid(liquid)))
+                Some((LayerKey::Thing(l.thing), Layer::Liquid(liquid)))
             }
             Points::Cpu(_) => None,
         });
         let canvases = frame.canvases.iter().map(|c| {
-            (
-                c.thing,
-                Layer::Canvas(Box::new(CanvasGpu::new(device, queue, &pipelines.stamp, c.thing, c.size, c.texels))),
-            )
+            let canvas = CanvasGpu::new(device, queue, &pipelines.stamp, c.key, c.size, c.texels);
+            (LayerKey::Marks(c.key), Layer::Canvas(Box::new(canvas)))
         });
         self.layers = liquids.collect();
         self.layers.extend(swarms);
@@ -451,7 +456,7 @@ impl FlowLayers {
             None => self.pipelines.swarm.draw(),
         };
         for l in &frame.swarms {
-            if let Some(Layer::Swarm(s)) = self.layers.get(&l.thing) {
+            if let Some(Layer::Swarm(s)) = self.layers.get(&LayerKey::Thing(l.thing)) {
                 s.draw(pipeline, pass, globals, paint);
             }
         }
@@ -1390,20 +1395,23 @@ mod tests {
     fn mark(step: u64, shape: bpe_runtime::MarkShape, from: Vec2, to: Vec2, radius: f32) -> bpe_runtime::Mark {
         bpe_runtime::Mark {
             step,
-            canvas: CANVAS,
+            target: bpe_runtime::MarkTarget::Canvas(CANVAS),
             shape,
             from,
             to,
             radius,
+            radius_to: radius,
             angle: 0.0,
+            within: [0.0, 1.0],
             variant: 0,
             colour: [1.0, 0.0, 0.0, 1.0],
+            colour_to: [1.0, 0.0, 0.0, 1.0],
         }
     }
 
     fn canvas_layer() -> crate::CanvasLayer {
         crate::CanvasLayer {
-            thing: CANVAS,
+            key: MarkTarget::Canvas(CANVAS),
             center: [0.0; 2],
             angle: 0.0,
             size: [SIDE as f32; 2],
@@ -1414,6 +1422,7 @@ mod tests {
             blend: bpe_core::Blend::Normal,
             opacity: 1.0,
             time: 0.0,
+            mask: Vec::new(),
         }
     }
 
@@ -1493,7 +1502,7 @@ mod tests {
         let mut flow = FlowLayers::new(&device);
         flow.prepare(&device, &queue, &frame, &source);
         flow.step_to(&device, &queue, 0.1, &source);
-        let textures = flow.canvas_textures(CANVAS).expect("the canvas has textures");
+        let textures = flow.canvas_textures(MarkTarget::Canvas(CANVAS)).expect("the canvas has textures");
         let paint = read_texture(&device, &queue, &textures.paint);
         let aux = read_texture(&device, &queue, &textures.aux);
         let painted = |p: Vec2| texel(&paint, p)[3] > 0.99;
@@ -1528,6 +1537,243 @@ mod tests {
     }
 
     #[test]
+    fn stroke_colour_runs_from_start_to_end() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let mut m = mark(1, bpe_runtime::MarkShape::Stroke, Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0);
+            m.colour = [1.0, 0.0, 0.0, 1.0];
+            m.colour_to = [0.0, 0.0, 1.0, 1.0];
+            vec![m]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let near = |c: [f32; 4], want: [f32; 4]| c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.1);
+        let v = Vec2::new;
+        assert!(near(texel(&paint, v(0.0, 0.0)), [0.5, 0.0, 0.5, 1.0]), "{:?}", texel(&paint, v(0.0, 0.0)));
+        assert!(near(texel(&paint, v(-90.0, 0.0)), [0.95, 0.0, 0.05, 1.0]), "{:?}", texel(&paint, v(-90.0, 0.0)));
+        assert!(near(texel(&paint, v(90.0, 0.0)), [0.05, 0.0, 0.95, 1.0]), "{:?}", texel(&paint, v(90.0, 0.0)));
+    }
+
+    #[test]
+    fn smear_tapers() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let mut m = mark(1, bpe_runtime::MarkShape::Smear, Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0);
+            m.radius_to = 0.0;
+            vec![m]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let v = Vec2::new;
+        let covered = |p: Vec2| texel(&paint, p)[3] > 0.99;
+        let clear = |p: Vec2| texel(&paint, p)[3] == 0.0;
+        assert!(covered(v(-100.0, 0.0)) && covered(v(-100.0, 8.0)), "full width at the start");
+        assert!(covered(v(0.0, 3.0)) && clear(v(0.0, 8.0)), "half width in the middle");
+        assert!(covered(v(60.0, 0.0)) && clear(v(80.0, 4.0)), "narrow near the end");
+        assert!(clear(v(98.0, 3.0)) && clear(v(110.0, 0.0)), "nothing at the tip");
+    }
+
+    /// Where the splat tests put their splats: three columns by three rows, 128 apart.
+    fn slot(k: usize) -> Vec2 {
+        Vec2::new((k % 3) as f32 - 1.0, (k / 3) as f32 - 1.0) * 128.0
+    }
+
+    /// A splat of radius 30 in slot `k`.
+    fn splat_in(k: usize, angle: f32, variant: u8) -> bpe_runtime::Mark {
+        let mut m = mark(1, bpe_runtime::MarkShape::Splat, slot(k), slot(k), 30.0);
+        m.angle = angle;
+        m.variant = variant;
+        m
+    }
+
+    /// The coverage (paint alpha) of the 128 by 128 texels around slot `k`, row by row.
+    fn slot_cover(paint: &[u8], k: usize) -> Vec<f32> {
+        let from = slot(k) - Vec2::splat(64.0);
+        (0..128)
+            .flat_map(|y| (0..128).map(move |x| (x, y)))
+            .map(|(x, y)| texel(paint, from + Vec2::new(x as f32 + 0.5, y as f32 + 0.5))[3])
+            .collect()
+    }
+
+    /// The blobs of 128 by 128 `cover` that are mostly covered, as lists of texels (x, y).
+    fn blobs(cover: &[f32]) -> Vec<Vec<(i32, i32)>> {
+        let mut seen = vec![false; cover.len()];
+        let mut found = Vec::new();
+        for start in 0..cover.len() {
+            if seen[start] || cover[start] <= 0.5 {
+                continue;
+            }
+            let mut stack = vec![start];
+            let mut blob = Vec::new();
+            seen[start] = true;
+            while let Some(i) = stack.pop() {
+                let (x, y) = ((i % 128) as i32, (i / 128) as i32);
+                blob.push((x, y));
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !(0..128).contains(&nx) || !(0..128).contains(&ny) {
+                        continue;
+                    }
+                    let j = (ny * 128 + nx) as usize;
+                    if !seen[j] && cover[j] > 0.5 {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            found.push(blob);
+        }
+        found
+    }
+
+    #[test]
+    fn splat_has_droplets() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            (0..8).map(|v| splat_in(v, 0.0, v as u8)).collect()
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        for v in 0..8 {
+            let found = blobs(&slot_cover(&paint, v));
+            assert!(found.len() > 1, "variant {v}: {} blob", found.len());
+        }
+    }
+
+    #[test]
+    fn splat_droplets_lean_forward() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            vec![splat_in(0, 0.0, 0), splat_in(1, std::f32::consts::FRAC_PI_2, 0), splat_in(2, std::f32::consts::PI, 3)]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let centroid = |k: usize| {
+            let cover = slot_cover(&paint, k);
+            let total: f32 = cover.iter().sum();
+            let (mut x, mut y) = (0.0, 0.0);
+            for (i, c) in cover.iter().enumerate() {
+                x += c * ((i % 128) as f32 + 0.5 - 64.0);
+                y += c * ((i / 128) as f32 + 0.5 - 64.0);
+            }
+            Vec2::new(x, y) / total
+        };
+        assert!(centroid(0).x > 3.0, "along +x: {}", centroid(0));
+        assert!(centroid(1).y > 3.0, "along +y: {}", centroid(1));
+        assert!(centroid(2).x < -3.0, "along -x: {}", centroid(2));
+    }
+
+    #[test]
+    fn squashed_splat_is_flatter() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            vec![splat_in(0, 0.0, 1), splat_in(1, 0.0, 1 | 3 << 3)]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        // The main blob is the one under the middle; droplets stand apart from it.
+        let extents = |k: usize| {
+            let blob = blobs(&slot_cover(&paint, k))
+                .into_iter()
+                .find(|b| b.contains(&(64, 64)))
+                .expect("a blob at the middle");
+            let span = |f: fn(&(i32, i32)) -> i32| {
+                let (lo, hi) = (blob.iter().map(f).min().unwrap(), blob.iter().map(f).max().unwrap());
+                (hi - lo + 1) as f32
+            };
+            (span(|p| p.0), span(|p| p.1))
+        };
+        let (along, across) = extents(0);
+        assert!((across / along) < 1.25, "a round splat: {along} by {across}");
+        let (along, across) = extents(1);
+        assert!(across / along >= 1.4, "a squashed splat is {along} along and {across} across");
+    }
+
+    #[test]
+    fn splat_edges_are_antialiased() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| if step == 1 { vec![splat_in(4, 0.3, 2)] } else { Vec::new() }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let cover = slot_cover(&paint, 4);
+        let soft = cover.iter().filter(|c| **c > 0.1 && **c < 0.9).count();
+        let solid = cover.iter().filter(|c| **c >= 0.9).count();
+        assert!(soft > 20 && solid > 200, "{soft} soft texels, {solid} solid");
+    }
+
+    #[test]
+    fn joined_pieces_leave_no_seam() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // Pieces of one slanted, slightly bending ribbon: each leaves out the caps its neighbours cover.
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let v = Vec2::new;
+            let points = [v(-100.0, -40.0), v(-94.2, -39.1), v(-88.4, -38.1), v(-82.5, -37.0), v(-76.6, -35.8)];
+            (0..4)
+                .map(|k| {
+                    let mut m = mark(1, bpe_runtime::MarkShape::Stroke, points[k], points[k + 1], 30.0);
+                    m.variant = if k > 0 { 2 } else { 0 } | if k < 3 { 4 } else { 0 };
+                    if k > 0 {
+                        m.angle = (points[k] - points[k - 1]).to_angle();
+                    }
+                    m
+                })
+                .collect()
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        // Every texel across the ribbon's width, between its first and last joint, is solid.
+        for x in -92..=-84 {
+            for y in -60..=-20 {
+                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let inside = (p - Vec2::new(p.x, -39.0 + (p.x + 94.0) * 0.16)).length() < 28.0;
+                if inside {
+                    assert!(texel(&paint, p)[3] > 0.99, "a seam at {p}: {:?}", texel(&paint, p));
+                }
+            }
+        }
+    }
+
+    /// Runs `sims` for a tenth of a second and reads back the canvas's paint.
+    fn stamped(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, resolved: &Resolved, sims: &Sims) -> Vec<u8> {
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(scene, resolved, sims);
+        let mut flow = FlowLayers::new(device);
+        flow.prepare(device, queue, &frame, &source);
+        flow.step_to(device, queue, 0.1, &source);
+        read_texture(
+            device,
+            queue,
+            &flow.canvas_textures(MarkTarget::Canvas(CANVAS)).expect("the canvas has textures").paint,
+        )
+    }
+
+    #[test]
     fn canvas_soft_edges_keep_the_time_under_them() {
         let Some((device, queue)) = gpu() else { return };
         let (scene, resolved) = tiny_scene();
@@ -1544,7 +1790,7 @@ mod tests {
         let mut flow = FlowLayers::new(&device);
         flow.prepare(&device, &queue, &frame, &source);
         flow.step_to(&device, &queue, 0.1, &source);
-        let aux = read_texture(&device, &queue, &flow.canvas_textures(CANVAS).unwrap().aux);
+        let aux = read_texture(&device, &queue, &flow.canvas_textures(MarkTarget::Canvas(CANVAS)).unwrap().aux);
         let second = 2.0 / World::build(&scene, &resolved, &sims).steps_per_second as f32;
         let first = second / 2.0;
         // Texel (0, 0)'s centre is 5.3 from the thin stroke's middle line: a fifth covered.
@@ -1552,6 +1798,42 @@ mod tests {
         assert!((edge - first).abs() < 1e-5, "{edge}: the soft edge keeps the older time");
         let inside = texel(&aux, Vec2::new(0.5, -4.5))[0];
         assert!((inside - second).abs() < 1e-5, "{inside}: the thin stroke re-dates what it covers");
+    }
+
+    #[test]
+    fn a_skin_and_a_canvas_keep_their_own_marks() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // Thing 9's canvas gets a stroke at the top, its skin one at the bottom.
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let stroke = |y| mark(1, bpe_runtime::MarkShape::Stroke, Vec2::new(-50.0, y), Vec2::new(50.0, y), 10.0);
+            let mut skin = stroke(100.0);
+            skin.target = MarkTarget::Skin(CANVAS);
+            vec![stroke(-100.0), skin]
+        }));
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let mut skin = canvas_layer();
+        skin.key = MarkTarget::Skin(CANVAS);
+        skin.place = crate::CanvasPlace::OnThing;
+        frame.canvases.push(skin);
+        let source = canvas_source(&scene, &resolved, &sims);
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 0.1, &source);
+        let paint = |key| read_texture(&device, &queue, &flow.canvas_textures(key).unwrap().paint);
+        let (canvas, skin) = (paint(MarkTarget::Canvas(CANVAS)), paint(MarkTarget::Skin(CANVAS)));
+        let (top, bottom) = (Vec2::new(0.0, -100.0), Vec2::new(0.0, 100.0));
+        assert!(texel(&canvas, top)[3] > 0.99 && texel(&canvas, bottom)[3] == 0.0, "the canvas has its stroke");
+        assert!(texel(&skin, bottom)[3] > 0.99 && texel(&skin, top)[3] == 0.0, "the skin has its stroke");
+        // Without canvases or skins in the frame, nothing is kept.
+        frame.canvases.clear();
+        flow.prepare(&device, &queue, &frame, &source);
+        assert!(flow.canvas_textures(MarkTarget::Skin(CANVAS)).is_none() && flow.layers.is_empty());
     }
 
     #[test]
@@ -1570,7 +1852,7 @@ mod tests {
         frame.canvases.push(canvas_layer());
         let source = canvas_source(&scene, &resolved, &sims);
         let read = |flow: &FlowLayers| {
-            let t = flow.canvas_textures(CANVAS).unwrap();
+            let t = flow.canvas_textures(MarkTarget::Canvas(CANVAS)).unwrap();
             (read_texture(&device, &queue, &t.paint), read_texture(&device, &queue, &t.aux))
         };
         let mut seeked = FlowLayers::new(&device);

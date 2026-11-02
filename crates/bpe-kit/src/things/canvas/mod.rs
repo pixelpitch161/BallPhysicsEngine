@@ -3,11 +3,14 @@
 
 pub mod draw;
 pub mod grid;
+pub mod ribbon;
 pub mod sim;
+pub mod skin;
 
 pub use draw::CanvasDraw;
 pub use grid::{CanvasGrid, Cell};
 pub use sim::{CanvasSim, CanvasState, canvas_area};
+pub use skin::{SkinSettings, is_solid, outline_local, parts_local, skin_area, skin_settings, skin_state, wall_local};
 
 use bpe_core::{Blend, Choice, Color, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;

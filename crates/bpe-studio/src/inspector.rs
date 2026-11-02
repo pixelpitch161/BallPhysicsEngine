@@ -3936,4 +3936,64 @@ mod tests {
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
         assert_eq!(selected, ["Look"]);
     }
+
+    /// Where each label named `name` sits, top to bottom.
+    fn label_tops(h: &Harness<'_, State>, name: &str) -> Vec<f32> {
+        let mut tops: Vec<f32> = h.query_all_by_label(name).map(|n| n.rect().top()).collect();
+        tops.sort_by(f32::total_cmp);
+        tops
+    }
+
+    /// Asserts each of `rows` shows below the `heading` (and above `next`, a heading after it).
+    fn rows_under(h: &Harness<'_, State>, heading: &str, next: Option<&str>, rows: &[&str]) {
+        let top = *label_tops(h, heading).first().unwrap_or_else(|| panic!("a {heading} heading"));
+        let bottom = next.map_or(f32::MAX, |n| *label_tops(h, n).iter().find(|&&t| t > top).expect("the next heading"));
+        for row in rows {
+            assert!(
+                label_tops(h, row).iter().any(|&t| t > top && t < bottom),
+                "{row} sits under {heading}: {:?} not in {top}..{bottom}",
+                label_tops(h, row)
+            );
+        }
+    }
+
+    #[test]
+    fn an_arena_shows_its_paint_skin() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let h = harness_of(scene.clone(), Some(ThingId(1)));
+        rows_under(&h, "Paint skin", None, &["Takes paint", "Skin width", "Fade", "Opacity"]);
+        // Taking no paint, the rest has nothing to do.
+        scene.things.get_mut(&ThingId(1)).unwrap().params.set("skin_on", Value::Bool(false));
+        let h = harness_of(scene, Some(ThingId(1)));
+        rows_under(&h, "Paint skin", None, &["Takes paint"]);
+        for row in ["Skin width", "Opacity"] {
+            assert!(h.query_all_by_label(row).next().is_none(), "{row} shows with Takes paint off");
+        }
+        let skin = *label_tops(&h, "Paint skin").first().unwrap();
+        assert!(label_tops(&h, "Fade").iter().all(|&t| t < skin), "the skin's Fade shows with Takes paint off");
+    }
+
+    #[test]
+    fn a_balls_marks_card_shows_where_splats_land_and_how_trails_end() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Marks).unwrap();
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone() else {
+            panic!("the ball's marks are linked")
+        };
+        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
+        params.set("paint_on", Value::Bool(true));
+        params.set("paint_width_by", Value::Choice("speed".into()));
+        params.set("splat_on", Value::Bool(true));
+        let h = harness_of(scene.clone(), Some(ThingId(2)));
+        rows_under(&h, "Paint trail", Some("Splat"), &["Taper", "Smoothing"]);
+        rows_under(&h, "Splat", None, &["Lands on", "Skin look"]);
+        // Splats onto canvases only have no skin to look like anything on.
+        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
+        params.set("splat_onto", Value::Choice("canvases".into()));
+        let h = harness_of(scene, Some(ThingId(2)));
+        rows_under(&h, "Splat", None, &["Lands on"]);
+        assert!(h.query_all_by_label("Skin look").next().is_none(), "Skin look shows for canvases");
+    }
 }

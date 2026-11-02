@@ -1,10 +1,11 @@
 //! Replaying marks on the graphics card: each flow step draws the marks its canvas got that step
 //! into the canvas's two textures (see canvas_stamp.wgsl), in one render pass of instanced quads
 //! in the order the marks were made. Blending runs in that order per texel, so the same marks
-//! always leave the same texels.
+//! always leave the same texels. Within a pass, a depth test keeps on top the paint of whichever
+//! ball last touched a texel, by its world step and when in that step (see canvas_stamp.wgsl);
+//! the depth is cleared every pass, as every pass's marks come after the pass before's.
 
-use bpe_core::ThingId;
-use bpe_runtime::{Mark, MarkShape};
+use bpe_runtime::{Mark, MarkShape, MarkTarget};
 use bytemuck::{Pod, Zeroable};
 
 use super::{CanvasTextures, clamp_texels};
@@ -25,10 +26,11 @@ struct MarkGpu {
     look: [f32; 4],
     colour: [f32; 4],
     clock: [f32; 4],
+    colour_to: [f32; 4],
+    within: [f32; 4],
 }
 
-const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
 
 /// The shape number canvas_stamp.wgsl draws.
 fn shape_number(shape: MarkShape) -> f32 {
@@ -40,17 +42,26 @@ fn shape_number(shape: MarkShape) -> f32 {
         MarkShape::Crack => 4.0,
         MarkShape::Burst => 5.0,
         MarkShape::Dots => 6.0,
+        MarkShape::Smear => 7.0,
     }
 }
 
 impl MarkGpu {
-    /// `m` for a world stepping `steps_per_second`, which turns its step into its time.
-    fn new(m: &Mark, steps_per_second: u32) -> Self {
+    /// `m` for a world stepping `steps_per_second`, which turns its step into its time, in a
+    /// pass whose marks were made over `steps` world steps from step `first`.
+    fn new(m: &Mark, steps_per_second: u32, first: u64, steps: u64) -> Self {
         Self {
             ends: [m.from.x, m.from.y, m.to.x, m.to.y],
             look: [m.radius, m.angle, m.variant as f32, shape_number(m.shape)],
             colour: m.colour,
-            clock: [(m.step as f64 / steps_per_second.max(1) as f64) as f32, 0.0, 0.0, 0.0],
+            clock: [
+                (m.step as f64 / steps_per_second.max(1) as f64) as f32,
+                (m.step - first) as f32,
+                steps as f32,
+                m.radius_to,
+            ],
+            colour_to: m.colour_to,
+            within: [m.within[0], m.within[1], 0.0, 0.0],
         }
     }
 }
@@ -88,7 +99,14 @@ impl StampPipeline {
                 })],
             },
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None,
+            // When in the pass a texel was last touched: later wins, a tie goes to the later mark.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -131,17 +149,23 @@ const REPLACE_BY_ALPHA: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
+/// The stamp pass's depth: when in the pass each texel was last touched.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
 /// Marks held in a mark buffer before it is made bigger.
 const FIRST_MARKS: u64 = 256;
 
 /// One canvas on the graphics card: its textures and what it needs to stamp marks into them.
 pub(crate) struct CanvasGpu {
     pub(crate) textures: CanvasTextures,
+    /// When in the current pass each texel was last touched, cleared every pass.
+    depth: wgpu::TextureView,
     /// The canvas's width and height in world pixels.
     pub(crate) size: [f32; 2],
     /// The texture size the frame asked for, before the cap.
     pub(crate) texels: [u32; 2],
-    thing: ThingId,
+    /// Whose marks it stamps: a canvas's or a skin's.
+    target: MarkTarget,
     group: wgpu::BindGroup,
     /// The marks of every step of one batch, each step's after the one before.
     marks: wgpu::Buffer,
@@ -151,17 +175,29 @@ pub(crate) struct CanvasGpu {
 }
 
 impl CanvasGpu {
-    /// Cleared textures for canvas `thing`, `size` world pixels drawn at `texels`.
+    /// Cleared textures for the canvas or skin `target`, `size` world pixels drawn at `texels`.
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &StampPipeline,
-        thing: ThingId,
+        target: MarkTarget,
         size: [f32; 2],
         texels: [u32; 2],
     ) -> Self {
         let textures = CanvasTextures::new(device, texels);
         let [w, h] = clamp_texels(texels);
+        let depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("canvas stamp depth"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("canvas stamp"),
             size: std::mem::size_of::<StampCanvas>() as u64,
@@ -177,9 +213,10 @@ impl CanvasGpu {
         });
         Self {
             textures,
+            depth,
             size,
             texels,
-            thing,
+            target,
             group,
             marks: mark_buffer(device, FIRST_MARKS),
             capacity: FIRST_MARKS,
@@ -204,8 +241,10 @@ impl CanvasGpu {
         if first {
             self.used = 0;
         }
-        let ours: Vec<MarkGpu> =
-            marks.iter().filter(|m| m.canvas == self.thing).map(|m| MarkGpu::new(m, steps_per_second)).collect();
+        let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == self.target).collect();
+        let first_step = ours.iter().map(|m| m.step).min().unwrap_or(0);
+        let steps = ours.iter().map(|m| m.step - first_step + 1).max().unwrap_or(1);
+        let ours: Vec<MarkGpu> = ours.iter().map(|m| MarkGpu::new(m, steps_per_second, first_step, steps)).collect();
         if ours.is_empty() {
             return;
         }
@@ -229,7 +268,11 @@ impl CanvasGpu {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas stamp"),
             color_attachments: &[attachment(&self.textures.paint_view), attachment(&self.textures.aux_view)],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,

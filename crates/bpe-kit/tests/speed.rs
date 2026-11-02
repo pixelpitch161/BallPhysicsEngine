@@ -129,3 +129,48 @@ fn canvas_step_is_quick() {
     assert!(log.marks().len() > 100, "the balls painted: {} marks", log.marks().len());
     assert!(mean < Duration::from_millis(1), "a canvas step takes {mean:?}");
 }
+
+/// Skins keep up: 50 balls in a ring arena throwing Spread splats cost under a millisecond of
+/// skin work a step, on average.
+#[test]
+#[ignore = "a speed check, run with --release"]
+fn skin_step_is_quick() {
+    use bpe_core::{SlotId, Value};
+    use bpe_kit::things::canvas::skin_state;
+    const STEPS: u32 = 1200;
+
+    let kit = bpe_kit::kit();
+    let mut scene = bpe_kit::new_scene(&kit.registry);
+    let balls = scene.things.get_mut(&ThingId(2)).expect("the balls");
+    let mut settings = BallsSettings::from_params(&balls.params);
+    (settings.arrangement, settings.count, settings.ring_radius, settings.radius) =
+        (bpe_kit::Arrangement::Ring, 50, 300.0, 10.0);
+    balls.params = settings.to_params();
+    let brush = bpe_kit::MarksBrushes {
+        paint_on: false,
+        splat_on: true,
+        splat_skin: bpe_kit::SplatSkin::Spread,
+        splat_min_speed: 0.0,
+        ..bpe_kit::MarksBrushes::default()
+    };
+    let module = scene.add_module(&kit.registry, "marks.brushes", "Spread").expect("the brushes kind");
+    scene.library.modules.get_mut(&module).unwrap().params = brush.to_params();
+    scene.link(&kit.registry, ThingId(2), SlotId::Marks, module).expect("the balls take brushes");
+    scene.things.get_mut(&ThingId(1)).unwrap().params.set("skin_on", Value::Bool(true));
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+
+    let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+    let mut log = bpe_runtime::Log::default();
+    let sim = kit.sims.thing("arena").expect("the arena sim");
+    let mut total = Duration::ZERO;
+    for _ in 0..STEPS {
+        world.step(&kit.sims, &mut log);
+        total += timed(|| sim.after_step(ThingId(1), &mut world, &mut log));
+    }
+    let mean = total / STEPS;
+    println!("skin marking under 50 balls with Spread splats: mean {mean:?} a step, {} marks", log.marks().len());
+    assert!(skin_state(&world, ThingId(1)).is_some(), "the arena has a skin");
+    assert!(log.marks().len() > 100, "the balls painted: {} marks", log.marks().len());
+    assert!(mean < Duration::from_millis(1), "a skin step takes {mean:?}");
+}

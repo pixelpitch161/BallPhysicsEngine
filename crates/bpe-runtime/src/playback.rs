@@ -159,14 +159,17 @@ mod tests {
         let rate = p.world.steps_per_second as u64;
         let mark = |step| crate::Mark {
             step,
-            canvas: DOTS,
+            target: crate::MarkTarget::Canvas(DOTS),
             shape: crate::MarkShape::Splat,
             from: glam::Vec2::ZERO,
             to: glam::Vec2::ZERO,
             radius: 1.0,
+            radius_to: 1.0,
             angle: 0.0,
+            within: [1.0, 1.0],
             variant: 0,
             colour: [1.0; 4],
+            colour_to: [1.0; 4],
         };
         for step in [rate / 2, 2 * rate, 3 * rate] {
             p.log.push_mark(mark(step));

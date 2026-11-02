@@ -35,7 +35,9 @@ pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
 pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_in_sim};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
-pub use modules::marks::{MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, SplatShape, Tip, Turn, WidthBy};
+pub use modules::marks::{
+    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, SplatOnto, SplatShape, SplatSkin, Tip, Turn, WidthBy,
+};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
@@ -68,7 +70,7 @@ pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::canvas::{
     CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
-    CanvasThingKind, Cell, Fit, StartsAs, canvas_area,
+    CanvasThingKind, Cell, Fit, SkinSettings, StartsAs, canvas_area, skin_area,
 };
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
@@ -416,7 +418,16 @@ mod tests {
         for key in ["paint_on", "paint_width_by", "paint_width", "paint_tip", "paint_when", "paint_min_speed"] {
             assert!(defs.iter().any(|d| d.key == key), "no {key}");
         }
-        for key in ["paint_load", "splat_on", "splat_shape", "splat_size", "splat_by_speed", "splat_turn"] {
+        for key in [
+            "paint_load",
+            "paint_taper",
+            "paint_smooth",
+            "splat_on",
+            "splat_shape",
+            "splat_size",
+            "splat_by_speed",
+            "splat_turn",
+        ] {
             assert!(defs.iter().any(|d| d.key == key), "no {key}");
         }
         for key in ["splat_variants", "splat_min_speed", "colour_from", "colour_colours", "colour_follow"] {
