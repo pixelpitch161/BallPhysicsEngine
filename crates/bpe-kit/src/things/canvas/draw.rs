@@ -6,16 +6,19 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bpe_core::{Blend, Settings, ThingId};
+use bpe_gfx::text::{FontFace, TextAlign, TextStyle, layout_text};
 use bpe_gfx::{
-    CanvasLayer, CanvasPlace, DrawCx, Frame, MAX_MASK_SHAPES, MaskShape, PaintLook, PaintStyle, Surface, ThingDraw,
-    clamp_texels,
+    CanvasLayer, CanvasPlace, DrawCx, Frame, GridImage, MAX_MASK_SHAPES, MaskShape, PaintLook, PaintStyle, Surface,
+    ThingDraw, Under, blend_alpha, clamp_texels,
 };
 use bpe_runtime::{MarkTarget, Solid, World};
 use glam::Vec2;
 
-use super::sim::canvas_area;
+use super::sim::{CanvasState, canvas_area};
 use super::skin::{SkinSettings, is_solid, line_reach, parts_local, skin_area, wall_local};
-use super::{CanvasLayerPos, CanvasSettings, CanvasStyle, StartsAs};
+use super::{
+    CanvasKind, CanvasLayerPos, CanvasSettings, CanvasStyle, CoverLook, FogLook, PowderLook, StartsAs, Underneath,
+};
 
 pub struct CanvasDraw;
 
@@ -96,9 +99,15 @@ impl ThingDraw for CanvasDraw {
         let settings = CanvasSettings::from_params(&cx.resolved.params);
         let detail = if settings.detail.is_finite() { settings.detail.max(0.0) } else { 1.0 };
         let texels = clamp_texels([(size.x * detail).round() as u32, (size.y * detail).round() as u32]);
-        // Always the top frame's list: the renderer draws no other frame's canvases, and mixes
-        // each in by its own blend.
-        frame.canvases.push(CanvasLayer {
+        let state = cx.world.states.get(&cx.thing.id).and_then(|s| s.as_any().downcast_ref::<CanvasState>());
+        let image = |pixels: Vec<u8>, dims: (u32, u32), cell: f32, srgb: bool, nearest: bool| GridImage {
+            size: [dims.0, dims.1],
+            pixels: std::sync::Arc::new(pixels),
+            srgb,
+            nearest,
+            cell,
+        };
+        let mut layer = CanvasLayer {
             key: MarkTarget::Canvas(cx.thing.id),
             center: pose.position.to_array(),
             angle: pose.angle,
@@ -116,7 +125,85 @@ impl ThingDraw for CanvasDraw {
             grid: None,
             border: 0.0,
             under_glyphs: Vec::new(),
-        });
+        };
+        if settings.kind == CanvasKind::Paint {
+            // A colour war's claimed ground goes under the paint.
+            if let Some(claims) = state.and_then(|st| st.claims.as_ref()) {
+                let map = &claims.map;
+                let nearest = settings.tile_size > 0.0;
+                layer.grid = Some(image(map.image(&claims.teams), map.dims(), map.cell_size(), true, nearest));
+                layer.border = within(settings.border, 0.0, 1.0, 0.0);
+            }
+        } else if let Some(st) = state {
+            // The paint textures of these are never used: keep them tiny.
+            layer.texels = [1, 1];
+            layer.start = Some(settings.start_colour.to_linear());
+            layer.look = PaintLook::default();
+            layer.grid = Some(image(st.grid.image(), st.grid.dims(), st.grid.cell_size(), false, false));
+            layer.surface = match settings.kind {
+                CanvasKind::Cover => {
+                    let under = match settings.under {
+                        Underneath::Scene => Under::Scene,
+                        Underneath::Colour => Under::Colour(settings.under_colour.to_linear()),
+                        Underneath::Gradient => {
+                            Under::Gradient(std::array::from_fn(|k| settings.under_colours.sample(k as f32 / 15.0)))
+                        }
+                        Underneath::Picture => Under::Picture(if settings.under_picture.trim().is_empty() {
+                            crate::pictures::NO_SLOT as u32
+                        } else {
+                            crate::pictures::slot_of(cx.world, &settings.under_picture) as u32
+                        }),
+                        Underneath::Text => {
+                            under_text(&settings, pose.position, size, &mut layer.under_glyphs);
+                            Under::Text(settings.under_colour.to_linear())
+                        }
+                    };
+                    Surface::Cover { foil: settings.cover_look == CoverLook::Foil, under }
+                }
+                CanvasKind::Powder => Surface::Powder {
+                    snow: settings.powder_look == PowderLook::Snow,
+                    ridges: within(settings.ridges, 0.0, 1.0, 0.5),
+                    light_angle: within(settings.light_angle, 0.0, 360.0, 45.0),
+                },
+                _ => {
+                    layer.place = CanvasPlace::OnTop;
+                    layer.blend = Blend::Normal;
+                    Surface::Fog {
+                        steam: settings.fog_look == FogLook::Steam,
+                        blur: within(settings.blur, 0.0, 200.0, 14.0),
+                        density: within(settings.density, 0.0, 1.0, 0.7),
+                    }
+                }
+            };
+        }
+        // Always the top frame's list: the renderer draws no other frame's canvases, and mixes
+        // each in by its own blend.
+        frame.canvases.push(layer);
+    }
+}
+
+/// Lays out a cover's text-underneath word, centred on the canvas, and colours its letters.
+/// The text does not turn with a turned canvas.
+fn under_text(s: &CanvasSettings, centre: Vec2, size: Vec2, out: &mut Vec<bpe_gfx::GlyphInstance>) {
+    if s.under_text.is_empty() {
+        return;
+    }
+    let style = TextStyle { color: [1.0; 4], outline: 0.0, outline_color: [1.0; 4], glow: 0.0 };
+    let px = within(s.under_text_size, 1.0, 2000.0, 160.0);
+    layout_text(&s.under_text, FontFace::Anton, px, centre, TextAlign::Center, size.x * 0.9, usize::MAX, &style, out);
+    if out.is_empty() {
+        return;
+    }
+    // Centre what was laid out on the canvas's middle, whatever the line's own origin.
+    let whole = out.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, g| {
+        [b[0].min(g.rect[0]), b[1].min(g.rect[1]), b[2].max(g.rect[2]), b[3].max(g.rect[3])]
+    });
+    let shift = centre - Vec2::new((whole[0] + whole[2]) * 0.5, (whole[1] + whole[3]) * 0.5);
+    let colour = blend_alpha(s.under_text_colour.to_linear());
+    for g in out.iter_mut() {
+        g.rect = [g.rect[0] + shift.x, g.rect[1] + shift.y, g.rect[2] + shift.x, g.rect[3] + shift.y];
+        g.color = colour;
+        g.outline_color = colour;
     }
 }
 
@@ -196,6 +283,7 @@ mod tests {
     use bpe_core::{Params, Scene, SlotId, Value, resolve};
     use bpe_gfx::{Frame, MaskShape, build_frame};
     use bpe_runtime::{Log, MarkTarget, World};
+    use glam::Vec2;
 
     use crate::testing::{ARENA, BALLS, OBSTACLE, module_of, scene_with_obstacle};
     use crate::{Kit, fill_slot};
@@ -336,5 +424,105 @@ mod tests {
         assert_eq!((look.gloss, look.dry_time), (1.0, 0.0));
         assert_eq!(look.glow_size, bpe_gfx::PaintLook::default().glow_size);
         let _ = skin_look_of(&SkinSettings::from_params(&Params::default()));
+    }
+
+    /// The frame of a canvas turned into `kind` by `f`, `seconds` into the run, whose world is
+    /// also given back.
+    fn surface_frame(f: impl FnOnce(&mut Params), brush: bool, seconds: f64) -> (Frame, World) {
+        use crate::testing::{CANVAS, painted, run};
+        let (mut scene, _, kit) = painted(brush, |p| {
+            p.set("paint_on", Value::Bool(false));
+            p.set("scrape_on", Value::Bool(true));
+            p.set("claim_on", Value::Bool(true));
+            p.set("claim_hits", Value::Bool(true));
+        });
+        f(&mut scene.things.get_mut(&CANVAS).unwrap().params);
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let (world, log) = run(&scene, &resolved, &kit, seconds);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &log, seconds, &kit.draws, &mut frame);
+        (frame, world)
+    }
+
+    fn cover(p: &mut Params) {
+        p.set("kind", Value::Choice("cover".into()));
+    }
+
+    #[test]
+    fn cover_frames_carry_their_grid() {
+        use crate::testing::{CANVAS, canvas_state};
+        let (frame, world) = surface_frame(cover, false, 0.0);
+        let layer = frame.canvases.iter().find(|c| c.key == MarkTarget::Canvas(CANVAS)).unwrap();
+        assert_eq!(layer.texels, [1, 1]);
+        assert!(matches!(layer.surface, bpe_gfx::Surface::Cover { foil: false, .. }));
+        let image = layer.grid.as_ref().expect("a cover has its amounts");
+        let grid = &canvas_state(&world, CANVAS).grid;
+        assert_eq!((image.size[0], image.size[1]), grid.dims());
+        assert!(!image.srgb);
+        assert_eq!(image.pixels[0], 255, "a whole cover");
+        // A scraped cell shows as 0.
+        let (mut scraped, mut world) = (grid.clone(), world);
+        let mut cell = scraped.get(0, 0);
+        cell.amount = 0;
+        scraped.set(0, 0, cell, None);
+        bpe_runtime::state_mut::<crate::CanvasState>(world.states.get_mut(&CANVAS).unwrap().as_mut()).grid = scraped;
+        assert_eq!(canvas_state(&world, CANVAS).grid.image()[0], 0);
+    }
+
+    #[test]
+    fn fog_is_always_on_top() {
+        use crate::testing::CANVAS;
+        let (frame, _) = surface_frame(
+            |p| {
+                p.set("kind", Value::Choice("fog".into()));
+                p.set("layer", Value::Choice("behind_everything".into()));
+                p.set("blend", Value::Choice("multiply".into()));
+            },
+            false,
+            0.0,
+        );
+        let layer = frame.canvases.iter().find(|c| c.key == MarkTarget::Canvas(CANVAS)).unwrap();
+        assert_eq!((layer.place, layer.blend), (bpe_gfx::CanvasPlace::OnTop, bpe_core::Blend::Normal));
+        assert!(matches!(layer.surface, bpe_gfx::Surface::Fog { .. }));
+    }
+
+    #[test]
+    fn claims_reach_the_frame() {
+        use crate::testing::CANVAS;
+        let (frame, _) = surface_frame(
+            |p| {
+                p.set("starts_as", Value::Choice("colour".into()));
+                p.set("tile_size", Value::Number(40.0));
+            },
+            true,
+            2.0,
+        );
+        let layer = frame.canvases.iter().find(|c| c.key == MarkTarget::Canvas(CANVAS)).unwrap();
+        let image = layer.grid.as_ref().expect("claimed ground");
+        assert!(image.srgb && image.nearest);
+        assert!(image.pixels.chunks(4).any(|p| p[3] == 255), "some ground is claimed");
+    }
+
+    #[test]
+    fn under_text_lays_out_glyphs() {
+        use crate::testing::CANVAS;
+        let (frame, _) = surface_frame(
+            |p| {
+                cover(p);
+                p.set("under", Value::Choice("text".into()));
+                p.set("under_text", Value::Text("AB".into()));
+            },
+            false,
+            0.0,
+        );
+        let layer = frame.canvases.iter().find(|c| c.key == MarkTarget::Canvas(CANVAS)).unwrap();
+        assert_eq!(layer.under_glyphs.len(), 2);
+        let g = &layer.under_glyphs;
+        let whole = g.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, g| {
+            [b[0].min(g.rect[0]), b[1].min(g.rect[1]), b[2].max(g.rect[2]), b[3].max(g.rect[3])]
+        });
+        let middle = Vec2::new((whole[0] + whole[2]) * 0.5, (whole[1] + whole[3]) * 0.5);
+        assert!((middle - Vec2::from(layer.center)).length() < 1.0, "{middle:?} vs {:?}", layer.center);
     }
 }
