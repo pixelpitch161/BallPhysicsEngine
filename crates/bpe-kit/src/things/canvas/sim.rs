@@ -103,7 +103,22 @@ impl ThingSim for CanvasSim {
     }
 
     fn affects_physics(&self, key: &str) -> bool {
-        !matches!(key, "layer" | "style" | "detail" | "fade" | "blend" | "opacity" | "start_colour")
+        !matches!(
+            key,
+            "layer"
+                | "style"
+                | "detail"
+                | "fade"
+                | "blend"
+                | "opacity"
+                | "start_colour"
+                | "light_angle"
+                | "gloss"
+                | "grain"
+                | "edge_dark"
+                | "glow_size"
+                | "glow_strength"
+        )
     }
 }
 
@@ -384,7 +399,8 @@ pub(crate) struct Stamp {
 /// shapes face the hit.
 pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> Stamp {
     let shape = match b.splat_shape {
-        SplatShape::Splat => MarkShape::Splat,
+        // Task 4 gives Picture its own mark.
+        SplatShape::Splat | SplatShape::Picture => MarkShape::Splat,
         SplatShape::Ring => MarkShape::Ring,
         SplatShape::Star => MarkShape::Star,
         SplatShape::Crack => MarkShape::Crack,
@@ -499,6 +515,17 @@ mod tests {
     /// `p` in the canvas's own pixels.
     fn local(pose: Pose, p: Vec2) -> Vec2 {
         Vec2::from_angle(-pose.angle).rotate(p - pose.position)
+    }
+
+    #[test]
+    fn look_keys_never_restart_the_canvas() {
+        let sim = CanvasSim;
+        for k in ["light_angle", "gloss", "grain", "edge_dark", "glow_size", "glow_strength", "style"] {
+            assert!(!sim.affects_physics(k), "{k}");
+        }
+        for k in ["dry_time", "bleed", "drips", "fit"] {
+            assert!(sim.affects_physics(k), "{k}");
+        }
     }
 
     #[test]

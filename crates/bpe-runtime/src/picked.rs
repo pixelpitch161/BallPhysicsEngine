@@ -21,7 +21,7 @@ impl Picked {
     /// How strongly it shows at world step `now`: amount − (seconds since step) / fade, floored at 0.
     /// `fade <= 0` (or not finite) never fades. `now < step` counts as no time passed.
     pub fn shown(&self, now: u64, steps_per_second: u32) -> f32 {
-        if !(self.fade > 0.0) || !self.fade.is_finite() {
+        if self.fade <= 0.0 || !self.fade.is_finite() {
             return self.amount;
         }
         let seconds = now.saturating_sub(self.step) as f32 / steps_per_second.max(1) as f32;
@@ -38,8 +38,8 @@ impl Picked {
         let s = share.clamp(0.0, 1.0);
         let a2 = 1.0 - (1.0 - a) * (1.0 - s);
         if a2 > 0.0 {
-            for k in 0..3 {
-                self.rgb[k] = (self.rgb[k] * a * (1.0 - s) + colour[k] * s) / a2;
+            for (c, new) in self.rgb.iter_mut().zip(colour) {
+                *c = (*c * a * (1.0 - s) + new * s) / a2;
             }
         } else {
             self.rgb = colour;
@@ -88,8 +88,8 @@ mod tests {
         p.mix([1.0, 0.0, 0.0], 0.5, 0, 240, 3.0);
         assert_eq!(p.amount, 0.75);
         let want = [2.0 / 3.0, 0.0, 1.0 / 3.0];
-        for k in 0..3 {
-            assert!((p.rgb[k] - want[k]).abs() < 1e-6, "{:?}", p.rgb);
+        for (got, want) in p.rgb.iter().zip(want) {
+            assert!((got - want).abs() < 1e-6, "{:?}", p.rgb);
         }
     }
 

@@ -51,6 +51,18 @@ pub enum SplatShape {
     Crack,
     Burst,
     Dots,
+    /// A picture file, stamped square.
+    Picture,
+}
+
+/// Whether a picture splat keeps its own colours or takes the mark's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum PictureColours {
+    /// The picture as it is.
+    #[default]
+    Own,
+    /// The picture's brightness, painted in the mark's colour.
+    Tinted,
 }
 
 /// How a splat is turned.
@@ -142,12 +154,24 @@ pub struct MarksBrushes {
     /// How smoothly a speed-based width changes: 0 follows the speed at once, 1 hardly moves.
     #[setting(label = "Smoothing", when = "paint_width_by=speed", range(0, 1), group = "Paint trail")]
     pub paint_smooth: f32,
+    /// How much wet paint the thing picks up as it rolls through it (0 picks up nothing).
+    #[setting(label = "Pickup", range(0, 1), group = "Paint trail")]
+    pub paint_pickup: f32,
+    /// How long picked-up paint takes to wear off.
+    #[setting(label = "Pickup fade", when = "paint_pickup", range(0, 30), unit = "s", group = "Paint trail")]
+    pub paint_pickup_fade: f32,
     /// Whether hits leave a splat.
     #[setting(label = "Splat", group = "Splat", simple)]
     pub splat_on: bool,
     /// What the splat looks like.
     #[setting(label = "Shape", when = "splat_on", group = "Splat", random)]
     pub splat_shape: SplatShape,
+    /// The picture file a Picture splat stamps.
+    #[setting(label = "Picture", when = "splat_on and splat_shape=picture", unit = "picture", group = "Splat")]
+    pub splat_picture: String,
+    /// Whether the picture keeps its colours or is tinted by the mark's.
+    #[setting(label = "Picture colours", when = "splat_on and splat_shape=picture", group = "Splat")]
+    pub splat_picture_colours: PictureColours,
     /// How big the splat is.
     #[setting(label = "Size", when = "splat_on", range(2, 400), unit = "px", group = "Splat", keyframe, random)]
     pub splat_size: f32,
@@ -197,8 +221,12 @@ impl Default for MarksBrushes {
             paint_load: 0.0,
             paint_taper: 0.3,
             paint_smooth: 0.5,
+            paint_pickup: 0.0,
+            paint_pickup_fade: 3.0,
             splat_on: false,
             splat_shape: SplatShape::Splat,
+            splat_picture: String::new(),
+            splat_picture_colours: PictureColours::Own,
             splat_size: 30.0,
             splat_by_speed: 0.5,
             splat_turn: Turn::FaceHit,
@@ -227,5 +255,22 @@ impl ModuleKind for MarksBrushesKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         MarksBrushes::defs()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bpe_core::Choice;
+
+    #[test]
+    fn pickup_and_picture_settings_have_their_defaults() {
+        let d = MarksBrushes::default();
+        assert_eq!((d.paint_pickup, d.paint_pickup_fade), (0.0, 3.0));
+        assert_eq!((d.splat_picture.as_str(), d.splat_picture_colours), ("", PictureColours::Own));
+        let defs = MarksBrushes::defs();
+        assert_eq!(defs.iter().find(|d| d.key == "paint_pickup").unwrap().when, "");
+        assert_eq!(defs.iter().find(|d| d.key == "splat_picture").unwrap().unit, "picture");
+        assert_eq!(SplatShape::NAMES.last(), Some(&"picture"));
     }
 }

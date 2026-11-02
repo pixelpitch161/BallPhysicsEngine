@@ -36,7 +36,8 @@ pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::marks::{
-    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, SplatOnto, SplatShape, SplatSkin, Tip, Turn, WidthBy,
+    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape, SplatSkin, Tip, Turn,
+    WidthBy,
 };
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};

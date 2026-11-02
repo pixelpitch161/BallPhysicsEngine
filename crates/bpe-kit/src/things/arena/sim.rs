@@ -163,7 +163,7 @@ impl ThingSim for ArenaSim {
     // Whether there is a skin and how far its line paint reaches; its fade and opacity are
     // the picture's.
     fn affects_marks(&self, key: &str) -> bool {
-        matches!(key, "skin_on" | "skin_width")
+        matches!(key, "skin_on" | "skin_width" | "skin_dry_time" | "skin_bleed" | "skin_drips")
     }
 }
 
@@ -174,6 +174,18 @@ mod tests {
     use bpe_core::{Address, Owner, Scene, Value, resolve};
     use bpe_runtime::{Log, Outline, World};
     use glam::Vec2;
+
+    #[test]
+    fn skin_drying_restarts_the_marks() {
+        use bpe_runtime::ThingSim;
+        let sim = super::ArenaSim;
+        for k in ["skin_dry_time", "skin_bleed", "skin_drips", "skin_on", "skin_width"] {
+            assert!(sim.affects_marks(k), "{k}");
+        }
+        for k in ["skin_style", "skin_gloss", "skin_glow_size", "skin_fade", "skin_opacity"] {
+            assert!(!sim.affects_marks(k), "{k}");
+        }
+    }
 
     #[test]
     fn a_radius_key_resizes_the_wall_while_running() {

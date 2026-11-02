@@ -136,7 +136,7 @@ impl ThingSim for ObstacleSim {
     // Whether there is a skin and how far its line paint reaches; its fade and opacity are
     // the picture's.
     fn affects_marks(&self, key: &str) -> bool {
-        matches!(key, "skin_on" | "skin_width")
+        matches!(key, "skin_on" | "skin_width" | "skin_dry_time" | "skin_bleed" | "skin_drips")
     }
 }
 
@@ -152,6 +152,18 @@ mod tests {
     use super::*;
     use crate::testing::{BALLS, OBSTACLE, peg_board, scene_with_obstacle};
     use crate::{kit, new_scene};
+
+    #[test]
+    fn obstacle_skin_drying_restarts_the_marks() {
+        use bpe_runtime::ThingSim;
+        let sim = super::ObstacleSim;
+        for k in ["skin_dry_time", "skin_bleed", "skin_drips", "skin_on", "skin_width"] {
+            assert!(sim.affects_marks(k), "{k}");
+        }
+        for k in ["skin_style", "skin_gloss", "skin_glow_size", "skin_fade", "skin_opacity"] {
+            assert!(!sim.affects_marks(k), "{k}");
+        }
+    }
 
     #[test]
     fn parts_follow_the_shape_settings() {

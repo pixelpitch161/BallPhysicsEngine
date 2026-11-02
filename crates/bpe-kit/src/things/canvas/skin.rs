@@ -17,7 +17,7 @@ use glam::Vec2;
 use super::grid::CanvasGrid;
 use super::ribbon::{CONTINUED, CONTINUES};
 use super::sim::{CanvasState, Colours, Stamp, cell_of, hit_stamp, reaches, to_local};
-use super::{CanvasSettings, Fit};
+use super::{CanvasSettings, CanvasStyle, Fit};
 use crate::modules::marks::{MarksBrushes, SplatSkin, Turn};
 use crate::things::arena::ArenaState;
 use crate::things::obstacle::{ObstacleShape, ObstacleState};
@@ -38,11 +38,79 @@ pub struct SkinSettings {
     /// How much of the paint shows.
     #[setting(label = "Opacity", when = "skin_on", range(0, 1), group = "Paint skin", keyframe)]
     pub skin_opacity: f32,
+    /// How the paint looks.
+    #[setting(label = "Style", when = "skin_on", group = "Paint skin")]
+    pub skin_style: CanvasStyle,
+    /// Where the light comes from, in degrees clockwise from the top.
+    #[setting(
+        label = "Light angle",
+        when = "skin_on and skin_style=wet_paint",
+        range(0, 360),
+        unit = "°",
+        group = "Paint skin"
+    )]
+    pub skin_light_angle: f32,
+    /// How shiny wet paint is.
+    #[setting(label = "Gloss", when = "skin_on and skin_style=wet_paint", range(0, 1), group = "Paint skin", keyframe)]
+    pub skin_gloss: f32,
+    /// How grainy the washes are.
+    #[setting(label = "Grain", when = "skin_on and skin_style=watercolour", range(0, 1), group = "Paint skin")]
+    pub skin_grain: f32,
+    /// How dark the edges of a wash are.
+    #[setting(
+        label = "Edge darkening",
+        when = "skin_on and skin_style=watercolour",
+        range(0, 1),
+        group = "Paint skin"
+    )]
+    pub skin_edge_dark: f32,
+    /// How far the glow reaches.
+    #[setting(
+        label = "Glow size",
+        when = "skin_on and skin_style=neon_ink",
+        range(2, 80),
+        unit = "px",
+        group = "Paint skin"
+    )]
+    pub skin_glow_size: f32,
+    /// How bright the glow is.
+    #[setting(
+        label = "Glow strength",
+        when = "skin_on and skin_style=neon_ink",
+        range(0, 3),
+        group = "Paint skin",
+        keyframe
+    )]
+    pub skin_glow_strength: f32,
+    /// How long paint stays wet; wet paint can bleed and drip.
+    #[setting(label = "Dry time", when = "skin_on", range(0, 30), unit = "s", group = "Paint skin")]
+    pub skin_dry_time: f32,
+    /// How much wet colours run into each other.
+    #[setting(label = "Bleed", when = "skin_on", range(0, 1), group = "Paint skin")]
+    pub skin_bleed: f32,
+    /// How much thick wet paint runs down the surface.
+    #[setting(label = "Drips", when = "skin_on", range(0, 1), group = "Paint skin")]
+    pub skin_drips: f32,
 }
 
 impl Default for SkinSettings {
     fn default() -> Self {
-        Self { skin_on: true, skin_width: 2.0, skin_fade: 0.0, skin_opacity: 1.0 }
+        Self {
+            skin_on: true,
+            skin_width: 2.0,
+            skin_fade: 0.0,
+            skin_opacity: 1.0,
+            skin_style: CanvasStyle::Flat,
+            skin_light_angle: 315.0,
+            skin_gloss: 0.6,
+            skin_grain: 0.5,
+            skin_edge_dark: 0.5,
+            skin_glow_size: 18.0,
+            skin_glow_strength: 1.0,
+            skin_dry_time: 1.0,
+            skin_bleed: 0.0,
+            skin_drips: 0.0,
+        }
     }
 }
 
@@ -588,6 +656,29 @@ mod tests {
     /// `p`, in a thing's own frame at `pose`, back in the world.
     fn world_point(pose: Pose, p: Vec2) -> Vec2 {
         pose.position + Vec2::from_angle(pose.angle).rotate(p)
+    }
+
+    #[test]
+    fn skin_look_keys_mirror_the_canvas() {
+        let canvas = CanvasSettings::defs();
+        let skin = SkinSettings::defs();
+        for k in [
+            "style",
+            "light_angle",
+            "gloss",
+            "grain",
+            "edge_dark",
+            "glow_size",
+            "glow_strength",
+            "dry_time",
+            "bleed",
+            "drips",
+        ] {
+            let c = canvas.iter().find(|d| d.key == k).unwrap_or_else(|| panic!("canvas {k}"));
+            let s = skin.iter().find(|d| d.key == format!("skin_{k}")).unwrap_or_else(|| panic!("skin_{k}"));
+            assert_eq!((s.label, s.range, s.group), (c.label, c.range, "Paint skin"), "{k}");
+            assert!(s.when.starts_with("skin_on"), "{k}: {}", s.when);
+        }
     }
 
     #[test]
