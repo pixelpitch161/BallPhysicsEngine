@@ -5,7 +5,6 @@
 //! ball last touched a texel, by its world step and when in that step (see canvas_stamp.wgsl);
 //! the depth is cleared every pass, as every pass's marks come after the pass before's.
 
-use bpe_core::ThingId;
 use bpe_runtime::{Mark, MarkShape, MarkTarget};
 use bytemuck::{Pod, Zeroable};
 
@@ -165,7 +164,8 @@ pub(crate) struct CanvasGpu {
     pub(crate) size: [f32; 2],
     /// The texture size the frame asked for, before the cap.
     pub(crate) texels: [u32; 2],
-    thing: ThingId,
+    /// Whose marks it stamps: a canvas's or a skin's.
+    target: MarkTarget,
     group: wgpu::BindGroup,
     /// The marks of every step of one batch, each step's after the one before.
     marks: wgpu::Buffer,
@@ -175,12 +175,12 @@ pub(crate) struct CanvasGpu {
 }
 
 impl CanvasGpu {
-    /// Cleared textures for canvas `thing`, `size` world pixels drawn at `texels`.
+    /// Cleared textures for the canvas or skin `target`, `size` world pixels drawn at `texels`.
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &StampPipeline,
-        thing: ThingId,
+        target: MarkTarget,
         size: [f32; 2],
         texels: [u32; 2],
     ) -> Self {
@@ -216,7 +216,7 @@ impl CanvasGpu {
             depth,
             size,
             texels,
-            thing,
+            target,
             group,
             marks: mark_buffer(device, FIRST_MARKS),
             capacity: FIRST_MARKS,
@@ -241,7 +241,7 @@ impl CanvasGpu {
         if first {
             self.used = 0;
         }
-        let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == MarkTarget::Canvas(self.thing)).collect();
+        let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == self.target).collect();
         let first_step = ours.iter().map(|m| m.step).min().unwrap_or(0);
         let steps = ours.iter().map(|m| m.step - first_step + 1).max().unwrap_or(1);
         let ours: Vec<MarkGpu> = ours.iter().map(|m| MarkGpu::new(m, steps_per_second, first_step, steps)).collect();

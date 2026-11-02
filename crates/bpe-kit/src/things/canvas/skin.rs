@@ -141,7 +141,7 @@ pub fn is_solid(world: &World, thing: ThingId, part: &Solid) -> bool {
 }
 
 /// How far paint reaches either side of a thin line of `thickness`.
-fn line_reach(thickness: f32, skin: &SkinSettings) -> f32 {
+pub fn line_reach(thickness: f32, skin: &SkinSettings) -> f32 {
     thickness.max(0.0) * 0.5 * (1.0 + skin.skin_width.clamp(0.0, 3.0))
 }
 

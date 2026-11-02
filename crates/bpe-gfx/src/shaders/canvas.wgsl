@@ -1,7 +1,8 @@
 // The canvas composite: draws one canvas's rectangle of the world with the Flat style. The paint
 // texture holds the marks' colour times their amount, and the amount; the aux texture's r holds
 // the time each texel was painted, read unfiltered. The output is premultiplied colour and
-// coverage.
+// coverage. A skin is drawn only where its thing is: its mask's shapes, in the skin's own
+// pixels, say how much of each pixel shows.
 
 struct Globals {
     // x: 2 / video width, y: 2 / video height, z: world units per output pixel, w: time
@@ -20,7 +21,8 @@ struct Canvas {
     size: vec4<f32>,
     // The colour the canvas starts as, straight; alpha 0 when it starts clear.
     start: vec4<f32>,
-    // x: the scene time in seconds.
+    // x: the scene time in seconds; y: how many mask shapes there are; z: 1 when the canvas is
+    // a skin, shown only through its mask.
     clock: vec4<f32>,
 };
 
@@ -29,6 +31,12 @@ struct Canvas {
 @group(1) @binding(1) var paint: texture_2d<f32>;
 @group(1) @binding(2) var aux: texture_2d<f32>;
 @group(1) @binding(3) var smooth_sampler: sampler;
+// The mask's shapes, nine words each, as `MaskShape`: the kind (0 disc, 1 capsule, 2 ring or
+// polygon line, 3 box line or filled box), then a and b.
+@group(1) @binding(4) var<storage, read> mask: array<f32>;
+
+const PI: f32 = 3.14159265;
+const TAU: f32 = 6.28318531;
 
 // The camera (centre xy, zoom, turn) turns a world point into clip space, as in scene.wgsl.
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
@@ -47,6 +55,8 @@ struct CanvasOut {
     @builtin(position) pos: vec4<f32>,
     // 0 to 1 across the canvas, (0, 0) at its top left texel.
     @location(0) uv: vec2<f32>,
+    // Canvas pixels from its middle, before it turns.
+    @location(1) local: vec2<f32>,
 };
 
 @vertex
@@ -59,7 +69,84 @@ fn vs_canvas(@builtin(vertex_index) i: u32) -> CanvasOut {
     var out: CanvasOut;
     out.pos = to_clip(world);
     out.uv = corner;
+    out.local = local;
     return out;
+}
+
+fn turn(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+    return length(p - a - ab * t);
+}
+
+// Point on a ring or regular polygon `u` radians round from `angle`, as scene.wgsl draws it.
+fn outline_point(radius: f32, sides: f32, angle: f32, u: f32) -> vec2<f32> {
+    let d = vec2<f32>(cos(angle + u), sin(angle + u));
+    if sides < 2.5 {
+        return d * radius;
+    }
+    let step = TAU / sides;
+    let side = round(u / step);
+    return d * (radius * cos(PI / sides) / cos(u - side * step));
+}
+
+// Distance from p (from the centre) to a ring's or polygon's line, as scene.wgsl draws it.
+fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32) -> f32 {
+    if sides < 2.5 {
+        return abs(length(p) - radius);
+    }
+    let u = atan2(p.y, p.x) - angle;
+    let u_wrapped = u - TAU * floor((u + PI) / TAU);
+    let step = TAU / sides;
+    let side = round(u_wrapped / step);
+    let a = outline_point(radius, sides, angle, (side - 0.5) * step);
+    let b = outline_point(radius, sides, angle, (side + 0.5) * step);
+    return segment_distance(p, a, b);
+}
+
+// How far past mask shape `i`'s edge p is: below 0 inside it.
+fn mask_distance(i: u32, p: vec2<f32>) -> f32 {
+    let at = i * 9u;
+    let kind = bitcast<u32>(mask[at]);
+    let a = vec4<f32>(mask[at + 1u], mask[at + 2u], mask[at + 3u], mask[at + 4u]);
+    let b = vec4<f32>(mask[at + 5u], mask[at + 6u], mask[at + 7u], mask[at + 8u]);
+    if kind == 0u {
+        return length(p - a.xy) - a.z;
+    }
+    if kind == 1u {
+        return segment_distance(p, a.xy, a.zw) - b.x;
+    }
+    if kind == 2u {
+        return ring_distance(p - a.xy, a.w, b.x, a.z) - b.y;
+    }
+    // A box, its corners rounded by a.w: its line, or all of it when filled.
+    let q = abs(turn(p - a.xy, -a.z)) - (b.xy - vec2<f32>(a.w));
+    let signed = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - a.w;
+    if b.w > 0.5 {
+        return signed;
+    }
+    return abs(signed) - b.z;
+}
+
+// How much of the pixel at canvas point p its mask lets through: the most any shape covers,
+// smoothed over one pixel of the picture.
+fn mask_cover(p: vec2<f32>) -> f32 {
+    let px = max(g.view.z, 1e-4);
+    var cover = 0.0;
+    let count = u32(canvas.clock.y);
+    for (var i = 0u; i < count; i++) {
+        cover = max(cover, clamp(0.5 - mask_distance(i, p) / px, 0.0, 1.0));
+        if cover >= 1.0 {
+            break;
+        }
+    }
+    return cover;
 }
 
 @fragment
@@ -80,5 +167,9 @@ fn fs_canvas(in: CanvasOut) -> @location(0) vec4<f32> {
     // The start colour shows under the marks.
     let under = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - amount);
     let rgb = colour * amount + canvas.start.rgb * under;
-    return vec4<f32>(rgb, amount + under) * clamp(canvas.size.w, 0.0, 1.0);
+    var shown = clamp(canvas.size.w, 0.0, 1.0);
+    if canvas.clock.z > 0.5 && amount + under > 0.0 {
+        shown *= mask_cover(in.local);
+    }
+    return vec4<f32>(rgb, amount + under) * shown;
 }

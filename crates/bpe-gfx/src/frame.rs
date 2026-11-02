@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
+use bpe_runtime::{CameraView, EventKind, Log, MarkTarget, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -187,6 +187,9 @@ pub enum CanvasPlace {
     /// After the walls and soft bodies, under the liquids and the balls.
     #[default]
     BehindBalls,
+    /// A skin: right after the walls, obstacles and soft bodies, before the canvases behind the
+    /// balls, so a thing's paint sits on its own line.
+    OnThing,
     /// Over everything in the scene, under the text.
     OnTop,
 }
@@ -199,7 +202,8 @@ pub enum CanvasPlace {
 /// each in by its own `blend`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasLayer {
-    pub thing: ThingId,
+    /// Whose marks it shows: a canvas thing's, or an arena's or obstacle's skin.
+    pub key: MarkTarget,
     /// The rectangle's centre in world pixels.
     pub center: [f32; 2],
     /// The rectangle's turn in radians.
@@ -218,6 +222,73 @@ pub struct CanvasLayer {
     pub opacity: f32,
     /// The scene time in seconds, which the fade counts from the time each mark was painted.
     pub time: f32,
+    /// A skin's thing as it is this frame, in the skin's own pixels: the paint shows only
+    /// inside these shapes (at most [`MAX_MASK_SHAPES`]; none shows nothing). A canvas has none
+    /// and shows its whole rectangle.
+    pub mask: Vec<MaskShape>,
+}
+
+/// Most shapes a skin's mask may hold.
+pub const MAX_MASK_SHAPES: usize = 256;
+
+/// One piece of the shape a skin shows through, in the skin's own pixels (from its middle,
+/// before it turns), laid out as canvas.wgsl reads it: nine 32-bit words. Solid pieces cover
+/// up to their edge; lines cover their reach either side of their middle. Edges are smoothed
+/// over one pixel of the picture.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct MaskShape {
+    /// 0 disc, 1 capsule, 2 ring or polygon line, 3 box line (or a filled box).
+    pub kind: u32,
+    /// Disc: centre, radius. Capsule: both ends. Ring or polygon: centre, turn, radius. Box:
+    /// centre, turn, corner radius.
+    pub a: [f32; 4],
+    /// Capsule: radius. Ring or polygon: sides (below 3 a circle), reach. Box: half width, half
+    /// height, reach, and 1 when the box is filled instead.
+    pub b: [f32; 4],
+}
+
+impl MaskShape {
+    pub const DISC: u32 = 0;
+    pub const CAPSULE: u32 = 1;
+    pub const RING: u32 = 2;
+    pub const BOX: u32 = 3;
+
+    /// A filled disc.
+    pub fn disc(center: Vec2, radius: f32) -> Self {
+        Self { kind: Self::DISC, a: [center.x, center.y, radius, 0.0], b: [0.0; 4] }
+    }
+
+    /// A filled bar with round ends.
+    pub fn capsule(from: Vec2, to: Vec2, radius: f32) -> Self {
+        Self { kind: Self::CAPSULE, a: [from.x, from.y, to.x, to.y], b: [radius, 0.0, 0.0, 0.0] }
+    }
+
+    /// The line of a wall `outline`, `reach` either side of its middle.
+    pub fn line(outline: &Outline, reach: f32) -> Self {
+        match *outline {
+            Outline::Ring { center, radius, sides, angle, .. } => {
+                Self { kind: Self::RING, a: [center.x, center.y, angle, radius], b: [sides as f32, reach, 0.0, 0.0] }
+            }
+            Outline::Box { center, half, angle, .. } => Self::rect(center, half, 0.0, angle, reach, false),
+            Outline::Rounded { center, half, corner, angle, .. } => {
+                Self::rect(center, half, corner, angle, reach, false)
+            }
+        }
+    }
+
+    /// A filled box, `half` its half size, turned by `angle`.
+    pub fn filled_box(center: Vec2, half: Vec2, angle: f32) -> Self {
+        Self::rect(center, half, 0.0, angle, 0.0, true)
+    }
+
+    fn rect(center: Vec2, half: Vec2, corner: f32, angle: f32, reach: f32, filled: bool) -> Self {
+        Self {
+            kind: Self::BOX,
+            a: [center.x, center.y, angle, corner],
+            b: [half.x, half.y, reach, if filled { 1.0 } else { 0.0 }],
+        }
+    }
 }
 
 /// A liquid thing's particles, drawn as one surface. A CPU liquid sends its points every frame;

@@ -2,11 +2,12 @@
 //! style, sampling its two textures (see canvas.wgsl).
 
 use bpe_core::Blend;
+use bpe_runtime::MarkTarget;
 use bytemuck::{Pod, Zeroable};
 
 use super::CanvasTextures;
 use crate::flow::util;
-use crate::{CanvasLayer, HDR_FORMAT};
+use crate::{CanvasLayer, HDR_FORMAT, MAX_MASK_SHAPES, MaskShape};
 
 /// One canvas's uniform, laid out as `Canvas` in canvas.wgsl.
 #[repr(C)]
@@ -20,11 +21,12 @@ struct CanvasUniform {
 
 impl CanvasUniform {
     fn new(c: &CanvasLayer) -> Self {
+        let skin = matches!(c.key, MarkTarget::Skin(_));
         Self {
             pose: [c.center[0], c.center[1], c.angle, 0.0],
             size: [c.size[0], c.size[1], c.fade, c.opacity],
             start: c.start.unwrap_or([0.0; 4]),
-            clock: [c.time, 0.0, 0.0, 0.0],
+            clock: [c.time, c.mask.len().min(MAX_MASK_SHAPES) as f32, if skin { 1.0 } else { 0.0 }, 0.0],
         }
     }
 }
@@ -39,9 +41,9 @@ pub(crate) struct Composite {
     sampler: wgpu::Sampler,
     /// Cleared 1×1 textures for a canvas whose own are not made yet: only its start colour shows.
     blank: CanvasTextures,
-    /// One uniform per canvas in a frame: every canvas is recorded before the frame is submitted,
-    /// so each needs its own.
-    uniforms: Vec<wgpu::Buffer>,
+    /// One uniform and one mask buffer per canvas in a frame: every canvas is recorded before the
+    /// frame is submitted, so each needs its own.
+    uniforms: Vec<(wgpu::Buffer, wgpu::Buffer)>,
     /// Each slot's bind group, kept while the slot draws the same paint texture.
     groups: Vec<Option<(wgpu::Texture, wgpu::BindGroup)>>,
 }
@@ -61,6 +63,7 @@ impl Composite {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                util::storage_entry(4, S::FRAGMENT, true),
             ],
         });
         let globals = util::globals_layout(device);
@@ -152,15 +155,24 @@ impl Composite {
         textures: Option<&CanvasTextures>,
     ) {
         while self.uniforms.len() <= slot {
-            self.uniforms.push(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("canvas"),
-                size: std::mem::size_of::<CanvasUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+            let buffer = |label, size, usage| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size,
+                    usage: usage | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            };
+            let uniform = buffer("canvas", std::mem::size_of::<CanvasUniform>() as u64, wgpu::BufferUsages::UNIFORM);
+            let mask_bytes = (MAX_MASK_SHAPES * std::mem::size_of::<MaskShape>()) as u64;
+            self.uniforms.push((uniform, buffer("canvas mask", mask_bytes, wgpu::BufferUsages::STORAGE)));
         }
-        let uniform = &self.uniforms[slot];
+        let (uniform, mask) = &self.uniforms[slot];
         queue.write_buffer(uniform, 0, bytemuck::bytes_of(&CanvasUniform::new(canvas)));
+        let shapes = &canvas.mask[..canvas.mask.len().min(MAX_MASK_SHAPES)];
+        if !shapes.is_empty() {
+            queue.write_buffer(mask, 0, bytemuck::cast_slice(shapes));
+        }
         let textures = textures.unwrap_or(&self.blank);
         self.groups.resize_with(self.groups.len().max(slot + 1), || None);
         let cached = &mut self.groups[slot];
@@ -179,6 +191,7 @@ impl Composite {
                         resource: wgpu::BindingResource::TextureView(&textures.aux_view),
                     },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 4, resource: mask.as_entire_binding() },
                 ],
             });
             *cached = Some((textures.paint.clone(), group));
@@ -213,7 +226,7 @@ mod tests {
 
     fn canvas(place: CanvasPlace, start: Option<[f32; 4]>) -> CanvasLayer {
         CanvasLayer {
-            thing: ThingId(7),
+            key: MarkTarget::Canvas(ThingId(7)),
             center: [0.0, 0.0],
             angle: 0.0,
             size: [200.0, 200.0],
@@ -224,6 +237,7 @@ mod tests {
             blend: Blend::Normal,
             opacity: 1.0,
             time: 0.0,
+            mask: Vec::new(),
         }
     }
 
@@ -250,6 +264,41 @@ mod tests {
         let centre = pixel(&pixels, 0.0, 0.0);
         assert!(centre[0] > 200 && centre[1] < 40 && centre[2] < 40, "{centre:?}: the centre is red");
         assert_eq!(pixel(&pixels, 150.0, 0.0), background, "outside the rectangle is the background");
+    }
+
+    #[test]
+    fn a_skin_shows_only_through_its_mask() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut frame = Frame::default();
+        let background = pixel(&render(&device, &queue, &frame), 150.0, 0.0);
+        let red = |p: [u8; 4]| p[0] > 200 && p[1] < 40 && p[2] < 40;
+        // A skin turned a quarter turn, whose mask is a disc 40 px right of its middle (in its
+        // own pixels) and a ring line: the disc lands below the middle on the screen.
+        let mut skin = canvas(CanvasPlace::OnThing, Some([1.0, 0.0, 0.0, 1.0]));
+        skin.key = MarkTarget::Skin(ThingId(7));
+        skin.size = [400.0, 400.0];
+        skin.angle = std::f32::consts::FRAC_PI_2;
+        let ring = bpe_runtime::Outline::Ring {
+            center: glam::Vec2::ZERO,
+            radius: 150.0,
+            sides: 0,
+            angle: 0.0,
+            thickness: 4.0,
+        };
+        skin.mask = vec![MaskShape::disc(glam::Vec2::new(40.0, 0.0), 20.0), MaskShape::line(&ring, 10.0)];
+        frame.canvases.push(skin.clone());
+        let pixels = render(&device, &queue, &frame);
+        assert!(red(pixel(&pixels, 0.0, 40.0)), "{:?}: the disc shows", pixel(&pixels, 0.0, 40.0));
+        assert_eq!(pixel(&pixels, 40.0, 0.0), background, "turned with the skin, not beside it");
+        assert_eq!(pixel(&pixels, 0.0, 0.0), background, "between the shapes nothing shows");
+        assert!(red(pixel(&pixels, 150.0, 0.0)), "{:?}: on the ring's line", pixel(&pixels, 150.0, 0.0));
+        assert_eq!(pixel(&pixels, 172.0, 0.0), background, "past the line's reach nothing shows");
+        // No shapes: nothing at all.
+        skin.mask.clear();
+        frame.canvases[0] = skin;
+        let pixels = render(&device, &queue, &frame);
+        assert_eq!(pixel(&pixels, 0.0, 40.0), background);
+        assert_eq!(pixel(&pixels, 150.0, 0.0), background);
     }
 
     #[test]

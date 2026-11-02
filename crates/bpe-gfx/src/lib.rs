@@ -27,16 +27,15 @@ use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, CanvasLayer, CanvasPlace, DrawCx, Draws, EffectCall,
-    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, ModuleDraw,
-    Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha,
-    build_frame, build_frame_at, hit_strength, push_streak, push_streak_colours, thing_code,
+    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, MAX_MASK_SHAPES,
+    MaskShape, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw,
+    TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
 pub use wgpu;
 
-use bpe_core::ThingId;
-use bpe_runtime::CameraView;
+use bpe_runtime::{CameraView, MarkTarget};
 use bytemuck::{Pod, Zeroable};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -977,7 +976,8 @@ impl Renderer {
     /// the walls and the balls, over a copy of what is behind them. Each blend layer is drawn
     /// into its own picture and mixed in after the frame's flashes (the overlay's layers after
     /// the overlay), so blended things sit above the rest. Canvases go in at their places: after
-    /// the background, after the walls and soft bodies, or after the balls, under the text.
+    /// the background, after the walls and soft bodies (skins first, then the canvases behind the
+    /// balls), or after the balls, under the text.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(
             &self.globals,
@@ -1035,7 +1035,7 @@ impl Renderer {
         let mut slot = 0;
         // The composite lets go of the textures of canvases gone since the last frame.
         let flow = self.flow.as_ref();
-        let current: Vec<_> = frame.canvases.iter().map(|c| flow.and_then(|f| f.canvas_textures(c.thing))).collect();
+        let current: Vec<_> = frame.canvases.iter().map(|c| flow.and_then(|f| f.canvas_textures(c.key))).collect();
         self.canvas.keep(&current);
         {
             let mut pass =
@@ -1052,6 +1052,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_back(&mut pass, frame, &self.buffers, &world);
         }
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnThing, &mut slot);
         self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindBalls, &mut slot);
         if !frame.liquids.is_empty() {
             self.copy_under(&mut encoder);
@@ -1183,7 +1184,7 @@ impl Renderer {
         for (i, c) in frame.canvases.iter().enumerate().filter(|(_, c)| c.place == place) {
             // Read from the flow layers directly (see `canvas_textures`) to borrow alongside
             // the composite.
-            let textures = self.flow.as_ref().and_then(|flow| flow.canvas_textures(c.thing));
+            let textures = self.flow.as_ref().and_then(|flow| flow.canvas_textures(c.key));
             if canvas::composite::Composite::direct(c.blend) {
                 let mut pass = begin_pass(encoder, &self.targets.hdr, "canvas", wgpu::LoadOp::Load);
                 self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
@@ -1204,10 +1205,10 @@ impl Renderer {
         }
     }
 
-    /// The textures `thing`'s canvas marks are painted into, from the flow layers; `None` until
-    /// they hold them.
-    pub fn canvas_textures(&self, thing: ThingId) -> Option<&CanvasTextures> {
-        self.flow.as_ref().and_then(|flow| flow.canvas_textures(thing))
+    /// The textures a canvas's or skin's marks are painted into, from the flow layers; `None`
+    /// until they hold them.
+    pub fn canvas_textures(&self, key: MarkTarget) -> Option<&CanvasTextures> {
+        self.flow.as_ref().and_then(|flow| flow.canvas_textures(key))
     }
 
     /// Copies the HDR picture into `behind`: what liquids bend, and what a blend layer is mixed
