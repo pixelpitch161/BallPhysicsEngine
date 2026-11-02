@@ -52,6 +52,8 @@ fn shape_number(shape: MarkShape) -> f32 {
         MarkShape::Picture => 9.0,
         MarkShape::Lift => 10.0,
         MarkShape::Bleed => 11.0,
+        MarkShape::Scrape => 12.0,
+        MarkShape::Chip => 13.0,
     }
 }
 

@@ -71,7 +71,7 @@ pub fn ink_of(shape: MarkShape) -> u8 {
         | MarkShape::Dots => 200,
         MarkShape::Picture => 96,
         MarkShape::Drip => 40,
-        MarkShape::Lift | MarkShape::Bleed => 0,
+        MarkShape::Lift | MarkShape::Bleed | MarkShape::Scrape | MarkShape::Chip => 0,
     }
 }
 
@@ -172,7 +172,7 @@ impl CanvasGrid {
             | MarkShape::Burst
             | MarkShape::Dots => (m.from, m.radius),
             MarkShape::Picture => (m.from, m.radius * 0.7),
-            MarkShape::Lift | MarkShape::Bleed => return,
+            MarkShape::Lift | MarkShape::Bleed | MarkShape::Scrape | MarkShape::Chip => return,
         };
         let colour = Color::from_linear(m.colour);
         let alpha = colour.a as i32;
