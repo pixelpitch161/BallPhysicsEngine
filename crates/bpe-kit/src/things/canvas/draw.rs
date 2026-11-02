@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(peg.len(), 1);
         assert_eq!((peg[0].kind, peg[0].a[2]), (MaskShape::DISC, 30.0));
 
-        // A polygon's sides are thin lines, reaching 4 x (1 + 2) by the default Skin width; a
+        // A polygon's sides are thin lines, reaching 4 x (1 + 0.5) by the default Skin width; a
         // bar is solid.
         let (mut scene, kit) = obstacle(|p| {
             p.set("shape", Value::Choice("polygon".into()));
@@ -243,7 +243,7 @@ mod tests {
         });
         let sides = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!(sides.len(), 5);
-        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 12.0), "{sides:?}");
+        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 6.0), "{sides:?}");
         let (mut scene, kit) = obstacle(|p| p.set("shape", Value::Choice("bar".into())));
         let bar = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!((bar.len(), bar[0].kind, bar[0].b[0]), (1, MaskShape::CAPSULE, 4.0));

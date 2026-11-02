@@ -98,7 +98,7 @@ impl Default for SkinSettings {
     fn default() -> Self {
         Self {
             skin_on: true,
-            skin_width: 2.0,
+            skin_width: 0.5,
             skin_fade: 0.0,
             skin_opacity: 1.0,
             skin_style: CanvasStyle::Flat,
@@ -766,7 +766,7 @@ mod tests {
         }
         assert!(bpe_core::section_rank("Paint skin").is_some());
         let d = SkinSettings::default();
-        assert!(d.skin_on && d.skin_width == 2.0 && d.skin_fade == 0.0 && d.skin_opacity == 1.0);
+        assert!(d.skin_on && d.skin_width == 0.5 && d.skin_fade == 0.0 && d.skin_opacity == 1.0);
         let mut a = crate::ArenaSettings::default();
         a.skin.skin_width = 2.5;
         assert_eq!(crate::ArenaSettings::from_params(&a.to_params()), a);
@@ -1200,11 +1200,11 @@ mod tests {
         for m in &on_peg {
             assert!((m.from.length() - 40.0).abs() < 0.5, "{}", m.from);
         }
-        // A thin line spreads the line's reach: the arena's 3 px wall, Skin width 2 (the default).
+        // A thin line spreads the line's reach: the arena's 3 px wall, Skin width 0.5 (the default).
         let (scene, resolved, kit) = spreading(|_| {});
         let (_, log) = run(&scene, &resolved, &kit, 6.0);
         assert!(!log.marks().is_empty());
         let widest = log.marks().iter().map(|m| m.radius).fold(0.0, f32::max);
-        assert_eq!(widest, 1.5 * 3.0);
+        assert_eq!(widest, 0.75 * 3.0);
     }
 }

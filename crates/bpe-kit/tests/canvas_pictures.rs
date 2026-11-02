@@ -553,7 +553,7 @@ fn line_distance(outline: &Outline, p: Vec2) -> f32 {
     }
 }
 
-/// How far paint may reach from the middle of a line `thickness` wide with Skin width 2 (the
+/// How far paint may reach from the middle of a line `thickness` wide with the default Skin width (the
 /// default).
 fn reach(thickness: f32) -> f32 {
     thickness * 0.5 * 3.0
