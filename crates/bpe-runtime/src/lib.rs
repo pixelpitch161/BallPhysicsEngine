@@ -9,6 +9,7 @@ pub mod camera;
 pub mod events;
 pub mod history;
 pub mod pairs;
+pub mod picked;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
@@ -26,6 +27,7 @@ pub use events::{
 };
 pub use history::History;
 pub use pairs::{Grid, Pairs, Support};
+pub use picked::{Picked, with_picked};
 pub use playback::Playback;
 pub use plugins::{
     Limits, ModuleSim, ModuleState, PairRule, RuleCx, SimCx, Sims, ThingSim, ThingState, state, state_mut,

@@ -43,6 +43,10 @@ fn shape_number(shape: MarkShape) -> f32 {
         MarkShape::Burst => 5.0,
         MarkShape::Dots => 6.0,
         MarkShape::Smear => 7.0,
+        MarkShape::Drip => 8.0,
+        MarkShape::Picture => 9.0,
+        MarkShape::Lift => 10.0,
+        MarkShape::Bleed => 11.0,
     }
 }
 
@@ -241,7 +245,11 @@ impl CanvasGpu {
         if first {
             self.used = 0;
         }
-        let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == self.target).collect();
+        // Lifts and bleeds get their own pipelines (Task 9).
+        let ours: Vec<&Mark> = marks
+            .iter()
+            .filter(|m| m.target == self.target && !matches!(m.shape, MarkShape::Lift | MarkShape::Bleed))
+            .collect();
         let first_step = ours.iter().map(|m| m.step).min().unwrap_or(0);
         let steps = ours.iter().map(|m| m.step - first_step + 1).max().unwrap_or(1);
         let ours: Vec<MarkGpu> = ours.iter().map(|m| MarkGpu::new(m, steps_per_second, first_step, steps)).collect();

@@ -109,6 +109,19 @@ pub enum MarkShape {
     Dots,
     /// A capsule whose radius runs from `radius` to `radius_to`.
     Smear,
+    /// One piece of a paint drip: a capsule from `from` to `to`, radius `radius` to `radius_to`.
+    /// Variant 8 leaves out the start disc and the half-plane behind the start (the piece joins
+    /// the previous one); `angle` is then the previous piece's direction. A drop has `from == to`.
+    Drip,
+    /// A picture stamped at `from` (== `to`): `radius` is half the square's side, `angle` the turn.
+    /// Variant bits 0-4 are the slot in `World.pictures` (31 = not in the table), bit 5 (32) = Tinted.
+    Picture,
+    /// Wet paint lifted off by a ball: a disc at `from` of `radius`, taking `radius_to` (0..1) of
+    /// the colour away. Not paint: it leaves no ink.
+    Lift,
+    /// One bleed pass over a rectangle (`from` min corner, `to` max corner, in canvas pixels from
+    /// the canvas middle): `radius` is the dry time in seconds, `radius_to` the Bleed setting.
+    Bleed,
 }
 
 /// What a mark is painted onto: a canvas thing, or the skin of an arena or obstacle.
