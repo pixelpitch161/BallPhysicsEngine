@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use bpe_core::{GroupOpts, Params, SettingDef, SettingGroup, Settings, SlotId, ThingId};
-use bpe_runtime::{Event, EventKind, Log, Mark, MarkTarget, Outline, Pose, Solid, World};
+use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Outline, Pose, Solid, World};
 use glam::Vec2;
 
 use super::grid::CanvasGrid;
@@ -343,7 +343,10 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
     }
     let pose = pose_of(world, thing);
     let target = MarkTarget::Skin(thing);
+    let skin = skin_settings(world, thing).cloned().unwrap_or_default();
     let mut colours = Colours::new(world);
+    // The outline, worked out once a step and only when something spreads.
+    let mut outline = None;
     let mut out = Vec::new();
     for (owner, b) in brushes(world) {
         if !splats_things(b) {
@@ -354,7 +357,20 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
             // The mover's colour, whoever owns the brush.
             let colour = colours.of(b, e.a.thing, e.a.item as usize);
             match b.splat_skin {
-                SplatSkin::Print | SplatSkin::Spread => {
+                SplatSkin::Spread => {
+                    let length = 2.0 * b.splat_size * (1.0 + b.splat_by_speed * (e.speed / 1000.0).min(2.0));
+                    let item = e.b.map_or(0, |p| p.item);
+                    let width = thin_reach(world, thing, item, &skin).unwrap_or(0.5 * b.splat_size);
+                    let outline = outline.get_or_insert_with(|| outline_local(world, thing));
+                    let at = to_local(pose, e.point);
+                    for m in spread_marks(outline, at, length, width, colour, world.step, target) {
+                        if reaches(st.size, m.from, m.to, m.radius) {
+                            st.grid.stamp_capsule(m.from, m.to, (m.radius + m.radius_to) * 0.5, cell_of(colour));
+                            out.push(m);
+                        }
+                    }
+                }
+                SplatSkin::Print => {
                     let Stamp { shape, radius, angle, variant } = hit_stamp(world, e, b, pose.angle);
                     // Pushed into the surface, so the print sits across the line.
                     let at = to_local(pose, e.point - e.normal.normalize_or_zero() * PRINT_DEPTH * radius);
@@ -378,6 +394,108 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
                     });
                 }
             }
+        }
+    }
+    out
+}
+
+/// The longest piece a spread is cut into, in pixels.
+const SPREAD_PIECE: f32 = 8.0;
+
+/// Where `at` falls nearest on `outline`: the polyline, the segment's index and the point.
+fn nearest(outline: &[Vec<Vec2>], at: Vec2) -> Option<(usize, usize, Vec2)> {
+    let mut best: Option<(f32, usize, usize, Vec2)> = None;
+    for (l, line) in outline.iter().enumerate() {
+        for (k, seg) in line.windows(2).enumerate() {
+            let d = seg[1] - seg[0];
+            let t = if d.length_squared() > 0.0 {
+                ((at - seg[0]).dot(d) / d.length_squared()).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let p = seg[0] + d * t;
+            let gap = (at - p).length_squared();
+            if best.is_none_or(|b| gap < b.0) {
+                best = Some((gap, l, k, p));
+            }
+        }
+    }
+    best.map(|(_, l, k, p)| (l, k, p))
+}
+
+/// The paint a Spread hit at `at` leaves: colour smeared along the nearest of `outline`'s
+/// polylines (a closed one repeats its first point), half of `length` each way from the point
+/// nearest `at`, in pieces of at most 8 px that end at every corner. Each half's radius falls
+/// from `width` at the hit to 0 at its end. A closed line is walked round, never past its far
+/// side; an open one stops at its ends. The forward half's pieces come first, each half from
+/// the hit outwards.
+pub fn spread_marks(
+    outline: &[Vec<Vec2>],
+    at: Vec2,
+    length: f32,
+    width: f32,
+    colour: [f32; 4],
+    step: u64,
+    target: MarkTarget,
+) -> Vec<Mark> {
+    let Some((l, k, start)) = nearest(outline, at) else { return Vec::new() };
+    let line = &outline[l];
+    let n = line.len();
+    let looped = n > 2 && line[0] == line[n - 1];
+    let around: f32 = line.windows(2).map(|s| (s[1] - s[0]).length()).sum();
+    let half = if looped { (length * 0.5).min(around * 0.5) } else { length * 0.5 };
+    // Nothing to spread, also for NaN sizes.
+    if !(half.is_finite() && width.is_finite() && half > 0.0 && width > 0.0) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for forward in [true, false] {
+        let (mut point, mut k) = (start, k);
+        let mut gone = 0.0f32;
+        loop {
+            // The corner this way along the current segment.
+            let corner = if forward { line[k + 1] } else { line[k] };
+            let left = half - gone;
+            let span = (corner - point).length();
+            let take = span.min(left);
+            if take > 0.0 {
+                let end = if take >= span { corner } else { point + (corner - point) * (take / span) };
+                let pieces = (take / SPREAD_PIECE).ceil().max(1.0) as usize;
+                for i in 0..pieces {
+                    let from = point.lerp(end, i as f32 / pieces as f32);
+                    let to = if i + 1 == pieces { end } else { point.lerp(end, (i + 1) as f32 / pieces as f32) };
+                    let (s0, s1) =
+                        (gone + take * i as f32 / pieces as f32, gone + take * (i + 1) as f32 / pieces as f32);
+                    let last = take >= left && i + 1 == pieces;
+                    out.push(Mark {
+                        step,
+                        target,
+                        shape: MarkShape::Smear,
+                        from,
+                        to,
+                        radius: width * (1.0 - s0 / half).max(0.0),
+                        radius_to: if last { 0.0 } else { width * (1.0 - s1 / half).max(0.0) },
+                        angle: 0.0,
+                        within: [1.0, 1.0],
+                        variant: 0,
+                        colour,
+                        colour_to: colour,
+                    });
+                }
+                gone += take;
+            }
+            if take >= left {
+                break;
+            }
+            // On round the next corner, wrapping a closed line; an open one ends here.
+            match (forward, k) {
+                (true, k2) if k2 + 2 < n => k += 1,
+                (true, _) if looped => k = 0,
+                (false, k2) if k2 > 0 => k -= 1,
+                (false, _) if looped => k = n - 2,
+                _ => break,
+            }
+            point = if forward { line[k] } else { line[k + 1] };
         }
     }
     out
@@ -706,5 +824,132 @@ mod tests {
         keyed.set_key(&kit.registry, &a, 1.0, Value::Number(1.0)).unwrap();
         let keyed_resolved = resolve(&keyed, &kit.registry);
         assert_eq!(fingerprint(&keyed, &keyed_resolved, &kit.sims), fingerprint(&scene, &resolved, &kit.sims));
+    }
+
+    /// The pieces' total length.
+    fn total(marks: &[Mark]) -> f32 {
+        marks.iter().map(|m| (m.to - m.from).length()).sum()
+    }
+
+    const WHITE: [f32; 4] = [1.0; 4];
+
+    /// A ball splatting with Spread in the new scene, with `f`'s changes to the arena.
+    fn spreading(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+        let (mut scene, _, kit) = splatting(|p| p.set("splat_skin", Value::Choice("spread".into())));
+        f(&mut scene.things.get_mut(&ARENA).unwrap().params);
+        let resolved = resolve(&scene, &kit.registry);
+        (scene, resolved, kit)
+    }
+
+    #[test]
+    fn spread_follows_a_circle() {
+        let (scene, resolved, kit) = spreading(|p| p.set("radius", Value::Number(300.0)));
+        let (w, log) = run(&scene, &resolved, &kit, 6.0);
+        let marks = log.marks();
+        assert!(marks.len() > 20, "{} pieces", marks.len());
+        let centre = to_local(w.poses[&ARENA], w.walls[&ARENA].outline.center());
+        for m in marks {
+            assert_eq!((m.target, m.shape), (MarkTarget::Skin(ARENA), MarkShape::Smear));
+            for p in [m.from, m.to] {
+                let off = ((p - centre).length() - 300.0).abs();
+                assert!(off <= 0.5, "{p} is {off} px off the circle");
+            }
+        }
+        assert!(skin_state(&w, ARENA).unwrap().grid.covered() > 0.0);
+    }
+
+    #[test]
+    fn spread_turns_a_box_corner() {
+        let half = Vec2::new(300.0, 400.0);
+        let outline = vec![outline_line(&Outline::Box { center: Vec2::ZERO, half, angle: 0.0, thickness: 3.0 })];
+        // 5 px from the top right corner, along the top.
+        let at = Vec2::new(295.0, -401.0);
+        let marks = spread_marks(&outline, at, 80.0, 3.0, WHITE, 9, MarkTarget::Skin(ARENA));
+        let on_top = |p: Vec2| (p.y + half.y).abs() < 1e-3 && p.x <= half.x + 1e-3;
+        let on_side = |p: Vec2| (p.x - half.x).abs() < 1e-3 && p.y >= -half.y - 1e-3;
+        assert!(marks.iter().any(|m| on_side(m.from) && on_side(m.to) && m.to.y > -half.y + 1.0), "down the side");
+        assert!(marks.iter().any(|m| on_top(m.from) && on_top(m.to)), "along the top");
+        for m in &marks {
+            let along = (on_top(m.from) && on_top(m.to)) || (on_side(m.from) && on_side(m.to));
+            assert!(along, "{} to {} cuts across", m.from, m.to);
+            assert!((m.to - m.from).length() <= 8.0 + 1e-3);
+            assert_eq!((m.step, m.target), (9, MarkTarget::Skin(ARENA)));
+        }
+        assert!((total(&marks) - 80.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn spread_length_matches() {
+        let circle = vec![circle(Vec2::ZERO, 300.0, 0.0, ROUND)];
+        let marks = spread_marks(&circle, Vec2::new(0.0, 310.0), 150.0, 4.0, WHITE, 1, MarkTarget::Skin(ARENA));
+        assert!((total(&marks) - 150.0).abs() <= 8.0, "{}", total(&marks));
+        // Longer than the loop: once round, never over itself.
+        let marks = spread_marks(&circle, Vec2::new(0.0, 310.0), 5000.0, 4.0, WHITE, 1, MarkTarget::Skin(ARENA));
+        let round: f32 = circle[0].windows(2).map(|s| (s[1] - s[0]).length()).sum();
+        assert!((total(&marks) - round).abs() < 0.1, "{} of {round}", total(&marks));
+
+        // In a run, each hit spreads 2 x size x (1 + by speed x min(speed / 1000, 2)).
+        let (scene, resolved, kit) = spreading(|_| {});
+        let (_, log) = run(&scene, &resolved, &kit, 6.0);
+        let hits: Vec<_> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.speed >= 100.0).collect();
+        assert!(hits.len() >= 2);
+        for e in hits {
+            let mine: Vec<Mark> = log.marks().iter().filter(|m| m.step == e.step).copied().collect();
+            let length = 2.0 * 30.0 * (1.0 + 0.5 * (e.speed / 1000.0).min(2.0));
+            assert!((total(&mine) - length).abs() <= 8.0, "{} vs {length}", total(&mine));
+        }
+    }
+
+    #[test]
+    fn spread_tapers() {
+        let circle = vec![circle(Vec2::ZERO, 300.0, 0.0, ROUND)];
+        let marks = spread_marks(&circle, Vec2::new(20.0, 300.0), 120.0, 5.0, WHITE, 1, MarkTarget::Skin(ARENA));
+        // Two halves, each from the hit outwards: full width at the hit, none at the far end.
+        let ends: Vec<usize> = (0..marks.len()).filter(|&k| marks[k].radius_to == 0.0).collect();
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert_eq!(*ends.last().unwrap(), marks.len() - 1);
+        let second = ends[0] + 1;
+        for start in [0, second] {
+            assert_eq!(marks[start].radius, 5.0);
+            assert!((marks[start].from - marks[0].from).length() < 1e-3, "both halves start at the hit");
+        }
+        for (k, pair) in marks.windows(2).enumerate() {
+            if k + 1 != second {
+                assert_eq!(pair[0].to, pair[1].from);
+                assert_eq!(pair[0].radius_to, pair[1].radius);
+                assert!(pair[1].radius < pair[0].radius);
+            }
+        }
+        // Linearly: halfway along a half, half the width.
+        let mut gone = 0.0;
+        for m in &marks[..second] {
+            assert!((m.radius - 5.0 * (1.0 - gone / 60.0)).abs() < 1e-3);
+            gone += (m.to - m.from).length();
+        }
+    }
+
+    #[test]
+    fn spread_width_on_solids() {
+        let (mut scene, _, kit) = scene_with_obstacle(|p| p.set("radius", Value::Number(40.0)));
+        splatter(&mut scene, &kit, BALLS, |p| {
+            p.set("splat_skin", Value::Choice("spread".into()));
+            p.set("splat_min_speed", Value::Number(0.0));
+        });
+        let resolved = resolve(&scene, &kit.registry);
+        let (_, log) = run(&scene, &resolved, &kit, 3.0);
+        let on_peg: Vec<_> = log.marks().iter().filter(|m| m.target == MarkTarget::Skin(OBSTACLE)).collect();
+        assert!(!on_peg.is_empty(), "the peg was hit");
+        let widest = on_peg.iter().map(|m| m.radius).fold(0.0, f32::max);
+        assert_eq!(widest, 0.5 * 30.0, "half the splat size");
+        // Along the peg's edge, in its frame.
+        for m in &on_peg {
+            assert!((m.from.length() - 40.0).abs() < 0.5, "{}", m.from);
+        }
+        // A thin line spreads the line's reach: the arena's 3 px wall, Skin width 1.
+        let (scene, resolved, kit) = spreading(|_| {});
+        let (_, log) = run(&scene, &resolved, &kit, 6.0);
+        assert!(!log.marks().is_empty());
+        let widest = log.marks().iter().map(|m| m.radius).fold(0.0, f32::max);
+        assert_eq!(widest, 1.5 * 2.0);
     }
 }
