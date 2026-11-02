@@ -1,4 +1,4 @@
-//! Canvases: rectangles of the world that marks are painted on. Each canvas keeps two textures
+//! Canvases: rectangles of the world that marks are painted on. Each canvas keeps three textures
 //! (filled by the flow layers, which replay its marks) and is drawn into the picture at its place
 //! by the composite.
 
@@ -8,30 +8,33 @@ pub(crate) mod stamp;
 /// The most texels along a canvas texture's long side.
 pub const MAX_TEXELS: u32 = 4096;
 
-/// A canvas's two textures, `texels` in size.
+/// A canvas's three textures, `texels` in size.
 pub struct CanvasTextures {
     /// Rgba16Float: the marks' colour times their amount, and the amount.
     pub paint: wgpu::Texture,
     /// Rgba16Float: r is the scene time the texel was last painted.
     pub aux: wgpu::Texture,
-    /// Views of the two, made once: marks are drawn into them and the composite samples them.
+    /// R16Float: how thick the paint is (ink / 255, added up).
+    pub body: wgpu::Texture,
+    /// Views of the three, made once: marks are drawn into them and the composite samples them.
     pub paint_view: wgpu::TextureView,
     pub aux_view: wgpu::TextureView,
+    pub body_view: wgpu::TextureView,
 }
 
 impl CanvasTextures {
-    /// Two cleared textures of `texels` (each side at least 1, the long side at most
+    /// Three cleared textures of `texels` (each side at least 1, the long side at most
     /// [`MAX_TEXELS`]), which can be drawn into, sampled and copied.
     pub fn new(device: &wgpu::Device, texels: [u32; 2]) -> Self {
         let [w, h] = clamp_texels(texels);
-        let make = |label| {
+        let make = |label, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
+                format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::COPY_SRC
@@ -39,15 +42,18 @@ impl CanvasTextures {
                 view_formats: &[],
             })
         };
-        let (paint, aux) = (make("canvas paint"), make("canvas aux"));
-        let (paint_view, aux_view) = (paint.create_view(&Default::default()), aux.create_view(&Default::default()));
-        Self { paint, aux, paint_view, aux_view }
+        let rgba = wgpu::TextureFormat::Rgba16Float;
+        let (paint, aux) = (make("canvas paint", rgba), make("canvas aux", rgba));
+        let body = make("canvas body", wgpu::TextureFormat::R16Float);
+        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+        let (paint_view, aux_view, body_view) = (view(&paint), view(&aux), view(&body));
+        Self { paint, aux, body, paint_view, aux_view, body_view }
     }
 }
 
-/// The bytes an Rgba16Float texture holds.
+/// The bytes a texture holds.
 pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
-    texture.width() as u64 * texture.height() as u64 * 8
+    texture.width() as u64 * texture.height() as u64 * texture.format().block_copy_size(None).unwrap_or(8) as u64
 }
 
 /// `texels` with each side at least 1 and both scaled down together so the long side is at most

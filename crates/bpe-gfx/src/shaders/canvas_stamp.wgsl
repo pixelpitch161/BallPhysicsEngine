@@ -19,8 +19,9 @@ struct MarkIn {
     // Where the mark starts and ends, in canvas pixels from the canvas's middle.
     @location(0) ends: vec4<f32>,
     // Radius, turn in radians, variant, shape (0 stroke, 1 splat, 2 ring, 3 star, 4 crack,
-    // 5 burst, 6 dots, 7 smear). A stroke's variant: bit 0 square tips, bit 1 no start cap (its
-    // turn is then the previous piece's direction), bit 2 no end cap. A smear's: bits 1 and 2.
+    // 5 burst, 6 dots, 7 smear, 8 drip, 9 picture, 10 lift). A stroke's variant: bit 0 square
+    // tips, bit 1 no start cap (its turn is then the previous piece's direction), bit 2 no end
+    // cap. A smear's: bits 1 and 2. A drip's: bit 3 joins the piece before it (its turn).
     @location(1) look: vec4<f32>,
     // Linear light, straight alpha.
     @location(2) colour: vec4<f32>,
@@ -63,11 +64,16 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
     var mid = start;
     var along = vec2<f32>(1.0, 0.0);
     var half = vec2<f32>(r + margin);
-    if m.look.w > 0.5 && m.look.w < 1.5 {
+    let shape = u32(round(m.look.w));
+    if shape == 1u {
         // A splat's droplets reach 1.6 r, spread wider by its squash.
         half = vec2<f32>(2.6 * r + margin);
     }
-    if m.look.w < 0.5 || m.look.w > 6.5 {
+    if shape == 9u {
+        // A picture is a square of side 2 r, turned: its corners reach 1.4143 r.
+        half = vec2<f32>(1.4143 * r + margin);
+    }
+    if shape == 0u || shape == 7u || shape == 8u {
         // A stroke's box runs along it, past both ends by the radius.
         let d = to - start;
         let span = length(d);
@@ -258,8 +264,22 @@ fn last_touch(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 struct StampTargets {
     @location(0) paint: vec4<f32>,
     @location(1) aux: vec4<f32>,
+    @location(2) body: vec4<f32>,
     @builtin(frag_depth) depth: f32,
 };
+
+// How much ink a mark of a shape lays down where it is solid, out of 255: what thickness the
+// paint gets, which the styles and the bleed read.
+fn ink(shape: u32) -> f32 {
+    switch shape {
+        case 0u: { return 96.0; }
+        case 7u: { return 160.0; }
+        case 8u: { return 40.0; }
+        case 9u: { return 96.0; }
+        case 1u, 2u, 3u, 4u, 5u, 6u: { return 200.0; }
+        default: { return 0.0; }
+    }
+}
 
 @fragment
 fn fs_stamp(in: StampOut) -> StampTargets {
@@ -288,6 +308,15 @@ fn fs_stamp(in: StampOut) -> StampTargets {
             discard;
         }
     }
+    // A drip joined to the piece before it leaves out its start cap, cut by the plane across
+    // that piece, so the pieces meet without a bead.
+    if shape == 8u && (variant & 8u) != 0u {
+        let before = vec2<f32>(cos(in.look.y), sin(in.look.y));
+        let o = in.local - start;
+        if length(o) < r || dot(o, before) < 0.0 {
+            discard;
+        }
+    }
     // Stamps are drawn in their own turned frame.
     let c = cos(in.look.y);
     let s = sin(in.look.y);
@@ -302,6 +331,7 @@ fn fs_stamp(in: StampOut) -> StampTargets {
         case 4u: { d = crack(q, r, variant); }
         case 5u: { d = burst(q, r); }
         case 6u: { d = dots(q, r, variant); }
+        case 8u: { d = stroke(in.local, start, to, r, r_to, false); }
         default: { d = stroke(in.local, start, to, r, r_to, false); }
     }
     let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
@@ -318,6 +348,8 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     out.paint = vec4<f32>(max(colour.rgb, vec3<f32>(0.0)) * amount, amount);
     // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
     out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
+    // The thickness adds up wherever paint lands.
+    out.body = vec4<f32>(ink(shape) / 255.0 * cover, 0.0, 0.0, 0.0);
     var touch = 1.0;
     if shape == 0u {
         touch = last_touch(in.local, start, to, 0.5 * (r + r_to));
@@ -325,5 +357,28 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     // A piece of a longer move scales its own touch to its share of the move, so the order of
     // two balls' paint runs on smoothly across the pieces' joints.
     out.depth = (in.clock.y + clamp(mix(in.within.x, in.within.y, touch), 0.0, 1.0)) / max(in.clock.z, 1.0);
+    return out;
+}
+
+struct LiftTargets {
+    @location(0) paint: vec4<f32>,
+    @location(1) aux: vec4<f32>,
+    @location(2) body: vec4<f32>,
+};
+
+// A ball picks wet paint up: the paint and its thickness under the disc are scaled down by the
+// share (clock.w), which the blend multiplies into what is there. The time is left alone.
+@fragment
+fn fs_lift(in: StampOut) -> LiftTargets {
+    let d = length(in.local - in.ends.xy) - in.look.x;
+    let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
+    if cover <= 0.0 {
+        discard;
+    }
+    let k = 1.0 - clamp(in.clock.w, 0.0, 1.0) * cover;
+    var out: LiftTargets;
+    out.paint = vec4<f32>(k);
+    out.aux = vec4<f32>(0.0);
+    out.body = vec4<f32>(k);
     return out;
 }

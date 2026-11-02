@@ -573,6 +573,9 @@ impl FlowLayers {
 }
 
 #[cfg(test)]
+mod canvas_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -588,7 +591,7 @@ mod tests {
     use bpe_runtime::{Bodies, Outline, Sims, World};
     use glam::Vec2;
 
-    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    pub(super) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         match headless_device() {
             Ok(pair) => Some(pair),
             Err(_) => {
@@ -657,7 +660,7 @@ mod tests {
         }
     }
 
-    fn tiny_scene() -> (Scene, Resolved) {
+    pub(super) fn tiny_scene() -> (Scene, Resolved) {
         let reg = testkit::registry();
         let mut scene = Scene::empty(&reg);
         testkit::push(&mut scene, "balls", ThingId::ROOT);
@@ -1374,12 +1377,12 @@ mod tests {
     }
 
     /// The canvas the marking sims below mark.
-    const CANVAS: ThingId = ThingId(9);
+    pub(super) const CANVAS: ThingId = ThingId(9);
     /// Its side in world pixels and texels: rows of 384 Rgba16Float texels read back unpadded.
-    const SIDE: u32 = 384;
+    pub(super) const SIDE: u32 = 384;
 
     /// Leaves `marks(step)` on [`CANVAS`] after every step, standing in for the canvas sim.
-    struct Marking(fn(u64) -> Vec<bpe_runtime::Mark>);
+    pub(super) struct Marking(pub(super) fn(u64) -> Vec<bpe_runtime::Mark>);
     impl bpe_runtime::ThingSim for Marking {
         fn kind(&self) -> &'static str {
             "balls"
@@ -1392,7 +1395,13 @@ mod tests {
         }
     }
 
-    fn mark(step: u64, shape: bpe_runtime::MarkShape, from: Vec2, to: Vec2, radius: f32) -> bpe_runtime::Mark {
+    pub(super) fn mark(
+        step: u64,
+        shape: bpe_runtime::MarkShape,
+        from: Vec2,
+        to: Vec2,
+        radius: f32,
+    ) -> bpe_runtime::Mark {
         bpe_runtime::Mark {
             step,
             target: bpe_runtime::MarkTarget::Canvas(CANVAS),
@@ -1409,7 +1418,7 @@ mod tests {
         }
     }
 
-    fn canvas_layer() -> crate::CanvasLayer {
+    pub(super) fn canvas_layer() -> crate::CanvasLayer {
         crate::CanvasLayer {
             key: MarkTarget::Canvas(CANVAS),
             center: [0.0; 2],
@@ -1426,7 +1435,7 @@ mod tests {
         }
     }
 
-    fn f16_to_f32(bits: u16) -> f32 {
+    pub(super) fn f16_to_f32(bits: u16) -> f32 {
         let exponent = ((bits >> 10) & 0x1f) as i32;
         let mantissa = (bits & 0x3ff) as f32;
         let value = if exponent == 0 {
@@ -1438,7 +1447,7 @@ mod tests {
     }
 
     /// The raw bytes of a [`SIDE`]-square Rgba16Float texture.
-    fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+    pub(super) fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
         let row = SIDE * 8;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1462,13 +1471,13 @@ mod tests {
     }
 
     /// The texel under canvas point `p` (from the canvas's middle) of a read-back texture.
-    fn texel(bytes: &[u8], p: Vec2) -> [f32; 4] {
+    pub(super) fn texel(bytes: &[u8], p: Vec2) -> [f32; 4] {
         let (x, y) = ((p.x + SIDE as f32 / 2.0) as usize, (p.y + SIDE as f32 / 2.0) as usize);
         let i = (y * SIDE as usize + x) * 8;
         std::array::from_fn(|c| f16_to_f32(u16::from_le_bytes([bytes[i + c * 2], bytes[i + c * 2 + 1]])))
     }
 
-    fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
+    pub(super) fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
         FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new() }
     }
 
