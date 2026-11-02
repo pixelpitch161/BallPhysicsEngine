@@ -238,7 +238,9 @@ impl Studio {
     /// Records the edit that turned `before` into the scene as it is now, unless nothing
     /// changed, and brings the simulation and sound along.
     /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
-    /// the screen goes in the middle of the picture, which is where the camera isn't.
+    /// the screen goes in the middle of the picture, which is where the camera isn't. A canvas
+    /// stays at 0,0: its place is an offset from the arena or view it fits, and with none it
+    /// covers that exactly.
     pub fn place_added(&mut self, id: ThingId) {
         let stuck = self
             .scene
@@ -248,7 +250,8 @@ impl Studio {
         if let Some(thing) = self.scene.things.get_mut(&id)
             && !thing.rides()
         {
-            thing.transform.position = if stuck { glam::Vec2::ZERO } else { self.view_centre.round() };
+            let fitted = thing.kind == "canvas";
+            thing.transform.position = if stuck || fitted { glam::Vec2::ZERO } else { self.view_centre.round() };
         }
     }
 
@@ -1232,6 +1235,30 @@ mod tests {
         studio.place_added(balls);
         assert_eq!(studio.scene.things[&text].transform.position, glam::Vec2::ZERO);
         assert_eq!(studio.scene.things[&balls].transform.position, glam::Vec2::new(5000.0, -300.0));
+    }
+
+    /// A canvas that fits the arena covers it wherever the preview is looking and wherever the
+    /// arena is: its own place is only an offset, and a new one has none.
+    #[test]
+    fn a_new_canvas_covers_the_arena_wherever_the_view_is() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = glam::Vec2::new(300.0, -200.0);
+        studio.view_centre = glam::Vec2::new(5000.0, -300.0);
+        let canvas = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "canvas", ThingId::ROOT).unwrap();
+        studio.place_added(canvas);
+        studio.after_edit(before);
+        assert_eq!(studio.scene.things[&canvas].transform.position, glam::Vec2::ZERO);
+        let world = studio.playback.world();
+        let (center, size) = match world.walls[&ThingId(1)].outline {
+            bpe_runtime::Outline::Ring { center, radius, .. } => (center, glam::Vec2::splat(radius * 2.0)),
+            bpe_runtime::Outline::Box { center, half, .. } | bpe_runtime::Outline::Rounded { center, half, .. } => {
+                (center, half * 2.0)
+            }
+        };
+        assert_eq!(center, glam::Vec2::new(300.0, -200.0), "the arena moved");
+        let (pose, area) = bpe_kit::canvas_area(world, canvas).unwrap();
+        assert_eq!((pose.position, area), (center, size));
     }
 
     #[test]

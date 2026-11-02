@@ -61,7 +61,8 @@ impl ThingSim for CanvasSim {
 
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let settings = CanvasSettings::from_params(&resolved.params);
-        // The first arena's box, when there is one and the canvas fits it; else the video.
+        // The first arena's box, when there is one and the canvas fits it; else the video. The
+        // canvas's own place moves it off that middle, so at 0,0 it covers the box exactly.
         let arena = world
             .walls
             .iter()

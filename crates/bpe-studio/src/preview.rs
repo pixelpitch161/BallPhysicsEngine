@@ -273,9 +273,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(handle) = grab(studio, press)
     {
         let anchor = match handle {
-            Handle::Body(id) => {
-                place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.pointer_for(studio, handle, press))
-            }
+            Handle::Body(id) => body_anchor(&studio.scene, studio.playback.world(), id)
+                .unwrap_or(view.pointer_for(studio, handle, press)),
             Handle::CameraMove(_) => studio.playback.world().camera.center,
             _ => view.pointer_for(studio, handle, press),
         };
@@ -456,6 +455,17 @@ fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
 /// Where a thing is on screen right now: its pose in the world, or its own position.
 fn place_of(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
     world.poses.get(&id).map(|p| p.position).or_else(|| scene.things.get(&id).map(|t| t.transform.position))
+}
+
+/// Where a body drag of `id` starts from: the point the drag writes. That is the thing's place,
+/// except for a canvas, whose middle sits off its anchor (an Arena or View canvas's own place is
+/// an offset from the fitted middle), so the drag starts from the anchor and moves the canvas by
+/// exactly the drag.
+fn body_anchor(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
+    if scene.things.get(&id).is_some_and(|t| t.kind == "canvas") && world.poses.contains_key(&id) {
+        return Some(world.anchor(id).position);
+    }
+    place_of(scene, world, id)
 }
 
 /// The pose a rider's offset is measured from: its parent's, or one ball of its parent's.
@@ -973,6 +983,44 @@ mod tests {
             None,
         );
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(500.0)));
+    }
+
+    /// Dragging a canvas by its middle moves it by exactly the drag, from the first frame, even
+    /// when the arena it fits is away from the origin.
+    #[test]
+    fn body_drag_moves_an_arena_canvas_by_the_drag() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = Vec2::new(300.0, -200.0);
+        let canvas = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "canvas", ThingId::ROOT).unwrap();
+        studio.after_edit(before);
+        let (start, _) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
+        assert_eq!(start.position, Vec2::new(300.0, -200.0), "the canvas covers the moved arena");
+        let press = start.position + Vec2::new(40.0, 25.0);
+        let anchor = body_anchor(&studio.scene, studio.playback.world(), canvas).unwrap();
+        let drag = Drag { handle: Handle::Body(canvas), offset: press - anchor };
+        let delta = Vec2::new(70.0, -30.0);
+        for moved in [Vec2::ZERO, delta] {
+            let before = studio.scene.clone();
+            apply_drag(&mut studio.scene, studio.playback.world(), drag, press + moved, None);
+            studio.after_edit(before);
+            let (pose, _) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
+            assert_eq!(pose.position, start.position + moved);
+        }
+        // A corner drag then turns it Custom around the rectangle it really shows.
+        let (pose, size) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
+        let top_left = pose.position - size * 0.5;
+        let before = studio.scene.clone();
+        apply_drag(
+            &mut studio.scene,
+            studio.playback.world(),
+            Drag { handle: Handle::CanvasCorner(canvas, 2), offset: Vec2::ZERO },
+            top_left + Vec2::new(300.0, 200.0),
+            None,
+        );
+        studio.after_edit(before);
+        let (pose, size) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
+        assert_eq!((pose.position, size), ((top_left + Vec2::new(150.0, 100.0)).round(), Vec2::new(300.0, 200.0)));
     }
 
     #[test]

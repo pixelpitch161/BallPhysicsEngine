@@ -22,7 +22,9 @@ pub enum CanvasKind {
     Paint,
 }
 
-/// Which rectangle of the world the canvas covers.
+/// Which rectangle of the world the canvas covers. For Arena and View the canvas's own place is
+/// an offset from that rectangle's middle (0,0 covers it exactly); a Custom canvas sits around
+/// its own place.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Fit {
     /// The box around the first arena.
