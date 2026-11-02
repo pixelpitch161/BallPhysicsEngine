@@ -54,6 +54,8 @@ enum Action {
     /// Delete this row: with everything else selected when the row is part of the selection.
     DeleteRow(ThingId),
     Add(&'static str),
+    /// A canvas with a starting point from the Canvas submenu.
+    AddCanvas(bpe_kit::CanvasStart),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -97,7 +99,19 @@ pub fn show(
             let kinds: Vec<_> =
                 reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
             let mut button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
-                if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
+                if kind.id() == "canvas" {
+                    // A canvas starts as paint, a scratch card, sand, snow, fog glass or a war.
+                    ui.menu_button(kind.name(), |ui| {
+                        for start in bpe_kit::CanvasStart::ALL {
+                            if ui.button(start.label()).on_hover_text(start.help()).clicked() {
+                                action = Some(Action::AddCanvas(start));
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(kind.help());
+                } else if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
                     action = Some(Action::Add(kind.id()));
                     ui.close();
                 }
@@ -239,7 +253,7 @@ pub fn show(
                 }
             }
         }
-        Some(Action::Add(kind)) => {
+        Some(action @ (Action::Add(_) | Action::AddCanvas(_))) => {
             // Into a selected folder, beside any other selected thing, or under Scene settings.
             let parent = selection
                 .primary
@@ -247,7 +261,12 @@ pub fn show(
                 .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
                 .unwrap_or(ThingId::ROOT);
             // The kit links the starter modules a kind needs, such as a liquid's surface look.
-            if let Ok(id) = bpe_kit::add_thing(scene, reg, kind, parent) {
+            let added = match action {
+                Action::AddCanvas(start) => bpe_kit::add_canvas(scene, reg, start, parent),
+                Action::Add(kind) => bpe_kit::add_thing(scene, reg, kind, parent),
+                _ => unreachable!("matched above"),
+            };
+            if let Ok(id) = added {
                 selection.set(id);
                 out.edited = true;
                 out.added = Some(id);
@@ -1075,6 +1094,22 @@ mod tests {
         assert_eq!(s.scene.things[&ThingId(3)].name, "Balls");
         assert_eq!(s.scene.things[&ThingId(3)].parent, Some(ThingId::ROOT));
         assert!(h.query_by_label("Balls").is_some());
+    }
+
+    #[test]
+    fn adding_a_sand_canvas_from_the_submenu() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Canvas").click();
+        h.run();
+        h.get_by_label("Sand").click();
+        h.run();
+        let s = h.state();
+        let id = s.selection.primary.expect("the new canvas is selected");
+        assert_eq!(s.scene.things[&id].kind, "canvas");
+        let settings = <bpe_kit::CanvasSettings as bpe_core::Settings>::from_params(&s.scene.things[&id].params);
+        assert_eq!(settings.kind, bpe_kit::CanvasKind::Powder);
     }
 
     #[test]
