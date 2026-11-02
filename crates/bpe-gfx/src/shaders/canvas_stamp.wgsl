@@ -11,9 +11,13 @@
 struct Canvas {
     // Width and height in canvas pixels, then the texture's width and height in texels.
     size: vec4<f32>,
+    // x: how many pictures the atlas holds.
+    info: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> canvas: Canvas;
+@group(0) @binding(1) var pictures: texture_2d_array<f32>;
+@group(0) @binding(2) var picture_sampler: sampler;
 
 struct MarkIn {
     // Where the mark starts and ends, in canvas pixels from the canvas's middle.
@@ -261,6 +265,21 @@ fn last_touch(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return along + half;
 }
 
+// The picture a missing or unreadable slot shows: pink and dark grey squares, in linear light.
+fn checker(uv: vec2<f32>) -> vec4<f32> {
+    let even = (u32(floor(uv.x * 16.0)) + u32(floor(uv.y * 16.0))) % 2u == 0u;
+    if even {
+        return vec4<f32>(1.0, 0.0782, 0.6867, 1.0);
+    }
+    return vec4<f32>(0.0144, 0.0144, 0.0144, 1.0);
+}
+
+// Linear light to sRGB, the standard piecewise encode.
+fn to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(12.92 * x, 1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x > vec3<f32>(0.0031308));
+}
+
 struct StampTargets {
     @location(0) paint: vec4<f32>,
     @location(1) aux: vec4<f32>,
@@ -323,6 +342,7 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     let o = in.local - start;
     let q = vec2<f32>(c * o.x + s * o.y, -s * o.x + c * o.y);
     var d = 0.0;
+    var pic = vec4<f32>(0.0);
     switch shape {
         case 0u: { d = stroke(in.local, start, to, r, r_to, (variant & 1u) != 0u); }
         case 1u: { d = splat(q, r, variant); }
@@ -332,6 +352,22 @@ fn fs_stamp(in: StampOut) -> StampTargets {
         case 5u: { d = burst(q, r); }
         case 6u: { d = dots(q, r, variant); }
         case 8u: { d = stroke(in.local, start, to, r, r_to, false); }
+        case 9u: {
+            // The picture fits a square of side 2 r, turned by the mark.
+            let uv = q / (2.0 * r) + vec2<f32>(0.5);
+            if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+                discard;
+            }
+            let slot = variant & 31u;
+            if slot >= u32(canvas.info.x) || slot == 31u {
+                pic = checker(uv);
+            } else {
+                let lod = max(0.0, log2(512.0 * texel_size() / (2.0 * r)));
+                pic = textureSampleLevel(pictures, picture_sampler, uv, slot, lod);
+            }
+            // Fully inside: cover is 1.
+            d = -1.0;
+        }
         default: { d = stroke(in.local, start, to, r, r_to, false); }
     }
     let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
@@ -343,13 +379,31 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     if ribbon {
         colour = mix(in.colour, in.colour_to, along_part(in.local, start, to));
     }
+    if shape == 9u {
+        if (variant & 32u) == 0u {
+            colour = vec4<f32>(pic.rgb, pic.a * in.colour.a);
+        } else {
+            let light = dot(to_srgb(pic.rgb), vec3<f32>(0.2126, 0.7152, 0.0722));
+            colour = vec4<f32>(in.colour.rgb * light * 1.25, pic.a * in.colour.a);
+        }
+    }
     let amount = clamp(colour.a, 0.0, 1.0) * cover;
+    if shape == 9u && amount <= 0.0 {
+        discard;
+    }
     var out: StampTargets;
     out.paint = vec4<f32>(max(colour.rgb, vec3<f32>(0.0)) * amount, amount);
     // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
-    out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
+    // A picture re-dates where it is at least half opaque, other marks where they are solid.
+    var solid = cover >= 0.5;
+    var thick = cover;
+    if shape == 9u {
+        solid = amount >= 0.5;
+        thick = amount;
+    }
+    out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, solid));
     // The thickness adds up wherever paint lands.
-    out.body = vec4<f32>(ink(shape) / 255.0 * cover, 0.0, 0.0, 0.0);
+    out.body = vec4<f32>(ink(shape) / 255.0 * thick, 0.0, 0.0, 0.0);
     var touch = 1.0;
     if shape == 0u {
         touch = last_touch(in.local, start, to, 0.5 * (r + r_to));

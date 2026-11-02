@@ -178,7 +178,15 @@ pub fn flow_source<'a>(
             (look.kind == "look.basic").then(|| (*id, BasicLook::from_params(&look.params).first_colour()))
         })
         .collect();
-    FlowSource { scene, resolved, sims, key: bpe_runtime::fingerprint(scene, resolved, sims), budget, ball_colors }
+    FlowSource {
+        scene,
+        resolved,
+        sims,
+        key: bpe_runtime::fingerprint(scene, resolved, sims),
+        budget,
+        ball_colors,
+        picture_folder: None,
+    }
 }
 
 /// What the mixer needs from the root's settings, and every thing's tags.

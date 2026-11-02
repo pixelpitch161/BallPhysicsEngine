@@ -10,6 +10,7 @@
 use bpe_runtime::{Mark, MarkShape, MarkTarget};
 use bytemuck::{Pod, Zeroable};
 
+use super::pictures::PictureAtlas;
 use super::{CanvasTextures, clamp_texels};
 use crate::flow::util;
 
@@ -18,6 +19,8 @@ use crate::flow::util;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct StampCanvas {
     size: [f32; 4],
+    /// x: how many pictures the atlas holds.
+    info: [f32; 4],
 }
 
 /// One mark as the stamp shader reads it, laid out as `MarkIn` in canvas_stamp.wgsl.
@@ -99,7 +102,25 @@ impl StampPipeline {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("canvas stamp layout"),
-            entries: &[util::uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT, false)],
+            entries: &[
+                util::uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("canvas stamp"),
@@ -278,6 +299,7 @@ impl CanvasGpu {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &StampPipeline,
+        atlas: &PictureAtlas,
         target: MarkTarget,
         size: [f32; 2],
         texels: [u32; 2],
@@ -302,12 +324,19 @@ impl CanvasGpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let data = StampCanvas { size: [size[0].max(1.0), size[1].max(1.0), w as f32, h as f32] };
+        let data = StampCanvas {
+            size: [size[0].max(1.0), size[1].max(1.0), w as f32, h as f32],
+            info: [atlas.layers as f32, 0.0, 0.0, 0.0],
+        };
         queue.write_buffer(&uniform, 0, bytemuck::bytes_of(&data));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("canvas stamp"),
             layout: &pipeline.layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&atlas.sampler) },
+            ],
         });
         Self {
             textures,

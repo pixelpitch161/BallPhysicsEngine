@@ -22,6 +22,7 @@ use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Mark, MarkTarget, Outline, Sims, World};
 
 use crate::canvas::CanvasTextures;
+use crate::canvas::pictures::PictureAtlas;
 use crate::canvas::stamp::{CanvasGpu, StampPipeline};
 use crate::canvas::texture_bytes;
 use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
@@ -55,6 +56,8 @@ pub struct FlowSource<'a> {
     pub budget: Option<Duration>,
     /// The linear-light colour of each ball thing, for layers that colour by the nearest ball.
     pub ball_colors: BTreeMap<ThingId, [f32; 4]>,
+    /// The folder relative picture paths are read from: the scene file's folder.
+    pub picture_folder: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +226,8 @@ pub struct FlowLayers {
     steps_run: u64,
     /// Most bytes the checkpoints may hold together; [`CHECKPOINT_BYTES`] unless changed.
     checkpoint_bytes: u64,
+    /// The scene's picture files that could not be read, as the scene gave them.
+    missing_pictures: Vec<String>,
 }
 
 /// The frame's swarms, then those of its blend layers: all of them are stepped here.
@@ -276,10 +281,16 @@ impl FlowLayers {
             sdf,
             pipelines,
             driver: None,
+            missing_pictures: Vec::new(),
             layers: BTreeMap::new(),
             steps_run: 0,
             checkpoint_bytes: CHECKPOINT_BYTES,
         }
+    }
+
+    /// The picture files the running scene names that could not be read.
+    pub fn missing_pictures(&self) -> &[String] {
+        &self.missing_pictures
     }
 
     /// Changes how many bytes the checkpoints may hold together.
@@ -393,6 +404,10 @@ impl FlowLayers {
     /// Builds the private world afresh and every layer at step 0.
     fn restart(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
         let world = World::build(source.scene, source.resolved, source.sims);
+        // The pictures are read here, once, never in the frame loop. The canvases' bind groups
+        // keep the atlas alive.
+        let atlas = PictureAtlas::load(device, queue, &world.pictures, source.picture_folder.as_deref());
+        self.missing_pictures = atlas.missing.clone();
         let video = frame.video;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow start") });
         let wall = first_wall(&world);
@@ -416,7 +431,7 @@ impl FlowLayers {
             Points::Cpu(_) => None,
         });
         let canvases = frame.canvases.iter().map(|c| {
-            let canvas = CanvasGpu::new(device, queue, &pipelines.stamp, c.key, c.size, c.texels);
+            let canvas = CanvasGpu::new(device, queue, &pipelines.stamp, &atlas, c.key, c.size, c.texels);
             (LayerKey::Marks(c.key), Layer::Canvas(Box::new(canvas)))
         });
         self.layers = liquids.collect();
@@ -518,7 +533,7 @@ impl FlowLayers {
 
     /// Runs up to [`BATCH_STEPS`] steps towards `target` and sends them to the GPU.
     fn run_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: u64, source: &FlowSource) {
-        let Self { inputs, sdf, pipelines, driver, layers, steps_run, checkpoint_bytes } = self;
+        let Self { inputs, sdf, pipelines, driver, layers, steps_run, checkpoint_bytes, .. } = self;
         let driver = driver.as_mut().unwrap();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow steps") });
         let mut slot = 0;
@@ -775,6 +790,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.swarms.push(swarm_layer(ThingId(1)));
         let mut source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -878,6 +894,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = Sims::default();
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -904,6 +921,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = Sims::default();
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -927,6 +945,7 @@ mod tests {
         layer.count = 20_000;
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -956,6 +975,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -983,6 +1003,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1015,6 +1036,7 @@ mod tests {
         layer.look.size = 2.0;
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1063,6 +1085,7 @@ mod tests {
         assert_eq!(frame.layers[0].each, each);
         assert!(frame.swarms.is_empty());
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1087,6 +1110,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.swarms.push(swarm_layer(ThingId(1)));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1116,6 +1140,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 12_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1150,6 +1175,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 4_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1177,6 +1203,7 @@ mod tests {
         let mut frame = Frame::default();
         frame.liquids.push(gpu_pool(ThingId(1), 10_000));
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1222,6 +1249,7 @@ mod tests {
         pool.paint_place = [90.0, 490.0, 0.0, 455.0];
         frame.liquids.push(pool);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1259,6 +1287,7 @@ mod tests {
         layer.look.color = [0.5, 0.0, 0.0, 1.0];
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1314,6 +1343,7 @@ mod tests {
         layer.look.paint = paint_of(&mut frame, &[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0)]);
         frame.swarms.push(layer);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1338,6 +1368,7 @@ mod tests {
         let (scene, resolved) = tiny_scene();
         let sims = ring_sims(400.0);
         let source = FlowSource {
+            picture_folder: None,
             scene: &scene,
             resolved: &resolved,
             sims: &sims,
@@ -1478,7 +1509,7 @@ mod tests {
     }
 
     pub(super) fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
-        FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new() }
+        FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new(), picture_folder: None }
     }
 
     #[test]

@@ -317,3 +317,120 @@ fn canvas_shaders_validate() {
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
 }
+
+/// Leaves `marks(step)` on the canvas like `Marking`, and names `pictures` in its world.
+struct WithPictures(&'static [&'static str], fn(u64) -> Vec<Mark>);
+impl bpe_runtime::ThingSim for WithPictures {
+    fn kind(&self) -> &'static str {
+        "balls"
+    }
+    fn build(&self, _: &bpe_core::Thing, _: &bpe_core::ResolvedThing, world: &mut bpe_runtime::World) {
+        world.pictures = self.0.iter().map(|p| p.to_string()).collect();
+    }
+    fn after_step(&self, _: bpe_core::ThingId, world: &mut bpe_runtime::World, log: &mut bpe_runtime::Log) {
+        for m in (self.1)(world.step) {
+            log.push_mark(m);
+        }
+    }
+}
+
+/// A fresh folder holding `name` as a 64 by 64 PNG, left half `left` and right half `right`.
+fn halves_folder(name: &str, left: [u8; 4], right: [u8; 4]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bpe-pic-gpu-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = image::RgbaImage::from_fn(64, 64, |x, _| image::Rgba(if x < 32 { left } else { right }));
+    image.save(dir.join("halves.png")).unwrap();
+    dir
+}
+
+/// Runs a canvas whose world names `pictures`, reading them from `folder`.
+fn run_with_pictures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pictures: &'static [&'static str],
+    folder: Option<std::path::PathBuf>,
+    marking: fn(u64) -> Vec<Mark>,
+) -> (FlowLayers, Picture) {
+    let (scene, resolved) = tiny_scene();
+    let mut sims = Sims::default();
+    sims.add_thing(WithPictures(pictures, marking));
+    let mut frame = Frame::default();
+    frame.canvases.push(canvas_layer());
+    let mut source = canvas_source(&scene, &resolved, &sims);
+    source.picture_folder = folder;
+    let mut flow = FlowLayers::new(device);
+    flow.prepare(device, queue, &frame, &source);
+    flow.step_to(device, queue, 0.1, &source);
+    let picture = read(device, queue, &flow);
+    (flow, picture)
+}
+
+fn picture_mark(step: u64, angle: f32, variant: u8, colour: [f32; 4]) -> Vec<Mark> {
+    if step != 1 {
+        return Vec::new();
+    }
+    let mut m = mark(1, S::Picture, v(0.0, 0.0), v(0.0, 0.0), 60.0);
+    m.angle = angle;
+    m.variant = variant;
+    m.colour = colour;
+    m.colour_to = colour;
+    vec![m]
+}
+
+#[test]
+fn picture_stamps_its_halves() {
+    let Some((device, queue)) = gpu() else { return };
+    let dir = halves_folder("halves", [255, 0, 0, 255], [0, 0, 255, 255]);
+    let (_, (paint, ..)) =
+        run_with_pictures(&device, &queue, &["halves.png"], Some(dir.clone()), |s| picture_mark(s, 0.0, 0, [1.0; 4]));
+    let (l, r) = (texel(&paint, v(-30.0, 0.0)), texel(&paint, v(30.0, 0.0)));
+    assert!(l[0] > 0.8 && l[2] < 0.2, "{l:?}");
+    assert!(r[2] > 0.8 && r[0] < 0.2, "{r:?}");
+    let (_, (turned, ..)) = run_with_pictures(&device, &queue, &["halves.png"], Some(dir), |s| {
+        picture_mark(s, std::f32::consts::PI, 0, [1.0; 4])
+    });
+    let (l, r) = (texel(&turned, v(-30.0, 0.0)), texel(&turned, v(30.0, 0.0)));
+    assert!(l[2] > 0.8 && l[0] < 0.2, "turned: {l:?}");
+    assert!(r[0] > 0.8 && r[2] < 0.2, "turned: {r:?}");
+    // Outside the square nothing is painted.
+    assert_eq!(texel(&paint, v(70.0, 0.0))[3], 0.0);
+}
+
+#[test]
+fn tinted_picture_keeps_light_and_dark() {
+    let Some((device, queue)) = gpu() else { return };
+    let dir = halves_folder("tinted", [255, 255, 255, 255], [0, 0, 0, 255]);
+    let (_, (paint, ..)) = run_with_pictures(&device, &queue, &["halves.png"], Some(dir), |s| {
+        picture_mark(s, 0.0, 32, [0.0, 1.0, 0.0, 1.0])
+    });
+    let (l, r) = (texel(&paint, v(-30.0, 0.0)), texel(&paint, v(30.0, 0.0)));
+    assert!(l[1] > 0.9, "{l:?}");
+    assert!(r[1] < 0.1 && r[3] > 0.95, "{r:?}");
+}
+
+fn is_checker(c: [f32; 4]) -> bool {
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.02);
+    near([c[0], c[1], c[2]], [1.0, 0.0782, 0.6867]) || near([c[0], c[1], c[2]], [0.0144; 3])
+}
+
+#[test]
+fn slot_past_the_atlas_draws_the_checker() {
+    let Some((device, queue)) = gpu() else { return };
+    let dir = halves_folder("slot", [255, 0, 0, 255], [0, 0, 255, 255]);
+    let (_, (paint, ..)) =
+        run_with_pictures(&device, &queue, &["halves.png"], Some(dir), |s| picture_mark(s, 0.0, 5, [1.0; 4]));
+    let c = texel(&paint, v(10.0, 10.0));
+    assert!(is_checker(c), "{c:?}");
+}
+
+#[test]
+fn missing_file_draws_the_checker_on_the_gpu() {
+    let Some((device, queue)) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("bpe-pic-gpu-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (flow, (paint, ..)) =
+        run_with_pictures(&device, &queue, &["gone.png"], Some(dir), |s| picture_mark(s, 0.0, 0, [1.0; 4]));
+    let c = texel(&paint, v(10.0, 10.0));
+    assert!(is_checker(c), "{c:?}");
+    assert_eq!(flow.missing_pictures(), ["gone.png"]);
+}

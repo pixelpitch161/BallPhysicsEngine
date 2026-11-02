@@ -22,6 +22,7 @@ pub mod particles;
 mod pictures;
 pub mod text;
 
+pub use canvas::pictures::picture_readable;
 pub use canvas::{CanvasTextures, MAX_TEXELS, clamp_texels};
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
