@@ -89,3 +89,43 @@ fn ten_thousand_balls_build_a_frame_no_slower() {
     assert_eq!(frame.balls.len(), 10_000);
     assert!(new_time <= old_time.mul_f64(1.1), "new {new_time:?} is slower than old {old_time:?}");
 }
+
+/// The canvas keeps up: 20 balls painting trails on a full-size canvas cost under a millisecond
+/// of marking a step, on average.
+#[test]
+#[ignore = "a speed check, run with --release"]
+fn canvas_step_is_quick() {
+    use bpe_core::{SlotId, Value};
+    const STEPS: u32 = 600;
+
+    let kit = bpe_kit::kit();
+    let mut scene = bpe_kit::new_scene(&kit.registry);
+    let balls = scene.things.get_mut(&ThingId(2)).expect("the balls");
+    let mut settings = BallsSettings::from_params(&balls.params);
+    (settings.arrangement, settings.count, settings.ring_radius, settings.radius) =
+        (bpe_kit::Arrangement::Ring, 20, 300.0, 14.0);
+    balls.params = settings.to_params();
+    let canvas = bpe_kit::add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).expect("a canvas");
+    let canvas_params = &mut scene.things.get_mut(&canvas).unwrap().params;
+    canvas_params.set("fit", Value::Choice("custom".into()));
+    canvas_params.set("size", Value::Vec2([1080.0, 1920.0]));
+    assert!(scene.things[&ThingId(2)].slots.contains_key(&SlotId::Marks), "the balls paint");
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+
+    let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+    let mut log = bpe_runtime::Log::default();
+    let sim = kit.sims.thing("canvas").expect("the canvas sim");
+    let mut total = Duration::ZERO;
+    for _ in 0..STEPS {
+        // Keep the canvas's own turn out of the step, so only its marking is timed.
+        let state = world.states.remove(&canvas).expect("the canvas state");
+        world.step(&kit.sims, &mut log);
+        world.states.insert(canvas, state);
+        total += timed(|| sim.after_step(canvas, &mut world, &mut log));
+    }
+    let mean = total / STEPS;
+    println!("marking a 1080 x 1920 canvas under 20 painting balls: mean {mean:?} a step, {} marks", log.marks().len());
+    assert!(log.marks().len() > 100, "the balls painted: {} marks", log.marks().len());
+    assert!(mean < Duration::from_millis(1), "a canvas step takes {mean:?}");
+}

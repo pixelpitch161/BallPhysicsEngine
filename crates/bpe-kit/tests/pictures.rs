@@ -89,3 +89,50 @@ fn a_rounded_box_arena_draws_round_corners() {
     // The rounded corner passes through the arc's 45° point: (150 + 212, 450 + 212).
     assert!(brightest_around(&pixels, 135 + 362 / 4, 240 + 662 / 4) > 100, "the round corner is drawn");
 }
+
+/// Stills of the two Marks demos at 4 s and 12 s: the canvas has paint on it that the same frame
+/// without its canvases doesn't show. Saved with `BPE_SAVE_RENDERS`.
+#[test]
+fn marks_scenes_draw_paint_on_their_canvases() {
+    let Ok((device, queue)) = headless_device() else {
+        eprintln!("no GPU adapter available, skipping");
+        return;
+    };
+    let kit = kit();
+    let mut renderer = Renderer::new(&device, W, H);
+    for (name, scene) in scenes::marks(&kit.registry) {
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        let mut painted_before = 0;
+        for time in [4.0, 12.0] {
+            playback.seek(time);
+            let mut shots = Vec::new();
+            for canvases in [true, false] {
+                let mut frame = Frame::default();
+                build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+                if !canvases {
+                    frame.canvases.clear();
+                }
+                let source = flow_source(&scene, &resolved, &kit.sims, None);
+                assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up, "{name}");
+                shots.push(renderer.read_output(&device, &queue).unwrap());
+            }
+            let painted = shots[0].chunks(4).zip(shots[1].chunks(4)).filter(|(a, b)| a != b).count();
+            assert!(painted > 200, "{name} at {time} s: only {painted} pixels differ without the canvas");
+            assert!(painted >= painted_before, "{name}: paint never goes away here ({painted_before} then {painted})");
+            painted_before = painted;
+            if std::env::var_os("BPE_SAVE_RENDERS").is_some() {
+                let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");
+                std::fs::create_dir_all(&dir).unwrap();
+                let file =
+                    std::fs::File::create(dir.join(format!("{}-{time}s.png", name.to_lowercase().replace(' ', "-"))))
+                        .unwrap();
+                let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.write_header().unwrap().write_image_data(&shots[0]).unwrap();
+            }
+        }
+    }
+    assert_eq!(renderer.shader_problems(), Vec::<String>::new());
+}
