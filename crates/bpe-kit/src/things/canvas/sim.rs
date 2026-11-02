@@ -106,8 +106,19 @@ impl ThingSim for CanvasSim {
         self.place(thing.id, world);
     }
 
-    fn after_build(&self, _thing: ThingId, world: &mut World) {
+    fn after_build(&self, thing: ThingId, world: &mut World) {
         crate::pictures::fill(world);
+        // Whether some brush that marks this canvas picks up wet paint.
+        let pickup = {
+            let Some(st) = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>()) else {
+                return;
+            };
+            super::skin::brushes(world)
+                .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
+        };
+        if let Some(st) = world.states.get_mut(&thing).and_then(|s| s.as_any_mut().downcast_mut::<CanvasState>()) {
+            st.evolve.pickup = pickup;
+        }
     }
 
     fn needs_walls(&self) -> bool {
@@ -265,7 +276,7 @@ impl<'a> Colours<'a> {
             }
             None => Inputs { time: time as f32, ..Inputs::default() },
         };
-        colour_at(&b.colour, &inputs)
+        bpe_runtime::with_picked(world, thing, i, colour_at(&b.colour, &inputs))
     }
 }
 

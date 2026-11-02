@@ -5,13 +5,14 @@
 
 use std::collections::BTreeMap;
 
-use bpe_core::{Color, ThingId};
+use bpe_core::{Color, SlotId, ThingId};
 use bpe_runtime::{Mark, MarkShape, MarkTarget, Picked, World};
 use glam::Vec2;
 
-use super::grid::{Cell, DRIP_JOINED, wet};
-use super::sim::{CanvasState, mix, reaches};
+use super::grid::{Cell, DRIP_JOINED, painter, wet};
+use super::sim::{CanvasState, mix, reaches, to_local};
 use super::skin::{line_reach, nearest, skin_settings, thin_reach};
+use crate::modules::marks::MarksBrushes;
 
 /// How a canvas or skin changes over time, fixed at build.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -90,7 +91,7 @@ pub(crate) struct Tick<'a> {
 pub(crate) fn tick(
     cx: &Tick,
     st: &mut CanvasState,
-    _picked: &mut BTreeMap<ThingId, Vec<Picked>>,
+    picked: &mut BTreeMap<ThingId, Vec<Picked>>,
     outline: Option<&[Vec<Vec2>]>,
 ) -> Vec<Mark> {
     let mut out = Vec::new();
@@ -101,11 +102,122 @@ pub(crate) fn tick(
             start_drips(cx, st, outline);
         }
     }
-    // pickup: Task 8
+    if st.evolve.pickup {
+        pickup(cx, st, picked, &mut out);
+    }
     if st.evolve.bleed > 0.0 {
         bleed(cx, st, &mut out);
     }
     out
+}
+
+/// The Marks brush of `thing`, when it has one.
+pub(crate) fn brush_of(world: &World, thing: ThingId) -> Option<&MarksBrushes> {
+    world.module_state(thing, SlotId::Marks)?.1.as_any().downcast_ref::<MarksBrushes>()
+}
+
+/// Canvas pickup: every living ball of every brush that marks this canvas with Pickup on, in the
+/// world's order and then row order, picks up from the paint under it.
+fn pickup(cx: &Tick, st: &mut CanvasState, picked: &mut BTreeMap<ThingId, Vec<Picked>>, out: &mut Vec<Mark>) {
+    let MarkTarget::Canvas(canvas) = cx.target else { return };
+    let world = cx.world;
+    let pose = world.poses.get(&canvas).copied().unwrap_or_default();
+    for &thing in world.order() {
+        let Some(b) = brush_of(world, thing) else { continue };
+        if b.paint_pickup <= 0.0 || !world.matches(canvas, thing, &st.settings.brushes_from) {
+            continue;
+        }
+        let Some(bodies) = world.bodies.get(&thing) else { continue };
+        for i in 0..bodies.len() {
+            if bodies.alive[i] {
+                pick_at(cx, st, to_local(pose, bodies.position[i]), bodies.radius[i], (thing, i), b, picked, out);
+            }
+        }
+    }
+}
+
+/// One ball (`ball`: its thing and row) of radius `radius` at canvas point `c` picks up wet paint
+/// from the cells under half its radius that someone else laid: it mixes their colour into its
+/// own picked-up paint, takes some of their paint away and logs a Lift. Shared by canvases (each
+/// tick) and skins (at hits).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pick_at(
+    cx: &Tick,
+    st: &mut CanvasState,
+    c: Vec2,
+    radius: f32,
+    ball: (ThingId, usize),
+    b: &MarksBrushes,
+    picked: &mut BTreeMap<ThingId, Vec<Picked>>,
+    out: &mut Vec<Mark>,
+) {
+    let (thing, i) = ball;
+    let rr = 0.5 * radius;
+    let (width, height) = st.grid.dims();
+    let cs = st.grid.cell_size();
+    // The cells whose middle lies within rr of c, and the one c is in.
+    let mut read: Vec<(u32, u32)> = Vec::new();
+    let reach = (rr / cs).ceil() as i64 + 1;
+    let (fx, fy) = ((c.x / cs + width as f32 / 2.0).floor() as i64, (c.y / cs + height as f32 / 2.0).floor() as i64);
+    for y in (fy - reach).max(0)..=(fy + reach).min(height as i64 - 1) {
+        for x in (fx - reach).max(0)..=(fx + reach).min(width as i64 - 1) {
+            if (st.grid.centre_of(x as u32, y as u32) - c).length() <= rr {
+                read.push((x as u32, y as u32));
+            }
+        }
+    }
+    if let Some(home) = st.grid.cell_at(c)
+        && !read.contains(&home)
+    {
+        read.push(home);
+    }
+    if read.is_empty() {
+        return;
+    }
+    let me = painter(thing, i as u32);
+    let dry = st.evolve.dry_ticks;
+    let taking: Vec<((u32, u32), Cell)> = read
+        .iter()
+        .map(|&(x, y)| ((x, y), st.grid.get(x, y)))
+        .filter(|(_, cell)| wet(cell, cx.now, dry) && cell.by != me)
+        .collect();
+    if taking.is_empty() {
+        return;
+    }
+    let share = (b.paint_pickup * (taking.len() as f32 / read.len() as f32) * 0.35).min(1.0);
+    // The paint they hold, by amount, as a linear colour.
+    let total: f32 = taking.iter().map(|(_, cell)| cell.amount as f32).sum();
+    let mut rgb = [0.0f32; 3];
+    for (_, cell) in &taking {
+        for (k, channel) in rgb.iter_mut().enumerate() {
+            *channel += cell.rgb[k] as f32 * cell.amount as f32 / total;
+        }
+    }
+    let linear = Color::rgb(rgb[0].round() as u8, rgb[1].round() as u8, rgb[2].round() as u8).to_linear();
+    let list = picked.entry(thing).or_default();
+    if list.len() <= i {
+        list.resize(i + 1, Picked::default());
+    }
+    let world = cx.world;
+    list[i].mix([linear[0], linear[1], linear[2]], share, world.step, world.steps_per_second, b.paint_pickup_fade);
+    for ((x, y), cell) in taking {
+        let loss = ((cell.amount as f32 * share * 0.5).floor() as u8).max(1);
+        st.grid.set(x, y, Cell { amount: cell.amount.saturating_sub(loss), ..cell }, None);
+    }
+    out.push(Mark {
+        step: world.step,
+        target: cx.target,
+        shape: MarkShape::Lift,
+        from: c,
+        to: c,
+        radius: rr.max(cs * 0.5),
+        radius_to: share * 0.5,
+        angle: 0.0,
+        within: [1.0, 1.0],
+        variant: 0,
+        colour: [0.0; 4],
+        colour_to: [0.0; 4],
+    });
 }
 
 /// Most drips running on one canvas or skin at once.
@@ -1119,5 +1231,194 @@ mod tests {
         assert_eq!(a.runners, b.runners);
         assert_eq!(straight.log().marks(), jumpy.log().marks());
         assert!(straight.log().marks().iter().any(|m| m.shape == MarkShape::Drip));
+    }
+
+    // --- pickup ---
+
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+    /// Gives the canvas (or the skin of `target`) a blue wet layer over everything, laid by
+    /// someone else, at the world's current tick.
+    fn pour_blue(world: &mut World, target: MarkTarget) {
+        let now = (world.step / 8) as u32;
+        let state = match target {
+            MarkTarget::Canvas(c) => world.states.get_mut(&c),
+            MarkTarget::Skin(t) => world.skins.get_mut(&t),
+        };
+        let st = state.unwrap().as_any_mut().downcast_mut::<CanvasState>().unwrap();
+        let mut layer = splat(Vec2::ZERO, 5000.0, BLUE);
+        layer.target = target;
+        st.grid.stamp(&layer, now, 200);
+    }
+
+    /// A canvas whose ball paints a trail with `pickup`, built and ready to run.
+    fn pickup_world(pickup: f32, dry: f32) -> (World, Log, Kit) {
+        let (mut scene, _, kit) = painted(true, |p| {
+            p.set("paint_pickup", Value::Number(pickup as f64));
+            p.set("paint_pickup_fade", Value::Number(2.0));
+        });
+        scene.things.get_mut(&CANVAS).unwrap().params.set("dry_time", Value::Number(dry as f64));
+        let resolved = resolve(&scene, &kit.registry);
+        (World::build(&scene, &resolved, &kit.sims), Log::default(), kit)
+    }
+
+    #[test]
+    fn pickup_takes_only_wet_paint() {
+        let (mut world, mut log, kit) = pickup_world(1.0, 4.0);
+        pour_blue(&mut world, MarkTarget::Canvas(CANVAS));
+        world.advance_to(0.5, &kit.sims, &mut log);
+        let p = world.picked[&crate::testing::BALLS][0];
+        assert!(p.amount > 0.0 && p.rgb[2] > p.rgb[0] && p.rgb[2] > p.rgb[1], "{p:?}");
+        // The same layer, dry by the time the ball is over it.
+        let (mut world, mut log, kit) = pickup_world(1.0, 0.1);
+        world.advance_to(1.0, &kit.sims, &mut log);
+        let mut dry = splat(Vec2::ZERO, 5000.0, BLUE);
+        dry.target = MarkTarget::Canvas(CANVAS);
+        let st = world.states.get_mut(&CANVAS).unwrap().as_any_mut().downcast_mut::<CanvasState>().unwrap();
+        st.grid.stamp(&dry, 0, 200);
+        world.advance_to(2.0, &kit.sims, &mut log);
+        assert!(world.picked.is_empty());
+    }
+
+    #[test]
+    fn pickup_never_takes_the_balls_own_paint() {
+        let (mut world, mut log, kit) = pickup_world(1.0, 4.0);
+        world.advance_to(3.0, &kit.sims, &mut log);
+        assert!(world.picked.is_empty());
+        assert!(log.marks().iter().any(|m| m.shape == MarkShape::Stroke));
+        assert!(log.marks().iter().all(|m| m.shape != MarkShape::Lift));
+    }
+
+    #[test]
+    fn pickup_tint_fades_over_pickup_fade() {
+        let (mut world, mut log, kit) = pickup_world(1.0, 4.0);
+        pour_blue(&mut world, MarkTarget::Canvas(CANVAS));
+        world.advance_to(0.2, &kit.sims, &mut log);
+        let p = world.picked[&crate::testing::BALLS][0];
+        let base = [1.0, 0.0, 0.0, 1.0];
+        let at = |w: &mut World, seconds: f32| {
+            w.step = p.step + (seconds * 240.0) as u64;
+            bpe_runtime::with_picked(w, crate::testing::BALLS, 0, base)
+        };
+        let full = p.shown(p.step, 240);
+        let half = at(&mut world, 1.0);
+        let want = p.shown(p.step + 240, 240);
+        assert!((want - (full - 0.5)).abs() < 1e-5);
+        for k in 0..3 {
+            assert!((half[k] - (base[k] + (p.rgb[k] - base[k]) * want)).abs() < 0.05, "{half:?}");
+        }
+        assert_eq!(at(&mut world, 3.0), base);
+    }
+
+    #[test]
+    fn later_trail_paints_the_mixed_colour() {
+        let (mut scene, _, kit) = painted(true, |p| {
+            p.set("paint_pickup", Value::Number(1.0));
+        });
+        let look = crate::testing::module_of(&scene, &kit.registry, crate::testing::BALLS, bpe_core::SlotId::Look);
+        let red = bpe_core::Color::rgb(255, 0, 0);
+        let p = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        p.set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, red])));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(0.1, &kit.sims, &mut log);
+        pour_blue(&mut world, MarkTarget::Canvas(CANVAS));
+        world.advance_to(1.5, &kit.sims, &mut log);
+        let mixed = log
+            .marks()
+            .iter()
+            .filter(|m| m.shape == MarkShape::Stroke)
+            .any(|m| m.colour[2] > 0.05 && m.colour[0] > 0.2);
+        assert!(mixed, "a stroke after the crossing is neither pure red nor pure blue");
+        assert!(log.marks().iter().filter(|m| m.shape == MarkShape::Stroke).take(3).all(|m| m.colour[2] < 0.01));
+    }
+
+    #[test]
+    fn pickup_lifts_paint() {
+        let (world, mut st) = rig(0.0, 0.0, 4.0);
+        let mut blob = splat(Vec2::ZERO, 30.0, BLUE);
+        blob.target = MarkTarget::Canvas(CANVAS);
+        st.grid.stamp(&blob, 0, 200);
+        let before = st.grid.clone();
+        let b = crate::modules::marks::MarksBrushes { paint_pickup: 1.0, ..Default::default() };
+        let cx =
+            Tick { target: MarkTarget::Canvas(CANVAS), world: &world, now: 1, per_second: 30.0, gravity: Vec2::ZERO };
+        let mut picked = BTreeMap::new();
+        let mut marks = Vec::new();
+        st.evolve = Evolve::new(4.0, 0.0, 0.0, 240);
+        pick_at(&cx, &mut st, Vec2::ZERO, 20.0, (crate::testing::BALLS, 0), &b, &mut picked, &mut marks);
+        assert_eq!(marks.len(), 1);
+        let lift = marks[0];
+        assert!(lift.shape == MarkShape::Lift && lift.radius_to > 0.0 && lift.radius_to <= 0.5, "{lift:?}");
+        let (w, h) = st.grid.dims();
+        let mut thinner = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let (old, new) = (before.get(x, y), st.grid.get(x, y));
+                assert_eq!(old.painted, new.painted);
+                assert!(new.amount <= old.amount);
+                thinner += (new.amount < old.amount) as u32;
+            }
+        }
+        assert!(thinner > 0);
+    }
+
+    #[test]
+    fn pickup_leaves_the_log_alone() {
+        let run = |pickup: f64| {
+            let (mut scene, _, kit) = painted(true, |p| p.set("paint_pickup", Value::Number(pickup)));
+            let ball = scene.things.get_mut(&crate::testing::BALLS).unwrap();
+            ball.params.set("arrangement", Value::Choice("block".into()));
+            ball.params.set("columns", Value::Int(3));
+            ball.params.set("rows", Value::Int(1));
+            ball.params.set("spacing", Value::Number(60.0));
+            let resolved = resolve(&scene, &kit.registry);
+            let (_, log) = crate::testing::run(&scene, &resolved, &kit, 20.0);
+            (log.len(), log.hash())
+        };
+        assert_eq!(run(0.6), run(0.0));
+    }
+
+    #[test]
+    fn skin_pickup_happens_at_hits() {
+        let kit = kit();
+        let build = |gravity: f64, velocity: [f64; 2]| {
+            let mut scene = crate::new_scene(&kit.registry);
+            let p = &mut scene.things.get_mut(&ARENA).unwrap().params;
+            p.set("skin_dry_time", Value::Number(6.0));
+            scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, gravity as f32]));
+            let ball = scene.things.get_mut(&crate::testing::BALLS).unwrap();
+            ball.transform.position = Vec2::ZERO;
+            ball.params.set("velocity", Value::Vec2([velocity[0] as f32, velocity[1] as f32]));
+            crate::testing::brushes(&mut scene, &kit, crate::testing::BALLS, |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("splat_on", Value::Bool(true));
+                p.set("paint_pickup", Value::Number(1.0));
+            });
+            let resolved = resolve(&scene, &kit.registry);
+            let mut world = World::build(&scene, &resolved, &kit.sims);
+            assert!(world.skins.contains_key(&ARENA));
+            pour_blue(&mut world, MarkTarget::Skin(ARENA));
+            world
+        };
+        let mut log = Log::default();
+        let mut world = build(900.0, [0.0, 0.0]);
+        world.advance_to(3.0, &kit.sims, &mut log);
+        assert!(!world.picked.is_empty());
+        assert!(log.marks().iter().any(|m| m.shape == MarkShape::Lift && m.target == MarkTarget::Skin(ARENA)));
+        // No gravity and no speed: no hits, nothing picked up (the known limit).
+        let mut log = Log::default();
+        let mut world = build(0.0, [0.0, 0.0]);
+        world.advance_to(3.0, &kit.sims, &mut log);
+        assert!(world.picked.is_empty());
+    }
+
+    #[test]
+    fn a_scene_without_marks_keeps_pickup_empty() {
+        let (scene, resolved, kit) = crate::testing::scene_with_balls("block", |_| {});
+        let (world, _) = crate::testing::run(&scene, &resolved, &kit, 5.0);
+        assert!(world.picked.is_empty() && world.pictures.is_empty() && world.skins.is_empty());
+        assert!(world.looks.is_empty());
     }
 }

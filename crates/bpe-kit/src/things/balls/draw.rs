@@ -35,10 +35,15 @@ pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + '
     let look = look_of(cx)?;
     let bodies = cx.world.bodies.get(&cx.thing.id)?;
     let look_color = colors(look, cx, bodies);
+    let (world, thing) = (cx.world, cx.thing.id);
     Some(move |i: usize| {
         let c = look_color(i);
-        let Some(t) = bodies.tint.get(i) else { return c };
-        [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]]
+        let tinted = match bodies.tint.get(i) {
+            Some(t) => [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]],
+            None => c,
+        };
+        // Paint picked up from wet paint goes over the rule's tint.
+        bpe_runtime::with_picked(world, thing, i, tinted)
     })
 }
 

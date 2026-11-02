@@ -14,7 +14,7 @@ use bpe_core::{GroupOpts, Params, SettingDef, SettingGroup, Settings, SlotId, Th
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Outline, Pose, Solid, World};
 use glam::Vec2;
 
-use super::evolve::{self, Evolve, Tick};
+use super::evolve::{self, Evolve, Tick, brush_of, pick_at};
 use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{CONTINUED, CONTINUES};
 use super::sim::{CanvasState, Colours, Stamp, hit_stamp, reaches, to_local};
@@ -409,19 +409,34 @@ pub fn build(thing: ThingId, world: &mut World) {
 pub fn after_step(thing: ThingId, world: &mut World, log: &mut Log) {
     let Some(mut boxed) = world.skins.remove(&thing) else { return };
     if let Some(st) = boxed.as_any_mut().downcast_mut::<CanvasState>() {
+        // A ball that hits wet paint picks some up first, and then leaves its own print, so the
+        // print is not mistaken for paint someone else laid. This happens whatever the tick does.
+        let hits: Vec<Event> = log.since(world.step).iter().filter(|e| is_hit_on(e, thing)).cloned().collect();
+        if st.evolve.dry_ticks > 0 && !hits.is_empty() {
+            let mut picked = std::mem::take(&mut world.picked);
+            let pose = pose_of(world, thing);
+            let cx = skin_tick(thing, world, st, pose);
+            let mut lifts = Vec::new();
+            for e in &hits {
+                let Some(b) = brush_of(world, e.a.thing).filter(|b| b.paint_pickup > 0.0) else { continue };
+                let Some(radius) = world.bodies.get(&e.a.thing).and_then(|b| b.radius.get(e.a.item as usize)) else {
+                    continue;
+                };
+                let ball = (e.a.thing, e.a.item as usize);
+                pick_at(&cx, st, to_local(pose, e.point), *radius, ball, b, &mut picked, &mut lifts);
+            }
+            world.picked = picked;
+            for m in lifts {
+                log.push_mark(m);
+            }
+        }
         for m in marks(thing, st, world, log) {
             log.push_mark(m);
         }
         if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
             let mut picked = std::mem::take(&mut world.picked);
             let pose = pose_of(world, thing);
-            let cx = Tick {
-                target: MarkTarget::Skin(thing),
-                world,
-                now: (world.step / st.tick_every) as u32,
-                per_second: world.steps_per_second as f32 / st.tick_every as f32,
-                gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
-            };
+            let cx = skin_tick(thing, world, st, pose);
             // The outline is only worked out while something can drip (peg grids are big).
             let outline = (st.evolve.drips > 0.0
                 && (!st.runners.is_empty() || !st.grid.wet_tiles(cx.now, st.evolve.dry_ticks).is_empty()))
@@ -433,6 +448,22 @@ pub fn after_step(thing: ThingId, world: &mut World, log: &mut Log) {
         }
     }
     world.skins.insert(thing, boxed);
+}
+
+/// What a tick on `thing`'s skin works with, in the thing's own frame.
+fn skin_tick<'a>(thing: ThingId, world: &'a World, st: &CanvasState, pose: Pose) -> Tick<'a> {
+    Tick {
+        target: MarkTarget::Skin(thing),
+        world,
+        now: (world.step / st.tick_every) as u32,
+        per_second: world.steps_per_second as f32 / st.tick_every as f32,
+        gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
+    }
+}
+
+/// Whether `e` is a hit on `thing`.
+fn is_hit_on(e: &Event, thing: ThingId) -> bool {
+    e.kind == EventKind::Hit && e.b.is_some_and(|b| b.thing == thing)
 }
 
 /// The marks this step's hits on `thing` leave on its skin.
