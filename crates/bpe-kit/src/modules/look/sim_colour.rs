@@ -6,7 +6,7 @@ use bpe_runtime::{Log, World};
 
 use super::BasicLook;
 use super::draw::{ball_inputs, for_balls, hue_shifted};
-use crate::paint::{beats_at, colour_at};
+use crate::paint::{Follow, beats_at, colour_at};
 
 /// The linear-light colour ball `i` of `thing` has right now under `look` (a Look slot's
 /// settings), with any tint a rule gave it laid over it as strongly as the tint's alpha says.
@@ -18,7 +18,8 @@ pub fn ball_colour_in_sim(look: &Params, world: &World, log: &Log, thing: ThingI
     let look = BasicLook::from_params(look);
     let fill = for_balls(look.fill);
     let time = world.time();
-    let beats = beats_at(log, time, world.steps_per_second);
+    // Only a fill that follows the beat needs the beats, and counting them scans the log.
+    let beats = if fill.follow == Follow::Beat { beats_at(log, time, world.steps_per_second) } else { 0.0 };
     let place = bodies.position.get(i).copied().unwrap_or_default();
     let inputs = ball_inputs(thing, bodies, i, world.camera.to_screen(place), time, beats);
     let base = colour_at(&fill, &inputs);

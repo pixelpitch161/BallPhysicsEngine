@@ -79,7 +79,7 @@ impl Default for ArenaSettings {
 }
 
 const SLOTS: &[SlotId] =
-    &[SlotId::Look, SlotId::Bounce, SlotId::Sound, SlotId::Particles, SlotId::Rules, SlotId::Shader];
+    &[SlotId::Look, SlotId::Bounce, SlotId::Sound, SlotId::Particles, SlotId::Rules, SlotId::Shader, SlotId::Marks];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Sound];
 
 impl ThingKind for ArenaKind {

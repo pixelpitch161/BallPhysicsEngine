@@ -66,6 +66,10 @@ pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
+pub use things::canvas::{
+    CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle, CanvasThingKind, Cell,
+    Fit, StartsAs, canvas_area,
+};
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
@@ -100,6 +104,7 @@ pub fn sims() -> Sims {
     s.add_thing(FolderSim);
     s.add_thing(ObstacleSim);
     s.add_thing(CameraSim);
+    s.add_thing(CanvasSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(RulesSim);
@@ -320,6 +325,7 @@ pub fn registry() -> Registry {
     r.add_thing(CameraKind);
     r.add_thing(LiquidKind);
     r.add_thing(SwarmKind);
+    r.add_thing(CanvasThingKind);
     r.add_module(BasicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);

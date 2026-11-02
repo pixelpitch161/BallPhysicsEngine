@@ -276,6 +276,12 @@ impl World {
         }
     }
 
+    /// The things the world steps, in the order it steps them: the tree order, parents before
+    /// children, with the things that need the walls last.
+    pub fn order(&self) -> &[ThingId] {
+        &self.order
+    }
+
     /// The kind of a thing the world built.
     pub fn kind_of(&self, id: ThingId) -> Option<&str> {
         self.kinds.get(&id).map(String::as_str)
