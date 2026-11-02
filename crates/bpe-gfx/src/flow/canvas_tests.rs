@@ -660,3 +660,135 @@ fn neon_glow_shows_past_a_skin_line_but_not_past_its_size() {
     assert!(off(8.0) >= 10, "near {}", off(8.0));
     assert!(off(30.0).abs() <= 2, "far {}", off(30.0));
 }
+
+/// A big opaque stroke across the middle, then (the next step) a ring chip and a half-strength
+/// scrape on it.
+fn wiped(step: u64) -> Vec<Mark> {
+    match step {
+        1 => vec![mark(1, S::Stroke, v(-300.0, 0.0), v(300.0, 0.0), 100.0)],
+        2 => {
+            let mut chip = mark(2, S::Chip, v(0.0, 0.0), v(0.0, 0.0), 60.0);
+            chip.variant = 1 << 5;
+            chip.colour = [0.0, 0.0, 0.0, 1.0];
+            chip.colour_to = chip.colour;
+            let mut scrape = mark(2, S::Scrape, v(-150.0, 70.0), v(150.0, 70.0), 8.0);
+            scrape.colour = [0.0, 0.0, 0.0, 0.5];
+            scrape.colour_to = scrape.colour;
+            vec![chip, scrape]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn stroked(step: u64) -> Vec<Mark> {
+    if step == 1 { wiped(1) } else { Vec::new() }
+}
+
+#[test]
+fn a_wipe_takes_paint_away() {
+    let Some((device, queue)) = gpu() else { return };
+    let (before, aux_before, body_before) = run(&device, &queue, stroked, 0.1);
+    let (after, aux_after, body_after) = run(&device, &queue, wiped, 0.1);
+    // The ring line (0.85 r = 51 px from the middle) is clear; the ring's middle is not.
+    assert!(texel(&after, v(51.5, 0.5))[3] < 0.05, "{:?}", texel(&after, v(51.5, 0.5)));
+    assert!(texel(&after, v(0.5, 0.5))[3] > 0.99);
+    // Half strength leaves half.
+    let half = texel(&after, v(0.5, 70.5))[3];
+    assert!((half - 0.5).abs() < 0.02, "{half}");
+    assert!((body_at(&body_after, v(0.5, 70.5)) / body_at(&body_before, v(0.5, 70.5)) - 0.5).abs() < 0.03);
+    // Elsewhere nothing changed, and the time painted is untouched everywhere.
+    for p in [v(0.5, -80.5), v(120.5, 30.5), v(-120.5, -30.5)] {
+        assert_eq!(texel(&after, p), texel(&before, p), "{p}");
+    }
+    assert!(aux_before == aux_after, "wipes never re-date paint");
+}
+
+fn wiping(step: u64) -> Vec<Mark> {
+    let mut out = busy(step);
+    if step.is_multiple_of(9) {
+        let at = v(((step * 41) % 300) as f32 - 150.0, ((step * 29) % 300) as f32 - 150.0);
+        let mut chip = mark(step, S::Chip, at, at, 30.0);
+        chip.variant = ((step % 6) as u8) << 5 | (step % 8) as u8;
+        chip.angle = step as f32 * 0.3;
+        chip.colour = [0.0, 0.0, 0.0, 0.8];
+        chip.colour_to = chip.colour;
+        out.push(chip);
+    }
+    if step.is_multiple_of(7) {
+        let mut scrape = mark(step, S::Scrape, v(-150.0, (step % 300) as f32 - 150.0), v(150.0, 0.0), 10.0);
+        scrape.radius_to = 4.0;
+        scrape.colour = [0.0, 0.0, 0.0, 0.6];
+        scrape.colour_to = scrape.colour;
+        out.push(scrape);
+    }
+    out
+}
+
+#[test]
+fn seeking_back_over_wipes_restores_bit_for_bit() {
+    let Some((device, queue)) = gpu() else { return };
+    let (scene, resolved) = tiny_scene();
+    let mut sims = Sims::default();
+    sims.add_thing(Marking(wiping));
+    let mut frame = Frame::default();
+    frame.canvases.push(canvas_layer());
+    let source = canvas_source(&scene, &resolved, &sims);
+    let mut flow = FlowLayers::new(&device);
+    flow.prepare(&device, &queue, &frame, &source);
+    flow.step_to(&device, &queue, 5.0, &source);
+    let first = read(&device, &queue, &flow);
+    flow.step_to(&device, &queue, 1.0, &source);
+    flow.step_to(&device, &queue, 5.0, &source);
+    assert!(first == read(&device, &queue, &flow), "seeking back and forth gives the same canvas");
+    let (_, straight) = flow_for(&device, &queue, &sims, 5.0);
+    assert!(first == straight, "and the same as running straight");
+}
+
+/// The rotation `fs_stamp` puts a mark's turned frame through.
+fn turned(o: Vec2, angle: f32) -> Vec2 {
+    let (c, s) = (angle.cos(), angle.sin());
+    Vec2::new(c * o.x + s * o.y, -s * o.x + c * o.y)
+}
+
+#[test]
+fn rust_chip_shapes_match_the_stamp_shader() {
+    let Some((device, queue)) = gpu() else { return };
+    let angle = 0.7;
+    let shapes = [S::Splat, S::Ring, S::Star, S::Crack, S::Burst, S::Dots];
+    for (index, shape) in shapes.into_iter().enumerate() {
+        let variants: &[u8] = if index == 0 { &[0, 5, 13, 26] } else { &[0, 3, 5, 7] };
+        for &variant in variants {
+            let mut sims = Sims::default();
+            sims.add_thing(Marking(|step| {
+                // The mark is rebuilt per test below through the statics; see `STAMPED`.
+                STAMPED.with(|s| if step == 1 { vec![s.get().unwrap()] } else { Vec::new() })
+            }));
+            let mut m = mark(1, shape, v(0.0, 0.0), v(0.0, 0.0), 60.0);
+            m.angle = angle;
+            m.variant = variant;
+            STAMPED.with(|s| s.set(Some(m)));
+            let (paint, _, _) = flow_for(&device, &queue, &sims, 0.1).1;
+            let mut checked = 0;
+            for y in 0..SIDE {
+                for x in 0..SIDE {
+                    let p = v(x as f32 + 0.5 - SIDE as f32 / 2.0, y as f32 + 0.5 - SIDE as f32 / 2.0);
+                    let d = crate::chip_distance(index as u32, turned(p, angle), 60.0, variant as u32);
+                    let alpha = texel(&paint, p)[3];
+                    if d < -1.5 {
+                        assert!(alpha > 0.9, "{shape:?} variant {variant}: inside at {p} (d {d}) has alpha {alpha}");
+                        checked += 1;
+                    } else if d > 1.5 {
+                        assert!(alpha < 0.1, "{shape:?} variant {variant}: outside at {p} (d {d}) has alpha {alpha}");
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 1000, "{shape:?} {variant}");
+        }
+    }
+}
+
+thread_local! {
+    /// The one mark `rust_chip_shapes_match_the_stamp_shader` is stamping.
+    static STAMPED: std::cell::Cell<Option<Mark>> = const { std::cell::Cell::new(None) };
+}

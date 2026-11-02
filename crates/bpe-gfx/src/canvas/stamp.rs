@@ -77,11 +77,28 @@ impl MarkGpu {
     }
 }
 
+/// Which pipeline draws a mark.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Stamp,
+    Lift,
+    Wipe,
+}
+
+fn pass_of(shape: MarkShape) -> Pass {
+    match shape {
+        MarkShape::Lift => Pass::Lift,
+        MarkShape::Scrape | MarkShape::Chip => Pass::Wipe,
+        _ => Pass::Stamp,
+    }
+}
+
 /// The stamp pipeline every canvas shares.
 pub(crate) struct StampPipeline {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     lift: wgpu::RenderPipeline,
+    wipe: wgpu::RenderPipeline,
     bleed_layout: wgpu::BindGroupLayout,
     bleed: wgpu::RenderPipeline,
 }
@@ -189,6 +206,27 @@ impl StampPipeline {
             multiview_mask: None,
             cache: None,
         });
+        // A scrape or chip scales the paint and thickness under it like a lift does.
+        let wipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("canvas wipe"),
+            layout: Some(&pipeline_layout),
+            vertex: mark_vertex(&module, "vs_stamp"),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: depth(false, wgpu::CompareFunction::Always),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_wipe"),
+                compilation_options: Default::default(),
+                targets: &[
+                    target(format, Some(SCALE), all),
+                    target(format, None, wgpu::ColorWrites::empty()),
+                    target(body, Some(SCALE), all),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let bleed_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("canvas bleed layout"),
             entries: &[
@@ -220,7 +258,7 @@ impl StampPipeline {
             multiview_mask: None,
             cache: None,
         });
-        Self { layout, pipeline, lift, bleed_layout, bleed }
+        Self { layout, pipeline, lift, wipe, bleed_layout, bleed }
     }
 }
 
@@ -423,12 +461,16 @@ impl CanvasGpu {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_vertex_buffer(0, self.marks.slice(..));
-            // Runs of stamps and of lifts, drawn one after the other.
+            // Runs of stamps, lifts and wipes, drawn one after the other.
             let mut i = 0;
             while i < body.len() {
-                let lift = body[i].shape == MarkShape::Lift;
-                let n = body[i..].iter().take_while(|m| (m.shape == MarkShape::Lift) == lift).count();
-                pass.set_pipeline(if lift { &pipeline.lift } else { &pipeline.pipeline });
+                let kind = pass_of(body[i].shape);
+                let n = body[i..].iter().take_while(|m| pass_of(m.shape) == kind).count();
+                pass.set_pipeline(match kind {
+                    Pass::Stamp => &pipeline.pipeline,
+                    Pass::Lift => &pipeline.lift,
+                    Pass::Wipe => &pipeline.wipe,
+                });
                 pass.draw(0..4, base + i as u32..base + (i + n) as u32);
                 i += n;
             }
