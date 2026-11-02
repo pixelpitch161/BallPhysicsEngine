@@ -62,6 +62,39 @@ pub enum Turn {
     Random,
 }
 
+/// What a hit's splat lands on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum SplatOnto {
+    /// The wall or obstacle that was hit, on its own paint skin.
+    #[default]
+    ThingHit,
+    /// The canvases that take this brush.
+    Canvases,
+    /// Both the thing hit and the canvases.
+    Both,
+}
+
+impl SplatOnto {
+    /// Whether splats land on the skin of the thing hit.
+    pub fn things(self) -> bool {
+        self != SplatOnto::Canvases
+    }
+    /// Whether splats land on canvases.
+    pub fn canvases(self) -> bool {
+        self != SplatOnto::ThingHit
+    }
+}
+
+/// How a splat paints the skin of the thing it hits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum SplatSkin {
+    /// The splat's shape, printed where the hit was.
+    #[default]
+    Print,
+    /// Colour smeared along the surface on both sides of the hit.
+    Spread,
+}
+
 /// Where the colour of the marks comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum MarkColour {
@@ -129,6 +162,12 @@ pub struct MarksBrushes {
     /// The slowest hit that leaves a splat.
     #[setting(label = "Hit speed", when = "splat_on", range(0, 2000), unit = "px/s", group = "Splat")]
     pub splat_min_speed: f32,
+    /// Whether the splat goes on the wall or obstacle that was hit, on the canvases, or both.
+    #[setting(label = "Lands on", when = "splat_on", group = "Splat")]
+    pub splat_onto: SplatOnto,
+    /// How a splat paints the thing it hits: its shape printed there, or spread along the surface.
+    #[setting(label = "Skin look", when = "splat_on and splat_onto!=canvases", group = "Splat")]
+    pub splat_skin: SplatSkin,
     /// The ball's own colour, or the Colours below.
     #[setting(label = "Colour from", group = "Colours", simple, random)]
     pub colour_from: MarkColour,
@@ -164,6 +203,8 @@ impl Default for MarksBrushes {
             splat_turn: Turn::FaceHit,
             splat_variants: 4,
             splat_min_speed: 50.0,
+            splat_onto: SplatOnto::ThingHit,
+            splat_skin: SplatSkin::Print,
             colour_from: MarkColour::Ball,
             colour: Paint { follow: Follow::Place, ..Paint::solid(Color::WHITE) },
         }
@@ -178,7 +219,7 @@ impl ModuleKind for MarksBrushesKind {
         "Brushes"
     }
     fn help(&self) -> &'static str {
-        "Paints a trail behind the thing and stamps a splat where it hits, on the canvases that ask for it."
+        "Paints a trail behind the thing, on the canvases that ask for it, and stamps a splat where it hits, on the thing it hits or on the canvases."
     }
     fn slot(&self) -> SlotId {
         SlotId::Marks

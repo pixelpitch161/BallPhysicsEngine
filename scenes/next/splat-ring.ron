@@ -156,6 +156,7 @@
                 params: {
                     "paint_on": Bool(false),
                     "splat_on": Bool(true),
+                    "splat_onto": Choice("canvases"),
                     "splat_size": Number(60.0),
                 },
                 owner: Some(2),

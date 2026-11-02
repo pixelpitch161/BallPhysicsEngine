@@ -8,6 +8,8 @@ pub use sim::{ObstacleSim, ObstacleState, parts, path_offset};
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
+use crate::things::canvas::SkinSettings;
+
 pub struct ObstacleKind;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -74,6 +76,9 @@ pub struct ObstacleSettings {
     /// Peg grid: shift every other row by half a step, like a Plinko board.
     #[setting(label = "Stagger", when = "shape=peg_grid", group = "Shape details")]
     pub stagger: bool,
+    /// How the obstacle takes the paint of splats that hit it.
+    #[setting(paint, label = "Paint skin", group = "Paint skin")]
+    pub skin: SkinSettings,
 }
 
 impl Default for ObstacleSettings {
@@ -93,6 +98,7 @@ impl Default for ObstacleSettings {
             rows: 9,
             spacing: 90.0,
             stagger: true,
+            skin: SkinSettings::default(),
         }
     }
 }

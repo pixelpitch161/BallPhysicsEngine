@@ -216,6 +216,7 @@ fn riding_canvas_turns_its_marks() {
     brushes(&mut scene, &kit, obstacle, |p| {
         p.set("paint_on", Value::Bool(false));
         p.set("splat_on", Value::Bool(true));
+        p.set("splat_onto", Value::Choice("canvases".into()));
         p.set("splat_min_speed", Value::Number(0.0));
         // Green, unlike the white bar under it.
         p.set("colour_from", Value::Choice("own".into()));

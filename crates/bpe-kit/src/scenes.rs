@@ -23,8 +23,9 @@ use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion,
     BeatSync, BurstSource, CanvasLayerPos, CanvasSettings, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings,
     FieldShape, Fit, Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound,
-    ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatShape,
-    StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene, recipes,
+    ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatOnto,
+    SplatShape, StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene,
+    recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -1768,6 +1769,7 @@ fn splat_ring(reg: &Registry) -> Scene {
         paint_on: false,
         splat_on: true,
         splat_shape: SplatShape::Splat,
+        splat_onto: SplatOnto::Canvases,
         splat_turn: Turn::FaceHit,
         splat_size: 60.0,
         ..MarksBrushes::default()

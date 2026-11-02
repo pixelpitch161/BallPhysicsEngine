@@ -84,6 +84,9 @@ pub trait ThingSim: Send + Sync + 'static {
     fn kind(&self) -> &'static str;
     /// Puts the thing into the world: its bodies, its wall, its state.
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
+    /// Runs once every thing is built, in the world's order, for what depends on the whole
+    /// scene: a wall's paint skin waits for brushes that splat onto the things they hit.
+    fn after_build(&self, _thing: ThingId, _world: &mut World) {}
     /// Whether `build` reads the walls other things put into the world. Such things are built
     /// after everything else, whatever their place in the tree.
     fn needs_walls(&self) -> bool {
@@ -108,6 +111,12 @@ pub trait ThingSim: Send + Sync + 'static {
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {
         true
+    }
+    /// Whether changing this setting changes the marks the simulation makes (a wall's paint
+    /// skin) without changing the physics. Such settings count in the fingerprint only when the
+    /// scene has a Marks module.
+    fn affects_marks(&self, _key: &str) -> bool {
+        false
     }
 }
 

@@ -3,8 +3,10 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
-use bpe_runtime::{Outline, Pose, ThingSim, Wall, World, state_mut};
+use bpe_runtime::{Log, Outline, Pose, ThingSim, Wall, World, state_mut};
 use glam::Vec2;
+
+use crate::things::canvas::skin;
 
 use super::{ArenaSettings, ArenaShape};
 
@@ -145,8 +147,23 @@ impl ThingSim for ArenaSim {
         );
     }
 
-    fn affects_physics(&self, _key: &str) -> bool {
-        true
+    fn after_build(&self, thing: ThingId, world: &mut World) {
+        skin::build(thing, world);
+    }
+
+    fn after_step(&self, thing: ThingId, world: &mut World, log: &mut Log) {
+        skin::after_step(thing, world, log);
+    }
+
+    // The paint skin is the marks', never the physics'.
+    fn affects_physics(&self, key: &str) -> bool {
+        !key.starts_with("skin_")
+    }
+
+    // Whether there is a skin and how far its line paint reaches; its fade and opacity are
+    // the picture's.
+    fn affects_marks(&self, key: &str) -> bool {
+        matches!(key, "skin_on" | "skin_width")
     }
 }
 

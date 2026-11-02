@@ -116,17 +116,23 @@ struct Cx<'a> {
     pose: Pose,
     world: &'a World,
     log: &'a Log,
-    /// The looks of the balls marked this step, read once each (`None` when unknown).
-    looks: BTreeMap<ThingId, Option<SimLook>>,
+    colours: Colours<'a>,
     /// The marks made so far, in order.
     out: Vec<Mark>,
+}
+
+/// The colours marks take, with the looks of the balls marked this step read once each.
+pub(crate) struct Colours<'a> {
+    world: &'a World,
+    /// `None` when the ball's look is unknown.
+    looks: BTreeMap<ThingId, Option<SimLook>>,
 }
 
 /// This step's marks on `canvas`, already stamped into its grid: every matching brush's strokes
 /// (60 times a second) and splats, brushes in the world's order.
 fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<Mark> {
     let pose = world.poses.get(&canvas).copied().unwrap_or_default();
-    let mut cx = Cx { canvas, pose, world, log, looks: BTreeMap::new(), out: Vec::new() };
+    let mut cx = Cx { canvas, pose, world, log, colours: Colours::new(world), out: Vec::new() };
     let paint_now = world.step.is_multiple_of(st.every);
     for &thing in world.order() {
         let Some((_, brush)) = world.module_state(thing, SlotId::Marks) else { continue };
@@ -137,7 +143,7 @@ fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec
         if b.paint_on && paint_now {
             cx.strokes(st, thing, b);
         }
-        if b.splat_on {
+        if b.splat_on && b.splat_onto.canvases() {
             cx.splats(st, thing, b);
         }
     }
@@ -145,13 +151,13 @@ fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec
 }
 
 /// `p` in canvas pixels: from the canvas's middle, before the canvas turns.
-fn to_local(pose: Pose, p: Vec2) -> Vec2 {
+pub(crate) fn to_local(pose: Pose, p: Vec2) -> Vec2 {
     Vec2::from_angle(-pose.angle).rotate(p - pose.position)
 }
 
 /// Whether a capsule of `radius` around the segment `a`..`b` (canvas pixels) may reach onto a
 /// canvas of `size`: the segment against the canvas grown by the radius.
-fn reaches(size: Vec2, a: Vec2, b: Vec2, radius: f32) -> bool {
+pub(crate) fn reaches(size: Vec2, a: Vec2, b: Vec2, radius: f32) -> bool {
     let half = size * 0.5 + Vec2::splat(radius.max(0.0));
     // Clip the segment to the box one axis at a time (Liang-Barsky).
     let d = b - a;
@@ -177,15 +183,19 @@ fn reaches(size: Vec2, a: Vec2, b: Vec2, radius: f32) -> bool {
 }
 
 /// A grid cell fully painted in a linear-light colour.
-fn cell_of(colour: [f32; 4]) -> Cell {
+pub(crate) fn cell_of(colour: [f32; 4]) -> Cell {
     let c = Color::from_linear(colour);
     Cell { rgb: [c.r, c.g, c.b], amount: 255, ..Cell::default() }
 }
 
-impl Cx<'_> {
+impl<'a> Colours<'a> {
+    pub(crate) fn new(world: &'a World) -> Self {
+        Colours { world, looks: BTreeMap::new() }
+    }
+
     /// The colour ball `i` of `thing` marks with under brush `b`: its own colour when the brush
     /// says Ball and the ball's look is known, else the brush's own Colours.
-    fn colour(&mut self, b: &MarksBrushes, thing: ThingId, i: usize) -> [f32; 4] {
+    pub(crate) fn of(&mut self, b: &MarksBrushes, thing: ThingId, i: usize) -> [f32; 4] {
         let world = self.world;
         if b.colour_from == MarkColour::Ball
             && let Some(look) =
@@ -205,7 +215,9 @@ impl Cx<'_> {
         };
         colour_at(&b.colour, &inputs)
     }
+}
 
+impl Cx<'_> {
     /// Each living ball of `thing` that may paint: its ribbon grows from its last point to where
     /// it is now, in short smooth pieces, or ends when the ball stops painting or dies.
     fn strokes(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
@@ -270,7 +282,7 @@ impl Cx<'_> {
             if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
                 continue;
             }
-            let colour = *colour.get_or_insert_with(|| self.colour(b, thing, item as usize));
+            let colour = *colour.get_or_insert_with(|| self.colours.of(b, thing, item as usize));
             st.grid.stamp_capsule(p.from, p.to, (p.radius + p.radius_to) * 0.5, cell_of(colour));
             self.out.push(Mark {
                 step: self.world.step,
@@ -292,14 +304,6 @@ impl Cx<'_> {
 
     /// A splat at each of this step's hits that `thing` made or took, fast enough to count.
     fn splats(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
-        let shape = match b.splat_shape {
-            SplatShape::Splat => MarkShape::Splat,
-            SplatShape::Ring => MarkShape::Ring,
-            SplatShape::Star => MarkShape::Star,
-            SplatShape::Crack => MarkShape::Crack,
-            SplatShape::Burst => MarkShape::Burst,
-            SplatShape::Dots => MarkShape::Dots,
-        };
         let (world, log) = (self.world, self.log);
         for e in log.since(world.step) {
             let ours = e.a.thing == thing || e.b.is_some_and(|p| p.thing == thing);
@@ -307,24 +311,12 @@ impl Cx<'_> {
                 continue;
             }
             let at = to_local(self.pose, e.point);
-            let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
-            let (radius, angle, variant) =
-                splat_look(e, mover, b.splat_size, b.splat_by_speed, b.splat_variants, b.splat_turn, self.pose.angle);
+            let Stamp { shape, radius, angle, variant } = hit_stamp(world, e, b, self.pose.angle);
             if !reaches(st.size, at, at, radius) {
                 continue;
             }
-            // Only a splat leans with the ball and squashes; the other shapes face the hit.
-            let (angle, variant) = if shape == MarkShape::Splat {
-                (angle, variant)
-            } else {
-                let angle = match b.splat_turn {
-                    Turn::FaceHit => e.normal.y.atan2(e.normal.x) - self.pose.angle,
-                    Turn::Random => angle,
-                };
-                (angle, variant & 7)
-            };
             // The mover's colour, whoever owns the brush.
-            let colour = self.colour(b, e.a.thing, e.a.item as usize);
+            let colour = self.colours.of(b, e.a.thing, e.a.item as usize);
             st.grid.stamp_disc(at, radius, cell_of(colour));
             self.out.push(Mark {
                 step: world.step,
@@ -342,6 +334,41 @@ impl Cx<'_> {
             });
         }
     }
+}
+
+/// The stamp brush `b` leaves for hit `e` in a frame turned by `pose_angle`.
+pub(crate) struct Stamp {
+    pub shape: MarkShape,
+    pub radius: f32,
+    pub angle: f32,
+    pub variant: u8,
+}
+
+/// The stamp brush `b` leaves for hit `e`, in the frame of a thing turned by `pose_angle`: its
+/// shape, size, turn and variant. Only a splat leans with the ball and squashes; the other
+/// shapes face the hit.
+pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> Stamp {
+    let shape = match b.splat_shape {
+        SplatShape::Splat => MarkShape::Splat,
+        SplatShape::Ring => MarkShape::Ring,
+        SplatShape::Star => MarkShape::Star,
+        SplatShape::Crack => MarkShape::Crack,
+        SplatShape::Burst => MarkShape::Burst,
+        SplatShape::Dots => MarkShape::Dots,
+    };
+    let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+    let (radius, angle, variant) =
+        splat_look(e, mover, b.splat_size, b.splat_by_speed, b.splat_variants, b.splat_turn, pose_angle);
+    let (angle, variant) = if shape == MarkShape::Splat {
+        (angle, variant)
+    } else {
+        let angle = match b.splat_turn {
+            Turn::FaceHit => e.normal.y.atan2(e.normal.x) - pose_angle,
+            Turn::Random => angle,
+        };
+        (angle, variant & 7)
+    };
+    Stamp { shape, radius, angle, variant }
 }
 
 /// How fast a hit squashes its splat at least (level 1 at 1000 px/s) and at most (level 3).
@@ -793,7 +820,10 @@ mod tests {
     #[test]
     fn fast_hits_squash_their_splat() {
         let level = |speed: f32| splat_look(&hit(speed, Vec2::Y), None, 30.0, 0.0, 4, Turn::FaceHit, 0.0).2 >> 3;
-        assert_eq!([level(100.0), level(599.0), level(1000.0), level(1400.0), level(1800.0), level(5000.0)], [0, 0, 1, 2, 3, 3]);
+        assert_eq!(
+            [level(100.0), level(599.0), level(1000.0), level(1400.0), level(1800.0), level(5000.0)],
+            [0, 0, 1, 2, 3, 3]
+        );
         let (_, _, v) = splat_look(&hit(1800.0, Vec2::Y), None, 30.0, 0.0, 4, Turn::FaceHit, 0.0);
         assert!(v & 7 < 4);
     }
@@ -803,6 +833,7 @@ mod tests {
         let (scene, resolved, kit) = painted(true, |p| {
             p.set("paint_on", Value::Bool(false));
             p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
             p.set("splat_min_speed", Value::Number(200.0));
         });
         let (w, log) = run(&scene, &resolved, &kit, 6.0);
@@ -842,6 +873,7 @@ mod tests {
         brushes(&mut scene, &kit, OBSTACLE, |p| {
             p.set("paint_on", Value::Bool(false));
             p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
             p.set("splat_min_speed", Value::Number(0.0));
         });
         let resolved = resolve(&scene, &kit.registry);
@@ -961,7 +993,10 @@ mod tests {
     fn no_canvas_no_marks() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        brushes(&mut scene, &kit, BALLS, |p| p.set("splat_on", Value::Bool(true)));
+        brushes(&mut scene, &kit, BALLS, |p| {
+            p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
+        });
         let resolved = resolve(&scene, &kit.registry);
         let (_, log) = run(&scene, &resolved, &kit, 2.0);
         assert!(log.marks().is_empty());
@@ -982,6 +1017,7 @@ mod tests {
         brushes(&mut scene, &kit, ARENA, |p| {
             p.set("paint_on", Value::Bool(false));
             p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
             p.set("splat_min_speed", Value::Number(200.0));
         });
         let resolved = resolve(&scene, &kit.registry);
@@ -999,6 +1035,7 @@ mod tests {
         brushes(&mut scene, &kit, OBSTACLE, |p| {
             p.set("paint_on", Value::Bool(false));
             p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
             p.set("splat_min_speed", Value::Number(1.0));
         });
         let look = module_of(&scene, &kit.registry, BALLS, SlotId::Look);
@@ -1028,6 +1065,7 @@ mod tests {
     fn busy() -> (Scene, Resolved, Kit) {
         painted(true, |p| {
             p.set("splat_on", Value::Bool(true));
+            p.set("splat_onto", Value::Choice("canvases".into()));
             p.set("splat_turn", Value::Choice("random".into()));
         })
     }

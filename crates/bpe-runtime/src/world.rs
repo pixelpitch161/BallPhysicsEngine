@@ -66,6 +66,11 @@ pub struct World {
     /// module, so marks can take the balls' colours in the simulation. Only then do looks count
     /// in the fingerprint.
     pub looks: BTreeMap<ThingId, Params>,
+    /// The paint skin of every arena and obstacle that takes paint, kept only when some brush
+    /// splats onto the things it hits: the skin's state (a canvas held by the thing, in the
+    /// thing's own frame), written by the thing's sim. Cloned with the world, so checkpoints
+    /// rewind it.
+    pub skins: BTreeMap<ThingId, Box<dyn ThingState>>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
     /// Where the balls of a thing have been, for the things whose sim asked for it (trails).
@@ -150,6 +155,7 @@ impl World {
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
             looks: BTreeMap::new(),
+            skins: BTreeMap::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
@@ -215,6 +221,12 @@ impl World {
                 if !prepared.is_empty() {
                     world.modules.insert(*id, prepared);
                 }
+            }
+        }
+        // Everything is there now: things that depend on the whole scene finish building.
+        for id in world.order.clone() {
+            if let Some(sim) = world.kinds.get(&id).and_then(|kind| sims.thing(kind)) {
+                sim.after_build(id, &mut world);
             }
         }
         world.animated = physics_animation(scene, resolved, sims)
@@ -791,7 +803,7 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics(key) {
+                if sim.affects_physics(key) || (any_marks && sim.affects_marks(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
