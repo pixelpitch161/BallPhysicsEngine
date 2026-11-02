@@ -179,6 +179,43 @@ pub struct FlashInstance {
     pub color: [f32; 4],
 }
 
+/// Where a canvas is drawn among the scene's things.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CanvasPlace {
+    /// Right after the background, under everything else.
+    BehindEverything,
+    /// After the walls and soft bodies, under the liquids and the balls.
+    #[default]
+    BehindBalls,
+    /// Over everything in the scene, under the text.
+    OnTop,
+}
+
+/// A canvas thing's picture: a rectangle of the world its marks are painted on, drawn at its
+/// place with its style. The marks themselves live in the renderer's canvas textures.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanvasLayer {
+    pub thing: ThingId,
+    /// The rectangle's centre in world pixels.
+    pub center: [f32; 2],
+    /// The rectangle's turn in radians.
+    pub angle: f32,
+    /// The rectangle's width and height in world pixels.
+    pub size: [f32; 2],
+    /// The textures' size: `size` times the detail, the long side at most 4096.
+    pub texels: [u32; 2],
+    pub place: CanvasPlace,
+    /// Linear light: the colour the canvas starts as, shown under the marks. None: clear.
+    pub start: Option<[f32; 4]>,
+    /// Seconds a mark takes to fade away; 0 keeps marks for good.
+    pub fade: f32,
+    pub blend: Blend,
+    /// 0 to 1.
+    pub opacity: f32,
+    /// The scene time in seconds, which the fade counts from the time each mark was painted.
+    pub time: f32,
+}
+
 /// A liquid thing's particles, drawn as one surface. A CPU liquid sends its points every frame;
 /// a GPU liquid describes itself and the renderer steps it (see [`crate::flow`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -599,6 +636,8 @@ pub struct Frame {
     pub flashes: Vec<FlashInstance>,
     pub liquids: Vec<LiquidLayer>,
     pub swarms: Vec<SwarmLayer>,
+    /// Canvases, each drawn at its own place. Only the top frame's are drawn.
+    pub canvases: Vec<CanvasLayer>,
     /// Triangles, three vertices each, drawn between the walls and the balls.
     pub soft: Vec<SoftVertex>,
     /// Text, drawn last.
@@ -718,6 +757,7 @@ impl Default for Frame {
             flashes: Vec::new(),
             liquids: Vec::new(),
             swarms: Vec::new(),
+            canvases: Vec::new(),
             soft: Vec::new(),
             glyphs: Vec::new(),
             looks: Vec::new(),
@@ -744,6 +784,7 @@ impl Frame {
         self.flashes.clear();
         self.liquids.clear();
         self.swarms.clear();
+        self.canvases.clear();
         self.soft.clear();
         self.glyphs.clear();
         self.looks.clear();

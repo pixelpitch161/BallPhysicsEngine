@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Outline, Sims, World};
 
+use crate::canvas::CanvasTextures;
 use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
 use inputs::{Inputs, step_inputs};
 use liquid::{LiquidGpu, LiquidPipelines};
@@ -244,6 +245,12 @@ impl FlowLayers {
             Layer::Liquid(l) => Some(l),
             Layer::Swarm(_) => None,
         }
+    }
+
+    /// The textures `thing`'s canvas marks are painted into; `None` until its layer runs.
+    pub fn canvas_textures(&self, _thing: ThingId) -> Option<&CanvasTextures> {
+        // The canvas layers arrive with the next task, which fills this in.
+        None
     }
 
     /// Where a GPU liquid's particles are, for the surface pass; `None` when the frame's
