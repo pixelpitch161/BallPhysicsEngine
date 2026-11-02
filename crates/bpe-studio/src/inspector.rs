@@ -3996,4 +3996,55 @@ mod tests {
         rows_under(&h, "Splat", None, &["Lands on"]);
         assert!(h.query_all_by_label("Skin look").next().is_none(), "Skin look shows for canvases");
     }
+
+    #[test]
+    fn a_canvas_shows_its_style_knobs() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let canvas = bpe_kit::add_thing(&mut scene, &reg, "canvas", ThingId::ROOT).unwrap();
+        scene.things.get_mut(&canvas).unwrap().params.set("style", Value::Choice("wet_paint".into()));
+        let h = harness_of(scene.clone(), Some(canvas));
+        rows_under(&h, "Look", Some("Over time"), &["Style", "Light angle", "Gloss"]);
+        rows_under(&h, "Over time", None, &["Dry time", "Bleed", "Drips", "Fade"]);
+        scene.things.get_mut(&canvas).unwrap().params.set("style", Value::Choice("watercolour".into()));
+        let h = harness_of(scene, Some(canvas));
+        rows_under(&h, "Look", Some("Over time"), &["Style", "Grain", "Edge darkening"]);
+        assert!(h.query_all_by_label("Gloss").next().is_none(), "Gloss shows for watercolour");
+    }
+
+    #[test]
+    fn an_arena_skin_shows_its_style_and_drying() {
+        let reg = bpe_kit::registry();
+        let scene = bpe_kit::new_scene(&reg);
+        let h = harness_of(scene, Some(ThingId(1)));
+        rows_under(
+            &h,
+            "Paint skin",
+            None,
+            &["Takes paint", "Skin width", "Fade", "Opacity", "Style", "Dry time", "Bleed", "Drips"],
+        );
+    }
+
+    #[test]
+    fn a_marks_card_shows_pickup_and_picture_rows() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Marks).unwrap();
+        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone() else {
+            panic!("the ball's marks are linked")
+        };
+        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
+        params.set("paint_on", Value::Bool(false));
+        let h = harness_of(scene.clone(), Some(ThingId(2)));
+        assert!(h.query_all_by_label("Pickup").next().is_some(), "Pickup shows with the trail off");
+        assert!(h.query_all_by_label("Pickup fade").next().is_none(), "Pickup fade shows with no pickup");
+        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
+        params.set("paint_pickup", Value::Number(0.5));
+        params.set("splat_on", Value::Bool(true));
+        params.set("splat_shape", Value::Choice("picture".into()));
+        let h = harness_of(scene, Some(ThingId(2)));
+        assert!(h.query_all_by_label("Pickup fade").next().is_some());
+        rows_under(&h, "Splat", None, &["Picture", "Picture colours"]);
+        assert!(h.query_all_by_label("Browse Picture").next().is_some(), "a Browse button for the picture");
+    }
 }
