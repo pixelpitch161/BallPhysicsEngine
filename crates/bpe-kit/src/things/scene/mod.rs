@@ -13,6 +13,9 @@ use glam::Vec2;
 
 pub struct SceneKind;
 
+/// The root's inspector cards, in order. Every scene setting's `group` is one of these.
+pub const ROOT_CARDS: [&str; 6] = ["Video", "World", "Background", "Picture", "Music", "Mix"];
+
 /// How hits and the beat are brought together.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum BeatSync {
@@ -37,121 +40,122 @@ pub enum Clip {
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SceneSettings {
-    /// How long the video runs.
-    #[setting(label = "Length", range(1, 600), unit = "s", simple)]
-    pub duration: f32,
-    /// How hard everything is pulled, and which way. Down is positive y.
-    #[setting(label = "Gravity", unit = "px/s²", simple, keyframe)]
-    pub gravity: Vec2,
-    /// The colours behind everything, at any angle or spreading from a centre.
-    #[setting(
-        paint,
-        label = "Background",
-        prefix = "background_",
-        follows = "place|time|beat",
-        screen_only,
-        simple,
-        no_vary
-    )]
-    pub background: Paint,
-    /// How much bright things bleed light around them.
-    #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse)]
-    pub bloom: f32,
     /// The video's width in pixels.
     #[setting(label = "Width", range(2, 7680), unit = "px", group = "Video")]
     pub width: u32,
     /// The video's height in pixels.
     #[setting(label = "Height", range(2, 7680), unit = "px", group = "Video")]
     pub height: u32,
-    /// Keep the background still on the screen while the camera moves; off paints it across
-    /// the world instead.
-    #[setting(label = "Background stays on screen", group = "Video")]
-    pub background_on_screen: bool,
     /// Frames per second.
     #[setting(label = "Frame rate", range(1, 240), unit = "fps", group = "Video")]
     pub fps: u32,
+    /// How long the video runs.
+    #[setting(label = "Length", range(1, 600), unit = "s", simple, group = "Video")]
+    pub duration: f32,
+    /// How hard everything is pulled, and which way. Down is positive y.
+    #[setting(label = "Gravity", unit = "px/s²", simple, keyframe, group = "World")]
+    pub gravity: Vec2,
     /// How many times a second the physics moves everything.
-    #[setting(label = "Physics rate", range(60, 2000), unit = "per s", group = "Video")]
+    #[setting(label = "Physics rate", range(60, 2000), unit = "per s", group = "World")]
     pub steps_per_second: u32,
+    /// The colours behind everything, at any angle or spreading from a centre.
+    #[setting(
+        paint,
+        label = "Colours",
+        prefix = "background_",
+        follows = "place|time|beat",
+        screen_only,
+        simple,
+        no_vary,
+        group = "Background"
+    )]
+    pub background: Paint,
+    /// Keep the background still on the screen while the camera moves; off paints it across
+    /// the world instead.
+    #[setting(label = "Background stays on screen", group = "Background")]
+    pub background_on_screen: bool,
+    /// How much bright things bleed light around them.
+    #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse, group = "Picture")]
+    pub bloom: f32,
     /// How bright the whole picture is.
-    #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse)]
+    #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse, group = "Picture")]
     pub exposure: f32,
     /// Makes the finished picture lighter or darker.
-    #[setting(label = "Brightness", range(-1, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Brightness", range(-1, 1), group = "Picture", keyframe, pulse)]
     pub grade_brightness: f32,
     /// Spreads the colours apart from the middle grey, or pulls them together.
-    #[setting(label = "Contrast", range(-1, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Contrast", range(-1, 1), group = "Picture", keyframe, pulse)]
     pub grade_contrast: f32,
     /// More colourful, or towards grey at -1.
-    #[setting(label = "Saturation", range(-1, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Saturation", range(-1, 1), group = "Picture", keyframe, pulse)]
     pub grade_saturation: f32,
     /// Warms the picture towards red, or cools it towards blue.
-    #[setting(label = "Warm / cool", range(-1, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Warm / cool", range(-1, 1), group = "Picture", keyframe, pulse)]
     pub grade_warmth: f32,
     /// Tints the picture towards magenta, or towards green.
-    #[setting(label = "Tint", range(-1, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Tint", range(-1, 1), group = "Picture", keyframe, pulse)]
     pub grade_tint: f32,
     /// Darkens the corners of the picture.
-    #[setting(label = "Vignette", range(0, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Vignette", range(0, 1), group = "Picture", keyframe, pulse)]
     pub grade_vignette: f32,
     /// How far out from the middle the vignette starts.
-    #[setting(label = "Vignette size", range(0, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Vignette size", range(0, 1), group = "Picture", keyframe, pulse)]
     pub grade_vignette_size: f32,
     /// Recolours the picture by its brightness: dark parts take the first colours, light parts
     /// the last.
-    #[setting(label = "Gradient map", group = "Grade", keyframe)]
+    #[setting(label = "Gradient map", group = "Picture", keyframe)]
     pub grade_map: Gradient,
     /// How much of the gradient map's colour replaces the picture's own.
-    #[setting(label = "Gradient map amount", range(0, 1), group = "Grade", keyframe, pulse)]
+    #[setting(label = "Gradient map amount", range(0, 1), group = "Picture", keyframe, pulse)]
     pub grade_map_amount: f32,
     /// How loud the finished soundtrack is, measured as real loudness (LUFS). -14 is the usual
     /// level for TikTok, Reels and Shorts.
-    #[setting(label = "Loudness", range(-30, -6), unit = "LUFS", group = "Master")]
+    #[setting(label = "Loudness", range(-30, -6), unit = "LUFS", group = "Mix")]
     pub loudness: f32,
     /// Shaves the peaks off before the limiter, for a louder, harder sound.
-    #[setting(label = "Clipper", group = "Master")]
+    #[setting(label = "Clipper", group = "Mix")]
     pub clipper: Clip,
     /// How hard the clipper is pushed.
-    #[setting(label = "Clipper drive", range(0, 24), unit = "dB", when = "clipper=soft|hard", group = "Master")]
+    #[setting(label = "Clipper drive", range(0, 24), unit = "dB", when = "clipper=soft|hard", group = "Mix")]
     pub clip_drive: f32,
     /// The loudest the soundtrack ever gets, between samples too.
-    #[setting(label = "Ceiling", range(-6, 0), unit = "dBTP", group = "Master")]
+    #[setting(label = "Ceiling", range(-6, 0), unit = "dBTP", group = "Mix")]
     pub ceiling: f32,
     /// Lets the limiter recover slower on dense music and faster on sparse hits.
-    #[setting(label = "Auto release", group = "Master")]
+    #[setting(label = "Auto release", group = "Mix")]
     pub auto_release: bool,
     /// How fast the limiter recovers.
-    #[setting(label = "Release", range(10, 1000), unit = "ms", when = "!auto_release", group = "Master")]
+    #[setting(label = "Release", range(10, 1000), unit = "ms", when = "!auto_release", group = "Mix")]
     pub release: f32,
-    /// Which of the chord's notes each hit picks. Change it for a different tune.
-    #[setting(label = "Seed", range(0, 1000000), group = "Sound", random)]
-    pub seed: u32,
-    /// A song file (mp3, wav, ogg or flac) played under the sounds, whose beats the scene can
-    /// follow.
-    #[setting(label = "Song", unit = "file", group = "Song")]
-    pub song: String,
-    /// How far into the song the video starts. Negative starts the song late.
-    #[setting(label = "Song starts at", when = "song", range(-60, 60), unit = "s", group = "Song")]
-    pub song_offset: f32,
-    #[setting(label = "Song volume", when = "song", range(-40, 6), unit = "dB", group = "Song")]
-    pub song_volume: f32,
-    /// How much the song dips while the hit sounds play.
-    #[setting(label = "Ducks under hits", when = "song", range(0, 1), group = "Song")]
-    pub ducking: f32,
     /// A steady beat; 0 follows the song's beats, or 120 without a song.
-    #[setting(label = "Tempo", range(0, 300), unit = "bpm", group = "Beat")]
+    #[setting(label = "Tempo", range(0, 300), unit = "bpm", group = "Music")]
     pub bpm: f32,
-    #[setting(label = "Beat sync", group = "Beat")]
+    #[setting(label = "Beat sync", group = "Music")]
     pub beat_sync: BeatSync,
     /// Hits may land on halves or quarters of a beat too.
-    #[setting(label = "Beats split into", range(1, 4), group = "Beat")]
+    #[setting(label = "Beats split into", range(1, 4), group = "Music")]
     pub subdivisions: u32,
     /// How much faster or slower than real time the video may run between hits.
-    #[setting(label = "Stretch", range(0, 0.9), group = "Beat")]
+    #[setting(label = "Stretch", range(0, 0.9), group = "Music")]
     pub warp_strength: f32,
+    /// A song file (mp3, wav, ogg or flac) played under the sounds, whose beats the scene can
+    /// follow.
+    #[setting(label = "Song", unit = "file", group = "Music")]
+    pub song: String,
+    /// How far into the song the video starts. Negative starts the song late.
+    #[setting(label = "Song starts at", when = "song", range(-60, 60), unit = "s", group = "Music")]
+    pub song_offset: f32,
+    #[setting(label = "Song volume", when = "song", range(-40, 6), unit = "dB", group = "Music")]
+    pub song_volume: f32,
+    /// How much the song dips while the hit sounds play.
+    #[setting(label = "Ducks under hits", when = "song", range(0, 1), group = "Music")]
+    pub ducking: f32,
+    /// Which of the chord's notes each hit picks. Change it for a different tune.
+    #[setting(label = "Seed", range(0, 1000000), group = "Music", random)]
+    pub seed: u32,
     /// How far past the edge of the shot a hit fades to silence, in shot widths; 0 plays every
     /// hit at full volume wherever it is.
-    #[setting(label = "Off-shot fade", range(0, 5), unit = "shot widths", group = "Camera sound")]
+    #[setting(label = "Off-shot fade", range(0, 5), unit = "shot widths", group = "Mix")]
     pub off_shot_fade: f32,
 }
 
@@ -244,7 +248,7 @@ impl ThingKind for SceneKind {
     }
     fn slot_label(&self, slot: SlotId) -> &'static str {
         match slot {
-            SlotId::Sound => "Music",
+            SlotId::Sound => "Sound",
             SlotId::Shader => "Effects",
             other => other.name(),
         }
@@ -259,6 +263,78 @@ impl ThingKind for SceneKind {
 mod tests {
     use super::*;
 
+    fn labels_in(card: &str) -> Vec<&'static str> {
+        SceneSettings::defs().iter().filter(|d| d.group == card).map(|d| d.label).collect()
+    }
+
+    #[test]
+    fn every_root_setting_is_on_a_card() {
+        for d in SceneSettings::defs() {
+            assert!(ROOT_CARDS.contains(&d.group), "{} has group {:?}", d.key, d.group);
+        }
+    }
+
+    #[test]
+    fn root_cards_hold_the_spec_rows() {
+        assert_eq!(labels_in("Video"), ["Width", "Height", "Frame rate", "Length"]);
+        assert_eq!(labels_in("World"), ["Gravity", "Physics rate"]);
+        assert_eq!(
+            labels_in("Background"),
+            [
+                "Colours",
+                "Colours follow",
+                "Gradient",
+                "Direction",
+                "Centre",
+                "Colours end at",
+                "Beyond the last colour",
+                "Scroll",
+                "Take hit colour",
+                "Step time",
+                "Background stays on screen"
+            ]
+        );
+        assert_eq!(
+            labels_in("Picture"),
+            [
+                "Bloom",
+                "Exposure",
+                "Brightness",
+                "Contrast",
+                "Saturation",
+                "Warm / cool",
+                "Tint",
+                "Vignette",
+                "Vignette size",
+                "Gradient map",
+                "Gradient map amount"
+            ]
+        );
+        assert_eq!(
+            labels_in("Music"),
+            [
+                "Tempo",
+                "Beat sync",
+                "Beats split into",
+                "Stretch",
+                "Song",
+                "Song starts at",
+                "Song volume",
+                "Ducks under hits",
+                "Seed"
+            ]
+        );
+        assert_eq!(
+            labels_in("Mix"),
+            ["Loudness", "Clipper", "Clipper drive", "Ceiling", "Auto release", "Release", "Off-shot fade"]
+        );
+    }
+
+    #[test]
+    fn the_root_sound_slot_reads_sound() {
+        assert_eq!(SceneKind.slot_label(SlotId::Sound), "Sound");
+    }
+
     #[test]
     fn scene_settings_holds_no_chords_and_keeps_its_slots_to_itself() {
         let k = SceneKind;
@@ -268,7 +344,7 @@ mod tests {
         assert!(k.default_slots().is_empty() && !k.passes_down());
         assert_eq!(
             (k.slot_label(SlotId::Sound), k.slot_label(SlotId::Shader), k.slot_label(SlotId::Rules)),
-            ("Music", "Effects", "Rules")
+            ("Sound", "Effects", "Rules")
         );
         assert!(k.accepts(SlotId::Sound, "sound.drums") && k.accepts(SlotId::Sound, "sound.melody"));
         assert!(!k.accepts(SlotId::Sound, "sound.notes"));
@@ -294,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grade_is_nine_keyframed_settings_in_one_group() {
+    fn the_grade_is_nine_keyframed_settings_on_the_picture_card() {
         let defs = SceneSettings::defs();
         let keys = [
             ("grade_brightness", "Brightness"),
@@ -309,11 +385,11 @@ mod tests {
         ];
         for (key, label) in keys {
             let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key} missing"));
-            assert_eq!((d.label, d.group), (label, "Grade"), "{key}");
+            assert_eq!((d.label, d.group), (label, "Picture"), "{key}");
             assert!(d.flags.keyframe, "{key}");
             assert_eq!(d.flags.pulse, key != "grade_map", "{key}");
         }
-        assert_eq!(defs.iter().filter(|d| d.group == "Grade").count(), 9);
+        assert_eq!(defs.iter().filter(|d| d.group == "Picture" && d.key.starts_with("grade_")).count(), 9);
         let map = defs.iter().find(|d| d.key == "grade_map").unwrap();
         assert_eq!(map.ty, bpe_core::ValueType::Gradient);
         let range = |key: &str| defs.iter().find(|d| d.key == key).unwrap().range;

@@ -1,13 +1,13 @@
-//! The chord editor shown under a card with a Chords setting: a key bar, a lane of chord blocks
-//! sized by their beats, a palette of the key's chords, the selected chord's settings and a list
-//! of presets to start from.
+//! The chord editor, drawn in the bottom panel under the preview when a Chords section's "Edit"
+//! is pressed: a key bar, a lane of chord blocks sized by their beats, a palette of the key's
+//! chords, the selected chord's settings and a list of presets to start from.
 
 mod editor;
 mod lane;
 mod presets;
 
 use crate::theme;
-use bpe_core::{Chord, Mode, MusicKey, Progression};
+use bpe_core::{Chord, InstrumentId, Mode, ModuleId, MusicKey, Progression, Scene};
 use bpe_mix::{Function, function, note_name};
 use eframe::egui::{self, Color32, Rect, RichText, Ui};
 
@@ -53,6 +53,23 @@ pub struct ChordClip {
     pub key: Option<u8>,
     pub instrument: bpe_mix::InstrumentChoice,
     pub seconds_per_beat: f64,
+}
+
+/// A clip of `chords` on the scene's tempo (`bpm`, 120 when it has none), through `instrument`
+/// as sound module `module` plays it.
+pub fn clip_for(
+    chords: Vec<Chord>,
+    bpm: f32,
+    scene: &Scene,
+    module: Option<ModuleId>,
+    instrument: Option<InstrumentId>,
+) -> ChordClip {
+    ChordClip {
+        chords,
+        key: None,
+        instrument: crate::instruments::choice(scene, instrument, module),
+        seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
+    }
 }
 
 impl ChordClip {

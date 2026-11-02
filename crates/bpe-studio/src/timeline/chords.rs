@@ -1,11 +1,11 @@
 //! The Chords track: the progression the selection plays, laid out on the video's time, in the
-//! colours of what each chord does. Read-only; the chords are edited in the inspector.
+//! colours of what each chord does. Read-only; its label opens the chord editor under the preview.
 
 use super::{LABEL_WIDTH, LANE_HEIGHT, Ruler};
 use crate::app::{Studio, clock};
 use crate::chords::function_colour;
 use crate::theme;
-use bpe_core::{Chord, MusicKey, ProgressionRef, SettingValue, SlotId, ThingId};
+use bpe_core::{Chord, ModuleId, MusicKey, ProgressionId, ProgressionRef, SettingValue, SlotId, ThingId};
 use bpe_mix::{ChordClock, chord_name};
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
@@ -15,26 +15,34 @@ pub fn chord_spans(p: &bpe_core::Progression, beats: &[f64], duration: f64) -> V
 }
 
 /// The progression the selection's sound plays, else that of the first thing in the tree whose
-/// sound plays one from the library.
-fn shown(studio: &Studio) -> Option<bpe_core::ProgressionId> {
+/// sound plays one from the library; with the sound module it was read from.
+fn shown(studio: &Studio) -> Option<(ProgressionId, ModuleId)> {
     let chords_of = |id: &ThingId| {
-        let params = &studio.resolved.things.get(id)?.slots.get(&SlotId::Sound)?.params;
-        ProgressionRef::from_value(params.get("chords")?)?
+        let sound = studio.resolved.things.get(id)?.slots.get(&SlotId::Sound)?;
+        let p = ProgressionRef::from_value(sound.params.get("chords")?)?
             .0
-            .filter(|p| studio.scene.library.progressions.contains_key(p))
+            .filter(|p| studio.scene.library.progressions.contains_key(p))?;
+        Some((p, sound.module))
     };
     studio.selection.primary.as_ref().and_then(chords_of).or_else(|| studio.scene.order.iter().find_map(chords_of))
 }
 
-pub(super) fn show(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
-    let Some(pid) = shown(studio) else { return };
+/// Draws the track. The progression and module come back when its label is clicked.
+pub(super) fn show(ui: &mut Ui, studio: &Studio, ruler: &Ruler) -> Option<(ProgressionId, ModuleId)> {
+    let shown = shown(studio)?;
+    let pid = shown.0;
     let p = &studio.scene.library.progressions[&pid];
     let beats: Vec<f64> = studio.panels.sound.beats.iter().map(|&b| b as f64).collect();
     let spans = chord_spans(p, &beats, ruler.duration);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::hover());
     let label_rect = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
     let label = format!("Chords ({})", p.name);
-    ui.put(label_rect, egui::Label::new(RichText::new(label).small()).truncate().selectable(false));
+    let label = egui::Label::new(RichText::new(label).small()).truncate().selectable(false).sense(Sense::click());
+    let clicked = ui
+        .put(label_rect, label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Edit these chords")
+        .clicked();
     let strip = Rect::from_min_max(
         Pos2::new(ruler.track.left(), rect.top() + 1.0),
         Pos2::new(ruler.track.right(), rect.bottom() - 1.0),
@@ -50,6 +58,7 @@ pub(super) fn show(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
     }
     let x = ruler.x_of(studio.time);
     painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, theme::ACCENT));
+    clicked.then_some(shown)
 }
 
 fn draw_block(ui: &mut Ui, block: Rect, c: &Chord, key: MusicKey, id: egui::Id, (start, end): (f64, f64)) {
@@ -132,5 +141,34 @@ mod tests {
         studio.resolved = bpe_core::resolve(&studio.scene, &studio.kit.registry);
         studio.selection.set(bpe_core::ThingId::ROOT);
         assert_eq!(track_of(studio), "Chords (Second)");
+    }
+
+    #[test]
+    fn the_timeline_chord_label_opens_the_editor() {
+        let studio = Studio::headless();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                |ui, s: &mut Studio| {
+                    egui::Panel::bottom("timeline").show(ui, |ui| timeline(ui, s));
+                    s.panels.nodes.show(ui, &mut s.scene, &s.kit, &s.resolved, None);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                },
+                studio,
+            );
+        h.run();
+        assert!(h.query_by_label("Chords: Starter").is_none());
+        h.get_by_label("Chords (Starter)").click();
+        h.run();
+        h.get_by_label("Chords: Starter");
+        let s = h.state();
+        // Nothing is selected: the lane reads the first sound in the tree, the arena's.
+        let arena =
+            s.scene.order.iter().find_map(|id| Some(s.resolved.things.get(id)?.slots.get(&SlotId::Sound)?.module));
+        let target = crate::nodes::panel::PanelTarget::Chords(bpe_core::ProgressionId(0), arena.unwrap());
+        assert_eq!(s.panels.nodes.open, Some(target));
     }
 }

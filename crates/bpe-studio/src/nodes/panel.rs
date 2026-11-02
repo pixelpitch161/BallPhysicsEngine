@@ -1,12 +1,14 @@
 //! The node panel: slides up under the preview and shows one module's graph, the Nodes depth
-//! of a card in the inspector, or one synth patch from the library.
+//! of a card in the inspector, one synth patch or effects graph from the library, or the chord
+//! editor on one progression.
 
 use super::editor::{Editor, LiveView};
+use crate::chords::{self, Audition, ChordClip, ChordUi};
 use crate::fx_list::FxPlace;
 use crate::theme;
 use bpe_core::{
-    InstrumentId, InstrumentSource, Module, ModuleGraph, ModuleId, ModuleKind, Params, Resolved, Scene, SlotId,
-    SlotLink, ThingId,
+    Chord, InstrumentId, InstrumentRef, InstrumentSource, Module, ModuleGraph, ModuleId, ModuleKind, Params,
+    ProgressionId, Resolved, Scene, SettingValue, SlotId, SlotLink, ThingId,
 };
 use bpe_graph::Graph;
 use bpe_kit::graphs::{bind, compile_module, is_custom, module_graph, role_of, settings_from_graph};
@@ -24,6 +26,10 @@ pub struct NodePanel {
     pub(super) editor: Editor,
     shown: Option<Shown>,
     patch: Option<ShownPatch>,
+    /// Each progression's chord editor: the picked chord, the presets list.
+    chord_ui: BTreeMap<ProgressionId, ChordUi>,
+    /// Chords the chord editor wants heard, for the app to play.
+    pub clip: Option<ChordClip>,
 }
 
 /// What the node panel can show.
@@ -35,6 +41,8 @@ pub enum PanelTarget {
     Patch(InstrumentId),
     /// An effects graph: an instrument's, a channel's, a bus's or the master's.
     Effects(FxPlace),
+    /// The chord editor on a progression in the library, heard through a sound module.
+    Chords(ProgressionId, ModuleId),
 }
 
 /// A patch or effects graph on the canvas: a working copy, and the stored graph it was copied
@@ -126,7 +134,14 @@ struct Shown {
 
 impl Default for NodePanel {
     fn default() -> Self {
-        Self { open: None, editor: Editor::new("panel"), shown: None, patch: None }
+        Self {
+            open: None,
+            editor: Editor::new("panel"),
+            shown: None,
+            patch: None,
+            chord_ui: BTreeMap::new(),
+            clip: None,
+        }
     }
 }
 
@@ -330,6 +345,14 @@ impl NodePanel {
         self.open = Some(PanelTarget::Effects(place));
     }
 
+    /// Opens the panel on the chord editor for progression `p`, auditioned through sound module
+    /// `module`.
+    pub fn open_chords(&mut self, p: ProgressionId, module: ModuleId) {
+        self.shown = None;
+        self.patch = None;
+        self.open = Some(PanelTarget::Chords(p, module));
+    }
+
     /// The thing and slot shown, when the panel shows a slot's graph.
     pub fn slot_open(&self) -> Option<(ThingId, SlotId)> {
         match self.open {
@@ -362,7 +385,7 @@ impl NodePanel {
                 InstrumentSource::BuiltIn { .. } => None,
             }),
             PanelTarget::Effects(place) => place.graph(scene),
-            PanelTarget::Slot(..) => None,
+            PanelTarget::Slot(..) | PanelTarget::Chords(..) => None,
         };
         let Some(graph) = found else {
             self.close();
@@ -383,7 +406,7 @@ impl NodePanel {
                 (format!("Instrument › {}", scene.library.instruments[&id].name), Some(used))
             }
             PanelTarget::Effects(place) => (format!("{} effects", place.label(scene)), None),
-            PanelTarget::Slot(..) => unreachable!("slots are shown by show"),
+            PanelTarget::Slot(..) | PanelTarget::Chords(..) => unreachable!("slots and chords are shown by show"),
         };
         let catalog: &dyn bpe_graph::Catalog = match target {
             PanelTarget::Effects(_) => effects_catalog(),
@@ -443,11 +466,73 @@ impl NodePanel {
                     scene.set_instrument(id, i).is_ok()
                 }
                 PanelTarget::Effects(place) => place.set(scene, shown.graph.clone()),
-                PanelTarget::Slot(..) => false,
+                PanelTarget::Slot(..) | PanelTarget::Chords(..) => false,
             };
             shown.stored = shown.graph.clone();
             (shown.status, shown.node_errors) = check_patch(target, &shown.graph);
         }
+        if close {
+            self.close();
+        }
+        changed
+    }
+
+    /// The chord editor on a progression, written back to the library on every change. Chords
+    /// it wants heard go in `clip`, through the module's own instrument.
+    fn show_chords(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        kit: &Kit,
+        resolved: &Resolved,
+        pid: ProgressionId,
+        module: ModuleId,
+    ) -> bool {
+        let (Some(p), Some(m)) = (scene.library.progressions.get(&pid), scene.library.modules.get(&module)) else {
+            self.close();
+            return false;
+        };
+        let mut p = p.clone();
+        // The module's own instrument, not a thing's override of it: the panel knows the module.
+        let instrument = kit
+            .registry
+            .module(&m.kind)
+            .and_then(|kind| full_params(kind, m).get("instrument").and_then(InstrumentRef::from_value))
+            .and_then(|r| r.0);
+        let title = format!("Chords: {}", p.name);
+        let state = self.chord_ui.entry(pid).or_default();
+        let mut close = false;
+        let mut out = chords::ChordOutcome::default();
+        egui::Panel::bottom("nodes")
+            .resizable(true)
+            .default_size(300.0)
+            .min_size(160.0)
+            .max_size(800.0)
+            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title.as_str()).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").on_hover_text("Hide the chord editor").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    out = ui.push_id(("chords", pid), |ui| chords::show(ui, &mut p, state)).inner;
+                });
+            });
+        let heard = match out.audition {
+            Some(Audition::Chord(c)) => Some(vec![Chord { beats: 4, ..c }]),
+            Some(Audition::All) => Some(p.chords.clone()),
+            None => None,
+        };
+        if let Some(heard) = heard {
+            let bpm = bpe_kit::music::root_settings(resolved).bpm;
+            self.clip = Some(chords::clip_for(heard, bpm, scene, Some(module), instrument));
+        }
+        let changed = out.changed && scene.set_progression(pid, p).is_ok();
         if close {
             self.close();
         }
@@ -469,6 +554,7 @@ impl NodePanel {
             Some(target @ (PanelTarget::Patch(_) | PanelTarget::Effects(_))) => {
                 return self.show_patch(ui, scene, kit, target);
             }
+            Some(PanelTarget::Chords(pid, module)) => return self.show_chords(ui, scene, kit, resolved, pid, module),
             Some(PanelTarget::Slot(thing, slot)) => (thing, slot),
         };
         let reg = &kit.registry;
@@ -644,6 +730,9 @@ mod tests {
                     }
                     if let Some(id) = s.inspector.patch_request.take() {
                         s.panel.open_patch(id);
+                    }
+                    if let Some((pid, module)) = s.inspector.chords_request.take() {
+                        s.panel.open_chords(pid, module);
                     }
                     if changed {
                         s.resolved = resolve_scene(&s.scene, &s.kit.registry);
@@ -966,5 +1055,93 @@ mod tests {
         assert!(shown.graph.node(last).is_some());
         assert_eq!(shown.graph.node(first).unwrap().pos, [-999.0, 42.0], "the layout is kept");
         assert!(shown.status.is_ok());
+    }
+
+    /// Presses the ball's Sound card's chords "Edit".
+    fn open_ball_chords(h: &mut Harness<'_, State>) {
+        // The Sound card is the last, below the window: scroll it in first.
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Edit").scroll_to_me();
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Edit").click();
+        h.run();
+    }
+
+    /// The ball's own sound module.
+    fn ball_sound(scene: &Scene) -> ModuleId {
+        match &scene.things[&ThingId(2)].slots[&SlotId::Sound] {
+            bpe_core::SlotLink::Linked { module, .. } => *module,
+            other => panic!("the ball links its sound: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_opens_chords_in_the_bottom_panel() {
+        let mut h = harness(new_scene(), Some(ThingId(2)));
+        assert!(h.query_by_label("Chord lane").is_none());
+        open_ball_chords(&mut h);
+        let sound = ball_sound(&h.state().scene);
+        assert_eq!(h.state().panel.open, Some(PanelTarget::Chords(bpe_core::ProgressionId(0), sound)));
+        h.get_by_label("Chords: Starter");
+        assert_eq!(h.query_all_by_label("Chord lane").count(), 1);
+        assert!(h.state().panel.graph().is_none(), "no node canvas");
+        assert!(h.query_by_label("Fit").is_none(), "no node canvas buttons");
+    }
+
+    #[test]
+    fn close_hides_the_chord_panel() {
+        let mut h = harness(new_scene(), Some(ThingId(2)));
+        open_ball_chords(&mut h);
+        h.get_by_label("Close").click();
+        h.run();
+        assert_eq!(h.state().panel.open, None);
+        assert!(h.query_by_label("Chord lane").is_none());
+        assert!(h.query_by_label("Chords: Starter").is_none());
+    }
+
+    #[test]
+    fn nodes_and_chords_replace_each_other() {
+        let mut h = harness(new_scene(), Some(ThingId(2)));
+        open_ball_chords(&mut h);
+        // Look has no nodes yet, so the Bounce card's switch stands in for a card's Nodes.
+        open_ball_bounce(&mut h);
+        assert_eq!(h.state().panel.open, Some(PanelTarget::Slot(ThingId(2), SlotId::Bounce)));
+        assert!(h.query_by_label("Chord lane").is_none());
+        h.get_by_label("Ball › Bounce");
+        open_ball_chords(&mut h);
+        assert!(h.query_by_label("Ball › Bounce").is_none(), "the node panel is gone");
+        assert!(h.state().panel.graph().is_none());
+        assert_eq!(h.query_all_by_label("Chord lane").count(), 1);
+    }
+
+    #[test]
+    fn the_chord_panel_closes_when_its_progression_goes() {
+        let mut h = harness(new_scene(), Some(ThingId(2)));
+        open_ball_chords(&mut h);
+        assert!(matches!(h.state().panel.open, Some(PanelTarget::Chords(..))));
+        let s = h.state_mut();
+        s.scene.library.progressions.remove(&bpe_core::ProgressionId(0));
+        s.resolved = resolve_scene(&s.scene, &s.kit.registry);
+        h.step();
+        h.step();
+        assert_eq!(h.state().panel.open, None);
+        assert!(h.query_by_label("Chord lane").is_none());
+    }
+
+    #[test]
+    fn a_chord_edit_in_the_panel_reaches_the_scene() {
+        let mut h = harness(new_scene(), Some(ThingId(2)));
+        open_ball_chords(&mut h);
+        let before = h.state().scene.library.progressions[&bpe_core::ProgressionId(0)].chords.len();
+        h.get_by_label("IV\nF").scroll_to_me();
+        h.run();
+        h.get_by_label("IV\nF").click();
+        h.run();
+        let p = &h.state().scene.library.progressions[&bpe_core::ProgressionId(0)];
+        assert_eq!(p.chords.len(), before + 1);
+        assert_eq!(p.chords[before].root, 5);
+        // The new chord is heard for a bar through the module's instrument, on the scene's tempo.
+        let clip = h.state().panel.clip.as_ref().expect("a chord to hear");
+        assert_eq!(clip.chords, [bpe_core::Chord { beats: 4, ..p.chords[before] }]);
+        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
     }
 }

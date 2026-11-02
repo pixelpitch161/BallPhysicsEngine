@@ -76,6 +76,7 @@ pub use things::liquid::sim::{LiquidSim, LiquidState};
 pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
 pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
+pub use things::scene::ROOT_CARDS;
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::{SceneSim, SceneState};
 pub use things::scene::{BeatSync, Clip, SceneKind, SceneSettings};
@@ -465,7 +466,7 @@ mod tests {
     #[test]
     fn every_module_setting_has_a_known_section() {
         let reg = registry();
-        for m in reg.modules().filter(|m| m.slot() != SlotId::Sound) {
+        for m in reg.modules() {
             for d in m.settings() {
                 assert!(
                     !d.group.is_empty() && bpe_core::section_rank(d.group).is_some(),
@@ -476,6 +477,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn sound_sections(reg: &Registry, kind: &str) -> Vec<&'static str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for d in defs_of(reg, kind) {
+            assert!(!d.group.is_empty(), "{kind} {} has no group", d.key);
+            if !seen.contains(&d.group) {
+                seen.push(d.group);
+            }
+        }
+        seen.sort_by_key(|g| bpe_core::section_rank(g).unwrap_or(usize::MAX));
+        seen
+    }
+
+    fn labels_in(reg: &Registry, kind: &str, group: &str) -> Vec<&'static str> {
+        defs_of(reg, kind).iter().filter(|d| d.group == group).map(|d| d.label).collect()
+    }
+
+    #[test]
+    fn sound_cards_use_the_spec_sections() {
+        let reg = registry();
+        assert_eq!(sound_sections(&reg, "sound.notes"), ["Instrument", "Notes", "Which hits", "Level", "Chords"]);
+        assert_eq!(sound_sections(&reg, "sound.melody"), ["Instrument", "Notes", "Which hits", "Level"]);
+        assert_eq!(sound_sections(&reg, "sound.drums"), ["Instrument", "Which hits", "On the beat", "Level"]);
+    }
+
+    #[test]
+    fn sound_notes_rows_follow_the_spec() {
+        let reg = registry();
+        assert_eq!(
+            labels_in(&reg, "sound.notes", "Notes"),
+            ["Lowest note", "Highest note", "Picks from", "Order", "Plays", "Full chord above", "Chord spread"]
+        );
+        let when: Vec<_> = defs_of(&reg, "sound.notes").iter().filter(|d| d.when == "plays=full_chord").collect();
+        assert_eq!(when.len(), 2);
+        assert!(when.iter().all(|d| d.group == "Notes"));
+        assert_eq!(
+            labels_in(&reg, "sound.notes", "Which hits"),
+            ["Plays when", "Only hits against", "Shortest gap", "Quietest hit", "Loudest hit"]
+        );
+        assert_eq!(labels_in(&reg, "sound.notes", "Level"), ["Volume", "Pan", "Stereo width"]);
     }
 
     #[test]

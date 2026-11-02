@@ -240,8 +240,15 @@ fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, 
 
 /// A group's heading: its name, which folds and opens the group when `fold` is given (as does
 /// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
-/// True when the heading or its arrow was clicked.
-fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
+/// `hover`, when given, says what the group is. True when the heading or its arrow was clicked.
+fn group_heading(
+    ui: &mut Ui,
+    group: &'static str,
+    fold: bool,
+    shut: bool,
+    changed: bool,
+    hover: Option<&'static str>,
+) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         if fold && fold_toggle(ui, !shut, group) {
@@ -249,7 +256,10 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         }
         let heading = RichText::new(group).strong().color(theme::MUTED);
         let label = egui::Label::new(heading).wrap().selectable(false);
-        let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        let mut response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        if let Some(hover) = hover {
+            response = response.on_hover_text(hover);
+        }
         let dot = shut && changed;
         if dot {
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{group} (changed)")));
@@ -265,6 +275,21 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         }
     });
     clicked
+}
+
+/// A heading inside a section's own widgets (as "Try it" in the Instrument section), folding
+/// what follows it: it looks like a group's heading, with the same air above. True when it was
+/// clicked, so the caller flips `open`.
+pub fn sub_heading(ui: &mut Ui, title: &'static str, open: bool, hover: &'static str) -> bool {
+    ui.add_space(10.0);
+    group_heading(ui, title, true, !open, false, Some(hover))
+}
+
+/// A grid for the rows in a section's own widgets (see [`settings_grid_sections`]), which are
+/// drawn [`EXTRA_INDENT`] in: the label column ([`label_cell`] at the grid's label width), then
+/// the widgets ([`widget_cell`]), so its labels and widgets line up with the settings' own.
+pub fn extra_grid(id: impl egui::AsIdSalt) -> egui::Grid {
+    egui::Grid::new(id).num_columns(2).spacing([8.0, 6.0])
 }
 
 /// What a setting's keyframe diamond shows.
@@ -286,6 +311,10 @@ pub struct KeyMark {
 
 /// The width of the diamond cell at the left of every row.
 pub const DIAMOND_CELL: f32 = 16.0;
+
+/// How far in a section's own widgets are drawn: past the diamond column and the grid's
+/// spacing, so they start where the rows' labels do.
+pub const EXTRA_INDENT: f32 = DIAMOND_CELL + 8.0;
 
 /// A settings grid of the settings that `applies`, with no marks and nothing for targets to
 /// point at. `get` supplies each setting's value as it stands; the rows the user changed come
@@ -323,59 +352,156 @@ pub fn settings_grid_marked(
     get: impl Fn(&str) -> Value,
     cx: &GridCx,
 ) -> GridOutcome {
+    // `settings_grid_sections` wants a Clone id, so this one is hashed into a salt first. The
+    // salt is hashed again there, so the grid's id differs from `id`'s own; that is harmless,
+    // as nothing outside looks the grid up by id.
+    settings_grid_sections(ui, egui::IdSalt::new(id), defs, get, cx, &[], &mut |_, _| {})
+}
+
+/// A section of a settings grid that ends with widgets the caller draws, below its rows. A
+/// section named only here (no setting has its group) gets its own heading, ranked by
+/// `section_rank`, and folds like any other.
+#[derive(Clone, Copy, Debug)]
+pub struct SectionExtra {
+    pub group: &'static str,
+    /// Whether the section holds changes, for the folded-with-changes dot.
+    pub changed: bool,
+    /// The heading's hover, saying what the section is.
+    pub hover: Option<&'static str>,
+}
+
+/// One section of a settings grid: its group ("" for the ungrouped rows before the headings)
+/// and the rows shown in it.
+struct Section<'a> {
+    group: &'static str,
+    defs: Vec<&'a SettingDef>,
+}
+
+/// The sections of [`rows_for`], with a heading-only section for each extra whose group has no
+/// row shown, placed by [`section_rank`]. Extras on the ungrouped rows ("") are ignored.
+fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx, extras: &[SectionExtra]) -> Vec<Section<'a>> {
+    let mut sections: Vec<Section<'a>> = Vec::new();
+    for row in rows_for(defs, cx.applies) {
+        match row {
+            Row::Group(group) => sections.push(Section { group, defs: Vec::new() }),
+            Row::Setting(def) => match sections.last_mut() {
+                Some(section) => section.defs.push(def),
+                None => sections.push(Section { group: "", defs: vec![def] }),
+            },
+        }
+    }
+    for extra in extras {
+        if !extra.group.is_empty() && !sections.iter().any(|s| s.group == extra.group) {
+            sections.push(Section { group: extra.group, defs: Vec::new() });
+        }
+    }
+    // A stable sort: the ungrouped rows first, then by rank, keeping `rows_for`'s order otherwise.
+    sections.sort_by_key(|s| (!s.group.is_empty(), section_rank(s.group).unwrap_or(usize::MAX)));
+    sections
+}
+
+/// [`settings_grid_marked`], with the caller's own widgets drawn at the end of the sections
+/// `extras` name: `draw_extra` is called with the section's group, below its rows, unless the
+/// section is folded shut. The grid is split after each such section, and the widgets are drawn
+/// [`EXTRA_INDENT`] in, so they start where the labels do; rows of their own in an
+/// [`extra_grid`] line up with the settings' rows. Every grid has the same label column and right
+/// edge, so the rows still line up from section to section. An
+/// extra on the ungrouped rows ("") is ignored, as is any extra after the first on one group.
+pub fn settings_grid_sections(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug + Clone,
+    defs: &[SettingDef],
+    get: impl Fn(&str) -> Value,
+    cx: &GridCx,
+    extras: &[SectionExtra],
+    draw_extra: &mut dyn FnMut(&mut Ui, &'static str),
+) -> GridOutcome {
     let mut out = GridOutcome::default();
     // Where the widgets must end. A grid widens its last column to its widest row, so a row
     // that can't shrink would otherwise push every slider under it past the panel's edge.
     let right = ui.available_rect_before_wrap().right();
-    settings_like_grid(id).show(ui, |ui| {
-        // Whether the group the rows are in is folded shut.
-        let mut shut = false;
-        for row in rows_for(defs, cx.applies) {
-            match row {
-                Row::Group(group) => {
+    let sections = sections_for(defs, cx, extras);
+    let shut = |group: &str| !group.is_empty() && cx.folded.is_some_and(|folded| folded(group));
+    let extra_at = |group: &str| extras.iter().find(|e| !group.is_empty() && e.group == group);
+    let mut grid_id = egui::IdSalt::new(id.clone());
+    let mut rest = &sections[..];
+    while !rest.is_empty() {
+        // The sections up to and including the next one with an extra share a grid.
+        let end = rest.iter().position(|s| extra_at(s.group).is_some()).map_or(rest.len(), |i| i + 1);
+        let (run, after) = rest.split_at(end);
+        rest = after;
+        settings_like_grid(grid_id).show(ui, |ui| {
+            for section in run {
+                let shut = shut(section.group);
+                if !section.group.is_empty() {
+                    let group = section.group;
+                    let extra_changed = extra_at(group).is_some_and(|e| e.changed);
+                    let hover = extra_at(group).and_then(|e| e.hover);
+                    let changed = shut && (extra_changed || group_changed(defs, group, &get, cx));
                     empty_cell(ui);
-                    shut = cx.folded.is_some_and(|folded| folded(group));
-                    let changed = shut && group_changed(defs, group, &get, cx);
                     // A grid can't take spacing, so the heading carries its own air above.
                     label_cell(ui, cx.label_width, |ui| {
                         let room = ui.available_size();
                         ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.add_space(10.0);
-                            if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
+                            if group_heading(ui, group, cx.folded.is_some(), shut, changed, hover) {
                                 out.folds.push((group, !shut));
                             }
                         });
                     });
                     ui.end_row();
                 }
-                Row::Setting(def) if shut && !def.group.is_empty() => {}
-                Row::Setting(def) => {
-                    match (cx.marks)(def.key) {
-                        Some(mark) => match diamond(ui, def.label, mark) {
-                            DiamondClick::None => {}
-                            DiamondClick::Toggle => out.toggled_key.push(def.key),
-                            DiamondClick::Pulse(source) => out.pulse.push((def.key, source)),
-                        },
-                        None => empty_cell(ui),
-                    }
-                    let mut value = get(def.key);
-                    let overridden = (cx.overridden)(def.key);
-                    let inherited = (cx.inherited)(def.key);
-                    let locked = (cx.locked)(def.key);
-                    let unit = unit_for(def, &|k| Some(get(k)));
-                    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx, right);
-                    match row {
-                        RowAction::Nothing => {}
-                        RowAction::Changed => out.changes.push((def.key, value)),
-                        RowAction::Reset => out.resets.push(def.key),
-                        RowAction::Push => out.pushes.push(def.key),
-                        RowAction::Lock(lock) => out.locks.push((def.key, lock)),
+                if !shut {
+                    for def in &section.defs {
+                        grid_row(ui, def, &get, cx, right, &mut out);
                     }
                 }
             }
+        });
+        let last = run.last().expect("a run holds a section").group;
+        if extra_at(last).is_some() {
+            if !shut(last) {
+                let mut rect = ui.available_rect_before_wrap();
+                rect.min.x += EXTRA_INDENT;
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| draw_extra(ui, last));
+            }
+            grid_id = egui::IdSalt::new((id.clone(), last));
         }
-    });
+    }
     out
+}
+
+/// One setting's row of a settings grid, with what the user did to it added to `out`.
+fn grid_row(
+    ui: &mut Ui,
+    def: &SettingDef,
+    get: &dyn Fn(&str) -> Value,
+    cx: &GridCx,
+    right: f32,
+    out: &mut GridOutcome,
+) {
+    match (cx.marks)(def.key) {
+        Some(mark) => match diamond(ui, def.label, mark) {
+            DiamondClick::None => {}
+            DiamondClick::Toggle => out.toggled_key.push(def.key),
+            DiamondClick::Pulse(source) => out.pulse.push((def.key, source)),
+        },
+        None => empty_cell(ui),
+    }
+    let mut value = get(def.key);
+    let overridden = (cx.overridden)(def.key);
+    let inherited = (cx.inherited)(def.key);
+    let locked = (cx.locked)(def.key);
+    let unit = unit_for(def, &|k| Some(get(k)));
+    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx, right);
+    match row {
+        RowAction::Nothing => {}
+        RowAction::Changed => out.changes.push((def.key, value)),
+        RowAction::Reset => out.resets.push(def.key),
+        RowAction::Push => out.pushes.push(def.key),
+        RowAction::Lock(lock) => out.locks.push((def.key, lock)),
+    }
 }
 
 /// What one grid row asks for.
@@ -660,7 +786,7 @@ pub fn setting_feel(def: &SettingDef) -> NumberFeel {
 
 /// A slider for a number setting: as wide as the row allows, moving in the setting's even steps,
 /// with its number box beside it.
-fn number_slider<N: egui::emath::Numeric>(
+pub fn number_slider<N: egui::emath::Numeric>(
     ui: &mut Ui,
     x: &mut N,
     (min, max): (f64, f64),
@@ -936,7 +1062,7 @@ pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
 mod tests {
     use super::*;
 
-    use bpe_core::Settings;
+    use bpe_core::{FOLDED_SECTIONS, Settings};
 
     #[test]
     fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
@@ -1202,10 +1328,15 @@ mod tests {
         assert_eq!(all.iter().filter(|r| matches!(r, Row::Setting(_))).count(), defs.len());
         let headings: Vec<&str> =
             all.iter().filter_map(|r| if let Row::Group(g) = r { Some(*g) } else { None }).collect();
-        assert_eq!(headings, ["Video", "Grade", "Master", "Sound", "Song", "Beat", "Camera sound"]);
+        // Each card's name heads its rows once (in the order the fields first name them).
+        let mut sorted = headings.clone();
+        sorted.sort_unstable();
+        let mut cards = bpe_kit::ROOT_CARDS.to_vec();
+        cards.sort_unstable();
+        assert_eq!(sorted, cards);
         // A group whose settings all drop out loses its heading too.
-        let no_song = rows_for(defs, &|d| d.group != "Song");
-        assert!(!no_song.iter().any(|r| matches!(r, Row::Group("Song"))));
+        let no_music = rows_for(defs, &|d| d.group != "Music");
+        assert!(!no_music.iter().any(|r| matches!(r, Row::Group("Music"))));
     }
 
     #[test]
@@ -1309,7 +1440,8 @@ mod tests {
         let h = open_grid(bpe_kit::SceneSettings::defs());
         let wrapped = h.get_by_role_and_label(Role::Label, "Background stays on screen").rect();
         assert!(wrapped.height() > 24.0, "the label wraps: {wrapped:?}");
-        let next = h.get_by_role_and_label(Role::Label, "Frame rate").rect();
+        // The Background group's last row; the Picture heading comes next.
+        let next = h.get_by_role_and_label(Role::Label, "Picture").rect();
         assert!(wrapped.bottom() <= next.top(), "{wrapped:?} runs into the next row {next:?}");
         let check = h.get_by_role_and_label(Role::CheckBox, "Background stays on screen").rect();
         let (l, c) = (wrapped.center().y, check.center().y);
@@ -1344,6 +1476,128 @@ mod tests {
         assert!(h.query_by_label("Hide Shape").is_none(), "no fold arrow for an empty section");
         assert!(h.query_by_label("Shape").is_none(), "no heading for an empty section");
         assert!(h.query_by_label("Hide Blending").is_some(), "other sections keep theirs");
+    }
+
+    /// Two rows in "Notes", one in "Level", and an extra button "Extra" at the end of `group`'s
+    /// section, holding `changed`. The state is the shut groups, starting as `FOLDED_SECTIONS` and
+    /// following the heading clicks, and every change the grid reported.
+    fn sections_grid(group: &'static str, changed: bool) -> egui_kittest::Harness<'static, SectionsState> {
+        // A number, so each row has a slider.
+        let base = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "glow_size").unwrap();
+        let def = |key: &'static str, group: &'static str, label: &'static str| SettingDef {
+            key,
+            group,
+            label,
+            ..base.clone()
+        };
+        let defs: &'static [SettingDef] =
+            Vec::leak(vec![def("a", "Notes", "Alpha"), def("b", "Notes", "Beta"), def("c", "Level", "Gamma")]);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(420.0, 800.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                move |ui, (shut, changes): &mut SectionsState| {
+                    let choices = TargetChoices::default();
+                    let folded = |g: &str| shut.contains(&g);
+                    let cx = GridCx {
+                        choices: &choices,
+                        overridden: &|_| false,
+                        inherited: &|_| None,
+                        marks: &|_| None,
+                        locked: &|_| false,
+                        applies: &|_| true,
+                        folded: Some(&folded),
+                        label_width: label_width(420.0),
+                    };
+                    let mut draw = |ui: &mut Ui, g: &'static str| {
+                        assert_eq!(g, group);
+                        let _ = ui.button("Extra");
+                    };
+                    let extras = [SectionExtra { group, changed, hover: None }];
+                    let get = |k: &str| defs.iter().find(|d| d.key == k).unwrap().default.clone();
+                    let out = settings_grid_sections(ui, "g", defs, get, &cx, &extras, &mut draw);
+                    changes.extend(out.changes);
+                    for (g, now_shut) in out.folds {
+                        shut.retain(|s| *s != g);
+                        if now_shut {
+                            shut.push(g);
+                        }
+                    }
+                },
+                (FOLDED_SECTIONS.to_vec(), Vec::new()),
+            );
+        h.run();
+        h
+    }
+
+    type SectionsState = (Vec<&'static str>, Vec<(&'static str, Value)>);
+
+    #[test]
+    fn a_row_after_the_split_still_reports_its_edit() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sections_grid("Notes", false);
+        // Gamma, in Level, is in the grid after the Notes extra.
+        let slider = h.get_by_role_and_label(Role::Slider, "Gamma");
+        slider.focus();
+        h.run();
+        h.key_press(egui::Key::ArrowRight);
+        h.run();
+        let keys: Vec<&str> = h.state().1.iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&"c"), "the edit came back: {keys:?}");
+    }
+
+    #[test]
+    fn an_extra_draws_under_its_sections_rows() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = sections_grid("Notes", false);
+        let extra = h.get_by_role_and_label(Role::Button, "Extra").rect();
+        let last = h.get_by_role_and_label(Role::Label, "Beta").rect();
+        let level = h.get_by_role_and_label(Role::Label, "Level").rect();
+        assert!(last.bottom() <= extra.top(), "the extra {extra:?} is below the last Notes row {last:?}");
+        assert!(extra.bottom() <= level.top(), "the extra {extra:?} is above the Level heading {level:?}");
+    }
+
+    #[test]
+    fn an_extra_only_section_gets_a_heading_in_rank() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sections_grid("Channel", false);
+        let level = h.get_by_role_and_label(Role::Label, "Level").rect();
+        let channel = h.get_by_role_and_label(Role::Label, "Channel").rect();
+        assert!(level.bottom() <= channel.top(), "Channel {channel:?} comes after Level {level:?}");
+        assert!(h.query_by_label("Extra").is_none(), "Channel starts folded");
+        h.get_by_label("Show Channel").click();
+        h.run();
+        assert!(!h.state().0.contains(&"Channel"), "the fold came back through `folds`");
+        let extra = h.get_by_role_and_label(Role::Button, "Extra").rect();
+        let channel = h.get_by_role_and_label(Role::Label, "Channel").rect();
+        assert!(channel.bottom() <= extra.top(), "the extra {extra:?} is under its heading {channel:?}");
+    }
+
+    #[test]
+    fn a_shut_extra_section_with_changes_shows_the_dot() {
+        use egui_kittest::kittest::Queryable;
+        let h = sections_grid("Channel", true);
+        assert!(h.query_by_label("Channel (changed)").is_some());
+        assert!(h.query_by_label("Extra").is_none());
+        let h = sections_grid("Channel", false);
+        assert!(h.query_by_label("Channel (changed)").is_none());
+    }
+
+    #[test]
+    fn labels_line_up_across_the_split() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let h = sections_grid("Notes", false);
+        let notes = h.get_by_role_and_label(Role::Label, "Alpha").rect();
+        let level = h.get_by_role_and_label(Role::Label, "Gamma").rect();
+        assert_eq!(notes.left(), level.left());
+        let a = h.get_all_by_role(Role::Slider).map(|n| n.rect().left()).collect::<Vec<_>>();
+        assert_eq!(a.len(), 3);
+        assert!(a.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "widgets line up too: {a:?}");
     }
 
     #[test]
