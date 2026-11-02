@@ -39,12 +39,13 @@ impl ThingSim for SceneSim {
         world.states.insert(thing.id, Box::new(SceneState { beats, next_beat: 0 }));
     }
 
-    /// Logs a Beat for every beat the step reached.
+    /// Logs a Beat for every beat the step reached, and counts it in [`World::beats`].
     fn after_step(&self, thing: ThingId, world: &mut World, log: &mut Log) {
         let time = world.time();
         let step = world.step;
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<SceneState>(st.as_mut());
+        let before = st.next_beat;
         while st.next_beat < st.beats.len() && st.beats[st.next_beat] <= time + 1e-9 {
             log.push(Event {
                 step,
@@ -57,6 +58,8 @@ impl ThingSim for SceneSim {
             });
             st.next_beat += 1;
         }
+        let logged = (st.next_beat - before) as u32;
+        world.beats += logged;
     }
 
     /// A keyframe moved gravity.
@@ -119,6 +122,7 @@ mod tests {
         world.advance_to(2.0, &kit.sims, &mut log);
         let beats: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Beat).collect();
         assert_eq!(beats.len(), 5, "0, 0.5, 1, 1.5 and 2 s");
+        assert_eq!(world.beats, 5, "the world counts them too");
         assert_eq!(beats[0].step, 1, "the beat at 0 is logged by the first step");
         assert_eq!(beats[2].step, 240);
         assert_eq!(beats[4].a, Party { thing: ThingId::ROOT, item: 4 });

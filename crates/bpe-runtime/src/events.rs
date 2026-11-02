@@ -93,6 +93,39 @@ pub struct Log {
     tracks: BTreeMap<Party, Vec<TrackSample>>,
     /// The whole scene's motion, 60 times a second. Not in the hash.
     scene: Vec<SceneSample>,
+    /// The marks things leave on canvases, in step order. Not in the hash.
+    marks: Vec<Mark>,
+}
+
+/// The shape a mark stamps onto a canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkShape {
+    Stroke,
+    Splat,
+    Ring,
+    Star,
+    Crack,
+    Burst,
+    Dots,
+}
+
+/// One mark a thing leaves on a canvas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub step: u64,
+    /// The canvas thing it lands on.
+    pub canvas: ThingId,
+    pub shape: MarkShape,
+    /// Where it starts, in canvas pixels from the canvas centre, before the canvas turns.
+    pub from: Vec2,
+    /// Where it ends; a stamp has `to == from`.
+    pub to: Vec2,
+    pub radius: f32,
+    pub angle: f32,
+    /// Which of a stamp shape's variants; for a stroke, its tip (0 round, 1 square).
+    pub variant: u8,
+    /// Linear light, not sRGB.
+    pub colour: [f32; 4],
 }
 
 /// How often motion is sampled for sound, per second.
@@ -167,6 +200,35 @@ impl Log {
         self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
     }
 
+    /// Adds a mark. Marks must arrive in step order.
+    pub fn push_mark(&mut self, m: Mark) {
+        if let Some(last) = self.marks.last() {
+            debug_assert!(m.step >= last.step, "mark log step order: {} after {}", m.step, last.step);
+        }
+        self.marks.push(m);
+    }
+
+    pub fn marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
+    /// The marks made in steps `(after, upto]`.
+    pub fn marks_between(&self, after: u64, upto: u64) -> &[Mark] {
+        let start = self.marks.partition_point(|m| m.step <= after);
+        let end = self.marks.partition_point(|m| m.step <= upto);
+        &self.marks[start..end.max(start)]
+    }
+
+    /// Forgets the marks made after `step`, when playback rewinds.
+    pub fn trim_marks_upto(&mut self, step: u64) {
+        self.marks.truncate(self.marks.partition_point(|m| m.step <= step));
+    }
+
+    /// Forgets the marks made at or before `step`, once they are drawn and nothing reads them.
+    pub fn drop_marks_upto(&mut self, step: u64) {
+        self.marks.drain(..self.marks.partition_point(|m| m.step <= step));
+    }
+
     /// Where the camera looked at `step`: the identity before it was first noted.
     pub fn camera_at(&self, step: u64) -> CameraView {
         let i = self.camera.partition_point(|(s, _)| *s <= step);
@@ -210,6 +272,7 @@ impl Log {
         self.events.capacity() * std::mem::size_of::<Event>()
             + self.tracks.values().map(|t| t.capacity() * std::mem::size_of::<TrackSample>()).sum::<usize>()
             + self.scene.capacity() * std::mem::size_of::<SceneSample>()
+            + self.marks.capacity() * std::mem::size_of::<Mark>()
     }
 
     /// An FNV-1a hash of every field of every event. Equal logs hash equal on every platform.
@@ -329,6 +392,66 @@ mod tests {
         let mut log = Log::default();
         log.push(Event { step: 5, ..hit() });
         log.push(Event { step: 4, ..hit() });
+    }
+
+    fn mark(step: u64) -> Mark {
+        Mark {
+            step,
+            canvas: ThingId(3),
+            shape: MarkShape::Splat,
+            from: Vec2::ZERO,
+            to: Vec2::ZERO,
+            radius: 4.0,
+            angle: 0.0,
+            variant: 0,
+            colour: [1.0, 0.5, 0.25, 1.0],
+        }
+    }
+
+    #[test]
+    fn marks_between_picks_the_step_range() {
+        let mut log = Log::default();
+        for step in [1, 2, 2, 5] {
+            log.push_mark(mark(step));
+        }
+        assert_eq!(log.marks_between(1, 2).len(), 2);
+        assert_eq!(log.marks_between(2, 5).len(), 1);
+        assert!(log.marks_between(5, 9).is_empty());
+        assert!(log.marks_between(9, 3).is_empty());
+    }
+
+    #[test]
+    fn marks_do_not_change_the_hash() {
+        let mut plain = Log::default();
+        plain.push(hit());
+        let mut marked = plain.clone();
+        marked.push_mark(mark(1));
+        assert_eq!(plain.hash(), marked.hash());
+        assert_eq!(marked.marks().len(), 1);
+    }
+
+    #[test]
+    fn trim_drops_old_marks() {
+        let mut log = Log::default();
+        for step in [1, 2, 2, 5] {
+            log.push_mark(mark(step));
+        }
+        log.trim_marks_upto(2);
+        assert_eq!(log.marks().len(), 3);
+        log.trim_marks_upto(0);
+        assert!(log.marks().is_empty());
+    }
+
+    #[test]
+    fn drop_forgets_drawn_marks() {
+        let mut log = Log::default();
+        for step in [1, 2, 2, 5] {
+            log.push_mark(mark(step));
+        }
+        log.drop_marks_upto(2);
+        assert_eq!(log.marks().iter().map(|m| m.step).collect::<Vec<_>>(), [5]);
+        log.drop_marks_upto(9);
+        assert!(log.marks().is_empty());
     }
 
     #[test]

@@ -80,6 +80,8 @@ pub const SECTION_ORDER: &[&str] = &[
     "Shape",
     "Style",
     "Burst",
+    "Paint trail",
+    "Splat",
     "Each particle",
     "Across the group",
     "Colours",

@@ -1017,7 +1017,7 @@ fn placement_rows(
     let right = ui.available_rect_before_wrap().right();
     settings_like_grid(("placement", thing.id)).show(ui, |ui| {
         position_rows(ui, scene, thing, lw, right, edits);
-        if !matches!(kind.id(), "liquid" | "swarm") {
+        if kind.can_stick_to_screen() && !matches!(kind.id(), "liquid" | "swarm") {
             let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a caption");
             let mut on = thing.sticks_to_screen(kind);

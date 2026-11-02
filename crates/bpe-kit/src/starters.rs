@@ -99,7 +99,26 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
     for &slot in slots {
         fill_slot(scene, reg, id, slot)?;
     }
+    if kind == "canvas" {
+        give_balls_brushes(scene, reg)?;
+    }
     Ok(id)
+}
+
+/// Links a fresh Brushes starter (Paint trail on) to every balls thing that has no Marks
+/// module, so a new canvas has something painting on it straight away.
+fn give_balls_brushes(scene: &mut Scene, reg: &Registry) -> Result<(), EditError> {
+    let bare: Vec<ThingId> = scene
+        .order
+        .iter()
+        .copied()
+        .filter(|id| scene.things[id].kind == "balls")
+        .filter(|&id| resolve_slot(scene, reg, id, SlotId::Marks, &mut Vec::new()).is_none())
+        .collect();
+    for id in bare {
+        fill_slot(scene, reg, id, SlotId::Marks)?;
+    }
+    Ok(())
 }
 
 /// After an edit, gives every thing that follows a folder its own copy of the module it used
@@ -162,7 +181,7 @@ pub fn move_thing(
 mod tests {
     use super::*;
     use crate::{new_scene, registry};
-    use bpe_core::{Color, Gradient, ModuleId, Value, resolve};
+    use bpe_core::{Color, Gradient, ModuleId, Settings, Value, resolve};
 
     fn linked(scene: &Scene, id: ThingId, slot: SlotId) -> ModuleId {
         match scene.things[&id].slots.get(&slot) {
@@ -237,6 +256,25 @@ mod tests {
         let a = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
         let bounce = linked(&scene, a, SlotId::Bounce);
         assert_eq!(scene.library.modules[&bounce].params.get("bounciness"), Some(&Value::Number(0.0)));
+    }
+
+    #[test]
+    fn adding_a_canvas_gives_balls_brushes() {
+        let reg = registry();
+        let mut scene = Scene::empty(&reg);
+        let bare = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let painted = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        fill_slot(&mut scene, &reg, painted, SlotId::Marks).unwrap();
+        let before = linked(&scene, painted, SlotId::Marks);
+        let wall = add_thing(&mut scene, &reg, "obstacle", ThingId::ROOT).unwrap();
+        add_thing(&mut scene, &reg, "canvas", ThingId::ROOT).unwrap();
+        let m = &scene.library.modules[&linked(&scene, bare, SlotId::Marks)];
+        assert_eq!((m.kind.as_str(), m.owner), ("marks.brushes", Some(bare)));
+        assert!(crate::modules::marks::MarksBrushes::from_params(&m.params).paint_on, "Paint trail is on");
+        assert_eq!(linked(&scene, painted, SlotId::Marks), before, "brushes already there stay");
+        assert!(!scene.things[&wall].slots.contains_key(&SlotId::Marks), "only balls get them");
+        let r = resolve(&scene, &reg);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
     }
 
     #[test]

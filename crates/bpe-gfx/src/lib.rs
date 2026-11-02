@@ -7,6 +7,7 @@
 mod blend;
 #[cfg(test)]
 mod blend_tests;
+mod canvas;
 mod each;
 pub mod effects;
 pub mod flow;
@@ -21,18 +22,20 @@ pub mod particles;
 mod pictures;
 pub mod text;
 
+pub use canvas::{CanvasTextures, MAX_TEXELS, clamp_texels};
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
-    BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Flock, Frame,
-    GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, ModuleDraw, Points, ShapeInstance, SoftVertex,
-    Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at,
-    hit_strength, push_streak, push_streak_colours, thing_code,
+    BackgroundPaint, BallInstance, BlendLayer, Burst, CanvasLayer, CanvasPlace, DrawCx, Draws, EffectCall,
+    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, ModuleDraw,
+    Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, blend_alpha,
+    build_frame, build_frame_at, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
 pub use wgpu;
 
+use bpe_core::ThingId;
 use bpe_runtime::CameraView;
 use bytemuck::{Pod, Zeroable};
 
@@ -286,6 +289,7 @@ pub struct Renderer {
     overlay: FrameBuffers,
     layer_buffers: Vec<FrameBuffers>,
     blend: blend::Composite,
+    canvas: canvas::composite::Composite,
     /// For layers whose things blend with each other.
     each: each::EachPipelines,
     each_globals: each::EachGlobals,
@@ -841,6 +845,7 @@ impl Renderer {
             overlay: FrameBuffers::default(),
             layer_buffers: Vec::new(),
             blend: blend::Composite::new(device),
+            canvas: canvas::composite::Composite::new(device),
             each,
             each_globals: each::EachGlobals::default(),
             globals_layout,
@@ -971,7 +976,8 @@ impl Renderer {
     /// [`Renderer::render_with_flow`]; here they are only drawn. Liquids are shaded between
     /// the walls and the balls, over a copy of what is behind them. Each blend layer is drawn
     /// into its own picture and mixed in after the frame's flashes (the overlay's layers after
-    /// the overlay), so blended things sit above the rest.
+    /// the overlay), so blended things sit above the rest. Canvases go in at their places: after
+    /// the background, after the walls and soft bodies, or after the balls, under the text.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(
             &self.globals,
@@ -1025,15 +1031,28 @@ impl Renderer {
             layer: false,
             each: None,
         };
+        // Counts the blend composites this frame: canvases' and blend layers'.
+        let mut slot = 0;
+        // The composite lets go of the textures of canvases gone since the last frame.
+        let flow = self.flow.as_ref();
+        let current: Vec<_> = frame.canvases.iter().map(|c| flow.and_then(|f| f.canvas_textures(c.thing))).collect();
+        self.canvas.keep(&current);
         {
             let mut pass =
-                begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                begin_pass(&mut encoder, &self.targets.hdr, "background", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.paint.group, &[]);
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
+        }
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindEverything, &mut slot);
+        {
+            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_back(&mut pass, frame, &self.buffers, &world);
         }
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindBalls, &mut slot);
         if !frame.liquids.is_empty() {
             self.copy_under(&mut encoder);
         }
@@ -1069,12 +1088,12 @@ impl Renderer {
             &self.targets.hdr,
             object_view.as_ref(),
         );
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnTop, &mut slot);
         if !frame.flashes.is_empty() || !frame.bursts.is_empty() || !frame.glyphs.is_empty() {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
         }
-        let mut slot = 0;
         let world_layer = Through { layer: true, ..world.clone() };
         for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate() {
             let effects = Some((frame, i, object_view.as_ref()));
@@ -1147,6 +1166,48 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+    }
+
+    /// Draws `frame`'s canvases at `place` into the HDR picture through the camera: Normal and
+    /// Add straight in, any other blend drawn into the layer picture and mixed in by the blend
+    /// composite. `slot` counts the blend composites so far this frame.
+    fn draw_canvases(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        place: CanvasPlace,
+        slot: &mut usize,
+    ) {
+        for (i, c) in frame.canvases.iter().enumerate().filter(|(_, c)| c.place == place) {
+            // Read from the flow layers directly (see `canvas_textures`) to borrow alongside
+            // the composite.
+            let textures = self.flow.as_ref().and_then(|flow| flow.canvas_textures(c.thing));
+            if canvas::composite::Composite::direct(c.blend) {
+                let mut pass = begin_pass(encoder, &self.targets.hdr, "canvas", wgpu::LoadOp::Load);
+                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+                continue;
+            }
+            self.targets.ensure_layer(device);
+            self.copy_under(encoder);
+            let (_, layer) = self.targets.layer.clone().expect("made above");
+            {
+                let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+                let mut pass = begin_pass(encoder, &layer, "canvas layer", clear);
+                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+            }
+            // The opacity is in the layer's coverage already.
+            let (under, hdr) = (&self.targets.behind_view, &self.targets.hdr);
+            self.blend.composite(device, queue, encoder, *slot, c.blend, 1.0, false, under, &layer, hdr);
+            *slot += 1;
+        }
+    }
+
+    /// The textures `thing`'s canvas marks are painted into, from the flow layers; `None` until
+    /// they hold them.
+    pub fn canvas_textures(&self, thing: ThingId) -> Option<&CanvasTextures> {
+        self.flow.as_ref().and_then(|flow| flow.canvas_textures(thing))
     }
 
     /// Copies the HDR picture into `behind`: what liquids bend, and what a blend layer is mixed

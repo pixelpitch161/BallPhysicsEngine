@@ -24,6 +24,11 @@ pub trait ThingKind: Send + Sync + 'static {
     fn sticks_to_screen(&self) -> bool {
         false
     }
+    /// Whether one of these may be stuck to the screen at all. A kind that says no is always
+    /// drawn in the world, whatever its own stick-to-screen choice says, such as a canvas.
+    fn can_stick_to_screen(&self) -> bool {
+        true
+    }
     /// Whether a scene has at most one of these, which can't be deleted or duplicated.
     fn single(&self) -> bool {
         false

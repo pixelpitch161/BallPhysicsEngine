@@ -163,7 +163,7 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
     // For each thing and slot, the thing whose link fills it for the thing's children: its own
     // link when its kind passes slots down, else whatever it was handed itself. Parents come
     // before children in `order`, so each thing only looks one step up.
-    let mut source: BTreeMap<ThingId, [Option<ThingId>; 8]> = BTreeMap::new();
+    let mut source: BTreeMap<ThingId, [Option<ThingId>; SlotId::ALL.len()]> = BTreeMap::new();
 
     for &id in &scene.order {
         let Some(thing) = scene.things.get(&id) else { continue };
@@ -177,8 +177,8 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
             continue;
         };
 
-        let above = thing.parent.and_then(|p| source.get(&p)).copied().unwrap_or([None; 8]);
-        let mut here = [None; 8];
+        let above = thing.parent.and_then(|p| source.get(&p)).copied().unwrap_or([None; SlotId::ALL.len()]);
+        let mut here = [None; SlotId::ALL.len()];
         for slot in SlotId::ALL {
             let i = slot as usize;
             here[i] = match step(scene, reg, id, slot, broken) {
@@ -281,6 +281,7 @@ mod tests {
         for (i, slot) in SlotId::ALL.into_iter().enumerate() {
             assert_eq!(slot as usize, i);
         }
+        assert_eq!(SlotId::ALL[SlotId::Marks as usize], SlotId::Marks);
     }
 
     #[test]

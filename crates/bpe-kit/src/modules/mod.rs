@@ -5,6 +5,7 @@ pub mod drums;
 pub mod look;
 pub mod look_liquid;
 pub mod look_swarm;
+pub mod marks;
 pub mod melody;
 pub mod motion;
 pub mod motion_flock;

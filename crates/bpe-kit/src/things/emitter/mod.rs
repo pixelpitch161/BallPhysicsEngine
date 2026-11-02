@@ -83,7 +83,7 @@ impl Default for EmitterSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Rules];
+const SLOTS: &[SlotId] = &[SlotId::Rules, SlotId::Marks];
 
 impl ThingKind for EmitterKind {
     fn id(&self) -> &'static str {

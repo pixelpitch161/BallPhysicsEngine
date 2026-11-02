@@ -32,9 +32,10 @@ pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::drums::mix::DrumSoundMix;
 pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
-pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
+pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_in_sim};
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
+pub use modules::marks::{MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, SplatShape, Tip, Turn, WidthBy};
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
@@ -65,6 +66,10 @@ pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
+pub use things::canvas::{
+    CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
+    CanvasThingKind, Cell, Fit, StartsAs, canvas_area,
+};
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
 pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
@@ -100,10 +105,12 @@ pub fn sims() -> Sims {
     s.add_thing(FolderSim);
     s.add_thing(ObstacleSim);
     s.add_thing(CameraSim);
+    s.add_thing(CanvasSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     s.add_module(RulesSim);
     s.add_module(FlowingSim);
+    s.add_module(MarksSim);
     s
 }
 
@@ -118,6 +125,7 @@ pub fn draws() -> Draws {
     d.add(SoftDraw);
     d.add(TextDraw);
     d.add(ObstacleDraw);
+    d.add(CanvasDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
@@ -319,10 +327,12 @@ pub fn registry() -> Registry {
     r.add_thing(CameraKind);
     r.add_thing(LiquidKind);
     r.add_thing(SwarmKind);
+    r.add_thing(CanvasThingKind);
     r.add_module(BasicLookKind);
     r.add_module(LiquidLookKind);
     r.add_module(SwarmLookKind);
     r.add_module(StreakTrailKind);
+    r.add_module(MarksBrushesKind);
     r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
     r.add_module(FlowingKind);
@@ -383,7 +393,7 @@ pub fn new_studio_scene(reg: &Registry) -> Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{SlotId, ThingId, Value, resolve};
+    use bpe_core::{Color, SlotId, ThingId, Value, resolve, resolve_slot};
     use bpe_runtime::{Log, World};
 
     #[test]
@@ -393,6 +403,86 @@ mod tests {
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
         }
+    }
+
+    #[test]
+    fn marks_kind_registered_on_marks_slot() {
+        let reg = registry();
+        let kind = reg.module("marks.brushes").expect("registered");
+        assert_eq!((kind.slot(), kind.name()), (SlotId::Marks, "Brushes"));
+        assert!(sims().module("marks.brushes").is_some());
+        assert!(reg.modules_for(SlotId::Marks).any(|m| m.id() == "marks.brushes"));
+        let defs = kind.settings();
+        for key in ["paint_on", "paint_width_by", "paint_width", "paint_tip", "paint_when", "paint_min_speed"] {
+            assert!(defs.iter().any(|d| d.key == key), "no {key}");
+        }
+        for key in ["paint_load", "splat_on", "splat_shape", "splat_size", "splat_by_speed", "splat_turn"] {
+            assert!(defs.iter().any(|d| d.key == key), "no {key}");
+        }
+        for key in ["splat_variants", "splat_min_speed", "colour_from", "colour_colours", "colour_follow"] {
+            assert!(defs.iter().any(|d| d.key == key), "no {key}");
+        }
+        let d = MarksBrushes::default();
+        assert!(d.paint_on && !d.splat_on);
+        assert_eq!(MarksBrushes::from_params(&d.to_params()), d);
+    }
+
+    /// The new scene with a Brushes module on its ball.
+    fn scene_with_brushes() -> (Scene, Registry) {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let m = scene.add_module(&reg, "marks.brushes", "Brushes").unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Marks, m).unwrap();
+        (scene, reg)
+    }
+
+    #[test]
+    fn fingerprint_changes_with_marks_settings() {
+        let (mut scene, reg) = scene_with_brushes();
+        let sims = sims();
+        let before = bpe_runtime::fingerprint(&scene, &resolve(&scene, &reg), &sims);
+        let m = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone();
+        let SlotLink::Linked { module, .. } = m else { panic!("linked") };
+        scene.library.modules.get_mut(&module).unwrap().params.set("splat_size", Value::Number(60.0));
+        let after = bpe_runtime::fingerprint(&scene, &resolve(&scene, &reg), &sims);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn looks_count_only_in_scenes_with_marks() {
+        let reg = registry();
+        let sims = sims();
+        let recolour = |scene: &mut Scene| {
+            let look = resolve_slot(scene, &reg, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
+            let p = &mut scene.library.modules.get_mut(&look).unwrap().params;
+            p.set("colours", Value::Gradient(bpe_core::Gradient::solid(Color::rgb(0, 255, 0))));
+        };
+        let mut plain = new_scene(&reg);
+        let before = bpe_runtime::fingerprint(&plain, &resolve(&plain, &reg), &sims);
+        recolour(&mut plain);
+        assert_eq!(bpe_runtime::fingerprint(&plain, &resolve(&plain, &reg), &sims), before);
+
+        let (mut marked, _) = scene_with_brushes();
+        let before = bpe_runtime::fingerprint(&marked, &resolve(&marked, &reg), &sims);
+        recolour(&mut marked);
+        let resolved = resolve(&marked, &reg);
+        assert_ne!(bpe_runtime::fingerprint(&marked, &resolved, &sims), before);
+        let world = World::build(&marked, &resolved, &sims);
+        // Every thing with a Look is kept, so a brush can take the colour of a ball that has no
+        // brushes of its own.
+        assert!(world.looks.contains_key(&ThingId(2)) && world.looks.contains_key(&ThingId(1)));
+        // A recolour of a ball without brushes counts too, once some other thing has them.
+        let mut other = marked.clone();
+        other.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Marks);
+        let obstacle = add_thing(&mut other, &reg, "obstacle", ThingId::ROOT).unwrap();
+        fill_slot(&mut other, &reg, obstacle, SlotId::Marks).unwrap();
+        let before = bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims);
+        let look = resolve_slot(&other, &reg, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
+        let p = &mut other.library.modules.get_mut(&look).unwrap().params;
+        p.set("colours", Value::Gradient(bpe_core::Gradient::solid(Color::rgb(255, 0, 0))));
+        assert_ne!(bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims), before);
+        let plain_world = World::build(&plain, &resolve(&plain, &reg), &sims);
+        assert!(plain_world.looks.is_empty());
     }
 
     #[test]

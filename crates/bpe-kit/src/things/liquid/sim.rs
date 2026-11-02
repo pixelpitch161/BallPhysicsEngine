@@ -55,7 +55,7 @@ pub fn wall_of(world: &World, position: Vec2) -> Option<(ThingId, Wall)> {
 }
 
 /// The box around an outline.
-fn bounds(outline: &Outline) -> Rect {
+pub(crate) fn bounds(outline: &Outline) -> Rect {
     match *outline {
         Outline::Ring { center, radius, .. } => {
             Rect { min: center - Vec2::splat(radius), max: center + Vec2::splat(radius) }

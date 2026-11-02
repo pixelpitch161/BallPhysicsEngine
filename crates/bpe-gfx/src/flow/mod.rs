@@ -5,6 +5,8 @@
 //! [`FlowLayers`] owns that private [`World`], steps it along with the layers in batches, and
 //! keeps checkpoints of both so seeking back is cheap. Each GPU step is told the first few
 //! balls and where the wall is ([`inputs`]) and reads the wall distance field ([`sdf`]).
+//! Canvases are layers too: each step stamps the marks the private world made that step into
+//! their textures, and checkpoints copy the textures.
 
 mod inputs;
 mod liquid;
@@ -17,8 +19,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use bpe_core::{Resolved, Scene, ThingId};
-use bpe_runtime::{Log, Outline, Sims, World};
+use bpe_runtime::{Log, Mark, Outline, Sims, World};
 
+use crate::canvas::CanvasTextures;
+use crate::canvas::stamp::{CanvasGpu, StampPipeline};
+use crate::canvas::texture_bytes;
 use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
 use inputs::{Inputs, step_inputs};
 use liquid::{LiquidGpu, LiquidPipelines};
@@ -62,20 +67,41 @@ pub struct FlowStatus {
 struct Pipelines {
     swarm: SwarmPipelines,
     liquid: LiquidPipelines,
+    stamp: StampPipeline,
 }
 
 /// One GPU-stepped layer.
 enum Layer {
     Swarm(Box<SwarmGpu>),
     Liquid(LiquidGpu),
+    Canvas(Box<CanvasGpu>),
+}
+
+/// What one layer step works with.
+struct StepCx<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    inputs: &'a Inputs,
+    /// Binds the step's inputs in `inputs.group`.
+    offset: u32,
+    sdf: &'a Sdf,
+    /// The marks the private world made during this step, in order.
+    marks: &'a [Mark],
+    steps_per_second: u32,
+    /// Whether the step is the first of its batch.
+    first: bool,
 }
 
 impl Layer {
-    /// Records one step into `encoder`. `offset` binds the step's inputs in `inputs.group`.
-    fn step(&self, pipelines: &Pipelines, encoder: &mut wgpu::CommandEncoder, inputs: &Inputs, offset: u32, sdf: &Sdf) {
+    /// Records one step into `encoder`.
+    fn step(&mut self, pipelines: &Pipelines, encoder: &mut wgpu::CommandEncoder, cx: &StepCx) {
+        let (inputs, offset, sdf) = (cx.inputs, cx.offset, cx.sdf);
         match self {
             Layer::Swarm(s) => s.step(&pipelines.swarm, encoder, inputs, offset, sdf),
             Layer::Liquid(l) => l.step(&pipelines.liquid, encoder, inputs, offset, sdf),
+            Layer::Canvas(c) => {
+                c.step(cx.device, cx.queue, &pipelines.stamp, encoder, cx.marks, cx.steps_per_second, cx.first)
+            }
         }
     }
 
@@ -84,13 +110,23 @@ impl Layer {
         match self {
             Layer::Swarm(s) => s.state(),
             Layer::Liquid(l) => l.state(),
+            Layer::Canvas(_) => Vec::new(),
+        }
+    }
+
+    /// The textures that carry the layer's state; checkpoints copy them too.
+    fn textures(&self) -> Vec<&wgpu::Texture> {
+        match self {
+            Layer::Canvas(c) => c.state().to_vec(),
+            Layer::Swarm(_) | Layer::Liquid(_) => Vec::new(),
         }
     }
 }
 
-/// Copies of a layer's state buffers at one step.
+/// Copies of a layer's state buffers and textures at one step.
 struct Snapshot {
     buffers: Vec<wgpu::Buffer>,
+    textures: Vec<wgpu::Texture>,
 }
 
 impl Snapshot {
@@ -109,17 +145,38 @@ impl Snapshot {
                 copy
             })
             .collect();
-        Self { buffers }
+        let textures = layer
+            .textures()
+            .into_iter()
+            .map(|source| {
+                let copy = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("flow checkpoint"),
+                    size: source.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: source.format(),
+                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_image_copy(), source.size());
+                copy
+            })
+            .collect();
+        Self { buffers, textures }
     }
 
     fn restore(&self, encoder: &mut wgpu::CommandEncoder, layer: &Layer) {
         for (copy, target) in self.buffers.iter().zip(layer.state()) {
             encoder.copy_buffer_to_buffer(copy, 0, target, 0, copy.size().min(target.size()));
         }
+        for (copy, target) in self.textures.iter().zip(layer.textures()) {
+            encoder.copy_texture_to_texture(copy.as_image_copy(), target.as_image_copy(), copy.size());
+        }
     }
 
     fn bytes(&self) -> u64 {
-        self.buffers.iter().map(|b| b.size()).sum()
+        self.buffers.iter().map(|b| b.size()).sum::<u64>() + self.textures.iter().map(texture_bytes).sum::<u64>()
     }
 }
 
@@ -185,8 +242,10 @@ fn arena_size(wall: Option<&Outline>, video: (u32, u32)) -> f32 {
     }
 }
 
-/// Keeps the log small: emitters only read back one step, so older events can go.
+/// Keeps the log small: emitters only read back one step, so older events can go, and the
+/// marks up to `world_step` are drawn already.
 fn trim_log(log: &mut Log, world_step: u64) {
+    log.drop_marks_upto(world_step);
     if log.len() > LOG_KEEP {
         let recent = log.since(world_step.saturating_sub(1)).to_vec();
         *log = Log::default();
@@ -203,6 +262,7 @@ impl FlowLayers {
         let pipelines = Pipelines {
             swarm: SwarmPipelines::new(device, &inputs.layout, &sdf.layout),
             liquid: LiquidPipelines::new(device, &inputs.layout, &sdf.layout),
+            stamp: StampPipeline::new(device),
         };
         Self {
             inputs,
@@ -233,7 +293,7 @@ impl FlowLayers {
     pub(crate) fn swarm(&self, thing: ThingId) -> Option<&SwarmGpu> {
         match self.layers.get(&thing)? {
             Layer::Swarm(s) => Some(s.as_ref()),
-            Layer::Liquid(_) => None,
+            _ => None,
         }
     }
 
@@ -242,7 +302,15 @@ impl FlowLayers {
     pub(crate) fn liquid(&self, thing: ThingId) -> Option<&LiquidGpu> {
         match self.layers.get(&thing)? {
             Layer::Liquid(l) => Some(l),
-            Layer::Swarm(_) => None,
+            _ => None,
+        }
+    }
+
+    /// The textures `thing`'s canvas marks are painted into; `None` until its layer runs.
+    pub fn canvas_textures(&self, thing: ThingId) -> Option<&CanvasTextures> {
+        match self.layers.get(&thing)? {
+            Layer::Canvas(c) => Some(&c.textures),
+            _ => None,
         }
     }
 
@@ -257,7 +325,7 @@ impl FlowLayers {
                 pour_steps: l.pour_steps(),
                 step: self.step(),
             }),
-            Layer::Swarm(_) => None,
+            _ => None,
         }
     }
 
@@ -273,14 +341,18 @@ impl FlowLayers {
 
     /// Makes the layers match the frame: starts over when `source.key`, the set of GPU layers
     /// or how one of them moves changed, takes a changed look in place, and lets everything go
-    /// when the frame has no GPU layers.
+    /// when the frame has no GPU layers. The frame's canvases are layers too (only the top
+    /// frame's: the renderer draws no others); a new size or texture size starts over.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, source: &FlowSource) {
         let gpu_liquids = all_liquids(frame).filter_map(|l| match &l.points {
             Points::Gpu(desc) => Some((l.thing, desc)),
             Points::Cpu(_) => None,
         });
-        let wanted: BTreeSet<ThingId> =
-            all_swarms(frame).map(|s| s.thing).chain(gpu_liquids.clone().map(|(id, _)| id)).collect();
+        let wanted: BTreeSet<ThingId> = all_swarms(frame)
+            .map(|s| s.thing)
+            .chain(gpu_liquids.clone().map(|(id, _)| id))
+            .chain(frame.canvases.iter().map(|c| c.thing))
+            .collect();
         if wanted.is_empty() {
             self.driver = None;
             self.layers.clear();
@@ -294,6 +366,10 @@ impl FlowLayers {
             })
             && gpu_liquids.clone().all(|(id, desc)| match self.layers.get(&id) {
                 Some(Layer::Liquid(l)) => l.desc() == desc,
+                _ => false,
+            })
+            && frame.canvases.iter().all(|c| match self.layers.get(&c.thing) {
+                Some(Layer::Canvas(g)) => g.size == c.size && g.texels == c.texels,
                 _ => false,
             });
         if !same {
@@ -332,8 +408,15 @@ impl FlowLayers {
             }
             Points::Cpu(_) => None,
         });
+        let canvases = frame.canvases.iter().map(|c| {
+            (
+                c.thing,
+                Layer::Canvas(Box::new(CanvasGpu::new(device, queue, &pipelines.stamp, c.thing, c.size, c.texels))),
+            )
+        });
         self.layers = liquids.collect();
         self.layers.extend(swarms);
+        self.layers.extend(canvases);
         let snapshots = self.layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l))).collect();
         queue.submit([encoder.finish()]);
         let checkpoint = Checkpoint { step: 0, world: world.clone(), log: Log::default(), layers: snapshots };
@@ -440,17 +523,28 @@ impl FlowLayers {
             let time = step as f64 / SIM_HZ as f64;
             // The private world runs at the scene's own rate: whole steps up to this one.
             let world_steps = step * driver.world.steps_per_second as u64 / SIM_HZ as u64;
+            let before = driver.world.step;
             while driver.world.step < world_steps {
                 driver.world.step(source.sims, &mut driver.log);
             }
-            trim_log(&mut driver.log, driver.world.step);
             let wall = first_wall(&driver.world);
             let bytes =
                 step_inputs(&driver.world, time, step, driver.video, &source.ball_colors, &sdf.frame(wall.as_ref()));
             let offset = inputs.write(queue, slot, &bytes);
-            for layer in layers.values() {
-                layer.step(pipelines, &mut encoder, inputs, offset, sdf);
+            let cx = StepCx {
+                device,
+                queue,
+                inputs,
+                offset,
+                sdf,
+                marks: driver.log.marks_between(before, driver.world.step),
+                steps_per_second: driver.world.steps_per_second,
+                first: slot == 0,
+            };
+            for layer in layers.values_mut() {
+                layer.step(pipelines, &mut encoder, &cx);
             }
+            trim_log(&mut driver.log, driver.world.step);
             *steps_run += 1;
             if step.is_multiple_of(driver.interval) && driver.checkpoints.last().is_none_or(|c| c.step < step) {
                 let snapshots = layers.iter().map(|(id, l)| (*id, Snapshot::take(device, &mut encoder, l))).collect();
@@ -1272,5 +1366,230 @@ mod tests {
         assert_eq!(green_far, 0, "{lit_far} lit");
         let (red_near, _, lit_near) = tally(1.0);
         assert_eq!(red_near, 0, "{lit_near} lit");
+    }
+
+    /// The canvas the marking sims below mark.
+    const CANVAS: ThingId = ThingId(9);
+    /// Its side in world pixels and texels: rows of 384 Rgba16Float texels read back unpadded.
+    const SIDE: u32 = 384;
+
+    /// Leaves `marks(step)` on [`CANVAS`] after every step, standing in for the canvas sim.
+    struct Marking(fn(u64) -> Vec<bpe_runtime::Mark>);
+    impl bpe_runtime::ThingSim for Marking {
+        fn kind(&self) -> &'static str {
+            "balls"
+        }
+        fn build(&self, _: &bpe_core::Thing, _: &bpe_core::ResolvedThing, _: &mut World) {}
+        fn after_step(&self, _: ThingId, world: &mut World, log: &mut bpe_runtime::Log) {
+            for m in (self.0)(world.step) {
+                log.push_mark(m);
+            }
+        }
+    }
+
+    fn mark(step: u64, shape: bpe_runtime::MarkShape, from: Vec2, to: Vec2, radius: f32) -> bpe_runtime::Mark {
+        bpe_runtime::Mark {
+            step,
+            canvas: CANVAS,
+            shape,
+            from,
+            to,
+            radius,
+            angle: 0.0,
+            variant: 0,
+            colour: [1.0, 0.0, 0.0, 1.0],
+        }
+    }
+
+    fn canvas_layer() -> crate::CanvasLayer {
+        crate::CanvasLayer {
+            thing: CANVAS,
+            center: [0.0; 2],
+            angle: 0.0,
+            size: [SIDE as f32; 2],
+            texels: [SIDE; 2],
+            place: crate::CanvasPlace::BehindBalls,
+            start: None,
+            fade: 0.0,
+            blend: bpe_core::Blend::Normal,
+            opacity: 1.0,
+            time: 0.0,
+        }
+    }
+
+    fn f16_to_f32(bits: u16) -> f32 {
+        let exponent = ((bits >> 10) & 0x1f) as i32;
+        let mantissa = (bits & 0x3ff) as f32;
+        let value = if exponent == 0 {
+            mantissa * 2f32.powi(-24)
+        } else {
+            (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15)
+        };
+        if bits & 0x8000 != 0 { -value } else { value }
+    }
+
+    /// The raw bytes of a [`SIDE`]-square Rgba16Float texture.
+    fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+        let row = SIDE * 8;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * SIDE) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None },
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        buffer.slice(..).get_mapped_range().unwrap().to_vec()
+    }
+
+    /// The texel under canvas point `p` (from the canvas's middle) of a read-back texture.
+    fn texel(bytes: &[u8], p: Vec2) -> [f32; 4] {
+        let (x, y) = ((p.x + SIDE as f32 / 2.0) as usize, (p.y + SIDE as f32 / 2.0) as usize);
+        let i = (y * SIDE as usize + x) * 8;
+        std::array::from_fn(|c| f16_to_f32(u16::from_le_bytes([bytes[i + c * 2], bytes[i + c * 2 + 1]])))
+    }
+
+    fn canvas_source<'a>(scene: &'a Scene, resolved: &'a Resolved, sims: &'a Sims) -> FlowSource<'a> {
+        FlowSource { scene, resolved, sims, key: 11, budget: None, ball_colors: BTreeMap::new() }
+    }
+
+    #[test]
+    fn canvas_marks_stamp_their_shapes() {
+        use bpe_runtime::MarkShape as S;
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let v = Vec2::new;
+            let mut square = mark(1, S::Stroke, v(-150.0, -100.0), v(-100.0, -100.0), 10.0);
+            square.variant = 1;
+            vec![
+                mark(1, S::Stroke, v(-150.0, -150.0), v(-100.0, -150.0), 10.0),
+                square,
+                mark(1, S::Splat, v(0.0, -150.0), v(0.0, -150.0), 30.0),
+                mark(1, S::Ring, v(100.0, -150.0), v(100.0, -150.0), 30.0),
+                mark(1, S::Star, v(-150.0, 50.0), v(-150.0, 50.0), 30.0),
+                mark(1, S::Crack, v(-50.0, 50.0), v(-50.0, 50.0), 30.0),
+                mark(1, S::Burst, v(50.0, 50.0), v(50.0, 50.0), 30.0),
+                mark(1, S::Dots, v(150.0, 50.0), v(150.0, 50.0), 30.0),
+            ]
+        }));
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(&scene, &resolved, &sims);
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 0.1, &source);
+        let textures = flow.canvas_textures(CANVAS).expect("the canvas has textures");
+        let paint = read_texture(&device, &queue, &textures.paint);
+        let aux = read_texture(&device, &queue, &textures.aux);
+        let painted = |p: Vec2| texel(&paint, p)[3] > 0.99;
+        let clear = |p: Vec2| texel(&paint, p)[3] == 0.0;
+        let v = Vec2::new;
+        // A full mark is its colour, premultiplied, and the time it was made.
+        assert_eq!(texel(&paint, v(-125.0, -150.0)), [1.0, 0.0, 0.0, 1.0]);
+        let time = 1.0 / World::build(&scene, &resolved, &sims).steps_per_second as f32;
+        assert!((texel(&aux, v(-125.0, -150.0))[0] - time).abs() < 1e-5, "{:?}", texel(&aux, v(-125.0, -150.0)));
+        assert_eq!(texel(&aux, v(0.0, 0.0))[0], 0.0, "unpainted");
+        // Round and square tips.
+        assert!(clear(v(-92.0, -142.0)) && painted(v(-92.0, -92.0)));
+        // A splat covers its middle and stays inside its radius.
+        assert!(painted(v(0.0, -150.0)));
+        for d in [v(33.0, 0.0), v(-33.0, 0.0), v(0.0, 33.0), v(0.0, -33.0)] {
+            assert!(clear(v(0.0, -150.0) + d), "{d}");
+        }
+        // A ring has a hole.
+        assert!(clear(v(100.0, -150.0)) && painted(v(125.5, -150.0)));
+        // A star's point is up; between the two lower points there is none.
+        assert!(painted(v(-150.0, 50.0)) && painted(v(-150.0, 25.0)) && clear(v(-150.0, 72.0)));
+        // A crack starts from a dot; a burst's rays start away from the middle.
+        assert!(painted(v(-50.0, 50.0)));
+        assert!(clear(v(50.0, 50.0)) && painted(v(68.0, 50.0)));
+        // Dots stay inside their radius.
+        let inside = (-30..=30)
+            .flat_map(|x| (-30..=30).map(move |y| v(x as f32, y as f32)))
+            .filter(|d| d.length() < 30.0 && painted(v(150.0, 50.0) + *d))
+            .count();
+        assert!(inside > 100, "{inside}");
+        assert!((0..64).all(|i| clear(v(150.0, 50.0) + Vec2::from_angle(i as f32 * 0.1) * 32.0)));
+    }
+
+    #[test]
+    fn canvas_soft_edges_keep_the_time_under_them() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // A wide stroke, then a thin one whose soft edge just reaches texel (0, 0).
+        sims.add_thing(Marking(|step| match step {
+            1 => vec![mark(1, bpe_runtime::MarkShape::Stroke, Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0), 20.0)],
+            2 => vec![mark(2, bpe_runtime::MarkShape::Stroke, Vec2::new(-10.0, -4.8), Vec2::new(10.0, -4.8), 5.0)],
+            _ => Vec::new(),
+        }));
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(&scene, &resolved, &sims);
+        let mut flow = FlowLayers::new(&device);
+        flow.prepare(&device, &queue, &frame, &source);
+        flow.step_to(&device, &queue, 0.1, &source);
+        let aux = read_texture(&device, &queue, &flow.canvas_textures(CANVAS).unwrap().aux);
+        let second = 2.0 / World::build(&scene, &resolved, &sims).steps_per_second as f32;
+        let first = second / 2.0;
+        // Texel (0, 0)'s centre is 5.3 from the thin stroke's middle line: a fifth covered.
+        let edge = texel(&aux, Vec2::new(0.5, 0.5))[0];
+        assert!((edge - first).abs() < 1e-5, "{edge}: the soft edge keeps the older time");
+        let inside = texel(&aux, Vec2::new(0.5, -4.5))[0];
+        assert!((inside - second).abs() < 1e-5, "{inside}: the thin stroke re-dates what it covers");
+    }
+
+    #[test]
+    fn canvas_checkpoints_restore_its_textures() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // A stroke every step, round and round, its colour by the step.
+        sims.add_thing(Marking(|step| {
+            let at = |s: u64| Vec2::from_angle(s as f32 * 0.03) * (60.0 + (s % 97) as f32);
+            let mut m = mark(step, bpe_runtime::MarkShape::Stroke, at(step - 1), at(step), 5.0);
+            m.colour = [(step % 7) as f32 / 7.0, (step % 13) as f32 / 13.0, 0.5, 0.8];
+            vec![m]
+        }));
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(&scene, &resolved, &sims);
+        let read = |flow: &FlowLayers| {
+            let t = flow.canvas_textures(CANVAS).unwrap();
+            (read_texture(&device, &queue, &t.paint), read_texture(&device, &queue, &t.aux))
+        };
+        let mut seeked = FlowLayers::new(&device);
+        seeked.prepare(&device, &queue, &frame, &source);
+        seeked.step_to(&device, &queue, 3.0, &source);
+        let (count, _, bytes) = seeked.checkpoint_stats();
+        assert_eq!(count, 2, "at steps 0 and 240");
+        assert!(bytes >= 2 * 2 * (SIDE * SIDE * 8) as u64, "{bytes}: the checkpoints hold the textures");
+        let at_three = read(&seeked);
+        seeked.step_to(&device, &queue, 2.5, &source);
+        let mut straight = FlowLayers::new(&device);
+        straight.prepare(&device, &queue, &frame, &source);
+        straight.step_to(&device, &queue, 2.5, &source);
+        let (back, ahead) = (read(&seeked), read(&straight));
+        assert!(back == ahead, "seeking back to 2.5 s matches running straight there");
+        assert!(back != at_three, "the canvas changed between 2.5 s and 3 s");
+        // A new size starts over.
+        frame.canvases[0].texels = [SIDE / 2; 2];
+        seeked.prepare(&device, &queue, &frame, &source);
+        assert_eq!(seeked.step(), 0);
     }
 }

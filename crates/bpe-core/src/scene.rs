@@ -102,9 +102,10 @@ impl Thing {
         matches!(self.attach, Attach::Ride { .. })
     }
 
-    /// Whether it is drawn on the screen rather than in the world.
+    /// Whether it is drawn on the screen rather than in the world; never for a kind that
+    /// [can't stick to the screen](crate::ThingKind::can_stick_to_screen).
     pub fn sticks_to_screen(&self, kind: &dyn crate::ThingKind) -> bool {
-        self.screen.unwrap_or_else(|| kind.sticks_to_screen())
+        kind.can_stick_to_screen() && self.screen.unwrap_or_else(|| kind.sticks_to_screen())
     }
 }
 
@@ -351,6 +352,49 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::{Owner, testkit};
+
+    /// Balls that may never be stuck to the screen, standing in for a canvas.
+    struct Unstuck;
+    impl crate::ThingKind for Unstuck {
+        fn id(&self) -> &'static str {
+            "unstuck"
+        }
+        fn name(&self) -> &'static str {
+            "Unstuck"
+        }
+        fn icon(&self) -> &'static str {
+            "ball"
+        }
+        fn help(&self) -> &'static str {
+            ""
+        }
+        fn settings(&self) -> &'static [crate::SettingDef] {
+            &[]
+        }
+        fn slots(&self) -> &'static [SlotId] {
+            &[]
+        }
+        fn default_slots(&self) -> &'static [SlotId] {
+            &[]
+        }
+        fn can_stick_to_screen(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_kind_that_cannot_stick_to_the_screen_never_does() {
+        let reg = testkit::registry();
+        let balls = reg.thing("balls").unwrap();
+        let mut scene = Scene::empty(&reg);
+        let id = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        let thing = scene.things.get_mut(&id).unwrap();
+        thing.screen = Some(true);
+        assert!(thing.sticks_to_screen(balls), "an ordinary kind follows the flag");
+        assert!(!thing.sticks_to_screen(&Unstuck), "the flag is ignored");
+        thing.screen = None;
+        assert!(!thing.sticks_to_screen(&Unstuck));
+    }
 
     #[test]
     fn locks_round_trip_and_old_files_load_without_them() {

@@ -91,6 +91,7 @@ impl Playback {
             self.log.truncate(*len);
             self.log.truncate_camera(self.world.step);
             self.log.truncate_motion(self.world.step);
+            self.log.trim_marks_upto(self.world.step);
         }
         let started = budget.map(|_| Instant::now());
         while self.world.step < target {
@@ -148,6 +149,30 @@ mod tests {
         p.seek(3.0);
         assert_eq!(p.log().track(ball), first.track(ball));
         assert_eq!(p.log().scene_samples(), first.scene_samples());
+    }
+
+    #[test]
+    fn rewind_drops_later_marks() {
+        let (scene, resolved, sims) = dots_in_ring(5);
+        let mut p = Playback::new(&scene, &resolved, Arc::new(sims));
+        p.seek(3.0);
+        let rate = p.world.steps_per_second as u64;
+        let mark = |step| crate::Mark {
+            step,
+            canvas: DOTS,
+            shape: crate::MarkShape::Splat,
+            from: glam::Vec2::ZERO,
+            to: glam::Vec2::ZERO,
+            radius: 1.0,
+            angle: 0.0,
+            variant: 0,
+            colour: [1.0; 4],
+        };
+        for step in [rate / 2, 2 * rate, 3 * rate] {
+            p.log.push_mark(mark(step));
+        }
+        p.seek(1.0);
+        assert_eq!(p.log().marks(), &[mark(rate / 2)]);
     }
 
     #[test]

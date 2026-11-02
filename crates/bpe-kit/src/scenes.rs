@@ -21,10 +21,10 @@ use crate::modules::sound::{Order, PlaysWhen};
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion,
-    BeatSync, BurstSource, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape, Flocking, Font,
-    HitBurst, LiquidSettings, MelodySound, MovePath, NoteSound, ObstacleSettings, ObstacleShape, Piece, Pinned,
-    RulesKind, SceneSettings, SoftSettings, SoftShape, StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings,
-    TrailSource, new_scene, recipes,
+    BeatSync, BurstSource, CanvasLayerPos, CanvasSettings, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings,
+    FieldShape, Fit, Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound,
+    ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatShape,
+    StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -67,6 +67,11 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat])
 }
 
+/// The two Marks scenes: balls painting a canvas, and balls splatting a canvas that turns.
+pub fn marks(reg: &Registry) -> Vec<(String, Scene)> {
+    build_all(reg, &[paint_pour, splat_ring])
+}
+
 /// Every shipped scene, stage by stage.
 pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     let mut scenes = stage2(reg);
@@ -78,6 +83,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes.push(("Blend modes".into(), blend_demo(reg)));
     scenes.push(("Graded sunset".into(), graded_sunset(reg)));
+    scenes.extend(marks(reg));
     scenes
 }
 
@@ -1663,9 +1669,117 @@ fn fireflies(reg: &Registry) -> Scene {
     b.finish()
 }
 
+/// Six rainbow balls in a box, each painting a trail as wide as itself over a canvas that fits
+/// the box, for twenty seconds.
+fn paint_pour(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Paint pour");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 500.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.balls("Painters", Vec2::new(0.0, -300.0), |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 6;
+        s.radius = 26.0;
+        s.ring_radius = 140.0;
+        s.velocity = Vec2::new(260.0, -120.0);
+    });
+    b.bounce(|s| s.bounciness = 0.95);
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0x3e, 0x5c),
+                Color::rgb(0xff, 0xb8, 0x2e),
+                Color::rgb(0xe8, 0xf0, 0x3e),
+                Color::rgb(0x3e, 0xe0, 0x7a),
+                Color::rgb(0x3e, 0x9b, 0xff),
+                Color::rgb(0xa0, 0x4d, 0xff),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        };
+    });
+    // The canvas fits the box and sits behind the balls. It is added last, so the balls already
+    // have their brushes: paint trail on, as wide as the ball.
+    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, CanvasSettings::default().to_params());
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    b.set_params(
+        brushes,
+        MarksBrushes { paint_on: true, paint_width_by: WidthBy::Size, ..MarksBrushes::default() }.to_params(),
+    );
+    b.finish()
+}
+
+/// Balls in a ring arena splat a canvas that rides a spinning bar: the splats turn with it.
+fn splat_ring(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Splat ring");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 300.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| a.radius = 480.0);
+    let bar = b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Spinning bar",
+        Vec2::ZERO,
+        obstacle(|o| {
+            o.shape = ObstacleShape::Bar;
+            o.length = 560.0;
+            o.thickness = 14.0;
+            o.spin = 25.0;
+        }),
+    );
+    b.balls("Splatters", Vec2::new(0.0, -200.0), |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 8;
+        s.radius = 18.0;
+        s.ring_radius = 200.0;
+        s.velocity = Vec2::new(220.0, 0.0);
+    });
+    b.bounce(|s| s.bounciness = 1.0);
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xff, 0x5c, 0xa8),
+                Color::rgb(0xff, 0xd2, 0x3e),
+                Color::rgb(0x3e, 0xe0, 0xd0),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        };
+    });
+    // The canvas is a square around the bar's middle that turns with it, on top of the balls.
+    let canvas = CanvasSettings {
+        fit: Fit::Custom,
+        size: Vec2::new(900.0, 900.0),
+        layer: CanvasLayerPos::OnTop,
+        ..CanvasSettings::default()
+    };
+    let canvas = b.add("canvas", bar, "Canvas", Vec2::ZERO, canvas.to_params());
+    b.ride(canvas, bar, Vec2::ZERO, true);
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    let splat = MarksBrushes {
+        paint_on: false,
+        splat_on: true,
+        splat_shape: SplatShape::Splat,
+        splat_turn: Turn::FaceHit,
+        splat_size: 60.0,
+        ..MarksBrushes::default()
+    };
+    b.set_params(brushes, splat.to_params());
+    b.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
+    use bpe_core::{Attach, SlotId, Value};
 
     #[test]
     fn every_thing_in_a_built_in_scene_has_its_own_modules() {
@@ -1704,7 +1818,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 33);
+        assert_eq!(scenes.len(), 35);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1717,6 +1831,7 @@ mod tests {
                 ("Blend modes".into(), scenes::blend_demo(&reg)),
                 ("Graded sunset".into(), scenes::graded_sunset(&reg)),
             ],
+            scenes::marks(&reg),
         ]
         .concat()
         .into_iter()
@@ -1733,7 +1848,7 @@ mod tests {
         assert_eq!(names[15..20], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[20..25], ["Fountain", "Wind tunnel", "Small pool", "Deep pool", "Fireflies"]);
         assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
-        assert_eq!(names[30..], ["Colour paints", "Blend modes", "Graded sunset"]);
+        assert_eq!(names[30..], ["Colour paints", "Blend modes", "Graded sunset", "Paint pour", "Splat ring"]);
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
@@ -1747,6 +1862,27 @@ mod tests {
                 std::fs::write(format!("{dir}/{}.ron", name.to_lowercase().replace(' ', "-")), text).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn marks_scenes_resolve_cleanly() {
+        let reg = registry();
+        let marks = scenes::marks(&reg);
+        let names: Vec<&str> = marks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Paint pour", "Splat ring"]);
+        for (name, scene) in &marks {
+            assert_eq!(&scene.name, name);
+            assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
+            let canvases: Vec<_> = scene.things.values().filter(|t| t.kind == "canvas").collect();
+            assert_eq!(canvases.len(), 1, "{name}: one canvas");
+            let brushed = scene.things.values().filter(|t| t.slots.contains_key(&SlotId::Marks)).count();
+            assert!(brushed > 0, "{name}: something paints");
+        }
+        let ring = &marks[1].1;
+        let canvas = ring.things.values().find(|t| t.kind == "canvas").unwrap();
+        assert!(matches!(canvas.attach, Attach::Ride { .. }), "the splat ring's canvas rides a bar");
+        let parent = ring.things[&canvas.parent.expect("a parent")].params.clone();
+        assert_eq!(parent.get("shape"), Some(&Value::Choice("bar".into())));
     }
 
     #[test]

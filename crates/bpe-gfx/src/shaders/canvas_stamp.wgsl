@@ -1,0 +1,210 @@
+// Stamping marks into a canvas's two textures: one instanced quad per mark, in the order the
+// marks were made. The paint texture takes each mark premultiplied over what is there; the aux
+// texture's r is replaced by the mark's time wherever the mark covers at least half a texel. Shapes are signed
+// distances in canvas pixels with a soft edge one texel wide.
+
+struct Canvas {
+    // Width and height in canvas pixels, then the texture's width and height in texels.
+    size: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> canvas: Canvas;
+
+struct MarkIn {
+    // Where the mark starts and ends, in canvas pixels from the canvas's middle.
+    @location(0) ends: vec4<f32>,
+    // Radius, turn in radians, variant, shape (0 stroke, 1 splat, 2 ring, 3 star, 4 crack,
+    // 5 burst, 6 dots).
+    @location(1) look: vec4<f32>,
+    // Linear light, straight alpha.
+    @location(2) colour: vec4<f32>,
+    // x: when the mark was made, in seconds.
+    @location(3) clock: vec4<f32>,
+};
+
+struct StampOut {
+    @builtin(position) pos: vec4<f32>,
+    // Canvas pixels from the canvas's middle.
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) ends: vec4<f32>,
+    @location(2) @interpolate(flat) look: vec4<f32>,
+    @location(3) @interpolate(flat) colour: vec4<f32>,
+    @location(4) @interpolate(flat) clock: vec4<f32>,
+};
+
+const TAU: f32 = 6.283185307;
+
+// Canvas pixels per texel, the longer of the two sides.
+fn texel_size() -> f32 {
+    return max(canvas.size.x / max(canvas.size.z, 1.0), canvas.size.y / max(canvas.size.w, 1.0));
+}
+
+@vertex
+fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
+    let corner = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u)) * 2.0 - 1.0;
+    let start = m.ends.xy;
+    let to = m.ends.zw;
+    let r = m.look.x;
+    let margin = 2.0 * texel_size();
+    var mid = start;
+    var along = vec2<f32>(1.0, 0.0);
+    var half = vec2<f32>(r + margin);
+    if m.look.w < 0.5 {
+        // A stroke's box runs along it, past both ends by the radius.
+        let d = to - start;
+        let span = length(d);
+        if span > 0.0 {
+            along = d / span;
+        }
+        mid = (start + to) * 0.5;
+        half = vec2<f32>(span * 0.5 + r + margin, r + margin);
+    }
+    let across = vec2<f32>(-along.y, along.x);
+    let local = mid + along * corner.x * half.x + across * corner.y * half.y;
+    var out: StampOut;
+    // The top of the canvas (negative y) is the top of the texture.
+    out.pos = vec4<f32>(local.x / (canvas.size.x * 0.5), -local.y / (canvas.size.y * 0.5), 0.0, 1.0);
+    out.local = local;
+    out.ends = m.ends;
+    out.look = m.look;
+    out.colour = m.colour;
+    out.clock = m.clock;
+    return out;
+}
+
+// A well-mixed number from 0 to 1 for a variant, an index and a salt (PCG).
+fn hash(variant: u32, k: u32, salt: u32) -> f32 {
+    var x = variant * 747796405u + k * 2891336453u + salt * 277803737u + 1u;
+    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+    x = (x >> 22u) ^ x;
+    return f32(x) / 4294967295.0;
+}
+
+fn segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+fn box_distance(p: vec2<f32>, half: vec2<f32>) -> f32 {
+    let d = abs(p) - half;
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
+// A capsule from `a` to `b`; variant 1 squares its tips off.
+fn stroke(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32, variant: u32) -> f32 {
+    if variant != 1u {
+        return segment(p, a, b) - r;
+    }
+    let d = b - a;
+    let span = length(d);
+    var along = vec2<f32>(1.0, 0.0);
+    if span > 0.0 {
+        along = d / span;
+    }
+    let q = p - (a + b) * 0.5;
+    return box_distance(vec2<f32>(dot(q, along), dot(q, vec2<f32>(-along.y, along.x))), vec2<f32>(span * 0.5 + r, r));
+}
+
+// A blob of 7 lobes, their size and phase perturbed by the variant.
+fn splat(q: vec2<f32>, r: f32, v: u32) -> f32 {
+    let a = atan2(q.y, q.x);
+    let edge = 0.74 + 0.18 * cos(7.0 * a + hash(v, 0u, 1u) * TAU) + 0.08 * cos(3.0 * a + hash(v, 0u, 2u) * TAU);
+    return (length(q) - r * edge) * 0.8;
+}
+
+fn ring(q: vec2<f32>, r: f32) -> f32 {
+    return abs(length(q) - 0.85 * r) - 0.15 * r;
+}
+
+// A five-pointed star whose points reach `r` (after Inigo Quilez's sdStar5).
+fn star(q: vec2<f32>, r: f32) -> f32 {
+    let k1 = vec2<f32>(0.809016994, -0.587785252);
+    let k2 = vec2<f32>(-k1.x, k1.y);
+    var p = vec2<f32>(abs(q.x), -q.y);
+    p -= 2.0 * max(dot(k1, p), 0.0) * k1;
+    p -= 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y -= r;
+    let ba = 0.45 * vec2<f32>(-k1.y, k1.x) - vec2<f32>(0.0, 1.0);
+    let h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+
+// Five jagged rays, their turns, lengths and zigzags from the variant.
+fn crack(q: vec2<f32>, r: f32, v: u32) -> f32 {
+    var d = length(q) - 0.12 * r;
+    for (var k = 0u; k < 5u; k++) {
+        let a = TAU * f32(k) / 5.0 + (hash(v, k, 3u) - 0.5) * 0.8;
+        let reach = r * (0.6 + 0.4 * hash(v, k, 4u));
+        let along = vec2<f32>(cos(a), sin(a));
+        let across = vec2<f32>(-along.y, along.x);
+        let p1 = along * reach / 3.0 + across * (hash(v, k, 5u) - 0.5) * 0.25 * reach;
+        let p2 = along * reach * 2.0 / 3.0 + across * (hash(v, k, 6u) - 0.5) * 0.25 * reach;
+        let p3 = along * reach;
+        let w = 0.05 * r;
+        d = min(d, segment(q, vec2<f32>(0.0), p1) - w);
+        d = min(d, segment(q, p1, p2) - w * 0.7);
+        d = min(d, segment(q, p2, p3) - w * 0.4);
+    }
+    return d;
+}
+
+// Twelve thin rays out from near the middle.
+fn burst(q: vec2<f32>, r: f32) -> f32 {
+    let sector = TAU / 12.0;
+    let a = atan2(q.y, q.x);
+    let folded = a - sector * round(a / sector);
+    let p = length(q) * vec2<f32>(cos(folded), sin(folded));
+    return segment(p, vec2<f32>(0.3 * r, 0.0), vec2<f32>(r, 0.0)) - 0.04 * r;
+}
+
+// Six discs placed and sized by the variant, all inside the radius.
+fn dots(q: vec2<f32>, r: f32, v: u32) -> f32 {
+    var d = 1e9;
+    for (var k = 0u; k < 6u; k++) {
+        let a = TAU * hash(v, k, 7u);
+        let centre = vec2<f32>(cos(a), sin(a)) * r * (0.15 + 0.6 * hash(v, k, 8u));
+        d = min(d, length(q - centre) - r * (0.12 + 0.13 * hash(v, k, 9u)));
+    }
+    return d;
+}
+
+struct StampTargets {
+    @location(0) paint: vec4<f32>,
+    @location(1) aux: vec4<f32>,
+};
+
+@fragment
+fn fs_stamp(in: StampOut) -> StampTargets {
+    let start = in.ends.xy;
+    let r = in.look.x;
+    let variant = u32(round(in.look.z));
+    let shape = u32(round(in.look.w));
+    // Stamps are drawn in their own turned frame.
+    let c = cos(in.look.y);
+    let s = sin(in.look.y);
+    let o = in.local - start;
+    let q = vec2<f32>(c * o.x + s * o.y, -s * o.x + c * o.y);
+    var d = 0.0;
+    switch shape {
+        case 0u: { d = stroke(in.local, start, in.ends.zw, r, variant); }
+        case 1u: { d = splat(q, r, variant); }
+        case 2u: { d = ring(q, r); }
+        case 3u: { d = star(q, r); }
+        case 4u: { d = crack(q, r, variant); }
+        case 5u: { d = burst(q, r); }
+        default: { d = dots(q, r, variant); }
+    }
+    let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
+    if cover <= 0.0 {
+        discard;
+    }
+    let amount = clamp(in.colour.a, 0.0, 1.0) * cover;
+    var out: StampTargets;
+    out.paint = vec4<f32>(max(in.colour.rgb, vec3<f32>(0.0)) * amount, amount);
+    // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
+    out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
+    return out;
+}

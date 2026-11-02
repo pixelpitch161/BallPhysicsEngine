@@ -5,6 +5,7 @@ use bpe_core::{ResolvedThing, Settings, Thing};
 use bpe_runtime::World;
 use glam::Vec2;
 
+use crate::things::canvas::sim::canvas_area;
 use crate::things::emitter::EmitterSettings;
 use crate::things::field::{FieldKindChoice, FieldSettings, FieldShape};
 use crate::things::liquid::sim::{region, wall_of};
@@ -89,6 +90,9 @@ pub fn gizmos(thing: &Thing, resolved: &ResolvedThing, world: &World) -> Vec<Giz
             }
         }
         "swarm" => vec![Gizmo::Dot(at)],
+        "canvas" => canvas_area(world, thing.id).map_or_else(Vec::new, |(pose, size)| {
+            vec![Gizmo::Rect { center: pose.position, half: size * 0.5, angle: pose.angle }]
+        }),
         _ => Vec::new(),
     }
 }
@@ -116,6 +120,19 @@ mod tests {
         assert!((to - Vec2::new(100.0, 120.0)).length() < 1e-3, "{to}: 80 px along -90°");
         let lines = g.iter().filter(|g| matches!(g, Gizmo::Line(..))).count();
         assert_eq!(lines, 2, "{g:?}: the two edges of the spread");
+    }
+
+    #[test]
+    fn canvas_gizmo_is_its_area() {
+        let (mut scene, _, kit, me) = scene_with("canvas", "Paper", Vec2::new(40.0, 60.0), |p| {
+            p.set("fit", Value::Choice("custom".into()));
+            p.set("size", Value::Vec2([400.0, 200.0]));
+        });
+        scene.things.get_mut(&me).unwrap().transform.position = Vec2::new(40.0, 60.0);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let g = gizmos(&scene.things[&me], &resolved.things[&me], &world);
+        assert_eq!(g, vec![Gizmo::Rect { center: Vec2::new(40.0, 60.0), half: Vec2::new(200.0, 100.0), angle: 0.0 }]);
     }
 
     #[test]
