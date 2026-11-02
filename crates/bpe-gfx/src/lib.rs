@@ -23,6 +23,7 @@ mod pictures;
 pub mod text;
 
 pub use canvas::pictures::{picture_path, picture_readable};
+pub use canvas::shapes::chip_distance;
 pub use canvas::{CanvasTextures, MAX_TEXELS, clamp_texels};
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
