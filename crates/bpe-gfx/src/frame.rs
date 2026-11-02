@@ -193,6 +193,10 @@ pub enum CanvasPlace {
 
 /// A canvas thing's picture: a rectangle of the world its marks are painted on, drawn at its
 /// place with its style. The marks themselves live in the renderer's canvas textures.
+///
+/// Push it into the top frame's [`Frame::canvases`], never a blend layer's (through
+/// [`Frame::layer_mut`]): the renderer steps and draws only the top frame's canvases, and mixes
+/// each in by its own `blend`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasLayer {
     pub thing: ThingId,
@@ -636,7 +640,8 @@ pub struct Frame {
     pub flashes: Vec<FlashInstance>,
     pub liquids: Vec<LiquidLayer>,
     pub swarms: Vec<SwarmLayer>,
-    /// Canvases, each drawn at its own place. Only the top frame's are drawn.
+    /// Canvases, each drawn at its own place. Only the top frame's are stepped and drawn: a
+    /// canvas in a blend layer's frame is ignored.
     pub canvases: Vec<CanvasLayer>,
     /// Triangles, three vertices each, drawn between the walls and the balls.
     pub soft: Vec<SoftVertex>,

@@ -122,6 +122,7 @@ pub struct Mark {
     pub to: Vec2,
     pub radius: f32,
     pub angle: f32,
+    /// Which of a stamp shape's variants; for a stroke, its tip (0 round, 1 square).
     pub variant: u8,
     /// Linear light, not sRGB.
     pub colour: [f32; 4],
@@ -221,6 +222,11 @@ impl Log {
     /// Forgets the marks made after `step`, when playback rewinds.
     pub fn trim_marks_upto(&mut self, step: u64) {
         self.marks.truncate(self.marks.partition_point(|m| m.step <= step));
+    }
+
+    /// Forgets the marks made at or before `step`, once they are drawn and nothing reads them.
+    pub fn drop_marks_upto(&mut self, step: u64) {
+        self.marks.drain(..self.marks.partition_point(|m| m.step <= step));
     }
 
     /// Where the camera looked at `step`: the identity before it was first noted.
@@ -433,6 +439,18 @@ mod tests {
         log.trim_marks_upto(2);
         assert_eq!(log.marks().len(), 3);
         log.trim_marks_upto(0);
+        assert!(log.marks().is_empty());
+    }
+
+    #[test]
+    fn drop_forgets_drawn_marks() {
+        let mut log = Log::default();
+        for step in [1, 2, 2, 5] {
+            log.push_mark(mark(step));
+        }
+        log.drop_marks_upto(2);
+        assert_eq!(log.marks().iter().map(|m| m.step).collect::<Vec<_>>(), [5]);
+        log.drop_marks_upto(9);
         assert!(log.marks().is_empty());
     }
 

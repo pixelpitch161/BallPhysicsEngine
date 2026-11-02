@@ -11,14 +11,14 @@ use crate::{CanvasLayer, HDR_FORMAT};
 /// One canvas's uniform, laid out as `Canvas` in canvas.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct CanvasGpu {
+struct CanvasUniform {
     pose: [f32; 4],
     size: [f32; 4],
     start: [f32; 4],
     clock: [f32; 4],
 }
 
-impl CanvasGpu {
+impl CanvasUniform {
     fn new(c: &CanvasLayer) -> Self {
         Self {
             pose: [c.center[0], c.center[1], c.angle, 0.0],
@@ -42,6 +42,8 @@ pub(crate) struct Composite {
     /// One uniform per canvas in a frame: every canvas is recorded before the frame is submitted,
     /// so each needs its own.
     uniforms: Vec<wgpu::Buffer>,
+    /// Each slot's bind group, kept while the slot draws the same paint texture.
+    groups: Vec<Option<(wgpu::Texture, wgpu::BindGroup)>>,
 }
 
 impl Composite {
@@ -107,7 +109,7 @@ impl Composite {
             ..Default::default()
         });
         let blank = CanvasTextures::new(device, [1, 1]);
-        Self { layout, over, add, sampler, blank, uniforms: Vec::new() }
+        Self { layout, over, add, sampler, blank, uniforms: Vec::new(), groups: Vec::new() }
     }
 
     /// Whether `blend` is drawn straight into the picture; any other goes through the blend
@@ -133,29 +135,39 @@ impl Composite {
         while self.uniforms.len() <= slot {
             self.uniforms.push(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("canvas"),
-                size: std::mem::size_of::<CanvasGpu>() as u64,
+                size: std::mem::size_of::<CanvasUniform>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
         }
         let uniform = &self.uniforms[slot];
-        queue.write_buffer(uniform, 0, bytemuck::bytes_of(&CanvasGpu::new(canvas)));
+        queue.write_buffer(uniform, 0, bytemuck::bytes_of(&CanvasUniform::new(canvas)));
         let textures = textures.unwrap_or(&self.blank);
-        let paint = textures.paint.create_view(&Default::default());
-        let aux = textures.aux.create_view(&Default::default());
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("canvas"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&paint) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&aux) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-            ],
-        });
+        self.groups.resize_with(self.groups.len().max(slot + 1), || None);
+        let cached = &mut self.groups[slot];
+        if cached.as_ref().is_none_or(|(paint, _)| *paint != textures.paint) {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&textures.paint_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&textures.aux_view),
+                    },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            });
+            *cached = Some((textures.paint.clone(), group));
+        }
+        let (_, group) = cached.as_ref().expect("made above");
         pass.set_pipeline(if canvas.blend == Blend::Add { &self.add } else { &self.over });
         pass.set_bind_group(0, globals, &[]);
-        pass.set_bind_group(1, &group, &[]);
+        pass.set_bind_group(1, group, &[]);
         pass.draw(0..4, 0..1);
     }
 }
@@ -401,5 +413,25 @@ mod tests {
         c.time = 0.5;
         let left = draw_alone(&device, &queue, &c, &textures)(17, 32);
         assert!((left[0] - 0.5).abs() < 0.05 && (left[1] - 0.5).abs() < 0.05, "{left:?}: half faded");
+    }
+
+    #[test]
+    fn canvas_time_painted_is_read_unblended() {
+        let Some((device, queue)) = gpu() else { return };
+        // Both texels are red; the left was painted at 0 s and has faded, the right at 1 s.
+        let textures = CanvasTextures::new(&device, [2, 1]);
+        write_row(&queue, &textures.paint, &[[1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
+        write_row(&queue, &textures.aux, &[[0.0; 4], [1.0, 0.0, 0.0, 0.0]]);
+        let mut c = canvas(CanvasPlace::BehindBalls, None);
+        c.size = [32.0, 32.0];
+        c.texels = [2, 1];
+        c.fade = 1.0;
+        c.time = 1.0;
+        let read = draw_alone(&device, &queue, &c, &textures);
+        // Just right of the seam the mark keeps its full colour: its time is not mixed with the
+        // older one beside it.
+        let (left, right) = (read(30, 32), read(33, 32));
+        assert!(left[0] < 0.01, "{left:?}: the old mark has faded");
+        assert!(right[0] > 0.99, "{right:?}: the new mark is whole up to its edge");
     }
 }

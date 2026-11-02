@@ -67,8 +67,8 @@ pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::canvas::{
-    CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle, CanvasThingKind, Cell,
-    Fit, StartsAs, canvas_area,
+    CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
+    CanvasThingKind, Cell, Fit, StartsAs, canvas_area,
 };
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
@@ -124,6 +124,7 @@ pub fn draws() -> Draws {
     d.add(SoftDraw);
     d.add(TextDraw);
     d.add(ObstacleDraw);
+    d.add(CanvasDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }

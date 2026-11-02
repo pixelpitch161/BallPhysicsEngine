@@ -1,9 +1,11 @@
 //! The canvas: a paint surface the marks layer draws into. Brushes (the Marks module on balls,
 //! walls and obstacles) paint trails and splat their hits onto every canvas that asks for them.
 
+pub mod draw;
 pub mod grid;
 pub mod sim;
 
+pub use draw::CanvasDraw;
 pub use grid::{CanvasGrid, Cell};
 pub use sim::{CanvasSim, CanvasState, canvas_area};
 

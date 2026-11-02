@@ -1,6 +1,7 @@
 // The canvas composite: draws one canvas's rectangle of the world with the Flat style. The paint
 // texture holds the marks' colour times their amount, and the amount; the aux texture's r holds
-// the time each texel was painted. The output is premultiplied colour and coverage.
+// the time each texel was painted, read unfiltered. The output is premultiplied colour and
+// coverage.
 
 struct Globals {
     // x: 2 / video width, y: 2 / video height, z: world units per output pixel, w: time
@@ -64,7 +65,11 @@ fn vs_canvas(@builtin(vertex_index) i: u32) -> CanvasOut {
 @fragment
 fn fs_canvas(in: CanvasOut) -> @location(0) vec4<f32> {
     let p = textureSample(paint, smooth_sampler, in.uv);
-    let painted = textureSample(aux, smooth_sampler, in.uv).r;
+    // The time painted is read from the nearest texel, never blended with an older one, so a
+    // mark's edge fades with the mark.
+    let dims = textureDimensions(aux);
+    let texel = min(vec2<u32>(in.uv * vec2<f32>(dims)), dims - vec2<u32>(1u));
+    let painted = textureLoad(aux, texel, 0).r;
     var fade = 1.0;
     if canvas.size.z > 0.0 {
         fade = clamp(1.0 - (canvas.clock.x - painted) / canvas.size.z, 0.0, 1.0);

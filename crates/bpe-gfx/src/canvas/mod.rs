@@ -3,6 +3,7 @@
 //! by the composite.
 
 pub(crate) mod composite;
+pub(crate) mod stamp;
 
 /// The most texels along a canvas texture's long side.
 pub const MAX_TEXELS: u32 = 4096;
@@ -13,6 +14,9 @@ pub struct CanvasTextures {
     pub paint: wgpu::Texture,
     /// Rgba16Float: r is the scene time the texel was last painted.
     pub aux: wgpu::Texture,
+    /// Views of the two, made once: marks are drawn into them and the composite samples them.
+    pub paint_view: wgpu::TextureView,
+    pub aux_view: wgpu::TextureView,
 }
 
 impl CanvasTextures {
@@ -35,8 +39,15 @@ impl CanvasTextures {
                 view_formats: &[],
             })
         };
-        Self { paint: make("canvas paint"), aux: make("canvas aux") }
+        let (paint, aux) = (make("canvas paint"), make("canvas aux"));
+        let (paint_view, aux_view) = (paint.create_view(&Default::default()), aux.create_view(&Default::default()));
+        Self { paint, aux, paint_view, aux_view }
     }
+}
+
+/// The bytes an Rgba16Float texture holds.
+pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    texture.width() as u64 * texture.height() as u64 * 8
 }
 
 /// `texels` with each side at least 1 and both scaled down together so the long side is at most

@@ -15,7 +15,7 @@ use super::grid::{CanvasGrid, Cell};
 use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
-use crate::modules::marks::{MarkColour, MarksBrushes, SplatShape, Turn, When, WidthBy};
+use crate::modules::marks::{MarkColour, MarksBrushes, SplatShape, Tip, Turn, When, WidthBy};
 use crate::paint::{Follow, Inputs, beats_at, colour_at};
 use crate::things::liquid::sim::bounds;
 
@@ -256,7 +256,8 @@ impl Cx<'_> {
                     to: here,
                     radius,
                     angle: 0.0,
-                    variant: 0,
+                    // A stroke's variant is its tip: 0 round, 1 square.
+                    variant: (b.paint_tip == Tip::Square) as u8,
                     colour,
                 });
                 if !endless {
