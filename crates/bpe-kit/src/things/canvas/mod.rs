@@ -2,6 +2,7 @@
 //! walls and obstacles) paint trails and splat their hits onto every canvas that asks for them.
 
 pub mod draw;
+pub mod evolve;
 pub mod grid;
 pub mod ribbon;
 pub mod sim;

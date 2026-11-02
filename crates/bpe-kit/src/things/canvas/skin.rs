@@ -14,6 +14,7 @@ use bpe_core::{GroupOpts, Params, SettingDef, SettingGroup, Settings, SlotId, Th
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Outline, Pose, Solid, World};
 use glam::Vec2;
 
+use super::evolve::{self, Evolve, Tick};
 use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{CONTINUED, CONTINUES};
 use super::sim::{CanvasState, Colours, Stamp, hit_stamp, reaches, to_local};
@@ -387,7 +388,19 @@ pub fn build(thing: ThingId, world: &mut World) {
     let settings = CanvasSettings { fit: Fit::Custom, size, ..CanvasSettings::default() };
     let every = (world.steps_per_second / 60).max(1) as u64;
     let tick_every = tick_every(world.steps_per_second);
-    let st = CanvasState { settings, grid, size, centre: Vec2::ZERO, ribbons: BTreeMap::new(), every, tick_every };
+    let evolve = Evolve::new(skin.skin_dry_time, skin.skin_bleed, skin.skin_drips, world.steps_per_second);
+    let st = CanvasState {
+        settings,
+        grid,
+        size,
+        centre: Vec2::ZERO,
+        ribbons: BTreeMap::new(),
+        every,
+        tick_every,
+        evolve,
+        runners: Vec::new(),
+        ticks_run: 0,
+    };
     world.skins.insert(thing, Box::new(st));
 }
 
@@ -398,6 +411,21 @@ pub fn after_step(thing: ThingId, world: &mut World, log: &mut Log) {
     if let Some(st) = boxed.as_any_mut().downcast_mut::<CanvasState>() {
         for m in marks(thing, st, world, log) {
             log.push_mark(m);
+        }
+        if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
+            let mut picked = std::mem::take(&mut world.picked);
+            let pose = pose_of(world, thing);
+            let cx = Tick {
+                target: MarkTarget::Skin(thing),
+                world,
+                now: (world.step / st.tick_every) as u32,
+                per_second: world.steps_per_second as f32 / st.tick_every as f32,
+                gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
+            };
+            for m in evolve::tick(&cx, st, &mut picked, None) {
+                log.push_mark(m);
+            }
+            world.picked = picked;
         }
     }
     world.skins.insert(thing, boxed);

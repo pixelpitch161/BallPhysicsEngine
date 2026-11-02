@@ -11,6 +11,7 @@ use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
+use super::evolve::{self, Evolve, Runner, Tick};
 use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasSettings, Fit};
@@ -38,6 +39,12 @@ pub struct CanvasState {
     pub every: u64,
     /// Steps between wet-paint ticks: 30 a second.
     pub tick_every: u64,
+    /// How the paint changes over time.
+    pub evolve: Evolve,
+    /// The drips that are running.
+    pub runners: Vec<Runner>,
+    /// Ticks that did work; for tests, never hashed.
+    pub ticks_run: u64,
 }
 
 /// Where a canvas is and how big it is: its pose (middle and turn) and its width and height.
@@ -80,9 +87,21 @@ impl ThingSim for CanvasSim {
         let tick_every = tick_every(world.steps_per_second);
         let grid = CanvasGrid::new(size);
         world.state_memory.insert(thing.id, grid.bytes());
+        let evolve = Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second);
         world.states.insert(
             thing.id,
-            Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every, tick_every }),
+            Box::new(CanvasState {
+                settings,
+                grid,
+                size,
+                centre,
+                ribbons: BTreeMap::new(),
+                every,
+                tick_every,
+                evolve,
+                runners: Vec::new(),
+                ticks_run: 0,
+            }),
         );
         self.place(thing.id, world);
     }
@@ -105,6 +124,21 @@ impl ThingSim for CanvasSim {
         if let Some(st) = boxed.as_any_mut().downcast_mut::<CanvasState>() {
             for m in marks(canvas, st, world, log) {
                 log.push_mark(m);
+            }
+            if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
+                let mut picked = std::mem::take(&mut world.picked);
+                let pose = world.poses.get(&canvas).copied().unwrap_or_default();
+                let cx = Tick {
+                    target: MarkTarget::Canvas(canvas),
+                    world,
+                    now: (world.step / st.tick_every) as u32,
+                    per_second: world.steps_per_second as f32 / st.tick_every as f32,
+                    gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
+                };
+                for m in evolve::tick(&cx, st, &mut picked, None) {
+                    log.push_mark(m);
+                }
+                world.picked = picked;
             }
         }
         world.states.insert(canvas, boxed);
@@ -501,43 +535,11 @@ mod tests {
     use bpe_runtime::{EventKind, MarkShape, MarkTarget, Playback};
 
     use super::*;
-    use crate::testing::{ARENA, BALLS, OBSTACLE, module_of, run, scene_with_obstacle};
-    use crate::{Kit, add_thing, fill_slot, kit, new_scene};
-
-    /// The canvas the tests add after the arena and the ball.
-    const CANVAS: ThingId = ThingId(3);
-
-    /// Gives `thing` a Marks module and applies `f` to its settings.
-    fn brushes(scene: &mut Scene, kit: &Kit, thing: ThingId, f: impl FnOnce(&mut Params)) {
-        fill_slot(scene, &kit.registry, thing, SlotId::Marks).unwrap();
-        let m = module_of(scene, &kit.registry, thing, SlotId::Marks);
-        f(&mut scene.library.modules.get_mut(&m).unwrap().params);
-    }
-
-    /// Takes the brushes a new canvas gave the ball away again.
-    fn bare_ball(scene: &mut Scene) {
-        scene.things.get_mut(&BALLS).unwrap().slots.remove(&SlotId::Marks);
-    }
-
-    /// The new scene with a canvas fitting the arena and, when `brush` says so, a Marks module
-    /// on the ball, with `f`'s changes.
-    fn painted(brush: bool, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
-        let kit = kit();
-        let mut scene = new_scene(&kit.registry);
-        assert_eq!(add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap(), CANVAS);
-        if brush {
-            brushes(&mut scene, &kit, BALLS, f);
-        } else {
-            bare_ball(&mut scene);
-        }
-        let resolved = resolve(&scene, &kit.registry);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        (scene, resolved, kit)
-    }
-
-    fn canvas_state(world: &World, canvas: ThingId) -> &CanvasState {
-        state::<CanvasState>(world.states[&canvas].as_ref())
-    }
+    use crate::testing::{
+        ARENA, BALLS, CANVAS, OBSTACLE, bare_ball, brushes, busy, canvas_state, module_of, painted, run,
+        scene_with_obstacle,
+    };
+    use crate::{Kit, add_thing, kit, new_scene};
 
     /// `p` in the canvas's own pixels.
     fn local(pose: Pose, p: Vec2) -> Vec2 {
@@ -1264,15 +1266,6 @@ mod tests {
                 m.colour
             );
         }
-    }
-
-    /// A ball that paints and splats, for the determinism tests.
-    fn busy() -> (Scene, Resolved, Kit) {
-        painted(true, |p| {
-            p.set("splat_on", Value::Bool(true));
-            p.set("splat_onto", Value::Choice("canvases".into()));
-            p.set("splat_turn", Value::Choice("random".into()));
-        })
     }
 
     #[test]
