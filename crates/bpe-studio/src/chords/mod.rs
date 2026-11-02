@@ -1,6 +1,6 @@
-//! The chord editor shown under a card with a Chords setting: a key bar, a lane of chord blocks
-//! sized by their beats, a palette of the key's chords, the selected chord's settings and a list
-//! of presets to start from.
+//! The chord editor, drawn in the bottom panel under the preview when a Chords section's "Edit"
+//! is pressed: a key bar, a lane of chord blocks sized by their beats, a palette of the key's
+//! chords, the selected chord's settings and a list of presets to start from.
 
 mod editor;
 mod lane;

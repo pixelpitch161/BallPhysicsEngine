@@ -240,8 +240,15 @@ fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, 
 
 /// A group's heading: its name, which folds and opens the group when `fold` is given (as does
 /// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
-/// True when the heading or its arrow was clicked.
-fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
+/// `hover`, when given, says what the group is. True when the heading or its arrow was clicked.
+fn group_heading(
+    ui: &mut Ui,
+    group: &'static str,
+    fold: bool,
+    shut: bool,
+    changed: bool,
+    hover: Option<&'static str>,
+) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         if fold && fold_toggle(ui, !shut, group) {
@@ -249,7 +256,10 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         }
         let heading = RichText::new(group).strong().color(theme::MUTED);
         let label = egui::Label::new(heading).wrap().selectable(false);
-        let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        let mut response = ui.add(if fold { label.sense(Sense::click()) } else { label });
+        if let Some(hover) = hover {
+            response = response.on_hover_text(hover);
+        }
         let dot = shut && changed;
         if dot {
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{group} (changed)")));
@@ -265,6 +275,21 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         }
     });
     clicked
+}
+
+/// A heading inside a section's own widgets (as "Try it" in the Instrument section), folding
+/// what follows it: it looks like a group's heading, with the same air above. True when it was
+/// clicked, so the caller flips `open`.
+pub fn sub_heading(ui: &mut Ui, title: &'static str, open: bool, hover: &'static str) -> bool {
+    ui.add_space(10.0);
+    group_heading(ui, title, true, !open, false, Some(hover))
+}
+
+/// A grid for the rows in a section's own widgets (see [`settings_grid_sections`]), which are
+/// drawn [`EXTRA_INDENT`] in: the label column ([`label_cell`] at the grid's label width), then
+/// the widgets ([`widget_cell`]), so its labels and widgets line up with the settings' own.
+pub fn extra_grid(id: impl egui::AsIdSalt) -> egui::Grid {
+    egui::Grid::new(id).num_columns(2).spacing([8.0, 6.0])
 }
 
 /// What a setting's keyframe diamond shows.
@@ -286,6 +311,10 @@ pub struct KeyMark {
 
 /// The width of the diamond cell at the left of every row.
 pub const DIAMOND_CELL: f32 = 16.0;
+
+/// How far in a section's own widgets are drawn: past the diamond column and the grid's
+/// spacing, so they start where the rows' labels do.
+pub const EXTRA_INDENT: f32 = DIAMOND_CELL + 8.0;
 
 /// A settings grid of the settings that `applies`, with no marks and nothing for targets to
 /// point at. `get` supplies each setting's value as it stands; the rows the user changed come
@@ -337,6 +366,8 @@ pub struct SectionExtra {
     pub group: &'static str,
     /// Whether the section holds changes, for the folded-with-changes dot.
     pub changed: bool,
+    /// The heading's hover, saying what the section is.
+    pub hover: Option<&'static str>,
 }
 
 /// One section of a settings grid: its group ("" for the ungrouped rows before the headings)
@@ -371,8 +402,10 @@ fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx, extras: &[SectionExtra]
 
 /// [`settings_grid_marked`], with the caller's own widgets drawn at the end of the sections
 /// `extras` name: `draw_extra` is called with the section's group, below its rows, unless the
-/// section is folded shut. The grid is split after each such section, so the widgets span the
-/// card; every grid has the same label column and right edge, so the rows still line up. An
+/// section is folded shut. The grid is split after each such section, and the widgets are drawn
+/// [`EXTRA_INDENT`] in, so they start where the labels do; rows of their own in an
+/// [`extra_grid`] line up with the settings' rows. Every grid has the same label column and right
+/// edge, so the rows still line up from section to section. An
 /// extra on the ungrouped rows ("") is ignored, as is any extra after the first on one group.
 pub fn settings_grid_sections(
     ui: &mut Ui,
@@ -403,6 +436,7 @@ pub fn settings_grid_sections(
                 if !section.group.is_empty() {
                     let group = section.group;
                     let extra_changed = extra_at(group).is_some_and(|e| e.changed);
+                    let hover = extra_at(group).and_then(|e| e.hover);
                     let changed = shut && (extra_changed || group_changed(defs, group, &get, cx));
                     empty_cell(ui);
                     // A grid can't take spacing, so the heading carries its own air above.
@@ -410,7 +444,7 @@ pub fn settings_grid_sections(
                         let room = ui.available_size();
                         ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.add_space(10.0);
-                            if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
+                            if group_heading(ui, group, cx.folded.is_some(), shut, changed, hover) {
                                 out.folds.push((group, !shut));
                             }
                         });
@@ -427,7 +461,10 @@ pub fn settings_grid_sections(
         let last = run.last().expect("a run holds a section").group;
         if extra_at(last).is_some() {
             if !shut(last) {
-                ui.vertical(|ui| draw_extra(ui, last));
+                let mut rect = ui.available_rect_before_wrap();
+                rect.min.x += EXTRA_INDENT;
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| draw_extra(ui, last));
             }
             grid_id = egui::IdSalt::new((id.clone(), last));
         }
@@ -749,7 +786,7 @@ pub fn setting_feel(def: &SettingDef) -> NumberFeel {
 
 /// A slider for a number setting: as wide as the row allows, moving in the setting's even steps,
 /// with its number box beside it.
-fn number_slider<N: egui::emath::Numeric>(
+pub fn number_slider<N: egui::emath::Numeric>(
     ui: &mut Ui,
     x: &mut N,
     (min, max): (f64, f64),
@@ -1477,7 +1514,7 @@ mod tests {
                         assert_eq!(g, group);
                         let _ = ui.button("Extra");
                     };
-                    let extras = [SectionExtra { group, changed }];
+                    let extras = [SectionExtra { group, changed, hover: None }];
                     let get = |k: &str| defs.iter().find(|d| d.key == k).unwrap().default.clone();
                     let out = settings_grid_sections(ui, "g", defs, get, &cx, &extras, &mut draw);
                     changes.extend(out.changes);

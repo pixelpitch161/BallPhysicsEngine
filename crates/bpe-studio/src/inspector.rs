@@ -11,8 +11,8 @@ use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
     BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
-    SectionExtra, TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid,
-    settings_grid_marked, settings_grid_sections, settings_like_grid, widget_cell,
+    SectionExtra, TargetChoices, extra_grid, fold_toggle, grid_label, label_cell, label_width, plays_built_in,
+    settings_grid, settings_grid_marked, settings_grid_sections, settings_like_grid, sub_heading, widget_cell,
 };
 use bpe_core::{
     Address, Attach, Bus, BusId, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
@@ -43,7 +43,7 @@ pub struct Inspector {
     pub nodes_request: Option<(ThingId, SlotId)>,
     /// What the node panel shows, so that card's switch shows Nodes as chosen.
     pub nodes_open: Option<(ThingId, SlotId)>,
-    /// Chords asked to be heard this frame; the app plays them.
+    /// A Try it key asked to be heard this frame; the app plays it.
     pub clip: Option<ChordClip>,
     /// A card's "Edit patch" was pressed: the node panel should open on this patch.
     pub patch_request: Option<InstrumentId>,
@@ -596,10 +596,10 @@ pub fn show(
                     mkind.settings().iter().filter(|d| !bound.contains(d.key)).cloned().collect();
                 let defs: &[SettingDef] = if custom.is_some() { &unbound } else { mkind.settings() };
                 debug_assert!(
-                    unknown_groups(slot, defs).is_empty(),
+                    unknown_groups(defs).is_empty(),
                     "{} has groups that are not sections: {:?}",
                     m.kind,
-                    unknown_groups(slot, defs)
+                    unknown_groups(defs)
                 );
                 if let Some((mut g, role)) = custom {
                     ui.horizontal_wrapped(|ui| {
@@ -651,7 +651,7 @@ pub fn show(
                         let out = if extras.is_empty() {
                             settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
                         } else {
-                            let card = SoundCard { scene, defs, get: &get, module, bpm };
+                            let card = SoundCard { scene, defs, get: &get, module, bpm, lw };
                             settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
                                 sound_section(ui, group, &card, inspector, &mut edits)
                             })
@@ -695,7 +695,7 @@ pub fn show(
                         let out = if extras.is_empty() {
                             settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
                         } else {
-                            let card = SoundCard { scene, defs, get: &get, module, bpm };
+                            let card = SoundCard { scene, defs, get: &get, module, bpm, lw };
                             settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
                                 sound_section(ui, group, &card, inspector, &mut edits)
                             })
@@ -1168,28 +1168,34 @@ struct SoundCard<'a> {
     get: &'a dyn Fn(&str) -> Value,
     module: ModuleId,
     bpm: f32,
+    /// The label column's width, so the sections' own rows line up with the settings.
+    lw: f32,
 }
 
 /// The sections of a Sound card that end with widgets of their own: the instrument's section and
 /// Try it, the Chords button, and the channel.
 fn sound_extras(scene: &Scene, defs: &[SettingDef], module: ModuleId) -> Vec<SectionExtra> {
     let has = |ty: ValueType| defs.iter().any(|d| d.ty == ty);
+    let m = scene.library.modules.get(&module);
     let mut extras = Vec::new();
     if has(ValueType::Instrument) {
-        extras.push(SectionExtra { group: "Instrument", changed: false });
+        // The module's own macro values are the instrument's knobs changed here.
+        let changed = m.is_some_and(|m| !m.macros.is_empty());
+        extras.push(SectionExtra { group: "Instrument", changed, hover: None });
     }
     if has(ValueType::Progression) {
-        extras.push(SectionExtra { group: "Chords", changed: false });
+        extras.push(SectionExtra { group: "Chords", changed: false, hover: None });
     }
-    let channel = scene.library.modules.get(&module).map(|m| &m.channel);
+    let channel = m.map(|m| &m.channel);
     let changed = channel.is_some_and(|c| !c.inserts.nodes.is_empty() || c.sends.values().any(|&db| db > SEND_OFF));
-    extras.push(SectionExtra { group: "Channel", changed });
+    let hover = Some("Effects on everything this sound plays, and how much goes to each bus");
+    extras.push(SectionExtra { group: "Channel", changed, hover });
     extras
 }
 
 /// Draws the widgets at the end of a Sound card's section `group`.
 fn sound_section(ui: &mut Ui, group: &str, card: &SoundCard, inspector: &mut Inspector, edits: &mut Vec<Edit>) {
-    let SoundCard { scene, defs, get, module, bpm } = *card;
+    let SoundCard { scene, defs, get, module, bpm, lw } = *card;
     match group {
         "Instrument" => {
             instrument_section(
@@ -1198,6 +1204,7 @@ fn sound_section(ui: &mut Ui, group: &str, card: &SoundCard, inspector: &mut Ins
                 defs,
                 get,
                 module,
+                lw,
                 edits,
                 &mut inspector.patch_request,
                 &mut inspector.fx_request,
@@ -1209,24 +1216,27 @@ fn sound_section(ui: &mut Ui, group: &str, card: &SoundCard, inspector: &mut Ins
             }
         }
         "Chords" => {
-            if let Some(pid) = chords_section(ui, scene, defs, get) {
+            if let Some(pid) = chords_section(ui, scene, defs, get, lw) {
                 inspector.chords_request = Some((pid, module));
             }
         }
-        "Channel" => channel_section(ui, scene, module, edits, &mut inspector.fx_request),
+        "Channel" => channel_section(ui, scene, module, lw, edits, &mut inspector.fx_request),
         _ => {}
     }
 }
 
-/// A Chords section's end: the "Edit" button that opens the chord editor on the progression
-/// the section picks, which is off with a line saying so while it plays the built-in starter
-/// chords. The progression comes back when Edit is pressed.
+/// A Chords section's end: the "Edit" button, in the widget column under the Chords picker,
+/// that opens the chord editor on the progression the section picks. It is off, with a line
+/// saying so, while the section plays the built-in starter chords. The progression comes back
+/// when Edit is pressed.
 fn chords_section(
     ui: &mut Ui,
     scene: &Scene,
     defs: &[SettingDef],
     get: &dyn Fn(&str) -> Value,
+    lw: f32,
 ) -> Option<ProgressionId> {
+    let right = ui.available_rect_before_wrap().right();
     let mut open = None;
     for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
         let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
@@ -1238,8 +1248,11 @@ fn chords_section(
                     .color(theme::MUTED),
             );
         }
-        let edit = ui
-            .push_id(("chords", def.key), |ui| ui.add_enabled(picked.is_some(), egui::Button::new("Edit")))
+        let edit = extra_grid(("chords", def.key))
+            .show(ui, |ui| {
+                label_cell(ui, lw, |_| {});
+                widget_cell(ui, right, |ui| ui.add_enabled(picked.is_some(), egui::Button::new("Edit")))
+            })
             .inner
             .on_hover_text("Open the chord editor under the preview")
             .on_disabled_hover_text("Pick or make a progression to edit it");
@@ -1259,6 +1272,7 @@ fn instrument_section(
     defs: &[SettingDef],
     get: &dyn Fn(&str) -> Value,
     module: ModuleId,
+    lw: f32,
     edits: &mut Vec<Edit>,
     patch_request: &mut Option<InstrumentId>,
     fx_request: &mut Option<FxPlace>,
@@ -1273,7 +1287,7 @@ fn instrument_section(
             );
             continue;
         };
-        for edit in crate::instruments::show(ui, scene, module, iid) {
+        for edit in crate::instruments::show(ui, scene, module, iid, lw) {
             match edit {
                 InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, *instrument)),
                 InstrumentEdit::Macro(key, value) => edits.push(Edit::Macro(module, key, value)),
@@ -1288,16 +1302,9 @@ fn instrument_section(
 /// "Try it": folded, or the octave buttons and the keyboard strip to hear the instrument. A key
 /// pressed on the strip comes back.
 fn try_it(ui: &mut Ui, open: &mut bool, octave: &mut Option<i8>) -> Option<u8> {
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let toggled = fold_toggle(ui, *open, "Try it");
-        let label = ui
-            .add(egui::Label::new(RichText::new("Try it").color(theme::MUTED)).sense(egui::Sense::click()))
-            .on_hover_text("Play the instrument from a keyboard");
-        if toggled || label.clicked() {
-            *open = !*open;
-        }
-    });
+    if sub_heading(ui, "Try it", *open, "Play the instrument from a keyboard") {
+        *open = !*open;
+    }
     if !*open {
         return None;
     }
@@ -1313,10 +1320,12 @@ fn channel_section(
     ui: &mut Ui,
     scene: &Scene,
     module: ModuleId,
+    lw: f32,
     edits: &mut Vec<Edit>,
     fx_request: &mut Option<FxPlace>,
 ) {
     let Some(m) = scene.library.modules.get(&module) else { return };
+    let right = ui.available_rect_before_wrap().right();
     ui.push_id(("channel", module), |ui| {
         ui.label(RichText::new("Inserts").small().color(theme::MUTED));
         match crate::fx_list::show(
@@ -1333,9 +1342,9 @@ fn channel_section(
             return;
         }
         ui.label(RichText::new("Sends").small().color(theme::MUTED));
-        egui::Grid::new("sends").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+        extra_grid("sends").show(ui, |ui| {
             for bus in &scene.library.buses {
-                let label = ui.label(bus.name.as_str());
+                let label = label_cell(ui, lw, |ui| ui.label(bus.name.as_str()));
                 let before = m.channel.sends.get(&bus.id).copied();
                 let mut db = before.unwrap_or(SEND_OFF);
                 ui.spacing_mut().slider_width = 140.0;
@@ -1347,7 +1356,7 @@ fn channel_section(
                         "off" => Some(SEND_OFF as f64),
                         t => t.trim_end_matches("dB").trim().parse().ok(),
                     });
-                if ui.add(slider).labelled_by(label.id).changed() {
+                if widget_cell(ui, right, |ui| ui.add(slider)).labelled_by(label.id).changed() {
                     let after = (db > SEND_OFF).then_some(db);
                     if after != before {
                         edits.push(Edit::Send(module, bus.id, after));
@@ -1689,12 +1698,9 @@ fn fold_groups(inspector: &mut Inspector, (id, slot): (ThingId, Option<SlotId>),
     }
 }
 
-/// The groups of a module's settings that are not sections. Sound modules have none yet, as
-/// their sections come later.
-fn unknown_groups(slot: SlotId, defs: &[SettingDef]) -> Vec<&'static str> {
-    if slot == SlotId::Sound {
-        return Vec::new();
-    }
+/// The groups of a module's settings that are not sections, for the debug check that every
+/// group is one. Every slot's modules, Sound's too, should have none.
+fn unknown_groups(defs: &[SettingDef]) -> Vec<&'static str> {
     defs.iter().map(|d| d.group).filter(|g| !g.is_empty() && section_rank(g).is_none()).collect()
 }
 
@@ -1704,9 +1710,9 @@ fn make_own(ui: &mut Ui) -> egui::Response {
 }
 
 /// The row of buttons above the inspector that jump to its cards: the thing's own card (the
-/// root's six cards), then one per slot it has. The card last clicked is selected until the next scroll, then the card
-/// whose header has scrolled to the top (or just past). A click unfolds the card and scrolls
-/// it to the top when it's next drawn. Returns the selected card.
+/// root's six cards), then one per slot it has. The card last clicked is selected until the
+/// next scroll, then the card whose header has scrolled to the top (or just past). A click
+/// unfolds the card and scrolls it to the top when it's next drawn. Returns the selected card.
 fn jump_bar(
     ui: &mut Ui,
     inspector: &mut Inspector,
@@ -3051,6 +3057,92 @@ mod tests {
         let h = harness_of(scene, Some(ThingId(2)));
         assert!(h.get_by_role_and_label(Role::Button, "Edit").accesskit_node().is_disabled());
         assert!(h.query_by_label_contains("built-in starter chords").is_some());
+    }
+
+    #[test]
+    fn the_sound_cards_own_widgets_line_up_with_its_settings() {
+        let h = harness(Some(ThingId(2)));
+        let left = |role: Role, label: &str| h.get_by_role_and_label(role, label).rect().left();
+        // The Pluck's knob starts where the settings' sliders do.
+        let setting = left(Role::Slider, "Stereo width");
+        let decay = left(Role::Slider, "Decay");
+        assert!((decay - setting).abs() <= 1.0, "Decay at {decay}, Stereo width at {setting}");
+        assert!((left(Role::Slider, "Brightness") - setting).abs() <= 1.0);
+        // Its label starts where the settings' labels do.
+        let label = |name: &str| {
+            h.get_all_by_role_and_label(Role::Label, name).map(|n| n.rect().left()).reduce(f32::max).unwrap()
+        };
+        assert!((label("Decay") - label("Stereo width")).abs() <= 1.0, "the knob's label in the label column");
+        // Edit sits in the widget column, under the Chords picker.
+        let picker = h.get_by_role_and_label(Role::ComboBox, "Chords").rect();
+        let edit = h.get_by_role_and_label(Role::Button, "Edit").rect();
+        assert!((edit.left() - picker.left()).abs() <= 1.0, "Edit at {}, Chords at {}", edit.left(), picker.left());
+        assert!(edit.top() >= picker.bottom(), "Edit under the picker");
+        // Try it's arrow sits where a section heading's does.
+        let try_it = h.get_by_label("Show Try it").rect().left();
+        let notes = h.get_by_label("Hide Notes").rect().left();
+        assert!((try_it - notes).abs() <= 1.0, "Try it's arrow at {try_it}, Notes' at {notes}");
+    }
+
+    #[test]
+    fn instrument_shows_the_dot_when_the_module_changes_a_knob() {
+        let fold = |scene: Scene| {
+            let mut h = harness_of(scene, Some(ThingId(2)));
+            h.get_by_label("Hide Instrument").click();
+            h.run();
+            h
+        };
+        // A fresh module plays its default instrument.
+        let (scene, _) = ball_with_own_sound("sound.notes");
+        let h = fold(scene);
+        assert!(h.query_by_label("Instrument (changed)").is_none(), "no knob changed here");
+        let (mut scene, own) = ball_with_own_sound("sound.notes");
+        scene.library.modules.get_mut(&own).unwrap().macros.insert("filter.cutoff".into(), 0.5);
+        let h = fold(scene);
+        assert!(h.query_by_label("Instrument (changed)").is_some(), "the module's own knob shows while folded");
+    }
+
+    #[test]
+    fn an_overridden_sound_card_keeps_its_sections_and_edits_its_own_chords() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let own = scene.add_progression(bpe_core::Progression { name: "Own".into(), ..Default::default() });
+        let value = ProgressionRef(Some(own)).to_value();
+        scene.set_override(&reg, ThingId(2), SlotId::Sound, "chords", value).unwrap();
+        let resolved = resolve_scene(&scene, &reg);
+        assert_eq!(
+            write_target(&scene, &resolved, ThingId(2), SlotId::Sound),
+            Some(Write::Override(ThingId(2), SlotId::Sound))
+        );
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        let tops: Vec<f32> = ["Instrument", "Notes", "Which hits", "Level", "Chords", "Channel"]
+            .iter()
+            .map(|name| sound_heading_top(&h, name).unwrap_or_else(|| panic!("a {name} heading")))
+            .collect();
+        assert!(tops.windows(2).all(|w| w[0] < w[1]), "the headings read down in order: {tops:?}");
+        let edit = h.get_by_role_and_label(Role::Button, "Edit");
+        assert!(!edit.accesskit_node().is_disabled(), "the override picks a library progression");
+        edit.click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.inspector.chords_request, Some((own, ball_sound(&s.scene))), "the thing's own chords");
+    }
+
+    #[test]
+    fn channel_heading_says_what_it_is() {
+        let mut h = harness(Some(ThingId(2)));
+        let card = h.get_by_label("Hide Sound").rect().top();
+        let heading = h
+            .get_all_by_role_and_label(Role::Label, "Channel")
+            .filter(|n| n.rect().top() > card)
+            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap()
+            .rect();
+        h.hover_at(heading.center());
+        for _ in 0..90 {
+            h.step();
+        }
+        assert!(h.query_by_label_contains("how much goes to each bus").is_some());
     }
 
     #[test]

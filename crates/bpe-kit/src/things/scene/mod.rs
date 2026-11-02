@@ -278,10 +278,22 @@ mod tests {
     fn root_cards_hold_the_spec_rows() {
         assert_eq!(labels_in("Video"), ["Width", "Height", "Frame rate", "Length"]);
         assert_eq!(labels_in("World"), ["Gravity", "Physics rate"]);
-        let background = labels_in("Background");
-        assert_eq!(background.first(), Some(&"Colours"));
-        assert_eq!(background.last(), Some(&"Background stays on screen"));
-        assert_eq!(background.iter().filter(|l| **l == "Background stays on screen").count(), 1);
+        assert_eq!(
+            labels_in("Background"),
+            [
+                "Colours",
+                "Colours follow",
+                "Gradient",
+                "Direction",
+                "Centre",
+                "Colours end at",
+                "Beyond the last colour",
+                "Scroll",
+                "Take hit colour",
+                "Step time",
+                "Background stays on screen"
+            ]
+        );
         assert_eq!(
             labels_in("Picture"),
             [
