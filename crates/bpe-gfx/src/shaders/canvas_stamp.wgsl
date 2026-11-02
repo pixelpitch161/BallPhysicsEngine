@@ -19,13 +19,16 @@ struct MarkIn {
     // Where the mark starts and ends, in canvas pixels from the canvas's middle.
     @location(0) ends: vec4<f32>,
     // Radius, turn in radians, variant, shape (0 stroke, 1 splat, 2 ring, 3 star, 4 crack,
-    // 5 burst, 6 dots).
+    // 5 burst, 6 dots, 7 smear). A stroke's variant: bit 0 square tips, bit 1 no start cap, bit 2
+    // no end cap.
     @location(1) look: vec4<f32>,
     // Linear light, straight alpha.
     @location(2) colour: vec4<f32>,
     // x: when the mark was made, in seconds; y: its world step counted from the pass's first;
-    // z: how many world steps the pass's marks span.
+    // z: how many world steps the pass's marks span; w: the radius at the mark's end.
     @location(3) clock: vec4<f32>,
+    // The colour at the mark's end, straight alpha.
+    @location(4) colour_to: vec4<f32>,
 };
 
 struct StampOut {
@@ -36,6 +39,7 @@ struct StampOut {
     @location(2) @interpolate(flat) look: vec4<f32>,
     @location(3) @interpolate(flat) colour: vec4<f32>,
     @location(4) @interpolate(flat) clock: vec4<f32>,
+    @location(5) @interpolate(flat) colour_to: vec4<f32>,
 };
 
 const TAU: f32 = 6.283185307;
@@ -50,12 +54,13 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
     let corner = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u)) * 2.0 - 1.0;
     let start = m.ends.xy;
     let to = m.ends.zw;
-    let r = m.look.x;
+    // A stroke or smear may be wider at either end.
+    let r = max(m.look.x, m.clock.w);
     let margin = 2.0 * texel_size();
     var mid = start;
     var along = vec2<f32>(1.0, 0.0);
     var half = vec2<f32>(r + margin);
-    if m.look.w < 0.5 {
+    if m.look.w < 0.5 || m.look.w > 6.5 {
         // A stroke's box runs along it, past both ends by the radius.
         let d = to - start;
         let span = length(d);
@@ -75,6 +80,7 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
     out.look = m.look;
     out.colour = m.colour;
     out.clock = m.clock;
+    out.colour_to = m.colour_to;
     return out;
 }
 
@@ -98,19 +104,28 @@ fn box_distance(p: vec2<f32>, half: vec2<f32>) -> f32 {
     return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
 }
 
-// A capsule from `a` to `b`; variant 1 squares its tips off.
-fn stroke(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32, variant: u32) -> f32 {
-    if variant != 1u {
-        return segment(p, a, b) - r;
-    }
+// A capsule from `a` to `b` whose radius runs from `r0` to `r1`; a square tip squares its ends off.
+fn stroke(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r0: f32, r1: f32, square: bool) -> f32 {
     let d = b - a;
     let span = length(d);
+    let t = along_part(p, a, b);
+    let r = mix(r0, r1, t);
+    if !square {
+        return segment(p, a, b) - r;
+    }
     var along = vec2<f32>(1.0, 0.0);
     if span > 0.0 {
         along = d / span;
     }
-    let q = p - (a + b) * 0.5;
-    return box_distance(vec2<f32>(dot(q, along), dot(q, vec2<f32>(-along.y, along.x))), vec2<f32>(span * 0.5 + r, r));
+    let q = p - a;
+    let u = dot(q, along);
+    return max(abs(dot(q, vec2<f32>(-along.y, along.x))) - r, max(-u - r0, u - span - r1));
+}
+
+// How far along `a`..`b` the nearest point to `p` is, from 0 to 1.
+fn along_part(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ba = b - a;
+    return clamp(dot(p - a, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
 }
 
 // A blob of 7 lobes, their size and phase perturbed by the variant.
@@ -205,6 +220,21 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     let r = in.look.x;
     let variant = u32(round(in.look.z));
     let shape = u32(round(in.look.w));
+    let r_to = in.clock.w;
+    let to = in.ends.zw;
+    let ribbon = shape == 0u || shape == 7u;
+    // A piece of a longer stroke leaves out the caps that the pieces beside it cover. The cut is
+    // hard: every texel belongs to one piece, so translucent paint never shows a seam or a bead.
+    if shape == 0u && (variant & 6u) != 0u {
+        let d = to - start;
+        let span = length(d);
+        if span > 0.0 {
+            let u = dot(in.local - start, d / span);
+            if ((variant & 2u) != 0u && u < 0.0) || ((variant & 4u) != 0u && u >= span) {
+                discard;
+            }
+        }
+    }
     // Stamps are drawn in their own turned frame.
     let c = cos(in.look.y);
     let s = sin(in.look.y);
@@ -212,26 +242,32 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     let q = vec2<f32>(c * o.x + s * o.y, -s * o.x + c * o.y);
     var d = 0.0;
     switch shape {
-        case 0u: { d = stroke(in.local, start, in.ends.zw, r, variant); }
+        case 0u: { d = stroke(in.local, start, to, r, r_to, (variant & 1u) != 0u); }
         case 1u: { d = splat(q, r, variant); }
         case 2u: { d = ring(q, r); }
         case 3u: { d = star(q, r); }
         case 4u: { d = crack(q, r, variant); }
         case 5u: { d = burst(q, r); }
-        default: { d = dots(q, r, variant); }
+        case 6u: { d = dots(q, r, variant); }
+        default: { d = stroke(in.local, start, to, r, r_to, false); }
     }
     let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
     if cover <= 0.0 {
         discard;
     }
-    let amount = clamp(in.colour.a, 0.0, 1.0) * cover;
+    // A stroke or smear runs from its colour to its end colour.
+    var colour = in.colour;
+    if ribbon {
+        colour = mix(in.colour, in.colour_to, along_part(in.local, start, to));
+    }
+    let amount = clamp(colour.a, 0.0, 1.0) * cover;
     var out: StampTargets;
-    out.paint = vec4<f32>(max(in.colour.rgb, vec3<f32>(0.0)) * amount, amount);
+    out.paint = vec4<f32>(max(colour.rgb, vec3<f32>(0.0)) * amount, amount);
     // Only the mark's solid part re-dates the texel: its soft edge leaves older paint's time be.
     out.aux = vec4<f32>(in.clock.x, 0.0, 0.0, select(0.0, 1.0, cover >= 0.5));
     var touch = 1.0;
     if shape == 0u {
-        touch = last_touch(in.local, start, in.ends.zw, r);
+        touch = last_touch(in.local, start, to, 0.5 * (r + r_to));
     }
     out.depth = (in.clock.y + touch) / max(in.clock.z, 1.0);
     return out;

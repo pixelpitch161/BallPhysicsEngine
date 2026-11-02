@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use bpe_core::{Color, ResolvedThing, Settings, SlotId, Thing, ThingId};
-use bpe_runtime::{EventKind, Log, Mark, MarkShape, Pose, ThingSim, World, state};
+use bpe_runtime::{EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
 use super::grid::{CanvasGrid, Cell};
@@ -251,15 +251,17 @@ impl Cx<'_> {
                 st.grid.stamp_capsule(from, here, radius, cell_of(colour));
                 self.out.push(Mark {
                     step: self.world.step,
-                    canvas: self.canvas,
+                    target: MarkTarget::Canvas(self.canvas),
                     shape: MarkShape::Stroke,
                     from,
                     to: here,
                     radius,
+                    radius_to: radius,
                     angle: 0.0,
                     // A stroke's variant is its tip: 0 round, 1 square.
                     variant: (b.paint_tip == Tip::Square) as u8,
                     colour,
+                    colour_to: colour,
                 });
                 if !endless {
                     load = (load - length).max(0.0);
@@ -301,14 +303,16 @@ impl Cx<'_> {
             st.grid.stamp_disc(at, radius, cell_of(colour));
             self.out.push(Mark {
                 step: world.step,
-                canvas: self.canvas,
+                target: MarkTarget::Canvas(self.canvas),
                 shape,
                 from: at,
                 to: at,
                 radius,
+                radius_to: radius,
                 angle,
                 variant,
                 colour,
+                colour_to: colour,
             });
         }
     }
@@ -325,7 +329,7 @@ fn mix(step: u64, item: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use bpe_core::{Attach, Params, Resolved, Scene, SlotId, Target, Value, resolve};
-    use bpe_runtime::{EventKind, MarkShape, Playback};
+    use bpe_runtime::{EventKind, MarkShape, MarkTarget, Playback};
 
     use super::*;
     use crate::testing::{ARENA, BALLS, OBSTACLE, module_of, run, scene_with_obstacle};
@@ -508,7 +512,7 @@ mod tests {
         let (w, log) = run(&scene, &resolved, &kit, 1.0);
         let marks = log.marks();
         assert!((59..=61).contains(&marks.len()), "{} marks", marks.len());
-        assert!(marks.iter().all(|m| m.shape == MarkShape::Stroke && m.canvas == CANVAS));
+        assert!(marks.iter().all(|m| m.shape == MarkShape::Stroke && m.target == MarkTarget::Canvas(CANVAS)));
         assert!(marks.iter().all(|m| m.radius > 0.0 && m.colour[3] > 0.0));
         assert!(canvas_state(&w, CANVAS).grid.covered() > 0.0);
     }

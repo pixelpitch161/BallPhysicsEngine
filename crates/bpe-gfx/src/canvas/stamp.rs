@@ -6,7 +6,7 @@
 //! the depth is cleared every pass, as every pass's marks come after the pass before's.
 
 use bpe_core::ThingId;
-use bpe_runtime::{Mark, MarkShape};
+use bpe_runtime::{Mark, MarkShape, MarkTarget};
 use bytemuck::{Pod, Zeroable};
 
 use super::{CanvasTextures, clamp_texels};
@@ -27,10 +27,11 @@ struct MarkGpu {
     look: [f32; 4],
     colour: [f32; 4],
     clock: [f32; 4],
+    colour_to: [f32; 4],
 }
 
-const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
+    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
 
 /// The shape number canvas_stamp.wgsl draws.
 fn shape_number(shape: MarkShape) -> f32 {
@@ -42,6 +43,7 @@ fn shape_number(shape: MarkShape) -> f32 {
         MarkShape::Crack => 4.0,
         MarkShape::Burst => 5.0,
         MarkShape::Dots => 6.0,
+        MarkShape::Smear => 7.0,
     }
 }
 
@@ -57,8 +59,9 @@ impl MarkGpu {
                 (m.step as f64 / steps_per_second.max(1) as f64) as f32,
                 (m.step - first) as f32,
                 steps as f32,
-                0.0,
+                m.radius_to,
             ],
+            colour_to: m.colour_to,
         }
     }
 }
@@ -237,7 +240,7 @@ impl CanvasGpu {
         if first {
             self.used = 0;
         }
-        let ours: Vec<&Mark> = marks.iter().filter(|m| m.canvas == self.thing).collect();
+        let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == MarkTarget::Canvas(self.thing)).collect();
         let first_step = ours.iter().map(|m| m.step).min().unwrap_or(0);
         let steps = ours.iter().map(|m| m.step - first_step + 1).max().unwrap_or(1);
         let ours: Vec<MarkGpu> = ours.iter().map(|m| MarkGpu::new(m, steps_per_second, first_step, steps)).collect();

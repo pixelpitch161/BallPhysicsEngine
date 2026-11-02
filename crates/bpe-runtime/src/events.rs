@@ -107,25 +107,40 @@ pub enum MarkShape {
     Crack,
     Burst,
     Dots,
+    /// A capsule whose radius runs from `radius` to `radius_to`.
+    Smear,
+}
+
+/// What a mark is painted onto: a canvas thing, or the skin of an arena or obstacle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MarkTarget {
+    Canvas(ThingId),
+    Skin(ThingId),
 }
 
 /// One mark a thing leaves on a canvas.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mark {
     pub step: u64,
-    /// The canvas thing it lands on.
-    pub canvas: ThingId,
+    /// What it lands on.
+    pub target: MarkTarget,
     pub shape: MarkShape,
     /// Where it starts, in canvas pixels from the canvas centre, before the canvas turns.
     pub from: Vec2,
     /// Where it ends; a stamp has `to == from`.
     pub to: Vec2,
     pub radius: f32,
+    /// The radius at `to`; strokes and smears run from `radius` to it, other shapes equal `radius`.
+    pub radius_to: f32,
     pub angle: f32,
-    /// Which of a stamp shape's variants; for a stroke, its tip (0 round, 1 square).
+    /// Which of a stamp shape's variants; for a stroke, bit 0 is its tip (0 round, 1 square),
+    /// bit 1 says it continues the previous piece (no start cap) and bit 2 that the next piece
+    /// continues it (no end cap).
     pub variant: u8,
     /// Linear light, not sRGB.
     pub colour: [f32; 4],
+    /// The colour at `to`; equal to `colour` for marks of one colour.
+    pub colour_to: [f32; 4],
 }
 
 /// How often motion is sampled for sound, per second.
@@ -210,6 +225,11 @@ impl Log {
 
     pub fn marks(&self) -> &[Mark] {
         &self.marks
+    }
+
+    /// The marks aimed at `target`, in the order they were made.
+    pub fn marks_for(&self, target: MarkTarget) -> impl Iterator<Item = &Mark> {
+        self.marks.iter().filter(move |m| m.target == target)
     }
 
     /// The marks made in steps `(after, upto]`.
@@ -397,15 +417,31 @@ mod tests {
     fn mark(step: u64) -> Mark {
         Mark {
             step,
-            canvas: ThingId(3),
+            target: MarkTarget::Canvas(ThingId(3)),
             shape: MarkShape::Splat,
             from: Vec2::ZERO,
             to: Vec2::ZERO,
             radius: 4.0,
+            radius_to: 4.0,
             angle: 0.0,
             variant: 0,
             colour: [1.0, 0.5, 0.25, 1.0],
+            colour_to: [1.0, 0.5, 0.25, 1.0],
         }
+    }
+
+    #[test]
+    fn mark_target_filters_marks() {
+        let mut log = Log::default();
+        let (canvas, skin) = (MarkTarget::Canvas(ThingId(3)), MarkTarget::Skin(ThingId(3)));
+        for (step, target) in [(1, canvas), (1, skin), (2, skin), (3, canvas)] {
+            log.push_mark(Mark { target, ..mark(step) });
+        }
+        let steps = |t| log.marks_for(t).map(|m| m.step).collect::<Vec<_>>();
+        assert_eq!(steps(canvas), [1, 3]);
+        assert_eq!(steps(skin), [1, 2]);
+        assert_eq!(log.marks_for(MarkTarget::Canvas(ThingId(4))).count(), 0);
+        assert!(canvas < skin, "canvases sort before skins");
     }
 
     #[test]

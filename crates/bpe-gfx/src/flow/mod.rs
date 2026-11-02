@@ -1390,14 +1390,16 @@ mod tests {
     fn mark(step: u64, shape: bpe_runtime::MarkShape, from: Vec2, to: Vec2, radius: f32) -> bpe_runtime::Mark {
         bpe_runtime::Mark {
             step,
-            canvas: CANVAS,
+            target: bpe_runtime::MarkTarget::Canvas(CANVAS),
             shape,
             from,
             to,
             radius,
+            radius_to: radius,
             angle: 0.0,
             variant: 0,
             colour: [1.0, 0.0, 0.0, 1.0],
+            colour_to: [1.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -1525,6 +1527,62 @@ mod tests {
             .count();
         assert!(inside > 100, "{inside}");
         assert!((0..64).all(|i| clear(v(150.0, 50.0) + Vec2::from_angle(i as f32 * 0.1) * 32.0)));
+    }
+
+    #[test]
+    fn stroke_colour_runs_from_start_to_end() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let mut m = mark(1, bpe_runtime::MarkShape::Stroke, Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0);
+            m.colour = [1.0, 0.0, 0.0, 1.0];
+            m.colour_to = [0.0, 0.0, 1.0, 1.0];
+            vec![m]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let near = |c: [f32; 4], want: [f32; 4]| c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.1);
+        let v = Vec2::new;
+        assert!(near(texel(&paint, v(0.0, 0.0)), [0.5, 0.0, 0.5, 1.0]), "{:?}", texel(&paint, v(0.0, 0.0)));
+        assert!(near(texel(&paint, v(-90.0, 0.0)), [0.95, 0.0, 0.05, 1.0]), "{:?}", texel(&paint, v(-90.0, 0.0)));
+        assert!(near(texel(&paint, v(90.0, 0.0)), [0.05, 0.0, 0.95, 1.0]), "{:?}", texel(&paint, v(90.0, 0.0)));
+    }
+
+    #[test]
+    fn smear_tapers() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let mut m = mark(1, bpe_runtime::MarkShape::Smear, Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), 10.0);
+            m.radius_to = 0.0;
+            vec![m]
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        let v = Vec2::new;
+        let covered = |p: Vec2| texel(&paint, p)[3] > 0.99;
+        let clear = |p: Vec2| texel(&paint, p)[3] == 0.0;
+        assert!(covered(v(-100.0, 0.0)) && covered(v(-100.0, 8.0)), "full width at the start");
+        assert!(covered(v(0.0, 3.0)) && clear(v(0.0, 8.0)), "half width in the middle");
+        assert!(covered(v(60.0, 0.0)) && clear(v(80.0, 4.0)), "narrow near the end");
+        assert!(clear(v(98.0, 3.0)) && clear(v(110.0, 0.0)), "nothing at the tip");
+    }
+
+    /// Runs `sims` for a tenth of a second and reads back the canvas's paint.
+    fn stamped(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, resolved: &Resolved, sims: &Sims) -> Vec<u8> {
+        let mut frame = Frame::default();
+        frame.canvases.push(canvas_layer());
+        let source = canvas_source(scene, resolved, sims);
+        let mut flow = FlowLayers::new(device);
+        flow.prepare(device, queue, &frame, &source);
+        flow.step_to(device, queue, 0.1, &source);
+        read_texture(device, queue, &flow.canvas_textures(CANVAS).expect("the canvas has textures").paint)
     }
 
     #[test]
