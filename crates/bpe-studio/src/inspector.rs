@@ -2,7 +2,7 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
-use crate::chords::{self, Audition, ChordClip, ChordUi};
+use crate::chords::{self, ChordClip};
 use crate::dice::dice_button;
 use crate::fx_list::{FxEdit, FxPlace};
 use crate::instruments::InstrumentEdit;
@@ -11,19 +11,19 @@ use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
     BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
-    TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid, settings_grid_marked,
-    settings_like_grid, widget_cell,
+    SectionExtra, TargetChoices, fold_toggle, grid_label, label_width, plays_built_in, settings_grid,
+    settings_grid_marked, settings_grid_sections, settings_like_grid, widget_cell,
 };
 use bpe_core::{
-    Address, Attach, Bus, BusId, Chord, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
-    ModuleGraph, ModuleId, ModuleKind, Owner, Progression, ProgressionId, ProgressionRef, PulseSource, Resolved,
-    SAME_TIME, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType, section_rank,
+    Address, Attach, Bus, BusId, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
+    ModuleGraph, ModuleId, ModuleKind, Owner, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene,
+    SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType, section_rank,
 };
 use bpe_graph::Graph;
 use bpe_kit::Kit;
 use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub struct Inspector {
@@ -43,14 +43,17 @@ pub struct Inspector {
     pub nodes_request: Option<(ThingId, SlotId)>,
     /// What the node panel shows, so that card's switch shows Nodes as chosen.
     pub nodes_open: Option<(ThingId, SlotId)>,
-    /// Each progression's chord editor: the picked chord, the presets list.
-    pub chord_ui: BTreeMap<ProgressionId, ChordUi>,
     /// Chords asked to be heard this frame; the app plays them.
     pub clip: Option<ChordClip>,
     /// A card's "Edit patch" was pressed: the node panel should open on this patch.
     pub patch_request: Option<InstrumentId>,
     /// The keyboard strip's octave, once one is shown (C4 at first).
     pub octave: Option<i8>,
+    /// Whether the Instrument section's "Try it" (the octave buttons and keyboard) is open.
+    pub try_open: bool,
+    /// A Chords section's "Edit" was pressed: the bottom panel should open the chord editor on
+    /// this progression, heard through this sound module.
+    pub chords_request: Option<(ProgressionId, ModuleId)>,
     /// An effects list's "Open nodes" was pressed: the node panel should open on those effects.
     pub fx_request: Option<FxPlace>,
     /// The card the jump bar was clicked on, scrolled to when its header is next drawn.
@@ -151,8 +154,6 @@ enum Edit {
     RollGroup(&'static str),
     /// A card edited the module's graph.
     Graph(ModuleId, ModuleGraph),
-    /// A chord editor changed a progression in the library.
-    Progression(ProgressionId, Progression),
     /// An instrument section changed an instrument in the library.
     Instrument(InstrumentId, bpe_core::Instrument),
     /// A module's own value for one of its instrument's macros, or `None` to follow it again.
@@ -634,7 +635,9 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_module(k), time))
                         };
-                        let folded = |group: &str| is_folded(inspector, (id, Some(slot)), group);
+                        let extras = if slot == SlotId::Sound { sound_extras(scene, defs, module) } else { Vec::new() };
+                        let shut = folded_groups(inspector, (id, Some(slot)), defs, &extras);
+                        let folded = |group: &str| shut.contains(group);
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &|_| false,
@@ -645,29 +648,15 @@ pub fn show(
                             folded: Some(&folded),
                             label_width: lw,
                         };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        let out = if extras.is_empty() {
+                            settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
+                        } else {
+                            let card = SoundCard { scene, defs, get: &get, module, bpm };
+                            settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
+                                sound_section(ui, group, &card, inspector, &mut edits)
+                            })
+                        };
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
-                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
-                            inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
-                        }
-                        let octave = inspector.octave.get_or_insert(4);
-                        if let Some(key) = instrument_section(
-                            ui,
-                            scene,
-                            defs,
-                            &get,
-                            module,
-                            &mut edits,
-                            &mut inspector.patch_request,
-                            &mut inspector.fx_request,
-                            octave,
-                        ) {
-                            let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
-                            inspector.clip = Some(ChordClip { key: Some(key), ..clip });
-                        }
-                        if slot == SlotId::Sound {
-                            channel_section(ui, scene, module, &mut edits, &mut inspector.fx_request);
-                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
                         edits.extend(out.pulse.into_iter().map(|(key, source)| Edit::Pulse(of_module(key), source)));
@@ -690,7 +679,9 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_thing(k), time))
                         };
-                        let folded = |group: &str| is_folded(inspector, (id, Some(slot)), group);
+                        let extras = if slot == SlotId::Sound { sound_extras(scene, defs, module) } else { Vec::new() };
+                        let shut = folded_groups(inspector, (id, Some(slot)), defs, &extras);
+                        let folded = |group: &str| shut.contains(group);
                         let cx = GridCx {
                             choices: &choices,
                             overridden: &overridden,
@@ -701,29 +692,15 @@ pub fn show(
                             folded: Some(&folded),
                             label_width: lw,
                         };
-                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
+                        let out = if extras.is_empty() {
+                            settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
+                        } else {
+                            let card = SoundCard { scene, defs, get: &get, module, bpm };
+                            settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
+                                sound_section(ui, group, &card, inspector, &mut edits)
+                            })
+                        };
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
-                        if let Some(heard) = chord_editor(ui, &mut inspector.chord_ui, scene, defs, &get, &mut edits) {
-                            inspector.clip = Some(chord_clip(heard, bpm, scene, Some(module), &|k| Some(get(k))));
-                        }
-                        let octave = inspector.octave.get_or_insert(4);
-                        if let Some(key) = instrument_section(
-                            ui,
-                            scene,
-                            defs,
-                            &get,
-                            module,
-                            &mut edits,
-                            &mut inspector.patch_request,
-                            &mut inspector.fx_request,
-                            octave,
-                        ) {
-                            let clip = chord_clip(Vec::new(), bpm, scene, Some(module), &|k| Some(get(k)));
-                            inspector.clip = Some(ChordClip { key: Some(key), ..clip });
-                        }
-                        if slot == SlotId::Sound {
-                            channel_section(ui, scene, module, &mut edits, &mut inspector.fx_request);
-                        }
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
                         edits.extend(out.pushes.into_iter().map(|key| Edit::PushOverride(slot, key)));
@@ -802,7 +779,6 @@ pub fn show(
                 scene.set_thing_name(id, &name);
                 true
             }
-            Edit::Progression(pid, p) => scene.set_progression(pid, p).is_ok(),
             Edit::Instrument(iid, i) => scene.set_instrument(iid, i).is_ok(),
             Edit::Macro(module, key, value) => scene.set_macro(module, &key, value).is_ok(),
             Edit::InstrumentFx(iid, g) => FxPlace::Instrument(iid).set(scene, g),
@@ -1185,44 +1161,97 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
     }
 }
 
-/// Under a card with a Chords setting: the chord editor for the progression it picks, or a line
-/// saying it plays the built-in starter chords.
-fn chord_editor(
+/// What a Sound card's own sections read.
+struct SoundCard<'a> {
+    scene: &'a Scene,
+    defs: &'a [SettingDef],
+    get: &'a dyn Fn(&str) -> Value,
+    module: ModuleId,
+    bpm: f32,
+}
+
+/// The sections of a Sound card that end with widgets of their own: the instrument's section and
+/// Try it, the Chords button, and the channel.
+fn sound_extras(scene: &Scene, defs: &[SettingDef], module: ModuleId) -> Vec<SectionExtra> {
+    let has = |ty: ValueType| defs.iter().any(|d| d.ty == ty);
+    let mut extras = Vec::new();
+    if has(ValueType::Instrument) {
+        extras.push(SectionExtra { group: "Instrument", changed: false });
+    }
+    if has(ValueType::Progression) {
+        extras.push(SectionExtra { group: "Chords", changed: false });
+    }
+    let channel = scene.library.modules.get(&module).map(|m| &m.channel);
+    let changed = channel.is_some_and(|c| !c.inserts.nodes.is_empty() || c.sends.values().any(|&db| db > SEND_OFF));
+    extras.push(SectionExtra { group: "Channel", changed });
+    extras
+}
+
+/// Draws the widgets at the end of a Sound card's section `group`.
+fn sound_section(ui: &mut Ui, group: &str, card: &SoundCard, inspector: &mut Inspector, edits: &mut Vec<Edit>) {
+    let SoundCard { scene, defs, get, module, bpm } = *card;
+    match group {
+        "Instrument" => {
+            instrument_section(
+                ui,
+                scene,
+                defs,
+                get,
+                module,
+                edits,
+                &mut inspector.patch_request,
+                &mut inspector.fx_request,
+            );
+            if let Some(key) = try_it(ui, &mut inspector.try_open, &mut inspector.octave) {
+                let instrument = InstrumentRef::from_value(&get("instrument")).and_then(|r| r.0);
+                let clip = chords::clip_for(Vec::new(), bpm, scene, Some(module), instrument);
+                inspector.clip = Some(ChordClip { key: Some(key), ..clip });
+            }
+        }
+        "Chords" => {
+            if let Some(pid) = chords_section(ui, scene, defs, get) {
+                inspector.chords_request = Some((pid, module));
+            }
+        }
+        "Channel" => channel_section(ui, scene, module, edits, &mut inspector.fx_request),
+        _ => {}
+    }
+}
+
+/// A Chords section's end: the "Edit" button that opens the chord editor on the progression
+/// the section picks, which is off with a line saying so while it plays the built-in starter
+/// chords. The progression comes back when Edit is pressed.
+fn chords_section(
     ui: &mut Ui,
-    chord_ui: &mut BTreeMap<ProgressionId, ChordUi>,
     scene: &Scene,
     defs: &[SettingDef],
     get: &dyn Fn(&str) -> Value,
-    edits: &mut Vec<Edit>,
-) -> Option<Vec<Chord>> {
-    let mut heard = None;
+) -> Option<ProgressionId> {
+    let mut open = None;
     for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
         let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
-        let Some((pid, p)) = picked.and_then(|pid| scene.library.progressions.get(&pid).map(|p| (pid, p))) else {
+        let picked = picked.filter(|pid| scene.library.progressions.contains_key(pid));
+        if picked.is_none() {
             ui.label(
                 RichText::new("Plays the built-in starter chords. Pick Make unique to edit a copy.")
                     .small()
                     .color(theme::MUTED),
             );
-            continue;
-        };
-        let mut p = p.clone();
-        let out = ui.push_id(("chords", pid), |ui| chords::show(ui, &mut p, chord_ui.entry(pid).or_default())).inner;
-        heard = match out.audition {
-            Some(Audition::Chord(c)) => Some(vec![Chord { beats: 4, ..c }]),
-            Some(Audition::All) => Some(p.chords.clone()),
-            None => heard,
-        };
-        if out.changed {
-            edits.push(Edit::Progression(pid, p));
+        }
+        let edit = ui
+            .push_id(("chords", def.key), |ui| ui.add_enabled(picked.is_some(), egui::Button::new("Edit")))
+            .inner
+            .on_hover_text("Open the chord editor under the preview")
+            .on_disabled_hover_text("Pick or make a progression to edit it");
+        if edit.clicked() {
+            open = picked;
         }
     }
-    heard
+    open
 }
 
-/// Under a card with an Instrument setting: the section for the instrument it picks, or a line
-/// saying it plays the built-in Pluck, then the keyboard strip to hear it. A key pressed on the
-/// strip comes back.
+/// The end of a card's Instrument section: the section for the instrument it picks, or a line
+/// saying it plays the built-in Pluck.
 #[allow(clippy::too_many_arguments)]
 fn instrument_section(
     ui: &mut Ui,
@@ -1233,9 +1262,7 @@ fn instrument_section(
     edits: &mut Vec<Edit>,
     patch_request: &mut Option<InstrumentId>,
     fx_request: &mut Option<FxPlace>,
-    octave: &mut i8,
-) -> Option<u8> {
-    let mut played = None;
+) {
     for def in defs.iter().filter(|d| d.ty == ValueType::Instrument) {
         let picked = InstrumentRef::from_value(&get(def.key)).and_then(|r| r.0);
         let Some(iid) = picked.filter(|i| scene.library.instruments.contains_key(i)) else {
@@ -1256,18 +1283,32 @@ fn instrument_section(
             }
         }
     }
-    if defs.iter().any(|d| d.ty == ValueType::Instrument) {
-        ui.add_space(4.0);
-        played = crate::keyboard::show(ui, octave);
+}
+
+/// "Try it": folded, or the octave buttons and the keyboard strip to hear the instrument. A key
+/// pressed on the strip comes back.
+fn try_it(ui: &mut Ui, open: &mut bool, octave: &mut Option<i8>) -> Option<u8> {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let toggled = fold_toggle(ui, *open, "Try it");
+        let label = ui
+            .add(egui::Label::new(RichText::new("Try it").color(theme::MUTED)).sense(egui::Sense::click()))
+            .on_hover_text("Play the instrument from a keyboard");
+        if toggled || label.clicked() {
+            *open = !*open;
+        }
+    });
+    if !*open {
+        return None;
     }
-    played
+    crate::keyboard::show(ui, octave.get_or_insert(4))
 }
 
 /// The lowest send; at it the send is off.
 const SEND_OFF: f32 = -60.0;
 
-/// A sound module's channel: its inserts and its sends to each bus. Its pan is a setting, so
-/// the grid above draws it.
+/// The end of a Sound card's Channel section: the module's inserts and its sends to each bus.
+/// Its pan is a setting, so the Level rows draw it.
 fn channel_section(
     ui: &mut Ui,
     scene: &Scene,
@@ -1277,9 +1318,6 @@ fn channel_section(
 ) {
     let Some(m) = scene.library.modules.get(&module) else { return };
     ui.push_id(("channel", module), |ui| {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Channel").strong())
-            .on_hover_text("Effects on everything this sound plays, and how much goes to each bus");
         ui.label(RichText::new("Inserts").small().color(theme::MUTED));
         match crate::fx_list::show(
             ui,
@@ -1481,23 +1519,6 @@ fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: 
     }
 }
 
-/// A clip of `chords` on the scene's tempo, through the instrument a sound module's `get` reads.
-fn chord_clip(
-    chords: Vec<Chord>,
-    bpm: f32,
-    scene: &Scene,
-    module: Option<ModuleId>,
-    get: &dyn Fn(&str) -> Option<Value>,
-) -> ChordClip {
-    let id = get("instrument").and_then(|v| InstrumentRef::from_value(&v)).and_then(|r| r.0);
-    ChordClip {
-        chords,
-        key: None,
-        instrument: crate::instruments::choice(scene, id, module),
-        seconds_per_beat: 60.0 / if bpm > 0.0 { bpm as f64 } else { 120.0 },
-    }
-}
-
 /// A Chords row's "New progression" or "Make unique" becomes a pick of a progression made for
 /// it: a starter, or a copy of the one the row shows.
 fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
@@ -1641,6 +1662,18 @@ fn is_folded(inspector: &Inspector, (id, slot): (ThingId, Option<SlotId>), group
         set.iter().any(|&(i, s, g)| i == id && s == slot && g == group)
     };
     if quiet(group) { !has(&inspector.opened) } else { has(&inspector.collapsed) }
+}
+
+/// The groups of a card's settings, and of its sections with widgets of their own, that are
+/// folded shut, as [`is_folded`] says.
+fn folded_groups(
+    inspector: &Inspector,
+    card: (ThingId, Option<SlotId>),
+    defs: &[SettingDef],
+    extras: &[SectionExtra],
+) -> BTreeSet<&'static str> {
+    let groups = defs.iter().map(|d| d.group).chain(extras.iter().map(|e| e.group));
+    groups.filter(|g| !g.is_empty() && is_folded(inspector, card, g)).collect()
 }
 
 /// Folds shut or opens the groups of a card's settings, as their headings asked.
@@ -2585,24 +2618,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_chord_editor_edits_the_picked_progression() {
-        let mut h = harness(Some(ThingId(2)));
-        assert_eq!(h.query_all_by_label("Chord lane").count(), 1, "the ball's sound picks the starter chords");
-        let node = h.get_by_label("IV\nF");
-        node.scroll_to_me();
-        h.run();
-        h.get_by_label("IV\nF").click();
-        h.run();
-        let p = &h.state().scene.library.progressions[&ProgressionId(0)];
-        assert_eq!(p.chords.len(), 7);
-        assert_eq!(p.chords[6].root, 5);
-        // The new chord is heard for a bar through the ball's sound, on the scene's tempo.
-        let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
-        assert_eq!(clip.chords, [bpe_core::Chord { beats: 4, ..p.chords[6] }]);
-        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
-    }
-
     /// The ball's own sound module.
     fn ball_sound(s: &Scene) -> ModuleId {
         linked(s, ThingId(2), SlotId::Sound)
@@ -2712,9 +2727,18 @@ mod tests {
         assert!(h.query_by_label("Changed here").is_none());
     }
 
+    /// Opens the ball's Sound card's Channel section, which starts folded.
+    fn open_channel(h: &mut Harness<'_, State>) {
+        h.get_by_label("Show Channel").scroll_to_me();
+        h.run();
+        h.get_by_label("Show Channel").click();
+        h.run();
+    }
+
     #[test]
     fn a_send_knob_sends() {
         let mut h = harness(Some(ThingId(2)));
+        open_channel(&mut h);
         let send = h.get_by_role_and_label(Role::Slider, "Reverb");
         send.scroll_to_me();
         h.run();
@@ -2776,8 +2800,9 @@ mod tests {
             ("eq".into(), Default::default(), true),
             ("compressor".into(), Default::default(), true),
         ]);
-        let h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Channel");
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        open_channel(&mut h);
+        h.get_by_label("Inserts");
         for n in h.get_all_by_role(Role::Slider).chain(h.get_all_by_role(Role::SpinButton)) {
             assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
         }
@@ -2808,19 +2833,23 @@ mod tests {
         h.get_by_label(name).click();
         h.run();
         // A key on the strip plays that one note through the patch.
+        h.get_by_label("Show Try it").scroll_to_me();
+        h.run();
+        h.get_by_label("Show Try it").click();
+        h.run();
         h.get_by_role_and_label(Role::Button, "C4").click();
         h.run();
         let clip = h.state_mut().inspector.clip.take().expect("a note to hear");
         assert_eq!(clip.key, Some(60));
         assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
         assert!(clip.render().iter().any(|s| s.abs() > 1e-3), "the patch sounds");
-        // A chord from the lane plays through it too.
-        h.get_by_label("IV\nF").scroll_to_me();
-        h.run();
-        h.get_by_label("IV\nF").click();
-        h.run();
-        let clip = h.state().inspector.clip.as_ref().expect("a chord to hear");
+        // Chords play through it too, as the chord editor hears them.
+        let s = h.state();
+        let module = ball_sound(&s.scene);
+        let patch = s.scene.library.modules[&module].params.get("instrument").and_then(InstrumentRef::from_value);
+        let clip = chords::clip_for(Vec::new(), 0.0, &s.scene, Some(module), patch.and_then(|r| r.0));
         assert_eq!(clip.key, None);
+        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
         assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
     }
 
@@ -2946,9 +2975,111 @@ mod tests {
         let sound = ball_sound(&scene);
         make_custom(&mut scene, sound);
         let h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Instrument");
+        // The picker itself, not the Instrument section's heading.
+        h.get_by_role_and_label(Role::ComboBox, "Instrument");
         // Bound settings come from the graph: the volume is a slider, not shown twice.
         assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
+    }
+
+    /// The top of the Sound card's heading `name`: the highest label of that name under the
+    /// card's header, as a heading sits above any row of its name.
+    fn sound_heading_top(h: &Harness<'_, State>, name: &str) -> Option<f32> {
+        let card = h.get_by_label("Hide Sound").rect().top();
+        h.query_all_by_role_and_label(Role::Label, name).map(|n| n.rect().top()).filter(|&t| t > card).reduce(f32::min)
+    }
+
+    /// The ball's sound becomes a new module of `kind`, its own.
+    fn ball_with_own_sound(kind: &str) -> (Scene, ModuleId) {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let m = scene.add_module(&reg, kind, "Own sound").unwrap();
+        scene.link(&reg, ThingId(2), SlotId::Sound, m).unwrap();
+        (scene, m)
+    }
+
+    #[test]
+    fn sound_card_sections_in_order() {
+        let h = harness(Some(ThingId(2)));
+        let tops: Vec<f32> = ["Instrument", "Notes", "Which hits", "Level", "Chords", "Channel"]
+            .iter()
+            .map(|name| sound_heading_top(&h, name).unwrap_or_else(|| panic!("a {name} heading")))
+            .collect();
+        assert!(tops.windows(2).all(|w| w[0] < w[1]), "the headings read down in order: {tops:?}");
+    }
+
+    #[test]
+    fn the_instrument_macros_sit_in_instrument() {
+        let h = harness(Some(ThingId(2)));
+        let instrument = sound_heading_top(&h, "Instrument").unwrap();
+        let notes = sound_heading_top(&h, "Notes").unwrap();
+        // The built-in Pluck's knob.
+        let decay = h.get_by_role_and_label(Role::Slider, "Decay").rect().top();
+        assert!(instrument < decay && decay < notes, "Decay {decay} between {instrument} and {notes}");
+    }
+
+    #[test]
+    fn try_it_is_folded_until_opened() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.query_by_label("Oct −").is_none(), "Try it starts folded");
+        assert!(h.query_by_label("C4").is_none());
+        h.get_by_label("Show Try it").click();
+        h.run();
+        assert!(h.state().inspector.try_open);
+        let oct = h.get_by_label("Oct −").rect().top();
+        let key = h.get_by_role_and_label(Role::Button, "C4").rect().top();
+        let instrument = sound_heading_top(&h, "Instrument").unwrap();
+        let notes = sound_heading_top(&h, "Notes").unwrap();
+        assert!(instrument < oct && oct < notes, "Oct − {oct} in Instrument ({instrument}..{notes})");
+        assert!(instrument < key && key < notes, "C4 {key} in Instrument ({instrument}..{notes})");
+    }
+
+    #[test]
+    fn edit_opens_the_chord_editor_request() {
+        let mut h = harness(Some(ThingId(2)));
+        assert!(h.query_by_label("Chord lane").is_none(), "the editor is under the preview, not here");
+        let edit = h.get_by_role_and_label(Role::Button, "Edit");
+        assert!(!edit.accesskit_node().is_disabled(), "the ball's sound picks a library progression");
+        edit.click();
+        h.run();
+        let s = h.state();
+        assert_eq!(s.inspector.chords_request, Some((ProgressionId(0), ball_sound(&s.scene))));
+    }
+
+    #[test]
+    fn edit_is_off_for_the_starter_chords() {
+        let (scene, _) = ball_with_own_sound("sound.notes");
+        let h = harness_of(scene, Some(ThingId(2)));
+        assert!(h.get_by_role_and_label(Role::Button, "Edit").accesskit_node().is_disabled());
+        assert!(h.query_by_label_contains("built-in starter chords").is_some());
+    }
+
+    #[test]
+    fn channel_shows_the_dot_when_it_has_inserts() {
+        let h = harness(Some(ThingId(2)));
+        assert!(h.query_by_label("Channel (changed)").is_none(), "a plain channel has no dot");
+        // Inserts.
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        let sound = ball_sound(&scene);
+        scene.library.modules.get_mut(&sound).unwrap().channel.inserts =
+            bpe_synth::chain_graph(&[("eq".into(), Default::default(), true)]);
+        let h = harness_of(scene, Some(ThingId(2)));
+        assert!(h.query_by_label("Channel (changed)").is_some(), "inserts show while folded");
+        // A send.
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        let sound = ball_sound(&scene);
+        let bus = scene.library.buses[0].id;
+        scene.library.modules.get_mut(&sound).unwrap().channel.sends.insert(bus, -12.0);
+        let h = harness_of(scene, Some(ThingId(2)));
+        assert!(h.query_by_label("Channel (changed)").is_some(), "a send shows while folded");
+    }
+
+    #[test]
+    fn drums_card_has_on_the_beat() {
+        let (scene, _) = ball_with_own_sound("sound.drums");
+        let h = harness_of(scene, Some(ThingId(2)));
+        assert!(sound_heading_top(&h, "On the beat").is_some());
+        assert!(sound_heading_top(&h, "Notes").is_none());
+        assert!(sound_heading_top(&h, "Chords").is_none());
     }
 
     #[test]

@@ -6,6 +6,8 @@
 mod app;
 mod audio_out;
 mod batch_window;
+// The chord editor isn't drawn until the bottom panel shows it; the inspector only asks for it.
+#[cfg_attr(not(test), expect(dead_code, reason = "the bottom panel will draw the chord editor"))]
 mod chords;
 mod dice;
 mod explorer;
