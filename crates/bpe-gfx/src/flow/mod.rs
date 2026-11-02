@@ -1461,6 +1461,7 @@ mod tests {
             fade: 0.0,
             blend: bpe_core::Blend::Normal,
             opacity: 1.0,
+            look: crate::PaintLook::default(),
             time: 0.0,
             mask: Vec::new(),
         }

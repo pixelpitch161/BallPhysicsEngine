@@ -1,5 +1,5 @@
 //! The canvas composite: draws a canvas's rectangle of the world into the picture with the Flat
-//! style, sampling its two textures (see canvas.wgsl).
+//! style or a paint style, sampling its three textures (see canvas.wgsl).
 
 use bpe_core::Blend;
 use bpe_runtime::MarkTarget;
@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::CanvasTextures;
 use crate::flow::util;
-use crate::{CanvasLayer, HDR_FORMAT, MAX_MASK_SHAPES, MaskShape};
+use crate::{CanvasLayer, HDR_FORMAT, MAX_MASK_SHAPES, MaskShape, PaintStyle};
 
 /// One canvas's uniform, laid out as `Canvas` in canvas.wgsl.
 #[repr(C)]
@@ -17,6 +17,11 @@ struct CanvasUniform {
     size: [f32; 4],
     start: [f32; 4],
     clock: [f32; 4],
+    /// Style (0 flat, 1 wet paint, 2 watercolour, 3 neon ink), dry time, light angle in radians,
+    /// gloss.
+    look: [f32; 4],
+    /// Grain, edge darkening, glow size, glow strength.
+    look2: [f32; 4],
 }
 
 impl CanvasUniform {
@@ -27,6 +32,18 @@ impl CanvasUniform {
             size: [c.size[0], c.size[1], c.fade, c.opacity],
             start: c.start.unwrap_or([0.0; 4]),
             clock: [c.time, c.mask.len().min(MAX_MASK_SHAPES) as f32, if skin { 1.0 } else { 0.0 }, 0.0],
+            look: [
+                match c.look.style {
+                    PaintStyle::Flat => 0.0,
+                    PaintStyle::WetPaint => 1.0,
+                    PaintStyle::Watercolour => 2.0,
+                    PaintStyle::NeonInk => 3.0,
+                },
+                c.look.dry_time,
+                c.look.light_angle.to_radians(),
+                c.look.gloss,
+            ],
+            look2: [c.look.grain, c.look.edge_dark, c.look.glow_size, c.look.glow_strength],
         }
     }
 }
@@ -64,6 +81,7 @@ impl Composite {
                     count: None,
                 },
                 util::storage_entry(4, S::FRAGMENT, true),
+                util::float_texture_entry(5, S::FRAGMENT),
             ],
         });
         let globals = util::globals_layout(device);
@@ -192,6 +210,10 @@ impl Composite {
                     },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                     wgpu::BindGroupEntry { binding: 4, resource: mask.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&textures.body_view),
+                    },
                 ],
             });
             *cached = Some((textures.paint.clone(), group));
@@ -236,6 +258,7 @@ mod tests {
             fade: 0.0,
             blend: Blend::Normal,
             opacity: 1.0,
+            look: Default::default(),
             time: 0.0,
             mask: Vec::new(),
         }

@@ -49,6 +49,7 @@ impl ThingDraw for CanvasDraw {
             fade: settings.fade.max(0.0),
             blend: settings.blend,
             opacity: settings.opacity.clamp(0.0, 1.0),
+            look: bpe_gfx::PaintLook::default(),
             time: cx.time as f32,
             mask: Vec::new(),
         });
@@ -75,6 +76,7 @@ pub fn draw_skin(cx: &DrawCx, frame: &mut Frame) {
         fade: skin.skin_fade.max(0.0),
         blend: Blend::Normal,
         opacity: skin.skin_opacity.clamp(0.0, 1.0),
+        look: bpe_gfx::PaintLook::default(),
         time: cx.time as f32,
         mask: skin_mask(cx.world, thing, &skin),
     });

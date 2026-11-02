@@ -434,3 +434,229 @@ fn missing_file_draws_the_checker_on_the_gpu() {
     assert!(is_checker(c), "{c:?}");
     assert_eq!(flow.missing_pictures(), ["gone.png"]);
 }
+
+// ---- The paint styles, seen through the renderer ----
+
+use crate::{MaskShape, PaintLook, PaintStyle, Renderer};
+
+/// Leaves `marks(step)` on the canvas, or on its skin.
+struct Marker(fn(u64) -> Vec<Mark>, bool);
+impl bpe_runtime::ThingSim for Marker {
+    fn kind(&self) -> &'static str {
+        "balls"
+    }
+    fn build(&self, _: &bpe_core::Thing, _: &bpe_core::ResolvedThing, _: &mut bpe_runtime::World) {}
+    fn after_step(&self, _: bpe_core::ThingId, world: &mut bpe_runtime::World, log: &mut bpe_runtime::Log) {
+        for mut m in (self.0)(world.step) {
+            if self.1 {
+                m.target = MarkTarget::Skin(CANVAS);
+            }
+            log.push_mark(m);
+        }
+    }
+}
+
+/// The canvas drawn in `look` at scene time `time`, as 540 by 960 RGBA bytes: two world pixels
+/// to an output pixel, the middle in the middle. With a mask it is a skin.
+fn composite(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    look: PaintLook,
+    marks: fn(u64) -> Vec<Mark>,
+    time: f64,
+    mask: Option<Vec<MaskShape>>,
+) -> Vec<u8> {
+    let (scene, resolved) = tiny_scene();
+    let mut sims = Sims::default();
+    sims.add_thing(Marker(marks, mask.is_some()));
+    let mut layer = canvas_layer();
+    layer.look = look;
+    layer.time = time as f32;
+    if let Some(mask) = mask {
+        layer.key = MarkTarget::Skin(CANVAS);
+        layer.place = crate::CanvasPlace::OnThing;
+        layer.mask = mask;
+    }
+    let frame = Frame { bloom: 0.0, time: time as f32, canvases: vec![layer], ..Default::default() };
+    let source = canvas_source(&scene, &resolved, &sims);
+    let mut renderer = Renderer::new(device, 540, 960);
+    assert!(renderer.render_with_flow(device, queue, &frame, &source).caught_up);
+    renderer.read_output(device, queue).unwrap()
+}
+
+/// The output pixel at world point (x, y).
+fn px(out: &[u8], x: f32, y: f32) -> [u8; 3] {
+    let (ox, oy) = ((x / 2.0 + 270.0).floor() as usize, (y / 2.0 + 480.0).floor() as usize);
+    let i = (oy * 540 + ox) * 4;
+    [out[i], out[i + 1], out[i + 2]]
+}
+
+fn sum(p: [u8; 3]) -> i32 {
+    p.iter().map(|c| *c as i32).sum()
+}
+
+fn look(style: PaintStyle) -> PaintLook {
+    PaintLook { style, dry_time: 1.0, light_angle: 315.0, gloss: 1.0, grain: 0.0, ..PaintLook::default() }
+}
+
+/// The brightest pixel (by r + g + b) in the world square `centre` plus or minus `half`.
+fn brightest(out: &[u8], centre: Vec2, half: f32) -> i32 {
+    let mut best = 0;
+    let mut y = -half;
+    while y <= half {
+        let mut x = -half;
+        while x <= half {
+            best = best.max(sum(px(out, centre.x + x, centre.y + y)));
+            x += 2.0;
+        }
+        y += 2.0;
+    }
+    best
+}
+
+fn one_splat(step: u64) -> Vec<Mark> {
+    (step == 1).then(|| mark(1, S::Splat, v(0.0, 0.0), v(0.0, 0.0), 60.0)).into_iter().collect()
+}
+
+fn two_splats(step: u64) -> Vec<Mark> {
+    if step != 1 {
+        return Vec::new();
+    }
+    vec![mark(1, S::Splat, v(-20.0, 0.0), v(-20.0, 0.0), 60.0), mark(1, S::Splat, v(20.0, 0.0), v(20.0, 0.0), 60.0)]
+}
+
+fn disc(step: u64) -> Vec<Mark> {
+    (step == 1).then(|| mark(1, S::Stroke, v(0.0, 0.0), v(0.0, 0.0), 60.0)).into_iter().collect()
+}
+
+fn bar(step: u64) -> Vec<Mark> {
+    (step == 1).then(|| mark(1, S::Stroke, v(-80.0, 0.0), v(80.0, 0.0), 30.0)).into_iter().collect()
+}
+
+fn thin_line(step: u64) -> Vec<Mark> {
+    (step == 1)
+        .then(|| {
+            let mut m = mark(1, S::Stroke, v(-80.0, 0.0), v(80.0, 0.0), 4.0);
+            m.colour = [0.1, 0.02, 0.02, 1.0];
+            m.colour_to = m.colour;
+            m
+        })
+        .into_iter()
+        .collect()
+}
+
+fn dim_line(step: u64) -> Vec<Mark> {
+    let mut marks = thin_line(step);
+    for m in &mut marks {
+        m.colour = [0.01, 0.002, 0.002, 1.0];
+        m.colour_to = m.colour;
+    }
+    marks
+}
+
+#[test]
+fn flat_is_the_same_wet_or_dry() {
+    let Some((device, queue)) = gpu() else { return };
+    let wet = composite(&device, &queue, look(PaintStyle::Flat), one_splat, 0.05, None);
+    let dry = composite(&device, &queue, look(PaintStyle::Flat), one_splat, 3.0, None);
+    assert!(wet == dry);
+}
+
+#[test]
+fn wet_paint_highlight_fades_as_it_dries() {
+    let Some((device, queue)) = gpu() else { return };
+    let wet = composite(&device, &queue, look(PaintStyle::WetPaint), one_splat, 0.05, None);
+    let dry = composite(&device, &queue, look(PaintStyle::WetPaint), one_splat, 3.0, None);
+    let (a, b) = (brightest(&wet, Vec2::ZERO, 50.0), brightest(&dry, Vec2::ZERO, 50.0));
+    assert!(a >= b + 40, "wet {a}, dry {b}");
+}
+
+#[test]
+fn wet_paint_overlaps_shine_more() {
+    let Some((device, queue)) = gpu() else { return };
+    let one = composite(&device, &queue, look(PaintStyle::WetPaint), one_splat, 0.05, None);
+    let two = composite(&device, &queue, look(PaintStyle::WetPaint), two_splats, 0.05, None);
+    let (a, b) = (brightest(&one, Vec2::ZERO, 60.0), brightest(&two, Vec2::ZERO, 60.0));
+    assert!(b >= a + 20, "one {a}, two {b}");
+}
+
+#[test]
+fn light_angle_moves_the_highlight() {
+    let Some((device, queue)) = gpu() else { return };
+    let rim = |out: &[u8], sx: f32, sy: f32| {
+        let mut total = 0;
+        let mut count = 0;
+        for i in 0..16 {
+            for r in [57.0, 58.5, 60.0, 61.5] {
+                let a = std::f32::consts::FRAC_PI_2 * (0.1 + 0.8 * i as f32 / 15.0);
+                let p = v(sx * a.cos() * r, sy * a.sin() * r);
+                total += sum(px(out, p.x, p.y));
+                count += 1;
+            }
+        }
+        total as f32 / count as f32
+    };
+    let mut l = look(PaintStyle::WetPaint);
+    l.light_angle = 315.0;
+    let from_top_left = composite(&device, &queue, l, disc, 0.05, None);
+    assert!(rim(&from_top_left, -1.0, -1.0) > rim(&from_top_left, 1.0, 1.0) + 10.0);
+    l.light_angle = 135.0;
+    let from_bottom_right = composite(&device, &queue, l, disc, 0.05, None);
+    assert!(rim(&from_bottom_right, 1.0, 1.0) > rim(&from_bottom_right, -1.0, -1.0) + 10.0);
+}
+
+#[test]
+fn watercolour_footprint_shrinks_as_it_dries() {
+    let Some((device, queue)) = gpu() else { return };
+    let none = composite(&device, &queue, look(PaintStyle::Watercolour), |_| Vec::new(), 0.05, None);
+    let count =
+        |out: &[u8]| out.chunks(4).zip(none.chunks(4)).filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > 8)).count();
+    let wet = count(&composite(&device, &queue, look(PaintStyle::Watercolour), bar, 0.05, None));
+    let dry = count(&composite(&device, &queue, look(PaintStyle::Watercolour), bar, 3.0, None));
+    assert!(wet > dry, "wet {wet}, dry {dry}");
+}
+
+#[test]
+fn watercolour_edges_darken() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut l = look(PaintStyle::Watercolour);
+    l.edge_dark = 1.0;
+    let dark = composite(&device, &queue, l, bar, 3.0, None);
+    l.edge_dark = 0.0;
+    let plain = composite(&device, &queue, l, bar, 3.0, None);
+    let (a, b) = (sum(px(&dark, 0.0, 28.0)), sum(px(&plain, 0.0, 28.0)));
+    assert!(a + 10 <= b, "dark {a}, plain {b}");
+}
+
+#[test]
+fn neon_glow_goes_as_it_dries() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut l = look(PaintStyle::NeonInk);
+    l.glow_size = 18.0;
+    let background = composite(&device, &queue, l, |_| Vec::new(), 0.05, None);
+    let wet = composite(&device, &queue, l, thin_line, 0.05, None);
+    let dry = composite(&device, &queue, l, thin_line, 3.0, None);
+    let dim_neon = composite(&device, &queue, l, dim_line, 3.0, None);
+    let dim_flat = composite(&device, &queue, look(PaintStyle::Flat), dim_line, 3.0, None);
+    let off = |out: &[u8]| sum(px(out, 0.0, 8.0)) - sum(px(&background, 0.0, 8.0));
+    assert!(off(&wet) >= 15, "wet glow {}", off(&wet));
+    assert!(off(&dry).abs() <= 2, "dry glow {}", off(&dry));
+    // A dim line, so the tone curve has not squashed the extra light yet. The picture is
+    // encoded for the screen, so 1.5 times the light is about 1.2 times the code value.
+    let bg = sum(px(&background, 0.0, 0.0));
+    let (line, plain) = (sum(px(&dim_neon, 0.0, 0.0)) - bg, sum(px(&dim_flat, 0.0, 0.0)) - bg);
+    assert!(line as f32 >= 1.15 * plain as f32, "line {line}, flat {plain}");
+}
+
+#[test]
+fn neon_glow_shows_past_a_skin_line_but_not_past_its_size() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut l = look(PaintStyle::NeonInk);
+    l.glow_size = 18.0;
+    let capsule = MaskShape { kind: MaskShape::CAPSULE, a: [-100.0, 0.0, 100.0, 0.0], b: [4.0, 0.0, 0.0, 0.0] };
+    let background = composite(&device, &queue, l, |_| Vec::new(), 0.05, Some(vec![capsule]));
+    let wet = composite(&device, &queue, l, thin_line, 0.05, Some(vec![capsule]));
+    let off = |y: f32| sum(px(&wet, 0.0, y)) - sum(px(&background, 0.0, y));
+    assert!(off(8.0) >= 10, "near {}", off(8.0));
+    assert!(off(30.0).abs() <= 2, "far {}", off(30.0));
+}

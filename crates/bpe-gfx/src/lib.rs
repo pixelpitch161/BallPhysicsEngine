@@ -29,8 +29,9 @@ pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, CanvasLayer, CanvasPlace, DrawCx, Draws, EffectCall,
     FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, MAX_MASK_SHAPES,
-    MaskShape, ModuleDraw, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook, SwarmStart, ThingDraw,
-    TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak, push_streak_colours, thing_code,
+    MaskShape, ModuleDraw, PaintLook, PaintStyle, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook,
+    SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak,
+    push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
