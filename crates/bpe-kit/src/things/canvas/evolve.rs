@@ -11,6 +11,7 @@ use glam::Vec2;
 
 use super::grid::{Cell, DRIP_JOINED, wet};
 use super::sim::{CanvasState, mix, reaches};
+use super::skin::{line_reach, nearest, skin_settings, thin_reach};
 
 /// How a canvas or skin changes over time, fixed at build.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -135,12 +136,15 @@ fn run_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>, out
     if cx.gravity.length() <= 1e-3 || st.runners.is_empty() {
         return;
     }
-    // Skin drips run along the outline: Task 7.
-    if outline.is_some() || matches!(cx.target, MarkTarget::Skin(_)) {
-        return;
-    }
     let drips = st.evolve.drips;
     let g = cx.gravity.normalize();
+    if let MarkTarget::Skin(_) = cx.target {
+        // A skin's drips run along its outline; with none to run on they wait.
+        if let Some(outline) = outline {
+            run_skin_drips(cx, st, outline, g, out);
+        }
+        return;
+    }
     let per_px = 1.0 / (60.0 + 200.0 * drips);
     let mut alive = Vec::with_capacity(st.runners.len());
     for mut r in std::mem::take(&mut st.runners) {
@@ -188,10 +192,11 @@ fn run_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>, out
 
 /// Starts new runners in wet tiles.
 fn start_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>) {
-    // Skin drips start on the outline: Task 7.
-    if outline.is_some() || matches!(cx.target, MarkTarget::Skin(_)) {
+    // A skin's drips start on its outline; with none, nothing starts.
+    if matches!(cx.target, MarkTarget::Skin(_)) && outline.is_none() {
         return;
     }
+    let reach = outline.map_or(0.0, |_| skin_reach(cx.world, cx.target));
     let drips = st.evolve.drips;
     let thr = 255.0 - 150.0 * drips;
     let chance = 0.08 + 0.25 * drips;
@@ -224,19 +229,234 @@ fn start_drips(cx: &Tick, st: &mut CanvasState, outline: Option<&[Vec<Vec2>]>) {
                 if unit(mix(salt ^ ((cx.now as u64) << 20), index)) >= chance {
                     continue;
                 }
+                let centre = st.grid.centre_of(x, y);
+                // On a skin it runs on the line nearest the cell, at the cell's side of it.
+                let (at, on) = match outline {
+                    None => (centre, None),
+                    Some(lines) => {
+                        let Some((l, k, p)) = nearest(lines, centre) else { continue };
+                        let seg = lines[l][k + 1] - lines[l][k];
+                        let (u, len2) = (seg.normalize_or_zero(), seg.length_squared());
+                        let n = u.perp();
+                        let t = if len2 > 0.0 { ((p - lines[l][k]).dot(seg) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                        let offset = (centre - p).dot(n).clamp(-reach, reach);
+                        (p + n * offset, Some(OnLine { line: l as u32, seg: k as u32, t, offset, dir: 0 }))
+                    }
+                };
                 st.grid.set(x, y, Cell { amount: c.amount.saturating_sub(48), ..c }, None);
                 st.runners.push(Runner {
-                    at: st.grid.centre_of(x, y),
+                    at,
                     load: ((c.amount as f32 - thr / 2.0) / 255.0).clamp(0.2, 1.0),
                     rgb: c.rgb,
                     heading: None,
                     seed: mix(salt, cx.now ^ index),
-                    on: None,
+                    on,
                 });
                 starts += 1;
             }
         }
     }
+}
+
+/// How far a skin's paint reaches either side of its line, for the drips' offsets: the wall's, or
+/// the widest thin piece's; 0 for solid shapes (drips run on their edge).
+fn skin_reach(world: &World, target: MarkTarget) -> f32 {
+    let MarkTarget::Skin(thing) = target else { return 0.0 };
+    let Some(skin) = skin_settings(world, thing) else { return 0.0 };
+    if let Some(wall) = world.walls.get(&thing) {
+        return line_reach(wall.outline.thickness(), skin);
+    }
+    let parts = world.solids.get(&thing).map_or(0, |s| s.parts.len() as u32);
+    (0..parts).filter_map(|i| thin_reach(world, thing, i, skin)).fold(0.0, f32::max)
+}
+
+/// Walks along `line` from where `on` says, `dist` pixels downhill (`g` is the unit gravity in the
+/// line's frame). Returns the points of the line it passed through and ended at (before the
+/// offset is applied), and whether it stopped (at a lowest point, or at an open end).
+pub(crate) fn walk(line: &[Vec2], on: &mut OnLine, g: Vec2, mut dist: f32) -> (Vec<Vec2>, bool) {
+    let mut points = Vec::new();
+    if line.len() < 2 {
+        return (points, true);
+    }
+    let segs = line.len() as i32 - 1;
+    let looped = line.len() > 2 && line[0] == line[line.len() - 1];
+    let mut seg = (on.seg as i32).clamp(0, segs - 1);
+    for _ in 0..(4 * segs).max(8) {
+        let d = line[seg as usize + 1] - line[seg as usize];
+        let len = d.length();
+        if len < 1e-6 {
+            if on.dir == 0 {
+                return (points, true);
+            }
+            // Past a zero-length piece in the way it was going.
+            let next = seg + on.dir as i32;
+            if next < 0 || next >= segs {
+                if !looped {
+                    return (points, true);
+                }
+                seg = if on.dir > 0 { 0 } else { segs - 1 };
+            } else {
+                seg = next;
+            }
+            on.seg = seg as u32;
+            on.t = if on.dir > 0 { 0.0 } else { 1.0 };
+            continue;
+        }
+        let pull = g.dot(d / len);
+        if on.dir == 0 {
+            if pull.abs() < 0.05 {
+                return (points, true);
+            }
+            on.dir = if pull > 0.0 { 1 } else { -1 };
+        } else if pull * (on.dir as f32) < 0.0 || pull.abs() < 0.05 {
+            return (points, true);
+        }
+        let dir = on.dir as f32;
+        let room = if on.dir > 0 { (1.0 - on.t) * len } else { on.t * len };
+        if dist <= room {
+            on.t += dir * dist / len;
+            on.seg = seg as u32;
+            points.push(line[seg as usize] + d * on.t);
+            return (points, false);
+        }
+        dist -= room;
+        let corner = if on.dir > 0 { line[seg as usize + 1] } else { line[seg as usize] };
+        points.push(corner);
+        let next = seg + on.dir as i32;
+        if next < 0 || next >= segs {
+            if !looped {
+                on.seg = seg as u32;
+                on.t = if on.dir > 0 { 1.0 } else { 0.0 };
+                return (points, true);
+            }
+            seg = if on.dir > 0 { 0 } else { segs - 1 };
+        } else {
+            seg = next;
+        }
+        on.seg = seg as u32;
+        on.t = if on.dir > 0 { 0.0 } else { 1.0 };
+    }
+    (points, true)
+}
+
+/// The unit normal of `line` at `p`: the average of the normals of the pieces `p` lies on.
+fn normal_at(line: &[Vec2], p: Vec2) -> Vec2 {
+    let mut sum = Vec2::ZERO;
+    for w in line.windows(2) {
+        let d = w[1] - w[0];
+        let len2 = d.length_squared();
+        if len2 < 1e-12 {
+            continue;
+        }
+        let t = ((p - w[0]).dot(d) / len2).clamp(0.0, 1.0);
+        if (w[0] + d * t - p).length_squared() < 1e-6 {
+            sum += d.normalize().perp();
+        }
+    }
+    sum.normalize_or_zero()
+}
+
+/// Moves every skin runner one tick along its line.
+fn run_skin_drips(cx: &Tick, st: &mut CanvasState, outline: &[Vec<Vec2>], g: Vec2, out: &mut Vec<Mark>) {
+    let drips = st.evolve.drips;
+    let per_px = 1.0 / (60.0 + 200.0 * drips);
+    let mut alive = Vec::with_capacity(st.runners.len());
+    for mut r in std::mem::take(&mut st.runners) {
+        let Some(mut on) = r.on else { continue };
+        let Some(line) = outline.get(on.line as usize) else { continue };
+        if line.len() < 2 {
+            continue;
+        }
+        let seg = (on.seg as usize).min(line.len() - 2);
+        let u = (line[seg + 1] - line[seg]).normalize_or_zero();
+        let mut dist = (30.0 + 150.0 * r.load) * g.dot(u).abs().max(0.25) / cx.per_second;
+        let mut done = r.load - dist * per_px <= 0.0;
+        if done {
+            dist = r.load / per_px;
+        }
+        let (points, stopped) = walk(line, &mut on, g, dist);
+        // The points, pushed off the line to the runner's side.
+        let mut at = r.at;
+        let mut used = 0.0;
+        let mut pieces: Vec<(Vec2, Vec2, f32)> = Vec::new();
+        for p in &points {
+            let to = *p + normal_at(line, *p) * on.offset;
+            let len = (to - at).length();
+            pieces.push((at, to, used));
+            used += len;
+            at = to;
+        }
+        let total = used;
+        // If the walk ran short of its distance, the load used up is what it really ran.
+        let load_after = (r.load - if done && !stopped { dist } else { total.min(dist) } * per_px).max(0.0);
+        if stopped {
+            done = false;
+        }
+        let load_at = |d: f32| (r.load - d * per_px).max(0.0);
+        let mut heading = r.heading;
+        let count = pieces.len();
+        for (i, (from, to, d0)) in pieces.into_iter().enumerate() {
+            // Standing at a corner leaves a piece of no length; it draws nothing.
+            if (to - from).length() < 1e-4 {
+                continue;
+            }
+            let (a, b) = (d0, d0 + (to - from).length());
+            let r0 = drip_radius(drips, load_at(a));
+            let r1 = if done && i + 1 == count { 0.0 } else { drip_radius(drips, load_at(b)) };
+            let colour = Color::rgb(r.rgb[0], r.rgb[1], r.rgb[2]).to_linear();
+            let piece = Mark {
+                step: cx.world.step,
+                target: cx.target,
+                shape: MarkShape::Drip,
+                from,
+                to,
+                radius: r0,
+                radius_to: r1,
+                angle: heading.unwrap_or(0.0),
+                within: [1.0, 1.0],
+                variant: if heading.is_some() { DRIP_JOINED } else { 0 },
+                colour,
+                colour_to: colour,
+            };
+            if reaches(st.size, from, to, r0.max(r1)) {
+                st.grid.stamp(&piece, cx.now, 0);
+                out.push(piece);
+            }
+            heading = Some((to - from).to_angle());
+        }
+        r.at = at;
+        r.heading = heading;
+        r.load = load_after;
+        r.on = Some(on);
+        if stopped {
+            // A drop where it stopped, round, with no join.
+            if load_after > 0.0 {
+                let radius = 1.6 * drip_radius(drips, load_after);
+                let colour = Color::rgb(r.rgb[0], r.rgb[1], r.rgb[2]).to_linear();
+                let drop = Mark {
+                    step: cx.world.step,
+                    target: cx.target,
+                    shape: MarkShape::Drip,
+                    from: at,
+                    to: at,
+                    radius,
+                    radius_to: radius,
+                    angle: 0.0,
+                    within: [1.0, 1.0],
+                    variant: 0,
+                    colour,
+                    colour_to: colour,
+                };
+                if reaches(st.size, at, at, radius) {
+                    st.grid.stamp(&drop, cx.now, 0);
+                    out.push(drop);
+                }
+            }
+        } else if !done {
+            alive.push(r);
+        }
+    }
+    st.runners = alive;
 }
 
 /// The four neighbours of (x, y) inside a grid of `width` x `height`, in the order left, right,
@@ -741,5 +961,163 @@ mod tests {
         assert_eq!(sa.runners, sb.runners);
         assert_eq!(sa.grid.hash(), sb.grid.hash());
         assert_eq!(a.log().marks(), b.log().marks());
+    }
+
+    // --- skins ---
+
+    /// The Splat ring scene with the drips on for the ring and the bar, and its bar's id.
+    fn dripping_ring(drips: f32) -> (Scene, bpe_core::Resolved, Kit, ThingId) {
+        let kit = kit();
+        let (_, mut scene) = scenes::marks(&kit.registry).into_iter().find(|(n, _)| n == "Splat ring").unwrap();
+        let bar = *scene.things.iter().find(|(_, t)| t.name == "Spinning bar").unwrap().0;
+        for id in [ARENA, bar] {
+            let p = &mut scene.things.get_mut(&id).unwrap().params;
+            p.set("skin_drips", Value::Number(drips as f64));
+            p.set("skin_dry_time", Value::Number(6.0));
+        }
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        (scene, resolved, kit, bar)
+    }
+
+    fn skin_drips(log: &Log, thing: ThingId) -> Vec<Mark> {
+        log.marks()
+            .iter()
+            .filter(|m| m.target == MarkTarget::Skin(thing) && m.shape == MarkShape::Drip)
+            .copied()
+            .collect()
+    }
+
+    /// How far `p` is from the nearest of `lines`.
+    fn off_line(lines: &[Vec<Vec2>], p: Vec2) -> f32 {
+        let (_, _, q) = nearest(lines, p).unwrap();
+        (p - q).length()
+    }
+
+    #[test]
+    fn skin_drips_stay_on_the_ring() {
+        let (scene, resolved, kit, _) = dripping_ring(0.8);
+        let (world, log) = crate::testing::run(&scene, &resolved, &kit, 8.0);
+        let drips = skin_drips(&log, ARENA);
+        assert!(!drips.is_empty());
+        let lines = crate::things::canvas::outline_local(&world, ARENA);
+        let skin = skin_settings(&world, ARENA).unwrap();
+        let reach = line_reach(world.walls[&ARENA].outline.thickness(), skin) + 0.5;
+        for m in &drips {
+            assert!(off_line(&lines, m.from) <= reach && off_line(&lines, m.to) <= reach, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn skin_drips_gather_at_the_bottom_of_a_ring() {
+        // The new scene's ring with a skin, and a thick wet blob put on it by hand, 20 degrees
+        // round from the bottom, so a drip's paint lasts long enough to get there.
+        let kit = kit();
+        let mut scene = crate::new_scene(&kit.registry);
+        let p = &mut scene.things.get_mut(&ARENA).unwrap().params;
+        p.set("skin_drips", Value::Number(0.8));
+        p.set("skin_dry_time", Value::Number(6.0));
+        crate::testing::brushes(&mut scene, &kit, crate::testing::BALLS, |p| {
+            p.set("paint_on", Value::Bool(false));
+            p.set("splat_on", Value::Bool(true));
+        });
+        let resolved = resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let mut st = skin_state(&world, ARENA).expect("a skin").clone();
+        let radius = match world.walls[&ARENA].outline {
+            bpe_runtime::Outline::Ring { radius, .. } => radius,
+            _ => panic!("a ring"),
+        };
+        let at = Vec2::new(20f32.to_radians().sin(), 20f32.to_radians().cos()) * radius * 0.97;
+        let blob = Mark { target: MarkTarget::Skin(ARENA), ..splat(at, 30.0, [0.0, 0.3, 1.0, 1.0]) };
+        st.grid.stamp(&blob, 0, 1);
+        st.grid.stamp(&blob, 0, 1);
+        let lines = crate::things::canvas::outline_local(&world, ARENA);
+        let mut picked = BTreeMap::new();
+        let mut marks = Vec::new();
+        for now in 1..=150 {
+            let cx = Tick {
+                target: MarkTarget::Skin(ARENA),
+                world: &world,
+                now,
+                per_second: 30.0,
+                gravity: Vec2::new(0.0, 900.0),
+            };
+            marks.extend(tick(&cx, &mut st, &mut picked, Some(&lines)));
+        }
+        let drops: Vec<&Mark> = marks.iter().filter(|m| m.shape == MarkShape::Drip && m.from == m.to).collect();
+        assert!(!drops.is_empty());
+        for d in drops {
+            assert!(d.from.y > 0.9 * radius, "{d:?}");
+        }
+    }
+
+    #[test]
+    fn skin_drips_stay_on_a_spinning_bar() {
+        let (scene, resolved, kit, bar) = dripping_ring(0.8);
+        let (world, log) = crate::testing::run(&scene, &resolved, &kit, 10.0);
+        let drips = skin_drips(&log, bar);
+        assert!(!drips.is_empty());
+        let lines = crate::things::canvas::outline_local(&world, bar);
+        // The bar is solid, so the drips run on its edge: within a pixel of it.
+        for m in &drips {
+            assert!(off_line(&lines, m.from) <= 1.0 && off_line(&lines, m.to) <= 1.0, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn skin_drips_run_round_a_peg_to_its_underside() {
+        let (mut scene, _, kit) = crate::testing::scene_with_obstacle(|p| {
+            p.set("shape", Value::Choice("peg".into()));
+            p.set("radius", Value::Number(40.0));
+            p.set("skin_drips", Value::Number(1.0));
+            p.set("skin_dry_time", Value::Number(6.0));
+        });
+        crate::testing::brushes(&mut scene, &kit, crate::testing::BALLS, |p| {
+            p.set("paint_on", Value::Bool(false));
+            p.set("splat_on", Value::Bool(true));
+            p.set("splat_size", Value::Number(40.0));
+            p.set("splat_min_speed", Value::Number(0.0));
+        });
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 900.0]));
+        let resolved = resolve(&scene, &kit.registry);
+        let (world, log) = crate::testing::run(&scene, &resolved, &kit, 6.0);
+        let drips = skin_drips(&log, crate::testing::OBSTACLE);
+        assert!(!drips.is_empty());
+        let drops: Vec<&Mark> = drips.iter().filter(|m| m.from == m.to).collect();
+        assert!(!drops.is_empty());
+        for d in drops {
+            assert!(d.from.y > 0.8 * 40.0, "{d:?}");
+        }
+        let lines = crate::things::canvas::outline_local(&world, crate::testing::OBSTACLE);
+        for m in &drips {
+            assert!(off_line(&lines, m.from) <= 1.0 && off_line(&lines, m.to) <= 1.0, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn no_gravity_no_skin_drips() {
+        let (mut scene, _, kit, _) = dripping_ring(0.8);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let resolved = resolve(&scene, &kit.registry);
+        let (_, log) = crate::testing::run(&scene, &resolved, &kit, 8.0);
+        assert!(log.marks().iter().any(|m| matches!(m.target, MarkTarget::Skin(_))), "the balls still hit");
+        assert!(log.marks().iter().all(|m| m.shape != MarkShape::Drip));
+    }
+
+    #[test]
+    fn seek_equals_straight_for_skin_drips() {
+        let (scene, resolved, kit, _) = dripping_ring(0.8);
+        let mut straight = Playback::new(&scene, &resolved, kit.sims.clone());
+        straight.seek(5.0);
+        let mut jumpy = Playback::new(&scene, &resolved, kit.sims.clone());
+        jumpy.seek(8.0);
+        jumpy.seek(5.0);
+        let skin = |p: &Playback| skin_state(p.world(), ARENA).unwrap().clone();
+        let (a, b) = (skin(&straight), skin(&jumpy));
+        assert_eq!(a.grid.hash(), b.grid.hash());
+        assert_eq!(a.runners, b.runners);
+        assert_eq!(straight.log().marks(), jumpy.log().marks());
+        assert!(straight.log().marks().iter().any(|m| m.shape == MarkShape::Drip));
     }
 }

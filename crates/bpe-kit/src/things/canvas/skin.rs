@@ -331,7 +331,7 @@ pub fn outline_local(world: &World, thing: ThingId) -> Vec<Vec<Vec2>> {
 
 /// How far paint on a thin line of `thing` reaches from the line, or `None` when the thing (or
 /// its piece `part`, for an obstacle) is solid.
-fn thin_reach(world: &World, thing: ThingId, part: u32, skin: &SkinSettings) -> Option<f32> {
+pub(crate) fn thin_reach(world: &World, thing: ThingId, part: u32, skin: &SkinSettings) -> Option<f32> {
     if let Some(wall) = world.walls.get(&thing) {
         return Some(line_reach(wall.outline.thickness(), skin));
     }
@@ -422,7 +422,11 @@ pub fn after_step(thing: ThingId, world: &mut World, log: &mut Log) {
                 per_second: world.steps_per_second as f32 / st.tick_every as f32,
                 gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
             };
-            for m in evolve::tick(&cx, st, &mut picked, None) {
+            // The outline is only worked out while something can drip (peg grids are big).
+            let outline = (st.evolve.drips > 0.0
+                && (!st.runners.is_empty() || !st.grid.wet_tiles(cx.now, st.evolve.dry_ticks).is_empty()))
+            .then(|| outline_local(world, thing));
+            for m in evolve::tick(&cx, st, &mut picked, outline.as_deref()) {
                 log.push_mark(m);
             }
             world.picked = picked;
@@ -519,7 +523,7 @@ fn along_surface(normal: Vec2, travel: Vec2) -> Vec2 {
 const SPREAD_PIECE: f32 = 8.0;
 
 /// Where `at` falls nearest on `outline`: the polyline, the segment's index and the point.
-fn nearest(outline: &[Vec<Vec2>], at: Vec2) -> Option<(usize, usize, Vec2)> {
+pub(crate) fn nearest(outline: &[Vec<Vec2>], at: Vec2) -> Option<(usize, usize, Vec2)> {
     let mut best: Option<(f32, usize, usize, Vec2)> = None;
     for (l, line) in outline.iter().enumerate() {
         for (k, seg) in line.windows(2).enumerate() {
