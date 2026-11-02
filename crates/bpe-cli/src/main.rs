@@ -118,6 +118,7 @@ fn run() -> anyhow::Result<()> {
     options.preset = preset;
     options.encoder = encoder;
     options.extras = extras;
+    options.picture_folder = scene_path.as_ref().and_then(|p| p.parent()).map(PathBuf::from);
     if let Some(ffmpeg) = ffmpeg {
         options.ffmpeg = ffmpeg;
     }

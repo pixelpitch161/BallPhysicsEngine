@@ -36,6 +36,8 @@ pub struct ExportOptions {
     /// What the extras are named after: `<base>.mid` and `<base>-stems/`. `None` names them
     /// after the video.
     pub extras_base: Option<PathBuf>,
+    /// The folder relative picture paths are read from: the scene file's folder.
+    pub picture_folder: Option<PathBuf>,
 }
 
 /// What an export made, besides the video.
@@ -61,6 +63,7 @@ impl ExportOptions {
             encoder: Encoder::Auto,
             extras: bpe_kit::Extras::default(),
             extras_base: None,
+            picture_folder: None,
         }
     }
 
@@ -384,7 +387,8 @@ fn export_with(
     let mut frame = Frame::default();
     // Liquids and swarms on the graphics card step with the frames; without a time budget
     // every frame waits for them, so the clip never skips.
-    let source = flow_source(scene, &resolved, &kit.sims, None);
+    let mut source = flow_source(scene, &resolved, &kit.sims, None);
+    source.picture_folder = options.picture_folder.clone();
     let mut failed = None;
     for index in 0..total {
         let video_time = index as f64 / fps as f64;
@@ -554,5 +558,15 @@ mod tests {
         assert!(extras_flag("--midi", &mut extras) && extras_flag("--wet-stems", &mut extras));
         assert!(!extras_flag("--scale", &mut extras));
         assert_eq!(extras, bpe_kit::Extras { midi: true, stems: true, wet: true });
+    }
+}
+
+#[cfg(test)]
+mod picture_folder_tests {
+    use super::*;
+
+    #[test]
+    fn export_options_have_no_picture_folder_by_default() {
+        assert!(ExportOptions::new("x.mp4").picture_folder.is_none());
     }
 }

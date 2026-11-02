@@ -467,7 +467,7 @@ impl Studio {
 
     // ---------- files ----------
 
-    fn base_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn base_dir(&self) -> Option<PathBuf> {
         self.path.as_ref().and_then(|p| p.parent()).map(PathBuf::from)
     }
 
