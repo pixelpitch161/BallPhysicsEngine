@@ -37,8 +37,8 @@ pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::marks::{
-    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape, SplatSkin, Tip, Turn,
-    WidthBy,
+    ChipShape, ClaimTeam, MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape,
+    SplatSkin, Tip, Turn, WidthBy,
 };
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
@@ -72,7 +72,8 @@ pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::canvas::{
     CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
-    CanvasThingKind, Cell, Fit, SkinSettings, StartsAs, canvas_area, skin_area,
+    CanvasThingKind, Cell, CoverLook, Fit, FogLook, PowderLook, SkinSettings, StartsAs, Underneath, canvas_area,
+    skin_area,
 };
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};

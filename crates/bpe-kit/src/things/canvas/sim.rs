@@ -171,6 +171,19 @@ impl ThingSim for CanvasSim {
                 | "edge_dark"
                 | "glow_size"
                 | "glow_strength"
+                | "cover_look"
+                | "powder_look"
+                | "fog_look"
+                | "blur"
+                | "density"
+                | "under"
+                | "under_colour"
+                | "under_colours"
+                | "under_picture"
+                | "under_text"
+                | "under_text_size"
+                | "under_text_colour"
+                | "border"
         )
     }
 }
