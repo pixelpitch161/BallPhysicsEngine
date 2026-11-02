@@ -102,6 +102,12 @@ pub struct MarksBrushes {
     /// How far the paint lasts, in pixels of travel; 0 never runs out.
     #[setting(label = "Paint load", when = "paint_on", range(0, 5000), unit = "px", group = "Paint trail")]
     pub paint_load: f32,
+    /// How much of its length the trail narrows at each end: 0 keeps it blunt, 1 narrows it over 40 px.
+    #[setting(label = "Taper", when = "paint_on", range(0, 1), group = "Paint trail")]
+    pub paint_taper: f32,
+    /// How smoothly a speed-based width changes: 0 follows the speed at once, 1 hardly moves.
+    #[setting(label = "Smoothing", when = "paint_width_by=speed", range(0, 1), group = "Paint trail")]
+    pub paint_smooth: f32,
     /// Whether hits leave a splat.
     #[setting(label = "Splat", group = "Splat", simple)]
     pub splat_on: bool,
@@ -149,6 +155,8 @@ impl Default for MarksBrushes {
             paint_when: When::Always,
             paint_min_speed: 100.0,
             paint_load: 0.0,
+            paint_taper: 0.3,
+            paint_smooth: 0.5,
             splat_on: false,
             splat_shape: SplatShape::Splat,
             splat_size: 30.0,

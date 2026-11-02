@@ -132,7 +132,13 @@ pub struct Mark {
     pub radius: f32,
     /// The radius at `to`; strokes and smears run from `radius` to it, other shapes equal `radius`.
     pub radius_to: f32,
+    /// How a stamp is turned. For a stroke that continues a piece (variant bit 1), the direction
+    /// of that piece, which sets where the two are cut apart.
     pub angle: f32,
+    /// For a stroke, the part of its step (0 its start, 1 its end) over which the ball travelled
+    /// along it; a piece of a longer move covers a part. The graphics card orders overlapping
+    /// paint by it. Other marks: `[1.0, 1.0]`.
+    pub within: [f32; 2],
     /// Which of a stamp shape's variants; for a stroke, bit 0 is its tip (0 round, 1 square),
     /// bit 1 says it continues the previous piece (no start cap) and bit 2 that the next piece
     /// continues it (no end cap).
@@ -424,6 +430,7 @@ mod tests {
             radius: 4.0,
             radius_to: 4.0,
             angle: 0.0,
+            within: [1.0, 1.0],
             variant: 0,
             colour: [1.0, 0.5, 0.25, 1.0],
             colour_to: [1.0, 0.5, 0.25, 1.0],

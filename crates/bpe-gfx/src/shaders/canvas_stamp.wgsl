@@ -19,8 +19,8 @@ struct MarkIn {
     // Where the mark starts and ends, in canvas pixels from the canvas's middle.
     @location(0) ends: vec4<f32>,
     // Radius, turn in radians, variant, shape (0 stroke, 1 splat, 2 ring, 3 star, 4 crack,
-    // 5 burst, 6 dots, 7 smear). A stroke's variant: bit 0 square tips, bit 1 no start cap, bit 2
-    // no end cap.
+    // 5 burst, 6 dots, 7 smear). A stroke's variant: bit 0 square tips, bit 1 no start cap (its
+    // turn is then the previous piece's direction), bit 2 no end cap.
     @location(1) look: vec4<f32>,
     // Linear light, straight alpha.
     @location(2) colour: vec4<f32>,
@@ -29,6 +29,8 @@ struct MarkIn {
     @location(3) clock: vec4<f32>,
     // The colour at the mark's end, straight alpha.
     @location(4) colour_to: vec4<f32>,
+    // x, y: the part of its step a stroke was made over, from 0 to 1.
+    @location(5) within: vec4<f32>,
 };
 
 struct StampOut {
@@ -40,6 +42,7 @@ struct StampOut {
     @location(3) @interpolate(flat) colour: vec4<f32>,
     @location(4) @interpolate(flat) clock: vec4<f32>,
     @location(5) @interpolate(flat) colour_to: vec4<f32>,
+    @location(6) @interpolate(flat) within: vec4<f32>,
 };
 
 const TAU: f32 = 6.283185307;
@@ -81,6 +84,7 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
     out.colour = m.colour;
     out.clock = m.clock;
     out.colour_to = m.colour_to;
+    out.within = m.within;
     return out;
 }
 
@@ -194,7 +198,7 @@ fn dots(q: vec2<f32>, r: f32, v: u32) -> f32 {
 
 // When in its step (0 its start, 1 its end) a disc of radius `r` moving from `a` to `b` last
 // touches `p`: the later of the two times its edge crosses `p`, or its nearest pass for a point
-// just beyond its edge.
+// just beyond its edge. Not clamped: below 0 or above 1 means before or after the move.
 fn last_touch(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     let d = b - a;
     let dd = dot(d, d);
@@ -205,7 +209,7 @@ fn last_touch(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     let along = dot(e, d) / dd;
     let off = max(dot(e, e) - along * along * dd, 0.0);
     let half = sqrt(max(r * r - off, 0.0) / dd);
-    return clamp(along + half, 0.0, 1.0);
+    return along + half;
 }
 
 struct StampTargets {
@@ -223,16 +227,22 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     let r_to = in.clock.w;
     let to = in.ends.zw;
     let ribbon = shape == 0u || shape == 7u;
-    // A piece of a longer stroke leaves out the caps that the pieces beside it cover. The cut is
-    // hard: every texel belongs to one piece, so translucent paint never shows a seam or a bead.
+    // A piece of a longer stroke leaves out the caps that the pieces beside it cover. Two joined
+    // pieces are cut apart by one plane across the first of them, so they meet without a gap
+    // or an overlap however the ribbon bends. The cut is hard: every texel belongs to one
+    // piece, so translucent paint never shows a seam or a bead.
     if shape == 0u && (variant & 6u) != 0u {
         let d = to - start;
         let span = length(d);
-        if span > 0.0 {
-            let u = dot(in.local - start, d / span);
-            if ((variant & 2u) != 0u && u < 0.0) || ((variant & 4u) != 0u && u >= span) {
+        if (variant & 2u) != 0u {
+            // The previous piece ends where this one starts, and its direction is the turn.
+            let before = vec2<f32>(cos(in.look.y), sin(in.look.y));
+            if dot(in.local - start, before) < 0.0 {
                 discard;
             }
+        }
+        if (variant & 4u) != 0u && span > 0.0 && dot(in.local - start, d / span) >= span {
+            discard;
         }
     }
     // Stamps are drawn in their own turned frame.
@@ -269,6 +279,8 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     if shape == 0u {
         touch = last_touch(in.local, start, to, 0.5 * (r + r_to));
     }
-    out.depth = (in.clock.y + touch) / max(in.clock.z, 1.0);
+    // A piece of a longer move scales its own touch to its share of the move, so the order of
+    // two balls' paint runs on smoothly across the pieces' joints.
+    out.depth = (in.clock.y + clamp(mix(in.within.x, in.within.y, touch), 0.0, 1.0)) / max(in.clock.z, 1.0);
     return out;
 }

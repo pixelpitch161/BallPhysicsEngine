@@ -28,10 +28,10 @@ struct MarkGpu {
     colour: [f32; 4],
     clock: [f32; 4],
     colour_to: [f32; 4],
+    within: [f32; 4],
 }
 
-const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
+const MARK_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
 
 /// The shape number canvas_stamp.wgsl draws.
 fn shape_number(shape: MarkShape) -> f32 {
@@ -62,6 +62,7 @@ impl MarkGpu {
                 m.radius_to,
             ],
             colour_to: m.colour_to,
+            within: [m.within[0], m.within[1], 0.0, 0.0],
         }
     }
 }

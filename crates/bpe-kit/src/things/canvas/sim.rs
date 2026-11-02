@@ -12,6 +12,7 @@ use bpe_runtime::{EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, W
 use glam::Vec2;
 
 use super::grid::{CanvasGrid, Cell};
+use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
@@ -31,9 +32,8 @@ pub struct CanvasState {
     pub size: Vec2,
     /// Where the canvas's middle sits from its anchor, before the anchor turns.
     pub centre: Vec2,
-    /// Per brush thing and item: the last point a stroke reached (canvas pixels; `None` while
-    /// it isn't painting), the paint left in its load, and its hits when that was noted.
-    pub last: BTreeMap<(ThingId, u32), (Option<Vec2>, f32, u32)>,
+    /// Per brush thing and item: its trail's ribbon (last point, width, paint left in its load).
+    pub ribbons: BTreeMap<(ThingId, u32), Ribbon>,
     /// Steps between strokes: 60 strokes a second.
     pub every: u64,
 }
@@ -79,7 +79,7 @@ impl ThingSim for CanvasSim {
         world.state_memory.insert(thing.id, grid.bytes());
         world
             .states
-            .insert(thing.id, Box::new(CanvasState { settings, grid, size, centre, last: BTreeMap::new(), every }));
+            .insert(thing.id, Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every }));
         self.place(thing.id, world);
     }
 
@@ -206,68 +206,87 @@ impl Cx<'_> {
         colour_at(&b.colour, &inputs)
     }
 
-    /// Each living ball of `thing` that may paint strokes from its last point to where it is now.
+    /// Each living ball of `thing` that may paint: its ribbon grows from its last point to where
+    /// it is now, in short smooth pieces, or ends when the ball stops painting or dies.
     fn strokes(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
         let Some(bodies) = self.world.bodies.get(&thing) else { return };
         let endless = b.paint_load <= 0.0;
+        let tune = Tune {
+            taper: b.paint_taper.max(0.0) * 40.0,
+            follow: if b.paint_width_by == WidthBy::Speed { 1.0 - b.paint_smooth } else { 1.0 },
+        };
         for i in 0..bodies.len() {
             let key = (thing, i as u32);
+            let hits = bodies.hits[i];
+            let mut ribbon = st.ribbons.remove(&key).unwrap_or_else(|| Ribbon::new(b.paint_load, hits));
             if !bodies.alive[i] {
-                st.last.remove(&key);
+                let pieces = ribbon.finish(&tune, endless);
+                self.pieces(st, b, key, &pieces);
                 continue;
             }
             let speed = bodies.velocity[i].length();
-            let hits = bodies.hits[i];
-            let (point, load, seen) = st.last.get(&key).copied().unwrap_or((None, b.paint_load, hits));
-            // The load refills only on a hit.
-            let mut load = if hits > seen { b.paint_load } else { load };
+            // The load refills only on a hit, which also bends the trail.
+            if hits > ribbon.hits {
+                ribbon.load = b.paint_load;
+                ribbon.corner = ribbon.point.is_some();
+                ribbon.hits = hits;
+            }
             let paints = match b.paint_when {
                 When::Always => true,
                 When::AfterFirstHit => hits > 0,
                 When::FasterThan => speed > b.paint_min_speed,
-            };
+            } && (endless || ribbon.load > 0.0);
             if !paints {
                 // It starts afresh wherever it next paints, with the paint it has left.
-                st.last.insert(key, (None, load, hits));
+                let pieces = ribbon.finish(&tune, endless);
+                self.pieces(st, b, key, &pieces);
+                st.ribbons.insert(key, ribbon);
                 continue;
             }
             let here = to_local(self.pose, bodies.position[i]);
-            let Some(from) = point else {
-                st.last.insert(key, (Some(here), load, hits));
-                continue;
-            };
-            let length = (here - from).length();
-            if length < MIN_STROKE {
-                st.last.insert(key, (Some(from), load, hits));
-                continue;
-            }
+            let velocity = Vec2::from_angle(-self.pose.angle).rotate(bodies.velocity[i]);
             let radius = match b.paint_width_by {
                 WidthBy::Size => b.paint_width * bodies.radius[i],
                 WidthBy::Fixed => b.paint_width * 10.0 * 0.5,
                 WidthBy::Speed => b.paint_width * speed / 100.0 * 0.5,
             };
-            if (endless || load > 0.0) && reaches(st.size, from, here, radius) {
-                let colour = self.colour(b, thing, i);
-                st.grid.stamp_capsule(from, here, radius, cell_of(colour));
-                self.out.push(Mark {
-                    step: self.world.step,
-                    target: MarkTarget::Canvas(self.canvas),
-                    shape: MarkShape::Stroke,
-                    from,
-                    to: here,
-                    radius,
-                    radius_to: radius,
-                    angle: 0.0,
-                    // A stroke's variant is its tip: 0 round, 1 square.
-                    variant: (b.paint_tip == Tip::Square) as u8,
-                    colour,
-                    colour_to: colour,
-                });
-                if !endless {
-                    load = (load - length).max(0.0);
+            match ribbon.point {
+                None => ribbon.begin(here, velocity, radius),
+                // Shorter moves wait and add up into a later piece.
+                Some(from) if (here - from).length() < MIN_STROKE => {}
+                Some(_) => {
+                    let pieces = ribbon.advance(here, velocity, radius, &tune, endless);
+                    self.pieces(st, b, key, &pieces);
                 }
             }
-            st.last.insert(key, (Some(here), load, hits));
+            st.ribbons.insert(key, ribbon);
+        }
+    }
+
+    /// Logs and stamps `pieces` of the trail of ball `(thing, item)`, in its colour now.
+    fn pieces(&mut self, st: &mut CanvasState, b: &MarksBrushes, (thing, item): (ThingId, u32), pieces: &[Piece]) {
+        let mut colour = None;
+        for p in pieces {
+            if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
+                continue;
+            }
+            let colour = *colour.get_or_insert_with(|| self.colour(b, thing, item as usize));
+            st.grid.stamp_capsule(p.from, p.to, (p.radius + p.radius_to) * 0.5, cell_of(colour));
+            self.out.push(Mark {
+                step: self.world.step,
+                target: MarkTarget::Canvas(self.canvas),
+                shape: MarkShape::Stroke,
+                from: p.from,
+                to: p.to,
+                radius: p.radius,
+                radius_to: p.radius_to,
+                angle: p.joins_at,
+                within: p.within,
+                // A stroke's variant: bit 0 is its tip (0 round, 1 square), bits 1 and 2 its joints.
+                variant: (b.paint_tip == Tip::Square) as u8 | p.joints,
+                colour,
+                colour_to: colour,
+            });
         }
     }
 
@@ -310,6 +329,7 @@ impl Cx<'_> {
                 radius,
                 radius_to: radius,
                 angle,
+                within: [1.0, 1.0],
                 variant,
                 colour,
                 colour_to: colour,
@@ -427,7 +447,10 @@ mod tests {
     /// restarts the canvas.
     #[test]
     fn keyframed_width_changes_the_stroke() {
-        let (mut scene, resolved, kit) = painted(true, |p| p.set("paint_width_by", Value::Choice("fixed".into())));
+        let (mut scene, resolved, kit) = painted(true, |p| {
+            p.set("paint_width_by", Value::Choice("fixed".into()));
+            p.set("paint_taper", Value::Number(0.0));
+        });
         let before = bpe_runtime::fingerprint(&scene, &resolved, &kit.sims);
         let m = module_of(&scene, &kit.registry, BALLS, SlotId::Marks);
         let a = bpe_core::Address { owner: bpe_core::Owner::Module(m), slot: None, key: "paint_width".into() };
@@ -511,9 +534,14 @@ mod tests {
         let (scene, resolved, kit) = painted(true, |_| {});
         let (w, log) = run(&scene, &resolved, &kit, 1.0);
         let marks = log.marks();
-        assert!((59..=61).contains(&marks.len()), "{} marks", marks.len());
+        // Every 60 Hz tick adds its move to the ribbon as one or more short pieces.
+        let ticks: std::collections::BTreeSet<u64> = marks.iter().map(|m| m.step).collect();
+        let every = canvas_state(&w, CANVAS).every;
+        assert!((58..=60).contains(&ticks.len()), "{} ticks", ticks.len());
+        assert!(ticks.iter().all(|s| s % every == 0));
+        assert!(marks.len() >= ticks.len());
         assert!(marks.iter().all(|m| m.shape == MarkShape::Stroke && m.target == MarkTarget::Canvas(CANVAS)));
-        assert!(marks.iter().all(|m| m.radius > 0.0 && m.colour[3] > 0.0));
+        assert!(marks.iter().all(|m| m.radius_to > 0.0 && m.colour[3] > 0.0));
         assert!(canvas_state(&w, CANVAS).grid.covered() > 0.0);
     }
 
@@ -526,6 +554,167 @@ mod tests {
         for pair in marks.windows(2) {
             assert_eq!(pair[1].from, pair[0].to, "at step {}", pair[1].step);
         }
+    }
+
+    fn length(m: &Mark) -> f32 {
+        (m.to - m.from).length()
+    }
+
+    /// A scene whose ball flies at `velocity` with no gravity, painting with `f`'s settings.
+    fn flying(velocity: [f32; 2], f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+        let (mut scene, _, kit) = painted(true, f);
+        let m = module_of(&scene, &kit.registry, BALLS, SlotId::Motion);
+        scene.library.modules.get_mut(&m).unwrap().params.set("gravity_scale", Value::Number(0.0));
+        let ball = scene.things.get_mut(&BALLS).unwrap();
+        ball.transform.position = Vec2::ZERO;
+        ball.params.set("velocity", Value::Vec2(velocity));
+        let resolved = resolve(&scene, &kit.registry);
+        (scene, resolved, kit)
+    }
+
+    #[test]
+    fn ribbon_pieces_join_exactly() {
+        let (scene, resolved, kit) = painted(true, |_| {});
+        let (_, log) = run(&scene, &resolved, &kit, 4.0);
+        let marks = log.marks();
+        assert!(marks.len() > 200, "{} pieces", marks.len());
+        for pair in marks.windows(2) {
+            // Bit for bit, not nearly.
+            assert_eq!(pair[1].from.to_array().map(f32::to_bits), pair[0].to.to_array().map(f32::to_bits));
+            // The previous piece leaves its end cap out exactly when this one leaves its start out.
+            assert_eq!(pair[0].variant & 4 != 0, pair[1].variant & 2 != 0, "at step {}", pair[1].step);
+            assert_eq!(pair[0].radius_to, pair[1].radius, "the width carries on at step {}", pair[1].step);
+        }
+        assert_eq!(marks[0].variant & 2, 0, "a ribbon starts with a cap");
+        let continuing = marks.iter().filter(|m| m.variant & 2 != 0).count();
+        assert!(continuing + 10 > marks.len(), "{continuing} of {} continue", marks.len());
+    }
+
+    #[test]
+    fn ribbon_pieces_are_short() {
+        let (scene, resolved, kit) = flying([2000.0, 0.0], |_| {});
+        let (_, log) = run(&scene, &resolved, &kit, 1.0);
+        let marks = log.marks();
+        let longest = marks.iter().map(length).fold(0.0, f32::max);
+        assert!(longest <= 6.0, "a piece of {longest} px");
+        assert!(marks.iter().map(length).sum::<f32>() > 1500.0, "the ball really flew fast");
+        assert!(marks.iter().filter(|m| length(m) > 5.0).count() > 100, "the pieces are cut, not shrunk");
+    }
+
+    #[test]
+    fn ribbon_bends_at_a_hit() {
+        let (scene, resolved, kit) = painted(true, |p| p.set("paint_taper", Value::Number(0.0)));
+        let (w, log) = run(&scene, &resolved, &kit, 5.0);
+        let (pose, _) = canvas_area(&w, CANVAS).unwrap();
+        let radius = w.bodies[&BALLS].radius[0];
+        let marks = log.marks();
+        let hits: Vec<_> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == BALLS).collect();
+        assert!(hits.len() >= 2, "{} hits", hits.len());
+        let joints: Vec<usize> = (1..marks.len()).filter(|&k| marks[k].variant & 2 == 0).collect();
+        assert!(joints.len() >= 2, "{} corners", joints.len());
+        let every = canvas_state(&w, CANVAS).every;
+        for k in joints {
+            let (before, after) = (&marks[k - 1], &marks[k]);
+            assert_eq!(before.to, after.from, "the corner is a joint");
+            assert_eq!(before.variant & 4, 0, "both pieces keep their caps at a corner");
+            // It is the bounce: a hit of the ball happened here, around then.
+            let near = hits.iter().any(|e| {
+                e.step.abs_diff(after.step) <= every && (local(pose, e.point) - after.from).length() <= radius + 12.0
+            });
+            assert!(near, "a corner at {:?} in step {} is not at a hit", after.from, after.step);
+            // The path turns there, where it is otherwise smooth.
+            let turn = (before.to - before.from).angle_to(after.to - after.from).abs();
+            assert!(turn > 0.4, "turns {turn} rad at the corner");
+        }
+        let smooth = marks.windows(2).filter(|p| p[1].variant & 2 != 0 && length(&p[0]) > 0.1 && length(&p[1]) > 0.1);
+        let sharp = smooth.filter(|p| (p[0].to - p[0].from).angle_to(p[1].to - p[1].from).abs() > 0.4).count();
+        assert_eq!(sharp, 0, "no turn that sharp inside a smooth stretch");
+    }
+
+    #[test]
+    fn taper_narrows_the_ends() {
+        let (scene, resolved, kit) = painted(true, |p| p.set("paint_taper", Value::Number(0.3)));
+        let (w, log) = run(&scene, &resolved, &kit, 1.0);
+        let full = w.bodies[&BALLS].radius[0];
+        let marks = log.marks();
+        assert!(marks[0].radius < 0.2 * full, "{} of {full}", marks[0].radius);
+        let mut run_length = 0.0;
+        for m in marks {
+            let before = run_length;
+            run_length += length(m);
+            if before < 6.0 {
+                assert!(m.radius_to < full, "still narrow {before} px along: {}", m.radius_to);
+            }
+            if run_length >= 12.0 {
+                assert!((m.radius_to - full).abs() < 1e-3, "full by 12 px, not {} of {full}", m.radius_to);
+                assert!(marks.iter().skip_while(|n| *n != m).all(|n| n.radius_to <= full + 1e-3));
+                break;
+            }
+        }
+        assert!(run_length >= 12.0);
+    }
+
+    #[test]
+    fn taper_closes_a_ribbon_that_stops() {
+        // Thrown straight up, painting only while faster than 150 px/s: the trail stops near the
+        // top of the throw and starts again on the way down.
+        let (mut scene, _, kit) = painted(true, |p| {
+            p.set("paint_when", Value::Choice("faster_than".into()));
+            p.set("paint_min_speed", Value::Number(150.0));
+            p.set("paint_taper", Value::Number(0.3));
+        });
+        let ball = scene.things.get_mut(&BALLS).unwrap();
+        ball.transform.position = Vec2::ZERO;
+        ball.params.set("velocity", Value::Vec2([0.0, -400.0]));
+        let resolved = resolve(&scene, &kit.registry);
+        let (w, log) = run(&scene, &resolved, &kit, 3.0);
+        let full = w.bodies[&BALLS].radius[0];
+        let marks = log.marks();
+        let end = (0..marks.len() - 1).find(|&k| marks[k + 1].from != marks[k].to).expect("the trail stops once");
+        assert!(marks[end].radius_to < 1e-4, "ends at {}", marks[end].radius_to);
+        assert_eq!(marks[end].variant & 4, 0, "the last piece has an end cap");
+        let tail: f32 =
+            (0..=end).rev().take_while(|&k| marks[k].radius_to < full - 1e-3).map(|k| length(&marks[k])).sum();
+        assert!((tail - 12.0).abs() < 1.0, "narrows over {tail} px");
+    }
+
+    #[test]
+    fn taper_closes_a_ribbon_that_runs_out_of_paint() {
+        let (scene, resolved, kit) = flying([0.0, -400.0], |p| {
+            p.set("paint_load", Value::Number(80.0));
+            p.set("paint_taper", Value::Number(0.3));
+        });
+        let (_, log) = run(&scene, &resolved, &kit, 1.0);
+        let marks = log.marks();
+        assert!((marks.iter().map(length).sum::<f32>() - 80.0).abs() < 0.01, "exactly the load");
+        assert!(marks.last().unwrap().radius_to < 1e-4);
+        assert_eq!(marks.last().unwrap().variant & 4, 0);
+    }
+
+    #[test]
+    fn speed_width_is_smoothed() {
+        // Speed 600 px/s, then 1200: the width would jump from 3 px to 6 px.
+        let tune = Tune { taper: 0.0, follow: 0.5 };
+        let mut ribbon = Ribbon::new(0.0, 0);
+        ribbon.begin(Vec2::ZERO, Vec2::new(600.0, 0.0), 3.0);
+        ribbon.advance(Vec2::new(10.0, 0.0), Vec2::new(600.0, 0.0), 3.0, &tune, true);
+        let pieces = ribbon.advance(Vec2::new(30.0, 0.0), Vec2::new(1200.0, 0.0), 6.0, &tune, true);
+        assert!(pieces.len() >= 3);
+        assert_eq!(pieces[0].radius, 3.0);
+        assert!(pieces[0].radius_to - 3.0 < 1.5, "the first piece moved {}", pieces[0].radius_to - 3.0);
+        // The tick as a whole moves half of the way; the next carries on.
+        assert!((pieces.last().unwrap().radius_to - 4.5).abs() < 1e-4);
+        let next = ribbon.advance(Vec2::new(50.0, 0.0), Vec2::new(1200.0, 0.0), 6.0, &tune, true);
+        assert!((next.last().unwrap().radius_to - 5.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_hit_refill_starts_a_new_ribbon_when_the_paint_had_run_out() {
+        let (scene, resolved, kit) = painted(true, |p| p.set("paint_load", Value::Number(60.0)));
+        let (_, log) = run(&scene, &resolved, &kit, 6.0);
+        let marks = log.marks();
+        let gaps = (0..marks.len() - 1).filter(|&k| marks[k + 1].from != marks[k].to).count();
+        assert!(gaps >= 1, "the paint ran out and came back");
     }
 
     #[test]
@@ -609,12 +798,17 @@ mod tests {
         let every = canvas_state(&w, CANVAS).every;
         let first_tick = spawn.step.div_ceil(every) * every;
         let at = |step: u64| log.marks().iter().filter(|m| m.step == step).collect::<Vec<_>>();
-        assert_eq!(at(first_tick).len(), 1, "only the old ball strokes on the first tick");
-        let second = at(first_tick + every);
+        // The pieces of one ball's move chain up; a new chain is a new ball.
+        let chains = |marks: &[&Mark]| {
+            let starts = (0..marks.len()).filter(|&k| k == 0 || marks[k].from != marks[k - 1].to);
+            starts.map(|k| marks[k].from).collect::<Vec<_>>()
+        };
+        assert_eq!(chains(&at(first_tick)).len(), 1, "only the old ball strokes on the first tick");
+        let second = chains(&at(first_tick + every));
         assert_eq!(second.len(), 2);
         let speed = w.bodies[&BALLS].velocity[1].length().max(500.0) + 500.0;
         let travel = speed * every as f32 / w.steps_per_second as f32 + 2.0;
-        assert!((second[1].from - spawn.point).length() <= travel, "{:?} from {:?}", second[1].from, spawn.point);
+        assert!((second[1] - spawn.point).length() <= travel, "{:?} from {:?}", second[1], spawn.point);
     }
 
     #[test]

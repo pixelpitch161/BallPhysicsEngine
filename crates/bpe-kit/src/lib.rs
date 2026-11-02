@@ -416,7 +416,16 @@ mod tests {
         for key in ["paint_on", "paint_width_by", "paint_width", "paint_tip", "paint_when", "paint_min_speed"] {
             assert!(defs.iter().any(|d| d.key == key), "no {key}");
         }
-        for key in ["paint_load", "splat_on", "splat_shape", "splat_size", "splat_by_speed", "splat_turn"] {
+        for key in [
+            "paint_load",
+            "paint_taper",
+            "paint_smooth",
+            "splat_on",
+            "splat_shape",
+            "splat_size",
+            "splat_by_speed",
+            "splat_turn",
+        ] {
             assert!(defs.iter().any(|d| d.key == key), "no {key}");
         }
         for key in ["splat_variants", "splat_min_speed", "colour_from", "colour_colours", "colour_follow"] {

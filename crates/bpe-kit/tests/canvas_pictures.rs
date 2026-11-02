@@ -375,3 +375,74 @@ fn trail_edges_are_smooth() {
         );
     }
 }
+
+#[test]
+fn ribbon_joints_have_no_beads() {
+    let Some((device, queue)) = gpu() else { return };
+    // A thin, half-transparent trail along a curve: where its pieces meet, nothing may be
+    // painted twice, so the paint is as strong at a joint as halfway between two.
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let canvas = add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap();
+    scene.things.get_mut(&canvas).unwrap().params.set("layer", Value::Choice("on_top".into()));
+    scene.things.get_mut(&BALLS).unwrap().transform.position = Vec2::new(-400.0, -300.0);
+    scene.things.get_mut(&BALLS).unwrap().params.set("velocity", Value::Vec2([700.0, -300.0]));
+    let mut red = Color::rgb(230, 30, 30);
+    red.a = 128;
+    brushes(&mut scene, &kit, BALLS, |p| {
+        p.set("paint_on", Value::Bool(true));
+        p.set("paint_width_by", Value::Choice("fixed".into()));
+        p.set("paint_width", Value::Number(0.8));
+        p.set("colour_from", Value::Choice("own".into()));
+        p.set("colour_colours", Value::Gradient(Gradient::even(&[red, red])));
+    });
+    let resolved = resolve(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+    let time = 0.7;
+    playback.seek(time);
+    let (w, h) = (1080, 1920);
+    let mut renderer = Renderer::new(&device, w, h);
+    let mut render = |canvases: bool| {
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+        frame.bloom = 0.0;
+        if !canvases {
+            frame.canvases.clear();
+        }
+        let source = flow_source(&scene, &resolved, &kit.sims, None);
+        assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+        renderer.read_output(&device, &queue).unwrap()
+    };
+    let (painted, bare) = (render(true), render(false));
+    save_sized("canvas-ribbon-beads", &painted, w, h);
+
+    let pose = canvas_area(playback.world(), canvas).unwrap().0;
+    // The picture at the pixel under world point `p`.
+    let at = |pixels: &[u8], p: Vec2| {
+        let (x, y) = ((p.x + 540.0).floor() as usize, (p.y + 960.0).floor() as usize);
+        let i = (y * w as usize + x) * 4;
+        [pixels[i] as f32, pixels[i + 1] as f32, pixels[i + 2] as f32]
+    };
+    let marks = playback.log().marks();
+    // Along the middle of the ribbon, away from its ends and from the ball at its head.
+    let middle = &marks[marks.len() / 5..marks.len() * 3 / 5];
+    assert!(middle.len() > 20, "{} pieces", middle.len());
+    // The channel the paint changes most gives the strength of the paint: 0 is the picture
+    // without it, 1 would be full paint.
+    let paint = [red.r as f32, red.g as f32, red.b as f32];
+    let samples: Vec<[f32; 3]> = middle.iter().map(|m| at(&painted, world_of(pose, m.from))).collect();
+    let bares: Vec<[f32; 3]> = middle.iter().map(|m| at(&bare, world_of(pose, m.from))).collect();
+    let strength: Vec<f32> = (0..samples.len())
+        .map(|k| {
+            let c = (0..3)
+                .max_by(|&a, &b| (paint[a] - bares[k][a]).abs().total_cmp(&(paint[b] - bares[k][b]).abs()))
+                .unwrap();
+            assert!((paint[c] - bares[k][c]).abs() > 60.0, "the paint shows against the ground");
+            (samples[k][c] - bares[k][c]) / (paint[c] - bares[k][c])
+        })
+        .collect();
+    let (lo, hi) = strength.iter().fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
+    assert!((0.3..0.9).contains(&lo), "half-transparent paint, not {lo}: {strength:?}");
+    assert!(hi - lo < 0.05, "the paint's strength along the ribbon runs from {lo} to {hi}: {strength:?}");
+}

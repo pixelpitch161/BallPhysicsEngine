@@ -1397,6 +1397,7 @@ mod tests {
             radius,
             radius_to: radius,
             angle: 0.0,
+            within: [0.0, 1.0],
             variant: 0,
             colour: [1.0, 0.0, 0.0, 1.0],
             colour_to: [1.0, 0.0, 0.0, 1.0],
@@ -1572,6 +1573,42 @@ mod tests {
         assert!(covered(v(0.0, 3.0)) && clear(v(0.0, 8.0)), "half width in the middle");
         assert!(covered(v(60.0, 0.0)) && clear(v(80.0, 4.0)), "narrow near the end");
         assert!(clear(v(98.0, 3.0)) && clear(v(110.0, 0.0)), "nothing at the tip");
+    }
+
+    #[test]
+    fn joined_pieces_leave_no_seam() {
+        let Some((device, queue)) = gpu() else { return };
+        let (scene, resolved) = tiny_scene();
+        let mut sims = Sims::default();
+        // Pieces of one slanted, slightly bending ribbon: each leaves out the caps its neighbours cover.
+        sims.add_thing(Marking(|step| {
+            if step != 1 {
+                return Vec::new();
+            }
+            let v = Vec2::new;
+            let points = [v(-100.0, -40.0), v(-94.2, -39.1), v(-88.4, -38.1), v(-82.5, -37.0), v(-76.6, -35.8)];
+            (0..4)
+                .map(|k| {
+                    let mut m = mark(1, bpe_runtime::MarkShape::Stroke, points[k], points[k + 1], 30.0);
+                    m.variant = if k > 0 { 2 } else { 0 } | if k < 3 { 4 } else { 0 };
+                    if k > 0 {
+                        m.angle = (points[k] - points[k - 1]).to_angle();
+                    }
+                    m
+                })
+                .collect()
+        }));
+        let paint = stamped(&device, &queue, &scene, &resolved, &sims);
+        // Every texel across the ribbon's width, between its first and last joint, is solid.
+        for x in -92..=-84 {
+            for y in -60..=-20 {
+                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let inside = (p - Vec2::new(p.x, -39.0 + (p.x + 94.0) * 0.16)).length() < 28.0;
+                if inside {
+                    assert!(texel(&paint, p)[3] > 0.99, "a seam at {p}: {:?}", texel(&paint, p));
+                }
+            }
+        }
     }
 
     /// Runs `sims` for a tenth of a second and reads back the canvas's paint.

@@ -3,6 +3,7 @@
 
 pub mod draw;
 pub mod grid;
+pub mod ribbon;
 pub mod sim;
 
 pub use draw::CanvasDraw;

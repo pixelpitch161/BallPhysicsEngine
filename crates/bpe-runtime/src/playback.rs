@@ -166,6 +166,7 @@ mod tests {
             radius: 1.0,
             radius_to: 1.0,
             angle: 0.0,
+            within: [1.0, 1.0],
             variant: 0,
             colour: [1.0; 4],
             colour_to: [1.0; 4],
