@@ -340,6 +340,11 @@ mod tests {
         f(&mut scene.library.modules.get_mut(&m).unwrap().params);
     }
 
+    /// Takes the brushes a new canvas gave the ball away again.
+    fn bare_ball(scene: &mut Scene) {
+        scene.things.get_mut(&BALLS).unwrap().slots.remove(&SlotId::Marks);
+    }
+
     /// The new scene with a canvas fitting the arena and, when `brush` says so, a Marks module
     /// on the ball, with `f`'s changes.
     fn painted(brush: bool, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
@@ -348,6 +353,8 @@ mod tests {
         assert_eq!(add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap(), CANVAS);
         if brush {
             brushes(&mut scene, &kit, BALLS, f);
+        } else {
+            bare_ball(&mut scene);
         }
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
@@ -467,6 +474,7 @@ mod tests {
             p.set("spin", Value::Number(90.0));
         });
         let canvas = add_thing(&mut scene, &kit.registry, "canvas", OBSTACLE).unwrap();
+        bare_ball(&mut scene);
         scene
             .set_attach(canvas, Attach::Ride { offset: Vec2::new(40.0, 0.0), turn_with_parent: true, item: None })
             .unwrap();
@@ -618,6 +626,39 @@ mod tests {
         let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.speed >= 200.0).count();
         assert!(hits >= 2);
         assert_eq!(log.marks().len(), hits);
+    }
+
+    #[test]
+    fn an_obstacle_splats_in_the_colour_of_a_ball_without_marks() {
+        let (mut scene, _, kit) = scene_with_obstacle(|_| {});
+        assert_eq!(add_thing(&mut scene, &kit.registry, "canvas", ThingId::ROOT).unwrap(), ThingId(4));
+        bare_ball(&mut scene);
+        brushes(&mut scene, &kit, OBSTACLE, |p| {
+            p.set("paint_on", Value::Bool(false));
+            p.set("splat_on", Value::Bool(true));
+            p.set("splat_min_speed", Value::Number(1.0));
+        });
+        let look = module_of(&scene, &kit.registry, BALLS, SlotId::Look);
+        let red = bpe_core::Color::rgb(255, 0, 0);
+        scene
+            .library
+            .modules
+            .get_mut(&look)
+            .unwrap()
+            .params
+            .set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, red])));
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(!resolved.things[&BALLS].slots.contains_key(&SlotId::Marks), "the ball has no brushes");
+        let (_, log) = run(&scene, &resolved, &kit, 4.0);
+        let marks = log.marks();
+        assert!(!marks.is_empty(), "the obstacle was hit");
+        for m in marks {
+            assert!(
+                m.colour[0] > 0.99 && m.colour[1] < 0.01 && m.colour[2] < 0.01,
+                "{:?}: the ball's red, not white",
+                m.colour
+            );
+        }
     }
 
     /// A ball that paints and splats, for the determinism tests.

@@ -199,6 +199,8 @@ fn riding_canvas_turns_its_marks() {
     ball.transform.position = Vec2::new(0.0, -300.0);
     ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
     let canvas = add_thing(&mut scene, &kit.registry, "canvas", obstacle).unwrap();
+    // Only the bar splats here, not the ball the new canvas gave brushes to.
+    scene.things.get_mut(&BALLS).unwrap().slots.remove(&SlotId::Marks);
     scene
         .set_attach(canvas, Attach::Ride { offset: Vec2::new(40.0, 0.0), turn_with_parent: true, item: None })
         .unwrap();

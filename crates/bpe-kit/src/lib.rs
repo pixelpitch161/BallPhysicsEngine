@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn look_colour_counts_only_with_marks() {
+    fn looks_count_only_in_scenes_with_marks() {
         let reg = registry();
         let sims = sims();
         let recolour = |scene: &mut Scene| {
@@ -458,7 +458,19 @@ mod tests {
         let resolved = resolve(&marked, &reg);
         assert_ne!(bpe_runtime::fingerprint(&marked, &resolved, &sims), before);
         let world = World::build(&marked, &resolved, &sims);
-        assert!(world.looks.contains_key(&ThingId(2)) && world.looks.len() == 1);
+        // Every thing with a Look is kept, so a brush can take the colour of a ball that has no
+        // brushes of its own.
+        assert!(world.looks.contains_key(&ThingId(2)) && world.looks.contains_key(&ThingId(1)));
+        // A recolour of a ball without brushes counts too, once some other thing has them.
+        let mut other = marked.clone();
+        other.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Marks);
+        let obstacle = add_thing(&mut other, &reg, "obstacle", ThingId::ROOT).unwrap();
+        fill_slot(&mut other, &reg, obstacle, SlotId::Marks).unwrap();
+        let before = bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims);
+        let look = resolve_slot(&other, &reg, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
+        let p = &mut other.library.modules.get_mut(&look).unwrap().params;
+        p.set("colours", Value::Gradient(bpe_core::Gradient::solid(Color::rgb(255, 0, 0))));
+        assert_ne!(bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims), before);
         let plain_world = World::build(&plain, &resolve(&plain, &reg), &sims);
         assert!(plain_world.looks.is_empty());
     }
