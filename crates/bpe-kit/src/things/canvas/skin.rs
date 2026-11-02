@@ -14,9 +14,9 @@ use bpe_core::{GroupOpts, Params, SettingDef, SettingGroup, Settings, SlotId, Th
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Outline, Pose, Solid, World};
 use glam::Vec2;
 
-use super::grid::CanvasGrid;
+use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{CONTINUED, CONTINUES};
-use super::sim::{CanvasState, Colours, Stamp, cell_of, hit_stamp, reaches, to_local};
+use super::sim::{CanvasState, Colours, Stamp, hit_stamp, reaches, to_local};
 use super::{CanvasSettings, CanvasStyle, Fit};
 use crate::modules::marks::{MarksBrushes, SplatSkin, Turn};
 use crate::things::arena::ArenaState;
@@ -384,7 +384,8 @@ pub fn build(thing: ThingId, world: &mut World) {
     world.state_memory.insert(thing, grid.bytes());
     let settings = CanvasSettings { fit: Fit::Custom, size, ..CanvasSettings::default() };
     let every = (world.steps_per_second / 60).max(1) as u64;
-    let st = CanvasState { settings, grid, size, centre: Vec2::ZERO, ribbons: BTreeMap::new(), every };
+    let tick_every = tick_every(world.steps_per_second);
+    let st = CanvasState { settings, grid, size, centre: Vec2::ZERO, ribbons: BTreeMap::new(), every, tick_every };
     world.skins.insert(thing, Box::new(st));
 }
 
@@ -412,6 +413,7 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
     }
     let pose = pose_of(world, thing);
     let target = MarkTarget::Skin(thing);
+    let tick = (world.step / st.tick_every) as u32;
     let skin = skin_settings(world, thing).cloned().unwrap_or_default();
     let mut colours = Colours::new(world);
     // The outline, worked out once a step and only when something spreads.
@@ -434,7 +436,7 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
                     let at = to_local(pose, e.point);
                     for m in spread_marks(outline, at, length, width, colour, world.step, target) {
                         if reaches(st.size, m.from, m.to, m.radius) {
-                            st.grid.stamp_capsule(m.from, m.to, (m.radius + m.radius_to) * 0.5, cell_of(colour));
+                            st.grid.stamp(&m, tick, painter(e.a.thing, e.a.item));
                             out.push(m);
                         }
                     }
@@ -453,8 +455,7 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
                     if !reaches(st.size, at, at, radius) {
                         continue;
                     }
-                    st.grid.stamp_disc(at, radius, cell_of(colour));
-                    out.push(Mark {
+                    let mark = Mark {
                         step: world.step,
                         target,
                         shape,
@@ -467,7 +468,9 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
                         variant,
                         colour,
                         colour_to: colour,
-                    });
+                    };
+                    st.grid.stamp(&mark, tick, painter(e.a.thing, e.a.item));
+                    out.push(mark);
                 }
             }
         }

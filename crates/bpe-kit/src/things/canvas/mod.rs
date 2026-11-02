@@ -8,7 +8,7 @@ pub mod sim;
 pub mod skin;
 
 pub use draw::CanvasDraw;
-pub use grid::{CanvasGrid, Cell};
+pub use grid::{CanvasGrid, Cell, DRIP_JOINED, TICK_HZ, painter, tick_every, wet};
 pub use sim::{CanvasSim, CanvasState, canvas_area};
 pub use skin::{SkinSettings, is_solid, outline_local, parts_local, skin_area, skin_settings, skin_state, wall_local};
 

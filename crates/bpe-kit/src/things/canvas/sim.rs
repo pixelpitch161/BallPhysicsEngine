@@ -7,11 +7,11 @@
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
-use bpe_core::{Color, ResolvedThing, Settings, SlotId, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
-use super::grid::{CanvasGrid, Cell};
+use super::grid::{CanvasGrid, painter, tick_every};
 use super::ribbon::{Piece, Ribbon, Tune};
 use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
@@ -36,6 +36,8 @@ pub struct CanvasState {
     pub ribbons: BTreeMap<(ThingId, u32), Ribbon>,
     /// Steps between strokes: 60 strokes a second.
     pub every: u64,
+    /// Steps between wet-paint ticks: 30 a second.
+    pub tick_every: u64,
 }
 
 /// Where a canvas is and how big it is: its pose (middle and turn) and its width and height.
@@ -75,11 +77,13 @@ impl ThingSim for CanvasSim {
         };
         let size = size.max(Vec2::ONE);
         let every = (world.steps_per_second / 60).max(1) as u64;
+        let tick_every = tick_every(world.steps_per_second);
         let grid = CanvasGrid::new(size);
         world.state_memory.insert(thing.id, grid.bytes());
-        world
-            .states
-            .insert(thing.id, Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every }));
+        world.states.insert(
+            thing.id,
+            Box::new(CanvasState { settings, grid, size, centre, ribbons: BTreeMap::new(), every, tick_every }),
+        );
         self.place(thing.id, world);
     }
 
@@ -198,12 +202,6 @@ pub(crate) fn reaches(size: Vec2, a: Vec2, b: Vec2, radius: f32) -> bool {
     true
 }
 
-/// A grid cell fully painted in a linear-light colour.
-pub(crate) fn cell_of(colour: [f32; 4]) -> Cell {
-    let c = Color::from_linear(colour);
-    Cell { rgb: [c.r, c.g, c.b], amount: 255, ..Cell::default() }
-}
-
 impl<'a> Colours<'a> {
     pub(crate) fn new(world: &'a World) -> Self {
         Colours { world, looks: BTreeMap::new() }
@@ -292,7 +290,7 @@ impl Cx<'_> {
                     let now = self.colours.of(b, thing, i);
                     let was = ribbon.colour.unwrap_or(now);
                     let pieces = ribbon.advance(here, velocity, radius, &tune, endless);
-                    self.pieces(st, b, &pieces, [was, now]);
+                    self.pieces(st, b, key, &pieces, [was, now]);
                     ribbon.colour = Some(now);
                 }
             }
@@ -307,12 +305,20 @@ impl Cx<'_> {
             return;
         }
         let colour = ribbon.colour.unwrap_or_else(|| self.colours.of(b, key.0, key.1 as usize));
-        self.pieces(st, b, pieces, [colour, colour]);
+        self.pieces(st, b, key, pieces, [colour, colour]);
     }
 
     /// Logs and stamps `pieces` of a trail, its colour blending from `was` to `now` over the
     /// move (by each piece's [`Piece::within`]).
-    fn pieces(&mut self, st: &mut CanvasState, b: &MarksBrushes, pieces: &[Piece], [was, now]: [[f32; 4]; 2]) {
+    fn pieces(
+        &mut self,
+        st: &mut CanvasState,
+        b: &MarksBrushes,
+        key: (ThingId, u32),
+        pieces: &[Piece],
+        [was, now]: [[f32; 4]; 2],
+    ) {
+        let (tick, by) = ((self.world.step / st.tick_every) as u32, painter(key.0, key.1));
         let at = |t: f32| -> [f32; 4] {
             if t >= 1.0 {
                 now
@@ -327,8 +333,7 @@ impl Cx<'_> {
                 continue;
             }
             let (colour, colour_to) = (at(p.within[0]), at(p.within[1]));
-            st.grid.stamp_capsule(p.from, p.to, (p.radius + p.radius_to) * 0.5, cell_of(colour));
-            self.out.push(Mark {
+            let mark = Mark {
                 step: self.world.step,
                 target: MarkTarget::Canvas(self.canvas),
                 shape: MarkShape::Stroke,
@@ -342,7 +347,9 @@ impl Cx<'_> {
                 variant: (b.paint_tip == Tip::Square) as u8 | p.joints,
                 colour,
                 colour_to,
-            });
+            };
+            st.grid.stamp(&mark, tick, by);
+            self.out.push(mark);
         }
     }
 
@@ -367,8 +374,7 @@ impl Cx<'_> {
             }
             // The mover's colour, whoever owns the brush.
             let colour = self.colours.of(b, e.a.thing, e.a.item as usize);
-            st.grid.stamp_disc(at, radius, cell_of(colour));
-            self.out.push(Mark {
+            let mark = Mark {
                 step: world.step,
                 target: MarkTarget::Canvas(self.canvas),
                 shape,
@@ -381,7 +387,9 @@ impl Cx<'_> {
                 variant,
                 colour,
                 colour_to: colour,
-            });
+            };
+            st.grid.stamp(&mark, (world.step / st.tick_every) as u32, painter(e.a.thing, e.a.item));
+            self.out.push(mark);
         }
     }
 }
@@ -461,7 +469,7 @@ pub fn splat_look(
 }
 
 /// A well-mixed 64-bit number from a step and an item (SplitMix64's finaliser).
-fn mix(step: u64, item: u32) -> u64 {
+pub(crate) fn mix(step: u64, item: u32) -> u64 {
     let mut z = (step << 32 ^ item as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -470,7 +478,7 @@ fn mix(step: u64, item: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use bpe_core::{Attach, Params, Resolved, Scene, SlotId, Target, Value, resolve};
+    use bpe_core::{Attach, Color, Params, Resolved, Scene, SlotId, Target, Value, resolve};
     use bpe_runtime::{EventKind, MarkShape, MarkTarget, Playback};
 
     use super::*;
@@ -515,6 +523,28 @@ mod tests {
     /// `p` in the canvas's own pixels.
     fn local(pose: Pose, p: Vec2) -> Vec2 {
         Vec2::from_angle(-pose.angle).rotate(p - pose.position)
+    }
+
+    #[test]
+    fn cells_remember_the_painting_ball() {
+        let (scene, resolved, kit) = painted(true, |_| {});
+        let mut pb = Playback::new(&scene, &resolved, kit.sims.clone());
+        pb.seek(1.0);
+        let grid = &canvas_state(pb.world(), CANVAS).grid;
+        let (w, h) = grid.dims();
+        let want = painter(BALLS, 0);
+        let (mut mine, mut anonymous) = (false, false);
+        for y in 0..h {
+            for x in 0..w {
+                let c = grid.get(x, y);
+                if c.amount == 0 {
+                    continue;
+                }
+                mine |= c.by == want && c.amount >= 96;
+                anonymous |= c.by == 0;
+            }
+        }
+        assert!(mine && !anonymous);
     }
 
     #[test]
