@@ -59,7 +59,9 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected = None;
         timeline.curve_open = false;
     }
-    chords::show(ui, studio, &ruler);
+    if let Some((p, module)) = chords::show(ui, studio, &ruler) {
+        studio.panels.nodes.open_chords(p, module);
+    }
     if lanes.is_empty() {
         ui.add_space(6.0);
         let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \
