@@ -586,25 +586,31 @@ impl Studio {
             }
         };
         let Some(path) = path else { return false };
-        // A first save, or Save As somewhere else, brings the pictures along.
+        // A first save, or Save As somewhere else, brings the pictures along. The copy of the
+        // scene with its new picture paths is only kept once the file is written.
+        let mut scene = self.scene.clone();
         let mut adopted = false;
+        let mut picture_problem = None;
         if self.path.as_ref() != Some(&path) {
             let from = self.base_dir();
-            match bpe_kit::pictures::adopt(&mut self.scene, from.as_deref(), &path) {
+            match bpe_kit::pictures::adopt(&mut scene, from.as_deref(), &path) {
                 Ok(count) => adopted = count > 0,
-                Err(message) => self.status = message,
+                Err(message) => picture_problem = Some(message),
             }
         }
-        match std::fs::write(&path, bpe_core::save(&self.scene)) {
+        match std::fs::write(&path, bpe_core::save(&scene)) {
             Ok(()) => {
                 self.status = format!("Saved {}.", file_label(&path));
-                self.saved = self.scene.clone();
+                if let Some(message) = picture_problem {
+                    self.status = format!("{} {message}", self.status);
+                }
                 settings::remember_scene(&path);
                 self.path = Some(path);
                 if adopted {
+                    self.scene = scene;
                     self.scene_changed();
-                    self.saved = self.scene.clone();
                 }
+                self.saved = self.scene.clone();
                 true
             }
             Err(error) => {

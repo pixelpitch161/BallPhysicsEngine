@@ -111,7 +111,25 @@ pub fn picture_readable(path: &Path) -> bool {
         .is_some_and(|r| r.into_dimensions().is_ok())
 }
 
+/// What a loaded atlas was made from: the files named, where they were read from, and when each
+/// was last written. The same key means the same atlas, so it is not decoded again.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AtlasKey {
+    paths: Vec<String>,
+    folder: Option<PathBuf>,
+    written: Vec<Option<std::time::SystemTime>>,
+}
+
+impl AtlasKey {
+    pub(crate) fn new(paths: &[String], folder: Option<&Path>) -> Self {
+        let written =
+            paths.iter().map(|p| std::fs::metadata(picture_path(p, folder)).and_then(|m| m.modified()).ok()).collect();
+        Self { paths: paths.to_vec(), folder: folder.map(Path::to_path_buf), written }
+    }
+}
+
 /// Every picture of a scene as layers of one texture array, and how to sample them.
+#[derive(Clone)]
 pub(crate) struct PictureAtlas {
     pub(crate) view: wgpu::TextureView,
     pub(crate) sampler: wgpu::Sampler,

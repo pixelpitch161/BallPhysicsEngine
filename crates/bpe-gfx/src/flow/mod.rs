@@ -22,7 +22,7 @@ use bpe_core::{Resolved, Scene, ThingId};
 use bpe_runtime::{Log, Mark, MarkTarget, Outline, Sims, World};
 
 use crate::canvas::CanvasTextures;
-use crate::canvas::pictures::PictureAtlas;
+use crate::canvas::pictures::{AtlasKey, PictureAtlas};
 use crate::canvas::stamp::{CanvasGpu, StampPipeline};
 use crate::canvas::texture_bytes;
 use crate::frame::{Frame, LiquidLayer, Points, SwarmLayer};
@@ -228,6 +228,8 @@ pub struct FlowLayers {
     checkpoint_bytes: u64,
     /// The scene's picture files that could not be read, as the scene gave them.
     missing_pictures: Vec<String>,
+    /// The picture atlas of the running scene and what it was made from.
+    atlas: Option<(AtlasKey, PictureAtlas)>,
 }
 
 /// The frame's swarms, then those of its blend layers: all of them are stepped here.
@@ -282,6 +284,7 @@ impl FlowLayers {
             pipelines,
             driver: None,
             missing_pictures: Vec::new(),
+            atlas: None,
             layers: BTreeMap::new(),
             steps_run: 0,
             checkpoint_bytes: CHECKPOINT_BYTES,
@@ -406,7 +409,17 @@ impl FlowLayers {
         let world = World::build(source.scene, source.resolved, source.sims);
         // The pictures are read here, once, never in the frame loop. The canvases' bind groups
         // keep the atlas alive.
-        let atlas = PictureAtlas::load(device, queue, &world.pictures, source.picture_folder.as_deref());
+        // Decoding is slow, so an atlas is kept while its files and their times stay the same:
+        // a physics change restarts the layers but does not read the pictures again.
+        let key = AtlasKey::new(&world.pictures, source.picture_folder.as_deref());
+        let atlas = match &self.atlas {
+            Some((kept, atlas)) if *kept == key => atlas.clone(),
+            _ => {
+                let atlas = PictureAtlas::load(device, queue, &world.pictures, source.picture_folder.as_deref());
+                self.atlas = Some((key, atlas.clone()));
+                atlas
+            }
+        };
         self.missing_pictures = atlas.missing.clone();
         let video = frame.video;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow start") });

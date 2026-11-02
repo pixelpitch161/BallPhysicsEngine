@@ -373,22 +373,12 @@ impl CanvasGpu {
         let ours: Vec<&Mark> = marks.iter().filter(|m| m.target == self.target).collect();
         let first_step = ours.iter().map(|m| m.step).min().unwrap_or(0);
         let steps = ours.iter().map(|m| m.step - first_step + 1).max().unwrap_or(1);
-        // Stamps, then lifts, then bleeds, each in log order.
-        let of = |wanted: fn(MarkShape) -> u8, kind: u8| ours.iter().copied().filter(move |m| wanted(m.shape) == kind);
-        let kind = |shape: MarkShape| match shape {
-            MarkShape::Lift => 1,
-            MarkShape::Bleed => 2,
-            _ => 0,
-        };
-        let stamps: Vec<&Mark> = of(kind, 0).collect();
-        let lifts: Vec<&Mark> = of(kind, 1).collect();
-        let bleeds: Vec<&Mark> = of(kind, 2).collect();
-        let gpu: Vec<MarkGpu> = stamps
-            .iter()
-            .chain(&lifts)
-            .chain(&bleeds)
-            .map(|m| MarkGpu::new(m, steps_per_second, first_step, steps))
-            .collect();
+        // Stamps and lifts in the order they were logged (a ball's pickup is logged before the
+        // print it makes, so the print stays whole), then the bleeds.
+        let body: Vec<&Mark> = ours.iter().copied().filter(|m| m.shape != MarkShape::Bleed).collect();
+        let bleeds: Vec<&Mark> = ours.iter().copied().filter(|m| m.shape == MarkShape::Bleed).collect();
+        let gpu: Vec<MarkGpu> =
+            body.iter().chain(&bleeds).map(|m| MarkGpu::new(m, steps_per_second, first_step, steps)).collect();
         if gpu.is_empty() {
             return;
         }
@@ -402,7 +392,7 @@ impl CanvasGpu {
         let stride = std::mem::size_of::<MarkGpu>() as u64;
         queue.write_buffer(&self.marks, self.used * stride, bytemuck::cast_slice(&gpu));
         let base = self.used as u32;
-        let (stamp_end, lift_end) = (base + stamps.len() as u32, base + (stamps.len() + lifts.len()) as u32);
+        let body_end = base + body.len() as u32;
         self.used += count;
         let attachment = |view| {
             Some(wgpu::RenderPassColorAttachment {
@@ -412,7 +402,7 @@ impl CanvasGpu {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })
         };
-        if !stamps.is_empty() || !lifts.is_empty() {
+        if !body.is_empty() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("canvas stamp"),
                 color_attachments: &[
@@ -431,17 +421,18 @@ impl CanvasGpu {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_vertex_buffer(0, self.marks.slice(..));
-            if !stamps.is_empty() {
-                pass.set_pipeline(&pipeline.pipeline);
-                pass.draw(0..4, base..stamp_end);
-            }
-            if !lifts.is_empty() {
-                pass.set_pipeline(&pipeline.lift);
-                pass.draw(0..4, stamp_end..lift_end);
+            // Runs of stamps and of lifts, drawn one after the other.
+            let mut i = 0;
+            while i < body.len() {
+                let lift = body[i].shape == MarkShape::Lift;
+                let n = body[i..].iter().take_while(|m| (m.shape == MarkShape::Lift) == lift).count();
+                pass.set_pipeline(if lift { &pipeline.lift } else { &pipeline.pipeline });
+                pass.draw(0..4, base + i as u32..base + (i + n) as u32);
+                i += n;
             }
         }
         // Bleeds: one pass per step that has any, in order.
-        let mut from = lift_end;
+        let mut from = body_end;
         let mut i = 0;
         while i < bleeds.len() {
             let step = bleeds[i].step;

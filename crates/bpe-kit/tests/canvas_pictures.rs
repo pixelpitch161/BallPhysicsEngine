@@ -1019,4 +1019,7 @@ fn wet_pour_seek_back_matches_straight_run() {
     assert_eq!(differ, 0, "{differ} bytes differ between seeking back and a straight run");
     let marks = playback.log().marks();
     assert!(marks.iter().any(|m| m.target == MarkTarget::Canvas(id)), "the canvas got marks");
+    for shape in [bpe_runtime::MarkShape::Drip, bpe_runtime::MarkShape::Bleed] {
+        assert!(marks.iter().any(|m| m.shape == shape), "{shape:?} marks were drawn");
+    }
 }

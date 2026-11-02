@@ -2325,13 +2325,13 @@ mod tests {
     #[test]
     fn evolution_marks_stay_bounded() {
         use bpe_core::Value;
-        let (mut scene, _, kit) = crate::testing::painted(true, |p| {
-            p.set("fit", Value::Choice("custom".into()));
-            p.set("size", Value::Vec2([1080.0, 1920.0]));
-            p.set("bleed", Value::Number(0.5));
-            p.set("drips", Value::Number(0.5));
-            p.set("dry_time", Value::Number(2.0));
-        });
+        let (mut scene, _, kit) = crate::testing::painted(true, |_| {});
+        let canvas_params = &mut scene.things.get_mut(&crate::testing::CANVAS).unwrap().params;
+        canvas_params.set("fit", Value::Choice("custom".into()));
+        canvas_params.set("size", Value::Vec2([1080.0, 1920.0]));
+        canvas_params.set("bleed", Value::Number(0.5));
+        canvas_params.set("drips", Value::Number(0.5));
+        canvas_params.set("dry_time", Value::Number(2.0));
         let balls = scene.things.get_mut(&super::BALLS).unwrap();
         balls.params.set("arrangement", Value::Choice("block".into()));
         balls.params.set("columns", Value::Int(5));
@@ -2352,6 +2352,8 @@ mod tests {
         let st = crate::testing::canvas_state(&world, canvas);
         let (tx, ty) = st.grid.tile_dims();
         let wet_tiles_max = (tx * ty) as usize;
+        let count = |shape| log.marks().iter().filter(|m| m.shape == shape).count();
+        assert!(count(bpe_runtime::MarkShape::Drip) > 0 && count(bpe_runtime::MarkShape::Bleed) > 0, "it evolves");
         let per_second = log.marks().len() / 20;
         assert!(per_second <= 3000 + 30 * 20 + 30 * wet_tiles_max, "{per_second} marks a second");
     }
