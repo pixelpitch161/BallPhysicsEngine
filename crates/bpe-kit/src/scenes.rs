@@ -21,10 +21,11 @@ use crate::modules::sound::{Order, PlaysWhen};
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
     Align, Appear, ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion,
-    BeatSync, BurstSource, CanvasSettings, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings, FieldShape,
-    Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound, ObstacleSettings,
-    ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatOnto, SplatShape, SplatSkin,
-    StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn, WidthBy, new_scene, recipes,
+    BeatSync, BurstSource, CanvasSettings, CanvasStyle, DrumSound, EmitterSettings, FieldKindChoice, FieldSettings,
+    FieldShape, Flocking, Font, HitBurst, LiquidSettings, MarksBrushes, MelodySound, MovePath, NoteSound,
+    ObstacleSettings, ObstacleShape, Piece, Pinned, RulesKind, SceneSettings, SoftSettings, SoftShape, SplatOnto,
+    SplatShape, SplatSkin, StartsAs, StreakTrail, Style, SwarmLook, SwarmSettings, TextSettings, TrailSource, Turn,
+    WidthBy, new_scene, recipes,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -67,10 +68,11 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat])
 }
 
-/// The three Marks scenes: trails on a canvas, paint thrown onto a ring and a spinning bar, and
-/// pegs that take paint.
+/// The seven Marks scenes: trails on a canvas, paint thrown onto a ring and a spinning bar, pegs
+/// that take paint, and then the rich paint demos: wet paint that drips, a watercolour garden,
+/// neon ink on a ring and colours that mix.
 pub fn marks(reg: &Registry) -> Vec<(String, Scene)> {
-    build_all(reg, &[paint_pour, splat_ring, peg_paint])
+    build_all(reg, &[paint_pour, splat_ring, peg_paint, wet_pour, watercolour_garden, neon_splat_ring, colour_mixing])
 }
 
 /// Every shipped scene, stage by stage.
@@ -1673,7 +1675,12 @@ fn fireflies(reg: &Registry) -> Scene {
 /// Six rainbow balls in a box, each painting a trail as wide as itself over a canvas that fits
 /// the box, for twenty seconds.
 fn paint_pour(reg: &Registry) -> Scene {
-    let mut b = Builder::new(reg, "Paint pour");
+    pour(reg, "Paint pour", |_, _| {})
+}
+
+/// [`paint_pour`] under `name`, with `tweak` to change the canvas and the balls' brush.
+fn pour(reg: &Registry, name: &str, tweak: impl FnOnce(&mut CanvasSettings, &mut MarksBrushes)) -> Scene {
+    let mut b = Builder::new(reg, name);
     b.scene_settings(|s| {
         s.gravity = Vec2::new(0.0, 500.0);
         s.duration = 20.0;
@@ -1707,20 +1714,27 @@ fn paint_pour(reg: &Registry) -> Scene {
     });
     // The canvas fits the box and sits behind the balls. It is added last, so the balls already
     // have their brushes: paint trail on, as wide as the ball.
-    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, CanvasSettings::default().to_params());
+    let mut canvas = CanvasSettings::default();
+    let mut brush =
+        MarksBrushes { paint_on: true, paint_width_by: WidthBy::Size, paint_taper: 0.3, ..MarksBrushes::default() };
+    tweak(&mut canvas, &mut brush);
+    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, canvas.to_params());
     let brushes = b.module_of(BALLS, SlotId::Marks);
-    b.set_params(
-        brushes,
-        MarksBrushes { paint_on: true, paint_width_by: WidthBy::Size, paint_taper: 0.3, ..MarksBrushes::default() }
-            .to_params(),
-    );
+    b.set_params(brushes, brush.to_params());
     b.finish()
 }
 
 /// Balls in a ring arena throw paint at the ring, which smears it along its line, and at a
 /// spinning bar, which wears the prints and carries them round. No canvas: the things hold it.
 fn splat_ring(reg: &Registry) -> Scene {
-    let mut b = Builder::new(reg, "Splat ring");
+    let colours = [Color::rgb(0xff, 0x5c, 0xa8), Color::rgb(0xff, 0xd2, 0x3e), Color::rgb(0x3e, 0xe0, 0xd0)];
+    ring_scene(reg, "Splat ring", colours, |_, _| {})
+}
+
+/// [`splat_ring`] under `name`, the balls' colours `colours`, with `tweak` to change the ring's
+/// and the bar's settings (their paint skins are among them).
+fn ring_scene(reg: &Registry, name: &str, colours: [Color; 3], tweak: impl FnOnce(&mut Params, &mut Params)) -> Scene {
+    let mut b = Builder::new(reg, name);
     b.scene_settings(|s| {
         s.gravity = Vec2::new(0.0, 300.0);
         s.duration = 20.0;
@@ -1729,18 +1743,14 @@ fn splat_ring(reg: &Registry) -> Scene {
         a.radius = 480.0;
         a.thickness = 22.0;
     });
-    let bar = b.add(
-        "obstacle",
-        ThingId::ROOT,
-        "Spinning bar",
-        Vec2::ZERO,
-        obstacle(|o| {
-            o.shape = ObstacleShape::Bar;
-            o.length = 560.0;
-            o.thickness = 40.0;
-            o.spin = 25.0;
-        }),
-    );
+    let mut bar_params = obstacle(|o| {
+        o.shape = ObstacleShape::Bar;
+        o.length = 560.0;
+        o.thickness = 40.0;
+        o.spin = 25.0;
+    });
+    tweak(&mut b.scene.things.get_mut(&ARENA).expect("arena").params, &mut bar_params);
+    let bar = b.add("obstacle", ThingId::ROOT, "Spinning bar", Vec2::ZERO, bar_params);
     b.balls("Splatters", Vec2::new(0.0, -200.0), |s| {
         s.arrangement = Arrangement::Ring;
         s.count = 8;
@@ -1750,15 +1760,7 @@ fn splat_ring(reg: &Registry) -> Scene {
     });
     b.bounce(|s| s.bounciness = 1.0);
     b.ball_look(|l| {
-        l.fill = Paint {
-            colours: Gradient::even(&[
-                Color::rgb(0xff, 0x5c, 0xa8),
-                Color::rgb(0xff, 0xd2, 0x3e),
-                Color::rgb(0x3e, 0xe0, 0xd0),
-            ]),
-            follow: Follow::Order,
-            ..Paint::default()
-        };
+        l.fill = Paint { colours: Gradient::even(&colours), follow: Follow::Order, ..Paint::default() };
     });
     // The balls carry the colour; the ring and the bar each have a brush of their own that
     // decides how they take it.
@@ -1850,6 +1852,152 @@ fn peg_paint(reg: &Registry) -> Scene {
     b.finish()
 }
 
+/// A pour with wet paint: the trails and splats stay glossy for a while, bleed into each other
+/// and drip down the canvas.
+fn wet_pour(reg: &Registry) -> Scene {
+    pour(reg, "Wet pour", |canvas, brush| {
+        canvas.style = CanvasStyle::WetPaint;
+        canvas.dry_time = 2.5;
+        canvas.drips = 0.6;
+        canvas.bleed = 0.15;
+        canvas.gloss = 0.7;
+        brush.splat_on = true;
+        brush.splat_onto = SplatOnto::Canvases;
+    })
+}
+
+/// Balls fall through a peg board over a cream canvas, leaving soft watercolour trails and
+/// blooms that spread and darken at their edges as they dry.
+fn watercolour_garden(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Watercolour garden");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 900.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.add(
+        "obstacle",
+        ThingId::ROOT,
+        "Pegs",
+        Vec2::new(0.0, 100.0),
+        obstacle(|o| {
+            o.shape = ObstacleShape::PegGrid;
+            o.columns = 6;
+            o.rows = 7;
+            o.spacing = 120.0;
+            o.radius = 14.0;
+            o.stagger = true;
+        }),
+    );
+    b.balls("Blooms", Vec2::new(0.0, -650.0), |s| {
+        s.arrangement = Arrangement::Block;
+        s.columns = 4;
+        s.rows = 3;
+        s.spacing = 60.0;
+        s.radius = 14.0;
+        s.velocity = Vec2::ZERO;
+    });
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xe0, 0x7a, 0x8f),
+                Color::rgb(0xf2, 0xb8, 0x80),
+                Color::rgb(0x8f, 0xb8, 0xde),
+                Color::rgb(0x9a, 0xd1, 0xa8),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        };
+    });
+    let canvas = CanvasSettings {
+        starts_as: StartsAs::Colour,
+        start_colour: Color::rgb(0xf4, 0xef, 0xe4),
+        style: CanvasStyle::Watercolour,
+        dry_time: 3.0,
+        bleed: 0.5,
+        grain: 0.6,
+        edge_dark: 0.6,
+        ..CanvasSettings::default()
+    };
+    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, canvas.to_params());
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    let brush = MarksBrushes {
+        paint_on: true,
+        paint_width_by: WidthBy::Size,
+        paint_width: 1.6,
+        splat_on: true,
+        splat_onto: SplatOnto::Canvases,
+        splat_size: 40.0,
+        ..MarksBrushes::default()
+    };
+    b.set_params(brushes, brush.to_params());
+    b.finish()
+}
+
+/// The splat ring in glowing neon: paint that drips down the ring and glows while it is wet.
+fn neon_splat_ring(reg: &Registry) -> Scene {
+    let colours = [Color::rgb(0xff, 0x2b, 0xd6), Color::rgb(0x29, 0xf0, 0xff), Color::rgb(0xb6, 0xff, 0x3b)];
+    ring_scene(reg, "Neon splat ring", colours, |ring, bar| {
+        ring.set("skin_style", Value::Choice("neon_ink".into()));
+        ring.set("skin_dry_time", Value::Number(2.5));
+        ring.set("skin_drips", Value::Number(0.5));
+        bar.set("skin_style", Value::Choice("neon_ink".into()));
+        bar.set("skin_dry_time", Value::Number(2.5));
+    })
+}
+
+/// Three balls in red, yellow and blue paint their trails and pick up each other's wet paint
+/// where they cross, so the colours mix.
+fn colour_mixing(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Colour mixing");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::new(0.0, 200.0);
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.balls("Painters", Vec2::ZERO, |s| {
+        s.arrangement = Arrangement::Ring;
+        s.count = 3;
+        s.radius = 30.0;
+        s.ring_radius = 200.0;
+        s.velocity = Vec2::new(320.0, -160.0);
+    });
+    b.bounce(|s| s.bounciness = 1.0);
+    b.ball_look(|l| {
+        l.fill = Paint {
+            colours: Gradient::even(&[
+                Color::rgb(0xe8, 0x34, 0x3a),
+                Color::rgb(0xf6, 0xc6, 0x23),
+                Color::rgb(0x2f, 0x6f, 0xe8),
+            ]),
+            follow: Follow::Order,
+            ..Paint::default()
+        };
+    });
+    let canvas =
+        CanvasSettings { style: CanvasStyle::WetPaint, dry_time: 4.0, bleed: 0.25, ..CanvasSettings::default() };
+    b.add("canvas", ThingId::ROOT, "Canvas", Vec2::ZERO, canvas.to_params());
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    let brush = MarksBrushes {
+        paint_on: true,
+        paint_width_by: WidthBy::Size,
+        paint_width: 1.0,
+        paint_pickup: 0.6,
+        paint_pickup_fade: 4.0,
+        ..MarksBrushes::default()
+    };
+    b.set_params(brushes, brush.to_params());
+    b.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
@@ -1892,7 +2040,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 36);
+        assert_eq!(scenes.len(), 40);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -1924,7 +2072,18 @@ mod tests {
         assert_eq!(names[25..30], ["Jelly drop", "Rope bridge", "Cloth hammock", "Captioned reel", "Drum beat"]);
         assert_eq!(
             names[30..],
-            ["Colour paints", "Blend modes", "Graded sunset", "Paint pour", "Splat ring", "Peg paint"]
+            [
+                "Colour paints",
+                "Blend modes",
+                "Graded sunset",
+                "Paint pour",
+                "Splat ring",
+                "Peg paint",
+                "Wet pour",
+                "Watercolour garden",
+                "Neon splat ring",
+                "Colour mixing"
+            ]
         );
         let mut scenes = scenes;
         scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
@@ -1946,7 +2105,18 @@ mod tests {
         let reg = registry();
         let marks = scenes::marks(&reg);
         let names: Vec<&str> = marks.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["Paint pour", "Splat ring", "Peg paint"]);
+        assert_eq!(
+            names,
+            [
+                "Paint pour",
+                "Splat ring",
+                "Peg paint",
+                "Wet pour",
+                "Watercolour garden",
+                "Neon splat ring",
+                "Colour mixing"
+            ]
+        );
         for (name, scene) in &marks {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
@@ -1954,7 +2124,7 @@ mod tests {
             let brushed = scene.things.values().filter(|t| t.slots.contains_key(&SlotId::Marks)).count();
             assert!(brushed > 0, "{name}: something paints");
             // The splat ring has no canvas: the ring and the bar hold the paint themselves.
-            assert_eq!(canvases, usize::from(name != "Splat ring"), "{name}: canvases");
+            assert_eq!(canvases, usize::from(name != "Splat ring" && name != "Neon splat ring"), "{name}: canvases");
         }
         let ring = &marks[1].1;
         let brush = |name: &str| {
@@ -2045,5 +2215,144 @@ mod tests {
             );
         }
         assert!(lowest > 2000.0, "the ball got down the course: {lowest}");
+    }
+
+    // ---- the rich paint demos ----
+
+    fn marks_scene(name: &str) -> (bpe_core::Scene, bpe_core::Resolved, crate::Kit) {
+        let kit = crate::kit();
+        let (_, scene) = scenes::marks(&kit.registry).into_iter().find(|(n, _)| n == name).expect(name);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        (scene, resolved, kit)
+    }
+
+    fn canvas_of(scene: &bpe_core::Scene) -> bpe_core::ThingId {
+        *scene.things.iter().find(|(_, t)| t.kind == "canvas").expect("a canvas").0
+    }
+
+    #[test]
+    fn wet_pour_drips_and_bleeds() {
+        use bpe_runtime::{MarkShape, MarkTarget};
+        let (scene, resolved, kit) = marks_scene("Wet pour");
+        let canvas = canvas_of(&scene);
+        let (_, log) = crate::testing::run(&scene, &resolved, &kit, 10.0);
+        let has = |shape| log.marks().iter().any(|m| m.target == MarkTarget::Canvas(canvas) && m.shape == shape);
+        assert!(has(MarkShape::Drip), "drips");
+        assert!(has(MarkShape::Bleed), "bleeds");
+    }
+
+    #[test]
+    fn watercolour_garden_bleeds() {
+        use crate::things::canvas::sim::CanvasState;
+        use bpe_runtime::MarkShape;
+        let (scene, resolved, kit) = marks_scene("Watercolour garden");
+        let canvas = canvas_of(&scene);
+        let (world, log) = crate::testing::run(&scene, &resolved, &kit, 10.0);
+        assert!(log.marks().iter().any(|m| m.shape == MarkShape::Bleed));
+        assert!(crate::testing::canvas_state(&world, canvas).ticks_run > 0);
+        let _: Option<&CanvasState> = None;
+    }
+
+    #[test]
+    fn neon_splat_ring_drips_downhill() {
+        use bpe_runtime::{MarkShape, MarkTarget};
+        let (scene, resolved, kit) = marks_scene("Neon splat ring");
+        let (_, log) = crate::testing::run(&scene, &resolved, &kit, 15.0);
+        let drips: Vec<_> = log
+            .marks()
+            .iter()
+            .filter(|m| m.target == MarkTarget::Skin(super::ARENA) && m.shape == MarkShape::Drip)
+            .collect();
+        assert!(!drips.is_empty(), "the ring drips");
+        // Paint runs down the ring; a drop, where one comes to rest, sits low on it. (Most drips
+        // run out of paint on the way: only the ones that start low reach the bottom.)
+        for d in &drips {
+            assert!(d.to.y >= d.from.y - 2.0, "{d:?} runs uphill");
+            if d.from == d.to {
+                assert!(d.from.y > 0.8 * 480.0, "{d:?}");
+            }
+        }
+    }
+
+    /// The linear distance between two colours' strongest channel difference.
+    fn far(a: [f32; 4], b: [f32; 3]) -> f32 {
+        (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn colour_mixing_picks_up_colour() {
+        use bpe_runtime::MarkShape;
+        let (scene, resolved, kit) = marks_scene("Colour mixing");
+        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut log = bpe_runtime::Log::default();
+        let mut best = 0.0f32;
+        for k in 1..=40 {
+            world.advance_to(k as f64 * 0.5, &kit.sims, &mut log);
+            let now = world.step;
+            let sps = world.steps_per_second;
+            for list in world.picked.values() {
+                for p in list {
+                    best = best.max(p.shown(now, sps));
+                }
+            }
+        }
+        assert!(best > 0.2, "a ball carried paint: {best}");
+        let bases = [
+            bpe_core::Color::rgb(0xe8, 0x34, 0x3a).to_linear(),
+            bpe_core::Color::rgb(0xf6, 0xc6, 0x23).to_linear(),
+            bpe_core::Color::rgb(0x2f, 0x6f, 0xe8).to_linear(),
+        ];
+        let mixed = log
+            .marks()
+            .iter()
+            .any(|m| m.shape == MarkShape::Stroke && bases.iter().all(|b| far(m.colour, [b[0], b[1], b[2]]) > 0.15));
+        assert!(mixed, "some stroke is a mix");
+    }
+
+    #[test]
+    fn colour_mixing_log_is_the_same_without_pickup() {
+        let (scene, resolved, kit) = marks_scene("Colour mixing");
+        let (_, with) = crate::testing::run(&scene, &resolved, &kit, 20.0);
+        let mut scene = scene;
+        let brush = crate::testing::module_of(&scene, &kit.registry, super::BALLS, bpe_core::SlotId::Marks);
+        scene.library.modules.get_mut(&brush).unwrap().params.set("paint_pickup", bpe_core::Value::Number(0.0));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let (_, without) = crate::testing::run(&scene, &resolved, &kit, 20.0);
+        assert_eq!((with.hash(), with.len()), (without.hash(), without.len()));
+    }
+
+    #[test]
+    fn evolution_marks_stay_bounded() {
+        use bpe_core::Value;
+        let (mut scene, _, kit) = crate::testing::painted(true, |p| {
+            p.set("fit", Value::Choice("custom".into()));
+            p.set("size", Value::Vec2([1080.0, 1920.0]));
+            p.set("bleed", Value::Number(0.5));
+            p.set("drips", Value::Number(0.5));
+            p.set("dry_time", Value::Number(2.0));
+        });
+        let balls = scene.things.get_mut(&super::BALLS).unwrap();
+        balls.params.set("arrangement", Value::Choice("block".into()));
+        balls.params.set("columns", Value::Int(5));
+        balls.params.set("rows", Value::Int(4));
+        crate::testing::brushes(&mut scene, &kit, super::BALLS, |p| {
+            p.set("paint_on", Value::Bool(true));
+            p.set("paint_pickup", Value::Number(0.5));
+        });
+        let canvas = canvas_of(&scene);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut log = bpe_runtime::Log::default();
+        for second in 1..=20 {
+            world.advance_to(second as f64, &kit.sims, &mut log);
+            let st = crate::testing::canvas_state(&world, canvas);
+            assert!(st.runners.len() <= 96, "{} runners at {second} s", st.runners.len());
+        }
+        let st = crate::testing::canvas_state(&world, canvas);
+        let (tx, ty) = st.grid.tile_dims();
+        let wet_tiles_max = (tx * ty) as usize;
+        let per_second = log.marks().len() / 20;
+        assert!(per_second <= 3000 + 30 * 20 + 30 * wet_tiles_max, "{per_second} marks a second");
     }
 }
