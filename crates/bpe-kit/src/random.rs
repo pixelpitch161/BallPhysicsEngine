@@ -17,6 +17,8 @@ pub enum Scope {
     Things(Vec<ThingId>),
     /// One card of one thing: its own settings (`slot: None`) or one slot.
     Card { thing: ThingId, slot: Option<SlotId> },
+    /// One group (a root card) of one thing's own settings.
+    Group { thing: ThingId, group: &'static str },
     /// One library module.
     Module(ModuleId),
 }
@@ -230,6 +232,7 @@ fn addresses(scene: &Scene, reg: &Registry, scope: &Scope) -> Vec<Address> {
         }
         Scope::Card { thing, slot: None } => own_settings(scene, reg, *thing, &mut out),
         Scope::Card { thing, slot: Some(slot) } => card_settings(scene, reg, *thing, *slot, &mut out),
+        Scope::Group { thing, group } => group_settings(scene, reg, *thing, group, &mut out),
         Scope::Module(m) => module_settings(scene, reg, *m, &mut out),
     }
     out
@@ -238,6 +241,15 @@ fn addresses(scene: &Scene, reg: &Registry, scope: &Scope) -> Vec<Address> {
 fn own_settings(scene: &Scene, reg: &Registry, id: ThingId, out: &mut Vec<Address>) {
     let Some(kind) = scene.things.get(&id).and_then(|t| reg.thing(&t.kind)) else { return };
     out.extend(kind.settings().iter().filter(|d| d.flags.random).map(|d| Address {
+        owner: Owner::Thing(id),
+        slot: None,
+        key: d.key.into(),
+    }));
+}
+
+fn group_settings(scene: &Scene, reg: &Registry, id: ThingId, group: &str, out: &mut Vec<Address>) {
+    let Some(kind) = scene.things.get(&id).and_then(|t| reg.thing(&t.kind)) else { return };
+    out.extend(kind.settings().iter().filter(|d| d.flags.random && d.group == group).map(|d| Address {
         owner: Owner::Thing(id),
         slot: None,
         key: d.key.into(),
@@ -1024,5 +1036,31 @@ mod tests {
             // The dice roll 150 to 500 for a shot at Zoom 1; at Zoom 2 the shot is half as wide.
             assert!(radius <= 250.0 + 1e-3, "seed {seed}: radius {radius}");
         }
+    }
+
+    #[test]
+    fn a_group_roll_changes_only_that_group() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let before = scene.clone();
+        let own = |key: &str| Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: key.into() };
+        let rolled = roll(
+            &mut scene,
+            &reg,
+            &Scope::Group { thing: ThingId::ROOT, group: "Video" },
+            Roll { seed: 3, amount: 1.0 },
+        );
+        assert!(rolled.changed.is_empty());
+        assert_eq!(scene, before);
+
+        let rolled = roll(
+            &mut scene,
+            &reg,
+            &Scope::Group { thing: ThingId::ROOT, group: "Music" },
+            Roll { seed: 3, amount: 1.0 },
+        );
+        assert!(rolled.changed.contains(&own("seed")));
+        assert!(!rolled.changed.contains(&own("bloom")));
+        assert!(rolled.changed.iter().all(|a| a.key == "seed"), "{:?}", rolled.changed);
     }
 }

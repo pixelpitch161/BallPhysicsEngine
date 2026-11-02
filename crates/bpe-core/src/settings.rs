@@ -91,6 +91,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Instrument",
     "Notes",
     "Which hits",
+    "On the beat",
     "Level",
     "Chords",
     "Other balls",

@@ -53,40 +53,31 @@ pub enum PlaysWhen {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct NoteSound {
     /// What plays the notes: an instrument in the library, or the built-in Pluck when none is picked.
-    #[setting(label = "Instrument", simple, random)]
+    #[setting(label = "Instrument", simple, random, group = "Instrument")]
     pub instrument: InstrumentRef,
-    /// How loud these notes are.
-    #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
-    pub volume: f32,
-    /// Where the channel sits from left (-1) to right (1), on top of each hit's own place.
-    #[setting(label = "Pan", range(-1, 1), keyframe)]
-    pub pan: f32,
     /// The lowest MIDI note a hit may play.
-    #[setting(label = "Lowest note", range(0, 127), simple)]
+    #[setting(label = "Lowest note", range(0, 127), simple, group = "Notes")]
     pub low_note: u32,
     /// The highest MIDI note a hit may play.
-    #[setting(label = "Highest note", range(0, 127), simple)]
+    #[setting(label = "Highest note", range(0, 127), simple, group = "Notes")]
     pub high_note: u32,
-    /// The chord progression these notes follow: one in the library, or the built-in starter when none is picked.
-    #[setting(label = "Chords", simple, random)]
-    pub chords: ProgressionRef,
-    /// Which of the allowed notes a hit plays: random, by the hit's speed, by the ball's hits,
-    /// an arpeggio, or by how high the hit is.
-    #[setting(label = "Order", simple, random)]
-    pub order: Order,
-    /// One note, the whole chord, or only its bass note.
-    #[setting(label = "Plays")]
-    pub plays: Plays,
-    /// Hits faster than this play the whole chord; slower ones play one note. 0 always plays
-    /// the whole chord.
-    #[setting(label = "Full chord above", range(0, 10000), unit = "px/s", when = "plays=full_chord")]
-    pub full_chord_speed: f32,
-    /// How many octaves the whole chord is spread over.
-    #[setting(label = "Chord spread", range(1, 3), unit = "octaves", when = "plays=full_chord")]
-    pub chord_spread: u32,
     /// The chord's own notes, those and the rest of the key, or any note of the key.
     #[setting(label = "Picks from", group = "Notes")]
     pub picks_from: PicksFrom,
+    /// Which of the allowed notes a hit plays: random, by the hit's speed, by the ball's hits,
+    /// an arpeggio, or by how high the hit is.
+    #[setting(label = "Order", simple, random, group = "Notes")]
+    pub order: Order,
+    /// One note, the whole chord, or only its bass note.
+    #[setting(label = "Plays", group = "Notes")]
+    pub plays: Plays,
+    /// Hits faster than this play the whole chord; slower ones play one note. 0 always plays
+    /// the whole chord.
+    #[setting(label = "Full chord above", range(0, 10000), unit = "px/s", when = "plays=full_chord", group = "Notes")]
+    pub full_chord_speed: f32,
+    /// How many octaves the whole chord is spread over.
+    #[setting(label = "Chord spread", range(1, 3), unit = "octaves", when = "plays=full_chord", group = "Notes")]
+    pub chord_spread: u32,
     /// Whether this sounds when its own balls hit something, when something hits it, or both.
     #[setting(label = "Plays when", group = "Which hits")]
     pub plays_when: PlaysWhen,
@@ -97,14 +88,23 @@ pub struct NoteSound {
     #[setting(label = "Shortest gap", range(0, 1), unit = "s", group = "Which hits")]
     pub min_gap: f32,
     /// Hits slower than this are silent.
-    #[setting(label = "Quietest hit", range(0, 3000), unit = "px/s")]
+    #[setting(label = "Quietest hit", range(0, 3000), unit = "px/s", group = "Which hits")]
     pub quietest_hit: f32,
     /// Hits this fast play at full strength.
-    #[setting(label = "Loudest hit", range(1, 10000), unit = "px/s")]
+    #[setting(label = "Loudest hit", range(1, 10000), unit = "px/s", group = "Which hits")]
     pub loudest_hit: f32,
+    /// How loud these notes are.
+    #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe, group = "Level")]
+    pub volume: f32,
+    /// Where the channel sits from left (-1) to right (1), on top of each hit's own place.
+    #[setting(label = "Pan", range(-1, 1), keyframe, group = "Level")]
+    pub pan: f32,
     /// How far left and right notes spread, following where the hit was.
-    #[setting(label = "Stereo width", range(0, 1))]
+    #[setting(label = "Stereo width", range(0, 1), group = "Level")]
     pub stereo_width: f32,
+    /// The chord progression these notes follow: one in the library, or the built-in starter when none is picked.
+    #[setting(label = "Chords", simple, random, group = "Chords")]
+    pub chords: ProgressionRef,
 }
 
 impl Default for NoteSound {
