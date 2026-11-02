@@ -78,6 +78,15 @@ pub struct World {
     /// The picture files the scene's brushes splat, sorted, at most 16: a Picture mark names one
     /// by its index here. Filled by the kit at build.
     pub pictures: Vec<String>,
+    /// Each canvas's numbers as it last reported them (see [`World::report_canvas`]). Cloned with
+    /// the world, so checkpoints rewind it. Never in the fingerprint or the log hash.
+    pub canvas_numbers: BTreeMap<ThingId, crate::canvas_numbers::CanvasNumbers>,
+    /// Each canvas's colour-war teams, in the order they first claimed (see
+    /// [`World::set_teams`]). Cloned with the world; never in the fingerprint or the log hash.
+    pub teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
+    /// Every built thing's name, as the scene names it, for things that are named by captions,
+    /// rules and the synth (a canvas).
+    pub names: BTreeMap<ThingId, String>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
     /// Where the balls of a thing have been, for the things whose sim asked for it (trails).
@@ -95,9 +104,9 @@ pub struct World {
     /// (a canvas's grid). Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
     /// The kind of every built thing, in id order.
-    kinds: BTreeMap<ThingId, String>,
+    pub(crate) kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
-    order: Vec<ThingId>,
+    pub(crate) order: Vec<ThingId>,
     /// Scratch space for the ball-to-ball stage.
     pairs: Pairs,
     /// Every built thing's parent, how it hangs off it and its own transform.
@@ -165,6 +174,9 @@ impl World {
             skins: BTreeMap::new(),
             picked: BTreeMap::new(),
             pictures: Vec::new(),
+            canvas_numbers: BTreeMap::new(),
+            teams: BTreeMap::new(),
+            names: BTreeMap::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
@@ -204,6 +216,7 @@ impl World {
                     world.order.push(*id);
                 }
                 world.kinds.insert(*id, r.kind.clone());
+                world.names.insert(*id, thing.name.clone());
                 if !thing.tags.is_empty() {
                     world.tags.insert(*id, thing.tags.clone());
                 }

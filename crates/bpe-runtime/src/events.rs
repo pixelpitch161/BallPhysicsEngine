@@ -95,6 +95,10 @@ pub struct Log {
     scene: Vec<SceneSample>,
     /// The marks things leave on canvases, in step order. Not in the hash.
     marks: Vec<Mark>,
+    /// Every canvas's numbers, 60 times a second, in step order. Not in the hash.
+    pub(crate) canvas: Vec<crate::canvas_numbers::CanvasSample>,
+    /// Each canvas's colour-war teams, as last noted. Not in the hash.
+    pub(crate) teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
 }
 
 /// The shape a mark stamps onto a canvas.
@@ -232,6 +236,7 @@ impl Log {
         }
         self.tracks.retain(|_, t| !t.is_empty());
         self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
+        self.canvas.truncate(self.canvas.partition_point(|s| s.step <= step));
     }
 
     /// Adds a mark. Marks must arrive in step order.
@@ -312,6 +317,8 @@ impl Log {
             + self.tracks.values().map(|t| t.capacity() * std::mem::size_of::<TrackSample>()).sum::<usize>()
             + self.scene.capacity() * std::mem::size_of::<SceneSample>()
             + self.marks.capacity() * std::mem::size_of::<Mark>()
+            + self.canvas.capacity() * std::mem::size_of::<crate::canvas_numbers::CanvasSample>()
+            + self.canvas.iter().map(|c| c.numbers.shares.len() * 4).sum::<usize>()
     }
 
     /// An FNV-1a hash of every field of every event. Equal logs hash equal on every platform.

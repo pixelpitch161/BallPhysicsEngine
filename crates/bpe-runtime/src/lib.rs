@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod bodies;
 pub mod camera;
+pub mod canvas_numbers;
 pub mod events;
 pub mod history;
 pub mod pairs;
@@ -22,6 +23,7 @@ pub mod world;
 pub use actions::{Action, MAX_BALLS, SPLIT_SPREAD_DEGREES};
 pub use bodies::Bodies;
 pub use camera::CameraView;
+pub use canvas_numbers::{CANVAS_NUMBERS, CanvasNumbers, CanvasRef, CanvasSample, Team, team_index};
 pub use events::{
     Event, EventKind, Log, MOTION_RATE, Mark, MarkShape, MarkTarget, Party, SceneSample, TRACK_SECONDS, TrackSample,
 };
