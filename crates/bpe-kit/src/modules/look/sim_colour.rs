@@ -1,20 +1,20 @@
 //! A ball's colour as the simulation sees it, for marks: the same inputs and the same hue
-//! shift the drawing uses, read from the world and the log instead of a frame.
+//! shift the drawing uses, read from the world instead of a frame.
 
 use bpe_core::{Params, Settings, ThingId};
-use bpe_runtime::{Log, World};
+use bpe_runtime::World;
 
 use super::BasicLook;
 use super::draw::{ball_inputs, for_balls, hue_shifted};
-use crate::paint::{Follow, Paint, beats_at, colour_at};
+use crate::paint::{Follow, Paint, colour_at};
 
 /// The linear-light colour ball `i` of `thing` has right now under `look` (a Look slot's
 /// settings), with any tint a rule gave it laid over it as strongly as the tint's alpha says.
 ///
 /// Known gap: a Step colour that takes the colour of what was hit reads as the ball's own
 /// colour here, and a thing stuck to the screen is read as a world thing.
-pub fn ball_colour_in_sim(look: &Params, world: &World, log: &Log, thing: ThingId, i: usize) -> [f32; 4] {
-    SimLook::new(look, world, log).colour(world, thing, i)
+pub fn ball_colour_in_sim(look: &Params, world: &World, thing: ThingId, i: usize) -> [f32; 4] {
+    SimLook::new(look, world).colour(world, thing, i)
 }
 
 /// A look's settings read once for a step, so many balls' colours can be worked out from it
@@ -27,11 +27,12 @@ pub struct SimLook {
 }
 
 impl SimLook {
-    pub fn new(look: &Params, world: &World, log: &Log) -> Self {
+    pub fn new(look: &Params, world: &World) -> Self {
         let look = BasicLook::from_params(look);
         let fill = for_balls(look.fill);
-        // Only a fill that follows the beat needs the beats, and counting them scans the log.
-        let beats = if fill.follow == Follow::Beat { beats_at(log, world.time(), world.steps_per_second) } else { 0.0 };
+        // The beats so far, counted by the world: the log may have been trimmed. In the
+        // simulation no later beat is logged yet, so there is no fraction to the next one.
+        let beats = if fill.follow == Follow::Beat { world.beats as f32 } else { 0.0 };
         Self { fill, hue_per_hit: look.hue_per_hit, beats }
     }
 
@@ -76,7 +77,7 @@ mod tests {
         for (i, v) in world.bodies.get_mut(&ThingId(2)).unwrap().velocity.iter_mut().enumerate() {
             *v = glam::Vec2::new(40.0 * i as f32, -30.0);
         }
-        let mut log = Log::default();
+        let mut log = bpe_runtime::Log::default();
         world.advance_to(1.0, &kit.sims, &mut log);
         let (world, log) = (&world, &log);
         let thing = &scene.things[&ThingId(2)];
@@ -88,7 +89,7 @@ mod tests {
         assert_eq!(n, 6);
         let mut distinct = Vec::new();
         for i in 0..n {
-            let c = ball_colour_in_sim(look, world, log, ThingId(2), i);
+            let c = ball_colour_in_sim(look, world, ThingId(2), i);
             assert_eq!(c, drawn(i), "ball {i}");
             if !distinct.contains(&c) {
                 distinct.push(c);

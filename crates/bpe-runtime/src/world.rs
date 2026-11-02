@@ -97,6 +97,9 @@ pub struct World {
     scope: BTreeMap<ThingId, BTreeSet<ThingId>>,
     /// What pulses follow: the beat grid and the song's bands. The scene's sim sets it.
     pub pulse_inputs: Option<Arc<PulseInputs>>,
+    /// How many Beat events the run has logged so far; the scene's sim counts them. Kept here so
+    /// things the simulation colours by the beat need not count the log, which may be trimmed.
+    pub beats: u32,
     /// Whether to record each ball's track after its hits into the log, for sounds that follow
     /// balls. The scene's motion is always recorded.
     pub record_tracks: bool,
@@ -161,6 +164,7 @@ impl World {
             modules: BTreeMap::new(),
             scope: BTreeMap::new(),
             pulse_inputs: None,
+            beats: 0,
             record_tracks: false,
             last_hit: BTreeMap::new(),
             animated: None,

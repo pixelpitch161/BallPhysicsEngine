@@ -16,7 +16,7 @@ use super::{CanvasSettings, Fit};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
 use crate::modules::marks::{MarkColour, MarksBrushes, SplatShape, Tip, Turn, When, WidthBy};
-use crate::paint::{Follow, Inputs, beats_at, colour_at};
+use crate::paint::{Follow, Inputs, colour_at};
 use crate::things::liquid::sim::bounds;
 
 pub struct CanvasSim;
@@ -186,18 +186,18 @@ impl Cx<'_> {
     /// The colour ball `i` of `thing` marks with under brush `b`: its own colour when the brush
     /// says Ball and the ball's look is known, else the brush's own Colours.
     fn colour(&mut self, b: &MarksBrushes, thing: ThingId, i: usize) -> [f32; 4] {
-        let (world, log) = (self.world, self.log);
+        let world = self.world;
         if b.colour_from == MarkColour::Ball
             && let Some(look) =
-                self.looks.entry(thing).or_insert_with(|| world.looks.get(&thing).map(|p| SimLook::new(p, world, log)))
+                self.looks.entry(thing).or_insert_with(|| world.looks.get(&thing).map(|p| SimLook::new(p, world)))
         {
             return look.colour(world, thing, i);
         }
         let time = world.time();
         let inputs = match world.bodies.get(&thing) {
             Some(bodies) => {
-                let beats =
-                    if b.colour.follow == Follow::Beat { beats_at(log, time, world.steps_per_second) } else { 0.0 };
+                // The world's count: the log may have been trimmed.
+                let beats = if b.colour.follow == Follow::Beat { world.beats as f32 } else { 0.0 };
                 let place = bodies.position.get(i).copied().unwrap_or_default();
                 ball_inputs(thing, bodies, i, world.camera.to_screen(place), time, beats)
             }
@@ -454,6 +454,52 @@ mod tests {
         let close = |c: [f32; 4], to: Color| c.iter().zip(to.to_linear()).all(|(a, b)| (a - b).abs() < 0.02);
         assert!(close(marks[0].colour, red), "first {:?}", marks[0].colour);
         assert!(close(marks.last().unwrap().colour, blue), "last {:?}", marks.last().unwrap().colour);
+    }
+
+    /// The graphics card's private world trims its log as it goes; marks that take a ball's
+    /// beat-following colour must still count every beat so far, not just the ones left.
+    #[test]
+    fn beat_colours_survive_a_trimmed_log() {
+        let (red, green, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255));
+        let (mut scene, _, kit) = painted(true, |_| {});
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("bpm", Value::Number(240.0));
+        let look = module_of(&scene, &kit.registry, BALLS, SlotId::Look);
+        let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        let mut colours = bpe_core::Gradient::even(&[red, green, blue]);
+        colours.transition = bpe_core::Transition::Steps;
+        params.set("colours", Value::Gradient(colours));
+        params.set("follow", Value::Choice("beat".into()));
+        params.set("hue_per_hit", Value::Number(0.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let (_, full) = run(&scene, &resolved, &kit, 4.0);
+
+        // The same run, trimmed the way the flow layers trim (with a much smaller limit).
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        let mut marks = Vec::new();
+        let end = 4 * world.steps_per_second as u64;
+        while world.step < end {
+            world.step(&kit.sims, &mut log);
+            marks.extend_from_slice(log.marks_between(world.step - 1, world.step));
+            log.drop_marks_upto(world.step);
+            if log.len() > 4 {
+                let recent = log.since(world.step.saturating_sub(1)).to_vec();
+                log = Log::default();
+                for e in recent {
+                    log.push(e);
+                }
+            }
+        }
+        let beats = |step| full.events().iter().filter(|e| e.kind == EventKind::Beat && e.step <= step).count();
+        assert!(beats(end) >= 15, "{} beats", beats(end));
+        let kept = log.events().iter().filter(|e| e.kind == EventKind::Beat).count();
+        assert!(kept + 8 < beats(end), "the log was trimmed: {kept} beats kept");
+        assert_eq!(marks.len(), full.marks().len());
+        for (trimmed, m) in marks.iter().zip(full.marks()) {
+            let ball = [red, green, blue][beats(m.step) % 3].to_linear();
+            assert_eq!(m.colour, ball, "the ball's colour at step {}", m.step);
+            assert_eq!(trimmed.colour, m.colour, "at step {}", m.step);
+        }
     }
 
     #[test]
