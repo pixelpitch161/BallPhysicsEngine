@@ -15,9 +15,10 @@ use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Outline, P
 use glam::Vec2;
 
 use super::grid::CanvasGrid;
+use super::ribbon::{CONTINUED, CONTINUES};
 use super::sim::{CanvasState, Colours, Stamp, cell_of, hit_stamp, reaches, to_local};
 use super::{CanvasSettings, Fit};
-use crate::modules::marks::{MarksBrushes, SplatSkin};
+use crate::modules::marks::{MarksBrushes, SplatSkin, Turn};
 use crate::things::arena::ArenaState;
 use crate::things::obstacle::{ObstacleShape, ObstacleState};
 
@@ -41,7 +42,7 @@ pub struct SkinSettings {
 
 impl Default for SkinSettings {
     fn default() -> Self {
-        Self { skin_on: true, skin_width: 1.0, skin_fade: 0.0, skin_opacity: 1.0 }
+        Self { skin_on: true, skin_width: 2.0, skin_fade: 0.0, skin_opacity: 1.0 }
     }
 }
 
@@ -371,7 +372,14 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
                     }
                 }
                 SplatSkin::Print => {
-                    let Stamp { shape, radius, angle, variant } = hit_stamp(world, e, b, pose.angle);
+                    let Stamp { shape, radius, mut angle, variant } = hit_stamp(world, e, b, pose.angle);
+                    // A splat facing the hit throws its droplets along the surface, the way the
+                    // ball was going along it, not into the wall where the skin hides them.
+                    let n = e.normal.normalize_or_zero();
+                    if shape == MarkShape::Splat && b.splat_turn == Turn::FaceHit && n != Vec2::ZERO {
+                        let travel = Vec2::from_angle(angle + pose.angle);
+                        angle = along_surface(n, travel).to_angle() - pose.angle;
+                    }
                     // Pushed into the surface, so the print sits across the line.
                     let at = to_local(pose, e.point - e.normal.normalize_or_zero() * PRINT_DEPTH * radius);
                     if !reaches(st.size, at, at, radius) {
@@ -397,6 +405,13 @@ fn marks(thing: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec<
         }
     }
     out
+}
+
+/// The way along a surface with unit `normal` that `travel` heads (either way when it heads
+/// straight in).
+fn along_surface(normal: Vec2, travel: Vec2) -> Vec2 {
+    let t = normal.perp();
+    if travel.dot(t) < 0.0 { -t } else { t }
 }
 
 /// The longest piece a spread is cut into, in pixels.
@@ -448,10 +463,13 @@ pub fn spread_marks(
     if !(half.is_finite() && width.is_finite() && half > 0.0 && width > 0.0) {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    for forward in [true, false] {
+    let mut out: Vec<Mark> = Vec::new();
+    let mut firsts = [None, None];
+    for (half_index, forward) in [true, false].into_iter().enumerate() {
         let (mut point, mut k) = (start, k);
         let mut gone = 0.0f32;
+        // The direction of the last piece, while the next may join on to it.
+        let mut before: Option<Vec2> = None;
         loop {
             // The corner this way along the current segment.
             let corner = if forward { line[k + 1] } else { line[k] };
@@ -467,6 +485,21 @@ pub fn spread_marks(
                     let (s0, s1) =
                         (gone + take * i as f32 / pieces as f32, gone + take * (i + 1) as f32 / pieces as f32);
                     let last = take >= left && i + 1 == pieces;
+                    let d = (to - from).normalize_or_zero();
+                    // Like a ribbon's pieces, the pieces of a straight run or a gentle bend are
+                    // cut apart at their joint, so see-through paint is never drawn twice there.
+                    let (variant, angle) = match before {
+                        Some(b) if b.angle_to(d).abs() < SMEAR_BEND => {
+                            if let Some(previous) = out.last_mut() {
+                                previous.variant |= CONTINUED;
+                            }
+                            (CONTINUES, b.to_angle())
+                        }
+                        _ => (0, 0.0),
+                    };
+                    if firsts[half_index].is_none() {
+                        firsts[half_index] = Some(out.len());
+                    }
                     out.push(Mark {
                         step,
                         target,
@@ -475,12 +508,13 @@ pub fn spread_marks(
                         to,
                         radius: width * (1.0 - s0 / half).max(0.0),
                         radius_to: if last { 0.0 } else { width * (1.0 - s1 / half).max(0.0) },
-                        angle: 0.0,
+                        angle,
                         within: [1.0, 1.0],
-                        variant: 0,
+                        variant,
                         colour,
                         colour_to: colour,
                     });
+                    before = (d != Vec2::ZERO).then_some(d);
                 }
                 gone += take;
             }
@@ -498,8 +532,24 @@ pub fn spread_marks(
             point = if forward { line[k] } else { line[k + 1] };
         }
     }
+    // The two halves set off back to back from the hit: each is cut at the hit across its own
+    // way, which splits the paint there exactly between them.
+    if let [Some(f), Some(b)] = firsts {
+        let way = |m: &Mark| (m.to - m.from).normalize_or_zero();
+        let (fw, bw) = (way(&out[f]), way(&out[b]));
+        if fw.dot(bw) < -0.999 {
+            for (i, w) in [(f, fw), (b, bw)] {
+                out[i].variant |= CONTINUES;
+                out[i].angle = w.to_angle();
+            }
+        }
+    }
     out
 }
+
+/// The sharpest turn in radians at which a Spread's pieces join without their round caps; a
+/// sharper corner keeps them, as a ribbon does at a hit.
+const SMEAR_BEND: f32 = 0.5;
 
 #[cfg(test)]
 mod tests {
@@ -557,7 +607,7 @@ mod tests {
         }
         assert!(bpe_core::section_rank("Paint skin").is_some());
         let d = SkinSettings::default();
-        assert!(d.skin_on && d.skin_width == 1.0 && d.skin_fade == 0.0 && d.skin_opacity == 1.0);
+        assert!(d.skin_on && d.skin_width == 2.0 && d.skin_fade == 0.0 && d.skin_opacity == 1.0);
         let mut a = crate::ArenaSettings::default();
         a.skin.skin_width = 2.5;
         assert_eq!(crate::ArenaSettings::from_params(&a.to_params()), a);
@@ -606,12 +656,22 @@ mod tests {
         arena.set("skin_fade", Value::Number(3.0));
         arena.set("skin_opacity", Value::Number(0.5));
         assert_eq!(print(&scene), before);
-        scene.things.get_mut(&ARENA).unwrap().params.set("skin_width", Value::Number(2.0));
+        scene.things.get_mut(&ARENA).unwrap().params.set("skin_width", Value::Number(3.0));
         assert_ne!(print(&scene), before);
 
         // Takes paint off: no skin.
         scene.things.get_mut(&ARENA).unwrap().params.set("skin_on", Value::Bool(false));
         assert!(built(&scene, &kit).skins.is_empty());
+    }
+
+    #[test]
+    fn prints_follow_the_ball_along_the_surface() {
+        let up = Vec2::new(0.0, -1.0);
+        // Bouncing off a floor going right and up: along the floor to the right.
+        assert_eq!(along_surface(up, Vec2::new(3.0, -4.0)), Vec2::new(1.0, 0.0));
+        assert_eq!(along_surface(up, Vec2::new(-3.0, -4.0)), Vec2::new(-1.0, 0.0));
+        // Straight back up: one way or the other, still along the floor.
+        assert_eq!(along_surface(up, up).dot(up), 0.0);
     }
 
     #[test]
@@ -641,6 +701,9 @@ mod tests {
             let centre = world_point(pose, m.from);
             assert!(((centre - e.point).length() - 0.3 * radius).abs() < 1.0, "{centre} from {}", e.point);
             assert!((centre - e.point).dot(e.normal) < 0.0, "into the wall, away from the ball");
+            // Its droplets fly along the wall, not into it.
+            let way = Vec2::from_angle(m.angle + pose.angle);
+            assert!(way.dot(e.normal.normalize()).abs() < 1e-4, "{way} across a wall facing {}", e.normal);
         }
         assert!(skin_state(&w, ARENA).unwrap().grid.covered() > 0.0);
     }
@@ -879,6 +942,39 @@ mod tests {
     }
 
     #[test]
+    fn spread_pieces_join_like_a_ribbon() {
+        // Round a circle (gentle bends): every joint is cut, both halves at the hit too, so
+        // see-through paint has no beads; only the two far ends keep a cap.
+        let circle = vec![circle(Vec2::ZERO, 300.0, 0.0, ROUND)];
+        let marks = spread_marks(&circle, Vec2::new(20.0, 300.0), 120.0, 5.0, WHITE, 1, MarkTarget::Skin(ARENA));
+        let second = marks.iter().position(|m| m.radius_to == 0.0).unwrap() + 1;
+        for (k, pair) in marks.windows(2).enumerate() {
+            if k + 1 != second {
+                assert_ne!(pair[0].variant & CONTINUED, 0, "piece {k} leaves its end to the next");
+                assert_ne!(pair[1].variant & CONTINUES, 0, "piece {} leaves its start to the last", k + 1);
+                assert!((pair[1].angle - (pair[0].to - pair[0].from).to_angle()).abs() < 1e-5);
+            }
+        }
+        for start in [0, second] {
+            let m = &marks[start];
+            assert_ne!(m.variant & CONTINUES, 0, "the halves meet at the hit without caps");
+            assert!((m.angle - (m.to - m.from).to_angle()).abs() < 1e-5, "each cut across its own way");
+        }
+        for end in [second - 1, marks.len() - 1] {
+            assert_eq!(marks[end].variant & CONTINUED, 0, "a far end keeps its cap");
+        }
+
+        // A box corner is sharp: the pieces either side of it keep their caps.
+        let half = Vec2::new(300.0, 400.0);
+        let outline = vec![outline_line(&Outline::Box { center: Vec2::ZERO, half, angle: 0.0, thickness: 3.0 })];
+        let marks = spread_marks(&outline, Vec2::new(295.0, -401.0), 80.0, 3.0, WHITE, 9, MarkTarget::Skin(ARENA));
+        let corner = Vec2::new(300.0, -400.0);
+        let at = marks.iter().position(|m| (m.from - corner).length() < 1e-3).expect("a piece from the corner");
+        assert_eq!(marks[at].variant & CONTINUES, 0);
+        assert_eq!(marks[at - 1].variant & CONTINUED, 0);
+    }
+
+    #[test]
     fn spread_length_matches() {
         let circle = vec![circle(Vec2::ZERO, 300.0, 0.0, ROUND)];
         let marks = spread_marks(&circle, Vec2::new(0.0, 310.0), 150.0, 4.0, WHITE, 1, MarkTarget::Skin(ARENA));
@@ -945,11 +1041,11 @@ mod tests {
         for m in &on_peg {
             assert!((m.from.length() - 40.0).abs() < 0.5, "{}", m.from);
         }
-        // A thin line spreads the line's reach: the arena's 3 px wall, Skin width 1.
+        // A thin line spreads the line's reach: the arena's 3 px wall, Skin width 2 (the default).
         let (scene, resolved, kit) = spreading(|_| {});
         let (_, log) = run(&scene, &resolved, &kit, 6.0);
         assert!(!log.marks().is_empty());
         let widest = log.marks().iter().map(|m| m.radius).fold(0.0, f32::max);
-        assert_eq!(widest, 1.5 * 2.0);
+        assert_eq!(widest, 1.5 * 3.0);
     }
 }

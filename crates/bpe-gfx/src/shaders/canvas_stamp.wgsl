@@ -20,7 +20,7 @@ struct MarkIn {
     @location(0) ends: vec4<f32>,
     // Radius, turn in radians, variant, shape (0 stroke, 1 splat, 2 ring, 3 star, 4 crack,
     // 5 burst, 6 dots, 7 smear). A stroke's variant: bit 0 square tips, bit 1 no start cap (its
-    // turn is then the previous piece's direction), bit 2 no end cap.
+    // turn is then the previous piece's direction), bit 2 no end cap. A smear's: bits 1 and 2.
     @location(1) look: vec4<f32>,
     // Linear light, straight alpha.
     @location(2) colour: vec4<f32>,
@@ -274,7 +274,7 @@ fn fs_stamp(in: StampOut) -> StampTargets {
     // pieces are cut apart by one plane across the first of them, so they meet without a gap
     // or an overlap however the ribbon bends. The cut is hard: every texel belongs to one
     // piece, so translucent paint never shows a seam or a bead.
-    if shape == 0u && (variant & 6u) != 0u {
+    if ribbon && (variant & 6u) != 0u {
         let d = to - start;
         let span = length(d);
         if (variant & 2u) != 0u {

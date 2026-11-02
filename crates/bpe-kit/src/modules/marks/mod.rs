@@ -65,7 +65,8 @@ pub enum Turn {
 /// What a hit's splat lands on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum SplatOnto {
-    /// The wall or obstacle that was hit, on its own paint skin.
+    /// The wall or obstacle that was hit, on its own paint skin. A hit with no skin to paint
+    /// (a ball, or a thing that takes no paint) lands on the canvases instead.
     #[default]
     ThingHit,
     /// The canvases that take this brush.
@@ -79,7 +80,7 @@ impl SplatOnto {
     pub fn things(self) -> bool {
         self != SplatOnto::Canvases
     }
-    /// Whether splats land on canvases.
+    /// Whether every splat lands on canvases, not only those with no skin to paint.
     pub fn canvases(self) -> bool {
         self != SplatOnto::ThingHit
     }

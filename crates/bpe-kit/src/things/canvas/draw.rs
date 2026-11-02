@@ -173,7 +173,8 @@ mod tests {
         assert_eq!(peg.len(), 1);
         assert_eq!((peg[0].kind, peg[0].a[2]), (MaskShape::DISC, 30.0));
 
-        // A polygon's sides are thin lines; a bar is solid.
+        // A polygon's sides are thin lines, reaching 4 x (1 + 2) by the default Skin width; a
+        // bar is solid.
         let (mut scene, kit) = obstacle(|p| {
             p.set("shape", Value::Choice("polygon".into()));
             p.set("sides", Value::Int(5));
@@ -181,7 +182,7 @@ mod tests {
         });
         let sides = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!(sides.len(), 5);
-        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 8.0), "{sides:?}");
+        assert!(sides.iter().all(|s| s.kind == MaskShape::CAPSULE && s.b[0] == 12.0), "{sides:?}");
         let (mut scene, kit) = obstacle(|p| p.set("shape", Value::Choice("bar".into())));
         let bar = frame(&mut scene, &kit, true).canvases[1].mask.clone();
         assert_eq!((bar.len(), bar[0].kind, bar[0].b[0]), (1, MaskShape::CAPSULE, 4.0));
@@ -201,5 +202,28 @@ mod tests {
         assert_eq!((grid[0].kind, grid[0].b[3]), (MaskShape::BOX, 1.0), "a filled box");
         // 20 columns 20 px apart with pegs of 5 px: 390 px across.
         assert!((grid[0].b[0] - 195.0).abs() < 0.5 && (grid[0].b[1] - 145.0).abs() < 0.5, "{:?}", grid[0]);
+    }
+
+    #[test]
+    fn skins_show_whatever_their_things_look_blend() {
+        // A blended, see-through or stuck-to-screen Look draws the arena into a layer or the
+        // overlay; its skin still lands in the top frame, the only one whose canvases are drawn.
+        let cases: [(&str, f64, bool); 3] = [("add", 1.0, false), ("normal", 0.5, false), ("normal", 1.0, true)];
+        for (blend, amount, screen) in cases {
+            let (mut scene, kit) = obstacle(|_| {});
+            fill_slot(&mut scene, &kit.registry, ARENA, SlotId::Look).unwrap();
+            let look = module_of(&scene, &kit.registry, ARENA, SlotId::Look);
+            let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+            params.set("blend", Value::Choice(blend.into()));
+            params.set("blend_amount", Value::Number(amount));
+            if screen {
+                scene.things.get_mut(&ARENA).unwrap().screen = Some(true);
+            }
+            let f = frame(&mut scene, &kit, true);
+            let keys: Vec<_> = f.canvases.iter().map(|c| c.key).collect();
+            assert!(keys.contains(&MarkTarget::Skin(ARENA)), "{blend} {amount} {screen}: {keys:?}");
+            assert!(f.layers.iter().all(|l| l.frame.canvases.is_empty()), "{blend} {amount}");
+            assert!(f.overlay.as_ref().is_none_or(|o| o.canvases.is_empty()), "{screen}");
+        }
     }
 }

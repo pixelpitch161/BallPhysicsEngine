@@ -553,9 +553,10 @@ fn line_distance(outline: &Outline, p: Vec2) -> f32 {
     }
 }
 
-/// How far paint may reach from the middle of a line `thickness` wide with Skin width 1.
+/// How far paint may reach from the middle of a line `thickness` wide with Skin width 2 (the
+/// default).
 fn reach(thickness: f32) -> f32 {
-    thickness * 0.5 * 2.0
+    thickness * 0.5 * 3.0
 }
 
 /// Asserts paint shows on the arena's skin, only within its line's reach (plus a pixel), and
@@ -588,6 +589,108 @@ fn skin_paint_stays_on_the_line() {
     save_sized("skin-box", &painted, 1080, 1920);
     let covered = paint_on_the_line(&painted, &bare, &playback, "box");
     assert!(covered > 500, "{covered} pixels painted");
+}
+
+#[test]
+fn skin_shows_under_a_blended_look() {
+    // The arena's own Look in Add, or at half amount, draws the arena into a blend layer; its
+    // skin paint still shows on the line.
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, 1080, 1920);
+    for (blend, amount) in [("add", 1.0), ("normal", 0.5)] {
+        let (scene, resolved, kit) = skin_scene(
+            |scene, kit| {
+                box_arena(scene, kit);
+                fill_slot(scene, &kit.registry, ARENA, SlotId::Look).unwrap();
+                let look =
+                    bpe_core::resolve_slot(scene, &kit.registry, ARENA, SlotId::Look, &mut Vec::new()).unwrap().module;
+                let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+                params.set("blend", Value::Choice(blend.into()));
+                params.set("blend_amount", Value::Number(amount));
+            },
+            |_| {},
+        );
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(4.0);
+        assert!(playback.log().marks().len() >= 10, "{blend} {amount}: the balls splat the wall");
+        let painted = shot(&device, &queue, &mut renderer, &scene, &resolved, &kit, &mut playback, 4.0, true);
+        let bare = shot(&device, &queue, &mut renderer, &scene, &resolved, &kit, &mut playback, 4.0, false);
+        let covered = paint_on_the_line(&painted, &bare, &playback, blend);
+        assert!(covered > 500, "{blend} {amount}: {covered} pixels painted");
+    }
+}
+
+#[test]
+fn spread_smears_have_no_beads() {
+    // A half-transparent Spread along a thick ring: where its pieces meet (the hit too), the
+    // paint is as strong as halfway along a piece.
+    let Some((device, queue)) = gpu() else { return };
+    let mut red = Color::rgb(230, 30, 30);
+    red.a = 128;
+    let (scene, resolved, kit) = skin_scene(
+        |scene, _| {
+            let arena = &mut scene.things.get_mut(&ARENA).unwrap().params;
+            arena.set("thickness", Value::Number(30.0));
+            arena.set("skin_width", Value::Number(0.0));
+        },
+        |p| {
+            p.set("splat_skin", Value::Choice("spread".into()));
+            p.set("splat_size", Value::Number(60.0));
+            p.set("colour_colours", Value::Gradient(Gradient::even(&[red])));
+        },
+    );
+    let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+    playback.seek(6.0);
+    let first = playback.log().marks().first().copied().expect("the ball spreads paint on the ring");
+    // Just after the first hit, before another can paint over it.
+    let time = time_of(&first, &playback) + 0.02;
+    playback.seek(time);
+    let marks: Vec<Mark> = playback.log().marks().iter().filter(|m| m.step == first.step).copied().collect();
+    let mut renderer = Renderer::new(&device, 1080, 1920);
+    let mut render = |canvases: bool| {
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+        frame.bloom = 0.0;
+        // Without the ball, which sits on the hit.
+        frame.balls.clear();
+        frame.looks.clear();
+        if !canvases {
+            frame.canvases.clear();
+        }
+        let source = flow_source(&scene, &resolved, &kit.sims, None);
+        assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+        renderer.read_output(&device, &queue).unwrap()
+    };
+    let (painted, bare) = (render(true), render(false));
+    save_sized("skin-spread-beads", &painted, 1080, 1920);
+    let pose = skin_area(playback.world(), ARENA).unwrap().0;
+    let at = |pixels: &[u8], p: Vec2| {
+        let (x, y) = ((p.x + 540.0).floor() as usize, (p.y + 960.0).floor() as usize);
+        let i = (y * 1080 + x) * 4;
+        [pixels[i] as f32, pixels[i + 1] as f32, pixels[i + 2] as f32]
+    };
+    // At each joint and halfway along each piece, where the smear is still wide.
+    let points: Vec<Vec2> = marks
+        .iter()
+        .filter(|m| m.radius_to > 6.0)
+        .flat_map(|m| [m.from, (m.from + m.to) * 0.5])
+        .map(|p| world_of(pose, p))
+        .collect();
+    assert!(points.len() >= 8, "{} points", points.len());
+    let paint = [red.r as f32, red.g as f32, red.b as f32];
+    let strength: Vec<f32> = points
+        .iter()
+        .map(|&p| {
+            let (got, under) = (at(&painted, p), at(&bare, p));
+            let c =
+                (0..3).max_by(|&a, &b| (paint[a] - under[a]).abs().total_cmp(&(paint[b] - under[b]).abs())).unwrap();
+            assert!((paint[c] - under[c]).abs() > 60.0, "the paint shows against the wall");
+            (got[c] - under[c]) / (paint[c] - under[c])
+        })
+        .collect();
+    let (lo, hi) = strength.iter().fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
+    assert!((0.15..0.9).contains(&lo), "half-transparent paint, not {lo}: {strength:?}");
+    assert!(hi - lo < 0.05, "the smear's strength runs from {lo} to {hi}: {strength:?}");
 }
 
 #[test]

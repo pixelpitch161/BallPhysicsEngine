@@ -143,7 +143,8 @@ fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec
         if b.paint_on && paint_now {
             cx.strokes(st, thing, b);
         }
-        if b.splat_on && b.splat_onto.canvases() {
+        // Splats meant for the thing hit come here too when it has no skin to take them.
+        if b.splat_on {
             cx.splats(st, thing, b);
         }
     }
@@ -231,9 +232,11 @@ impl Cx<'_> {
             let key = (thing, i as u32);
             let hits = bodies.hits[i];
             let mut ribbon = st.ribbons.remove(&key).unwrap_or_else(|| Ribbon::new(b.paint_load, hits));
+            // It ends where the ball is, its tail no longer than the ball is wide.
+            let end = (to_local(self.pose, bodies.position[i]), bodies.radius[i]);
             if !bodies.alive[i] {
-                let pieces = ribbon.finish(&tune, endless);
-                self.pieces(st, b, key, &pieces);
+                let pieces = ribbon.finish(end.0, end.1, &tune, endless);
+                self.ends(st, b, key, &ribbon, &pieces);
                 continue;
             }
             let speed = bodies.velocity[i].length();
@@ -250,12 +253,12 @@ impl Cx<'_> {
             } && (endless || ribbon.load > 0.0);
             if !paints {
                 // It starts afresh wherever it next paints, with the paint it has left.
-                let pieces = ribbon.finish(&tune, endless);
-                self.pieces(st, b, key, &pieces);
+                let pieces = ribbon.finish(end.0, end.1, &tune, endless);
+                self.ends(st, b, key, &ribbon, &pieces);
                 st.ribbons.insert(key, ribbon);
                 continue;
             }
-            let here = to_local(self.pose, bodies.position[i]);
+            let here = end.0;
             let velocity = Vec2::from_angle(-self.pose.angle).rotate(bodies.velocity[i]);
             let radius = match b.paint_width_by {
                 WidthBy::Size => b.paint_width * bodies.radius[i],
@@ -263,26 +266,52 @@ impl Cx<'_> {
                 WidthBy::Speed => b.paint_width * speed / 100.0 * 0.5,
             };
             match ribbon.point {
-                None => ribbon.begin(here, velocity, radius),
+                None => {
+                    ribbon.begin(here, velocity, radius);
+                    ribbon.colour = Some(self.colours.of(b, thing, i));
+                }
                 // Shorter moves wait and add up into a later piece.
                 Some(from) if (here - from).length() < MIN_STROKE => {}
                 Some(_) => {
+                    // The colour blends from the last point's to this one's along the move.
+                    let now = self.colours.of(b, thing, i);
+                    let was = ribbon.colour.unwrap_or(now);
                     let pieces = ribbon.advance(here, velocity, radius, &tune, endless);
-                    self.pieces(st, b, key, &pieces);
+                    self.pieces(st, b, &pieces, [was, now]);
+                    ribbon.colour = Some(now);
                 }
             }
             st.ribbons.insert(key, ribbon);
         }
     }
 
-    /// Logs and stamps `pieces` of the trail of ball `(thing, item)`, in its colour now.
-    fn pieces(&mut self, st: &mut CanvasState, b: &MarksBrushes, (thing, item): (ThingId, u32), pieces: &[Piece]) {
-        let mut colour = None;
+    /// Logs and stamps the closing `pieces` of `ribbon`, the trail of ball `(thing, item)`, in
+    /// the colour it had at its last point.
+    fn ends(&mut self, st: &mut CanvasState, b: &MarksBrushes, key: (ThingId, u32), ribbon: &Ribbon, pieces: &[Piece]) {
+        if pieces.is_empty() {
+            return;
+        }
+        let colour = ribbon.colour.unwrap_or_else(|| self.colours.of(b, key.0, key.1 as usize));
+        self.pieces(st, b, pieces, [colour, colour]);
+    }
+
+    /// Logs and stamps `pieces` of a trail, its colour blending from `was` to `now` over the
+    /// move (by each piece's [`Piece::within`]).
+    fn pieces(&mut self, st: &mut CanvasState, b: &MarksBrushes, pieces: &[Piece], [was, now]: [[f32; 4]; 2]) {
+        let at = |t: f32| -> [f32; 4] {
+            if t >= 1.0 {
+                now
+            } else if t <= 0.0 {
+                was
+            } else {
+                std::array::from_fn(|c| was[c] + (now[c] - was[c]) * t)
+            }
+        };
         for p in pieces {
             if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
                 continue;
             }
-            let colour = *colour.get_or_insert_with(|| self.colours.of(b, thing, item as usize));
+            let (colour, colour_to) = (at(p.within[0]), at(p.within[1]));
             st.grid.stamp_capsule(p.from, p.to, (p.radius + p.radius_to) * 0.5, cell_of(colour));
             self.out.push(Mark {
                 step: self.world.step,
@@ -297,17 +326,23 @@ impl Cx<'_> {
                 // A stroke's variant: bit 0 is its tip (0 round, 1 square), bits 1 and 2 its joints.
                 variant: (b.paint_tip == Tip::Square) as u8 | p.joints,
                 colour,
-                colour_to: colour,
+                colour_to,
             });
         }
     }
 
-    /// A splat at each of this step's hits that `thing` made or took, fast enough to count.
+    /// A splat at each of this step's hits that `thing` made or took, fast enough to count, and
+    /// meant for canvases (see [`SplatOnto`](crate::SplatOnto)).
     fn splats(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
         let (world, log) = (self.world, self.log);
         for e in log.since(world.step) {
             let ours = e.a.thing == thing || e.b.is_some_and(|p| p.thing == thing);
             if e.kind != EventKind::Hit || !ours || e.speed < b.splat_min_speed {
+                continue;
+            }
+            // Lands on the thing hit: only a hit with no skin to paint (a ball, or a thing that
+            // takes no paint) splats the canvases, as if the brush said Canvases.
+            if !b.splat_onto.canvases() && e.b.is_some_and(|p| world.skins.contains_key(&p.thing)) {
                 continue;
             }
             let at = to_local(self.pose, e.point);
@@ -593,10 +628,15 @@ mod tests {
         let kept = log.events().iter().filter(|e| e.kind == EventKind::Beat).count();
         assert!(kept + 8 < beats(end), "the log was trimmed: {kept} beats kept");
         assert_eq!(marks.len(), full.marks().len());
-        for (trimmed, m) in marks.iter().zip(full.marks()) {
+        // A tick's last piece ends in the ball's colour then (the move blends into it).
+        let ends: Vec<_> = full.marks().iter().filter(|m| m.within[1] == 1.0).collect();
+        assert!(ends.len() > 100, "{} ticks", ends.len());
+        for m in ends {
             let ball = [red, green, blue][beats(m.step) % 3].to_linear();
-            assert_eq!(m.colour, ball, "the ball's colour at step {}", m.step);
-            assert_eq!(trimmed.colour, m.colour, "at step {}", m.step);
+            assert_eq!(m.colour_to, ball, "the ball's colour at step {}", m.step);
+        }
+        for (trimmed, m) in marks.iter().zip(full.marks()) {
+            assert_eq!((trimmed.colour, trimmed.colour_to), (m.colour, m.colour_to), "at step {}", m.step);
         }
     }
 
@@ -659,6 +699,28 @@ mod tests {
         assert_eq!(marks[0].variant & 2, 0, "a ribbon starts with a cap");
         let continuing = marks.iter().filter(|m| m.variant & 2 != 0).count();
         assert!(continuing + 10 > marks.len(), "{continuing} of {} continue", marks.len());
+    }
+
+    #[test]
+    fn ribbon_colour_blends_along_its_pieces() {
+        // A colour that follows the speed of a ball falling faster and faster: each piece ends
+        // in the colour the next one starts with, so the ribbon never steps between ticks.
+        let (scene, resolved, kit) = painted(true, |p| {
+            p.set("colour_from", Value::Choice("own".into()));
+            p.set("colour_follow", Value::Choice("speed".into()));
+            let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+            p.set("colour_colours", Value::Gradient(bpe_core::Gradient::even(&[red, blue])));
+        });
+        let (_, log) = run(&scene, &resolved, &kit, 1.0);
+        let marks = log.marks();
+        assert!(marks.len() > 50, "{} pieces", marks.len());
+        let joined: Vec<_> = marks.windows(2).filter(|p| p[1].variant & 2 != 0).collect();
+        assert!(joined.len() + 5 > marks.len());
+        for pair in &joined {
+            assert_eq!(pair[0].colour_to, pair[1].colour, "at step {}", pair[1].step);
+        }
+        let changing = marks.iter().filter(|m| m.colour_to != m.colour).count();
+        assert!(changing * 2 > marks.len(), "only {changing} of {} pieces change colour", marks.len());
     }
 
     #[test]
@@ -763,6 +825,27 @@ mod tests {
     }
 
     #[test]
+    fn tail_starts_where_the_ball_ended() {
+        // The ball ends 4 px past the last point: the ribbon runs on to it, then narrows away
+        // over no more than its radius (8 px), not the whole taper (40 px).
+        let tune = Tune { taper: 40.0, follow: 1.0 };
+        let mut ribbon = Ribbon::new(0.0, 0);
+        ribbon.begin(Vec2::ZERO, Vec2::new(600.0, 0.0), 5.0);
+        ribbon.advance(Vec2::new(30.0, 0.0), Vec2::new(600.0, 0.0), 5.0, &tune, true);
+        let pieces = ribbon.finish(Vec2::new(34.0, 0.0), 8.0, &tune, true);
+        assert_eq!(pieces[0].from, Vec2::new(30.0, 0.0));
+        let at = pieces.iter().position(|p| p.from == Vec2::new(34.0, 0.0)).expect("a piece from where it ended");
+        let tail: f32 = pieces[at..].iter().map(|p| (p.to - p.from).length()).sum();
+        assert!((tail - 8.0).abs() < 1e-3, "a tail of {tail} px");
+        assert!((pieces.last().unwrap().to - Vec2::new(42.0, 0.0)).length() < 1e-3);
+        assert!(pieces.last().unwrap().radius_to < 1e-6);
+        for pair in pieces.windows(2) {
+            assert_eq!(pair[0].to, pair[1].from);
+        }
+        assert!(ribbon.point.is_none());
+    }
+
+    #[test]
     fn speed_width_is_smoothed() {
         // Speed 600 px/s, then 1200: the width would jump from 3 px to 6 px.
         let tune = Tune { taper: 0.0, follow: 0.5 };
@@ -854,6 +937,52 @@ mod tests {
             assert!((m.radius - radius).abs() < 1e-3, "{} vs {radius}", m.radius);
             assert!(m.variant & 7 < 4);
         }
+    }
+
+    #[test]
+    fn splats_without_a_skin_land_on_canvases() {
+        // Lands on the thing hit (the default): a hit with no skin to take it splats the
+        // canvases instead, as if it said Canvases.
+        let splats = |skin_on: bool, balls: bool| {
+            let (mut scene, _, kit) = painted(true, |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("splat_on", Value::Bool(true));
+                p.set("splat_min_speed", Value::Number(200.0));
+            });
+            scene.things.get_mut(&ARENA).unwrap().params.set("skin_on", Value::Bool(skin_on));
+            if balls {
+                let params = &mut scene.things.get_mut(&BALLS).unwrap().params;
+                params.set("arrangement", Value::Choice("block".into()));
+                params.set("columns", Value::Int(4));
+                params.set("rows", Value::Int(3));
+                params.set("velocity", Value::Vec2([700.0, -300.0]));
+                let bounce = module_of(&scene, &kit.registry, BALLS, SlotId::Bounce);
+                scene.library.modules.get_mut(&bounce).unwrap().params.set("hit_balls", Value::Bool(true));
+            }
+            let resolved = resolve(&scene, &kit.registry);
+            let (_, log) = run(&scene, &resolved, &kit, 6.0);
+            let hits = |ball: bool| {
+                log.events()
+                    .iter()
+                    .filter(|e| e.kind == EventKind::Hit && e.a.thing == BALLS && e.speed >= 200.0)
+                    .filter(|e| e.b.is_some_and(|b| b.thing == BALLS) == ball)
+                    .count()
+            };
+            let on_canvas = log.marks().iter().filter(|m| m.target == MarkTarget::Canvas(CANVAS)).count();
+            let on_skin = log.marks().iter().filter(|m| m.target == MarkTarget::Skin(ARENA)).count();
+            (hits(false), hits(true), on_canvas, on_skin)
+        };
+        // The arena takes no paint: its hits splat the canvas.
+        let (walls, _, canvas, skin) = splats(false, false);
+        assert!(walls >= 2, "{walls} hits");
+        assert_eq!((canvas, skin), (walls, 0));
+        // It takes paint: they splat its skin, never the canvas.
+        let (walls, _, canvas, skin) = splats(true, false);
+        assert_eq!((canvas, skin), (0, walls));
+        // Balls hitting balls have no skin: those splat the canvas.
+        let (walls, balls, canvas, skin) = splats(true, true);
+        assert!(balls >= 2, "{balls} ball hits");
+        assert_eq!((canvas, skin), (balls, walls));
     }
 
     #[test]

@@ -197,9 +197,9 @@ pub enum CanvasPlace {
 /// A canvas thing's picture: a rectangle of the world its marks are painted on, drawn at its
 /// place with its style. The marks themselves live in the renderer's canvas textures.
 ///
-/// Push it into the top frame's [`Frame::canvases`], never a blend layer's (through
-/// [`Frame::layer_mut`]): the renderer steps and draws only the top frame's canvases, and mixes
-/// each in by its own `blend`.
+/// It belongs in the top frame's [`Frame::canvases`]: the renderer steps and draws only the top
+/// frame's canvases, and mixes each in by its own `blend`. [`build_frame`] moves any a thing drew
+/// into a blend layer or the overlay (an arena's skin under a blended Look) up there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasLayer {
     /// Whose marks it shows: a canvas thing's, or an arena's or obstacle's skin.
@@ -939,7 +939,7 @@ impl Frame {
         overlay
     }
 
-    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
+    /// Moves the overlay's canvases (skins), shader effects, hit particles and hit marks into this frame: those of
     /// stuck things work on the whole picture like everyone else's, and the overlay only holds
     /// what is drawn as shapes. Particles in one of the overlay's layers go into this frame's
     /// layer of the same blend and amount, and a layer left with nothing to draw is dropped.
@@ -947,6 +947,8 @@ impl Frame {
         let Some(o) = self.overlay.as_deref_mut() else { return };
         let (effects, mut bursts, hits) =
             (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
+        // Only the top frame's canvases are drawn: a stuck thing's skin goes there too.
+        self.canvases.append(&mut o.canvases);
         let mut layered: Vec<(Blend, f32, bool, Vec<Burst>)> = o
             .layers
             .iter_mut()
@@ -1029,8 +1031,8 @@ fn layered(blend: Blend, amount: f32) -> bool {
 /// Runs `draw` on what things with `blend` at `amount` (blending with each other when `each`)
 /// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows
 /// `target`'s gradient atlas, hits and effects while it is drawn into, so its paint rows are the
-/// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
-/// not kept.
+/// rows the renderer uploads and every module reads every hit. Canvases drawn into a layer move
+/// up to `target`, which mixes each by its own blend. A layer nothing was drawn into is not kept.
 fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
     if !layered(blend, amount) {
         draw(target);
@@ -1044,7 +1046,10 @@ fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: 
     (layer.gradients, layer.hits, layer.effects) = shared;
     draw(layer);
     let shared = take(layer);
+    // Canvases (a thing's skin) are drawn only from the top frame, mixed in by their own blend.
+    let canvases = std::mem::take(&mut layer.canvases);
     (target.gradients, target.hits, target.effects) = shared;
+    target.canvases.extend(canvases);
     if target.layers.len() > before && target.layers.last().is_some_and(|l| l.frame.draws_nothing()) {
         target.layers.pop();
     }

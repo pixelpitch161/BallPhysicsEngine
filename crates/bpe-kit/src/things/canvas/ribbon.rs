@@ -21,6 +21,8 @@ pub const CONTINUES: u8 = 2;
 pub const CONTINUED: u8 = 4;
 /// How many pieces one move is cut into at most.
 const MOST_PIECES: usize = 512;
+/// How far the ball may be from the last point when the ribbon ends without a piece to it, in px.
+const END_GAP: f32 = 0.01;
 
 /// One piece of a ribbon, in canvas pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,6 +70,8 @@ pub struct Ribbon {
     pub hits: u32,
     /// Whether a hit happened since the last piece.
     pub corner: bool,
+    /// The brush colour at the last point (linear), which the next pieces blend on from.
+    pub colour: Option<[f32; 4]>,
     /// The direction the ribbon was heading at the last point (unit; zero before the first move).
     heading: Vec2,
     /// The direction of the last move, for guessing the turn.
@@ -229,18 +233,26 @@ impl Ribbon {
         })
     }
 
-    /// Ends the ribbon: the pieces that narrow it away past the last point, none when it never moved.
-    /// A ribbon without a taper ends in a round cap.
-    pub fn finish(&mut self, tune: &Tune, endless: bool) -> Vec<Piece> {
-        let Some(at) = self.point.take() else { return Vec::new() };
+    /// Ends the ribbon where the ball ended up, at `end`: the pieces on from the last point to
+    /// there, then a tail narrowing it away past it, at most `most` px long (the ball's radius,
+    /// so the tail stays under the ball). None when it never moved. A ribbon without a taper
+    /// ends in a round cap.
+    pub fn finish(&mut self, end: Vec2, most: f32, tune: &Tune, endless: bool) -> Vec<Piece> {
+        let mut out = Vec::new();
+        if let Some(from) = self.point
+            && (end - from).length() > END_GAP
+        {
+            let (velocity, radius) = (self.velocity, self.radius);
+            out = self.advance(end, velocity, radius, tune, endless);
+        }
+        let Some(at) = self.point.take() else { return out };
         let dir = if self.heading != Vec2::ZERO { self.heading } else { self.chord };
         if self.length <= 0.0 || dir == Vec2::ZERO {
-            return Vec::new();
+            return out;
         }
-        let tail = tune.taper.max(1.0);
+        let tail = tune.taper.max(1.0).min(most.max(END_GAP));
         let left = (!endless).then_some(self.load);
         let n = (tail / MAX_PIECE).ceil().max(1.0) as usize;
-        let mut out = Vec::new();
         let mut open = self.open;
         let mut p = at;
         for k in 0..n {
@@ -304,9 +316,27 @@ fn hermite(a: Vec2, b: Vec2, h0: Vec2, h1: Vec2) -> Vec<Vec2> {
     let mut n = ((curve / MAX_PIECE).ceil() as usize).clamp(1, MOST_PIECES);
     loop {
         let pts = walk(n);
-        if n >= MOST_PIECES || longest(&pts) <= MAX_PIECE {
+        let most = longest(&pts);
+        if n >= MOST_PIECES || most <= MAX_PIECE {
             return pts;
         }
-        n += 1;
+        // Enough more pieces to bring the longest down to size, in one or two goes.
+        n = ((n as f32 * most / MAX_PIECE).ceil() as usize).clamp(n + 1, MOST_PIECES);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hermite_pieces_are_short_even_round_a_hairpin() {
+        // Setting off and arriving backwards: a loop far longer than the chord.
+        let pts = hermite(Vec2::ZERO, Vec2::new(30.0, 0.0), Vec2::new(-1.0, 0.0), Vec2::new(-1.0, 0.0));
+        assert_eq!((pts[0], *pts.last().unwrap()), (Vec2::ZERO, Vec2::new(30.0, 0.0)));
+        let lengths: Vec<f32> = pts.windows(2).map(|w| (w[1] - w[0]).length()).collect();
+        assert!(lengths.iter().all(|&l| l <= MAX_PIECE), "{lengths:?}");
+        let curve: f32 = lengths.iter().sum();
+        assert!(lengths.len() as f32 <= 2.0 * curve / MAX_PIECE + 1.0, "{} pieces over {curve} px", lengths.len());
     }
 }
