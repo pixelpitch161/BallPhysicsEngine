@@ -26,6 +26,15 @@ pub fn check_registry(reg: &Registry) -> Vec<String> {
     for kind in reg.modules() {
         check_settings(kind.id(), kind.settings(), &mut fails);
     }
+    for kind in reg.layers() {
+        check_settings(kind.id(), kind.settings(), &mut fails);
+        if reg.module(kind.card()).is_none() {
+            fails.push(format!("{}: its card kind \"{}\" is not registered", kind.id(), kind.card()));
+        }
+        if kind.base() && kind.section() != crate::LayerSection::Drawn {
+            fails.push(format!("{}: a base layer must be drawn", kind.id()));
+        }
+    }
     if reg.thing("scene").is_some() {
         for p in resolve(&Scene::empty(reg), reg).problems {
             fails.push(format!("scene: an empty scene has a problem: {p:?}"));
@@ -40,6 +49,9 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
     for d in defs {
         if !keys.insert(d.key) {
             fail(d.key, "the key is used twice".into());
+        }
+        if d.key.contains('/') {
+            fail(d.key, "a key can't hold \"/\", which marks a layer's setting".into());
         }
         if d.label.trim().is_empty() {
             fail(d.key, "the label is empty".into());

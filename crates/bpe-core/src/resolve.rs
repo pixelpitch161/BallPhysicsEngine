@@ -1,16 +1,46 @@
 //! Working out every thing's effective settings: its kind's defaults with its own changes on
 //! top, for the thing itself and for each of its own cards. Nothing is passed down the tree.
 
-use crate::{KindId, Params, Registry, Scene, SettingDef, SlotId, Target, ThingId, Value};
+use crate::{KindId, LayerId, Params, Registry, Scene, SettingDef, SlotId, Target, ThingId, Value, layered_key};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// One shown layer of a card, of a known kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedLayer {
+    pub id: LayerId,
+    /// The layer kind's plugin id.
+    pub kind: KindId,
+    pub name: String,
+}
 
 /// One of a thing's cards, with every setting's value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedSlot {
     /// The card kind's plugin id.
     pub kind: KindId,
-    /// Every setting the card kind has.
+    /// Every setting the card kind has, then every setting of each of `layers` under its
+    /// layered key.
     pub params: Params,
+    /// The card's shown layers of known kinds, bottom first, then its reactions.
+    pub layers: Vec<ResolvedLayer>,
+}
+
+impl ResolvedSlot {
+    /// Layer `id`'s settings under their plain keys.
+    pub fn layer_params(&self, id: LayerId) -> Params {
+        let prefix = format!("{id}/");
+        Params(
+            self.params
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|plain| (plain.to_owned(), v.clone())))
+                .collect(),
+        )
+    }
+
+    /// The first shown layer of `kind`.
+    pub fn first_layer(&self, kind: &str) -> Option<&ResolvedLayer> {
+        self.layers.iter().find(|l| l.kind == kind)
+    }
 }
 
 /// One thing with every setting worked out.
@@ -34,6 +64,8 @@ pub enum ProblemKind {
     UnknownCardKind(KindId),
     /// A setting points at a thing that isn't in the scene.
     MissingTarget(ThingId),
+    /// A layer of a kind this version doesn't know, or of a kind made for another card.
+    UnknownLayerKind(KindId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,8 +113,30 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
             match reg.module(&card.kind).filter(|k| k.slot() == slot) {
                 Some(ckind) => {
                     let mut params = defaults(ckind.settings());
-                    params.apply(&card.params);
-                    resolved.slots.insert(slot, ResolvedSlot { kind: card.kind.clone(), params });
+                    let mut layers = Vec::new();
+                    for layer in &card.layers {
+                        let Some(lkind) = reg.layer(&layer.kind).filter(|k| k.card() == card.kind) else {
+                            out.problems.push(Problem {
+                                thing: id,
+                                slot: Some(slot),
+                                kind: ProblemKind::UnknownLayerKind(layer.kind.clone()),
+                            });
+                            continue;
+                        };
+                        if !layer.enabled {
+                            continue;
+                        }
+                        for d in lkind.settings() {
+                            let key = layered_key(layer.id, d.key);
+                            let v = card.params.get(&key).unwrap_or(&d.default).clone();
+                            params.set(&key, v);
+                        }
+                        layers.push(ResolvedLayer { id: layer.id, kind: layer.kind.clone(), name: layer.name.clone() });
+                    }
+                    for (k, v) in card.params.iter().filter(|(k, _)| crate::split_layered(k).is_none()) {
+                        params.set(k, v.clone());
+                    }
+                    resolved.slots.insert(slot, ResolvedSlot { kind: card.kind.clone(), params, layers });
                 }
                 None => out.problems.push(Problem {
                     thing: id,
@@ -130,6 +184,60 @@ mod tests {
         let look = &resolve(&s, &r).things[&b].slots[&SlotId::Look];
         assert_eq!((look.kind.as_str(), look.params.get("glow")), ("look.plain", Some(&Value::Number(0.3))));
         assert_eq!(look.params.get("color"), Some(&Value::Color(Color::WHITE)));
+    }
+
+    #[test]
+    fn shown_layers_resolve_their_defaults_under_layered_keys() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, b, SlotId::Look, "look.stack").unwrap();
+        s.add_layer(&r, b, SlotId::Look, "layer.base").unwrap();
+        let ring = s.add_layer(&r, b, SlotId::Look, "layer.ring").unwrap();
+        let hidden = s.add_layer(&r, b, SlotId::Look, "layer.ring").unwrap();
+        s.set_layer_enabled(&r, b, SlotId::Look, hidden, false).unwrap();
+        let card = s.card_mut(b, SlotId::Look).unwrap();
+        card.params.set("1/width", Value::Number(9.0));
+        card.layers.push(crate::Layer { id: LayerId(5), kind: "layer.hologram".into(), ..Default::default() });
+        card.params.set("5/width", Value::Number(2.0));
+        let res = resolve(&s, &r);
+        let look = &res.things[&b].slots[&SlotId::Look];
+        let ids: Vec<LayerId> = look.layers.iter().map(|l| l.id).collect();
+        assert_eq!(ids, [LayerId(0), ring], "the hidden and the unknown layers are left out");
+        assert_eq!(look.params.get("0/size"), Some(&Value::Number(1.0)));
+        assert_eq!(look.params.get("1/width"), Some(&Value::Number(9.0)));
+        assert_eq!(look.params.get("2/width"), None, "a hidden layer writes nothing");
+        assert_eq!(look.layer_params(ring).get("width"), Some(&Value::Number(9.0)));
+        assert_eq!(look.layer_params(ring).0.len(), 1);
+        assert_eq!(look.first_layer("layer.ring").map(|l| l.name.as_str()), Some("Ring"));
+        assert_eq!(
+            res.problems,
+            vec![Problem {
+                thing: b,
+                slot: Some(SlotId::Look),
+                kind: ProblemKind::UnknownLayerKind("layer.hologram".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn a_keyframe_on_a_layer_setting_moves_it() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, b, SlotId::Look, "look.stack").unwrap();
+        s.add_layer(&r, b, SlotId::Look, "layer.base").unwrap();
+        let ring = s.add_layer(&r, b, SlotId::Look, "layer.ring").unwrap();
+        let width = crate::Address::on(b, SlotId::Look, &layered_key(ring, "width"));
+        let first = s.set_key(&r, &width, 0.0, Value::Number(0.0)).unwrap();
+        s.set_key(&r, &width, 2.0, Value::Number(20.0)).unwrap();
+        s.set_ease(&width, first, crate::Ease::Linear);
+        let mut res = resolve(&s, &r);
+        crate::Animation::new(&s, &res).apply(&mut res, 1.0, &crate::Inputs::default());
+        let Some(Value::Number(w)) = res.things[&b].slots[&SlotId::Look].params.get("1/width").cloned() else {
+            panic!()
+        };
+        assert!((w - 10.0).abs() < 1e-6, "{w}");
     }
 
     #[test]
