@@ -6,7 +6,6 @@ use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{Outline, Pose, ThingSim, Wall, World, state_mut};
 use glam::Vec2;
 
-
 use super::{ArenaSettings, ArenaShape};
 
 pub struct ArenaSim;
@@ -145,7 +144,6 @@ impl ThingSim for ArenaSim {
             },
         );
     }
-
 }
 
 #[cfg(test)]

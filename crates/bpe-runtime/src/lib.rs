@@ -22,9 +22,7 @@ pub use events::{Event, EventKind, Log, Party};
 pub use history::History;
 pub use pairs::{Grid, Pairs, Support};
 pub use playback::Playback;
-pub use plugins::{
-    Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut,
-};
+pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
 pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
 pub use world::{World, fingerprint, physics_animation};

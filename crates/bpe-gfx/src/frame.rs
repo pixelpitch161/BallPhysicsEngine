@@ -986,7 +986,6 @@ mod tests {
         assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
     }
 
-
     #[test]
     fn hit_strength_decays_and_saturates() {
         let hit = |step: u64, speed: f32| Event {
@@ -1011,7 +1010,6 @@ mod tests {
         assert_eq!(hit_strength(&many, 1.0, 240), 1.0, "three half hits saturate");
         assert!(hit_strength(&Log::default(), 1.0, 240) == 0.0);
     }
-
 
     #[test]
     fn module_draws_run_after_thing_draws_for_every_slot_they_fill() {

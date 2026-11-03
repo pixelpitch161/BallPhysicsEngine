@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn a_follow_outside_the_list_reads_as_default() {
         let mut p = Params::default();
-        p.set("follow", Value::Choice("beat".into()));
+        p.set("follow", Value::Choice("nonsense".into()));
         assert_eq!(Two::from_params(&p).fill.follow, Follow::Place);
     }
 

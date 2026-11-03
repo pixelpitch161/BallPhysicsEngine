@@ -136,11 +136,7 @@ mod tests {
         let table: &[(&str, &[(SlotId, &str)])] = &[
             (
                 "balls",
-                &[
-                    (SlotId::Look, "look.basic"),
-                    (SlotId::Motion, "motion.basic"),
-                    (SlotId::Bounce, "bounce.basic"),
-                ],
+                &[(SlotId::Look, "look.basic"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")],
             ),
             ("arena", &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic")]),
         ];
@@ -162,8 +158,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn cameras_and_folders_start_empty() {
         let reg = registry();
@@ -174,7 +168,6 @@ mod tests {
         }
         assert!(scene.library.modules.is_empty());
     }
-
 
     #[test]
     fn a_thing_added_in_a_filled_folder_follows_it() {

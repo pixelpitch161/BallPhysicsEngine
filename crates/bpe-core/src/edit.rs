@@ -2,8 +2,8 @@
 //! nothing.
 
 use crate::{
-    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Stash,
-    Thing, ThingId, Value,
+    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Stash, Thing, ThingId,
+    Value,
 };
 use glam::Vec2;
 use std::collections::BTreeSet;

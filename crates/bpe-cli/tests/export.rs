@@ -132,4 +132,3 @@ fn output_sizes_are_even_and_encoders_have_names() {
     }
     assert_eq!(Encoder::from_name("quantum"), None);
 }
-

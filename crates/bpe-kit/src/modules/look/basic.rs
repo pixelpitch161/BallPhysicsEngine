@@ -115,16 +115,10 @@ pub struct BasicLook {
     )]
     pub fill: Paint,
     /// How the colour is laid out inside each ball, letter or body.
-    #[setting(
-        paint,
-        label = "Inside each one",
-        prefix = "in_",
-        group = "Inside each one",
-        when = "thing=balls|text|soft"
-    )]
+    #[setting(paint, label = "Inside each one", prefix = "in_", group = "Inside each one", when = "thing=balls")]
     pub inside: InsidePaint,
     /// How brightly the halo shines.
-    #[setting(label = "Glow", group = "Light", when = "thing!=liquid", range(0, 2), simple, keyframe, random, pulse)]
+    #[setting(label = "Glow", group = "Light", range(0, 2), simple, keyframe, random, pulse)]
     pub glow: f32,
     /// How far the halo reaches, in ball radii.
     #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe, random)]
@@ -286,9 +280,6 @@ impl ModuleKind for BasicLookKind {
     }
     fn help(&self) -> &'static str {
         "Colours, with a shape, a style, a pattern inside each one, an outline and a halo."
-    }
-    fn fits(&self, thing_kind: &str) -> bool {
-        !matches!(thing_kind, "liquid" | "swarm")
     }
     fn slot(&self) -> SlotId {
         SlotId::Look

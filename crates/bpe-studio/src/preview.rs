@@ -5,8 +5,8 @@ use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::grid::{snap_length, snap_point};
 use crate::theme;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame_at, wgpu};
-use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings, GIZMO_GRAB, Gizmo, gizmos};
+use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
+use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
 use bpe_runtime::{CameraView, Outline, Pose, World};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
@@ -23,12 +23,6 @@ const EDGE_GRAB: f32 = 12.0;
 
 /// How close to an arrow tip, in screen points, counts as grabbing it.
 const TIP_GRAB: f32 = 10.0;
-
-/// Side of the squares drawn on a selected canvas's corners, in screen points.
-const CORNER_SIZE: f32 = 8.0;
-
-/// The smallest side a canvas can be dragged down to, in world pixels.
-const MIN_CANVAS: f32 = 20.0;
 
 /// How close to a thing with nothing of its own to show (a folder), in screen points, counts
 /// as grabbing it.
@@ -47,8 +41,6 @@ pub struct Preview {
 struct Drawn {
     revision: u64,
     time: f64,
-    /// The video clock, which beats and captions follow; a new mix can move it.
-    video: f64,
     step: u64,
     size: (u32, u32),
     /// The World view's own camera and picture size, when it is the one shown.
@@ -70,9 +62,6 @@ pub enum Handle {
     CameraZoom(ThingId),
     /// Turn the camera by the handle above its frame.
     CameraTurn(ThingId),
-    /// Resize a canvas by one of the four corners of its rectangle, numbered clockwise from
-    /// the top left.
-    CanvasCorner(ThingId, u8),
 }
 
 impl Handle {
@@ -83,8 +72,7 @@ impl Handle {
             | Handle::Edge(id)
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
-            | Handle::CameraTurn(id)
-            | Handle::CanvasCorner(id, _) => id,
+            | Handle::CameraTurn(id) => id,
         }
     }
 
@@ -273,8 +261,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(handle) = grab(studio, press)
     {
         let anchor = match handle {
-            Handle::Body(id) => body_anchor(&studio.scene, studio.playback.world(), id)
-                .unwrap_or(view.pointer_for(studio, handle, press)),
+            Handle::Body(id) => {
+                place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.pointer_for(studio, handle, press))
+            }
             Handle::CameraMove(_) => studio.playback.world().camera.center,
             _ => view.pointer_for(studio, handle, press),
         };
@@ -366,27 +355,23 @@ fn draw_picture(
     drawn: &mut Option<Drawn>,
     look: Option<(CameraView, (u32, u32))>,
 ) -> bool {
-    // The playhead is in video time; the beat sync's warp says which moment of the run to show.
-    let mut catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
+    let catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
     // While catching up, the picture shows the moment the simulation has got to.
     let shown_time = if catching_up { studio.playback.time() } else { studio.sim_time() };
-    let shown_video = if catching_up { studio.warp.video_time(shown_time) } else { studio.time };
     let now = Drawn {
         revision: studio.revision,
         time: shown_time,
-        video: shown_video,
         step: studio.playback.world().step,
         size: renderer.size(),
         look,
     };
     if drawn.as_ref() != Some(&now) {
-        build_frame_at(
+        build_frame(
             &studio.scene,
             &studio.resolved,
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
-            shown_video,
             &studio.kit.draws,
             frame,
         );
@@ -400,17 +385,8 @@ fn draw_picture(
             frame.grade = Default::default();
         }
         frame.cull();
-        // Liquids and swarms on the graphics card step towards the playhead within the same
-        // budget as the physics; until they are there the picture is drawn again next frame.
-        let mut source = bpe_kit::flow_source(&studio.scene, &studio.resolved, &studio.kit.sims, Some(CATCH_UP_BUDGET));
-        source.picture_folder = studio.base_dir();
-        let status = renderer.render_with_flow(device, queue, frame, &source);
-        if status.caught_up {
-            *drawn = Some(now);
-        } else {
-            *drawn = None;
-            catching_up = true;
-        }
+        renderer.render(device, queue, frame);
+        *drawn = Some(now);
     }
     catching_up
 }
@@ -421,28 +397,6 @@ fn arrow_tip(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<Vec2> {
     let r = resolved.things.get(&id)?;
     (r.kind == "balls")
         .then(|| thing.transform.position + BallsSettings::from_params(&r.params).velocity * ARROW_SECONDS)
-}
-
-/// The corners of a rectangle of half-size `half` turned by `angle` about `center`, clockwise
-/// on screen from the top left: the same order `Handle::CanvasCorner` numbers them.
-fn rect_corners(center: Vec2, half: Vec2, angle: f32) -> [Vec2; 4] {
-    let turn = Vec2::from_angle(angle);
-    [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, y)| center + turn.rotate(Vec2::new(x, y) * half))
-}
-
-/// Where a rectangle's middle and size land when its corner number `corner` is dragged to
-/// `pointer` and the opposite corner stays where it is. The rectangle keeps its turn, and no
-/// side gets shorter than [`MIN_CANVAS`].
-fn corner_resize(center: Vec2, half: Vec2, angle: f32, corner: u8, pointer: Vec2) -> (Vec2, Vec2) {
-    let fixed = rect_corners(center, half, angle)[(corner as usize + 2) % 4];
-    let turn = Vec2::from_angle(angle);
-    // The pointer in the rectangle's own axes, measured from the fixed corner.
-    let own = Vec2::from_angle(-angle).rotate(pointer - fixed);
-    let sign = rect_corners(Vec2::ZERO, Vec2::ONE, 0.0)[corner as usize];
-    // A drag across the fixed corner stops at the minimum rather than flipping the rectangle.
-    let size = Vec2::new((own.x * sign.x).max(MIN_CANVAS), (own.y * sign.y).max(MIN_CANVAS));
-    let new_center = fixed + turn.rotate(size * sign * 0.5);
-    (new_center, size)
 }
 
 /// The point on `outline` in the direction of `world` from its centre.
@@ -456,17 +410,6 @@ fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
 /// Where a thing is on screen right now: its pose in the world, or its own position.
 fn place_of(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
     world.poses.get(&id).map(|p| p.position).or_else(|| scene.things.get(&id).map(|t| t.transform.position))
-}
-
-/// Where a body drag of `id` starts from: the point the drag writes. That is the thing's place,
-/// except for a canvas, whose middle sits off its anchor (an Arena or View canvas's own place is
-/// an offset from the fitted middle), so the drag starts from the anchor and moves the canvas by
-/// exactly the drag.
-fn body_anchor(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
-    if scene.things.get(&id).is_some_and(|t| t.kind == "canvas") && world.poses.contains_key(&id) {
-        return Some(world.anchor(id).position);
-    }
-    place_of(scene, world, id)
 }
 
 /// The pose a rider's offset is measured from: its parent's, or one ball of its parent's.
@@ -485,8 +428,7 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
         .unwrap_or_default()
 }
 
-/// What is under `pos`: an arrow tip first, then a ball, then an obstacle, then a gizmo's
-/// middle, then a selected thing with nothing of its own to show, then an arena's edge.
+/// What is under `pos`: an arrow tip first, then a ball, then a selected thing with nothing of its own to show, then an arena's edge.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     // Each thing through its own view: stuck things aren't seen through the camera.
@@ -499,24 +441,6 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
             && (v.to_screen(tip) - pos).length() <= TIP_GRAB
         {
             return Some(Handle::Aim(*id));
-        }
-    }
-    // The corner squares of the selected canvas, before the things they sit on.
-    if let Some(id) = studio.selection.primary
-        && let Some(v) = seen(&id)
-        && let Some(thing) = studio.scene.things.get(&id)
-        && let Some(r) = studio.resolved.things.get(&id)
-    {
-        for gizmo in gizmos(thing, r, world) {
-            if r.kind == "canvas"
-                && let Gizmo::Rect { center, half, angle } = gizmo
-            {
-                for (i, corner) in rect_corners(center, half, angle).into_iter().enumerate() {
-                    if (v.to_screen(corner) - pos).length() <= GIZMO_GRAB {
-                        return Some(Handle::CanvasCorner(id, i as u8));
-                    }
-                }
-            }
         }
     }
     let mut best: Option<(f32, ThingId)> = None;
@@ -534,43 +458,8 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
             }
         }
     }
-    for (id, st) in world.states.iter() {
-        let Some(v) = seen(id) else { continue };
-        let Some(soft) = st.as_any().downcast_ref::<bpe_kit::SoftState>() else { continue };
-        let p = v.to_world(pos);
-        for point in &soft.world.points {
-            let grab = (point.radius * 1.5).max(8.0 / v.world_scale());
-            let distance = (point.position - p).length() * v.camera.zoom;
-            if distance <= grab * v.camera.zoom && best.is_none_or(|(d, _)| distance < d) {
-                best = Some((distance, *id));
-            }
-        }
-    }
     if let Some((_, id)) = best {
         return Some(Handle::Body(id));
-    }
-    for (id, solids) in world.solids.iter() {
-        let Some(v) = seen(id) else { continue };
-        let p = v.to_world(pos);
-        // Each part's own circle, so the gaps of a peg grid or the inside of a ring stay free.
-        let grab = SPOT_GRAB / v.world_scale();
-        let on_part = solids.bounds.iter().any(|(center, bound)| (*center - p).length() <= bound + grab);
-        if on_part || (solids.pose.position - p).length() <= grab {
-            return Some(Handle::Body(*id));
-        }
-    }
-    // Things with nothing of their own to click are grabbed by their gizmo's middle.
-    for (id, thing) in studio.scene.things.iter() {
-        let (Some(v), Some(r)) = (seen(id), studio.resolved.things.get(id)) else { continue };
-        for gizmo in gizmos(thing, r, world) {
-            let middle = match gizmo {
-                Gizmo::Dot(at) | Gizmo::Circle(at, _) | Gizmo::Rect { center: at, .. } | Gizmo::Arrow(at, _) => at,
-                Gizmo::Line(a, b) => (a + b) * 0.5,
-            };
-            if (v.to_screen(middle) - pos).length() <= GIZMO_GRAB {
-                return Some(Handle::Body(*id));
-            }
-        }
     }
     if let Some(id) = studio.selection.primary.filter(|id| spot_only(studio, world, *id))
         && let Some(v) = seen(&id)
@@ -590,12 +479,11 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     None
 }
 
-/// A thing with no balls, wall or solids of its own: a folder, or an empty obstacle. The camera
+/// A thing with no balls or wall of its own, such as a folder. The camera
 /// has its own frame to grab instead.
 fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
     !world.bodies.contains_key(&id)
         && !world.walls.contains_key(&id)
-        && !world.solids.contains_key(&id)
         && studio.scene.things.get(&id).is_some_and(|t| t.kind != "camera")
 }
 
@@ -624,18 +512,6 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2, s
         // The camera's handles are the World view's; see `world_view::apply_camera_drag`.
         Handle::CameraMove(_) | Handle::CameraZoom(_) | Handle::CameraTurn(_) => {}
         Handle::Body(_) => thing.transform.position = place.round(),
-        Handle::CanvasCorner(_, corner) => {
-            let Some((pose, size)) = bpe_kit::canvas_area(world, id) else { return };
-            let (center, size) =
-                corner_resize(pose.position, size * 0.5, pose.angle, corner, snap_point(pointer, step));
-            thing.params.set("fit", Value::Choice("custom".into()));
-            thing.params.set("size", Value::Vec2([size.x.round(), size.y.round()]));
-            // A custom canvas sits around its thing's place, so the middle moves with the corner
-            // (a rider keeps its offset; only its size changes).
-            if thing.parent.is_none() || !matches!(thing.attach, Attach::Ride { .. }) {
-                thing.transform.position = center.round();
-            }
-        }
         Handle::Aim(_) => {
             let tip = snap_point(pointer, step);
             let velocity = ((tip - thing.transform.position) / ARROW_SECONDS).round();
@@ -666,7 +542,6 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     let faint = Color32::from_white_alpha(110);
     let world = studio.playback.world();
     let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
-    draw_gizmos(&painter, studio, view, active, selected);
 
     for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
         let Some(view) = view.of(studio, *id) else { continue };
@@ -693,13 +568,6 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         );
     }
 
-    // Obstacles: a ring at their place, like the balls below.
-    for (id, solids) in world.solids.iter().filter(|(id, _)| shown(id)) {
-        let Some(view) = view.of(studio, *id) else { continue };
-        let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
-        let color = if highlighted { theme::ACCENT } else { faint };
-        painter.circle_stroke(view.to_screen(solids.pose.position), 6.0, Stroke::new(1.2, color));
-    }
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
     // name, so it can still be found and dragged.
     if let Some(id) = selected.filter(|id| shown(id) && spot_only(studio, world, *id))
@@ -753,83 +621,6 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
                 FontId::proportional(12.0),
                 Color32::WHITE,
             );
-        }
-    }
-}
-
-/// The dashed outlines of the things that have nothing visible of their own at rest: where an
-/// emitter points, what a field covers, where a liquid starts, where a swarm gathers.
-fn draw_gizmos(
-    painter: &egui::Painter,
-    studio: &Studio,
-    view: &View,
-    active: Option<Handle>,
-    selected: Option<ThingId>,
-) {
-    let world = studio.playback.world();
-    for (id, thing) in studio.scene.things.iter().filter(|(_, t)| t.enabled) {
-        let Some(r) = studio.resolved.things.get(id) else { continue };
-        let Some(view) = view.of(studio, *id) else { continue };
-        let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
-        let color = if highlighted { theme::ACCENT } else { theme::MUTED };
-        let stroke = Stroke::new(if highlighted { 1.6 } else { 1.0 }, color);
-        let dashed = |painter: &egui::Painter, points: &[Pos2]| {
-            painter.extend(egui::Shape::dashed_line(points, stroke, 5.0, 4.0));
-        };
-        for gizmo in gizmos(thing, r, world) {
-            match gizmo {
-                Gizmo::Dot(at) => {
-                    let at = view.to_screen(at);
-                    painter.circle_stroke(at, 6.0, stroke);
-                    painter.circle_filled(at, 2.0, color);
-                }
-                Gizmo::Circle(center, radius) => {
-                    let points: Vec<Pos2> = (0..=72)
-                        .map(|i| {
-                            let a = i as f32 / 72.0 * std::f32::consts::TAU;
-                            view.to_screen(center + Vec2::new(a.cos(), a.sin()) * radius)
-                        })
-                        .collect();
-                    dashed(painter, &points);
-                }
-                Gizmo::Rect { center, half, angle } => {
-                    let turn = Vec2::from_angle(angle);
-                    let corners: Vec<Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
-                        .iter()
-                        .map(|&(x, y)| view.to_screen(center + turn.rotate(Vec2::new(x, y) * half)))
-                        .collect();
-                    dashed(painter, &corners);
-                    if r.kind == "canvas" && selected == Some(*id) {
-                        for (i, corner) in rect_corners(center, half, angle).into_iter().enumerate() {
-                            let grabbed = active == Some(Handle::CanvasCorner(*id, i as u8));
-                            let square =
-                                Rect::from_center_size(view.to_screen(corner), egui::vec2(CORNER_SIZE, CORNER_SIZE));
-                            painter.rect_filled(square, 1.0, if grabbed { theme::ACCENT } else { theme::TEXT });
-                            painter.rect_stroke(
-                                square,
-                                1.0,
-                                Stroke::new(1.0, Color32::BLACK),
-                                egui::StrokeKind::Middle,
-                            );
-                        }
-                    }
-                }
-                Gizmo::Arrow(from, to) => {
-                    let (from, to) = (view.to_screen(from), view.to_screen(to));
-                    painter.line_segment([from, to], stroke);
-                    let dir = (to - from).normalized();
-                    if dir.length() > 0.5 {
-                        let side = egui::vec2(-dir.y, dir.x);
-                        let back = to - dir * 9.0;
-                        painter.add(egui::Shape::convex_polygon(
-                            vec![to, back + side * 4.5, back - side * 4.5],
-                            color,
-                            Stroke::NONE,
-                        ));
-                    }
-                }
-                Gizmo::Line(a, b) => dashed(painter, &[view.to_screen(a), view.to_screen(b)]),
-            }
         }
     }
 }
@@ -931,32 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn hit_testing_grabs_a_soft_body_by_its_points() {
-        let mut studio = Studio::headless();
-        let before = studio.scene.clone();
-        let soft = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "soft", ThingId::ROOT).unwrap();
-        studio.scene.things.get_mut(&soft).unwrap().transform.position = Vec2::new(0.0, 300.0);
-        studio.after_edit(before);
-        let view = View {
-            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
-            scale: 0.25,
-            camera: CameraView::default(),
-            world: false,
-        };
-        // The top of the jelly's skin, 120 px above its middle.
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 182.0))), Some(Handle::Body(soft)));
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None, "the hollow middle");
-        apply_drag(
-            &mut studio.scene,
-            studio.playback.world(),
-            Drag { handle: Handle::Body(soft), offset: Vec2::ZERO },
-            Vec2::new(10.0, 20.0),
-            None,
-        );
-        assert_eq!(studio.scene.things[&soft].transform.position, Vec2::new(10.0, 20.0));
-    }
-
-    #[test]
     fn dragging_moves_aims_and_resizes() {
         let mut studio = Studio::headless();
         let world = studio.playback.world().clone();
@@ -986,90 +751,10 @@ mod tests {
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(500.0)));
     }
 
-    /// Dragging a canvas by its middle moves it by exactly the drag, from the first frame, even
-    /// when the arena it fits is away from the origin.
     #[test]
-    fn body_drag_moves_an_arena_canvas_by_the_drag() {
+    fn dragging_a_rider_moves_its_offset_and_a_selected_folder_is_grabbable() {
         let mut studio = Studio::headless();
         let before = studio.scene.clone();
-        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = Vec2::new(300.0, -200.0);
-        let canvas = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "canvas", ThingId::ROOT).unwrap();
-        studio.after_edit(before);
-        let (start, _) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
-        assert_eq!(start.position, Vec2::new(300.0, -200.0), "the canvas covers the moved arena");
-        let press = start.position + Vec2::new(40.0, 25.0);
-        let anchor = body_anchor(&studio.scene, studio.playback.world(), canvas).unwrap();
-        let drag = Drag { handle: Handle::Body(canvas), offset: press - anchor };
-        let delta = Vec2::new(70.0, -30.0);
-        for moved in [Vec2::ZERO, delta] {
-            let before = studio.scene.clone();
-            apply_drag(&mut studio.scene, studio.playback.world(), drag, press + moved, None);
-            studio.after_edit(before);
-            let (pose, _) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
-            assert_eq!(pose.position, start.position + moved);
-        }
-        // A corner drag then turns it Custom around the rectangle it really shows.
-        let (pose, size) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
-        let top_left = pose.position - size * 0.5;
-        let before = studio.scene.clone();
-        apply_drag(
-            &mut studio.scene,
-            studio.playback.world(),
-            Drag { handle: Handle::CanvasCorner(canvas, 2), offset: Vec2::ZERO },
-            top_left + Vec2::new(300.0, 200.0),
-            None,
-        );
-        studio.after_edit(before);
-        let (pose, size) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
-        assert_eq!((pose.position, size), ((top_left + Vec2::new(150.0, 100.0)).round(), Vec2::new(300.0, 200.0)));
-    }
-
-    #[test]
-    fn corner_drag_resizes_and_sets_custom() {
-        let mut studio = Studio::headless();
-        let before = studio.scene.clone();
-        let canvas = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "canvas", ThingId::ROOT).unwrap();
-        studio.after_edit(before);
-        let (pose, size) = bpe_kit::canvas_area(studio.playback.world(), canvas).unwrap();
-        let top_left = pose.position - size * 0.5;
-        let bottom_right = pose.position + size * 0.5;
-        // Drag the bottom right corner in towards the top left one, which stays put.
-        apply_drag(
-            &mut studio.scene,
-            studio.playback.world(),
-            Drag { handle: Handle::CanvasCorner(canvas, 2), offset: Vec2::ZERO },
-            top_left + Vec2::new(300.0, 200.0),
-            None,
-        );
-        let thing = &studio.scene.things[&canvas];
-        assert_eq!(thing.params.get("fit"), Some(&Value::Choice("custom".into())));
-        assert_eq!(thing.params.get("size"), Some(&Value::Vec2([300.0, 200.0])));
-        assert_eq!(thing.transform.position, (top_left + Vec2::new(150.0, 100.0)).round());
-        assert!(bottom_right.x > top_left.x + 300.0, "the canvas really shrank");
-    }
-
-    #[test]
-    fn corner_resize_keeps_the_opposite_corner_and_a_minimum() {
-        let (c, s) = corner_resize(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.0, 0, Vec2::new(-40.0, -10.0));
-        assert_eq!((c, s), (Vec2::new(30.0, 20.0), Vec2::new(140.0, 60.0)), "bottom right at (100, 50) stays");
-        // Dragged past the fixed corner it stops at the minimum, not flipped.
-        let (c, s) = corner_resize(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.0, 0, Vec2::new(500.0, 500.0));
-        assert_eq!(s, Vec2::splat(MIN_CANVAS));
-        assert_eq!(c, Vec2::new(90.0, 40.0));
-        // Turned a quarter: the fixed corner is still where it was in the world.
-        let angle = std::f32::consts::FRAC_PI_2;
-        let before = rect_corners(Vec2::new(10.0, 10.0), Vec2::new(100.0, 50.0), angle)[2];
-        let (c, s) = corner_resize(Vec2::new(10.0, 10.0), Vec2::new(100.0, 50.0), angle, 0, Vec2::new(0.0, 0.0));
-        let after = rect_corners(c, s * 0.5, angle)[2];
-        assert!((before - after).length() < 1e-3, "{before} vs {after}");
-    }
-
-    #[test]
-    fn dragging_a_rider_moves_its_offset_and_obstacles_are_grabbable() {
-        let mut studio = Studio::headless();
-        let before = studio.scene.clone();
-        let peg = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "obstacle", ThingId::ROOT).unwrap();
-        studio.scene.things.get_mut(&peg).unwrap().transform.position = Vec2::new(100.0, 100.0);
         let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: true, item: None };
         studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
         studio.after_edit(before);
@@ -1079,7 +764,6 @@ mod tests {
             camera: CameraView::default(),
             world: false,
         };
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(100.0, 100.0))), Some(Handle::Body(peg)));
         let world = studio.playback.world().clone();
         apply_drag(
             &mut studio.scene,
@@ -1120,34 +804,6 @@ mod tests {
         let params = &studio.scene.things[&ThingId(1)].params;
         assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
         assert_eq!(params.get("height"), Some(&Value::Number(800.0)));
-    }
-
-    #[test]
-    fn hit_testing_finds_a_field_by_its_gizmo() {
-        let mut studio = Studio::headless();
-        let before = studio.scene.clone();
-        let field = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "field", ThingId::ROOT).unwrap();
-        let thing = studio.scene.things.get_mut(&field).unwrap();
-        thing.transform.position = Vec2::new(300.0, 0.0);
-        thing.params.set("radius", Value::Number(100.0));
-        studio.after_edit(before);
-        let view = View {
-            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
-            scale: 0.25,
-            camera: CameraView::default(),
-            world: false,
-        };
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 0.0))), Some(Handle::Body(field)));
-        // Just past the grab distance there is nothing: a field's circle has no edge handle.
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(300.0, 80.0))), None);
-        apply_drag(
-            &mut studio.scene,
-            studio.playback.world(),
-            Drag { handle: Handle::Body(field), offset: Vec2::ZERO },
-            Vec2::new(-100.0, 50.0),
-            None,
-        );
-        assert_eq!(studio.scene.things[&field].transform.position, Vec2::new(-100.0, 50.0));
     }
 
     #[test]

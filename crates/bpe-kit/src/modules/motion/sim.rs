@@ -33,7 +33,6 @@ impl ModuleSim for BasicMotionSim {
             }
         }
     }
-
 }
 
 #[cfg(test)]

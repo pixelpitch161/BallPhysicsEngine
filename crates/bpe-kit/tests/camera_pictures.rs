@@ -105,4 +105,3 @@ fn culled_ball_is_not_in_frame() {
     frame.cull();
     assert!(frame.balls.is_empty() && frame.looks.is_empty(), "{:?}", frame.balls);
 }
-

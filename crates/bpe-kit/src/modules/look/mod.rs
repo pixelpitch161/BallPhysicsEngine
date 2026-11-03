@@ -1,4 +1,4 @@
-//! The look a ball (or any other thing but a liquid or a swarm) wears: see [`basic`].
+//! The look a ball or an arena wears: see [`basic`].
 
 pub mod basic;
 pub mod draw;
@@ -9,16 +9,6 @@ pub use basic::{BallColours, BallShape, BasicLook, BasicLookKind, Style};
 mod tests {
     use crate::registry;
     use bpe_core::Value;
-
-    #[test]
-    fn a_liquid_wearing_a_look_shows_its_colours() {
-        let reg = registry();
-        let defs = reg.module("look.basic").unwrap().settings();
-        let colours = defs.iter().find(|d| d.key == "colours").unwrap();
-        let get = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
-        assert!(colours.applies(Some("liquid"), &get), "a liquid paints with its Colours");
-        assert!(colours.applies(Some("balls"), &get));
-    }
 
     #[test]
     fn an_arena_card_hides_the_ball_only_look_rows() {
@@ -78,5 +68,4 @@ mod tests {
             }
         }
     }
-
 }

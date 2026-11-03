@@ -34,14 +34,8 @@ pub enum SlotId {
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 6] = [
-        SlotId::Look,
-        SlotId::Trail,
-        SlotId::Motion,
-        SlotId::Bounce,
-        SlotId::Particles,
-        SlotId::Shader,
-    ];
+    pub const ALL: [SlotId; 6] =
+        [SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles, SlotId::Shader];
 
     /// The name shown in the inspector.
     pub fn name(self) -> &'static str {

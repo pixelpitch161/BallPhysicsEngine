@@ -11,7 +11,7 @@ enum Icon {
     Restart,
 }
 
-/// The first row: play, pause, the clock, loop and mute.
+/// The first row: play, pause, the clock and loop.
 pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
     ui.horizontal(|ui| {
         let icon = if studio.playing { Icon::Pause } else { Icon::Play };
@@ -24,24 +24,13 @@ pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
         ui.monospace(format!("{} / {}", clock(studio.time), clock(studio.duration())));
         ui.add_space(8.0);
         ui.checkbox(&mut studio.looping, "Loop").on_hover_text("Start again from the beginning at the end");
-        if ui.checkbox(&mut studio.muted, "Mute").on_hover_text("Preview without sound").changed() {
-            studio.sync_mute();
-        }
-        ui.add_space(8.0);
-        let target = studio.settings().loudness;
-        meters(ui, studio.panels.sound.report.as_ref(), studio.time, target);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let hint = if studio.panels.sound.beats.is_empty() {
-                "Drag the bar to scrub · ticks are hits"
-            } else {
-                "Drag the bar to scrub · ticks are hits · marks below are beats"
-            };
-            ui.label(RichText::new(hint).small().color(theme::MUTED));
+            ui.label(RichText::new("Drag the bar to scrub · ticks are hits").small().color(theme::MUTED));
         });
     });
 }
 
-/// The whole video as a bar: hits as ticks, beats as marks along the bottom, the playhead,
+/// The whole video as a bar: hits as ticks, the playhead,
 /// and dragging to scrub. The bar starts `inset` points in from the left, so the lanes below
 /// it can line up; the rect of the bar itself comes back.
 pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
@@ -51,8 +40,7 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     let painter = ui.painter_at(rect);
     painter.rect_filled(track, 6.0, theme::RAISED);
 
-    // Hits per pixel column: from the finished mix when there is one, else what the playback
-    // has got to so far.
+    // Hits per pixel column, as far as the playback has got.
     let columns = track.width().max(1.0) as usize;
     let mut counts = vec![0u32; columns];
     let mut count = |t: f32| {
@@ -61,15 +49,9 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
             *c += 1;
         }
     };
-    if studio.panels.sound.hits.is_empty() {
-        let rate = studio.playback.world().steps_per_second;
-        for e in studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit) {
-            count(e.time(rate) as f32);
-        }
-    } else {
-        for &t in &studio.panels.sound.hits {
-            count(t);
-        }
+    let rate = studio.playback.world().steps_per_second;
+    for e in studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit) {
+        count(e.time(rate) as f32);
     }
     for (column, &c) in counts.iter().enumerate() {
         if c == 0 {
@@ -92,18 +74,6 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
             Stroke::new(1.0, theme::LINE),
         );
     }
-    // Beats, along the bottom.
-    for &beat in &studio.panels.sound.beats {
-        if beat < 0.0 || beat as f64 > duration {
-            continue;
-        }
-        let x = track.left() + (beat as f64 / duration) as f32 * track.width();
-        painter.line_segment(
-            [Pos2::new(x, track.bottom() - 6.0), Pos2::new(x, track.bottom() - 1.0)],
-            Stroke::new(1.0, theme::WARNING),
-        );
-    }
-
     // The playhead.
     let x = track.left() + (studio.time / duration) as f32 * track.width();
     painter.rect_filled(
@@ -113,19 +83,6 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     );
     painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, theme::ACCENT));
     painter.circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, theme::ACCENT);
-
-    // Where a rule ended the video, with a small handle to hover for the reason.
-    if let Some(end) = studio.end_time() {
-        let x = track.left() + (end / duration) as f32 * track.width();
-        painter.line_segment(
-            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-            Stroke::new(2.0, theme::ACCENT_TEXT),
-        );
-        let handle = Rect::from_center_size(Pos2::new(x, rect.center().y), egui::vec2(10.0, rect.height()));
-        let marker = ui.interact(handle, ui.scope_id().with("video-end"), Sense::hover());
-        marker.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Video ends here"));
-        marker.on_hover_text("The video ends here (a rule ended it)");
-    }
 
     if response.drag_started() {
         studio.resume_after_scrub = studio.playing;
@@ -145,39 +102,6 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     }
     response.on_hover_text("Click or drag to move through the video");
     track
-}
-
-/// Two small meters at the playhead: short-term loudness on a -40 to 0 LUFS scale with a tick
-/// at the `target`, and the limiter's gain reduction on a 0 to 12 dB scale. Each reads "--"
-/// until a mix has been measured.
-pub(crate) fn meters(ui: &mut Ui, report: Option<&bpe_mix::MasterReport>, time: f64, target: f32) {
-    let reading = report.map(|r| r.at(time));
-    let bar = |ui: &mut Ui, fill: Option<f32>, tick: Option<f32>, color: Color32| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(60.0, 8.0), Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 3.0, theme::RAISED);
-        if let Some(f) = fill {
-            let right = rect.left() + rect.width() * f.clamp(0.0, 1.0);
-            painter.rect_filled(Rect::from_min_max(rect.min, Pos2::new(right, rect.bottom())), 3.0, color);
-        }
-        if let Some(t) = tick {
-            let x = rect.left() + rect.width() * t.clamp(0.0, 1.0);
-            painter.line_segment(
-                [Pos2::new(x, rect.top() - 2.0), Pos2::new(x, rect.bottom() + 2.0)],
-                Stroke::new(1.5, theme::TEXT),
-            );
-        }
-    };
-    let loud = reading.map(|(lufs, _)| lufs);
-    bar(ui, loud.map(|l| (l + 40.0) / 40.0), Some((target + 40.0) / 40.0), theme::ACCENT);
-    ui.label(RichText::new(loud.map_or("--".into(), |l| format!("{l:.0} LUFS"))).small().monospace())
-        .on_hover_text("Loudness over the last 3 seconds; the tick is the target");
-    let reduction = reading.map(|(_, gr)| gr);
-    bar(ui, reduction.map(|g| g / 12.0), None, theme::WARNING);
-    ui.label(
-        RichText::new(reduction.map_or("--".into(), |g| format!("GR {:.1} dB", g.max(0.0) + 0.0))).small().monospace(),
-    )
-    .on_hover_text("How much the limiter is turning the mix down here");
 }
 
 fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {
@@ -229,35 +153,4 @@ fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {
     };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     response
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bpe_mix::MasterReport;
-    use egui_kittest::{Harness, kittest::Queryable};
-
-    fn harness(report: Option<MasterReport>, time: f64) -> Harness<'static, Option<MasterReport>> {
-        let mut h = Harness::builder()
-            .with_size(egui::vec2(400.0, 60.0))
-            .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
-            .build_ui_state(move |ui, r: &mut Option<MasterReport>| meters(ui, r.as_ref(), time, -14.0), report);
-        h.run();
-        h
-    }
-
-    #[test]
-    fn meters_read_the_playhead() {
-        let mut short_term = vec![-30.0; 40];
-        short_term[10] = -20.0;
-        let mut reduction = vec![0.0; 40];
-        reduction[10] = 3.0;
-        let report = MasterReport { integrated: -14.0, true_peak: -1.0, short_term, reduction };
-        let h = harness(Some(report), 1.0);
-        h.get_by_label("-20 LUFS");
-        h.get_by_label("GR 3.0 dB");
-        let h = harness(None, 1.0);
-        assert_eq!(h.get_all_by_label("--").count(), 2, "no mix yet: both meters blank");
-    }
 }

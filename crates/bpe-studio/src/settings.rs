@@ -1,7 +1,6 @@
-//! Remembers the last scene file and the score weights between runs, in small files in the
+//! Remembers the last scene file and the layout between runs, in small files in the
 //! user's settings folder. The old and new editors share the folder and keep separate files.
 
-use bpe_kit::score::Parts;
 use std::path::{Path, PathBuf};
 
 /// The user's settings folder for Ball Studio.
@@ -104,33 +103,6 @@ pub fn presets_dir() -> Option<PathBuf> {
     settings_dir().map(|d| d.join("presets"))
 }
 
-fn weights_file() -> Option<PathBuf> {
-    settings_dir().map(|d| d.join("score-weights.ron"))
-}
-
-/// The score weights the user taught last time, or the defaults.
-pub fn load_weights() -> Parts {
-    weights_file().and_then(|f| load_weights_from(&f)).unwrap_or(Parts::WEIGHTS)
-}
-
-pub fn load_weights_from(path: &Path) -> Option<Parts> {
-    ron::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
-pub fn save_weights(weights: &Parts) {
-    if let Some(file) = weights_file() {
-        let _ = save_weights_to(&file, weights);
-    }
-}
-
-pub fn save_weights_to(path: &Path, weights: &Parts) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = ron::ser::to_string_pretty(weights, Default::default()).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,17 +142,6 @@ mod tests {
         assert_eq!(load_inspector_width_in(&dir), 420.0);
         save_inspector_width_in(&dir, 500.0);
         assert_eq!(load_inspector_width_in(&dir), 500.0);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn score_weights_round_trip_and_missing_means_defaults() {
-        let dir = std::env::temp_dir().join(format!("ball-studio-weights-{}", std::process::id()));
-        let file = dir.join("score-weights.ron");
-        assert_eq!(load_weights_from(&file), None);
-        let taught = Parts { rhythm: 1.4, ..Parts::WEIGHTS };
-        save_weights_to(&file, &taught).unwrap();
-        assert_eq!(load_weights_from(&file), Some(taught));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

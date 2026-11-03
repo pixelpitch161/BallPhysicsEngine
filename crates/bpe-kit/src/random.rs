@@ -576,9 +576,7 @@ mod tests {
     #[test]
     fn shapes_and_arrangements_stay_put_until_close_to_all_new() {
         let reg = registry();
-        for (kind, key) in
-            [("balls", "arrangement"), ("arena", "shape")]
-        {
+        for (kind, key) in [("balls", "arrangement"), ("arena", "shape")] {
             let d = def(&reg, kind, key);
             assert!(d.flags.structural, "{kind}.{key} decides what the thing is");
             let ValueType::Choice(names) = d.ty else { panic!("{kind}.{key} is a choice") };
@@ -592,7 +590,6 @@ mod tests {
         let first = Value::Choice(names[0].into());
         assert!(rolls(&order, &first, 0.5, 50).iter().any(|v| *v != first), "other choices change half way");
     }
-
 
     #[test]
     fn rolls_never_make_additive_colours() {

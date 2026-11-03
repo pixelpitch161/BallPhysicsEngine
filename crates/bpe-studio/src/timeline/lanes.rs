@@ -108,7 +108,7 @@ mod tests {
         scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         scene.set_key(reg, &size, 2.0, Value::Number(60.0)).unwrap();
         scene.set_key(reg, &glow, 0.0, Value::Number(0.5)).unwrap();
-        scene.set_pulse(reg, &bloom, bpe_core::PulseSource::Beat, Value::Number(0.3), 0.25).unwrap();
+        scene.set_pulse(reg, &bloom, bpe_core::PulseSource::Hits, Value::Number(0.3), 0.25).unwrap();
         let resolved = resolve(&scene, reg);
         let labels = |selected| {
             lanes_for(&scene, &kit, &resolved, selected).into_iter().map(|l| (l.label, l.pulse)).collect::<Vec<_>>()

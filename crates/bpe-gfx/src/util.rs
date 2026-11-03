@@ -34,4 +34,3 @@ pub fn float_texture_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu
         count: None,
     }
 }
-

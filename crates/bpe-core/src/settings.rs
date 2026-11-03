@@ -80,34 +80,21 @@ pub const SECTION_ORDER: &[&str] = &[
     "Shape",
     "Style",
     "Burst",
-    "Paint trail",
-    "Splat",
-    "Scrape",
-    "Claim",
-    "Paint skin",
     "Each particle",
     "Across the group",
     "Colours",
     "Inside each one",
-    "Surface",
     "Light",
     "Motion",
     "Growing",
-    "Instrument",
-    "Notes",
-    "Which hits",
-    "On the beat",
-    "Level",
-    "Chords",
     "Other balls",
     "Against some things",
     "Variation",
-    "Channel",
     "Blending",
 ];
 
 /// The sections that stay folded until opened.
-pub const FOLDED_SECTIONS: &[&str] = &["Variation", "Blending", "Other balls", "Against some things", "Channel"];
+pub const FOLDED_SECTIONS: &[&str] = &["Variation", "Blending", "Other balls", "Against some things"];
 
 /// Where a group sits in [`SECTION_ORDER`]; a group ending in " variation" (a paint's own
 /// variation rows) ranks with "Variation". `None` for a group that is not a section.

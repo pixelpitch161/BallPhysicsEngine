@@ -2,26 +2,18 @@
 //! one card per slot. A shared module's card edits this thing's own overrides; an inherited card
 //! is read-only until the thing takes its own link.
 
-use crate::chords::{self, ChordClip};
 use crate::dice::dice_button;
-use crate::fx_list::{FxEdit, FxPlace};
-use crate::instruments::InstrumentEdit;
-use crate::nodes::cards;
 use crate::selection::Selection;
 use crate::theme;
 use crate::widgets::{
-    BUILT_IN_BASE, GridCx, KeyMark, MAKE_UNIQUE, MAKE_UNIQUE_INSTRUMENT, NEW_PATCH, NEW_PROGRESSION, STARTER_BASE,
-    SectionExtra, TargetChoices, extra_grid, fold_toggle, grid_label, label_cell, label_width, plays_built_in,
-    settings_grid, settings_grid_marked, settings_grid_sections, settings_like_grid, sub_heading, widget_cell,
+    GridCx, KeyMark, TargetChoices, fold_toggle, grid_label, label_width, settings_grid, settings_grid_marked,
+    settings_like_grid, widget_cell,
 };
 use bpe_core::{
-    Address, Attach, Bus, BusId, Color, Depth, FOLDED_SECTIONS, InstrumentId, InstrumentRef, InstrumentSource,
-    ModuleGraph, ModuleId, ModuleKind, Owner, ProgressionId, ProgressionRef, PulseSource, Resolved, SAME_TIME, Scene,
-    SettingDef, SettingValue, SlotId, SlotLink, ThingId, Transform, Value, ValueType, section_rank,
+    Address, Attach, Color, FOLDED_SECTIONS, ModuleId, ModuleKind, Owner, PulseSource, Resolved, SAME_TIME, Scene,
+    SettingDef, SlotId, SlotLink, ThingId, Transform, Value, ValueType, section_rank,
 };
-use bpe_graph::Graph;
 use bpe_kit::Kit;
-use bpe_kit::graphs::{bound_keys, module_graph};
 use eframe::egui::{self, DragValue, RichText, Ui};
 use std::collections::BTreeSet;
 
@@ -39,23 +31,6 @@ pub struct Inspector {
     pub keyed_edit: bool,
     /// Set when "Open in Library" was clicked; the app opens the Library window on it.
     pub open_library: Option<ModuleId>,
-    /// A card's Nodes switch was pressed: the node panel should open on this slot.
-    pub nodes_request: Option<(ThingId, SlotId)>,
-    /// What the node panel shows, so that card's switch shows Nodes as chosen.
-    pub nodes_open: Option<(ThingId, SlotId)>,
-    /// A Try it key asked to be heard this frame; the app plays it.
-    pub clip: Option<ChordClip>,
-    /// A card's "Edit patch" was pressed: the node panel should open on this patch.
-    pub patch_request: Option<InstrumentId>,
-    /// The keyboard strip's octave, once one is shown (C4 at first).
-    pub octave: Option<i8>,
-    /// Whether the Instrument section's "Try it" (the octave buttons and keyboard) is open.
-    pub try_open: bool,
-    /// A Chords section's "Edit" was pressed: the bottom panel should open the chord editor on
-    /// this progression, heard through this sound module.
-    pub chords_request: Option<(ProgressionId, ModuleId)>,
-    /// An effects list's "Open nodes" was pressed: the node panel should open on those effects.
-    pub fx_request: Option<FxPlace>,
     /// The card the jump bar was clicked on, scrolled to when its header is next drawn.
     pub jump_to: Option<Card>,
     /// Each card header's top in the last frame, relative to the scroll area's top.
@@ -85,25 +60,6 @@ impl Card {
             Card::Section(name) => (id, None, name),
             Card::Slot(slot) => (id, Some(slot), ""),
         }
-    }
-}
-
-/// A card's Nodes button.
-pub struct NodesSwitch {
-    pub enabled: bool,
-    pub open: bool,
-    /// Why it can't be pressed, when it can't.
-    pub hover: &'static str,
-}
-
-/// Why a slot's Nodes switch is off.
-fn no_nodes_yet(slot: SlotId) -> &'static str {
-    match slot {
-        SlotId::Look => "Look graphs can't be edited as nodes yet",
-        SlotId::Trail => "Trail graphs can't be edited as nodes yet",
-        SlotId::Particles => "Particle graphs can't be edited as nodes yet",
-        SlotId::Shader => "Shader graphs can't be edited as nodes yet",
-        _ => "Pick a module first",
     }
 }
 
@@ -144,29 +100,12 @@ enum Edit {
     MakeOwn(SlotId),
     Off(SlotId),
     AddSlot(SlotId),
-    /// Throw a module's graph edits away and go back to its settings.
-    Revert(ModuleId),
     /// Lock (true) or unlock a setting against the dice.
     Lock(Address, bool),
     /// Roll the dice on one card: the kind's own settings (`None`) or one slot.
     RollCard(Option<SlotId>),
     /// Roll the dice on one of the root's cards: its own settings in that group.
     RollGroup(&'static str),
-    /// A card edited the module's graph.
-    Graph(ModuleId, ModuleGraph),
-    /// An instrument section changed an instrument in the library.
-    Instrument(InstrumentId, bpe_core::Instrument),
-    /// A module's own value for one of its instrument's macros, or `None` to follow it again.
-    Macro(ModuleId, String, Option<f32>),
-    /// An instrument's own effects.
-    InstrumentFx(InstrumentId, Graph),
-    /// A sound module's channel inserts.
-    ChannelInserts(ModuleId, Graph),
-    /// How much a sound module sends to a bus in dB, or `None` for none.
-    Send(ModuleId, BusId, Option<f32>),
-    /// Every bus, after one was added, removed, renamed or changed.
-    Buses(Vec<Bus>),
-    MasterFx(Graph),
 }
 
 /// Where an edit to a slot's settings goes for one thing.
@@ -243,7 +182,6 @@ pub fn show(
     };
     let selected = selection.all(scene);
     let choices = TargetChoices::from_scene(scene, reg);
-    let bpm = bpe_kit::music::root_settings(resolved).bpm;
     let mut edits = Vec::new();
 
     let marked = jump_bar(ui, inspector, id, kind, &thing);
@@ -297,17 +235,12 @@ pub fn show(
         let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
         let cx = OwnCx { scene, kit, choices: &choices, id, thing: &thing, time, label_width: lw, applies: &applies };
         if id == ThingId::ROOT {
-            // The root's settings are six cards, one per group; the mix's buses and master
-            // effects sit in the last.
+            // The root's settings are one card per group.
             for (i, name) in bpe_kit::ROOT_CARDS.into_iter().enumerate() {
                 if i > 0 {
                     ui.add_space(6.0);
                 }
-                root_card(ui, inspector, &cx, name, &mut edits, |ui, inspector, edits| {
-                    if name == "Mix" {
-                        mix_sections(ui, scene, edits, &mut inspector.fx_request);
-                    }
-                });
+                root_card(ui, inspector, &cx, name, &mut edits);
             }
         } else {
             card(ui, |ui| {
@@ -513,17 +446,9 @@ pub fn show(
                     .response
                     .on_hover_text("Which module fills this slot");
                     ui.add_space(8.0);
-                    let nodes = NodesSwitch {
-                        enabled: bpe_kit::role_of(slot).is_some() && shown_module.is_some(),
-                        open: inspector.nodes_open == Some((id, slot)),
-                        hover: no_nodes_yet(slot),
-                    };
-                    if nodes_button(ui, nodes) {
-                        inspector.nodes_request = Some((id, slot));
-                    }
                     let editable =
                         matches!(write_target(scene, resolved, id, slot), Some(Write::Module(_) | Write::Override(..)));
-                    if editable && slot != SlotId::Rules {
+                    if editable {
                         ui.add_space(8.0);
                         if dice_button(ui, "Randomize these settings").clicked() {
                             edits.push(Edit::RollCard(Some(slot)));
@@ -552,9 +477,6 @@ pub fn show(
                     return;
                 };
                 let Some(mkind) = reg.module(&m.kind) else { return };
-                // Every setting shows; the depth only matters to graph cards.
-                let depth = Depth::More;
-                let inherited = matches!(write, Write::Inherited { .. });
                 let physics = matches!(slot, SlotId::Motion | SlotId::Bounce);
                 let of_module = |key: &str| Address { owner: Owner::Module(module), slot: None, key: key.into() };
                 let of_thing = |key: &str| Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
@@ -563,68 +485,13 @@ pub fn show(
                     mark_for(scene, def, a, time, physics)
                 };
                 ui.add_space(4.0);
-                if slot == SlotId::Rules {
-                    // Rules are their graph: sentences on the card, blocks in the panel. The
-                    // graph is the module's, so an inherited card only reads it.
-                    let Some(mut g) = m.graph.clone().or_else(|| module_graph(mkind, m)) else { return };
-                    if inherited && make_own(ui).clicked() {
-                        edits.push(Edit::MakeOwn(slot));
-                    }
-                    let out = ui.add_enabled_ui(!inherited, |ui| {
-                        cards::rules_card(ui, ("rules", id, slot), &mut g, scene, depth)
-                    });
-                    if out.inner.changed && !inherited {
-                        g.custom = true;
-                        edits.push(Edit::Graph(module, g));
-                    }
-                    if out.inner.open_nodes {
-                        inspector.nodes_request = Some((id, slot));
-                    }
-                    return;
-                }
-                // A module edited as nodes shows its graph's setting blocks; the settings the
-                // graph doesn't bind, such as the instrument, stay native.
-                let custom = match (m.graph.as_ref().filter(|g| g.custom), bpe_kit::role_of(slot)) {
-                    (Some(g), Some(role)) => Some((g.clone(), role)),
-                    _ => None,
-                };
-                let bound = match custom {
-                    Some(_) => mkind.template().map(|t| bound_keys(&t)).unwrap_or_default(),
-                    None => Default::default(),
-                };
-                let unbound: Vec<SettingDef> =
-                    mkind.settings().iter().filter(|d| !bound.contains(d.key)).cloned().collect();
-                let defs: &[SettingDef] = if custom.is_some() { &unbound } else { mkind.settings() };
+                let defs = mkind.settings();
                 debug_assert!(
                     unknown_groups(defs).is_empty(),
                     "{} has groups that are not sections: {:?}",
                     m.kind,
                     unknown_groups(defs)
                 );
-                if let Some((mut g, role)) = custom {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("Edited as nodes").small().color(theme::ACCENT_TEXT)).on_hover_text(
-                            "This module runs its graph. These are the graph's own settings; open Nodes to see it.",
-                        );
-                        if !inherited
-                            && ui
-                                .small_button("Revert to template")
-                                .on_hover_text("Throw the graph edits away and go back to the module's settings")
-                                .clicked()
-                        {
-                            edits.push(Edit::Revert(module));
-                        }
-                    });
-                    let catalog = bpe_vm::catalog(role);
-                    let changed = ui
-                        .add_enabled_ui(!inherited, |ui| {
-                            cards::graph_settings(ui, ("graph", id, slot), &mut g, catalog, depth, scene)
-                        })
-                        .inner;
-                    if changed && !inherited {
-                        edits.push(Edit::Graph(module, g));
-                    }
-                }
                 match write {
                     Write::Module(_) => {
                         let get = |key: &str| {
@@ -635,8 +502,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_module(k), time))
                         };
-                        let extras = if slot == SlotId::Sound { sound_extras(scene, defs, module) } else { Vec::new() };
-                        let shut = folded_groups(inspector, (id, Some(slot)), defs, &extras);
+                        let shut = folded_groups(inspector, (id, Some(slot)), defs);
                         let folded = |group: &str| shut.contains(group);
                         let cx = GridCx {
                             choices: &choices,
@@ -648,14 +514,7 @@ pub fn show(
                             folded: Some(&folded),
                             label_width: lw,
                         };
-                        let out = if extras.is_empty() {
-                            settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
-                        } else {
-                            let card = SoundCard { scene, defs, get: &get, module, bpm, lw };
-                            settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
-                                sound_section(ui, group, &card, inspector, &mut edits)
-                            })
-                        };
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.toggled_key.into_iter().map(|key| Edit::ToggleKey(of_module(key))));
@@ -679,8 +538,7 @@ pub fn show(
                         let applies = |d: &SettingDef| {
                             d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &of_thing(k), time))
                         };
-                        let extras = if slot == SlotId::Sound { sound_extras(scene, defs, module) } else { Vec::new() };
-                        let shut = folded_groups(inspector, (id, Some(slot)), defs, &extras);
+                        let shut = folded_groups(inspector, (id, Some(slot)), defs);
                         let folded = |group: &str| shut.contains(group);
                         let cx = GridCx {
                             choices: &choices,
@@ -692,14 +550,7 @@ pub fn show(
                             folded: Some(&folded),
                             label_width: lw,
                         };
-                        let out = if extras.is_empty() {
-                            settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx)
-                        } else {
-                            let card = SoundCard { scene, defs, get: &get, module, bpm, lw };
-                            settings_grid_sections(ui, ("slot", id, slot), defs, get, &cx, &extras, &mut |ui, group| {
-                                sound_section(ui, group, &card, inspector, &mut edits)
-                            })
-                        };
+                        let out = settings_grid_marked(ui, ("slot", id, slot), defs, get, &cx);
                         fold_groups(inspector, (id, Some(slot)), &out.folds);
                         edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
                         edits.extend(out.resets.into_iter().map(|key| Edit::ResetOverride(slot, key)));
@@ -769,8 +620,6 @@ pub fn show(
 
     let mut changed = false;
     for edit in edits {
-        let edit = make_picked_progression(scene, reg, id, time, edit);
-        let edit = make_picked_instrument(scene, reg, id, time, edit);
         // A folder's followers keep what they used when its slot changes under them.
         let reslotted = matches!(edit, Edit::Link(..) | Edit::NewModule { .. } | Edit::Follow(_) | Edit::Off(_));
         let before = (reslotted && !scene.children(id).is_empty()).then(|| bpe_core::resolve(scene, reg));
@@ -779,29 +628,6 @@ pub fn show(
                 scene.set_thing_name(id, &name);
                 true
             }
-            Edit::Instrument(iid, i) => scene.set_instrument(iid, i).is_ok(),
-            Edit::Macro(module, key, value) => scene.set_macro(module, &key, value).is_ok(),
-            Edit::InstrumentFx(iid, g) => FxPlace::Instrument(iid).set(scene, g),
-            Edit::ChannelInserts(module, g) => FxPlace::Channel(module).set(scene, g),
-            Edit::Send(module, bus, db) => match scene.library.modules.get_mut(&module) {
-                Some(m) => {
-                    match db {
-                        Some(db) => m.channel.sends.insert(bus, db),
-                        None => m.channel.sends.remove(&bus),
-                    };
-                    true
-                }
-                None => false,
-            },
-            Edit::Buses(buses) => {
-                // Sends to a bus that went go with it.
-                for m in scene.library.modules.values_mut() {
-                    m.channel.sends.retain(|id, _| buses.iter().any(|b| b.id == *id));
-                }
-                scene.library.buses = buses;
-                true
-            }
-            Edit::MasterFx(g) => FxPlace::Master.set(scene, g),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -903,28 +729,6 @@ pub fn show(
                 true
             }
             Edit::AddSlot(slot) => bpe_kit::fill_slot(scene, reg, id, slot).is_ok(),
-            Edit::Graph(module, g) => match scene.library.modules.get_mut(&module) {
-                Some(m) => {
-                    m.graph = Some(g);
-                    if let Some(kind) = reg.module(&m.kind)
-                        && let Some(graph) = m.graph.as_ref().map(|g| g.graph.clone())
-                    {
-                        crate::nodes::panel::sync_params(&graph, m, kind);
-                    }
-                    true
-                }
-                None => false,
-            },
-            Edit::Revert(module) => match scene.library.modules.get_mut(&module) {
-                Some(m) => match reg.module(&m.kind) {
-                    Some(kind) => {
-                        crate::nodes::panel::revert_to_template(m, kind);
-                        true
-                    }
-                    None => false,
-                },
-                None => false,
-            },
             Edit::Lock(address, lock) => scene.set_locked(address, lock),
             Edit::RollCard(slot) => {
                 use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
@@ -1017,7 +821,7 @@ fn placement_rows(
     let right = ui.available_rect_before_wrap().right();
     settings_like_grid(("placement", thing.id)).show(ui, |ui| {
         position_rows(ui, scene, thing, lw, right, edits);
-        if kind.can_stick_to_screen() && !matches!(kind.id(), "liquid" | "swarm") {
+        if kind.can_stick_to_screen() {
             let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a caption");
             let mut on = thing.sticks_to_screen(kind);
@@ -1127,12 +931,15 @@ fn eye_toggle(ui: &mut Ui, shown: bool) -> bool {
 
 /// What a setting's diamond shows, or `None` for a setting that can't be keyed or pulsed.
 fn mark_for(scene: &Scene, def: &SettingDef, a: &Address, time: f64, physics: bool) -> Option<KeyMark> {
-    if !def.flags.keyframe && !def.flags.pulse {
+    // Hits are the only pulse, and a setting that moves the physics can't follow them; one that
+    // pulses anyway keeps its menu so the pulse can be taken off.
+    let can_pulse = def.flags.pulse && (!physics || scene.pulses.contains_key(a));
+    if !def.flags.keyframe && !can_pulse {
         return None;
     }
     Some(KeyMark {
         can_key: def.flags.keyframe,
-        can_pulse: def.flags.pulse,
+        can_pulse,
         keyed: scene.keyed(a),
         on_key: scene.tracks.get(a).and_then(|t| t.key_near(time, SAME_TIME)).is_some(),
         pulsed: scene.pulses.contains_key(a),
@@ -1159,213 +966,6 @@ pub(crate) fn pulse_amount(def: &SettingDef) -> Value {
         (ValueType::Color, _) => Value::Color(Color::WHITE),
         _ => Value::Number(quarter),
     }
-}
-
-/// What a Sound card's own sections read.
-struct SoundCard<'a> {
-    scene: &'a Scene,
-    defs: &'a [SettingDef],
-    get: &'a dyn Fn(&str) -> Value,
-    module: ModuleId,
-    bpm: f32,
-    /// The label column's width, so the sections' own rows line up with the settings.
-    lw: f32,
-}
-
-/// The sections of a Sound card that end with widgets of their own: the instrument's section and
-/// Try it, the Chords button, and the channel.
-fn sound_extras(scene: &Scene, defs: &[SettingDef], module: ModuleId) -> Vec<SectionExtra> {
-    let has = |ty: ValueType| defs.iter().any(|d| d.ty == ty);
-    let m = scene.library.modules.get(&module);
-    let mut extras = Vec::new();
-    if has(ValueType::Instrument) {
-        // The module's own macro values are the instrument's knobs changed here.
-        let changed = m.is_some_and(|m| !m.macros.is_empty());
-        extras.push(SectionExtra { group: "Instrument", changed, hover: None });
-    }
-    if has(ValueType::Progression) {
-        extras.push(SectionExtra { group: "Chords", changed: false, hover: None });
-    }
-    let channel = m.map(|m| &m.channel);
-    let changed = channel.is_some_and(|c| !c.inserts.nodes.is_empty() || c.sends.values().any(|&db| db > SEND_OFF));
-    let hover = Some("Effects on everything this sound plays, and how much goes to each bus");
-    extras.push(SectionExtra { group: "Channel", changed, hover });
-    extras
-}
-
-/// Draws the widgets at the end of a Sound card's section `group`.
-fn sound_section(ui: &mut Ui, group: &str, card: &SoundCard, inspector: &mut Inspector, edits: &mut Vec<Edit>) {
-    let SoundCard { scene, defs, get, module, bpm, lw } = *card;
-    match group {
-        "Instrument" => {
-            instrument_section(
-                ui,
-                scene,
-                defs,
-                get,
-                module,
-                lw,
-                edits,
-                &mut inspector.patch_request,
-                &mut inspector.fx_request,
-            );
-            if let Some(key) = try_it(ui, &mut inspector.try_open, &mut inspector.octave) {
-                let instrument = InstrumentRef::from_value(&get("instrument")).and_then(|r| r.0);
-                let clip = chords::clip_for(Vec::new(), bpm, scene, Some(module), instrument);
-                inspector.clip = Some(ChordClip { key: Some(key), ..clip });
-            }
-        }
-        "Chords" => {
-            if let Some(pid) = chords_section(ui, scene, defs, get, lw) {
-                inspector.chords_request = Some((pid, module));
-            }
-        }
-        "Channel" => channel_section(ui, scene, module, lw, edits, &mut inspector.fx_request),
-        _ => {}
-    }
-}
-
-/// A Chords section's end: the "Edit" button, in the widget column under the Chords picker,
-/// that opens the chord editor on the progression the section picks. It is off, with a line
-/// saying so, while the section plays the built-in starter chords. The progression comes back
-/// when Edit is pressed.
-fn chords_section(
-    ui: &mut Ui,
-    scene: &Scene,
-    defs: &[SettingDef],
-    get: &dyn Fn(&str) -> Value,
-    lw: f32,
-) -> Option<ProgressionId> {
-    let right = ui.available_rect_before_wrap().right();
-    let mut open = None;
-    for def in defs.iter().filter(|d| d.ty == ValueType::Progression) {
-        let picked = ProgressionRef::from_value(&get(def.key)).and_then(|r| r.0);
-        let picked = picked.filter(|pid| scene.library.progressions.contains_key(pid));
-        if picked.is_none() {
-            ui.label(
-                RichText::new("Plays the built-in starter chords. Pick Make unique to edit a copy.")
-                    .small()
-                    .color(theme::MUTED),
-            );
-        }
-        let edit = extra_grid(("chords", def.key))
-            .show(ui, |ui| {
-                label_cell(ui, lw, |_| {});
-                widget_cell(ui, right, |ui| ui.add_enabled(picked.is_some(), egui::Button::new("Edit")))
-            })
-            .inner
-            .on_hover_text("Open the chord editor under the preview")
-            .on_disabled_hover_text("Pick or make a progression to edit it");
-        if edit.clicked() {
-            open = picked;
-        }
-    }
-    open
-}
-
-/// The end of a card's Instrument section: the section for the instrument it picks, or a line
-/// saying it plays the built-in Pluck.
-#[allow(clippy::too_many_arguments)]
-fn instrument_section(
-    ui: &mut Ui,
-    scene: &Scene,
-    defs: &[SettingDef],
-    get: &dyn Fn(&str) -> Value,
-    module: ModuleId,
-    lw: f32,
-    edits: &mut Vec<Edit>,
-    patch_request: &mut Option<InstrumentId>,
-    fx_request: &mut Option<FxPlace>,
-) {
-    for def in defs.iter().filter(|d| d.ty == ValueType::Instrument) {
-        let picked = InstrumentRef::from_value(&get(def.key)).and_then(|r| r.0);
-        let Some(iid) = picked.filter(|i| scene.library.instruments.contains_key(i)) else {
-            ui.label(
-                RichText::new("Plays the built-in Pluck. Pick Make unique to shape a copy.")
-                    .small()
-                    .color(theme::MUTED),
-            );
-            continue;
-        };
-        for edit in crate::instruments::show(ui, scene, module, iid, lw) {
-            match edit {
-                InstrumentEdit::Set(i, instrument) => edits.push(Edit::Instrument(i, *instrument)),
-                InstrumentEdit::Macro(key, value) => edits.push(Edit::Macro(module, key, value)),
-                InstrumentEdit::EditPatch(i) => *patch_request = Some(i),
-                InstrumentEdit::Fx(i, g) => edits.push(Edit::InstrumentFx(i, g)),
-                InstrumentEdit::OpenFx(i) => *fx_request = Some(FxPlace::Instrument(i)),
-            }
-        }
-    }
-}
-
-/// "Try it": folded, or the octave buttons and the keyboard strip to hear the instrument. A key
-/// pressed on the strip comes back.
-fn try_it(ui: &mut Ui, open: &mut bool, octave: &mut Option<i8>) -> Option<u8> {
-    if sub_heading(ui, "Try it", *open, "Play the instrument from a keyboard") {
-        *open = !*open;
-    }
-    if !*open {
-        return None;
-    }
-    crate::keyboard::show(ui, octave.get_or_insert(4))
-}
-
-/// The lowest send; at it the send is off.
-const SEND_OFF: f32 = -60.0;
-
-/// The end of a Sound card's Channel section: the module's inserts and its sends to each bus.
-/// Its pan is a setting, so the Level rows draw it.
-fn channel_section(
-    ui: &mut Ui,
-    scene: &Scene,
-    module: ModuleId,
-    lw: f32,
-    edits: &mut Vec<Edit>,
-    fx_request: &mut Option<FxPlace>,
-) {
-    let Some(m) = scene.library.modules.get(&module) else { return };
-    let right = ui.available_rect_before_wrap().right();
-    ui.push_id(("channel", module), |ui| {
-        ui.label(RichText::new("Inserts").small().color(theme::MUTED));
-        match crate::fx_list::show(
-            ui,
-            &m.channel.inserts,
-            "inserts",
-            &crate::follow_menu::follow_names(scene, Some(module)),
-        ) {
-            FxEdit::Set(g) => edits.push(Edit::ChannelInserts(module, g)),
-            FxEdit::OpenNodes => *fx_request = Some(FxPlace::Channel(module)),
-            FxEdit::None => {}
-        }
-        if scene.library.buses.is_empty() {
-            return;
-        }
-        ui.label(RichText::new("Sends").small().color(theme::MUTED));
-        extra_grid("sends").show(ui, |ui| {
-            for bus in &scene.library.buses {
-                let label = label_cell(ui, lw, |ui| ui.label(bus.name.as_str()));
-                let before = m.channel.sends.get(&bus.id).copied();
-                let mut db = before.unwrap_or(SEND_OFF);
-                ui.spacing_mut().slider_width = 140.0;
-                let slider = egui::Slider::new(&mut db, SEND_OFF..=6.0)
-                    .step_by(0.5)
-                    .max_decimals(1)
-                    .custom_formatter(|v, _| if v <= SEND_OFF as f64 { "off".into() } else { format!("{v:.1} dB") })
-                    .custom_parser(|t| match t.trim() {
-                        "off" => Some(SEND_OFF as f64),
-                        t => t.trim_end_matches("dB").trim().parse().ok(),
-                    });
-                if widget_cell(ui, right, |ui| ui.add(slider)).labelled_by(label.id).changed() {
-                    let after = (db > SEND_OFF).then_some(db);
-                    if after != before {
-                        edits.push(Edit::Send(module, bus.id, after));
-                    }
-                }
-                ui.end_row();
-            }
-        });
-    });
 }
 
 /// What drawing a thing's own settings reads.
@@ -1421,16 +1021,8 @@ fn own_grid(
 }
 
 /// One of the root's cards: the root's own settings whose group is `name`, under a title that
-/// folds them away, with dice when any of them can be rolled. `under` draws what the card holds
-/// beneath its settings.
-fn root_card(
-    ui: &mut Ui,
-    inspector: &mut Inspector,
-    cx: &OwnCx,
-    name: &'static str,
-    edits: &mut Vec<Edit>,
-    under: impl FnOnce(&mut Ui, &mut Inspector, &mut Vec<Edit>),
-) {
+/// folds them away, with dice when any of them can be rolled.
+fn root_card(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, name: &'static str, edits: &mut Vec<Edit>) {
     let Some(kind) = cx.kit.registry.thing(&cx.thing.kind) else { return };
     // Blanked, so no heading inside repeats the card's title.
     let defs: Vec<SettingDef> =
@@ -1449,180 +1041,8 @@ fn root_card(
         card_header(ui, inspector, card_kind, &header.response);
         if header.inner {
             own_grid(ui, inspector, cx, ("kind", cx.id, name), &defs, edits);
-            under(ui, inspector, edits);
         }
     });
-}
-
-/// The Mix card's sections under its settings: the buses, then the master effects.
-fn mix_sections(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
-    ui.add_space(8.0);
-    buses_section(ui, scene, edits, fx_request);
-    ui.add_space(8.0);
-    ui.label(RichText::new("Master effects").strong())
-        .on_hover_text("Run over the whole mix, before the loudness and the limiter");
-    match crate::fx_list::show(
-        ui,
-        &scene.library.master_fx,
-        "master fx",
-        &crate::follow_menu::follow_names(scene, None),
-    ) {
-        FxEdit::Set(g) => edits.push(Edit::MasterFx(g)),
-        FxEdit::OpenNodes => *fx_request = Some(FxPlace::Master),
-        FxEdit::None => {}
-    }
-}
-
-/// The scene's buses: each one's name, volume and effects, with Add bus at the end.
-fn buses_section(ui: &mut Ui, scene: &Scene, edits: &mut Vec<Edit>, fx_request: &mut Option<FxPlace>) {
-    ui.label(RichText::new("Buses").strong())
-        .on_hover_text("Shared effects, like one reverb, that sounds send to by their Sends");
-    let channels = crate::follow_menu::follow_names(scene, None);
-    let mut buses = scene.library.buses.clone();
-    let mut changed = false;
-    let mut remove = None;
-    for (i, bus) in buses.iter_mut().enumerate() {
-        ui.push_id(("bus", bus.id), |ui| {
-            egui::Grid::new("bus").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                let name = ui.label("Name");
-                ui.horizontal(|ui| {
-                    let edit = egui::TextEdit::singleline(&mut bus.name).desired_width(140.0);
-                    changed |= ui.add(edit).labelled_by(name.id).changed();
-                    if ui.small_button("Remove").on_hover_text("Remove this bus and every send to it").clicked() {
-                        remove = Some(i);
-                    }
-                });
-                ui.end_row();
-                let volume = ui.label("Volume");
-                ui.spacing_mut().slider_width = 140.0;
-                let slider =
-                    egui::Slider::new(&mut bus.volume, -60.0..=12.0).step_by(0.5).max_decimals(1).suffix(" dB");
-                changed |= ui.add(slider).labelled_by(volume.id).changed();
-                ui.end_row();
-            });
-            let count = bpe_synth::straight_chain(&bus.fx).map_or("custom".to_owned(), |c| c.len().to_string());
-            egui::CollapsingHeader::new(format!("Effects ({count})")).id_salt("fx").show(ui, |ui| {
-                match crate::fx_list::show(ui, &bus.fx, "list", &channels) {
-                    FxEdit::Set(g) => {
-                        bus.fx = g;
-                        changed = true;
-                    }
-                    FxEdit::OpenNodes => *fx_request = Some(FxPlace::Bus(bus.id)),
-                    FxEdit::None => {}
-                }
-            });
-            ui.separator();
-        });
-    }
-    if let Some(i) = remove {
-        buses.remove(i);
-        changed = true;
-    }
-    if ui.button("Add bus").on_hover_text("A new bus with no effects yet").clicked() {
-        let id = BusId(buses.iter().map(|b| b.id.0 + 1).max().unwrap_or(0));
-        buses.push(Bus { id, name: format!("Bus {}", buses.len() + 1), volume: 0.0, fx: Graph::default() });
-        changed = true;
-    }
-    if changed {
-        edits.push(Edit::Buses(buses));
-    }
-}
-
-/// A Chords row's "New progression" or "Make unique" becomes a pick of a progression made for
-/// it: a starter, or a copy of the one the row shows.
-fn make_picked_progression(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
-    let (slot, key, value) = match &edit {
-        Edit::SetOwn(key, value) => (None, *key, value),
-        Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
-        _ => return edit,
-    };
-    let Value::Int(pick @ (NEW_PROGRESSION | MAKE_UNIQUE)) = *value else { return edit };
-    let made =
-        if pick == NEW_PROGRESSION {
-            Some(scene.add_progression(bpe_core::Progression {
-                name: "New chords".into(),
-                ..bpe_core::Progression::starter()
-            }))
-        } else {
-            let here = Address { owner: Owner::Thing(id), slot, key: key.into() };
-            let shown =
-                scene.value_at_time(reg, &here, time).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0);
-            match shown.filter(|p| scene.library.progressions.contains_key(p)) {
-                Some(p) => scene.copy_progression(p).ok(),
-                // Nothing picked plays the starter chords: its copy is a library starter.
-                None => Some(scene.add_progression(bpe_core::Progression {
-                    name: "Starter copy".into(),
-                    ..bpe_core::Progression::starter()
-                })),
-            }
-        };
-    let value = made.map_or(Value::Int(-1), |p| ProgressionRef(Some(p)).to_value());
-    match slot {
-        None => Edit::SetOwn(key, value),
-        Some(slot) => Edit::SetSlot(slot, key, value),
-    }
-}
-
-/// An Instrument row's built-in, starter, "New patch" or "Make unique" pick becomes a pick of a
-/// library instrument made for it: a built-in is shared with whatever already plays it.
-fn make_picked_instrument(scene: &mut Scene, reg: &bpe_core::Registry, id: ThingId, time: f64, edit: Edit) -> Edit {
-    let (slot, key, value) = match &edit {
-        Edit::SetOwn(key, value) => (None, *key, value),
-        Edit::SetSlot(slot, key, value) => (Some(*slot), *key, value),
-        _ => return edit,
-    };
-    let is_instrument = |d: &SettingDef| d.key == key && d.ty == ValueType::Instrument;
-    let defs = match slot {
-        None => scene.things.get(&id).and_then(|t| reg.thing(&t.kind)).map(|k| k.settings()),
-        Some(slot) => {
-            let a = Address { owner: Owner::Thing(id), slot: Some(slot), key: key.into() };
-            scene.def_at(reg, &a).map(std::slice::from_ref)
-        }
-    };
-    if !defs.is_some_and(|d| d.iter().any(is_instrument)) {
-        return edit;
-    }
-    let Value::Int(pick) = *value else { return edit };
-    let starters = || bpe_synth::starters();
-    let made = match pick {
-        NEW_PATCH => Some(scene.add_instrument(bpe_core::Instrument {
-            fx: Default::default(),
-            name: "New patch".into(),
-            source: InstrumentSource::Patch { graph: bpe_synth::blank_patch() },
-            voices: Default::default(),
-        })),
-        MAKE_UNIQUE_INSTRUMENT => {
-            let here = Address { owner: Owner::Thing(id), slot, key: key.into() };
-            let shown =
-                scene.value_at_time(reg, &here, time).and_then(|v| InstrumentRef::from_value(&v)).and_then(|r| r.0);
-            match shown.filter(|i| scene.library.instruments.contains_key(i)) {
-                Some(i) => scene.copy_instrument(i).ok(),
-                // Nothing picked plays the built-in Pluck: its copy is a library Pluck.
-                None => Some(scene.add_instrument(bpe_kit::built_in_instrument(bpe_mix::Instrument::Pluck))),
-            }
-        }
-        p if p <= STARTER_BASE => {
-            let all = starters();
-            all.into_iter().nth((STARTER_BASE - p) as usize).map(|(name, graph, voices)| {
-                scene.add_instrument(bpe_core::Instrument {
-                    fx: Default::default(),
-                    name: name.into(),
-                    source: InstrumentSource::Patch { graph },
-                    voices,
-                })
-            })
-        }
-        p if p <= BUILT_IN_BASE => bpe_mix::Instrument::ALL.get((BUILT_IN_BASE - p) as usize).map(|&which| {
-            let found = scene.library.instruments.iter().find(|(_, i)| plays_built_in(i, which)).map(|(i, _)| *i);
-            found.unwrap_or_else(|| scene.add_instrument(bpe_kit::built_in_instrument(which)))
-        }),
-        _ => return edit,
-    };
-    let value = made.map_or(Value::Int(-1), |i| InstrumentRef(Some(i)).to_value());
-    match slot {
-        None => Edit::SetOwn(key, value),
-        Some(slot) => Edit::SetSlot(slot, key, value),
-    }
 }
 
 fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing)) -> bool {
@@ -1633,14 +1053,6 @@ fn set_thing(scene: &mut Scene, id: ThingId, f: impl FnOnce(&mut bpe_core::Thing
         }
         None => false,
     }
-}
-
-/// The Nodes button: it opens the node panel on the card's module; true when it was pressed.
-pub(crate) fn nodes_button(ui: &mut Ui, nodes: NodesSwitch) -> bool {
-    ui.add_enabled(nodes.enabled, egui::Button::selectable(nodes.open, "Nodes"))
-        .on_hover_text("Edit this module as blocks and wires, in the panel under the preview")
-        .on_disabled_hover_text(nodes.hover)
-        .clicked()
 }
 
 /// The arrow at the left of a card's title that folds the card's settings away and back. True
@@ -1673,16 +1085,13 @@ fn is_folded(inspector: &Inspector, (id, slot): (ThingId, Option<SlotId>), group
     if quiet(group) { !has(&inspector.opened) } else { has(&inspector.collapsed) }
 }
 
-/// The groups of a card's settings, and of its sections with widgets of their own, that are
-/// folded shut, as [`is_folded`] says.
+/// The groups of a card's settings that are folded shut, as [`is_folded`] says.
 fn folded_groups(
     inspector: &Inspector,
     card: (ThingId, Option<SlotId>),
     defs: &[SettingDef],
-    extras: &[SectionExtra],
 ) -> BTreeSet<&'static str> {
-    let groups = defs.iter().map(|d| d.group).chain(extras.iter().map(|e| e.group));
-    groups.filter(|g| !g.is_empty() && is_folded(inspector, card, g)).collect()
+    defs.iter().map(|d| d.group).filter(|g| !g.is_empty() && is_folded(inspector, card, g)).collect()
 }
 
 /// Folds shut or opens the groups of a card's settings, as their headings asked.
@@ -1699,7 +1108,7 @@ fn fold_groups(inspector: &mut Inspector, (id, slot): (ThingId, Option<SlotId>),
 }
 
 /// The groups of a module's settings that are not sections, for the debug check that every
-/// group is one. Every slot's modules, Sound's too, should have none.
+/// group is one. Every slot's modules should have none.
 fn unknown_groups(defs: &[SettingDef]) -> Vec<&'static str> {
     defs.iter().map(|d| d.group).filter(|g| !g.is_empty() && section_rank(g).is_none()).collect()
 }
@@ -1795,7 +1204,6 @@ fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 mod tests {
     use super::*;
     use bpe_core::{Resolved, Settings, SlotId, SlotLink, Value, resolve};
-    use bpe_kit::graphs::module_graph;
     use bpe_kit::resolve_scene;
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
@@ -1811,13 +1219,6 @@ mod tests {
         resolved: Resolved,
         selection: Selection,
         time: f64,
-    }
-
-    #[test]
-    fn the_switch_says_why_a_slot_has_no_nodes() {
-        assert_eq!(no_nodes_yet(SlotId::Look), "Look graphs can't be edited as nodes yet");
-        assert_eq!(no_nodes_yet(SlotId::Shader), "Shader graphs can't be edited as nodes yet");
-        assert_eq!(no_nodes_yet(SlotId::Motion), "Pick a module first");
     }
 
     fn harness(selected: Option<ThingId>) -> Harness<'static, State> {
@@ -1986,7 +1387,7 @@ mod tests {
         let look_before = h.state().scene.library.modules[&module].params.clone();
         assert_eq!(h.state().scene.things[&ThingId(2)].params.get("radius"), None, "the size starts at its default");
         // The ball has a die on its own settings and on each of its own cards.
-        assert_eq!(h.get_all_by_label("Randomize these settings").count(), 5);
+        assert_eq!(h.get_all_by_label("Randomize these settings").count(), 4);
         h.get_all_by_label("Randomize these settings").next().expect("the kind's own die").click();
         h.run();
         let s = h.state();
@@ -2055,16 +1456,16 @@ mod tests {
         // Size can't pulse, so its diamond has no menu; the scene's bloom can.
         h.get_by_label("Keyframe Size").click_secondary();
         h.run();
-        assert!(h.query_by_label("Pulse with beat").is_none());
+        assert!(h.query_by_label("Pulse with hits").is_none());
         h.state_mut().selection.set(ThingId::ROOT);
         h.run();
         h.get_by_label("Keyframe Bloom").click_secondary();
         h.run();
-        h.get_by_label("Pulse with beat").click();
+        h.get_by_label("Pulse with hits").click();
         h.run();
         let bloom = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bloom".into() };
         let pulse = &h.state().scene.pulses[&bloom];
-        assert_eq!((pulse.source, &pulse.amount), (PulseSource::Beat, &Value::Number(0.25)));
+        assert_eq!((pulse.source, &pulse.amount), (PulseSource::Hits, &Value::Number(0.25)));
         let gravity = bpe_kit::SceneSettings::defs().iter().find(|d| d.key == "gravity").unwrap();
         assert_eq!(pulse_amount(gravity), Value::Vec2([0.0, 125.0]), "gravity");
         h.get_by_label("Keyframe Bloom").click_secondary();
@@ -2126,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_module_is_picked_by_kind_when_a_slot_has_several() {
+    fn a_new_module_for_an_added_slot_is_made_from_its_picker() {
         let mut h = harness(Some(ThingId(2)));
         h.get_by_label("+ Add slot").click();
         h.run();
@@ -2142,30 +1543,17 @@ mod tests {
         let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
         assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
         assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
-        // The ball's Sound has several kinds: the submenu names them, and a different kind keeps
-        // only the settings both kinds share, such as the volume.
-        let notes = s.scene.library.modules[&ball_sound(&s.scene)].params.clone();
-        h.get_by_label("Ball sound").click();
-        h.run();
-        h.get_by_label("New Sound module").click();
-        h.run();
-        h.get_by_label("Melody").click();
-        h.run();
-        let s = h.state();
-        let m = &s.scene.library.modules[&ball_sound(&s.scene)];
-        assert_eq!(m.kind, "sound.melody");
-        assert_eq!(m.params, s.kit.registry.carry_over(&notes, "sound.melody"));
     }
 
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_a_starter() {
         let mut h = harness(Some(ThingId(2)));
-        // Trail, Shader and Rules have module kinds and aren't shown on a new ball, so there is
-        // something to add.
+        // Trail, Particles and Shader have module kinds and aren't shown on a new ball, so there
+        // is something to add.
         assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.get_by_label("+ Add slot").click();
         h.run();
-        assert!(h.query_by_label("Rules").is_some());
+        assert!(h.query_by_label("Particles").is_some());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
         h.get_by_label("+ Add slot").click();
@@ -2182,28 +1570,13 @@ mod tests {
     }
 
     #[test]
-    fn the_new_module_menu_lists_every_kind_that_fits_the_thing() {
+    fn the_new_module_menu_of_a_one_kind_slot_makes_the_module_at_once() {
         let mut h = harness(Some(ThingId(2)));
-        // A swarm's or a liquid's look doesn't fit a ball, so its Look has one kind.
         h.get_by_label("Ball look").click();
         h.run();
         assert!(h.query_by_label("New Look module…").is_some());
-        assert!(h.query_by_label("Liquid surface").is_none());
         h.key_press(egui::Key::Escape);
         h.run();
-        h.get_by_label("Ball sound").click();
-        h.run();
-        h.get_by_label("New Sound module").click();
-        h.run();
-        for name in ["Notes", "Melody", "Drum machine"] {
-            assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
-        }
-        h.get_all_by_label("Drum machine").last().unwrap().click();
-        h.run();
-        let s = h.state();
-        let module = ball_sound(&s.scene);
-        assert_eq!(s.scene.library.modules[&module].kind, "sound.drums");
-        assert_eq!(s.scene.library.modules[&module].name, "Ball Sound");
         // Bounce has one kind, so its menu keeps the plain button that makes the module at once.
         h.get_by_label("Ball bounce").click();
         h.run();
@@ -2419,48 +1792,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_settings_shows_music_effects_rules_and_no_chords() {
-        let mut h = harness(Some(ThingId::ROOT));
-        assert!(h.query_by_label("Chords").is_none());
-        assert!(h.query_by_label_contains("Plays Scene").is_none());
-        assert!(h.query_by_label_contains("settings settings").is_none(), "the card isn't named twice");
-        h.get_by_label("+ Add slot").click();
-        h.run();
-        for slot in ["Sound", "Effects", "Rules"] {
-            assert!(h.query_by_label(slot).is_some(), "{slot} can be added");
-        }
-        for slot in ["Look", "Motion", "Bounce", "Shader", "Trail", "Particles"] {
-            assert!(h.query_by_label(slot).is_none(), "{slot} is not on Scene settings");
-        }
-        // "Music" is the card of the scene's music settings; the menu doesn't offer it as a slot.
-        let menu_music =
-            h.get_all_by_role_and_label(Role::Button, "Music").filter(|n| n.accesskit_node().toggled().is_none());
-        assert_eq!(menu_music.count(), 0);
-    }
-
-    #[test]
-    fn the_music_picker_offers_only_drums_and_melody() {
-        let mut h = harness(Some(ThingId::ROOT));
-        h.get_by_label("+ Add slot").click();
-        h.run();
-        h.get_by_label("Sound").click();
-        h.run();
-        let s = h.state();
-        let music = linked(&s.scene, ThingId::ROOT, SlotId::Sound);
-        assert!(matches!(s.scene.library.modules[&music].kind.as_str(), "sound.drums" | "sound.melody"));
-        assert!(h.query_by_role_and_label(Role::Label, "Sound").is_some(), "the card is titled Sound");
-        let state = s.scene.library.modules[&music].name.clone();
-        h.get_by_label(&state).click();
-        h.run();
-        assert!(h.query_by_label_contains("Ball sound").is_none(), "a Notes module can't go there");
-        h.get_by_label("New Sound module").click();
-        h.run();
-        assert!(h.query_by_label("Drum machine").is_some());
-        assert!(h.query_by_label("Melody").is_some());
-        assert!(h.query_by_label("Notes").is_none());
-    }
-
-    #[test]
     fn make_unique_is_in_the_picker() {
         let mut h = harness(Some(ThingId(2)));
         let before = h.state().scene.library.modules.len();
@@ -2584,38 +1915,6 @@ mod tests {
     }
 
     #[test]
-    fn the_chords_row_offers_library_progressions_and_no_scenes_entry() {
-        let mut h = harness(Some(ThingId(2)));
-        let shown: Vec<String> = h
-            .query_all_by_role_and_label(Role::ComboBox, "Chords")
-            .map(|n| n.accesskit_node().value().unwrap_or_default().to_owned())
-            .collect();
-        assert_eq!(shown, ["Starter"], "the ball's sound plays the shared starter chords");
-        h.get_by_role_and_label(Role::ComboBox, "Chords").click();
-        h.run();
-        assert!(h.query_by_label_contains("Scene's").is_none());
-        assert!(h.query_by_label("New progression").is_some());
-        assert!(h.query_by_label("Make unique").is_some());
-    }
-
-    #[test]
-    fn a_new_ball_plays_the_shared_pluck() {
-        let mut h = harness(Some(ThingId(2)));
-        let s = h.state();
-        let instrument = |id| {
-            let m = &s.scene.library.modules[&linked(&s.scene, id, SlotId::Sound)];
-            m.params.get("instrument").and_then(InstrumentRef::from_value).and_then(|r| r.0)
-        };
-        assert!(instrument(ThingId(2)).is_some());
-        assert_eq!(instrument(ThingId(1)), instrument(ThingId(2)), "one Pluck for every new sound");
-        let combo = h.get_by_role_and_label(Role::ComboBox, "Instrument");
-        assert_eq!(combo.accesskit_node().value().as_deref(), Some("Pluck"));
-        assert!(h.query_by_label_contains("Plays Scene").is_none());
-        open_instrument_menu(&mut h);
-        assert!(h.query_by_label_contains("Scene's").is_none());
-    }
-
-    #[test]
     fn scene_settings_fits_the_panel() {
         // Long labels and units once pushed the number boxes past the edge, so the panel grew.
         let h = harness(Some(ThingId::ROOT));
@@ -2624,564 +1923,18 @@ mod tests {
         }
     }
 
-    /// The ball's own sound module.
-    fn ball_sound(s: &Scene) -> ModuleId {
-        linked(s, ThingId(2), SlotId::Sound)
-    }
-
-    fn open_instrument_menu(h: &mut Harness<'_, State>) {
-        let combo = h.get_by_role_and_label(Role::ComboBox, "Instrument");
-        combo.scroll_to_me();
-        h.run();
-        h.get_by_role_and_label(Role::ComboBox, "Instrument").click();
-        h.run();
-    }
-
-    #[test]
-    fn a_sound_card_has_an_instrument_picker_with_built_ins_first() {
-        let mut h = harness(Some(ThingId(2)));
-        let combo = h.get_by_role_and_label(Role::ComboBox, "Instrument");
-        assert_eq!(combo.accesskit_node().value().as_deref(), Some("Pluck"));
-        open_instrument_menu(&mut h);
-        let y = |label: &str| h.get_by_label(label).rect().top();
-        assert!(y("Built-in") < y("Marimba"));
-        assert!(y("Marimba") < y("New patch"), "built-ins come before the library and new ones");
-        assert!(y("New patch") < y("Starter patches"));
-        assert!(h.query_by_label(bpe_synth::starters()[0].0).is_some());
-        assert!(h.query_by_label("Make unique").is_some());
-    }
-
-    #[test]
-    fn picking_a_starter_adds_it_to_the_library_and_links_it() {
-        let mut h = harness(Some(ThingId(2)));
-        open_instrument_menu(&mut h);
-        let name = bpe_synth::starters()[0].0;
-        h.get_by_label(name).scroll_to_me();
-        h.run();
-        h.get_by_label(name).click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.instruments.len(), 2);
-        let (id, i) = s.scene.library.instruments.iter().find(|(_, i)| i.name == name).expect("the starter is added");
-        assert!(matches!(i.source, InstrumentSource::Patch { .. }));
-        let m = ball_sound(&s.scene);
-        assert_eq!(s.scene.library.modules[&m].params.get("instrument"), Some(&InstrumentRef(Some(*id)).to_value()));
-        // The section now shows the patch, its macros and its voices.
-        h.get_by_label("Edit patch");
-        h.get_by_role_and_label(Role::Slider, "Voice limit");
-        // Picking a built-in shares the library's Pluck rather than adding another.
-        open_instrument_menu(&mut h);
-        // The first Pluck is the built-in; the library's own Pluck follows further down.
-        h.query_all_by_label("Pluck").next().unwrap().scroll_to_me();
-        h.run();
-        h.query_all_by_label("Pluck").next().unwrap().click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.instruments.len(), 2);
-        assert_eq!(
-            s.scene.library.modules[&ball_sound(&s.scene)].params.get("instrument"),
-            Some(&InstrumentRef(Some(InstrumentId(0))).to_value())
-        );
-    }
-
-    #[test]
-    fn make_unique_copies_the_instrument() {
-        let mut h = harness(Some(ThingId(2)));
-        open_instrument_menu(&mut h);
-        // The menu scrolls: Make unique is at its foot.
-        h.get_by_label("Make unique").scroll_to_me();
-        h.run();
-        h.get_by_label("Make unique").click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.instruments.len(), 2);
-        let copy = s.scene.library.instruments.iter().find(|(_, i)| i.name == "Pluck copy").expect("a copy").0;
-        assert_eq!(
-            s.scene.library.modules[&ball_sound(&s.scene)].params.get("instrument"),
-            Some(&InstrumentRef(Some(*copy)).to_value())
-        );
-    }
-
-    #[test]
-    fn a_macro_override_is_marked_and_resets() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let (name, graph, voices) = bpe_synth::starters().into_iter().next().unwrap();
-        let knob = bpe_synth::macros(&graph).into_iter().next().expect("a starter has macros");
-        let id = scene.add_instrument(bpe_core::Instrument {
-            fx: Default::default(),
-            name: name.into(),
-            source: InstrumentSource::Patch { graph },
-            voices,
-        });
-        let m = ball_sound(&scene);
-        scene.library.modules.get_mut(&m).unwrap().params.set("instrument", InstrumentRef(Some(id)).to_value());
-        let mid = (knob.min + knob.max) / 2.0;
-        scene.set_macro(m, &knob.key(), Some(mid)).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        let slider = h.get_by_role_and_label(Role::Slider, &knob.label);
-        assert_eq!(slider.accesskit_node().numeric_value(), Some(mid as f64));
-        assert!(h.query_by_label("Changed here").is_some(), "the override is marked");
-        let label = h.get_by_role_and_label(Role::Label, &knob.label);
-        label.scroll_to_me();
-        h.run();
-        h.get_by_role_and_label(Role::Label, &knob.label).click_secondary();
-        h.run();
-        h.get_by_label("Reset to instrument").click();
-        h.run();
-        assert!(h.state().scene.library.modules[&m].macros.is_empty());
-        assert!(h.query_by_label("Changed here").is_none());
-    }
-
-    /// Opens the ball's Sound card's Channel section, which starts folded.
-    fn open_channel(h: &mut Harness<'_, State>) {
-        h.get_by_label("Show Channel").scroll_to_me();
-        h.run();
-        h.get_by_label("Show Channel").click();
-        h.run();
-    }
-
-    #[test]
-    fn a_send_knob_sends() {
-        let mut h = harness(Some(ThingId(2)));
-        open_channel(&mut h);
-        let send = h.get_by_role_and_label(Role::Slider, "Reverb");
-        send.scroll_to_me();
-        h.run();
-        let s = h.state();
-        assert!(s.scene.library.modules[&ball_sound(&s.scene)].channel.sends.is_empty(), "off at first");
-        let rect = slider_rect(&h, "Reverb");
-        drag_slider(&mut h, rect, 0.8);
-        let s = h.state();
-        let bus = s.scene.library.buses[0].id;
-        let db = s.scene.library.modules[&ball_sound(&s.scene)].channel.sends.get(&bus).copied();
-        assert!(db.is_some_and(|db| db > -60.0), "{db:?}");
-    }
-
-    #[test]
-    fn add_bus_and_rename() {
-        let mut h = harness(Some(ThingId::ROOT));
-        h.get_by_label("Add bus").scroll_to_me();
-        h.run();
-        h.get_by_label("Add bus").click();
-        h.run();
-        assert_eq!(h.state().scene.library.buses.len(), 3);
-        assert_eq!(h.state().scene.library.buses[2].name, "Bus 3");
-        let field = |h: &Harness<'static, State>| {
-            h.get_all_by_value("Bus 3").find(|n| n.accesskit_node().role() == Role::TextInput).unwrap().rect()
-        };
-        let rect = field(&h);
-        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().scroll_to_me();
-        h.run();
-        let rect = field(&h);
-        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().focus();
-        h.run();
-        let rect = field(&h);
-        h.get_all_by_value("Bus 3").find(|n| n.rect() == rect).unwrap().type_text(" echo");
-        h.run();
-        assert_eq!(h.state().scene.library.buses[2].name, "Bus 3 echo");
-    }
-
-    #[test]
-    fn master_effects_list_adds_a_limiter() {
-        let mut h = harness(Some(ThingId::ROOT));
-        let add = h.get_all_by_label("Add effect").last().unwrap();
-        add.scroll_to_me();
-        h.run();
-        h.get_all_by_label("Add effect").last().unwrap().click();
-        h.run();
-        h.get_all_by_label("Limiter").last().unwrap().click();
-        h.run();
-        let g = &h.state().scene.library.master_fx;
-        let chain = bpe_synth::straight_chain(g).unwrap();
-        let kinds: Vec<&str> = chain.iter().map(|id| g.node(*id).unwrap().kind.as_str()).collect();
-        assert_eq!(kinds, ["limiter"]);
-    }
-
-    #[test]
-    fn the_channel_section_fits_the_panel() {
-        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
-        let sound = ball_sound(&scene);
-        scene.library.modules.get_mut(&sound).unwrap().channel.inserts = bpe_synth::chain_graph(&[
-            ("eq".into(), Default::default(), true),
-            ("compressor".into(), Default::default(), true),
-        ]);
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        open_channel(&mut h);
-        h.get_by_label("Inserts");
-        for n in h.get_all_by_role(Role::Slider).chain(h.get_all_by_role(Role::SpinButton)) {
-            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
-        }
-    }
-
-    #[test]
-    fn a_patch_section_fits_the_panel() {
-        let mut h = harness(Some(ThingId(2)));
-        open_instrument_menu(&mut h);
-        let name = bpe_synth::starters()[0].0;
-        h.get_by_label(name).scroll_to_me();
-        h.run();
-        h.get_by_label(name).click();
-        h.run();
-        h.get_by_role_and_label(Role::Slider, "Note length");
-        for n in h.get_all_by_role(Role::SpinButton) {
-            assert!(n.rect().right() <= 420.0, "{:?} reaches {}", n.accesskit_node().label(), n.rect().right());
-        }
-    }
-
-    #[test]
-    fn chord_play_uses_a_patch_instrument() {
-        let mut h = harness(Some(ThingId(2)));
-        open_instrument_menu(&mut h);
-        let name = bpe_synth::starters()[0].0;
-        h.get_by_label(name).scroll_to_me();
-        h.run();
-        h.get_by_label(name).click();
-        h.run();
-        // A key on the strip plays that one note through the patch.
-        h.get_by_label("Show Try it").scroll_to_me();
-        h.run();
-        h.get_by_label("Show Try it").click();
-        h.run();
-        h.get_by_role_and_label(Role::Button, "C4").click();
-        h.run();
-        let clip = h.state_mut().inspector.clip.take().expect("a note to hear");
-        assert_eq!(clip.key, Some(60));
-        assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
-        assert!(clip.render().iter().any(|s| s.abs() > 1e-3), "the patch sounds");
-        // Chords play through it too, as the chord editor hears them.
-        let s = h.state();
-        let module = ball_sound(&s.scene);
-        let patch = s.scene.library.modules[&module].params.get("instrument").and_then(InstrumentRef::from_value);
-        let clip = chords::clip_for(Vec::new(), 0.0, &s.scene, Some(module), patch.and_then(|r| r.0));
-        assert_eq!(clip.key, None);
-        assert_eq!(clip.seconds_per_beat, 0.5, "120 bpm when the scene has no tempo");
-        assert!(matches!(&clip.instrument, bpe_mix::InstrumentChoice::Patch { name: n, .. } if n == name));
-    }
-
-    #[test]
-    fn pluck_knobs_show_for_the_built_in_pluck() {
-        let h = harness(Some(ThingId(2)));
-        let decay = h.get_by_role_and_label(Role::Slider, "Decay");
-        assert_eq!(decay.accesskit_node().numeric_value(), Some(0.9f32 as f64));
-        // Only the pluck's Brightness shows on the ball (the scene's grade has one too).
-        let mut brightness: Vec<_> = h
-            .get_all_by_label("Brightness")
-            .filter(|n| n.accesskit_node().role() == Role::Slider)
-            .filter_map(|n| n.accesskit_node().numeric_value())
-            .collect();
-        brightness.sort_by(f64::total_cmp);
-        assert_eq!(brightness, [0.5]);
-        assert!(h.query_by_label("Voice limit").is_none(), "a built-in plays without voices");
-    }
-
-    #[test]
-    fn make_unique_gives_the_module_its_own_progression() {
-        let mut h = harness(Some(ThingId(2)));
-        let m = {
-            let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "sound.notes", "Own sound").unwrap();
-            s.scene.link(&s.kit.registry, ThingId(2), SlotId::Sound, m).unwrap();
-            s.resolved = resolve(&s.scene, &s.kit.registry);
-            m
-        };
-        h.run();
-        h.query_all_by_role_and_label(Role::ComboBox, "Chords").next().unwrap().click();
-        h.run();
-        h.get_by_label("Make unique").click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.progressions.len(), 2);
-        let copy = s.scene.library.progressions.iter().find(|(_, p)| p.name == "Starter copy").unwrap().0;
-        assert_eq!(s.scene.library.modules[&m].params.get("chords"), Some(&Value::Int(copy.0 as i64)));
-    }
-
-    /// Stores the module's template as its own graph, so it runs through the compiled path.
-    fn make_custom(scene: &mut Scene, module: ModuleId) {
-        let reg = bpe_kit::registry();
-        let m = &scene.library.modules[&module];
-        let mut g = module_graph(reg.module(&m.kind).unwrap(), m).expect("a template");
-        g.custom = true;
-        scene.library.modules.get_mut(&module).unwrap().graph = Some(g);
-    }
-
-    #[test]
-    fn a_rules_card_lists_sentences_and_adds_a_recipe() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        scene.add_slot(&reg, ThingId(2), SlotId::Rules).unwrap();
-        let rules = scene.add_module(&reg, "rules.graph", "Ball rules").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Rules, rules).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        // The ball's other cards fold away, so the rules card and its menu fit the panel.
-        for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound] {
-            h.state_mut().inspector.collapsed.insert((ThingId(2), Some(slot), ""));
-        }
-        h.run();
-        h.get_by_label("No rules yet.");
-        h.get_by_label("Add rule").click();
-        h.run();
-        h.get_by_label("Grow on hit").click();
-        h.run();
-        assert!(h.query_by_label("No rules yet.").is_none());
-        h.get_by_label_contains("When hit › Grow");
-        // The recipe's number is right there on the card, named with its block.
-        let by = h
-            .get_all_by_role(Role::Slider)
-            .find(|n| n.accesskit_node().label().is_some_and(|l| l.ends_with("By (px)")))
-            .expect("the recipe's slider");
-        assert_eq!(by.accesskit_node().numeric_value(), Some(2.0));
-        let s = h.state();
-        let g = s.scene.library.modules[&rules].graph.as_ref().expect("the recipe is stored");
-        assert!(g.custom);
-        assert_eq!(g.graph.nodes.len(), 2);
-        assert_eq!(bpe_vm::sentences(&g.graph).len(), 1);
-    }
-
-    #[test]
-    fn a_custom_module_shows_its_setting_blocks_as_sliders() {
-        let reg = bpe_kit::registry();
-        let (mut followed, folder, _) = ball_in_a_folder();
-        let bounce = linked(&followed, ThingId(2), SlotId::Bounce);
-        make_custom(&mut followed, bounce);
-        followed.link(&reg, folder, SlotId::Bounce, bounce).unwrap();
-        followed.set_slot_inherit(ThingId(2), SlotId::Bounce);
-        // Following the folder's bounce, the ball's card shows the blocks read-only until
-        // "Make own", like any followed card.
-        let h = harness_of(followed, Some(ThingId(2)));
-        h.get_by_label("Edited as nodes");
-        assert!(h.get_by_role_and_label(Role::Slider, "Bounciness").accesskit_node().is_disabled());
-        // Its own bounce: the card edits the graph.
-        let mut scene = bpe_kit::new_scene(&reg);
-        let bounce = linked(&scene, ThingId(2), SlotId::Bounce);
-        make_custom(&mut scene, bounce);
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Edited as nodes");
-        let before = {
-            let s = h.state();
-            bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims)
-        };
-        let rect = slider_rect(&h, "Bounciness");
-        drag_slider(&mut h, rect, 0.95);
-        let s = h.state();
-        let g = s.scene.library.modules[&bounce].graph.as_ref().unwrap();
-        let block =
-            g.graph.nodes.iter().find(|n| n.params.get("key") == Some(&bpe_graph::Param::Text("bounciness".into())));
-        let value = block.and_then(|n| n.params.get("value")).and_then(bpe_graph::Param::number).unwrap();
-        assert!(value > 1.0, "the setting block holds the slider's value: {value}");
-        // The module's own setting follows, so the card and the graph agree.
-        let v = s.scene.library.modules[&bounce].params.get("bounciness").cloned();
-        assert!(matches!(v, Some(Value::Number(b)) if (b - value as f64).abs() < 1e-5), "{v:?}");
-        assert_ne!(bpe_runtime::fingerprint(&s.scene, &s.resolved, &s.kit.sims), before, "the physics changed");
-    }
-
-    #[test]
-    fn a_custom_sound_module_keeps_its_instrument_picker() {
-        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
-        let sound = ball_sound(&scene);
-        make_custom(&mut scene, sound);
-        let h = harness_of(scene, Some(ThingId(2)));
-        // The picker itself, not the Instrument section's heading.
-        h.get_by_role_and_label(Role::ComboBox, "Instrument");
-        // Bound settings come from the graph: the volume is a slider, not shown twice.
-        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Volume").count(), 1);
-    }
-
-    /// The top of the Sound card's heading `name`: the highest label of that name under the
-    /// card's header, as a heading sits above any row of its name.
-    fn sound_heading_top(h: &Harness<'_, State>, name: &str) -> Option<f32> {
-        let card = h.get_by_label("Hide Sound").rect().top();
-        h.query_all_by_role_and_label(Role::Label, name).map(|n| n.rect().top()).filter(|&t| t > card).reduce(f32::min)
-    }
-
-    /// The ball's sound becomes a new module of `kind`, its own.
-    fn ball_with_own_sound(kind: &str) -> (Scene, ModuleId) {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let m = scene.add_module(&reg, kind, "Own sound").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Sound, m).unwrap();
-        (scene, m)
-    }
-
-    #[test]
-    fn sound_card_sections_in_order() {
-        let h = harness(Some(ThingId(2)));
-        let tops: Vec<f32> = ["Instrument", "Notes", "Which hits", "Level", "Chords", "Channel"]
-            .iter()
-            .map(|name| sound_heading_top(&h, name).unwrap_or_else(|| panic!("a {name} heading")))
-            .collect();
-        assert!(tops.windows(2).all(|w| w[0] < w[1]), "the headings read down in order: {tops:?}");
-    }
-
-    #[test]
-    fn the_instrument_macros_sit_in_instrument() {
-        let h = harness(Some(ThingId(2)));
-        let instrument = sound_heading_top(&h, "Instrument").unwrap();
-        let notes = sound_heading_top(&h, "Notes").unwrap();
-        // The built-in Pluck's knob.
-        let decay = h.get_by_role_and_label(Role::Slider, "Decay").rect().top();
-        assert!(instrument < decay && decay < notes, "Decay {decay} between {instrument} and {notes}");
-    }
-
-    #[test]
-    fn try_it_is_folded_until_opened() {
-        let mut h = harness(Some(ThingId(2)));
-        assert!(h.query_by_label("Oct −").is_none(), "Try it starts folded");
-        assert!(h.query_by_label("C4").is_none());
-        h.get_by_label("Show Try it").click();
-        h.run();
-        assert!(h.state().inspector.try_open);
-        let oct = h.get_by_label("Oct −").rect().top();
-        let key = h.get_by_role_and_label(Role::Button, "C4").rect().top();
-        let instrument = sound_heading_top(&h, "Instrument").unwrap();
-        let notes = sound_heading_top(&h, "Notes").unwrap();
-        assert!(instrument < oct && oct < notes, "Oct − {oct} in Instrument ({instrument}..{notes})");
-        assert!(instrument < key && key < notes, "C4 {key} in Instrument ({instrument}..{notes})");
-    }
-
-    #[test]
-    fn edit_opens_the_chord_editor_request() {
-        let mut h = harness(Some(ThingId(2)));
-        assert!(h.query_by_label("Chord lane").is_none(), "the editor is under the preview, not here");
-        let edit = h.get_by_role_and_label(Role::Button, "Edit");
-        assert!(!edit.accesskit_node().is_disabled(), "the ball's sound picks a library progression");
-        edit.click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.inspector.chords_request, Some((ProgressionId(0), ball_sound(&s.scene))));
-    }
-
-    #[test]
-    fn edit_is_off_for_the_starter_chords() {
-        let (scene, _) = ball_with_own_sound("sound.notes");
-        let h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.get_by_role_and_label(Role::Button, "Edit").accesskit_node().is_disabled());
-        assert!(h.query_by_label_contains("built-in starter chords").is_some());
-    }
-
-    #[test]
-    fn the_sound_cards_own_widgets_line_up_with_its_settings() {
-        let h = harness(Some(ThingId(2)));
-        let left = |role: Role, label: &str| h.get_by_role_and_label(role, label).rect().left();
-        // The Pluck's knob starts where the settings' sliders do.
-        let setting = left(Role::Slider, "Stereo width");
-        let decay = left(Role::Slider, "Decay");
-        assert!((decay - setting).abs() <= 1.0, "Decay at {decay}, Stereo width at {setting}");
-        assert!((left(Role::Slider, "Brightness") - setting).abs() <= 1.0);
-        // Its label starts where the settings' labels do.
-        let label = |name: &str| {
-            h.get_all_by_role_and_label(Role::Label, name).map(|n| n.rect().left()).reduce(f32::max).unwrap()
-        };
-        assert!((label("Decay") - label("Stereo width")).abs() <= 1.0, "the knob's label in the label column");
-        // Edit sits in the widget column, under the Chords picker.
-        let picker = h.get_by_role_and_label(Role::ComboBox, "Chords").rect();
-        let edit = h.get_by_role_and_label(Role::Button, "Edit").rect();
-        assert!((edit.left() - picker.left()).abs() <= 1.0, "Edit at {}, Chords at {}", edit.left(), picker.left());
-        assert!(edit.top() >= picker.bottom(), "Edit under the picker");
-        // Try it's arrow sits where a section heading's does.
-        let try_it = h.get_by_label("Show Try it").rect().left();
-        let notes = h.get_by_label("Hide Notes").rect().left();
-        assert!((try_it - notes).abs() <= 1.0, "Try it's arrow at {try_it}, Notes' at {notes}");
-    }
-
-    #[test]
-    fn instrument_shows_the_dot_when_the_module_changes_a_knob() {
-        let fold = |scene: Scene| {
-            let mut h = harness_of(scene, Some(ThingId(2)));
-            h.get_by_label("Hide Instrument").click();
-            h.run();
-            h
-        };
-        // A fresh module plays its default instrument.
-        let (scene, _) = ball_with_own_sound("sound.notes");
-        let h = fold(scene);
-        assert!(h.query_by_label("Instrument (changed)").is_none(), "no knob changed here");
-        let (mut scene, own) = ball_with_own_sound("sound.notes");
-        scene.library.modules.get_mut(&own).unwrap().macros.insert("filter.cutoff".into(), 0.5);
-        let h = fold(scene);
-        assert!(h.query_by_label("Instrument (changed)").is_some(), "the module's own knob shows while folded");
-    }
-
-    #[test]
-    fn an_overridden_sound_card_keeps_its_sections_and_edits_its_own_chords() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let own = scene.add_progression(bpe_core::Progression { name: "Own".into(), ..Default::default() });
-        let value = ProgressionRef(Some(own)).to_value();
-        scene.set_override(&reg, ThingId(2), SlotId::Sound, "chords", value).unwrap();
-        let resolved = resolve_scene(&scene, &reg);
-        assert_eq!(
-            write_target(&scene, &resolved, ThingId(2), SlotId::Sound),
-            Some(Write::Override(ThingId(2), SlotId::Sound))
-        );
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        let tops: Vec<f32> = ["Instrument", "Notes", "Which hits", "Level", "Chords", "Channel"]
-            .iter()
-            .map(|name| sound_heading_top(&h, name).unwrap_or_else(|| panic!("a {name} heading")))
-            .collect();
-        assert!(tops.windows(2).all(|w| w[0] < w[1]), "the headings read down in order: {tops:?}");
-        let edit = h.get_by_role_and_label(Role::Button, "Edit");
-        assert!(!edit.accesskit_node().is_disabled(), "the override picks a library progression");
-        edit.click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.inspector.chords_request, Some((own, ball_sound(&s.scene))), "the thing's own chords");
-    }
-
-    #[test]
-    fn channel_heading_says_what_it_is() {
-        let mut h = harness(Some(ThingId(2)));
-        let card = h.get_by_label("Hide Sound").rect().top();
-        let heading = h
-            .get_all_by_role_and_label(Role::Label, "Channel")
-            .filter(|n| n.rect().top() > card)
-            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
-            .unwrap()
-            .rect();
-        h.hover_at(heading.center());
-        for _ in 0..90 {
-            h.step();
-        }
-        assert!(h.query_by_label_contains("how much goes to each bus").is_some());
-    }
-
-    #[test]
-    fn channel_shows_the_dot_when_it_has_inserts() {
-        let h = harness(Some(ThingId(2)));
-        assert!(h.query_by_label("Channel (changed)").is_none(), "a plain channel has no dot");
-        // Inserts.
-        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
-        let sound = ball_sound(&scene);
-        scene.library.modules.get_mut(&sound).unwrap().channel.inserts =
-            bpe_synth::chain_graph(&[("eq".into(), Default::default(), true)]);
-        let h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_by_label("Channel (changed)").is_some(), "inserts show while folded");
-        // A send.
-        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
-        let sound = ball_sound(&scene);
-        let bus = scene.library.buses[0].id;
-        scene.library.modules.get_mut(&sound).unwrap().channel.sends.insert(bus, -12.0);
-        let h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_by_label("Channel (changed)").is_some(), "a send shows while folded");
-    }
-
-    #[test]
-    fn drums_card_has_on_the_beat() {
-        let (scene, _) = ball_with_own_sound("sound.drums");
-        let h = harness_of(scene, Some(ThingId(2)));
-        assert!(sound_heading_top(&h, "On the beat").is_some());
-        assert!(sound_heading_top(&h, "Notes").is_none());
-        assert!(sound_heading_top(&h, "Chords").is_none());
-    }
-
     #[test]
     fn target_settings_offer_the_scene_things_and_tags() {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         scene.things.get_mut(&ThingId(2)).unwrap().tags.insert("bouncers".into());
-        let emitter = bpe_kit::add_thing(&mut scene, &reg, "emitter", ThingId::ROOT).unwrap();
-        let mut h = harness_of(scene, Some(emitter));
-        h.get_by_role_and_label(Role::Button, "Target").click();
+        let bounce = linked(&scene, ThingId(2), SlotId::Bounce);
+        let special = Address { owner: Owner::Module(bounce), slot: None, key: "special".into() };
+        scene.set_at(&reg, &special, Value::Bool(true)).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        h.get_by_label("Show Against some things").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Those things").click();
         h.run();
         // The Target menu's Thing, not the jump bar's.
         h.get_all_by_label("Thing").last().expect("the Thing submenu").hover();
@@ -3191,34 +1944,8 @@ mod tests {
         h.run();
         h.get_by_label("bouncers").click();
         h.run();
-        let target = h.state().scene.things[&emitter].params.get("target").cloned();
+        let target = h.state().scene.library.modules[&bounce].params.get("special_target").cloned();
         assert_eq!(target, Some(Value::Target(bpe_core::Target::Tag("bouncers".into()))));
-    }
-
-    #[test]
-    fn a_new_sound_of_another_kind_keeps_the_volume_and_pan() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let module = ball_sound(&scene);
-        let set = |scene: &mut Scene, key: &str, v: Value| {
-            let a = Address { owner: Owner::Module(module), slot: None, key: key.into() };
-            scene.set_at(&reg, &a, v).unwrap();
-        };
-        set(&mut scene, "volume", Value::Number(-12.0));
-        set(&mut scene, "pan", Value::Number(0.5));
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Ball sound").click();
-        h.run();
-        h.get_by_label("New Sound module").hover();
-        h.run();
-        h.get_all_by_label("Drum machine").last().unwrap().click();
-        h.run();
-        let new = ball_sound(&h.state().scene);
-        assert_ne!(new, module);
-        let drums = &h.state().scene.library.modules[&new];
-        assert_eq!(drums.kind, "sound.drums");
-        assert_eq!(drums.params.get("volume"), Some(&Value::Number(-12.0)), "the volume comes along");
-        assert_eq!(drums.params.get("pan"), Some(&Value::Number(0.5)), "and the pan");
     }
 
     /// The Colours row's name, after the Colours heading over it.
@@ -3341,7 +2068,7 @@ mod tests {
         assert!(def.flags.pulse && def.group == "Light");
         let address = Address { owner: Owner::Module(module), slot: None, key: def.key.into() };
         let reg = bpe_kit::registry();
-        h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Bass, pulse_amount(def), 0.25).unwrap();
+        h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, pulse_amount(def), 0.25).unwrap();
         h.run();
         assert!(h.query_by_label("Light (changed)").is_some(), "a pulse moves the video");
         assert!(h.query_by_label("Changes inside").is_some());
@@ -3365,7 +2092,6 @@ mod tests {
         let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
         // At the start the map amount is 0, yet the map still shows.
         h.run();
-        // The sound's pluck has a Brightness slider too.
         let slider =
             |h: &Harness<'_, State>, label: &str| h.query_all_by_role_and_label(Role::Slider, label).count() > 0;
         assert!(h.query_by_role_and_label(Role::Label, "Picture").is_some(), "a Picture card");
@@ -3388,23 +2114,41 @@ mod tests {
         h.run();
     }
 
-    /// The ball's sound with its lowest note set to 40.
-    fn ball_with_a_low_note() -> (Scene, ModuleId, Address) {
+    /// A new scene whose ball has its own effect in its Shader slot, with one of its number
+    /// settings moved off its default, and that setting's key. The other effect kinds named
+    /// come back too: those that lack the setting.
+    fn ball_with_an_effect() -> (Scene, ModuleId, Address, Vec<&'static str>) {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        let sound = ball_sound(&scene);
-        let low = Address { owner: Owner::Module(sound), slot: None, key: "low_note".into() };
-        scene.set_at(&reg, &low, Value::Int(40)).unwrap();
-        (scene, sound, low)
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Shader).unwrap();
+        let effect = linked(&scene, ThingId(2), SlotId::Shader);
+        let kind = reg.module(&scene.library.modules[&effect].kind).unwrap();
+        let def = kind
+            .settings()
+            .iter()
+            .find(|d| d.key != "blend" && matches!(d.default, Value::Number(_)))
+            .expect("an effect with a number setting of its own");
+        let (Value::Number(n), Some((low, high))) = (&def.default, def.range) else { unreachable!() };
+        let a = Address { owner: Owner::Module(effect), slot: None, key: def.key.into() };
+        scene.set_at(&reg, &a, Value::Number(if *n == low { high } else { low })).unwrap();
+        let others = reg
+            .modules_for(SlotId::Shader)
+            .filter(|m| m.id() != kind.id() && m.settings().iter().all(|d| d.key != def.key))
+            .map(|m| m.name())
+            .collect();
+        (scene, effect, a, others)
+    }
+
+    /// The name of `module`'s kind.
+    fn kind_name(s: &State, module: ModuleId) -> &'static str {
+        s.kit.registry.module(&s.scene.library.modules[&module].kind).unwrap().name()
     }
 
     #[test]
     fn an_effects_card_has_a_type_menu_and_a_balls_look_has_none() {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        // Only the ball's Look, Motion and Bounce: each has one kind that fits a ball.
-        scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Sound);
-        scene.things.get_mut(&ThingId::ROOT).unwrap().slots.remove(&SlotId::Sound);
+        // Only the ball's Look, Motion and Bounce: each has one kind.
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
         assert!(h.query_by_label("Ball look").is_some(), "the look card shows its module");
@@ -3430,133 +2174,85 @@ mod tests {
 
     #[test]
     fn picking_a_type_switches_the_module_and_back_restores_it() {
-        let (scene, sound, low) = ball_with_a_low_note();
+        let (scene, effect, moved, others) = ball_with_an_effect();
+        let reg = bpe_kit::registry();
+        let value = scene.value_at(&reg, &moved);
         let mut h = harness_of(scene, Some(ThingId(2)));
+        let first = kind_name(h.state(), effect);
+        let other = *others.first().expect("an effect without the moved setting");
         open_type_menu(&mut h);
-        h.get_all_by_label("Drum machine").last().unwrap().click();
+        h.get_all_by_label(other).last().unwrap().click();
         h.run();
         {
             let s = h.state();
-            assert_eq!(ball_sound(&s.scene), sound, "the slot keeps its module");
-            assert_eq!(s.scene.library.modules[&sound].kind, "sound.drums");
-            assert!(s.scene.library.modules[&sound].params.get("low_note").is_none());
+            assert_eq!(linked(&s.scene, ThingId(2), SlotId::Shader), effect, "the slot keeps its module");
+            assert_eq!(kind_name(s, effect), other);
+            assert!(s.scene.library.modules[&effect].params.get(&moved.key).is_none());
         }
         open_type_menu(&mut h);
-        h.get_all_by_label("Notes").last().unwrap().click();
+        h.get_all_by_label(first).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(s.scene.library.modules[&sound].kind, "sound.notes");
-        assert_eq!(s.scene.value_at(&s.kit.registry, &low), Some(Value::Int(40)), "the lowest note is back");
+        assert_eq!(kind_name(s, effect), first);
+        assert_eq!(s.scene.value_at(&s.kit.registry, &moved), value, "the moved setting is back");
     }
 
     #[test]
     fn undo_after_a_type_switch_restores_the_module() {
-        let (scene, sound, _) = ball_with_a_low_note();
+        let (scene, effect, _, others) = ball_with_an_effect();
         let before = scene.clone();
         let mut h = harness_of(scene, Some(ThingId(2)));
+        let first = kind_name(h.state(), effect);
         open_type_menu(&mut h);
-        h.get_all_by_label("Melody").last().unwrap().click();
+        h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
-        assert_eq!(h.state().scene.library.modules[&sound].kind, "sound.melody");
+        assert_eq!(kind_name(h.state(), effect), others[0]);
         // The studio records any frame that changed the scene as an undo step.
         let mut history = crate::history::History::default();
         history.record(before.clone(), false);
         let s = h.state_mut();
         assert!(history.undo(&mut s.scene));
-        assert_eq!(s.scene.library.modules[&sound].kind, "sound.notes");
+        assert_eq!(kind_name(s, effect), first);
         assert_eq!(s.scene, before);
         assert!(history.redo(&mut s.scene));
-        assert_eq!(s.scene.library.modules[&sound].kind, "sound.melody");
+        assert_eq!(kind_name(s, effect), others[0]);
     }
 
     #[test]
     fn a_shared_modules_type_menu_says_how_many_change() {
+        let (mut scene, effect, _, others) = ball_with_an_effect();
         let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let sound = ball_sound(&scene);
         let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.link(&reg, other, SlotId::Sound, sound).unwrap();
+        scene.add_slot(&reg, other, SlotId::Shader).unwrap();
+        scene.link(&reg, other, SlotId::Shader, effect).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
         open_type_menu(&mut h);
-        let name = h.state().scene.library.modules[&sound].name.clone();
+        let name = h.state().scene.library.modules[&effect].name.clone();
         assert!(h.query_by_label(&format!("Changes all 2 things using {name}")).is_some());
-        h.get_all_by_label("Drum machine").last().unwrap().click();
+        h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(s.scene.library.modules[&sound].kind, "sound.drums");
-        assert_eq!(linked(&s.scene, other, SlotId::Sound), sound, "both still share it");
+        assert_eq!(kind_name(s, effect), others[0]);
+        assert_eq!(linked(&s.scene, other, SlotId::Shader), effect, "both still share it");
     }
 
     #[test]
     fn a_type_switch_reaches_each_selected_module_once() {
+        let (mut scene, mine, _, others) = ball_with_an_effect();
         let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
         let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let theirs = linked(&scene, other, SlotId::Sound);
-        let mine = ball_sound(&scene);
-        assert_ne!(theirs, mine, "each ball has its own sound");
+        let theirs = scene.add_module(&reg, &scene.library.modules[&mine].kind.clone(), "Their effect").unwrap();
+        scene.add_slot(&reg, other, SlotId::Shader).unwrap();
+        scene.link(&reg, other, SlotId::Shader, theirs).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
         h.state_mut().selection.toggle(other);
         h.run();
         open_type_menu(&mut h);
-        h.get_all_by_label("Melody").last().unwrap().click();
+        h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(s.scene.library.modules[&mine].kind, "sound.melody");
-        assert_eq!(s.scene.library.modules[&theirs].kind, "sound.melody");
-    }
-
-    /// How many widgets read `name` with the Type menu open, less how many do with it shut.
-    fn offered(h: &mut Harness<'_, State>, name: &str) -> usize {
-        let shut = h.query_all_by_label(name).count();
-        open_type_menu(h);
-        let open = h.query_all_by_label(name).count();
-        h.key_press(egui::Key::Escape);
-        h.run();
-        open - shut
-    }
-
-    /// A new scene where ball 2 has its own drum machine and a second ball shares the scene's
-    /// music, which takes only drums and melody.
-    fn a_ball_sharing_the_music() -> (Scene, ThingId, ModuleId, ModuleId) {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let music = scene.add_module(&reg, "sound.drums", "Music").unwrap();
-        scene.add_slot(&reg, ThingId::ROOT, SlotId::Sound).unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Sound, music).unwrap();
-        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.link(&reg, other, SlotId::Sound, music).unwrap();
-        let mine = ball_sound(&scene);
-        scene.set_module_kind(&reg, mine, "sound.drums").unwrap();
-        (scene, other, mine, music)
-    }
-
-    #[test]
-    fn the_type_menu_offers_only_kinds_every_user_takes() {
-        let (scene, other, _, music) = a_ball_sharing_the_music();
-        let mut h = harness_of(scene, Some(other));
-        assert_eq!(offered(&mut h, "Notes"), 0, "the scene's music takes no notes");
-        assert_eq!(offered(&mut h, "Melody"), 1);
-        open_type_menu(&mut h);
-        h.get_all_by_label("Melody").last().unwrap().click();
-        h.run();
-        assert_eq!(h.state().scene.library.modules[&music].kind, "sound.melody");
-    }
-
-    #[test]
-    fn a_multi_select_type_menu_offers_only_kinds_every_selected_modules_users_take() {
-        let (scene, other, mine, music) = a_ball_sharing_the_music();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        assert_eq!(offered(&mut h, "Notes"), 1, "ball 2's own drums may become notes");
-        h.state_mut().selection.toggle(other);
-        h.run();
-        assert_eq!(offered(&mut h, "Notes"), 0, "the other ball's drums are the scene's music");
-        open_type_menu(&mut h);
-        h.get_all_by_label("Melody").last().unwrap().click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.modules[&mine].kind, "sound.melody");
-        assert_eq!(s.scene.library.modules[&music].kind, "sound.melody");
+        assert_eq!(kind_name(s, mine), others[0]);
+        assert_eq!(kind_name(s, theirs), others[0]);
     }
 
     #[test]
@@ -3564,11 +2260,11 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         let folder = bpe_kit::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
-        let sound = scene.add_module(&reg, "sound.notes", "Folder notes").unwrap();
-        scene.add_slot(&reg, folder, SlotId::Sound).unwrap();
-        scene.link(&reg, folder, SlotId::Sound, sound).unwrap();
+        let effect = scene.add_module(&reg, "shader.echo", "Folder effect").unwrap();
+        scene.add_slot(&reg, folder, SlotId::Shader).unwrap();
+        scene.link(&reg, folder, SlotId::Shader, effect).unwrap();
         scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
-        scene.set_slot_inherit(ThingId(2), SlotId::Sound);
+        scene.set_slot_inherit(ThingId(2), SlotId::Shader);
         let mut h = harness_of(scene, Some(ThingId(2)));
         let button = h.get_by_role_and_label(Role::Button, "Type");
         assert!(button.accesskit_node().is_disabled(), "an inherited slot's type is the folder's to change");
@@ -3627,23 +2323,19 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 16] = [
+    const BAR_LABELS: [&str; 12] = [
         "Thing",
         "Look",
         "Trail",
         "Motion",
         "Bounce",
-        "Sound",
         "Particles",
-        "Rules",
         "Shader",
         "Effects",
         "Video",
         "World",
         "Background",
         "Picture",
-        "Music",
-        "Mix",
     ];
 
     /// The jump bar's buttons, in order, each with whether it is selected.
@@ -3667,7 +2359,7 @@ mod tests {
     fn a_ball_with_every_slot() -> Scene {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        for slot in [SlotId::Trail, SlotId::Particles, SlotId::Rules] {
+        for slot in [SlotId::Trail, SlotId::Particles, SlotId::Shader] {
             scene.add_slot(&reg, ThingId(2), slot).unwrap();
         }
         scene
@@ -3711,38 +2403,38 @@ mod tests {
     fn the_jump_bar_lists_thing_then_the_slots_in_order() {
         let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
-        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Sound", "Particles", "Rules"]);
+        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Particles", "Shader"]);
         assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
     }
 
     #[test]
-    fn the_jump_bar_unfolds_and_scrolls_to_sound() {
+    fn the_jump_bar_unfolds_and_scrolls_to_trail() {
         let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
-        h.state_mut().inspector.collapsed.insert((ThingId(2), Some(SlotId::Sound), ""));
+        h.state_mut().inspector.collapsed.insert((ThingId(2), Some(SlotId::Trail), ""));
         h.run();
-        assert!(h.query_by_label("Show Sound").is_some(), "the Sound card starts folded");
-        the_bar_button(&h, "Sound").click();
+        assert!(h.query_by_label("Show Trail").is_some(), "the Trail card starts folded");
+        the_bar_button(&h, "Trail").click();
         h.run();
         let s = h.state();
-        assert!(!s.inspector.collapsed.contains(&(ThingId(2), Some(SlotId::Sound), "")), "the Sound card is open");
+        let open = !s.inspector.collapsed.contains(&(ThingId(2), Some(SlotId::Trail), ""));
+        assert!(open, "the Trail card is open");
         assert!(s.inspector.jump_to.is_none());
-        let top = s.inspector.card_tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Sound)).expect("Sound's top").1;
-        assert!(top.abs() <= 2.0, "Sound's header is at the top of the scroll area, at {top}");
+        let tops = &s.inspector.card_tops;
+        let top = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Trail)).expect("Trail' top").1;
+        assert!(top.abs() <= 2.0, "Trail' header is at the top of the scroll area, at {top}");
         // The header's own rect sits just under the bar, where the scroll area starts.
-        let header = h.get_by_label("Hide Sound").rect();
+        let header = h.get_by_label("Hide Trail").rect();
         let bar = the_bar_button(&h, "Thing").rect();
         assert!(header.top() > bar.bottom() && header.top() < bar.bottom() + 60.0, "{header:?} under {bar:?}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
-        assert_eq!(selected, ["Sound"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
+        assert_eq!(selected, ["Trail"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
     }
 
     /// Scene settings with every slot it can have, so its cards run well past one screen.
     fn a_root_with_every_slot() -> Scene {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        for slot in [SlotId::Sound, SlotId::Shader, SlotId::Rules] {
-            scene.add_slot(&reg, ThingId::ROOT, slot).unwrap();
-        }
+        scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader).unwrap();
         scene
     }
 
@@ -3752,7 +2444,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_settings_shows_six_cards() {
+    fn scene_settings_shows_a_card_per_group() {
         let h = harness(Some(ThingId::ROOT));
         let mut last = f32::NEG_INFINITY;
         for name in bpe_kit::ROOT_CARDS {
@@ -3778,33 +2470,20 @@ mod tests {
         let h = harness_of(a_root_with_every_slot(), Some(ThingId::ROOT));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
         let mut want: Vec<&str> = bpe_kit::ROOT_CARDS.to_vec();
-        want.extend(["Sound", "Rules", "Effects"]);
+        want.push("Effects");
         assert_eq!(labels, want);
     }
 
     #[test]
-    fn master_effects_sit_in_the_mix_card() {
-        let h = harness_of(a_root_with_every_slot(), Some(ThingId::ROOT));
-        let mix = heading_top(&h, "Mix");
-        let master = h.get_by_role_and_label(Role::Label, "Master effects").rect().top();
-        let buses = h.get_by_role_and_label(Role::Label, "Buses").rect().top();
-        assert!(mix < buses && buses < master, "Buses then Master effects under Mix: {mix}, {buses}, {master}");
-        // No other card's title, the root's or a slot's, comes between them.
-        for card in bpe_kit::ROOT_CARDS.into_iter().chain(["Sound", "Rules", "Effects"]).filter(|c| *c != "Mix") {
-            let top = h.get_by_label(&format!("Hide {card}")).rect().top();
-            assert!(!(mix < top && top < master), "{card} sits between Mix and Master effects");
-        }
-    }
-
-    #[test]
-    fn jumping_to_mix_scrolls_it_to_the_top() {
+    fn jumping_to_background_scrolls_it_to_the_top() {
         let mut h = harness_sized(a_root_with_every_slot(), Some(ThingId::ROOT), 600.0);
-        the_bar_button(&h, "Mix").click();
+        the_bar_button(&h, "Background").click();
         h.run();
         let s = h.state();
-        let top = s.inspector.card_tops.iter().find(|(c, _)| *c == Card::Section("Mix")).expect("Mix's top").1;
-        assert!(top.abs() <= 1.0, "Mix's header is at the top of the scroll area, at {top}");
-        assert_eq!(selected_in_bar(&h), ["Mix"]);
+        let tops = &s.inspector.card_tops;
+        let top = tops.iter().find(|(c, _)| *c == Card::Section("Background")).expect("Background's top").1;
+        assert!(top.abs() <= 1.0, "Background's header is at the top of the scroll area, at {top}");
+        assert_eq!(selected_in_bar(&h), ["Background"]);
     }
 
     #[test]
@@ -3833,20 +2512,20 @@ mod tests {
                         applies: &|_| false,
                     };
                     let mut edits = Vec::new();
-                    root_card(ui, &mut s.inspector, &cx, "Music", &mut edits, |_, _, _| {});
+                    root_card(ui, &mut s.inspector, &cx, "World", &mut edits);
                 },
                 state,
             );
         h.run();
-        assert!(h.query_by_label("Hide Music").is_some(), "the card keeps its fold arrow");
-        assert!(h.query_by_role_and_label(Role::Label, "Music").is_some(), "and its title");
-        assert!(h.query_by_role_and_label(Role::Label, "Tempo").is_none(), "no rows");
+        assert!(h.query_by_label("Hide World").is_some(), "the card keeps its fold arrow");
+        assert!(h.query_by_role_and_label(Role::Label, "World").is_some(), "and its title");
+        assert!(h.query_by_role_and_label(Role::Label, "Gravity").is_none(), "no rows");
         assert!(h.query_by_role_and_label(Role::Label, "Seed").is_none(), "no rows");
         assert!(h.query_all_by_role(Role::Slider).next().is_none(), "no grid row is drawn");
     }
 
     #[test]
-    fn music_card_dice_rolls_only_music() {
+    fn world_card_dice_rolls_only_the_world() {
         let mut h = harness(Some(ThingId::ROOT));
         let headings: Vec<(&str, f32)> = bpe_kit::ROOT_CARDS.iter().map(|n| (*n, heading_top(&h, n))).collect();
         // Which card each dice button sits in: the last heading above it.
@@ -3858,7 +2537,7 @@ mod tests {
             })
             .collect();
         // The background's paint rolls its colours, so Background has dice too.
-        assert_eq!(cards, ["Background", "Picture", "Music"], "only cards with something random have dice");
+        assert_eq!(cards, ["World", "Background", "Picture"], "only cards with something random have dice");
         let reg = bpe_kit::registry();
         let values = |s: &State| -> Vec<(&str, Value)> {
             bpe_kit::SceneSettings::defs()
@@ -3870,8 +2549,8 @@ mod tests {
                 .collect()
         };
         let before = values(h.state());
-        let music = cards.iter().position(|c| *c == "Music").unwrap();
-        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(music).unwrap().click();
+        let world = cards.iter().position(|c| *c == "World").unwrap();
+        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(world).unwrap().click();
         h.run();
         let after = values(h.state());
         let changed: Vec<&str> = before.iter().zip(&after).filter(|(b, a)| b != a).map(|(b, _)| b.0).collect();
@@ -3897,15 +2576,15 @@ mod tests {
     #[test]
     fn a_short_last_card_stays_marked_after_jumping_to_it() {
         let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
-        the_bar_button(&h, "Rules").click();
+        the_bar_button(&h, "Shader").click();
         h.run();
         let tops = &h.state().inspector.card_tops;
-        let rules = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Rules)).expect("Rules' top").1;
-        assert!(rules > 1.0, "Rules is too short to reach the top, at {rules}");
-        assert_eq!(selected_in_bar(&h), ["Rules"], "the card jumped to stays marked");
+        let shader = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Shader)).expect("Shader's top").1;
+        assert!(shader > 1.0, "Shader is too short to reach the top, at {shader}");
+        assert_eq!(selected_in_bar(&h), ["Shader"], "the card jumped to stays marked");
         // A scroll hands the mark back to the card at the top.
         wheel(&mut h, 40.0);
-        assert_ne!(selected_in_bar(&h), ["Rules"]);
+        assert_ne!(selected_in_bar(&h), ["Shader"]);
         assert!(h.state().inspector.jumped.is_none());
     }
 
@@ -3935,116 +2614,5 @@ mod tests {
         assert!(look < -1.0 && trail > 1.0, "scrolled past Look's header but not Trail's: {look}, {trail}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
         assert_eq!(selected, ["Look"]);
-    }
-
-    /// Where each label named `name` sits, top to bottom.
-    fn label_tops(h: &Harness<'_, State>, name: &str) -> Vec<f32> {
-        let mut tops: Vec<f32> = h.query_all_by_label(name).map(|n| n.rect().top()).collect();
-        tops.sort_by(f32::total_cmp);
-        tops
-    }
-
-    /// Asserts each of `rows` shows below the `heading` (and above `next`, a heading after it).
-    fn rows_under(h: &Harness<'_, State>, heading: &str, next: Option<&str>, rows: &[&str]) {
-        let top = *label_tops(h, heading).first().unwrap_or_else(|| panic!("a {heading} heading"));
-        let bottom = next.map_or(f32::MAX, |n| *label_tops(h, n).iter().find(|&&t| t > top).expect("the next heading"));
-        for row in rows {
-            assert!(
-                label_tops(h, row).iter().any(|&t| t > top && t < bottom),
-                "{row} sits under {heading}: {:?} not in {top}..{bottom}",
-                label_tops(h, row)
-            );
-        }
-    }
-
-    #[test]
-    fn an_arena_shows_its_paint_skin() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let h = harness_of(scene.clone(), Some(ThingId(1)));
-        rows_under(&h, "Paint skin", None, &["Takes paint", "Skin width", "Fade", "Opacity"]);
-        // Taking no paint, the rest has nothing to do.
-        scene.things.get_mut(&ThingId(1)).unwrap().params.set("skin_on", Value::Bool(false));
-        let h = harness_of(scene, Some(ThingId(1)));
-        rows_under(&h, "Paint skin", None, &["Takes paint"]);
-        for row in ["Skin width", "Opacity"] {
-            assert!(h.query_all_by_label(row).next().is_none(), "{row} shows with Takes paint off");
-        }
-        let skin = *label_tops(&h, "Paint skin").first().unwrap();
-        assert!(label_tops(&h, "Fade").iter().all(|&t| t < skin), "the skin's Fade shows with Takes paint off");
-    }
-
-    #[test]
-    fn a_balls_marks_card_shows_where_splats_land_and_how_trails_end() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Marks).unwrap();
-        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone() else {
-            panic!("the ball's marks are linked")
-        };
-        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
-        params.set("paint_on", Value::Bool(true));
-        params.set("paint_width_by", Value::Choice("speed".into()));
-        params.set("splat_on", Value::Bool(true));
-        let h = harness_of(scene.clone(), Some(ThingId(2)));
-        rows_under(&h, "Paint trail", Some("Splat"), &["Taper", "Smoothing"]);
-        rows_under(&h, "Splat", None, &["Lands on", "Skin look"]);
-        // Splats onto canvases only have no skin to look like anything on.
-        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
-        params.set("splat_onto", Value::Choice("canvases".into()));
-        let h = harness_of(scene, Some(ThingId(2)));
-        rows_under(&h, "Splat", None, &["Lands on"]);
-        assert!(h.query_all_by_label("Skin look").next().is_none(), "Skin look shows for canvases");
-    }
-
-    #[test]
-    fn a_canvas_shows_its_style_knobs() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let canvas = bpe_kit::add_thing(&mut scene, &reg, "canvas", ThingId::ROOT).unwrap();
-        scene.things.get_mut(&canvas).unwrap().params.set("style", Value::Choice("wet_paint".into()));
-        let h = harness_of(scene.clone(), Some(canvas));
-        rows_under(&h, "Look", Some("Over time"), &["Style", "Light angle", "Gloss"]);
-        rows_under(&h, "Over time", None, &["Dry time", "Bleed", "Drips", "Fade"]);
-        scene.things.get_mut(&canvas).unwrap().params.set("style", Value::Choice("watercolour".into()));
-        let h = harness_of(scene, Some(canvas));
-        rows_under(&h, "Look", Some("Over time"), &["Style", "Grain", "Edge darkening"]);
-        assert!(h.query_all_by_label("Gloss").next().is_none(), "Gloss shows for watercolour");
-    }
-
-    #[test]
-    fn an_arena_skin_shows_its_style_and_drying() {
-        let reg = bpe_kit::registry();
-        let scene = bpe_kit::new_scene(&reg);
-        let h = harness_of(scene, Some(ThingId(1)));
-        rows_under(
-            &h,
-            "Paint skin",
-            None,
-            &["Takes paint", "Skin width", "Fade", "Opacity", "Style", "Dry time", "Bleed", "Drips"],
-        );
-    }
-
-    #[test]
-    fn a_marks_card_shows_pickup_and_picture_rows() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Marks).unwrap();
-        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone() else {
-            panic!("the ball's marks are linked")
-        };
-        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
-        params.set("paint_on", Value::Bool(false));
-        let h = harness_of(scene.clone(), Some(ThingId(2)));
-        assert!(h.query_all_by_label("Pickup").next().is_some(), "Pickup shows with the trail off");
-        assert!(h.query_all_by_label("Pickup fade").next().is_none(), "Pickup fade shows with no pickup");
-        let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
-        params.set("paint_pickup", Value::Number(0.5));
-        params.set("splat_on", Value::Bool(true));
-        params.set("splat_shape", Value::Choice("picture".into()));
-        let h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_all_by_label("Pickup fade").next().is_some());
-        rows_under(&h, "Splat", None, &["Picture", "Picture colours"]);
-        assert!(h.query_all_by_label("Browse Picture").next().is_some(), "a Browse button for the picture");
     }
 }

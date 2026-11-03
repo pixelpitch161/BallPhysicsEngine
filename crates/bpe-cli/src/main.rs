@@ -110,11 +110,6 @@ fn run() -> anyhow::Result<()> {
         }
         true
     })?;
-    println!(
-        "\nwrote {} with the {} in {:.1} s",
-        output.display(),
-        encoder.name(),
-        started.elapsed().as_secs_f32()
-    );
+    println!("\nwrote {} with the {} in {:.1} s", output.display(), encoder.name(), started.elapsed().as_secs_f32());
     Ok(())
 }

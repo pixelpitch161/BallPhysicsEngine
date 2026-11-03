@@ -1,7 +1,6 @@
 //! The timeline panel: the transport, the scrub bar, and a lane for every keyed or pulsing
 //! setting of the selection, with its keys as diamonds that can be moved, eased and deleted.
 
-pub mod chords;
 pub mod ease;
 pub mod lanes;
 
@@ -10,13 +9,14 @@ use crate::theme;
 use crate::transport;
 use crate::widgets::paint_diamond;
 use bpe_core::{Address, Ease, PulseSource, Value};
+use bpe_runtime::EventKind;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use lanes::{Lane, lanes_for};
 
 /// The width of the column naming each lane.
 pub const LABEL_WIDTH: f32 = 230.0;
 pub const LANE_HEIGHT: f32 = 22.0;
-/// Keys dragged this close to a beat, a hit or a whole second snap to it.
+/// Keys dragged this close to a hit or a whole second snap to it.
 const SNAP_PX: f32 = 6.0;
 const KEY_SIZE: f32 = 6.0;
 
@@ -59,13 +59,10 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected = None;
         timeline.curve_open = false;
     }
-    if let Some((p, module)) = chords::show(ui, studio, &ruler) {
-        studio.panels.nodes.open_chords(p, module);
-    }
     if lanes.is_empty() {
         ui.add_space(6.0);
         let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \
-                    right-click it to pulse with the music. Keys appear here as lanes.";
+                    right-click it to pulse with the hits. Keys appear here as lanes.";
         ui.label(RichText::new(hint).small().color(theme::MUTED));
     } else {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -104,13 +101,6 @@ fn lane_frame(ui: &mut Ui, studio: &Studio, lane: &Lane, ruler: &Ruler) -> (Rect
     painter.rect_filled(strip, 3.0, theme::CARD);
     let x = ruler.x_of(studio.time);
     painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, theme::ACCENT));
-    if let Some(end) = studio.end_time() {
-        let x = ruler.x_of(end);
-        painter.line_segment(
-            [Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())],
-            Stroke::new(1.5, theme::ACCENT_TEXT),
-        );
-    }
     (rect, strip, response)
 }
 
@@ -121,11 +111,10 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
     let a = &lane.address;
     let keys: Vec<(f64, Ease)> =
         studio.scene.tracks.get(a).map(|t| t.keys.iter().map(|k| (k.time, k.ease)).collect()).unwrap_or_default();
-    let warp = studio.warp.clone();
     let mut ease_pick: Option<(usize, Ease, bool)> = None;
     let mut delete: Option<usize> = None;
     for (i, (time, ease)) in keys.iter().enumerate() {
-        let video = warp.video_time(*time);
+        let video = *time;
         let center = Pos2::new(ruler.x_of(video), rect.center().y);
         let key_rect = Rect::from_center_size(center, egui::vec2(14.0, 14.0));
         let key = ui.interact(key_rect, ui.scope_id().with(("key", index, i)), Sense::click_and_drag());
@@ -171,7 +160,7 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         studio.scene.remove_key(a, i);
         timeline.selected = None;
     }
-    // A drag in progress on this lane follows the pointer, snapping to beats, hits and seconds.
+    // A drag in progress on this lane follows the pointer, snapping to hits and seconds.
     if let Some((drag_a, i)) = timeline.dragging.clone()
         && drag_a == *a
     {
@@ -179,7 +168,7 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         if down {
             if let Some(pos) = pos {
                 let video = snap(studio, ruler, pos.x);
-                if let Some(new_index) = studio.scene.move_key(a, i, warp.sim_time(video)) {
+                if let Some(new_index) = studio.scene.move_key(a, i, video) {
                     timeline.dragging = Some((a.clone(), new_index));
                     timeline.selected = Some((a.clone(), new_index));
                 }
@@ -192,7 +181,7 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         && let Some(pos) = response.interact_pointer_pos()
         && pos.x >= strip.left()
     {
-        let sim = warp.sim_time(snap(studio, ruler, pos.x));
+        let sim = snap(studio, ruler, pos.x);
         let reg = &studio.kit.registry;
         if let Some(value) = studio.scene.value_at_time(reg, a, sim)
             && let Ok(i) = studio.scene.set_key(reg, a, sim, value)
@@ -205,15 +194,15 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
     response.on_hover_text("Double-click to add a key here");
 }
 
-/// The video time at `x`, pulled onto a beat, a hit or a whole second when one is within
+/// The time at `x`, pulled onto a hit the run has reached or a whole second when one is within
 /// a few pixels.
 fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
     let time = ruler.time_of(x);
     let seconds = (0..=ruler.duration.ceil() as u32).map(|s| s as f64);
-    let beats = studio.panels.sound.beats.iter().map(|&b| b as f64);
-    let hits = studio.panels.sound.hits.iter().map(|&h| h as f64);
+    let steps_per_second = studio.playback.world().steps_per_second;
+    let hits =
+        studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit).map(|e| e.time(steps_per_second));
     seconds
-        .chain(beats)
         .chain(hits)
         .filter(|&t| (ruler.x_of(t) - x).abs() <= SNAP_PX)
         .min_by(|p, q| (ruler.x_of(*p) - x).abs().total_cmp(&(ruler.x_of(*q) - x).abs()))

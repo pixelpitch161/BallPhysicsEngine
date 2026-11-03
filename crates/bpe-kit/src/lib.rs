@@ -163,7 +163,6 @@ mod tests {
         }
     }
 
-
     fn defs_of(reg: &Registry, kind: &str) -> &'static [bpe_core::SettingDef] {
         reg.module(kind).unwrap_or_else(|| panic!("no module {kind}")).settings()
     }
@@ -187,9 +186,6 @@ mod tests {
             }
         }
     }
-
-
-
 
     #[test]
     fn the_look_card_reads_in_section_order() {
@@ -313,7 +309,6 @@ mod tests {
         assert_eq!(reg.module("look.basic").unwrap().name(), "Look");
     }
 
-
     #[test]
     fn a_ball_bigger_than_its_arena_is_pinned_and_logs_no_hits() {
         let kit = kit();
@@ -328,7 +323,6 @@ mod tests {
         let p = world.bodies[&ThingId(2)].position[0];
         assert!(p.is_finite() && p.length() < 1e-3, "{p:?}");
     }
-
 
     #[test]
     fn ensure_camera_appends_once() {

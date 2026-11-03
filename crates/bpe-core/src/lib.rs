@@ -34,9 +34,7 @@ pub use edit::{EditError, starter_name};
 pub use ids::{KindId, ModuleId, SlotId, ThingId};
 pub use library::{Library, Module, Stash};
 pub use registry::{ModuleKind, Registry, ThingKind};
-pub use resolve::{
-    Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve, resolve_slot,
-};
+pub use resolve::{Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve, resolve_slot};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, SlotLink, Target, Thing, Transform};
 pub use settings::{

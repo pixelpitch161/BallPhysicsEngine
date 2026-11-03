@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
-    ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource,
-    HitBurst, SceneSettings, StreakTrail, Style, TrailSource, new_scene,
+    ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst,
+    SceneSettings, StreakTrail, Style, TrailSource, new_scene,
 };
 
 const ARENA: ThingId = ThingId(1);
@@ -621,7 +621,6 @@ impl<'a> Builder<'a> {
     fn ride(&mut self, id: ThingId, parent: ThingId, offset: Vec2, turn_with_parent: bool) {
         self.scene.set_parent(id, parent, Attach::Ride { offset, turn_with_parent, item: None }).expect("no loops");
     }
-
 }
 
 fn own(thing: ThingId, key: &str) -> Address {

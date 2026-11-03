@@ -197,8 +197,6 @@ dependencies = [
  "bpe-gfx",
  "bpe-kit",
  "bpe-runtime",
- "ron",
- "serde",
 ]
 
 [[package]]

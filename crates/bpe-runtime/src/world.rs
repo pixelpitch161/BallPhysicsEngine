@@ -820,7 +820,8 @@ mod tests {
         let mut w = World::build(&scene, &resolved, &sims);
         let mut log = Log::default();
         w.advance_to(1.0, &sims, &mut log);
-        let counts: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == counter).collect();
+        let counts: Vec<&Event> =
+            log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == counter).collect();
         assert_eq!(counts.len(), 240);
         assert_eq!(counts.first().unwrap().step, 1);
         assert_eq!(counts.last().unwrap().step, 240);
@@ -871,8 +872,6 @@ mod tests {
         w.step(&sims, &mut Log::default());
         assert_eq!(w.poses[&late].position, Vec2::new(300.0, 0.0));
     }
-
-
 
     #[test]
     fn two_balls_heading_at_each_other_bounce_and_log_one_hit() {
@@ -1004,13 +1003,6 @@ mod tests {
         assert_eq!(bare_log.events(), log.events());
     }
 
-
-
-
-
-
-
-
     #[test]
     fn a_thing_without_a_sim_is_skipped() {
         let (mut scene, _, sims) = dots_in_ring(1);
@@ -1026,8 +1018,6 @@ mod tests {
         assert_eq!(w.steps_per_second, 240);
         drop(sims);
     }
-
-
 
     #[test]
     fn targets_resolve_by_tag_kind_thing_and_me() {

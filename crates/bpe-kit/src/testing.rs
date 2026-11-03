@@ -50,4 +50,3 @@ pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Ki
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, kit)
 }
-

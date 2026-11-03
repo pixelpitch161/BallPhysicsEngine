@@ -75,8 +75,7 @@ impl Default for Streak {
     }
 }
 
-const BALL_SLOTS: &[SlotId] =
-    &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles];
+const BALL_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles];
 
 impl ThingKind for SceneKind {
     fn id(&self) -> &'static str {

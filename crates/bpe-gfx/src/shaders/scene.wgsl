@@ -437,3 +437,36 @@ fn shade_flash(in: FlashOut) -> vec4<f32> {
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
     return vec4<f32>(in.color.rgb * v, 0.0);
 }
+
+@fragment
+fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
+    return shade_shape(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_shape_each(in: ShapeOut) -> @location(0) vec4<f32> {
+    return each_out(shade_shape(in), g.post.w);
+}
+
+@fragment
+fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
+    return shade_ball(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_ball_each(in: BallOut) -> @location(0) vec4<f32> {
+    return each_out(shade_ball(in), g.post.w);
+}
+
+@fragment
+fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
+    return shade_flash(in);
+}
+
+// In a layer whose things blend with each other (see each.wgsl).
+@fragment
+fn fs_flash_each(in: FlashOut) -> @location(0) vec4<f32> {
+    return each_out(shade_flash(in), g.post.w);
+}

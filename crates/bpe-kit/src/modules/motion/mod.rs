@@ -36,9 +36,6 @@ impl ModuleKind for BasicMotionKind {
     fn help(&self) -> &'static str {
         "Falls under gravity, is slowed by the air and pushed by the wind."
     }
-    fn fits(&self, thing_kind: &str) -> bool {
-        !matches!(thing_kind, "liquid" | "swarm")
-    }
     fn slot(&self) -> SlotId {
         SlotId::Motion
     }

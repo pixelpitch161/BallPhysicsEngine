@@ -16,9 +16,9 @@ mod gradients;
 #[cfg(test)]
 mod paint_tests;
 pub mod particles;
-mod util;
 #[cfg(test)]
 mod pictures;
+mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
