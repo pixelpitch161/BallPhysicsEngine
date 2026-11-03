@@ -108,6 +108,28 @@ pub enum SplatSkin {
     Spread,
 }
 
+/// What a chip knocked out by a hit looks like.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum ChipShape {
+    #[default]
+    Splat,
+    Ring,
+    Star,
+    Crack,
+    Burst,
+    Dots,
+}
+
+/// Who claimed ground belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum ClaimTeam {
+    /// One team per thing.
+    ByThing,
+    /// One team per colour.
+    #[default]
+    ByColour,
+}
+
 /// Where the colour of the marks comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum MarkColour {
@@ -193,6 +215,42 @@ pub struct MarksBrushes {
     /// How a splat paints the thing it hits: its shape printed there, or spread along the surface.
     #[setting(label = "Skin look", when = "splat_on and splat_onto!=canvases", group = "Splat")]
     pub splat_skin: SplatSkin,
+    #[setting(label = "Scrape path", group = "Scrape", simple)]
+    pub scrape_on: bool,
+    #[setting(label = "Width from", when = "scrape_on", group = "Scrape")]
+    pub scrape_width_by: WidthBy,
+    /// Size: half the width is this many ball radii. Fixed: this many times 10 px. Speed: px = this × speed / 100.
+    #[setting(label = "Width", when = "scrape_on", range(0.1, 4), group = "Scrape", keyframe)]
+    pub scrape_width: f32,
+    #[setting(label = "Chip at hits", group = "Scrape")]
+    pub chip_on: bool,
+    #[setting(label = "Chip shape", when = "chip_on", group = "Scrape")]
+    pub chip_shape: ChipShape,
+    #[setting(label = "Chip size", when = "chip_on", range(2, 400), unit = "px", group = "Scrape", keyframe)]
+    pub chip_size: f32,
+    #[setting(label = "Size by speed", when = "chip_on", range(0, 1), group = "Scrape")]
+    pub chip_by_speed: f32,
+    #[setting(label = "Hit speed", when = "chip_on", range(0, 2000), unit = "px/s", group = "Scrape")]
+    pub chip_min_speed: f32,
+    /// How much one pass takes away.
+    #[setting(label = "Strength", when = "scrape_on or chip_on", range(0, 1), group = "Scrape")]
+    pub scrape_strength: f32,
+    #[setting(label = "Claim path", group = "Claim", simple)]
+    pub claim_on: bool,
+    #[setting(label = "Width from", when = "claim_on", group = "Claim")]
+    pub claim_width_by: WidthBy,
+    #[setting(label = "Width", when = "claim_on", range(0.1, 4), group = "Claim", keyframe)]
+    pub claim_width: f32,
+    #[setting(label = "Claim at hits", group = "Claim")]
+    pub claim_hits: bool,
+    #[setting(label = "Hit size", when = "claim_hits", range(2, 400), unit = "px", group = "Claim")]
+    pub claim_hit_size: f32,
+    #[setting(label = "Size by speed", when = "claim_hits", range(0, 1), group = "Claim")]
+    pub claim_hit_by_speed: f32,
+    #[setting(label = "Hit speed", when = "claim_hits", range(0, 2000), unit = "px/s", group = "Claim")]
+    pub claim_min_speed: f32,
+    #[setting(label = "Team", when = "claim_on or claim_hits", group = "Claim")]
+    pub claim_team: ClaimTeam,
     /// The ball's own colour, or the Colours below.
     #[setting(label = "Colour from", group = "Colours", simple, random)]
     pub colour_from: MarkColour,
@@ -234,6 +292,23 @@ impl Default for MarksBrushes {
             splat_min_speed: 50.0,
             splat_onto: SplatOnto::ThingHit,
             splat_skin: SplatSkin::Print,
+            scrape_on: false,
+            scrape_width_by: WidthBy::Size,
+            scrape_width: 1.0,
+            chip_on: false,
+            chip_shape: ChipShape::Splat,
+            chip_size: 30.0,
+            chip_by_speed: 0.5,
+            chip_min_speed: 80.0,
+            scrape_strength: 1.0,
+            claim_on: false,
+            claim_width_by: WidthBy::Size,
+            claim_width: 1.2,
+            claim_hits: false,
+            claim_hit_size: 40.0,
+            claim_hit_by_speed: 0.5,
+            claim_min_speed: 50.0,
+            claim_team: ClaimTeam::ByColour,
             colour_from: MarkColour::Ball,
             colour: Paint { follow: Follow::Place, ..Paint::solid(Color::WHITE) },
         }
@@ -272,5 +347,13 @@ mod tests {
         assert_eq!(defs.iter().find(|d| d.key == "paint_pickup").unwrap().when, "");
         assert_eq!(defs.iter().find(|d| d.key == "splat_picture").unwrap().unit, "picture");
         assert_eq!(SplatShape::NAMES.last(), Some(&"picture"));
+    }
+
+    #[test]
+    fn brush_defaults_round_trip() {
+        let d = MarksBrushes::default();
+        assert_eq!(MarksBrushes::from_params(&d.to_params()), d);
+        assert!(!d.scrape_on && !d.chip_on && !d.claim_on && !d.claim_hits);
+        assert_eq!(MarksBrushes::from_params(&bpe_core::Params::default()), d);
     }
 }

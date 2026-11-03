@@ -95,6 +95,13 @@ pub struct Log {
     scene: Vec<SceneSample>,
     /// The marks things leave on canvases, in step order. Not in the hash.
     marks: Vec<Mark>,
+    /// Every canvas's numbers, 60 times a second, in step order. Not in the hash.
+    pub(crate) canvas: Vec<crate::canvas_numbers::CanvasSample>,
+    /// Each canvas's colour-war teams, as last noted. Not in the hash.
+    pub(crate) teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
+    /// When a rule ended the video: `(step it was asked at, step the video ends at)`. Forgotten
+    /// when a rewind goes before the step it was asked at. Not in the hash.
+    pub(crate) end: Option<(u64, u64)>,
 }
 
 /// The shape a mark stamps onto a canvas.
@@ -122,6 +129,14 @@ pub enum MarkShape {
     /// One bleed pass over a rectangle (`from` min corner, `to` max corner, in canvas pixels from
     /// the canvas middle): `radius` is the dry time in seconds, `radius_to` the Bleed setting.
     Bleed,
+    /// A ball scraping along its track: a capsule like a Stroke's (from → to, radius → radius_to,
+    /// the joints in variant bits 1 and 2, angle the previous piece's direction) that takes paint
+    /// away. colour[3] is the strength, 0 to 1. Not paint: it leaves no ink.
+    Scrape,
+    /// A piece knocked out by a hit: a splat shape at `from` of `radius`, turned by `angle`.
+    /// variant bits 0-4 are the splat's layout and squash, bits 5-7 the shape (0 splat, 1 ring,
+    /// 2 star, 3 crack, 4 burst, 5 dots). colour[3] is the strength. Not paint.
+    Chip,
 }
 
 /// What a mark is painted onto: a canvas thing, or the skin of an arena or obstacle.
@@ -232,6 +247,25 @@ impl Log {
         }
         self.tracks.retain(|_, t| !t.is_empty());
         self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
+        self.canvas.truncate(self.canvas.partition_point(|s| s.step <= step));
+        if self.end.is_some_and(|(asked, _)| asked > step) {
+            self.end = None;
+        }
+    }
+
+    /// Notes that a rule asked at `asked` for the video to end at step `at`.
+    pub fn set_end(&mut self, asked: u64, at: u64) {
+        self.end = Some((asked, at));
+    }
+
+    /// The step a rule ended the video at, if one has.
+    pub fn end(&self) -> Option<u64> {
+        self.end.map(|(_, at)| at)
+    }
+
+    /// The time (run seconds) a rule ended the video at, if one has.
+    pub fn end_time(&self, steps_per_second: u32) -> Option<f64> {
+        self.end().map(|at| at as f64 / steps_per_second.max(1) as f64)
     }
 
     /// Adds a mark. Marks must arrive in step order.
@@ -312,6 +346,8 @@ impl Log {
             + self.tracks.values().map(|t| t.capacity() * std::mem::size_of::<TrackSample>()).sum::<usize>()
             + self.scene.capacity() * std::mem::size_of::<SceneSample>()
             + self.marks.capacity() * std::mem::size_of::<Mark>()
+            + self.canvas.capacity() * std::mem::size_of::<crate::canvas_numbers::CanvasSample>()
+            + self.canvas.iter().map(|c| c.numbers.shares.len() * 4).sum::<usize>()
     }
 
     /// An FNV-1a hash of every field of every event. Equal logs hash equal on every platform.

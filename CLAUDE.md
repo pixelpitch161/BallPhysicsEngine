@@ -42,8 +42,8 @@ Dependencies go bottom to top:
 - `bpe-synth`: the modular node synth (DSP blocks, patch catalog/compiler, voices).
 - `bpe-mix`: instruments, chords, buses, master chain, stems and export of the soundtrack.
 - `bpe-music`: song decoding, beats/tempo, band levels, MIDI. The old engine uses it too.
-- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, emitter,
-  field, folder, liquid, obstacle, scene, soft, swarm, text) and one per module kind in `src/modules/` (look, trail,
+- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, canvas, emitter,
+  field, folder, liquid, meter, obstacle, scene, soft, swarm, text) and one per module kind in `src/modules/` (look, trail,
   motion, bounce, sound, particles, rules, shader, drums, melody, and more). A folder usually has `mod.rs`
   (settings + kind), `sim.rs` (physics) and `draw.rs` or `graph.rs`. `lib.rs::kit()` registers them all.
   `starters.rs` holds per-thing starter modules and `scenes.rs` holds the built-in scenes.
@@ -110,6 +110,8 @@ native Windows (libm trig), which is a known gap.
 
 ## Engine pitfalls
 
+- A canvas's grid is the truth for Cover, Powder and Fog (drawn from `grid.image()`); only Paint canvases log marks.
+  Numbers go through `World::report_canvas` and are read from the log (`Log::canvas_at`) by captions and the Meter.
 - Module states are `MotionState { settings, program }` and `BounceState { settings, program }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns
   `None`.

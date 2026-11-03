@@ -553,6 +553,16 @@ fn rules() -> Vec<NodeSpec> {
         when("when.counter", "When a counter reaches", "Fires each time the counter climbs to this number.")
             .param(number("id", "Counter", 0.0, 0.0, 15.0))
             .param(number("reaches", "Reaches", 10.0, 1.0, 100000.0)),
+        when(
+            "when.canvas",
+            "When a canvas reaches",
+            "Fires when a canvas's number crosses a level: covered, revealed, wet, or a team's share.",
+        )
+        .param(target("canvas", "Canvas", "anything"))
+        .param(choice("number", "Number", &["Covered", "Revealed", "Wet", "Share"]))
+        .param(text("team", "Team", "").help("For Share: the team's name, as captions write it"))
+        .param(number("level", "Level (%)", 50.0, 0.0, 100.0))
+        .param(choice("way", "Way", &["Up", "Down"])),
         only_if("if.chance", "Chance", "Carries on this often, at random.", &[("percent", Number)])
             .param(number("percent", "Percent", 50.0, 0.0, 100.0)),
         only_if("if.every", "Every nth time", "Carries on every nth time it is reached.", &[])
@@ -633,6 +643,8 @@ fn rules() -> Vec<NodeSpec> {
             &[("ball", Ball), ("loudness", Number)],
         )
         .param(number("loudness", "Loudness", 600.0, 0.0, 10000.0)),
+        act("do.end", "End the video", "Ends the video a little after this: export and the timeline stop there.", &[])
+            .param(number("after", "After (s)", 2.0, 0.0, 30.0)),
         act("do.counter", "Count", "Adds to a counter.", &[("add", Number)])
             .param(number("id", "Counter", 0.0, 0.0, 15.0))
             .param(number("add", "Add", 1.0, -1000.0, 1000.0)),

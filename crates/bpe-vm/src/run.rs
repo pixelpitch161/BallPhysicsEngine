@@ -88,6 +88,10 @@ pub enum Act {
         ball: Ball,
         loudness: f32,
     },
+    /// End the video `after` seconds from now.
+    EndVideo {
+        after: f32,
+    },
 }
 
 /// What an output block collected: one entry per input pin, `None` where nothing is wired.
@@ -198,6 +202,8 @@ pub struct Vm {
     ticks: BTreeMap<u32, u32>,
     /// Per counter trigger, whether its counter is at or above the mark.
     above: BTreeSet<u32>,
+    /// Per canvas trigger, the number it read last step (to see it cross its level).
+    levels: BTreeMap<u32, f32>,
     counters: BTreeMap<u32, f32>,
 }
 
@@ -213,6 +219,7 @@ impl Vm {
             passed: BTreeMap::new(),
             ticks: BTreeMap::new(),
             above: BTreeSet::new(),
+            levels: BTreeMap::new(),
             counters: BTreeMap::new(),
         }
     }
@@ -338,6 +345,23 @@ impl Vm {
                         }
                     } else {
                         self.above.remove(&b.id);
+                    }
+                }
+                "when.canvas" => {
+                    let canvas = target_from_text(b.text("canvas"));
+                    if let Some(v) = cx.host.canvas_number(&canvas, b.text("number"), b.text("team")) {
+                        let level = b.num("level") / 100.0;
+                        // The first value never fires, even when it is already past the level.
+                        if let Some(was) = self.levels.insert(b.id, v) {
+                            let crossed = if b.text("way") != "Down" {
+                                was < level && v >= level
+                            } else {
+                                was > level && v <= level
+                            };
+                            if crossed {
+                                self.fire(&cx, t, &mut walk);
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -467,6 +491,7 @@ impl Vm {
                         walk.push(Act::Note { ball, loudness: cx.num(block, 2, 0) });
                     }
                 }
+                "end" => walk.push(Act::EndVideo { after: b.num("after").max(0.0) }),
                 "counter" => {
                     let add = cx.num(block, 1, 0);
                     *cx.counters.borrow_mut().entry(b.num("id") as u32).or_insert(0.0) += add;
@@ -1161,6 +1186,64 @@ mod rules_tests {
         let removes: Vec<&Act> = acts.iter().filter(|a| matches!(a, Act::Remove { .. })).collect();
         assert_eq!(removes.len(), 1);
         assert_eq!(vm.fired_at(reach), Some(2.0));
+    }
+
+    /// A host whose one canvas reads whatever the test sets.
+    struct CanvasHost(std::cell::Cell<Option<f32>>);
+    impl Host for CanvasHost {
+        fn canvas_number(&self, _: &Target, _: &str, _: &str) -> Option<f32> {
+            self.0.get()
+        }
+    }
+
+    /// Runs a "When a canvas reaches" rule over `values`, and says on which runs it fired.
+    fn canvas_fires(values: &[Option<f32>], level: f32, way: &str) -> Vec<usize> {
+        let (p, ids) = chain(&["when.canvas", "do.grow"], |g, ids| {
+            param(g, ids[0], "level", Param::Number(level));
+            param(g, ids[0], "way", Param::Choice(way.into()));
+        });
+        let host = CanvasHost(std::cell::Cell::new(None));
+        let mut vm = Vm::new(1);
+        let mut fired = Vec::new();
+        for (i, v) in values.iter().enumerate() {
+            host.0.set(*v);
+            let mut acts = Vec::new();
+            vm.run(&p, &host, i as f32, &[], &mut acts);
+            if vm.fired_at(ids[0]) == Some(i as f32) {
+                fired.push(i);
+            }
+        }
+        fired
+    }
+
+    #[test]
+    fn canvas_level_fires_once_per_crossing() {
+        let s = |v: &[f32]| v.iter().map(|x| Some(*x)).collect::<Vec<_>>();
+        assert_eq!(canvas_fires(&s(&[0.2, 0.4, 0.6, 0.7, 0.4, 0.55]), 50.0, "Up"), vec![2, 5]);
+        // The first value never fires, even when it is already above.
+        assert_eq!(canvas_fires(&s(&[0.7, 0.3, 0.6]), 50.0, "Up"), vec![2]);
+        assert_eq!(canvas_fires(&s(&[0.7, 0.8]), 50.0, "Up"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn end_block_asks_to_end() {
+        let (p, _) = chain(&["when.start", "do.end"], |g, ids| param(g, ids[1], "after", Param::Number(2.5)));
+        let mut acts = Vec::new();
+        Vm::new(1).run(&p, &TwoBalls, 0.0, &[], &mut acts);
+        assert_eq!(acts, vec![Act::EndVideo { after: 2.5 }]);
+    }
+
+    #[test]
+    fn canvas_level_down() {
+        let s = |v: &[f32]| v.iter().map(|x| Some(*x)).collect::<Vec<_>>();
+        assert_eq!(canvas_fires(&s(&[0.8, 0.6, 0.4]), 50.0, "Down"), vec![2]);
+    }
+
+    #[test]
+    fn unknown_canvas_never_fires() {
+        assert!(canvas_fires(&[None, None, None], 50.0, "Up").is_empty());
+        // A missing reading in between does not forget the last one.
+        assert_eq!(canvas_fires(&[Some(0.2), None, Some(0.6)], 50.0, "Up"), vec![2]);
     }
 
     #[test]

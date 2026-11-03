@@ -39,3 +39,8 @@ Wet pour	63	c624cfb82d43796a
 Watercolour garden	72	69345aba6916daa9
 Neon splat ring	135	6738568001f25edf
 Colour mixing	34	6817708b229b13ba
+Scratch to reveal	62	5416e2c14df3f2e6
+Colour war	56	80170bb36e7b2745
+Territory	37	3ef4695f4c2274bd
+Sand garden	60	0da85647104b99c0
+Fog glass	60	92e0d03d39848443

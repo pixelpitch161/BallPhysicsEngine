@@ -4,6 +4,7 @@
 
 pub(crate) mod composite;
 pub mod pictures;
+pub mod shapes;
 pub(crate) mod stamp;
 
 /// The most texels along a canvas texture's long side.

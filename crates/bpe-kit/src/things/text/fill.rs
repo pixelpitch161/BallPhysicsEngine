@@ -18,6 +18,12 @@ pub struct Values {
 /// `{countdown}` as whole seconds left (never below 0), `{hits}` and `{balls}` as counts.
 /// Anything else in braces stays as written.
 pub fn fill(template: &str, v: &Values) -> String {
+    fill_with(template, v, &|_| None)
+}
+
+/// `fill`, with `extra` asked about any other token (the text between the braces, as written):
+/// `Some` puts its answer in, `None` leaves the token as written. The five built-in tokens win.
+pub fn fill_with(template: &str, v: &Values, extra: &dyn Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -38,7 +44,10 @@ pub fn fill(template: &str, v: &Values) -> String {
                     }
                     "hits" => out.push_str(&v.hits.to_string()),
                     "balls" => out.push_str(&v.balls.to_string()),
-                    _ => out.push_str(&after[..=end]),
+                    _ => match extra(token) {
+                        Some(s) => out.push_str(&s),
+                        None => out.push_str(&after[..=end]),
+                    },
                 }
                 rest = &after[end + 1..];
             }
@@ -64,5 +73,14 @@ mod tests {
         assert_eq!(fill("odd {brace", &v), "odd {brace");
         assert_eq!(fill("{countdown}", &Values { time: 100.0, duration: 90.0, ..v }), "0");
         assert_eq!(fill("{time}", &Values { time: 0.0, ..v }), "0:00");
+    }
+
+    #[test]
+    fn extra_fills_unknown_tokens() {
+        let v = Values::default();
+        let extra = |t: &str| (t == "a").then(|| "A".to_string());
+        assert_eq!(fill_with("{a} {time} {b}", &v, &extra), "A 0:00 {b}");
+        // The built-ins win over `extra`.
+        assert_eq!(fill_with("{time}", &v, &|_| Some("X".into())), "0:00");
     }
 }

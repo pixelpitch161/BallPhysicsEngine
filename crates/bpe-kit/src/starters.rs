@@ -105,6 +105,151 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
     Ok(id)
 }
 
+/// What a new canvas can start as, in the Add menu's Canvas submenu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanvasStart {
+    Paint,
+    ScratchCard,
+    Sand,
+    Snow,
+    FogGlass,
+    ColourWar,
+}
+
+impl CanvasStart {
+    pub const ALL: [CanvasStart; 6] =
+        [Self::Paint, Self::ScratchCard, Self::Sand, Self::Snow, Self::FogGlass, Self::ColourWar];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Paint => "Paint canvas",
+            Self::ScratchCard => "Scratch card",
+            Self::Sand => "Sand",
+            Self::Snow => "Snow",
+            Self::FogGlass => "Fog glass",
+            Self::ColourWar => "Colour war",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::Paint => "A blank canvas the balls paint on.",
+            Self::ScratchCard => "A foil cover the balls scratch off to show a prize word.",
+            Self::Sand => "A bed of sand the balls plough through.",
+            Self::Snow => "A drift of snow the balls plough through.",
+            Self::FogGlass => "Misted glass the balls wipe clear; it fogs up again.",
+            Self::ColourWar => "Ground the balls claim by colour, tile by tile.",
+        }
+    }
+
+    /// The canvas settings this start changes from the defaults.
+    pub fn settings(self) -> crate::CanvasSettings {
+        use crate::{CanvasKind, CoverLook, FogLook, PowderLook, StartsAs, Underneath};
+        use bpe_core::Color;
+        let mut s = crate::CanvasSettings::default();
+        match self {
+            Self::Paint => {}
+            Self::ScratchCard => {
+                s.kind = CanvasKind::Cover;
+                s.cover_look = CoverLook::Foil;
+                s.start_colour = Color::rgb(0xb8, 0xbc, 0xc6);
+                s.under = Underneath::Text;
+                s.under_text = "YOU WIN".to_string();
+                s.under_text_size = 200.0;
+                s.under_colour = Color::rgb(0x1b, 0x10, 0x30);
+                s.under_text_colour = Color::rgb(0xff, 0xd2, 0x3e);
+            }
+            Self::Sand => {
+                s.kind = CanvasKind::Powder;
+                s.powder_look = PowderLook::Sand;
+                s.start_colour = Color::rgb(0xd9, 0xb7, 0x7e);
+                s.ridges = 0.6;
+                s.grows_back = 4.0;
+            }
+            Self::Snow => {
+                s.kind = CanvasKind::Powder;
+                s.powder_look = PowderLook::Snow;
+                s.start_colour = Color::rgb(0xf4, 0xf7, 0xfb);
+                s.ridges = 0.8;
+                s.grows_back = 4.0;
+            }
+            Self::FogGlass => {
+                s.kind = CanvasKind::Fog;
+                s.fog_look = FogLook::Steam;
+                s.start_colour = Color::rgb(0xe8, 0xee, 0xf5);
+                s.density = 0.7;
+                s.blur = 14.0;
+                s.grows_back = 4.0;
+                s.drops = 0.5;
+            }
+            Self::ColourWar => {
+                s.kind = CanvasKind::Paint;
+                s.starts_as = StartsAs::Colour;
+                s.start_colour = Color::rgb(0x14, 0x14, 0x1c);
+                s.tile_size = 40.0;
+                s.take_over = true;
+                s.border = 0.4;
+            }
+        }
+        s
+    }
+}
+
+/// Adds a canvas of the given start under `parent`, and sets the balls' brushes up for it:
+/// scraping for covers, powder and fog, claiming for a colour war. Balls that already had a
+/// Marks module keep their paint trail; fresh ones get only what the start needs.
+pub fn add_canvas(
+    scene: &mut Scene,
+    reg: &Registry,
+    start: CanvasStart,
+    parent: ThingId,
+) -> Result<ThingId, EditError> {
+    use crate::modules::marks::{ClaimTeam, MarksBrushes, WidthBy};
+    use bpe_core::Settings;
+    let had_marks: std::collections::BTreeSet<ThingId> = scene
+        .order
+        .iter()
+        .copied()
+        .filter(|id| scene.things[id].kind == "balls")
+        .filter(|&id| resolve_slot(scene, reg, id, SlotId::Marks, &mut Vec::new()).is_some())
+        .collect();
+    let id = add_thing(scene, reg, "canvas", parent)?;
+    // Only what differs from the defaults, so later default changes still reach the canvas.
+    let defaults = crate::CanvasSettings::default().to_params();
+    for (key, value) in start.settings().to_params().0 {
+        if defaults.get(&key) != Some(&value) {
+            scene.things.get_mut(&id).expect("just added").params.set(&key, value);
+        }
+    }
+    let balls: Vec<ThingId> = scene.order.iter().copied().filter(|b| scene.things[b].kind == "balls").collect();
+    for ball in balls {
+        let Some(resolved) = resolve_slot(scene, reg, ball, SlotId::Marks, &mut Vec::new()) else { continue };
+        let Some(module) = scene.library.modules.get_mut(&resolved.module) else { continue };
+        let fresh = !had_marks.contains(&ball);
+        let mut b = MarksBrushes::from_params(&module.params);
+        match start {
+            CanvasStart::Paint => continue,
+            CanvasStart::ScratchCard | CanvasStart::Sand | CanvasStart::Snow | CanvasStart::FogGlass => {
+                b.scrape_on = true;
+                b.scrape_width_by = WidthBy::Size;
+                b.scrape_width = if start == CanvasStart::FogGlass { 1.4 } else { 1.0 };
+            }
+            CanvasStart::ColourWar => {
+                b.claim_on = true;
+                b.claim_hits = true;
+                b.claim_team = ClaimTeam::ByColour;
+            }
+        }
+        if fresh {
+            b.paint_on = false;
+        }
+        for (key, value) in b.to_params().0 {
+            module.params.set(&key, value);
+        }
+    }
+    Ok(id)
+}
+
 /// Links a fresh Brushes starter (Paint trail on) to every balls thing that has no Marks
 /// module, so a new canvas has something painting on it straight away.
 fn give_balls_brushes(scene: &mut Scene, reg: &Registry) -> Result<(), EditError> {
@@ -443,5 +588,84 @@ mod tests {
         assert!(res.problems.is_empty(), "{:?}", res.problems);
         let pink = Gradient::solid(Color::rgb(0xff, 0x5c, 0xa8));
         assert_eq!(res.things[&ball].slots[&SlotId::Look].params.get("colours"), Some(&Value::Gradient(pink)));
+    }
+
+    // ---- canvas starting points ----
+
+    fn marks_of(scene: &Scene, reg: &Registry, ball: ThingId) -> crate::modules::marks::MarksBrushes {
+        use bpe_core::Settings;
+        let r = resolve_slot(scene, reg, ball, SlotId::Marks, &mut Vec::new()).expect("a Marks module");
+        crate::modules::marks::MarksBrushes::from_params(&scene.library.modules[&r.module].params)
+    }
+
+    #[test]
+    fn each_start_adds_a_canvas_of_its_kind() {
+        use crate::CanvasKind;
+        use bpe_core::Settings;
+        let kinds = [
+            (CanvasStart::Paint, CanvasKind::Paint),
+            (CanvasStart::ScratchCard, CanvasKind::Cover),
+            (CanvasStart::Sand, CanvasKind::Powder),
+            (CanvasStart::Snow, CanvasKind::Powder),
+            (CanvasStart::FogGlass, CanvasKind::Fog),
+            (CanvasStart::ColourWar, CanvasKind::Paint),
+        ];
+        for (start, kind) in kinds {
+            let reg = registry();
+            let mut scene = new_scene(&reg);
+            let id = add_canvas(&mut scene, &reg, start, ThingId::ROOT).unwrap();
+            assert_eq!(scene.things[&id].kind, "canvas");
+            let settings = crate::CanvasSettings::from_params(&scene.things[&id].params);
+            assert_eq!(settings.kind, kind, "{start:?}");
+            assert!(!start.label().is_empty() && !start.help().is_empty());
+        }
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let id = add_canvas(&mut scene, &reg, CanvasStart::ScratchCard, ThingId::ROOT).unwrap();
+        let s = crate::CanvasSettings::from_params(&scene.things[&id].params);
+        assert_eq!((s.under_text.as_str(), s.under_text_size), ("YOU WIN", 200.0));
+        assert!(resolve(&scene, &reg).problems.is_empty());
+    }
+
+    #[test]
+    fn scratch_card_turns_scrape_on_and_paint_off_for_fresh_brushes() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
+        add_canvas(&mut scene, &reg, CanvasStart::ScratchCard, ThingId::ROOT).unwrap();
+        let b = marks_of(&scene, &reg, ball);
+        assert!(b.scrape_on && !b.paint_on, "scrape on, paint off");
+        assert_eq!(b.scrape_width, 1.0);
+        let mut scene = new_scene(&reg);
+        add_canvas(&mut scene, &reg, CanvasStart::FogGlass, ThingId::ROOT).unwrap();
+        assert_eq!(marks_of(&scene, &reg, ball).scrape_width, 1.4);
+    }
+
+    #[test]
+    fn existing_brushes_keep_their_paint() {
+        use bpe_core::Settings;
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
+        fill_slot(&mut scene, &reg, ball, SlotId::Marks).unwrap();
+        let r = resolve_slot(&scene, &reg, ball, SlotId::Marks, &mut Vec::new()).unwrap();
+        let mut b = crate::modules::marks::MarksBrushes::from_params(&scene.library.modules[&r.module].params);
+        b.paint_on = true;
+        scene.library.modules.get_mut(&r.module).unwrap().params = b.to_params();
+        add_canvas(&mut scene, &reg, CanvasStart::Sand, ThingId::ROOT).unwrap();
+        let b = marks_of(&scene, &reg, ball);
+        assert!(b.paint_on && b.scrape_on);
+    }
+
+    #[test]
+    fn colour_war_turns_claims_on() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
+        let id = add_canvas(&mut scene, &reg, CanvasStart::ColourWar, ThingId::ROOT).unwrap();
+        let b = marks_of(&scene, &reg, ball);
+        assert!(b.claim_on && b.claim_hits && !b.paint_on);
+        let s = crate::CanvasSettings::from_params(&scene.things[&id].params);
+        assert_eq!((s.tile_size, s.take_over, s.starts_as), (40.0, true, crate::StartsAs::Colour));
     }
 }

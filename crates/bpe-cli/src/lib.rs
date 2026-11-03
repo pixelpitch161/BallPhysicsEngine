@@ -307,6 +307,13 @@ pub fn extras_flag(flag: &str, extras: &mut bpe_kit::Extras) -> bool {
 }
 /// Frames that can be on their way back from the graphics card at once.
 const FRAMES_IN_FLIGHT: usize = 3;
+/// How many of `total` frames to draw when a rule ends the video at run time `end`: up to and
+/// including the first frame whose moment of the run (`sim_time` of its video time) is at or past
+/// it. Never more than `total`, never fewer than 1.
+fn frames_until_end(total: u32, fps: u32, end: f64, sim_time: impl Fn(f64) -> f64) -> u32 {
+    (0..total).find(|&k| sim_time(k as f64 / fps as f64) >= end).map_or(total, |k| k + 1).clamp(1, total.max(1))
+}
+
 /// Finished frames that can wait for ffmpeg at once.
 const FRAMES_QUEUED: usize = 4;
 
@@ -346,6 +353,11 @@ fn export_with(
     track.write_wav(&wav.0)?;
     // Beat sync by time warp: each frame shows the moment of the run the warp puts there.
     let warp = bpe_kit::warp_for(scene, &resolved, &log);
+    // A rule may end the video early: draw up to the first frame at or after the end.
+    let total = match log.end_time(run.steps_per_second) {
+        Some(end) => frames_until_end(total, fps, end, |t| warp.sim_time(t)),
+        None => total,
+    };
 
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
@@ -550,6 +562,19 @@ mod tests {
         assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!(CANCELLED)));
         assert!(retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("ffmpeg failed")));
         assert!(!retry_on_cpu(Encoder::Cpu, &anyhow::anyhow!("ffmpeg failed")));
+    }
+
+    #[test]
+    fn frames_until_end_counts_to_the_first_frame_at_or_past_it() {
+        let identity = |t: f64| t;
+        // 60 fps, ending at 3 s: frames 0 to 180 are drawn.
+        assert_eq!(frames_until_end(360, 60, 3.0, identity), 181);
+        assert_eq!(frames_until_end(360, 60, 3.001, identity), 182);
+        // Never more than the video, never fewer than one frame.
+        assert_eq!(frames_until_end(120, 60, 9.0, identity), 120);
+        assert_eq!(frames_until_end(120, 60, 0.0, identity), 1);
+        // The beat sync's warp is asked, not the plain clock.
+        assert_eq!(frames_until_end(360, 60, 3.0, |t| t * 2.0), 91);
     }
 
     #[test]

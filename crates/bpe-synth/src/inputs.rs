@@ -57,6 +57,7 @@ pub const SCENE_INPUTS: &[InputDef] = &[
     def("mid", "Song mid", 0.0, 1.0),
     def("high", "Song high", 0.0, 1.0),
     def("channel", "Channel level", -48.0, -6.0),
+    def("canvas", "Canvas number", 0.0, 1.0),
 ];
 
 /// The table for an input block kind.
@@ -168,6 +169,9 @@ pub struct SceneSignals {
     pub chords: Vec<[f32; 2]>,
     /// Each channel's level by module name, in dBFS per [`BLOCK`] frames at 48 kHz.
     pub levels: BTreeMap<String, Arc<Vec<f32>>>,
+    /// Each canvas number a Canvas number block reads, by its Reads text (trimmed, as written),
+    /// sampled at `rate` on the video clock.
+    pub canvas: BTreeMap<String, Arc<Vec<f32>>>,
 }
 
 /// `series` at `time`, blended, 0 outside it.
@@ -208,7 +212,7 @@ fn phase(beats: &[f64], time: f64, per: f64) -> f32 {
 
 impl SceneSignals {
     /// The raw value of a scene input at `time` (video seconds). `channel` names the channel a
-    /// Channel level reads.
+    /// Channel level reads, or for Canvas number the Reads text (like `Card.revealed`).
     pub fn value(&self, input: &str, channel: &str, time: f64) -> f32 {
         match input {
             "balls" => blend(&self.balls, self.rate, time),
@@ -234,6 +238,7 @@ impl SceneSignals {
                 let i = (time * 48_000.0 / BLOCK as f64) as usize;
                 levels.get(i).copied().unwrap_or(SILENT_DB)
             }
+            "canvas" => self.canvas.get(channel.trim()).map_or(0.0, |s| blend(s, self.rate, time)),
             _ => 0.0,
         }
     }
@@ -256,6 +261,10 @@ impl SceneSignals {
             name.hash(&mut h);
             hash_f32s(&mut h, l);
         }
+        for (name, c) in &self.canvas {
+            name.hash(&mut h);
+            hash_f32s(&mut h, c);
+        }
         h.finish()
     }
 }
@@ -275,6 +284,8 @@ pub struct Uses {
     pub scene: bool,
     /// The channels its Channel level blocks read, by name.
     pub channels: BTreeSet<String>,
+    /// The canvas numbers its Canvas number blocks read, by their Reads text (trimmed).
+    pub canvas: BTreeSet<String>,
 }
 
 /// Which inputs the switched-on blocks of `graph` read.
@@ -294,6 +305,11 @@ pub fn uses(graph: &Graph) -> Uses {
                     && let Some(Param::Text(c)) = n.params.get("channel")
                 {
                     u.channels.insert(c.clone());
+                }
+                if input == "canvas"
+                    && let Some(Param::Text(c)) = n.params.get("reads")
+                {
+                    u.canvas.insert(c.trim().to_string());
                 }
             }
             _ => {}

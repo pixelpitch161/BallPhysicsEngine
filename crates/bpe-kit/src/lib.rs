@@ -1,6 +1,7 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
 //! its settings, its simulation, its drawing and its sound side by side.
 
+pub mod ending;
 pub mod gizmo;
 pub mod graphs;
 #[cfg(test)]
@@ -37,8 +38,8 @@ pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::marks::{
-    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape, SplatSkin, Tip, Turn,
-    WidthBy,
+    ChipShape, ClaimTeam, MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape,
+    SplatSkin, Tip, Turn, WidthBy,
 };
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
@@ -61,7 +62,7 @@ pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
     uses_live_inputs, wants_beats, warp_for,
 };
-pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
+pub use starters::{CanvasStart, add_canvas, add_thing, fill_slot, keep_followers, make_folder, move_thing};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -72,7 +73,8 @@ pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::canvas::{
     CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
-    CanvasThingKind, Cell, Fit, SkinSettings, StartsAs, canvas_area, skin_area,
+    CanvasThingKind, Cell, CoverLook, Fit, FogLook, PowderLook, SkinSettings, StartsAs, Underneath, canvas_area,
+    skin_area,
 };
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
@@ -83,6 +85,7 @@ pub use things::liquid::draw::LiquidDraw;
 pub use things::liquid::pbf::Rect;
 pub use things::liquid::sim::{LiquidSim, LiquidState};
 pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
+pub use things::meter::{MeterDraw, MeterKind, MeterLook, MeterReads, MeterSettings};
 pub use things::obstacle::draw::ObstacleDraw;
 pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::ROOT_CARDS;
@@ -128,6 +131,7 @@ pub fn draws() -> Draws {
     d.add(SwarmDraw);
     d.add(SoftDraw);
     d.add(TextDraw);
+    d.add(MeterDraw);
     d.add(ObstacleDraw);
     d.add(CanvasDraw);
     for b in &bpe_gfx::effects::BUILTINS {
@@ -332,6 +336,7 @@ pub fn registry() -> Registry {
     r.add_thing(BallsKind);
     r.add_thing(SoftKind);
     r.add_thing(TextKind);
+    r.add_thing(MeterKind);
     r.add_thing(FolderKind);
     r.add_thing(ObstacleKind);
     r.add_thing(EmitterKind);

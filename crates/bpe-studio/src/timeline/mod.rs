@@ -104,6 +104,13 @@ fn lane_frame(ui: &mut Ui, studio: &Studio, lane: &Lane, ruler: &Ruler) -> (Rect
     painter.rect_filled(strip, 3.0, theme::CARD);
     let x = ruler.x_of(studio.time);
     painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, theme::ACCENT));
+    if let Some(end) = studio.end_time() {
+        let x = ruler.x_of(end);
+        painter.line_segment(
+            [Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())],
+            Stroke::new(1.5, theme::ACCENT_TEXT),
+        );
+    }
     (rect, strip, response)
 }
 

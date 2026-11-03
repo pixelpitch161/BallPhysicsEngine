@@ -79,15 +79,20 @@ pub struct LookInstance {
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
-/// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points).
+/// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points), 3 filled
+/// rounded box clipped to an x range, 4 filled arc band.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct ShapeInstance {
-    /// Centre, angle.
+    /// Centre, angle. Filled box (3): the x range's low end in `w`. Arc band (4): `z` is the
+    /// direction of the middle of the band.
     pub a: [f32; 4],
     /// Ring: radius, sides. Box: half width, half height, corner radius. Capsule: half length.
+    /// Filled box: half width, half height, corner radius, the x range's high end. Arc band:
+    /// radius, half width, half sweep.
     pub b: [f32; 4],
-    /// Kind (0 ring or polygon, 1 box, 2 capsule), half line width, glow strength, thing code.
+    /// Kind (0 ring or polygon, 1 box, 2 capsule, 3 filled box, 4 arc band), half line width,
+    /// glow strength, thing code.
     pub c: [f32; 4],
     /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
     /// light (see [`blend_alpha`]).
@@ -135,6 +140,45 @@ impl ShapeInstance {
             a: [mid.x, mid.y, along.to_angle(), 0.0],
             b: [along.length() * 0.5, 0.0, 0.0, 0.0],
             c: [2.0, half_width, glow, 0.0],
+            color: blend_alpha(color),
+            paint: PaintGpu::default(),
+        }
+    }
+
+    /// A filled box of half size `half`, corners rounded by `corner`, shown only where its own x
+    /// (from the centre, before the turn) is within `clip` (use `[-1e9, 1e9]` for all of it).
+    pub fn fill_box(
+        centre: glam::Vec2,
+        angle: f32,
+        half: glam::Vec2,
+        corner: f32,
+        clip: [f32; 2],
+        color: [f32; 4],
+    ) -> Self {
+        Self {
+            a: [centre.x, centre.y, angle, clip[0]],
+            b: [half.x, half.y, corner.min(half.x).min(half.y).max(0.0), clip[1]],
+            c: [3.0, 0.0, 0.0, 0.0],
+            color: blend_alpha(color),
+            paint: PaintGpu::default(),
+        }
+    }
+
+    /// A filled band of a ring: radius `radius`, `half_width` either side of it, centred on the
+    /// direction `mid` (radians, as `angle` turns everything else) and reaching `half_sweep`
+    /// either way (pi or more: the whole ring).
+    pub fn arc_band(
+        centre: glam::Vec2,
+        radius: f32,
+        half_width: f32,
+        mid: f32,
+        half_sweep: f32,
+        color: [f32; 4],
+    ) -> Self {
+        Self {
+            a: [centre.x, centre.y, mid, 0.0],
+            b: [radius, half_width, half_sweep, 0.0],
+            c: [4.0, 0.0, 0.0, 0.0],
             color: blend_alpha(color),
             paint: PaintGpu::default(),
         }
@@ -228,6 +272,59 @@ pub struct CanvasLayer {
     /// inside these shapes (at most [`MAX_MASK_SHAPES`]; none shows nothing). A canvas has none
     /// and shows its whole rectangle.
     pub mask: Vec<MaskShape>,
+    /// What kind of surface this is: paint, or a cover, powder or fog drawn from `grid`.
+    pub surface: Surface,
+    /// Covers, powder and fog: the amounts. Paint: claimed ground. None: nothing.
+    pub grid: Option<GridImage>,
+    /// How dark the lines between teams are, 0 to 1.
+    pub border: f32,
+    /// The text under a cover, laid out in world pixels.
+    pub under_glyphs: Vec<GlyphInstance>,
+}
+
+/// What a canvas is made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Surface {
+    /// Marks of paint, drawn from the marks' textures.
+    #[default]
+    Paint,
+    /// A cover that balls scrape off to show what is underneath.
+    Cover { foil: bool, under: Under },
+    /// Sand or snow that balls plough through.
+    Powder { snow: bool, ridges: f32, light_angle: f32 },
+    /// Mist on glass that balls wipe clear; blurs what is behind it.
+    Fog { steam: bool, blur: f32, density: f32 },
+}
+
+/// What shows where a cover is scraped away.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Under {
+    /// Whatever is behind the canvas.
+    #[default]
+    Scene,
+    /// Linear light.
+    Colour([f32; 4]),
+    /// 16 stops, top to bottom, linear light.
+    Gradient([[f32; 4]; 16]),
+    /// A slot of the scene's picture table (`World::pictures`); 31 = missing.
+    Picture(u32),
+    /// The colour behind the text; the glyphs are the layer's `under_glyphs`.
+    Text([f32; 4]),
+}
+
+/// A canvas grid copied for drawing: RGBA8, one texel per cell.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridImage {
+    pub size: [u32; 2],
+    pub pixels: std::sync::Arc<Vec<u8>>,
+    /// The texels are sRGB colours (claimed ground), not amounts.
+    pub srgb: bool,
+    /// Sampled nearest (tiles), not filtered.
+    pub nearest: bool,
+    /// World pixels per texel.
+    pub cell: f32,
 }
 
 /// How a canvas's paint is drawn.

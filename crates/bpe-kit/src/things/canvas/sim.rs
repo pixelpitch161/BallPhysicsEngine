@@ -8,16 +8,20 @@ use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
-use bpe_runtime::{Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
+use bpe_runtime::{CanvasNumbers, Event, EventKind, Log, Mark, MarkShape, MarkTarget, Pose, ThingSim, World, state};
 use glam::Vec2;
 
+use super::claims::{ClaimMap, Claims, TeamKey, colour_key};
+use super::drops::{self, FogDrop};
 use super::evolve::{self, Evolve, Runner, Tick};
-use super::grid::{CanvasGrid, painter, tick_every};
+use super::grid::{CanvasGrid, REST_COVER, REST_FOG, REST_POWDER, painter, tick_every, wet};
 use super::ribbon::{Piece, Ribbon, Tune};
-use super::{CanvasSettings, Fit};
+use super::{CanvasKind, CanvasSettings, Fit, FogLook};
 use crate::modules::look::SimLook;
 use crate::modules::look::draw::ball_inputs;
-use crate::modules::marks::{MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy};
+use crate::modules::marks::{
+    ChipShape, ClaimTeam, MarkColour, MarksBrushes, PictureColours, SplatShape, Tip, Turn, When, WidthBy,
+};
 use crate::paint::{Follow, Inputs, colour_at};
 use crate::things::liquid::sim::bounds;
 
@@ -35,6 +39,8 @@ pub struct CanvasState {
     pub centre: Vec2,
     /// Per brush thing and item: its trail's ribbon (last point, width, paint left in its load).
     pub ribbons: BTreeMap<(ThingId, u32), Ribbon>,
+    /// Per brush thing and item: its scrape's ribbon.
+    pub scrapes: BTreeMap<(ThingId, u32), Ribbon>,
     /// Steps between strokes: 60 strokes a second.
     pub every: u64,
     /// Steps between wet-paint ticks: 30 a second.
@@ -45,6 +51,29 @@ pub struct CanvasState {
     pub runners: Vec<Runner>,
     /// Ticks that did work; for tests, never hashed.
     pub ticks_run: u64,
+    /// Steam drops that are running down the glass.
+    pub drops: Vec<FogDrop>,
+    /// Edges wiped since the last tick that a drop may start from: a point and its hash seed.
+    pub edges: Vec<(Vec2, u64)>,
+    /// The colour war, when some claiming brush marks this Paint canvas.
+    pub claims: Option<Claims>,
+    /// The share of painted cells still wet, as of the last tick. Never hashed.
+    pub wet: f32,
+}
+
+impl CanvasState {
+    /// Notes the two sides of a wiped piece (at `at`, `radius` wide, running along `dir`) as
+    /// places a steam drop may start from. Only steam fog with drops keeps them.
+    fn note_edge(&mut self, step: u64, key: (ThingId, u32), at: Vec2, radius: f32, dir: Vec2) {
+        let s = &self.settings;
+        if s.kind != CanvasKind::Fog || s.fog_look != FogLook::Steam || s.drops <= 0.0 || dir == Vec2::ZERO {
+            return;
+        }
+        let side = Vec2::new(-dir.y, dir.x) * radius;
+        for (k, sign) in [(0u32, 1.0), (1, -1.0)] {
+            self.edges.push((at + side * sign, mix(step, painter(key.0, key.1) as u32 * 2 + k)));
+        }
+    }
 }
 
 /// Where a canvas is and how big it is: its pose (middle and turn) and its width and height.
@@ -85,9 +114,19 @@ impl ThingSim for CanvasSim {
         let size = size.max(Vec2::ONE);
         let every = (world.steps_per_second / 60).max(1) as u64;
         let tick_every = tick_every(world.steps_per_second);
-        let grid = CanvasGrid::new(size);
+        let grid = match settings.kind {
+            CanvasKind::Paint => CanvasGrid::new(size),
+            CanvasKind::Cover => CanvasGrid::surface(size, REST_COVER, 2.0, 600_000),
+            CanvasKind::Powder => CanvasGrid::surface(size, REST_POWDER, 4.0, 300_000),
+            CanvasKind::Fog => CanvasGrid::surface(size, REST_FOG, 4.0, 300_000),
+        };
         world.state_memory.insert(thing.id, grid.bytes());
-        let evolve = Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second);
+        // Only paint dries, bleeds and drips.
+        let evolve = if settings.kind == CanvasKind::Paint {
+            Evolve::new(settings.dry_time, settings.bleed, settings.drips, world.steps_per_second)
+        } else {
+            Evolve::new(0.0, 0.0, 0.0, world.steps_per_second)
+        };
         world.states.insert(
             thing.id,
             Box::new(CanvasState {
@@ -96,11 +135,16 @@ impl ThingSim for CanvasSim {
                 size,
                 centre,
                 ribbons: BTreeMap::new(),
+                scrapes: BTreeMap::new(),
                 every,
                 tick_every,
                 evolve,
                 runners: Vec::new(),
                 ticks_run: 0,
+                drops: Vec::new(),
+                edges: Vec::new(),
+                claims: None,
+                wet: 0.0,
             }),
         );
         self.place(thing.id, world);
@@ -113,11 +157,26 @@ impl ThingSim for CanvasSim {
             let Some(st) = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>()) else {
                 return;
             };
-            super::skin::brushes(world)
-                .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
+            st.settings.kind == CanvasKind::Paint
+                && super::skin::brushes(world)
+                    .any(|(owner, b)| b.paint_pickup > 0.0 && world.matches(thing, owner, &st.settings.brushes_from))
+        };
+        // Whether some brush that marks this canvas claims ground (Paint canvases only).
+        let claiming = {
+            let st = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>());
+            st.is_some_and(|st| {
+                st.settings.kind == CanvasKind::Paint
+                    && super::skin::brushes(world).any(|(owner, b)| {
+                        (b.claim_on || b.claim_hits) && world.matches(thing, owner, &st.settings.brushes_from)
+                    })
+            })
         };
         if let Some(st) = world.states.get_mut(&thing).and_then(|s| s.as_any_mut().downcast_mut::<CanvasState>()) {
             st.evolve.pickup = pickup;
+            if claiming {
+                let cell = if st.settings.tile_size > 0.0 { st.settings.tile_size } else { st.grid.cell_size() };
+                st.claims = Some(Claims::new(ClaimMap::new(st.size, cell)));
+            }
         }
     }
 
@@ -132,27 +191,83 @@ impl ThingSim for CanvasSim {
     fn after_step(&self, canvas: ThingId, world: &mut World, log: &mut Log) {
         // The state comes out while the brushes read the world, and goes back after.
         let Some(mut boxed) = world.states.remove(&canvas) else { return };
+        let mut numbers = None;
         if let Some(st) = boxed.as_any_mut().downcast_mut::<CanvasState>() {
             for m in marks(canvas, st, world, log) {
                 log.push_mark(m);
             }
-            if st.evolve.on() && world.step.is_multiple_of(st.tick_every) {
-                let mut picked = std::mem::take(&mut world.picked);
-                let pose = world.poses.get(&canvas).copied().unwrap_or_default();
-                let cx = Tick {
-                    target: MarkTarget::Canvas(canvas),
-                    world,
-                    now: (world.step / st.tick_every) as u32,
-                    per_second: world.steps_per_second as f32 / st.tick_every as f32,
-                    gravity: Vec2::from_angle(-pose.angle).rotate(world.gravity),
-                };
-                for m in evolve::tick(&cx, st, &mut picked, None) {
-                    log.push_mark(m);
-                }
-                world.picked = picked;
+            if let Some(claims) = st.claims.as_mut()
+                && claims.changed
+            {
+                claims.changed = false;
+                world.set_teams(canvas, claims.teams.clone(), log);
             }
+            if world.step.is_multiple_of(st.tick_every) {
+                let pose = world.poses.get(&canvas).copied().unwrap_or_default();
+                let per_second = world.steps_per_second as f32 / st.tick_every as f32;
+                let gravity = Vec2::from_angle(-pose.angle).rotate(world.gravity);
+                if st.evolve.on() {
+                    let mut picked = std::mem::take(&mut world.picked);
+                    let cx = Tick {
+                        target: MarkTarget::Canvas(canvas),
+                        world,
+                        now: (world.step / st.tick_every) as u32,
+                        per_second,
+                        gravity,
+                    };
+                    for m in evolve::tick(&cx, st, &mut picked, None) {
+                        log.push_mark(m);
+                    }
+                    world.picked = picked;
+                }
+                if st.settings.kind == CanvasKind::Paint && st.evolve.dry_ticks > 0 {
+                    // Only reads the grid: it never wakes a tile or changes a cell.
+                    let now = (world.step / st.tick_every) as u32;
+                    let mut count = 0u64;
+                    for t in st.grid.wet_tiles(now, st.evolve.dry_ticks) {
+                        let (x0, x1, y0, y1) = st.grid.tile_cells(t);
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                count += wet(&st.grid.get(x, y), now, st.evolve.dry_ticks) as u64;
+                            }
+                        }
+                    }
+                    let painted = st.grid.off_cells();
+                    st.wet = if painted > 0 { count as f32 / painted as f32 } else { 0.0 };
+                }
+                if let Some(claims) = st.claims.as_mut() {
+                    let tick = (world.step / st.tick_every) as u32;
+                    claims.map.grow(st.settings.grow, st.settings.take_over, tick);
+                }
+                if st.settings.kind != CanvasKind::Paint {
+                    let s = &st.settings;
+                    if s.grows_back > 0.0 {
+                        let rest = st.grid.rest() as f32;
+                        st.grid.grow_back((rest / (s.grows_back * 30.0)).ceil().clamp(1.0, 255.0) as u8);
+                    }
+                    if s.kind == CanvasKind::Fog
+                        && s.fog_look == FogLook::Steam
+                        && s.drops > 0.0
+                        && gravity != Vec2::ZERO
+                    {
+                        let (chance, half) = (s.drops * 0.15, st.size * 0.5);
+                        drops::tick(&mut st.grid, &mut st.drops, &st.edges, chance, gravity, per_second, half);
+                    }
+                }
+                st.edges.clear();
+            }
+            numbers = Some(CanvasNumbers {
+                covered: st.grid.covered(),
+                revealed: st.grid.revealed(),
+                wet: if st.settings.kind == CanvasKind::Paint { st.wet } else { 0.0 },
+                shares: st.claims.as_ref().map_or_else(Vec::new, |c| c.map.shares(c.teams.len())),
+            });
         }
         world.states.insert(canvas, boxed);
+        // After the state is back and the teams are told: this step's numbers.
+        if let Some(numbers) = numbers {
+            world.report_canvas(canvas, numbers, log);
+        }
     }
 
     fn affects_physics(&self, key: &str) -> bool {
@@ -171,6 +286,18 @@ impl ThingSim for CanvasSim {
                 | "edge_dark"
                 | "glow_size"
                 | "glow_strength"
+                | "cover_look"
+                | "powder_look"
+                | "fog_look"
+                | "blur"
+                | "density"
+                | "under"
+                | "under_colour"
+                | "under_colours"
+                | "under_text"
+                | "under_text_size"
+                | "under_text_colour"
+                | "border"
         )
     }
 }
@@ -205,15 +332,31 @@ fn marks(canvas: ThingId, st: &mut CanvasState, world: &World, log: &Log) -> Vec
     for &thing in world.order() {
         let Some((_, brush)) = world.module_state(thing, SlotId::Marks) else { continue };
         let Some(b) = brush.as_any().downcast_ref::<MarksBrushes>() else { continue };
-        if !(b.paint_on || b.splat_on) || !world.matches(canvas, thing, &st.settings.brushes_from) {
+        if !(b.paint_on || b.splat_on || b.scrape_on || b.chip_on || b.claim_on || b.claim_hits)
+            || !world.matches(canvas, thing, &st.settings.brushes_from)
+        {
             continue;
         }
-        if b.paint_on && paint_now {
+        // Only a Paint canvas takes paint; the other kinds only lose what the brushes scrape.
+        let paints = st.settings.kind == CanvasKind::Paint;
+        if b.paint_on && paint_now && paints {
             cx.strokes(st, thing, b);
         }
+        if b.scrape_on && paint_now {
+            cx.scrape_strokes(st, thing, b);
+        }
+        if b.claim_on && paint_now && paints {
+            cx.claim_path(st, thing, b);
+        }
         // Splats meant for the thing hit come here too when it has no skin to take them.
-        if b.splat_on {
+        if b.splat_on && paints {
             cx.splats(st, thing, b);
+        }
+        if b.chip_on {
+            cx.chips(st, thing, b);
+        }
+        if b.claim_hits && paints {
+            cx.claim_hits(st, thing, b);
         }
     }
     cx.out
@@ -402,6 +545,165 @@ impl Cx<'_> {
         }
     }
 
+    /// Each living ball of `thing` that scrapes: its ribbon grows like a paint trail's, but each
+    /// piece takes paint or cover away instead. Only Paint canvases log the pieces (to replay on
+    /// the graphics card); the others draw straight from the grid.
+    fn scrape_strokes(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let Some(bodies) = self.world.bodies.get(&thing) else { return };
+        let tune = Tune { taper: 0.0, follow: 1.0 };
+        for i in 0..bodies.len() {
+            let key = (thing, i as u32);
+            let hits = bodies.hits[i];
+            let mut ribbon = st.scrapes.remove(&key).unwrap_or_else(|| Ribbon::new(0.0, hits));
+            let end = (to_local(self.pose, bodies.position[i]), bodies.radius[i]);
+            if !bodies.alive[i] {
+                let pieces = ribbon.finish(end.0, end.1, &tune, true);
+                self.wipes(st, b, key, &pieces);
+                continue;
+            }
+            let here = end.0;
+            let speed = bodies.velocity[i].length();
+            let velocity = Vec2::from_angle(-self.pose.angle).rotate(bodies.velocity[i]);
+            let radius = match b.scrape_width_by {
+                WidthBy::Size => b.scrape_width * bodies.radius[i],
+                WidthBy::Fixed => b.scrape_width * 10.0 * 0.5,
+                WidthBy::Speed => b.scrape_width * speed / 100.0 * 0.5,
+            };
+            match ribbon.point {
+                None => ribbon.begin(here, velocity, radius),
+                Some(from) if (here - from).length() < MIN_STROKE => {}
+                Some(_) => {
+                    let pieces = ribbon.advance(here, velocity, radius, &tune, true);
+                    self.wipes(st, b, key, &pieces);
+                }
+            }
+            st.scrapes.insert(key, ribbon);
+        }
+    }
+
+    /// Takes away what `pieces` of a scrape cover, and logs them on a Paint canvas.
+    fn wipes(&mut self, st: &mut CanvasState, b: &MarksBrushes, key: (ThingId, u32), pieces: &[Piece]) {
+        let strength = b.scrape_strength.clamp(0.0, 1.0);
+        for p in pieces {
+            if !reaches(st.size, p.from, p.to, p.radius.max(p.radius_to)) {
+                continue;
+            }
+            let mark = Mark {
+                step: self.world.step,
+                target: MarkTarget::Canvas(self.canvas),
+                shape: MarkShape::Scrape,
+                from: p.from,
+                to: p.to,
+                radius: p.radius,
+                radius_to: p.radius_to,
+                angle: p.joins_at,
+                within: p.within,
+                variant: p.joints,
+                colour: [0.0, 0.0, 0.0, strength],
+                colour_to: [0.0, 0.0, 0.0, strength],
+            };
+            st.grid.scrape(&mark, st.settings.ridges);
+            st.note_edge(self.world.step, key, p.to, p.radius_to, (p.to - p.from).normalize_or_zero());
+            if st.settings.kind == CanvasKind::Paint {
+                self.out.push(mark);
+            }
+        }
+    }
+
+    /// A chip knocked out at each of this step's hits that `thing` made or took, fast enough.
+    fn chips(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let (world, log) = (self.world, self.log);
+        let strength = b.scrape_strength.clamp(0.0, 1.0);
+        for e in log.since(world.step) {
+            let ours = e.a.thing == thing || e.b.is_some_and(|p| p.thing == thing);
+            if e.kind != EventKind::Hit || !ours || e.speed < b.chip_min_speed {
+                continue;
+            }
+            let at = to_local(self.pose, e.point);
+            let (radius, angle, variant) = chip_stamp(world, e, b, self.pose.angle);
+            if !reaches(st.size, at, at, radius) {
+                continue;
+            }
+            let mark = Mark {
+                step: world.step,
+                target: MarkTarget::Canvas(self.canvas),
+                shape: MarkShape::Chip,
+                from: at,
+                to: at,
+                radius,
+                radius_to: radius,
+                angle,
+                within: [1.0, 1.0],
+                variant,
+                colour: [0.0, 0.0, 0.0, strength],
+                colour_to: [0.0, 0.0, 0.0, strength],
+            };
+            st.grid.scrape(&mark, st.settings.ridges);
+            if st.settings.kind == CanvasKind::Paint {
+                self.out.push(mark);
+            }
+        }
+    }
+
+    /// The team (1-based) of ball `item` of `thing` under brush `b`, adding it when it is new.
+    fn team_of(&mut self, st: &mut CanvasState, b: &MarksBrushes, thing: ThingId, item: usize) -> Option<u8> {
+        let colour = self.colours.of(b, thing, item);
+        let key = match b.claim_team {
+            ClaimTeam::ByThing => TeamKey::Thing(thing),
+            ClaimTeam::ByColour => colour_key(colour),
+        };
+        let name = self.world.names.get(&thing).map(String::as_str).unwrap_or("");
+        st.claims.as_mut()?.team(key, name, colour)
+    }
+
+    /// Each living ball of `thing` claims the ground from where its last claim reached to where
+    /// it is now, and the cell it is in.
+    fn claim_path(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let Some(bodies) = self.world.bodies.get(&thing) else { return };
+        let tiles = st.settings.tile_size > 0.0;
+        let take_over = st.settings.take_over;
+        for i in 0..bodies.len() {
+            let key = (thing, i as u32);
+            let Some(claims) = st.claims.as_mut() else { return };
+            if !bodies.alive[i] {
+                claims.last.remove(&key);
+                continue;
+            }
+            let here = to_local(self.pose, bodies.position[i]);
+            let speed = bodies.velocity[i].length();
+            let radius = match b.claim_width_by {
+                WidthBy::Size => b.claim_width * bodies.radius[i],
+                WidthBy::Fixed => b.claim_width * 10.0 * 0.5,
+                WidthBy::Speed => b.claim_width * speed / 100.0 * 0.5,
+            };
+            let from = claims.last.get(&key).copied().unwrap_or(here);
+            let Some(team) = self.team_of(st, b, thing, i) else { continue };
+            let Some(claims) = st.claims.as_mut() else { return };
+            claims.map.claim(from, here, radius, team, take_over, tiles);
+            claims.last.insert(key, here);
+        }
+    }
+
+    /// A disc claimed at each of this step's hits that `thing` made or took, fast enough, for the
+    /// moving ball's team.
+    fn claim_hits(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
+        let (world, log) = (self.world, self.log);
+        let tiles = st.settings.tile_size > 0.0;
+        let take_over = st.settings.take_over;
+        for e in log.since(world.step) {
+            let ours = e.a.thing == thing || e.b.is_some_and(|p| p.thing == thing);
+            if e.kind != EventKind::Hit || !ours || e.speed < b.claim_min_speed {
+                continue;
+            }
+            let at = to_local(self.pose, e.point);
+            let radius = b.claim_hit_size * (1.0 + b.claim_hit_by_speed * (e.speed / 1000.0).min(2.0));
+            let Some(team) = self.team_of(st, b, e.a.thing, e.a.item as usize) else { continue };
+            if let Some(claims) = st.claims.as_mut() {
+                claims.map.claim(at, at, radius, team, take_over, tiles);
+            }
+        }
+    }
+
     /// A splat at each of this step's hits that `thing` made or took, fast enough to count, and
     /// meant for canvases (see [`SplatOnto`](crate::SplatOnto)).
     fn splats(&mut self, st: &mut CanvasState, thing: ThingId, b: &MarksBrushes) {
@@ -492,6 +794,28 @@ pub(crate) fn hit_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: 
         (angle, variant & 7)
     };
     Stamp { shape, radius, angle, variant }
+}
+
+/// The size, turn and variant of the chip brush `b` knocks out at hit `e`, in the frame of a
+/// thing turned by `pose_angle`. The variant is the layout (bits 0-4, as a splat's) and the shape
+/// (bits 5-7). Only a splat leans with the ball; the other shapes face the hit.
+pub(crate) fn chip_stamp(world: &World, e: &Event, b: &MarksBrushes, pose_angle: f32) -> (f32, f32, u8) {
+    let mover = world.bodies.get(&e.a.thing).and_then(|bodies| bodies.velocity.get(e.a.item as usize)).copied();
+    let (radius, angle, layout) = splat_look(e, mover, b.chip_size, b.chip_by_speed, 8, Turn::FaceHit, pose_angle);
+    let (shape, angle, layout) = match b.chip_shape {
+        ChipShape::Splat => (0u8, angle, layout),
+        other => {
+            let n = match other {
+                ChipShape::Ring => 1u8,
+                ChipShape::Star => 2,
+                ChipShape::Crack => 3,
+                ChipShape::Burst => 4,
+                _ => 5,
+            };
+            (n, e.normal.y.atan2(e.normal.x) - pose_angle, layout & 7)
+        }
+    };
+    (radius, angle, layout | shape << 5)
 }
 
 /// How fast a hit squashes its splat at least (level 1 at 1000 px/s) and at most (level 3).
@@ -585,7 +909,8 @@ mod tests {
         for k in ["light_angle", "gloss", "grain", "edge_dark", "glow_size", "glow_strength", "style"] {
             assert!(!sim.affects_physics(k), "{k}");
         }
-        for k in ["dry_time", "bleed", "drips", "fit"] {
+        // The picture table is filled when the world is built, so a new picture restarts it.
+        for k in ["dry_time", "bleed", "drips", "fit", "under_picture"] {
             assert!(sim.affects_physics(k), "{k}");
         }
     }
@@ -1304,5 +1629,279 @@ mod tests {
         assert_eq!(canvas_state(straight.world(), CANVAS).grid.hash(), canvas_state(jumpy.world(), CANVAS).grid.hash());
         assert_eq!(straight.log().marks(), jumpy.log().marks());
         assert_eq!(straight.log().hash(), jumpy.log().hash());
+    }
+
+    /// `painted(true, brush)` with the canvas turned into `kind` (and `canvas`'s changes).
+    fn surface_scene(
+        kind: &str,
+        canvas: impl FnOnce(&mut Params),
+        brush: impl FnOnce(&mut Params),
+    ) -> (Scene, Resolved, Kit) {
+        let (mut scene, _, kit) = painted(true, brush);
+        let params = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+        params.set("kind", Value::Choice(kind.into()));
+        canvas(params);
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        (scene, resolved, kit)
+    }
+
+    fn scraping(p: &mut Params) {
+        p.set("paint_on", Value::Bool(false));
+        p.set("scrape_on", Value::Bool(true));
+    }
+
+    #[test]
+    fn paint_trails_do_not_paint_covers() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("splat_on", Value::Bool(true));
+                p.set("splat_onto", Value::Choice("canvases".into()));
+                p.set("splat_min_speed", Value::Number(0.0));
+            },
+        );
+        let (world, log) = run(&scene, &resolved, &kit, 2.0);
+        assert_eq!(canvas_state(&world, CANVAS).grid.off_cells(), 0);
+        assert_eq!(log.marks_for(MarkTarget::Canvas(CANVAS)).count(), 0);
+    }
+
+    #[test]
+    fn scraping_reveals_a_cover() {
+        let (scene, resolved, kit) = surface_scene("cover", |_| {}, scraping);
+        let (world, log) = run(&scene, &resolved, &kit, 2.0);
+        let st = canvas_state(&world, CANVAS);
+        assert!(st.grid.revealed() > 0.0);
+        assert_eq!(log.marks_for(MarkTarget::Canvas(CANVAS)).count(), 0, "covers are drawn from the grid");
+        let at = to_local(world.poses[&CANVAS], world.bodies[&BALLS].position[0]);
+        // The ribbon trails a little behind the ball, so look within a ball's width of it.
+        let r = world.bodies[&BALLS].radius[0] * 2.0;
+        let mut found = false;
+        for dy in -5..=5 {
+            for dx in -5..=5 {
+                let p = at + Vec2::new(dx as f32, dy as f32) * (r / 5.0);
+                if let Some((x, y)) = st.grid.cell_at(p) {
+                    found |= st.grid.get(x, y).amount == 0;
+                }
+            }
+        }
+        assert!(found, "nothing scraped near the ball");
+    }
+
+    #[test]
+    fn scraping_logs_wipes_on_paint() {
+        let (scene, resolved, kit) = surface_scene("paint", |_| {}, |p| p.set("scrape_on", Value::Bool(true)));
+        let (_, log) = run(&scene, &resolved, &kit, 1.0);
+        let marks: Vec<&Mark> = log.marks_for(MarkTarget::Canvas(CANVAS)).collect();
+        assert!(marks.iter().any(|m| m.shape == MarkShape::Scrape));
+        let mut last: Option<(u64, MarkShape)> = None;
+        for m in &marks {
+            if let Some((step, shape)) = last
+                && step == m.step
+            {
+                assert!(
+                    !(shape == MarkShape::Scrape && m.shape == MarkShape::Stroke),
+                    "strokes come before scrapes within a step"
+                );
+            }
+            last = Some((m.step, m.shape));
+        }
+    }
+
+    #[test]
+    fn chips_follow_hits() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("chip_on", Value::Bool(true));
+                p.set("chip_min_speed", Value::Number(0.0));
+            },
+        );
+        let (world, log) = run(&scene, &resolved, &kit, 3.0);
+        let st = canvas_state(&world, CANVAS);
+        let pose = world.poses[&CANVAS];
+        let hits: Vec<_> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == BALLS).collect();
+        assert!(!hits.is_empty());
+        for e in hits {
+            let at = to_local(pose, e.point);
+            let box_r = 90.0;
+            let mut found = false;
+            let mut y = at.y - box_r;
+            while y <= at.y + box_r && !found {
+                let mut x = at.x - box_r;
+                while x <= at.x + box_r && !found {
+                    if let Some((cx, cy)) = st.grid.cell_at(Vec2::new(x, y)) {
+                        found = st.grid.get(cx, cy).amount == 0;
+                    }
+                    x += 4.0;
+                }
+                y += 4.0;
+            }
+            assert!(found, "no chip near the hit at {at:?}");
+        }
+    }
+
+    #[test]
+    fn slow_hits_do_not_chip() {
+        let (scene, resolved, kit) = surface_scene(
+            "cover",
+            |_| {},
+            |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("chip_on", Value::Bool(true));
+                p.set("chip_min_speed", Value::Number(100000.0));
+            },
+        );
+        let (world, _) = run(&scene, &resolved, &kit, 3.0);
+        assert_eq!(canvas_state(&world, CANVAS).grid.revealed(), 0.0);
+    }
+
+    fn steam(drops: f32) -> (Scene, Resolved, Kit) {
+        surface_scene(
+            "fog",
+            |c| {
+                c.set("fog_look", Value::Choice("steam".into()));
+                c.set("drops", Value::Number(drops as f64));
+            },
+            scraping,
+        )
+    }
+
+    /// The drops running at each quarter second up to `seconds`, and the world at the end.
+    fn drops_over_time(
+        scene: &Scene,
+        resolved: &Resolved,
+        kit: &Kit,
+        seconds: f64,
+    ) -> (Vec<usize>, bpe_runtime::World) {
+        let mut world = World::build(scene, resolved, &kit.sims);
+        let mut log = Log::default();
+        let mut seen = Vec::new();
+        let mut t = 0.25;
+        while t <= seconds {
+            world.advance_to(t, &kit.sims, &mut log);
+            seen.push(canvas_state(&world, CANVAS).drops.len());
+            t += 0.25;
+        }
+        (seen, world)
+    }
+
+    #[test]
+    fn a_scraped_cover_grows_back() {
+        let (scene, resolved, kit) = surface_scene("cover", |c| c.set("grows_back", Value::Number(1.0)), |_| {});
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        {
+            let st = bpe_runtime::state_mut::<CanvasState>(world.states.get_mut(&CANVAS).unwrap().as_mut());
+            let m = Mark {
+                step: 0,
+                target: MarkTarget::Canvas(CANVAS),
+                shape: MarkShape::Scrape,
+                from: Vec2::new(-60.0, 0.0),
+                to: Vec2::new(60.0, 0.0),
+                radius: 20.0,
+                radius_to: 20.0,
+                angle: 0.0,
+                within: [1.0, 1.0],
+                variant: 0,
+                colour: [0.0, 0.0, 0.0, 1.0],
+                colour_to: [0.0, 0.0, 0.0, 1.0],
+            };
+            st.grid.scrape(&m, 0.0);
+            assert!(st.grid.revealed() > 0.0);
+        }
+        world.advance_to(1.1, &kit.sims, &mut log);
+        assert_eq!(canvas_state(&world, CANVAS).grid.revealed(), 0.0);
+    }
+
+    #[test]
+    fn steam_drops_run_down() {
+        let (scene, resolved, kit) = steam(1.0);
+        let (seen, world) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        assert!(seen.iter().any(|&n| n > 0), "drops never started: {seen:?}");
+        assert!(seen.iter().all(|&n| n <= drops::MAX_DROPS), "{seen:?}");
+        let (scene0, resolved0, kit0) = steam(0.0);
+        let (_, world0) = drops_over_time(&scene0, &resolved0, &kit0, 4.0);
+        assert!(
+            canvas_state(&world, CANVAS).grid.revealed() > canvas_state(&world0, CANVAS).grid.revealed(),
+            "drops wipe extra glass"
+        );
+    }
+
+    #[test]
+    fn frost_has_no_drops() {
+        let (scene, resolved, kit) = surface_scene("fog", |c| c.set("drops", Value::Number(1.0)), scraping);
+        let (seen, _) = drops_over_time(&scene, &resolved, &kit, 3.0);
+        assert!(seen.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn no_gravity_no_drops() {
+        let (mut scene, _, kit) = steam(1.0);
+        scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let resolved = resolve(&scene, &kit.registry);
+        let (seen, _) = drops_over_time(&scene, &resolved, &kit, 3.0);
+        assert!(seen.iter().all(|&n| n == 0), "{seen:?}");
+    }
+
+    #[test]
+    fn drops_are_deterministic() {
+        let (scene, resolved, kit) = steam(1.0);
+        let (_, a) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        let (_, b) = drops_over_time(&scene, &resolved, &kit, 4.0);
+        let (a, b) = (canvas_state(&a, CANVAS), canvas_state(&b, CANVAS));
+        assert_eq!(a.drops, b.drops);
+        assert_eq!(a.grid.hash(), b.grid.hash());
+    }
+
+    fn war(canvas: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
+        surface_scene(
+            "paint",
+            |c| {
+                c.set("tile_size", Value::Number(40.0));
+                canvas(c);
+            },
+            |p| {
+                p.set("paint_on", Value::Bool(false));
+                p.set("claim_on", Value::Bool(true));
+                p.set("claim_hits", Value::Bool(true));
+            },
+        )
+    }
+
+    #[test]
+    fn a_canvas_without_claim_brushes_has_no_claims() {
+        let (scene, resolved, kit) = painted(true, |_| {});
+        let (world, _) = run(&scene, &resolved, &kit, 1.0);
+        assert!(canvas_state(&world, CANVAS).claims.is_none());
+        let (scene, resolved, kit) = surface_scene("cover", |_| {}, |p| p.set("claim_on", Value::Bool(true)));
+        let (world, _) = run(&scene, &resolved, &kit, 1.0);
+        assert!(canvas_state(&world, CANVAS).claims.is_none(), "claims are for Paint canvases only");
+    }
+
+    #[test]
+    fn claims_follow_the_path() {
+        let (scene, resolved, kit) = war(|_| {});
+        let (world, _) = run(&scene, &resolved, &kit, 2.0);
+        let st = canvas_state(&world, CANVAS);
+        let claims = st.claims.as_ref().expect("a colour war");
+        assert!(!claims.teams.is_empty());
+        let at = to_local(world.poses[&CANVAS], world.bodies[&BALLS].position[0]);
+        let (x, y) = claims.map.cell_at(at).unwrap();
+        assert_eq!(claims.map.get(x, y), 1);
+        // The paint grid is left alone: only the claim map changed.
+        assert_eq!(st.grid.off_cells(), 0);
+    }
+
+    #[test]
+    fn world_gets_the_teams() {
+        let (scene, resolved, kit) = war(|_| {});
+        let (world, log) = run(&scene, &resolved, &kit, 2.0);
+        let claims = canvas_state(&world, CANVAS).claims.as_ref().unwrap();
+        assert_eq!(world.teams_of(CANVAS), claims.teams.as_slice());
+        assert_eq!(log.teams_of(CANVAS), claims.teams.as_slice());
     }
 }

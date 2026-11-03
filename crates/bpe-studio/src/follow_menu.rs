@@ -19,13 +19,58 @@ pub fn channel_names(scene: &Scene, except: Option<ModuleId>) -> Vec<String> {
     names
 }
 
+/// The canvases of the scene, by name, in tree order, for Canvas number.
+pub fn canvas_names(scene: &Scene) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for id in &scene.order {
+        if let Some(t) = scene.things.get(id).filter(|t| t.kind.as_str() == "canvas") {
+            let name = t.name.trim().to_string();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// What Follow… can name besides the fixed inputs: the other sounds (Channel level) and the
+/// canvases (Canvas number).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FollowNames {
+    pub channels: Vec<String>,
+    pub canvases: Vec<String>,
+}
+
+/// The names Follow… offers in `scene`, leaving out the sound `except`.
+pub fn follow_names(scene: &Scene, except: Option<ModuleId>) -> FollowNames {
+    FollowNames { channels: channel_names(scene, except), canvases: canvas_names(scene) }
+}
+
 fn pick(kind: &str, input: &str, channel: &str) -> FollowInput {
     FollowInput { kind: kind.into(), input: input.into(), channel: channel.into() }
 }
 
-fn list(ui: &mut Ui, kind: &str, table: &[InputDef], channels: &[String], out: &mut Option<FollowInput>) {
+fn list(ui: &mut Ui, kind: &str, table: &[InputDef], names: &FollowNames, out: &mut Option<FollowInput>) {
+    let channels = &names.channels;
     for def in table {
-        if def.name == "channel" {
+        if def.name == "canvas" {
+            ui.menu_button(def.label, |ui| {
+                if names.canvases.is_empty() {
+                    ui.weak("No canvases");
+                }
+                for canvas in &names.canvases {
+                    ui.menu_button(canvas, |ui| {
+                        for number in ["Covered", "Revealed", "Wet"] {
+                            if ui.button(number).clicked() {
+                                let reads = format!("{canvas}.{}", number.to_lowercase());
+                                *out = Some(pick(kind, def.name, &reads));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+        } else if def.name == "channel" {
             ui.menu_button(def.label, |ui| {
                 if channels.is_empty() {
                     ui.weak("No other sounds");
@@ -46,14 +91,14 @@ fn list(ui: &mut Ui, kind: &str, table: &[InputDef], channels: &[String], out: &
 
 /// The "Follow…" submenu, inside a context menu. At-the-hit and live inputs are offered only
 /// for a patch (`patch`), since only voices have a hit; Scene inputs always.
-pub fn menu(ui: &mut Ui, patch: bool, channels: &[String]) -> Option<FollowInput> {
+pub fn menu(ui: &mut Ui, patch: bool, names: &FollowNames) -> Option<FollowInput> {
     let mut out = None;
     ui.menu_button("Follow…", |ui| {
         if patch {
-            ui.menu_button("At the hit", |ui| list(ui, "hit_input", HIT_INPUTS, channels, &mut out));
-            ui.menu_button("Live", |ui| list(ui, "live_input", LIVE_INPUTS, channels, &mut out));
+            ui.menu_button("At the hit", |ui| list(ui, "hit_input", HIT_INPUTS, names, &mut out));
+            ui.menu_button("Live", |ui| list(ui, "live_input", LIVE_INPUTS, names, &mut out));
         }
-        ui.menu_button("Scene", |ui| list(ui, "scene_input", SCENE_INPUTS, channels, &mut out));
+        ui.menu_button("Scene", |ui| list(ui, "scene_input", SCENE_INPUTS, names, &mut out));
     })
     .response
     .on_hover_text("Move this knob with something the balls do");

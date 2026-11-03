@@ -395,11 +395,16 @@ pub fn build(thing: ThingId, world: &mut World) {
         size,
         centre: Vec2::ZERO,
         ribbons: BTreeMap::new(),
+        scrapes: BTreeMap::new(),
         every,
         tick_every,
         evolve,
         runners: Vec::new(),
         ticks_run: 0,
+        drops: Vec::new(),
+        edges: Vec::new(),
+        claims: None,
+        wet: 0.0,
     };
     world.skins.insert(thing, Box::new(st));
 }

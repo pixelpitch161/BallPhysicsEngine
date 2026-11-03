@@ -294,6 +294,10 @@ fn specs() -> Vec<NodeSpec> {
             .param(
                 ParamSpec::new("channel", "Channel", Param::Text(String::new()))
                     .help("For Channel level: the sound module to listen to"),
+            )
+            .param(
+                ParamSpec::new("reads", "Reads", Param::Text(String::new()))
+                    .help("For Canvas number: the canvas and number, as captions write them, like Arena.revealed"),
             ),
         NodeSpec::new("macro", "Macro", "Inputs", "A value to show on the card: Show on the card to expose it.")
             .output(number("out"))

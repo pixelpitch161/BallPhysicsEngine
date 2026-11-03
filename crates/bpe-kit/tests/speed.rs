@@ -185,3 +185,49 @@ fn skin_step_is_quick() {
     assert!(log.marks().len() > 100, "the balls painted: {} marks", log.marks().len());
     assert!(mean < Duration::from_millis(1), "a skin step takes {mean:?}");
 }
+
+/// The mean time one `after_step` of the canvas takes over a minute of steps of the Marks demo
+/// called `name`.
+fn demo_canvas_step(name: &str) -> (Duration, f32) {
+    const STEPS: u32 = 600;
+    let kit = bpe_kit::kit();
+    let scene = scenes::marks(&kit.registry).into_iter().find(|(n, _)| n == name).expect("the demo").1;
+    let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let canvas = *scene.things.iter().find(|(_, t)| t.kind == "canvas").expect("a canvas").0;
+    let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+    let mut log = bpe_runtime::Log::default();
+    let sim = kit.sims.thing("canvas").expect("the canvas sim");
+    let mut total = Duration::ZERO;
+    for _ in 0..STEPS {
+        let state = world.states.remove(&canvas).expect("the canvas state");
+        world.step(&kit.sims, &mut log);
+        world.states.insert(canvas, state);
+        total += timed(|| sim.after_step(canvas, &mut world, &mut log));
+    }
+    // How much the balls did: ground scraped away, or claimed.
+    let n = world.canvas_numbers_of(canvas).expect("the canvas reported");
+    (total / STEPS, n.revealed + n.shares.iter().sum::<f32>())
+}
+
+/// Scraping sand and wiping fog cost under a millisecond of canvas work a step, on average.
+#[test]
+#[ignore = "a speed check, run with --release"]
+fn surface_step_is_quick() {
+    for name in ["Sand garden", "Fog glass"] {
+        let (mean, done) = demo_canvas_step(name);
+        println!("{name}: canvas step mean {mean:?}, {done:.3} of the canvas worked");
+        assert!(done > 0.005, "{name}: the balls worked the canvas ({done})");
+        assert!(mean < Duration::from_millis(1), "{name}: a canvas step takes {mean:?}");
+    }
+}
+
+/// A colour war's claims cost under a millisecond of canvas work a step, on average.
+#[test]
+#[ignore = "a speed check, run with --release"]
+fn claims_step_is_quick() {
+    let (mean, done) = demo_canvas_step("Territory");
+    println!("Territory: canvas step mean {mean:?}, {done:.3} of the canvas claimed");
+    assert!(done > 0.005, "the balls claimed ground ({done})");
+    assert!(mean < Duration::from_millis(1), "a canvas step takes {mean:?}");
+}

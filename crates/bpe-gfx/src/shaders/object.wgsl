@@ -10,7 +10,8 @@ fn fs_shape_object(in: ShapeOut) -> @location(0) vec4<f32> {
     let d = shape_distance(in);
     let half_width = max(in.c.y, 0.5 * px);
     let cover = clamp((half_width - d) / px + 0.5, 0.0, 1.0) * min(in.c.y * 2.0 / px, 1.0);
-    if cover <= 0.0 || in.c.w < 0.5 {
+    // Filled meter shapes (kinds 3 and 4) are not things: they leave the object picture empty.
+    if cover <= 0.0 || in.c.w < 0.5 || in.c.x > 2.5 {
         discard;
     }
     var size = vec2<f32>(in.b.x);

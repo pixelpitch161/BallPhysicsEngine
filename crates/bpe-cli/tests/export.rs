@@ -204,3 +204,47 @@ fn an_exported_clip_with_beat_sync_has_sound_and_the_right_length() {
     assert!((duration - 2.0).abs() < 0.15, "{duration}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn export_stops_at_the_end() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    // A rule asks at 1 s to end 2 s later: a 6 s video stops at about 3 s.
+    let mut scene = bpe_kit::ending::scene_that_ends(&kit.registry, 1.0, 2.0);
+    {
+        use bpe_core::{Settings, ThingId};
+        let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
+        let mut settings = bpe_kit::SceneSettings::from_params(&root.params);
+        settings.duration = 6.0;
+        settings.fps = 30;
+        root.params = settings.to_params();
+    }
+    let dir = temp_dir("ends");
+    let mut options = ExportOptions::new(dir.join("ends.mp4"));
+    options.scale = 0.1;
+    options.encoder = Encoder::Cpu;
+    let mut last = (0, 0);
+    export_video(&device, &queue, &scene, &kit, &options, |done, total| {
+        last = (done, total);
+        true
+    })
+    .unwrap();
+    assert_eq!(last.0, last.1, "every planned frame was drawn");
+    assert!((90..=92).contains(&last.1), "3 s at 30 fps, not the 180 of 6 s: {last:?}");
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "csv"])
+        .arg(dir.join("ends.mp4"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout).to_string();
+    let duration_of = |kind: &str| -> f64 {
+        text.lines()
+            .find(|l| l.starts_with(&format!("stream,{kind}")) || l.contains(kind))
+            .and_then(|l| l.split(',').find_map(|f| f.trim().parse::<f64>().ok()))
+            .unwrap_or_else(|| panic!("no {kind} duration in {text}"))
+    };
+    let (video, audio) = (duration_of("video"), duration_of("audio"));
+    assert!((video - 3.0).abs() < 0.2, "{video}");
+    assert!(audio <= video + 1.0 / 30.0 + 0.05, "audio {audio} runs past video {video}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

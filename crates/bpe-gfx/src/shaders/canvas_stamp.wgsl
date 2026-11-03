@@ -73,11 +73,15 @@ fn vs_stamp(@builtin(vertex_index) i: u32, m: MarkIn) -> StampOut {
         // A splat's droplets reach 1.6 r, spread wider by its squash.
         half = vec2<f32>(2.6 * r + margin);
     }
+    if shape == 13u && ((u32(round(m.look.z)) >> 5u) & 7u) == 0u {
+        // A chip's splat reaches like a splat.
+        half = vec2<f32>(2.6 * r + margin);
+    }
     if shape == 9u {
         // A picture is a square of side 2 r, turned: its corners reach 1.4143 r.
         half = vec2<f32>(1.4143 * r + margin);
     }
-    if shape == 0u || shape == 7u || shape == 8u {
+    if shape == 0u || shape == 7u || shape == 8u || shape == 12u {
         // A stroke's box runs along it, past both ends by the radius.
         let d = to - start;
         let span = length(d);
@@ -430,6 +434,60 @@ fn fs_lift(in: StampOut) -> LiftTargets {
         discard;
     }
     let k = 1.0 - clamp(in.clock.w, 0.0, 1.0) * cover;
+    var out: LiftTargets;
+    out.paint = vec4<f32>(k);
+    out.aux = vec4<f32>(0.0);
+    out.body = vec4<f32>(k);
+    return out;
+}
+
+// A scrape or chip takes paint away: the paint and its thickness under the shape are scaled
+// down by the strength (colour.a), which the blend multiplies into what is there. The time is
+// left alone.
+@fragment
+fn fs_wipe(in: StampOut) -> LiftTargets {
+    let start = in.ends.xy;
+    let r = in.look.x;
+    let variant = u32(round(in.look.z));
+    let shape = u32(round(in.look.w));
+    let to = in.ends.zw;
+    var d = 0.0;
+    if shape == 12u {
+        // The same ribbon cuts as a stroke's (variant bits 1 and 2), then the capsule.
+        if (variant & 6u) != 0u {
+            let dir = to - start;
+            let span = length(dir);
+            if (variant & 2u) != 0u {
+                let before = vec2<f32>(cos(in.look.y), sin(in.look.y));
+                if dot(in.local - start, before) < 0.0 {
+                    discard;
+                }
+            }
+            if (variant & 4u) != 0u && span > 0.0 && dot(in.local - start, dir / span) >= span {
+                discard;
+            }
+        }
+        d = stroke(in.local, start, to, r, in.clock.w, false);
+    } else {
+        let c = cos(in.look.y);
+        let s = sin(in.look.y);
+        let o = in.local - start;
+        let q = vec2<f32>(c * o.x + s * o.y, -s * o.x + c * o.y);
+        switch (variant >> 5u) & 7u {
+            case 0u: { d = splat(q, r, variant & 31u); }
+            case 1u: { d = ring(q, r); }
+            case 2u: { d = star(q, r); }
+            case 3u: { d = crack(q, r, variant & 7u); }
+            case 4u: { d = burst(q, r); }
+            case 5u: { d = dots(q, r, variant & 7u); }
+            default: { d = length(q) - r; }
+        }
+    }
+    let cover = clamp(0.5 - d / texel_size(), 0.0, 1.0);
+    if cover <= 0.0 {
+        discard;
+    }
+    let k = 1.0 - clamp(in.colour.a, 0.0, 1.0) * cover;
     var out: LiftTargets;
     out.paint = vec4<f32>(k);
     out.aux = vec4<f32>(0.0);
