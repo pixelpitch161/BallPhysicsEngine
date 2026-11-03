@@ -3,8 +3,12 @@
 //! them the settings of the one picked.
 
 pub mod ball_view;
+mod brush;
 mod clipboard;
+mod code_box;
+mod handles;
 mod layer_list;
+mod layer_rows;
 
 pub use ball_view::BallView;
 pub use clipboard::Clipboard;
@@ -74,26 +78,66 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     };
     // ---------- the ball view ----------
     {
-        let Inspector { ball_view, render, .. } = inspector;
-        ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time);
+        let Inspector { ball_view, render, own_step, .. } = inspector;
+        // Masks shown alone go back to the look when their layer goes.
+        if ball_view.solo.is_some_and(|(t, l)| t == cx.id && card.layer(l).is_none()) {
+            ball_view.solo = None;
+        }
+        let layer = card.layer(picked);
+        // A Brush shading or mask paints on the ball instead of picking layers.
+        let strokes = layer.and_then(|l| brush::target(cx, l));
+        // A stroke left from another layer, ball or brush setting is dropped.
+        if strokes.is_none() || ball_view.painting.as_ref().is_some_and(|p| p.thing != cx.id || p.layer != picked) {
+            ball_view.painting = None;
+        }
+        let swap = brush::preview(ball_view, cx.id, picked);
+        let swap = swap.as_ref().map(|(key, value)| (key.as_str(), value.clone()));
+        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time, swap);
+        match (out, layer, strokes) {
+            (Some(out), Some(_), Some(key)) => {
+                if let Some(map) = out.map {
+                    *own_step |= brush::paint(ui, ball_view, &out.response, map, cx, picked, key, edits);
+                }
+                brush::bar(ui, &mut ball_view.brush);
+            }
+            (Some(out), layer, None) => {
+                let on_handle = match (out.map, layer) {
+                    (Some(map), Some(layer)) => {
+                        handles::show(ui, cx, layer, map, out.response.rect, out.radius, own_step, edits)
+                    }
+                    _ => false,
+                };
+                // A click on the ball, off the handles, picks the layer showing there.
+                if !on_handle && let Some(layer) = out.picked {
+                    inspector.selected_layer.insert(cx.id, layer);
+                }
+            }
+            _ => {}
+        }
     }
     ui.add_space(6.0);
     let section = |kind: &str| reg.layer(kind).map(|k| k.section());
     let drawn: Vec<&bpe_core::Layer> =
-        card.layers.iter().filter(|l| section(&l.kind) != Some(LayerSection::Reaction)).collect();
+        layer_list::top_level(card).filter(|l| section(&l.kind) != Some(LayerSection::Reaction)).collect();
     let reactions: Vec<&bpe_core::Layer> =
-        card.layers.iter().filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
+        layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
 
     // ---------- Layers ----------
     list_header(ui, cx, card, "Layers", "+ Add layer", LayerSection::Drawn, edits);
     let mut rows = Vec::new();
+    // Records the shader draws: each shown layer's, and its shown masks'.
+    let mut records = 0;
     for layer in drawn.iter().rev() {
-        let index = card.layer_index(layer.id).unwrap_or(0);
-        let rect = layer_list::row(ui, inspector, cx, card, layer, index, picked, edits);
+        let rect = layer_list::row(ui, inspector, cx, card, layer, picked, edits);
         rows.push((layer.id, rect));
+        for mask in layer_list::masks_of(card, layer.id) {
+            layer_list::row(ui, inspector, cx, card, mask, picked, edits);
+            records += usize::from(layer.enabled && mask.enabled);
+        }
+        records += usize::from(layer.enabled);
     }
     layer_list::drop_target(ui, cx, card, &rows, edits);
-    if drawn.iter().filter(|l| l.enabled).count() > DRAWN_LIMIT {
+    if records > DRAWN_LIMIT {
         ui.label(RichText::new(format!("Only the first {DRAWN_LIMIT} layers are drawn")).small().color(style::MUTED));
     }
 
@@ -106,8 +150,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         );
     }
     for layer in &reactions {
-        let index = card.layer_index(layer.id).unwrap_or(0);
-        layer_list::row(ui, inspector, cx, card, layer, index, picked, edits);
+        layer_list::row(ui, inspector, cx, card, layer, picked, edits);
     }
 
     // ---------- the picked one's settings ----------
@@ -131,7 +174,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     if kind.base() {
         size_row(ui, cx, edits);
     }
-    layer_settings(ui, inspector, cx, picked, kind.settings(), edits);
+    // Some settings have rows of their own above the grid: a mask's From and Layer, a Shader's
+    // Effect and Code.
+    let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
+    let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
+    let defs: Vec<SettingDef> =
+        kind.settings().iter().chain(kind.dynamic_defs(&get)).filter(|d| !own_rows.contains(&d.key)).cloned().collect();
+    layer_settings(ui, inspector, cx, picked, &defs, edits);
 }
 
 /// A list's title and its add menu: the kinds of `section` that fit the card, greyed when one
@@ -194,7 +243,7 @@ fn layer_settings(
     inspector: &mut Inspector,
     cx: &LookCx,
     layer: LayerId,
-    defs: &'static [SettingDef],
+    defs: &[SettingDef],
     edits: &mut Vec<Edit>,
 ) {
     let (scene, reg, time) = (cx.scene, cx.reg(), cx.time);
@@ -539,5 +588,314 @@ mod tests {
         h.drop_at(to);
         h.run();
         assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::GLOW, kinds::OUTLINE]);
+    }
+
+    fn param(h: &Harness<'_, State>, id: ThingId, layer: LayerId, key: &str) -> Option<Value> {
+        let s = h.state();
+        s.scene.value_at_time(&s.kit.registry, &Address::on(id, SlotId::Look, &layered_key(layer, key)), 0.0)
+    }
+
+    fn masks(h: &Harness<'_, State>, parent: LayerId) -> Vec<bpe_core::Layer> {
+        card(h, BALL).layers.iter().filter(|l| l.parent == Some(parent)).cloned().collect()
+    }
+
+    fn has_text(h: &Harness<'_, State>, text: &str) -> bool {
+        h.query_all(egui_kittest::kittest::By::new().label_contains(text)).next().is_some()
+    }
+
+    #[test]
+    fn shading_switches_to_radial_and_shows_its_centre() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Shading");
+        let shading = layer_named(&h, BALL, "Shading");
+        assert!(h.query_by_role_and_label(Role::Label, "Dark end").is_some(), "linear to start with");
+        h.get_by_role_and_label(Role::ComboBox, "Kind").click();
+        h.run();
+        h.get_by_label("Radial").click();
+        h.run();
+        assert_eq!(param(&h, BALL, shading.id, "kind"), Some(Value::Choice("radial".into())));
+        assert!(h.query_by_role_and_label(Role::Label, "Centre").is_some());
+        assert!(h.query_by_role_and_label(Role::Label, "Dark end").is_none());
+        assert!(has_text(&h, "Radial · 60 %"), "the row's summary");
+    }
+
+    #[test]
+    fn a_shader_layer_picks_an_effect_and_shows_its_settings() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Shader");
+        let shader = layer_named(&h, BALL, "Shader");
+        h.get_by_role_and_label(Role::Button, "Lava").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Kaleidoscope").click();
+        h.run();
+        assert_eq!(param(&h, BALL, shader.id, "effect"), Some(Value::Choice("kaleidoscope".into())));
+        assert!(h.query_by_role_and_label(Role::Label, "Slices").is_some(), "the effect's own settings");
+        assert!(h.query_by_role_and_label(Role::Label, "Speed").is_some());
+        assert!(h.query_all_by_label("Code").next().is_none(), "no code box for a built-in");
+    }
+
+    #[test]
+    fn own_code_that_does_not_read_says_why_under_the_box() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Shader");
+        h.get_by_role_and_label(Role::Button, "Lava").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Own code").click();
+        h.run();
+        assert!(has_text(&h, "Runs"), "the starting code runs");
+        let shader = layer_named(&h, BALL, "Shader");
+        let broken = "// name: Mine\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(1.0 }\n";
+        h.state_mut()
+            .scene
+            .card_mut(BALL, SlotId::Look)
+            .unwrap()
+            .params
+            .set(&layered_key(shader.id, "code"), Value::Text(broken.into()));
+        h.run();
+        assert!(has_text(&h, "Doesn't run:"), "the error shows under the box");
+        assert!(has_text(&h, "Own code that doesn't run"), "the row's summary");
+    }
+
+    #[test]
+    fn mask_with_layer_below_adds_an_indented_mask_that_goes_with_its_layer() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Pattern");
+        let pattern = layer_named(&h, BALL, "Pattern");
+        row_menu(&mut h, "Pattern", "Mask with layer below");
+        let added = masks(&h, pattern.id);
+        assert_eq!(added.len(), 1);
+        assert_eq!(param(&h, BALL, added[0].id, "from"), Some(Value::Choice("layer_below".into())));
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&added[0].id), "the mask is picked");
+        let mask_row = h.get_by_role_and_label(Role::Button, &added[0].name).rect();
+        let pattern_row = h.get_by_role_and_label(Role::Button, "Pattern").rect();
+        assert!(mask_row.left() > pattern_row.left(), "indented");
+        assert!(mask_row.top() > pattern_row.top(), "under its layer");
+        assert!(has_text(&h, "Layer below"));
+        // Its eye hides it.
+        h.get_by_label(&format!("Hide {}", added[0].name)).click();
+        h.run();
+        assert!(!masks(&h, pattern.id)[0].enabled);
+        // Deleting the pattern takes the mask with it.
+        row_menu(&mut h, "Pattern", "Delete");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY]);
+        assert!(h.query_by_role_and_label(Role::Button, &added[0].name).is_none());
+    }
+
+    #[test]
+    fn the_body_and_blend_cannot_be_masked() {
+        let mut h = harness();
+        h.get_by_role_and_label(Role::Button, "Body").click_secondary();
+        h.run();
+        assert!(h.get_by_label("Add mask").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Mask with layer below").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn a_mask_s_layer_menu_lists_only_the_layers_under_its_layer() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        add(&mut h, "+ Add layer", "Pattern");
+        add(&mut h, "+ Add layer", "Glow");
+        let pattern = layer_named(&h, BALL, "Pattern");
+        row_menu(&mut h, "Pattern", "Add mask");
+        let mask = masks(&h, pattern.id).remove(0);
+        assert_eq!(param(&h, BALL, mask.id, "from"), Some(Value::Choice("shape".into())));
+        assert!(has_text(&h, "Top half"));
+        h.get_by_role_and_label(Role::Button, "Layer").click();
+        h.run();
+        assert_eq!(param(&h, BALL, mask.id, "from"), Some(Value::Choice("layer".into())));
+        assert!(has_text(&h, "masked by a missing layer"), "no layer picked yet");
+        h.get_by_role_and_label(Role::Button, "Pick a layer").click();
+        h.run();
+        let count = |h: &Harness<'_, State>, name: &str| h.query_all_by_label(name).count();
+        assert_eq!(count(&h, "Outline"), 2, "its row and the menu's");
+        assert_eq!(count(&h, "Body"), 2, "its row and the menu's");
+        assert_eq!(count(&h, "Glow"), 1, "only its row: the glow is above the pattern");
+        let outline = layer_named(&h, BALL, "Outline");
+        h.query_all_by_label("Outline").last().unwrap().click();
+        h.run();
+        assert_eq!(param(&h, BALL, mask.id, "target"), Some(Value::Int(outline.id.0.into())));
+    }
+
+    #[test]
+    fn clear_takes_every_stroke_away_in_one_step() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Shading");
+        let shading = layer_named(&h, BALL, "Shading");
+        let stroke =
+            bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 0.2, softness: 0.0, strength: 1.0, erase: false };
+        {
+            let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
+            params.set(&layered_key(shading.id, "kind"), Value::Choice("brush".into()));
+            params.set(&layered_key(shading.id, "strokes"), Value::Strokes(bpe_core::Strokes { list: vec![stroke] }));
+        }
+        h.run();
+        assert!(has_text(&h, "1 stroke"));
+        let mut history = crate::history::History::default();
+        let before = h.state().scene.clone();
+        history.record(before.clone(), true);
+        h.get_by_label("Clear Strokes").click();
+        h.run();
+        assert_eq!(param(&h, BALL, shading.id, "strokes"), Some(Value::Strokes(bpe_core::Strokes::default())));
+        let mut scene = h.state().scene.clone();
+        assert!(history.undo(&mut scene));
+        assert_eq!(scene, before, "one undo brings the strokes back");
+    }
+
+    #[test]
+    fn a_layer_moves_with_its_masks_counting_only_the_layers() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        row_menu(&mut h, "Outline", "Add mask");
+        add(&mut h, "+ Add layer", "Glow");
+        row_menu(&mut h, "Outline", "Move up");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::GLOW, kinds::OUTLINE, kinds::MASK]);
+        row_menu(&mut h, "Outline", "Move down");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::MASK, kinds::GLOW]);
+    }
+
+    #[test]
+    fn undo_brings_back_each_mask_step() {
+        let mut h = harness();
+        let mut history = crate::history::History::default();
+        let mut steps = vec![h.state().scene.clone()];
+        history.record(steps[0].clone(), true);
+        add(&mut h, "+ Add layer", "Pattern");
+        steps.push(h.state().scene.clone());
+        history.record(steps[1].clone(), true);
+        row_menu(&mut h, "Pattern", "Add mask");
+        steps.push(h.state().scene.clone());
+        history.record(steps[2].clone(), true);
+        h.get_by_role_and_label(Role::Button, "Brush").click();
+        h.run();
+        assert_ne!(h.state().scene, steps[2]);
+        let mut scene = h.state().scene.clone();
+        for want in steps.iter().rev() {
+            assert!(history.undo(&mut scene));
+            assert_eq!(&scene, want);
+        }
+    }
+
+    #[test]
+    fn dragging_the_outline_handle_changes_its_width() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let handle = h.get_by_label("Width handle").rect().center();
+        let to = handle - egui::vec2(15.0, 0.0);
+        h.drag_at(handle);
+        h.run();
+        h.hover_at(to);
+        h.step();
+        assert!(h.state().inspector.own_step, "the drag starts an undo step of its own");
+        h.state_mut().inspector.own_step = false;
+        h.run();
+        h.drop_at(to);
+        h.run();
+        let Some(Value::Number(width)) = param(&h, BALL, outline.id, "width") else { panic!("no width") };
+        assert!(width > 6.0, "dragged inwards, the outline is wider: {width}");
+    }
+
+    #[test]
+    fn a_click_on_the_ball_picks_the_layer_showing_there() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Pattern");
+        add(&mut h, "+ Add layer", "Outline");
+        let pattern = layer_named(&h, BALL, "Pattern");
+        // The Body picked, so no handles are in the way.
+        h.get_by_role_and_label(Role::Button, "Body").click();
+        h.run();
+        let picture = h.state().inspector.ball_view.last_rect().expect("the view was drawn");
+        // A press and a release in the same place is a click.
+        let at = picture.center() + egui::vec2(10.0, 20.0);
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.run();
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&pattern.id));
+    }
+
+    /// A new Shading layer set to Brush, picked.
+    fn brush_shading(h: &mut Harness<'_, State>) -> LayerId {
+        add(h, "+ Add layer", "Shading");
+        let shading = layer_named(h, BALL, "Shading");
+        let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
+        params.set(&layered_key(shading.id, "kind"), Value::Choice("brush".into()));
+        h.run();
+        shading.id
+    }
+
+    fn strokes(h: &Harness<'_, State>, layer: LayerId) -> bpe_core::Strokes {
+        match param(h, BALL, layer, "strokes") {
+            Some(Value::Strokes(s)) => s,
+            other => panic!("no strokes: {other:?}"),
+        }
+    }
+
+    /// Drags across the view through `points`, given as shares of the picture (0 to 1).
+    fn paint(h: &mut Harness<'_, State>, points: &[(f32, f32)]) {
+        let rect = h.state().inspector.ball_view.last_rect().expect("the view was drawn");
+        let at = |(x, y): (f32, f32)| rect.min + egui::vec2(x * rect.width(), y * rect.height());
+        h.drag_at(at(points[0]));
+        h.step();
+        for &p in &points[1..] {
+            h.hover_at(at(p));
+            h.step();
+        }
+        h.drop_at(at(*points.last().unwrap()));
+        h.run();
+    }
+
+    #[test]
+    fn a_drag_across_the_ball_paints_one_stroke_in_ball_space() {
+        let mut h = harness();
+        let shading = brush_shading(&mut h);
+        assert!(h.query_all_by_label("Brush size").next().is_some(), "the brush bar shows");
+        let rect = h.state().inspector.ball_view.last_rect().unwrap();
+        // Half way through the drag nothing is saved yet.
+        h.drag_at(rect.center());
+        h.step();
+        h.hover_at(rect.center() + egui::vec2(20.0, 0.0));
+        h.step();
+        h.hover_at(rect.center() + egui::vec2(40.0, 5.0));
+        h.step();
+        assert!(strokes(&h, shading).list.is_empty(), "no edit while painting");
+        assert!(h.state().inspector.ball_view.painting.is_some());
+        h.drop_at(rect.center() + egui::vec2(40.0, 5.0));
+        h.run();
+        let list = strokes(&h, shading).list;
+        assert_eq!(list.len(), 1, "one stroke, one edit");
+        assert!(h.state().inspector.own_step, "the stroke is an undo step of its own");
+        let s = &list[0];
+        assert!(s.points.len() >= 2, "{:?}", s.points);
+        assert!(s.points.iter().all(|p| p[0] >= -1e-3 && p[0] <= 1.0 && p[1].abs() <= 1.0), "{:?}", s.points);
+        assert!(s.points.last().unwrap()[0] > 0.2, "to the right of the middle: {:?}", s.points);
+        assert_eq!((s.size, s.erase), (0.15, false));
+    }
+
+    #[test]
+    fn erase_strokes_say_so_and_points_off_the_ball_are_kept_to_its_square() {
+        let mut h = harness();
+        let shading = brush_shading(&mut h);
+        h.get_by_role_and_label(Role::Button, "Erase").click();
+        h.run();
+        paint(&mut h, &[(0.5, 0.5), (0.02, 0.02)]);
+        let list = strokes(&h, shading).list;
+        assert_eq!(list.len(), 1);
+        assert!(list[0].erase);
+        assert_eq!(list[0].points.last(), Some(&[-1.0, -1.0]), "the corner of the view is held to the ball's square");
+    }
+
+    #[test]
+    fn a_handle_past_the_view_waits_at_its_edge_so_it_never_covers_the_lists() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Glow");
+        let glow = layer_named(&h, BALL, "Glow");
+        let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
+        params.set(&layered_key(glow.id, "size"), Value::Number(3.5));
+        h.run();
+        let view = h.state().inspector.ball_view.last_rect().unwrap();
+        let handle = h.get_by_label("Size handle").rect();
+        assert!(view.contains_rect(handle), "{handle:?} in {view:?}");
     }
 }

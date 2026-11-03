@@ -8,6 +8,7 @@ use bpe_core::{
 };
 use glam::Vec2;
 
+pub mod brush;
 pub mod eval;
 pub mod gpu;
 pub mod harmony;

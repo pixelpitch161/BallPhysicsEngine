@@ -77,7 +77,6 @@ impl ModuleKind for EffectKind {
 /// `blend`, then one setting per header line. The header's strings are kept for the program's
 /// life, as every setting's words are.
 fn settings_of(header: &Header) -> Vec<SettingDef> {
-    let keep = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
     let mut defs = vec![SettingDef {
         key: BLEND,
         label: "Blend",
@@ -92,6 +91,22 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
         flags: Flags { keyframe: true, pulse: true },
         when: "",
     }];
+    defs.extend(param_defs(header, "", "", "Basics", true));
+    defs
+}
+
+/// One setting per line of an effect's header, each key starting with `prefix` (such as
+/// `"lava."` for a Shader layer), shown when `when` holds, under `group`. The strings are kept for
+/// the program's life, as every setting's words are. Without `simple`, every one shows at More.
+pub fn param_defs(
+    header: &Header,
+    prefix: &str,
+    when: &'static str,
+    group: &'static str,
+    simple: bool,
+) -> Vec<SettingDef> {
+    let keep = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
+    let mut defs = Vec::new();
     for p in &header.params {
         let mut label = p.key.replace('_', " ");
         if let Some(first) = label.get(..1) {
@@ -121,7 +136,7 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
             ),
         };
         defs.push(SettingDef {
-            key: keep(&p.key),
+            key: keep(&format!("{prefix}{}", p.key)),
             label: keep(&label),
             help: keep(&p.help),
             ty,
@@ -129,10 +144,10 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
             range,
             span: None,
             unit: "",
-            group: "Basics",
-            depth: if p.simple { Depth::Simple } else { Depth::More },
+            group,
+            depth: if p.simple && simple { Depth::Simple } else { Depth::More },
             flags,
-            when: "",
+            when,
         });
     }
     defs

@@ -220,6 +220,9 @@ impl Studio {
         if self.scene == before {
             return;
         }
+        if std::mem::take(&mut self.panels.inspector.own_step) {
+            self.history.end_merging();
+        }
         self.history.record(before, separate);
         self.scene_changed();
     }
@@ -1032,6 +1035,25 @@ mod tests {
         studio.after_edit(before);
         assert_eq!(studio.playback.time(), 0.0);
         assert_eq!(studio.history.undo.len(), 2);
+    }
+
+    #[test]
+    fn a_brush_stroke_or_handle_drag_is_its_own_undo_step_however_quick() {
+        let mut studio = Studio::headless();
+        let look = Address::on(ThingId(2), SlotId::Look, "2/strength");
+        let edit = |studio: &mut Studio, v: f64, own: bool| {
+            let before = studio.scene.clone();
+            studio.scene.set_at(&studio.kit.registry, &look, Value::Number(v)).unwrap();
+            studio.panels.inspector.own_step = own;
+            studio.after_edit(before);
+        };
+        edit(&mut studio, 0.5, false);
+        edit(&mut studio, 0.6, false);
+        assert_eq!(studio.history.undo.len(), 1, "quick edits merge");
+        edit(&mut studio, 0.7, true);
+        assert_eq!(studio.history.undo.len(), 2, "a stroke starts its own step");
+        edit(&mut studio, 0.8, false);
+        assert_eq!(studio.history.undo.len(), 2, "and the drag after it joins it");
     }
 
     #[test]

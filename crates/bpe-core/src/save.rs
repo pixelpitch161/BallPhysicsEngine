@@ -86,6 +86,11 @@ mod probe {
 fn clean_layers(card: &mut crate::Slot, reg: &Registry) {
     let mut seen = std::collections::BTreeSet::new();
     card.layers.retain(|l| seen.insert(l.id));
+    // A mask whose layer is gone goes too.
+    let ids: std::collections::BTreeSet<crate::LayerId> =
+        card.layers.iter().filter(|l| l.parent.is_none()).map(|l| l.id).collect();
+    card.layers.retain(|l| l.parent.is_none_or(|p| ids.contains(&p)));
+    let snapshot = card.params.clone();
     let kinds: std::collections::BTreeMap<crate::LayerId, Option<&dyn crate::LayerKind>> =
         card.layers.iter().map(|l| (l.id, reg.layer(&l.kind))).collect();
     let keys: Vec<String> = card.params.0.keys().filter(|k| crate::split_layered(k).is_some()).cloned().collect();
@@ -96,7 +101,8 @@ fn clean_layers(card: &mut crate::Slot, reg: &Registry) {
             None => {}
             Some(None) => card.params.set(&key, v),
             Some(Some(kind)) => {
-                if let Some(def) = kind.settings().iter().find(|d| d.key == plain)
+                let get = |k: &str| snapshot.get(&crate::layered_key(id, k)).cloned();
+                if let Some(def) = crate::layer_def(*kind, &get, plain)
                     && def.ty.accepts(&v)
                 {
                     card.params.set(&key, def.clamp(v));
@@ -169,13 +175,13 @@ mod tests {
     }
 
     #[test]
-    fn format_three_files_are_old() {
-        assert_eq!(load("(format: 3)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
+    fn format_four_files_are_old() {
+        assert_eq!(load("(format: 4)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
     }
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 5)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 6)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -228,7 +234,7 @@ mod tests {
         assert_eq!(back.things[&a].parent, Some(ThingId::ROOT));
         assert_eq!(back.things[&b].id, b);
         assert_eq!(back.next_thing, b.0 + 1);
-        let e = load("(format: 4)", &r).unwrap_err();
+        let e = load("(format: 5)", &r).unwrap_err();
         assert_eq!(e.to_string(), "This scene file is damaged: it has no scene settings");
     }
 

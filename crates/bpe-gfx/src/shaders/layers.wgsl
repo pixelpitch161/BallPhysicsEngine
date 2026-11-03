@@ -11,19 +11,28 @@
 // A glow is light added outside the shape with no coverage, as the halo always was.
 
 struct LayerGpu {
-    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow), blend code, flags, spare.
+    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow, 5 shading, 6 shader, 7 mask), blend
+    // code, flags, how many mask records follow it.
     head: vec4<u32>,
-    // Opacity, then per kind (shine and glow: strength).
+    // Opacity, then per kind (shine and glow: strength; mask: target record, parent angle, shape).
     amount: vec4<f32>,
     // Outline: width in pixels, where it sits (0 inside, 1 centre, 2 outside). Shine: spot xy,
-    // size. Glow: size in radii.
+    // size. Glow: size in radii. Shading: kind, softness, space, amount. Mask: from, invert,
+    // softness, moves. Shader: speed, scale, space, effect slot.
     p0: vec4<f32>,
+    // Shading: linear from xy, to xy; radial centre xy, size; brush tile in w. Mask: angle,
+    // size, threshold, brush tile.
     p1: vec4<f32>,
     colour: vec4<f32>,
     paint: PaintGpu,
+    // A shader layer's effect settings, packed as its header lists them.
+    extra: array<vec4<f32>, 4>,
 };
 
 @group(2) @binding(0) var<storage, read> look_layers: array<LayerGpu>;
+// Brush strokes, one 128 x 128 tile per layer of the array (see masks.rs).
+@group(2) @binding(1) var mask_tiles: texture_2d_array<f32>;
+@group(2) @binding(2) var mask_sampler: sampler;
 
 // Matches MAX_LAYERS in frame.rs.
 const MAX_LAYERS: u32 = 64u;
@@ -121,92 +130,171 @@ fn band(d: f32, lo: f32, hi: f32, aa: f32, inside: bool) -> f32 {
     return bottom * clamp((hi - q) / aa + 0.5, 0.0, 1.0);
 }
 
-// What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
-fn shade_layers(in: LayeredOut) -> vec4<f32> {
-    let p = rotate(in.local, -in.form.z);
-    let d = ball_shape(p, in.form.x, in.form.y);
-    let aa = 1.0 / max(in.radius.x, 0.5);
-    let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
-    let body = in.body;
-    let base = vec4<f32>(body.rgb, 1.0);
-    // Lit as the ball sits on screen, whichever way it is stretched, as the classic ball was.
-    let screen = in.dir * in.local.x + vec2<f32>(-in.dir.y, in.dir.x) * in.local.y;
-    let lit_at = screen / max(length(screen), 1.0);
+// The ball a fragment is drawing, for the walks over its stack (see layers_walk.wgsl): set once
+// at the start of each fragment.
+struct LayeredBall {
+    body: vec4<f32>,
+    // The radius in output pixels, then in world units.
+    radius: vec2<f32>,
+    form: vec4<f32>,
+    misc: vec4<f32>,
+    vary: vec4<f32>,
+    dir: vec2<f32>,
+    // One output pixel, in radii.
+    aa: f32,
+    // The ball's first record and how many it has.
+    first: u32,
+    count: u32,
+};
 
-    var inner = vec4<f32>(0.0);
-    var outer = vec4<f32>(0.0);
-    let first = in.range.x;
-    let count = min(in.range.y, MAX_LAYERS);
-    for (var k = 0u; k < count; k++) {
-        let l = look_layers[first + k];
-        let mode = l.head.y;
-        let flag = (l.head.z & 1u) != 0u;
-        let opacity = clamp(l.amount.x, 0.0, 1.0);
-        switch l.head.x {
-            case 0u: {
-                inner = layer_over(inner, body.rgb, opacity, mode);
+var<private> layered_ball: LayeredBall;
+
+// What a walk over the stack gives at one point: as if wholly inside the shape, and as if wholly
+// outside it.
+struct Walked {
+    inner: vec4<f32>,
+    outer: vec4<f32>,
+};
+
+const LAYERS_TAU: f32 = 6.28318531;
+
+// How painted brush tile `tile` (-1: none) is at ball point `q` (-1 to 1 across its square).
+fn tile_at(tile: f32, q: vec2<f32>) -> f32 {
+    let uv = q * 0.5 + vec2<f32>(0.5);
+    if tile < 0.0 || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return 0.0;
+    }
+    return textureSampleLevel(mask_tiles, mask_sampler, uv, i32(tile + 0.5), 0.0).r;
+}
+
+// How light `c` (linear light) looks, 0 to 1: its luminance as the eye reads it, so a threshold of
+// 0.5 sits at a middle grey.
+fn layers_luminance(c: vec3<f32>) -> f32 {
+    return pow(clamp(dot(c, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0), 1.0 / 2.2);
+}
+
+// 1 well inside an edge at distance `d` (negative inside), 0 well outside, fading over `s`.
+fn soft_inside(d: f32, s: f32) -> f32 {
+    return 1.0 - smoothstep(-s, s, d);
+}
+
+// A Shape mask at mask point `m` (already turned by its angle): 0 half (the top), 1 wedge (round
+// the top, `size` of a turn), 2 quarters (top left and bottom right), 3 ring, 4 circle, 5 band.
+fn shape_mask(shape: f32, m: vec2<f32>, size: f32, s: f32) -> f32 {
+    let r = length(m);
+    switch u32(shape + 0.5) {
+        case 0u: {
+            return soft_inside(m.y, s);
+        }
+        case 1u: {
+            let span = clamp(size, 0.0, 1.0) * LAYERS_TAU;
+            if span >= LAYERS_TAU - 1e-4 {
+                return 1.0;
             }
-            case 1u: {
-                var paint = l.paint;
-                if paint.row >= 0.0 {
-                    paint.vary = in.vary;
-                }
-                if flag {
-                    paint.angle += in.misc.z;
-                }
-                if in.misc.w > 0.5 {
-                    paint.angle -= in.misc.z;
-                }
-                if paint_paints(paint) {
-                    inner = layer_over(inner, paint_colour(paint, p, g.view.w, base).rgb, opacity, mode);
-                }
-            }
-            case 2u: {
-                let w = max(l.p0.x, 0.0) / in.radius.y;
-                if w > 0.0 {
-                    var lo = -w;
-                    var hi = 0.0;
-                    if l.p0.y > 1.5 {
-                        lo = 0.0;
-                        hi = w;
-                    } else if l.p0.y > 0.5 {
-                        lo = -0.5 * w;
-                        hi = 0.5 * w;
-                    }
-                    // Same as body: the body's colour a little darker, so a white ball shows it.
-                    let c = select(l.colour.rgb, body.rgb * 0.6, flag);
-                    inner = layer_over(inner, c, band(d, lo, hi, aa, true) * opacity, mode);
-                    outer = layer_over(outer, c, band(d, lo, hi, aa, false) * opacity, mode);
-                }
-            }
-            case 3u: {
-                let under = select(body.rgb, inner.rgb / inner.a, inner.a > 1e-5);
-                let lit = shine_light(lit_at, under, l.p0.xy, l.p0.z);
-                inner = layer_over(inner, mix(under, lit, clamp(l.amount.y, 0.0, 1.0)), opacity, mode);
-            }
-            case 4u: {
-                let glow_d = max(d, 0.0) / max(l.p0.x, 0.05);
-                // Faded out over the last fifth of the quad, so a glow bigger than the quad
-                // never ends in a hard square.
-                let reach = max(in.form.w, 1.0);
-                let quad = max(abs(in.local.x), abs(in.local.y));
-                let fade = 1.0 - smoothstep(0.8 * reach, reach, quad);
-                let halo = max(l.amount.y, 0.0) * exp(-glow_d * glow_d) * opacity * fade;
-                let c = select(l.colour.rgb, body.rgb, flag);
-                // Light, covering nothing: mixed with what reaches past the edge, then added.
-                var mixed = c;
-                if mode != 0u && outer.a > 1e-5 {
-                    mixed = (1.0 - outer.a) * c + outer.a * blended(mode, outer.rgb / outer.a, c);
-                }
-                outer = vec4<f32>(outer.rgb + mixed * halo, outer.a);
-            }
-            default: {}
+            let a = atan2(m.x, -m.y);
+            return soft_inside((abs(a) - 0.5 * span) * r, s);
+        }
+        case 2u: {
+            return soft_inside(-min(abs(m.x), abs(m.y)) * sign(m.x * m.y), s);
+        }
+        case 3u: {
+            return soft_inside(abs(r - 0.7) - 0.5 * size, s);
+        }
+        case 4u: {
+            return soft_inside(r - size, s);
+        }
+        default: {
+            return soft_inside(abs(m.y) - 0.5 * size, s);
         }
     }
-    var out = cover * inner + (1.0 - cover) * outer;
+}
+
+// How much a Shading layer `l` darkens at ball point `q` (or `screen_q` when it stays with the
+// screen), before its amount.
+fn shading_factor(l: LayerGpu, q: vec2<f32>, screen_q: vec2<f32>, aa: f32) -> f32 {
+    let pt = select(q, screen_q, l.p0.z > 0.5);
+    let soft = clamp(l.p0.y, 0.0, 1.0);
+    let kind = u32(l.p0.x + 0.5);
+    if kind == 0u {
+        let along = l.p1.zw - l.p1.xy;
+        let t = dot(pt - l.p1.xy, along) / max(dot(along, along), 1e-6);
+        let e0 = 0.5 * (1.0 - soft);
+        return 1.0 - smoothstep(e0, 1.0 - e0 + 1e-4, t);
+    }
+    if kind == 1u {
+        let size = max(l.p1.z, 1e-3);
+        let w = max(soft * size, aa);
+        let f = smoothstep(size - w, size + 0.25 * w, length(pt - l.p1.xy));
+        return select(f, 1.0 - f, (l.head.z & 2u) != 0u);
+    }
+    return tile_at(l.p1.w, pt);
+}
+
+// A mask record `m`'s value at the point: `below`, `chosen` the coverage (inside, outside) of the
+// layer directly under its layer and of its chosen layer; `under` the stack under its layer.
+fn mask_value(
+    m: LayerGpu,
+    q: vec2<f32>,
+    screen_q: vec2<f32>,
+    below: vec2<f32>,
+    chosen: vec2<f32>,
+    under_in: vec4<f32>,
+    under_out: vec4<f32>,
+    aa: f32,
+) -> vec2<f32> {
+    let soft = clamp(m.p0.z, 0.0, 1.0);
+    var v = vec2<f32>(0.0);
+    switch u32(m.p0.x + 0.5) {
+        case 0u: {
+            v = below;
+        }
+        case 1u: {
+            v = chosen;
+        }
+        case 2u, 3u: {
+            var pt = q;
+            let moves = u32(m.p0.w + 0.5);
+            if moves == 0u {
+                pt = rotate(q, -m.amount.z);
+            } else if moves == 2u {
+                pt = screen_q;
+            }
+            if u32(m.p0.x + 0.5) == 2u {
+                let s = max(0.5 * soft, aa);
+                v = vec2<f32>(shape_mask(m.amount.w, rotate(pt, -m.p1.x), m.p1.y, s));
+            } else {
+                v = vec2<f32>(tile_at(m.p1.w, pt));
+            }
+        }
+        default: {
+            let t = m.p1.z;
+            let s = max(0.5 * soft, 1e-3);
+            let li = layers_luminance(select(vec3<f32>(0.0), under_in.rgb / under_in.a, under_in.a > 1e-5));
+            let lo = layers_luminance(select(vec3<f32>(0.0), under_out.rgb / under_out.a, under_out.a > 1e-5));
+            v = vec2<f32>(smoothstep(t - s, t + s, li), smoothstep(t - s, t + s, lo));
+            if u32(m.p0.x + 0.5) == 5u {
+                v = vec2<f32>(1.0) - v;
+            }
+        }
+    }
+    if m.p0.y > 0.5 {
+        v = vec2<f32>(1.0) - v;
+    }
+    return clamp(v, vec2<f32>(0.0), vec2<f32>(1.0));
+}
+
+// What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
+fn shade_layers(in: LayeredOut) -> vec4<f32> {
+    let aa = 1.0 / max(in.radius.x, 0.5);
+    layered_ball = LayeredBall(in.body, in.radius, in.form, in.misc, in.vary, in.dir, aa, in.range.x, in.range.y);
+    let p = rotate(in.local, -in.form.z);
+    let d = ball_shape(p, in.form.x, in.form.y);
+    let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
+    let w = walk_layers(in.local, in.range.x, in.range.y);
+    var out = cover * w.inner + (1.0 - cover) * w.outer;
     // An additive body colour makes the whole ball add its light.
-    if body.a < 0.0 {
-        out = vec4<f32>(out.rgb * -body.a, 0.0);
+    if in.body.a < 0.0 {
+        out = vec4<f32>(out.rgb * -in.body.a, 0.0);
     }
     out *= clamp(in.misc.x, 0.0, 1.0);
     if out.a < 1e-4 && max(out.r, max(out.g, out.b)) < 1e-4 {

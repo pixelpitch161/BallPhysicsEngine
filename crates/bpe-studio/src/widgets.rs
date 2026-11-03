@@ -555,6 +555,16 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Text(t) if t.chars().count() > 24 => format!("\"{}…\"", t.chars().take(23).collect::<String>()),
         Value::Text(t) => format!("\"{t}\""),
         Value::Target(t) => target_words(t, choices),
+        Value::Strokes(s) => strokes_words(s),
+    }
+}
+
+/// "No strokes", "1 stroke", "3 strokes".
+pub fn strokes_words(s: &bpe_core::Strokes) -> String {
+    match s.list.len() {
+        0 => "No strokes".to_owned(),
+        1 => "1 stroke".to_owned(),
+        n => format!("{n} strokes"),
     }
 }
 
@@ -752,6 +762,23 @@ fn widget(
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
+        // Strokes are painted in the ball view; here they are counted and can be cleared.
+        (ValueType::Strokes, Value::Strokes(strokes)) => {
+            let words = strokes_words(strokes);
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(RichText::new(words).color(style::TEXT))).labelled_by(name);
+                let clear = ui.add_enabled(!strokes.list.is_empty(), egui::Button::new("Clear").small());
+                let label = format!("Clear {}", def.label);
+                clear.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !strokes.list.is_empty(), &label));
+                let mut clear = clear.on_hover_text("Takes away every stroke. Paint them in the ball view above.");
+                if clear.clicked() {
+                    strokes.list.clear();
+                    clear.mark_changed();
+                }
+                clear
+            })
+            .inner
+        }
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(style::TEXT)),
     }
 }

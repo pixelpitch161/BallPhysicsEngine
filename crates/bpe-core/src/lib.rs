@@ -32,7 +32,7 @@ pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, SlotId, ThingId};
 pub use layers::{CopiedLayer, CopiedLook, Layer, LayerId, layered_key, split_layered};
-pub use registry::{LayerKind, LayerSection, ModuleKind, Registry, ThingKind};
+pub use registry::{LayerKind, LayerSection, ModuleKind, Registry, ThingKind, layer_def};
 pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, ResolvedThing, resolve};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
@@ -40,7 +40,7 @@ pub use settings::{
     Choice, Depth, FOLDED_SECTIONS, Flags, GroupOpts, SECTION_ORDER, SettingDef, SettingGroup, SettingValue, Settings,
     section_rank,
 };
-pub use value::{Params, Value, ValueType};
+pub use value::{Params, Stroke, Strokes, Value, ValueType};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.
 pub use bpe_settings_derive::{Choice, Settings};

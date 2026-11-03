@@ -9,7 +9,7 @@ use bpe_gfx::{Frame, Renderer, build_frame};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{CameraView, Event, EventKind, Log, Party, World};
 use eframe::{egui, egui_wgpu, wgpu};
-use egui::{Pos2, Rect, RichText, Ui};
+use egui::{Pos2, Rect, Ui};
 use glam::Vec2;
 
 use crate::style;
@@ -58,6 +58,25 @@ pub struct BallView {
     frame: Frame,
     /// What the picture shows now, so a still one is drawn again only when that changes.
     drawn: Option<u64>,
+    /// What the frame was built for, so it is built again only when that changes.
+    built: Option<u64>,
+    /// Where the picture was last drawn.
+    rect: Option<Rect>,
+    /// The brush strokes are painted with.
+    pub brush: super::brush::Brush,
+    /// The stroke being painted, until the button is let go.
+    pub painting: Option<super::brush::Painting>,
+    /// A layer whose masks the view shows alone (white where they let it show, black where they
+    /// hide it), until Alt-click again or another thing is picked.
+    pub solo: Option<(ThingId, bpe_core::LayerId)>,
+}
+
+impl BallView {
+    /// Where the picture was last drawn, in points.
+    #[cfg(test)]
+    pub fn last_rect(&self) -> Option<Rect> {
+        self.rect
+    }
 }
 
 /// The small scene the view draws: the scene's settings (or plain ones on a dark ground) and a
@@ -145,7 +164,46 @@ pub fn build_view_frame(
     frame.overlay = None;
 }
 
-/// Draws the view and its buttons for thing `id` of `scene` at the playhead `time`.
+/// Where the ball sits in the view: ball space (radii, y down, before the ball turns) to view
+/// points and back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewMap {
+    pub centre: Pos2,
+    /// The ball's radius in points.
+    pub radius: f32,
+    /// How far the ball has turned, in radians.
+    pub turn: f32,
+}
+
+impl ViewMap {
+    /// Ball point `q` in the view.
+    pub fn to_view(self, q: Vec2) -> Pos2 {
+        let v = Vec2::from_angle(self.turn).rotate(q) * self.radius;
+        self.centre + egui::vec2(v.x, v.y)
+    }
+
+    /// View point `p` on the ball.
+    pub fn to_ball(self, p: Pos2) -> Vec2 {
+        let v = Vec2::new(p.x - self.centre.x, p.y - self.centre.y) / self.radius.max(1e-3);
+        Vec2::from_angle(-self.turn).rotate(v)
+    }
+}
+
+/// What the view gives the editor for handles, the brush and clicks.
+pub struct ViewOut {
+    /// The picture's place and what the pointer did on it.
+    pub response: egui::Response,
+    /// Where the ball is; `None` while it moves, when it has no handles.
+    pub map: Option<ViewMap>,
+    /// The ball's radius in pixels of the scene.
+    pub radius: f32,
+    /// The layer a click on the picture picked, when it was clicked.
+    pub picked: Option<bpe_core::LayerId>,
+}
+
+/// Draws the view and its buttons for thing `id` of `scene` at the playhead `time`, with layered
+/// key `swap.0` of its Look holding `swap.1` instead (a stroke being painted).
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     view: &mut BallView,
@@ -154,37 +212,22 @@ pub fn show(
     kit: &Kit,
     id: ThingId,
     time: f64,
-) {
+    swap: Option<(&str, Value)>,
+) -> Option<ViewOut> {
     buttons(ui, view);
     let side = ui.available_width().clamp(40.0, MAX_SIZE);
-    let Some(render) = render else {
-        ui.label(RichText::new("The ball view needs the wgpu renderer.").small().color(style::MUTED));
-        return;
-    };
-    let Some(mini) = mini_scene(scene, kit, id, view.ground) else { return };
+    let mut mini = mini_scene(scene, kit, id, view.ground)?;
+    if let Some((key, value)) = swap
+        && let Some(card) = mini.card_mut(id, SlotId::Look)
+    {
+        card.params.set(key, value);
+    }
     let resolved = bpe_core::resolve(&mini, &kit.registry);
     let radius = match scene.value_at_time(&kit.registry, &Address::own(id, "radius"), time) {
         Some(Value::Number(r)) => r as f32,
         _ => 24.0,
     };
     let pixels = (side * ui.ctx().pixels_per_point()).round().max(2.0) as u32;
-    let device = &render.device;
-    let (renderer, texture) = view.renderer.get_or_insert_with(|| {
-        let renderer = Renderer::new(device, pixels, pixels);
-        let texture =
-            render.renderer.write().register_native_texture(device, renderer.output_view(), wgpu::FilterMode::Linear);
-        (renderer, texture)
-    });
-    if renderer.size() != (pixels, pixels) {
-        renderer.resize(device, pixels, pixels);
-        render.renderer.write().update_egui_texture_from_wgpu_texture(
-            device,
-            renderer.output_view(),
-            wgpu::FilterMode::Linear,
-            *texture,
-        );
-        view.drawn = None;
-    }
     let looped = match view.mode {
         ViewMode::Still => None,
         ViewMode::Moving => Some(MOVING_LOOP),
@@ -193,18 +236,79 @@ pub fn show(
     let now = ui.input(|i| i.time);
     let clock = looped.map_or(0.0, |len| now % len);
     let loops = looped.map_or(0, |len| (now / len) as u32);
-    let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground);
-    if view.drawn != Some(key) {
+    let solo = view.solo.filter(|(t, _)| *t == id).map(|(_, layer)| layer);
+    let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground)
+        ^ solo.map_or(0, |l| (u64::from(l.0) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    // The frame is built without a GPU too, so handles and clicks work everywhere.
+    if view.built != Some(key) {
         let at = time + clock;
         build_view_frame(&mini, &resolved, kit, id, radius, view.mode, at, clock, loops, &mut view.frame);
-        renderer.render(device, &render.queue, &view.frame);
-        view.drawn = Some(key);
+        if let Some(layer) = solo {
+            show_masks_alone(&mut view.frame, &resolved, id, layer);
+        }
+        view.built = Some(key);
     }
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-    ui.painter().image(*texture, rect, uv, style::UNTINTED);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+    view.rect = Some(rect);
+    match render {
+        Some(render) => {
+            let device = &render.device;
+            let (renderer, texture) = view.renderer.get_or_insert_with(|| {
+                let renderer = Renderer::new(device, pixels, pixels);
+                let texture = render.renderer.write().register_native_texture(
+                    device,
+                    renderer.output_view(),
+                    wgpu::FilterMode::Linear,
+                );
+                (renderer, texture)
+            });
+            if renderer.size() != (pixels, pixels) {
+                renderer.resize(device, pixels, pixels);
+                render.renderer.write().update_egui_texture_from_wgpu_texture(
+                    device,
+                    renderer.output_view(),
+                    wgpu::FilterMode::Linear,
+                    *texture,
+                );
+                view.drawn = None;
+            }
+            if view.drawn != Some(key) {
+                renderer.render(device, &render.queue, &view.frame);
+                view.drawn = Some(key);
+            }
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            ui.painter().image(*texture, rect, uv, style::UNTINTED);
+        }
+        None => {
+            ui.painter().rect_filled(rect, 0.0, style::STAGE);
+            let at = rect.center_bottom() - egui::vec2(0.0, 12.0);
+            let font = egui::FontId::proportional(11.0);
+            let words = "The ball view needs the wgpu renderer.";
+            ui.painter().text(at, egui::Align2::CENTER_CENTER, words, font, style::MUTED);
+        }
+    }
     if looped.is_some() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    let ball = view.frame.layered.first()?;
+    let world = view_size(radius) as f32;
+    let map = ViewMap { centre: rect.center(), radius: radius * side / world, turn: ball.form[2] };
+    let picked = response.interact_pointer_pos().filter(|_| response.clicked()).and_then(|at| {
+        let slot = resolved.things.get(&id)?.slots.get(&SlotId::Look)?;
+        bpe_kit::modules::look::layers::gpu::Stack::of(slot)?.topmost_at(map.to_ball(at), radius)
+    });
+    let map = (view.mode != ViewMode::Moving).then_some(map);
+    Some(ViewOut { response, map, radius, picked })
+}
+
+/// Makes the frame of [`build_view_frame`] show layer `layer`'s masks alone: white where they let
+/// it show, black where they hide it. Nothing changes when the layer draws nothing.
+pub fn show_masks_alone(frame: &mut Frame, resolved: &Resolved, id: ThingId, layer: bpe_core::LayerId) {
+    let Some(slot) = resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Look)) else { return };
+    let Some(stack) = bpe_kit::modules::look::layers::gpu::Stack::of(slot) else { return };
+    let (Some(at), Some(ball)) = (stack.record_of(layer), frame.layered.first()) else { return };
+    if let Some(record) = frame.look_layers.get_mut(ball.range[0] as usize + at) {
+        record.head[2] |= bpe_gfx::LayerGpu::SOLO;
     }
 }
 
@@ -277,6 +381,35 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, choices: &[(T, &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_points_go_to_the_ball_and_back() {
+        let map = ViewMap { centre: Pos2::new(150.0, 160.0), radius: 105.0, turn: 0.7 };
+        for p in [Pos2::new(150.0, 160.0), Pos2::new(10.0, 300.0), Pos2::new(260.0, 40.5)] {
+            let back = map.to_view(map.to_ball(p));
+            assert!((back - p).length() < 1e-3, "{p:?} came back as {back:?}");
+        }
+        let flat = ViewMap { turn: 0.0, ..map };
+        assert_eq!(flat.to_view(Vec2::new(0.0, -1.0)), Pos2::new(150.0, 55.0), "y down: -1 is the top");
+    }
+
+    #[test]
+    fn masks_alone_mark_their_layer_s_record_only() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_studio_scene(reg);
+        let ball = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+        scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::OUTLINE).unwrap();
+        let pattern = scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::PATTERN).unwrap();
+        scene.add_mask(reg, ball, SlotId::Look, pattern).unwrap();
+        let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
+        let resolved = bpe_core::resolve(&mini, reg);
+        let mut frame = Frame::default();
+        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+        show_masks_alone(&mut frame, &resolved, ball, pattern);
+        let solo: Vec<bool> = frame.look_layers.iter().map(|r| r.head[2] & bpe_gfx::LayerGpu::SOLO != 0).collect();
+        assert_eq!(solo, [false, false, true, false], "body, outline, pattern, its mask");
+    }
 
     #[test]
     fn the_view_puts_one_ball_at_its_middle_at_a_third_of_its_size() {

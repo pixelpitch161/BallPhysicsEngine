@@ -18,6 +18,8 @@ pub enum Value {
     Text(String),
     /// Which other things something reacts to.
     Target(Target),
+    /// Brush strokes painted on a ball (a Brush mask or Brush shading). Never keyframed.
+    Strokes(Strokes),
 }
 
 /// What kind of value a setting holds.
@@ -33,6 +35,7 @@ pub enum ValueType {
     Choice(&'static [&'static str]),
     Text,
     Target,
+    Strokes,
 }
 
 impl ValueType {
@@ -49,7 +52,71 @@ impl ValueType {
             | (ValueType::Text, Value::Text(_))
             | (ValueType::Target, Value::Target(_)) => true,
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),
+            (ValueType::Strokes, Value::Strokes(s)) => s.is_finite(),
             _ => false,
+        }
+    }
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// One brush stroke on a ball: the points it went through, in ball space (-1 to 1 across the
+/// ball, y down, before the ball turns), and the brush it was painted with.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stroke {
+    pub points: Vec<[f32; 2]>,
+    /// The brush's radius, in ball radii.
+    pub size: f32,
+    /// 0 a hard edge, 1 soft all the way to the middle.
+    pub softness: f32,
+    /// How much it paints, 0 to 1.
+    pub strength: f32,
+    /// It takes paint away instead of adding it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub erase: bool,
+}
+
+/// Every stroke painted on one brush setting, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Strokes {
+    pub list: Vec<Stroke>,
+}
+
+impl Strokes {
+    /// Whether every number in it is finite.
+    pub fn is_finite(&self) -> bool {
+        self.list.iter().all(|s| {
+            s.size.is_finite()
+                && s.softness.is_finite()
+                && s.strength.is_finite()
+                && s.points.iter().all(|p| p[0].is_finite() && p[1].is_finite())
+        })
+    }
+
+    /// The same number for the same strokes on every run and machine, to cache their pictures by.
+    pub fn hash64(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut h);
+        h.finish()
+    }
+}
+
+impl std::hash::Hash for Strokes {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.list.len().hash(h);
+        for s in &self.list {
+            s.points.len().hash(h);
+            for p in &s.points {
+                p[0].to_bits().hash(h);
+                p[1].to_bits().hash(h);
+            }
+            for x in [s.size, s.softness, s.strength] {
+                x.to_bits().hash(h);
+            }
+            s.erase.hash(h);
         }
     }
 }
@@ -129,6 +196,23 @@ mod tests {
         assert!(!ValueType::Number.accepts(&Value::Number(f64::NAN)));
         assert!(!ValueType::Number.accepts(&Value::Number(f64::INFINITY)));
         assert!(!ValueType::Vec2.accepts(&Value::Vec2([0.0, f32::NAN])));
+    }
+
+    #[test]
+    fn strokes_round_trip_and_hash_by_their_numbers() {
+        let one =
+            Stroke { points: vec![[0.0, 0.5], [0.25, -0.5]], size: 0.2, softness: 0.5, strength: 1.0, erase: false };
+        let strokes = Strokes { list: vec![one.clone(), Stroke { erase: true, ..one.clone() }] };
+        let v = Value::Strokes(strokes.clone());
+        let text = ron::to_string(&v).unwrap();
+        assert_eq!(ron::from_str::<Value>(&text).unwrap(), v);
+        assert!(ValueType::Strokes.accepts(&v));
+        assert!(!ValueType::Strokes.accepts(&Value::Number(1.0)));
+        let nan = Strokes { list: vec![Stroke { size: f32::NAN, ..one.clone() }] };
+        assert!(!ValueType::Strokes.accepts(&Value::Strokes(nan)));
+        assert_eq!(strokes.hash64(), strokes.clone().hash64());
+        let moved = Strokes { list: vec![Stroke { points: vec![[0.0, 0.5], [0.25, -0.4]], ..one }] };
+        assert_ne!(strokes.hash64(), moved.hash64());
     }
 
     #[test]

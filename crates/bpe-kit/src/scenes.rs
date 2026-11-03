@@ -116,7 +116,7 @@ pub fn layers_from_basic(look: &BasicLook) -> Slot {
     let mut card = Slot::new(l::CARD);
     let mut add = |kind: &str, name: &str, params: Params| {
         let id = LayerId(card.layers.len() as u32);
-        card.layers.push(Layer { id, kind: kind.into(), name: name.into(), enabled: true });
+        card.layers.push(Layer { id, kind: kind.into(), name: name.into(), enabled: true, parent: None });
         for (k, v) in params.iter() {
             card.params.set(&layered_key(id, k), v.clone());
         }

@@ -8,19 +8,25 @@ pub mod blend;
 pub mod body;
 pub mod glow;
 pub mod gpu;
+pub mod mask;
 pub mod outline;
 pub mod pattern;
 pub mod reactions;
+pub mod shader;
+pub mod shading;
 pub mod shine;
 
-use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId};
+use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value};
 
 pub use blend::BlendLayer;
 pub use body::BodyLayer;
 pub use glow::GlowLayer;
+pub use mask::{MaskFrom, MaskLayer, MaskMoves, MaskShape};
 pub use outline::{OutlineLayer, OutlineSits};
 pub use pattern::PatternLayer;
 pub use reactions::{ColourOnHit, ColourOverTime, FlashOnHit, StretchWhenFast, Turning};
+pub use shader::ShaderLayer;
+pub use shading::{ShadingKind, ShadingLayer, Space};
 pub use shine::ShineLayer;
 
 /// The card kind that holds the stack.
@@ -59,6 +65,9 @@ pub enum ColourFrom {
     Own,
 }
 
+/// How a kind finds the settings a layer's own values add.
+type DynamicDefs = fn(&dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef];
+
 /// One layer kind of the stack: its id, name, help, section, settings and whether it repeats.
 pub struct Kind {
     pub id: &'static str,
@@ -67,7 +76,16 @@ pub struct Kind {
     pub section: LayerSection,
     pub repeats: bool,
     pub base: bool,
+    /// Whether layers of this kind may carry masks.
+    pub maskable: bool,
     pub settings: fn() -> &'static [SettingDef],
+    /// The settings a layer's own values add (a Shader layer's own code).
+    pub dynamic: DynamicDefs,
+}
+
+/// No settings beyond the kind's own.
+fn no_more(_: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
+    &[]
 }
 
 impl LayerKind for Kind {
@@ -95,6 +113,12 @@ impl LayerKind for Kind {
     fn base(&self) -> bool {
         self.base
     }
+    fn maskable(&self) -> bool {
+        self.maskable
+    }
+    fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
+        (self.dynamic)(get)
+    }
 }
 
 pub const BODY: &str = "layer.body";
@@ -102,7 +126,10 @@ pub const PATTERN: &str = "layer.pattern";
 pub const OUTLINE: &str = "layer.outline";
 pub const SHINE: &str = "layer.shine";
 pub const GLOW: &str = "layer.glow";
+pub const SHADING: &str = "layer.shading";
+pub const SHADER: &str = "layer.shader";
 pub const BLEND: &str = "layer.blend";
+pub const MASK: &str = "layer.mask";
 pub const FLASH: &str = "react.flash";
 pub const HUE: &str = "react.hue";
 pub const STRETCH: &str = "react.stretch";
@@ -111,12 +138,30 @@ pub const TURNING: &str = "react.turning";
 
 /// Every layer kind of the balls' Look, in the order the add menus list them.
 pub fn kinds() -> Vec<Kind> {
-    use LayerSection::{Drawn, Reaction};
+    use LayerSection::{Drawn, Mask, Reaction};
     use bpe_core::Settings;
-    let drawn =
-        |id, name, help, repeats, settings| Kind { id, name, help, section: Drawn, repeats, base: false, settings };
-    let reaction =
-        |id, name, help, settings| Kind { id, name, help, section: Reaction, repeats: false, base: false, settings };
+    let drawn = |id, name, help, settings| Kind {
+        id,
+        name,
+        help,
+        section: Drawn,
+        repeats: true,
+        base: false,
+        maskable: true,
+        settings,
+        dynamic: no_more,
+    };
+    let reaction = |id, name, help, settings| Kind {
+        id,
+        name,
+        help,
+        section: Reaction,
+        repeats: false,
+        base: false,
+        maskable: false,
+        settings,
+        dynamic: no_more,
+    };
     vec![
         Kind {
             id: BODY,
@@ -125,18 +170,42 @@ pub fn kinds() -> Vec<Kind> {
             section: Drawn,
             repeats: false,
             base: true,
+            maskable: false,
             settings: BodyLayer::defs,
+            dynamic: no_more,
         },
-        drawn(PATTERN, "Pattern", "A pattern painted over the layers under it.", true, PatternLayer::defs),
-        drawn(OUTLINE, "Outline", "A ring along the ball's edge.", true, OutlineLayer::defs),
-        drawn(SHINE, "Shine", "Light on the ball, so it looks round and shiny.", true, ShineLayer::defs),
-        drawn(GLOW, "Glow", "A soft halo of light around the ball.", true, GlowLayer::defs),
-        drawn(BLEND, "Blend", "How the whole finished ball mixes with what is behind it.", false, BlendLayer::defs),
+        drawn(PATTERN, "Pattern", "A pattern painted over the layers under it.", PatternLayer::defs),
+        drawn(OUTLINE, "Outline", "A ring along the ball's edge.", OutlineLayer::defs),
+        drawn(SHINE, "Shine", "Light on the ball, so it looks round and shiny.", ShineLayer::defs),
+        drawn(GLOW, "Glow", "A soft halo of light around the ball.", GlowLayer::defs),
+        drawn(
+            SHADING,
+            "Shading",
+            "Darkens part of the ball: along a line, outside a circle or where painted.",
+            ShadingLayer::defs,
+        ),
+        Kind { dynamic: shader::dynamic_defs, ..drawn(SHADER, "Shader", shader::HELP, shader::defs) },
+        Kind {
+            repeats: false,
+            maskable: false,
+            ..drawn(BLEND, "Blend", "How the whole finished ball mixes with what is behind it.", BlendLayer::defs)
+        },
         reaction(FLASH, "Flash on hit", "A flash of light where the ball hits something.", FlashOnHit::defs),
         reaction(HUE, "Colour on hit", "Every hit turns the ball's colour round the colour wheel.", ColourOnHit::defs),
         reaction(STRETCH, "Stretch when fast", "Fast balls stretch along their path.", StretchWhenFast::defs),
         reaction(RAINBOW, "Colour over time", "The ball's colour cycles round the rainbow.", ColourOverTime::defs),
         reaction(TURNING, "Turning", "The ball's shape and pattern turn.", Turning::defs),
+        Kind {
+            id: MASK,
+            name: "Mask",
+            help: "Limits the layer above it to part of the ball. A layer's masks multiply.",
+            section: Mask,
+            repeats: true,
+            base: false,
+            maskable: false,
+            settings: MaskLayer::defs,
+            dynamic: no_more,
+        },
     ]
 }
 
@@ -151,7 +220,7 @@ mod tests {
         let ids: Vec<&str> = reg.layers_for(CARD).map(|k| k.id()).collect();
         assert_eq!(
             ids,
-            [BODY, PATTERN, OUTLINE, SHINE, GLOW, BLEND, FLASH, HUE, STRETCH, RAINBOW, TURNING],
+            [BODY, PATTERN, OUTLINE, SHINE, GLOW, SHADING, SHADER, BLEND, FLASH, HUE, STRETCH, RAINBOW, TURNING, MASK],
             "in the add menus' order"
         );
         assert!(reg.layer(BODY).unwrap().base());
@@ -171,8 +240,15 @@ mod tests {
             let has = |key: &str| k.settings().iter().any(|d| d.key == key);
             let drawn = k.section() == LayerSection::Drawn && !matches!(k.id(), BODY | BLEND);
             assert_eq!(has("opacity") && has("blend"), drawn, "{}", k.id());
-            assert_eq!(k.repeats(), drawn, "{}: only drawn layers repeat", k.id());
+            assert_eq!(
+                k.repeats(),
+                drawn || k.section() == LayerSection::Mask,
+                "{}: drawn layers and masks repeat",
+                k.id()
+            );
+            assert_eq!(k.maskable(), drawn, "{}: drawn layers but Body and Blend take masks", k.id());
         }
+        assert_eq!(reg.layer(MASK).unwrap().section(), LayerSection::Mask);
     }
 
     #[test]
