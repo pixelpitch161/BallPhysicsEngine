@@ -1,18 +1,15 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
-use crate::dice::RandomizeWindow;
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
-use crate::library::LibraryWindow;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
+use crate::{inspector, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
-use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
@@ -43,8 +40,6 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub timeline: Timeline,
-    pub library: LibraryWindow,
-    pub randomize: RandomizeWindow,
 }
 
 enum ToolbarClick {
@@ -56,8 +51,6 @@ enum ToolbarClick {
     Undo,
     Redo,
     Export,
-    Randomize,
-    Dice,
 }
 
 pub struct Studio {
@@ -267,22 +260,6 @@ impl Studio {
         self.status = "Started a new scene.".into();
     }
 
-    /// Rolls the dice on `scope` from the scene as it is: one undo step back to `before` (the
-    /// scene as the user last saw it, which may differ from what the roll starts from), and a
-    /// word in the status line. Returns how many settings changed.
-    pub fn roll_recording(&mut self, before: Scene, scope: Scope, seed: u32, amount: f32) -> usize {
-        let rolled = roll(&mut self.scene, &self.kit.registry, &scope, Roll { seed, amount });
-        let changed = rolled.changed.len();
-        self.after_separate_edit(before);
-        self.recorded = true;
-        self.status = match changed {
-            0 => "The dice found nothing to change (everything locked, keyed or never random).".to_owned(),
-            1 => format!("Rolled 1 setting (seed {seed})."),
-            n => format!("Rolled {n} settings (seed {seed})."),
-        };
-        changed
-    }
-
     pub fn undo(&mut self) -> bool {
         if !self.history.undo(&mut self.scene) {
             return false;
@@ -470,8 +447,8 @@ impl Studio {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        // Library and Export sit at the right, as wide as they were last drawn; everything else
-        // gets the room left of them and wraps onto a second line rather than running under them.
+        // Export sits at the right, as wide as it was last drawn; everything else gets the
+        // room left of it and wraps onto a second line rather than running under it.
         let right_id = ui.make_persistent_id("toolbar right");
         let right_width = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(SAVE_STATUS_WIDTH);
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -487,16 +464,8 @@ impl Studio {
                 if ui.add(export).on_hover_text("Render the scene to an mp4").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
-                let library = egui::Button::selectable(self.panels.library.open, "Library");
-                if ui
-                    .add(library)
-                    .on_hover_text("Shared modules: rename, duplicate, delete, drag onto a thing to link")
-                    .clicked()
-                {
-                    self.panels.library.open = !self.panels.library.open;
-                }
             });
-            // The gap before Library counts as part of the right side.
+            // The gap before Export counts as part of the right side.
             let width = right.response.rect.width() + ui.spacing().item_spacing.x;
             if (width - right_width).abs() > 0.5 {
                 ui.ctx().data_mut(|d| d.insert_temp(right_id, width));
@@ -505,7 +474,7 @@ impl Studio {
         });
     }
 
-    /// The toolbar's buttons left of Library, ending with the scene's name and its save status.
+    /// The toolbar's buttons left of Export, ending with the scene's name and its save status.
     fn toolbar_left(&mut self, ui: &mut egui::Ui) {
         if ui.button("New").on_hover_text("Start a new blank scene with just a camera (Ctrl+N)").clicked() {
             self.clicked = Some(ToolbarClick::New);
@@ -542,12 +511,6 @@ impl Studio {
             self.clicked = Some(ToolbarClick::Redo);
         }
         ui.separator();
-        if dice::dice_button(ui, "Roll the dice").on_hover_text("Roll the dice on the whole scene").clicked() {
-            self.clicked = Some(ToolbarClick::Dice);
-        }
-        if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
-            self.clicked = Some(ToolbarClick::Randomize);
-        }
         ui.separator();
         self.grid_controls(ui);
         ui.separator();
@@ -752,21 +715,6 @@ impl eframe::App for Studio {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);
         }
-        if let Some(module) = self.panels.inspector.open_library.take() {
-            self.panels.library.open = true;
-            self.panels.library.selected = Some(module);
-        }
-        let library = library::show(&ctx, &mut self.panels.library, &mut self.scene, &self.kit, &self.resolved);
-        if let Some(ids) = library.select {
-            self.selection.clear();
-            if let Some((&first, rest)) = ids.split_first() {
-                self.selection.set(first);
-                self.selection.extra.extend(rest.iter().copied());
-            }
-        }
-        if let Some(message) = library.message {
-            self.status = message;
-        }
         let outcome = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BACKGROUND))
             .show(ui, |ui| preview::show(ui, frame, self))
@@ -792,7 +740,6 @@ impl eframe::App for Studio {
         let base_dir = self.base_dir();
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
-        dice::show(&ctx, self);
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
@@ -802,11 +749,6 @@ impl eframe::App for Studio {
             Some(ToolbarClick::Undo) => _ = self.undo(),
             Some(ToolbarClick::Redo) => _ = self.redo(),
             Some(ToolbarClick::Export) => self.panels.export.open = true,
-            Some(ToolbarClick::Randomize) => self.panels.randomize.open = true,
-            Some(ToolbarClick::Dice) => {
-                let amount = self.panels.randomize.amount;
-                dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
-            }
             None => {}
         }
         self.confirm_dialog(&ctx);
@@ -934,9 +876,9 @@ mod tests {
         assert!(saved > 480.0 && saved == shown, "the dragged width {shown} is saved, got {saved}");
     }
 
-    /// Where the toolbar's save status ends and Library starts, for a scene saved as `name` in
+    /// Where the toolbar's save status ends and Export starts, for a scene saved as `name` in
     /// a window `width` wide.
-    fn status_and_library(name: &str, width: f32) -> (egui::Rect, egui::Rect) {
+    fn status_and_export(name: &str, width: f32) -> (egui::Rect, egui::Rect) {
         let mut studio = Studio::headless();
         studio.path = Some(PathBuf::from(format!("/scenes/{name}")));
         let mut h = Harness::builder()
@@ -951,26 +893,26 @@ mod tests {
                 && n.accesskit_node().value().is_some_and(|v| v.starts_with("Saved as"))
         };
         let status = h.root().children_recursive().find(saved).expect("the save status").rect();
-        let library = h.get_by_label("Library").rect();
-        (status, library)
+        let export = h.get_by_label("Export video…").rect();
+        (status, export)
     }
 
     #[test]
-    fn a_long_save_status_does_not_reach_library() {
+    fn a_long_save_status_does_not_reach_export() {
         let long = format!("{}.ron", &"a long scene name ".repeat(7)[..116]);
         assert_eq!(long.len(), 120);
         // The app's narrowest window, the screenshots' width, and a wide one.
         for width in [1000.0, 1440.0, 1600.0] {
             for name in ["blend-modes.ron", long.as_str()] {
-                let (status, library) = status_and_library(name, width);
-                // On Library's line it ends before Library; at a narrow width it may go to the next.
-                let beside = status.top() < library.bottom();
+                let (status, export) = status_and_export(name, width);
+                // On Export's line it ends before Export; at a narrow width it may go to the next.
+                let beside = status.top() < export.bottom();
                 assert!(
-                    !beside || status.right() < library.left(),
-                    "at {width}, {name}: the status {status:?} runs into Library {library:?}"
+                    !beside || status.right() < export.left(),
+                    "at {width}, {name}: the status {status:?} runs into Export {export:?}"
                 );
                 if width >= 1440.0 {
-                    assert!(beside, "at {width} the toolbar is one line: {status:?}, Library {library:?}");
+                    assert!(beside, "at {width} the toolbar is one line: {status:?}, Export {export:?}");
                 }
             }
         }

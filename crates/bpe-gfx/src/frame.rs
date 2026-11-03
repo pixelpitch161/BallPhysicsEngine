@@ -1027,11 +1027,9 @@ mod tests {
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
         scene.add_slot(&reg, ThingId::ROOT, SlotId::Look, "look.plain").unwrap();
-        let look = (ThingId::ROOT, SlotId::Look);
-
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
         let resolved = resolve(&scene, &reg);
-        assert_eq!(resolved.things[&balls].slots[&SlotId::Look].from, ThingId::ROOT);
         let world = World::build(&scene, &resolved, &Sims::default());
         let mut draws = Draws::default();
         draws.add(FakeScene);
@@ -1233,9 +1231,8 @@ mod tests {
     fn routed_each(blend: &str, amount: f64, screen: bool, adds_itself: bool, each: bool) -> Frame {
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
-        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
-        let look = (balls, SlotId::Look);
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
 
         let mut resolved = resolve(&scene, &reg);
         let r = resolved.things.get_mut(&balls).unwrap();
@@ -1332,9 +1329,8 @@ mod tests {
         }
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
-        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
-        let look = (balls, SlotId::Look);
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
 
         let mut resolved = resolve(&scene, &reg);
         let params = &mut resolved.things.get_mut(&balls).unwrap().slots.get_mut(&SlotId::Look).unwrap().params;

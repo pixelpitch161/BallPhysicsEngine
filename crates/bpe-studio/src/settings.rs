@@ -85,11 +85,6 @@ pub fn save_inspector_width_in(dir: &Path, w: f32) {
     let _ = std::fs::write(dir.join(INSPECTOR_WIDTH), format!("{}", w.round()));
 }
 
-/// Where "My presets" live.
-pub fn presets_dir() -> Option<PathBuf> {
-    settings_dir().map(|d| d.join("presets"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
