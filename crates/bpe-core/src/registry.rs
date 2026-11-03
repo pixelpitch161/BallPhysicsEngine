@@ -67,12 +67,14 @@ pub trait ModuleKind: Send + Sync + 'static {
     }
 }
 
-/// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, or with
-/// the reactions, which change the whole finished stack when something happens.
+/// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, with
+/// the reactions, which change the whole finished stack when something happens, or as a mask
+/// under the drawn layer it limits (its `Layer::parent`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerSection {
     Drawn,
     Reaction,
+    Mask,
 }
 
 /// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline
@@ -98,6 +100,32 @@ pub trait LayerKind: Send + Sync + 'static {
     fn base(&self) -> bool {
         false
     }
+    /// Whether layers of this kind may carry masks (a drawn layer that isn't the base layer).
+    fn maskable(&self) -> bool {
+        true
+    }
+    /// Settings a layer of this kind has beyond `settings()` because of its own values, such as
+    /// the settings named in a Shader layer's own code. `get` reads the layer's values by plain
+    /// key, defaults included. Each distinct set is made once and kept for the program's life.
+    fn dynamic_defs(&self, _get: &dyn Fn(&str) -> Option<crate::Value>) -> &'static [SettingDef] {
+        &[]
+    }
+}
+
+/// The description of a layer of `kind`'s setting `key`: one of its kind's settings, or one of
+/// those its own values add (`LayerKind::dynamic_defs`). `get` reads the layer's values by plain
+/// key; unset ones are read as their defaults.
+pub fn layer_def(
+    kind: &dyn LayerKind,
+    get: &dyn Fn(&str) -> Option<crate::Value>,
+    key: &str,
+) -> Option<&'static SettingDef> {
+    let fixed = kind.settings();
+    if let Some(d) = fixed.iter().find(|d| d.key == key) {
+        return Some(d);
+    }
+    let with_defaults = |k: &str| get(k).or_else(|| fixed.iter().find(|d| d.key == k).map(|d| d.default.clone()));
+    kind.dynamic_defs(&with_defaults).iter().find(|d| d.key == key)
 }
 
 /// Every registered kind, by id.

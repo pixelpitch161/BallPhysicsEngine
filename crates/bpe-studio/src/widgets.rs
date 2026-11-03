@@ -555,6 +555,11 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Text(t) if t.chars().count() > 24 => format!("\"{}…\"", t.chars().take(23).collect::<String>()),
         Value::Text(t) => format!("\"{t}\""),
         Value::Target(t) => target_words(t, choices),
+        Value::Strokes(s) => match s.list.len() {
+            0 => "No strokes".to_owned(),
+            1 => "1 stroke".to_owned(),
+            n => format!("{n} strokes"),
+        },
     }
 }
 

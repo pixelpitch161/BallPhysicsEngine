@@ -39,7 +39,8 @@ impl Scene {
                 // A layer's setting: its kind's, when the card has that layer.
                 if let Some((id, key)) = crate::split_layered(&a.key) {
                     let layer = card.layer(id)?;
-                    return find(reg.layer(&layer.kind)?.settings(), key);
+                    let get = |k: &str| card.params.get(&crate::layered_key(id, k)).cloned();
+                    return crate::layer_def(reg.layer(&layer.kind)?, &get, key);
                 }
                 reg.module(&card.kind)?.settings()
             }

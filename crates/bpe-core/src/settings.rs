@@ -1,7 +1,7 @@
 //! The settings schema: one description of each setting drives the inspector, keyframes and
 //! pulses.
 
-use crate::{Color, Gradient, Params, Target, Value, ValueType};
+use crate::{Color, Gradient, Params, Strokes, Target, Value, ValueType};
 
 /// Whether a setting shows in a module's first, short view or only under More.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +281,18 @@ impl SettingValue for Target {
     }
     fn from_value(v: &Value) -> Option<Self> {
         if let Value::Target(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
+impl SettingValue for Strokes {
+    fn value_type() -> ValueType {
+        ValueType::Strokes
+    }
+    fn to_value(&self) -> Value {
+        Value::Strokes(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Strokes(x) = v { Some(x.clone()) } else { None }
     }
 }
 

@@ -193,6 +193,58 @@ pub struct BaseLayerKind;
 pub struct RingLayerKind;
 /// A reaction, at most one.
 pub struct PopLayerKind;
+/// A drawn layer that can't carry masks, at most one.
+pub struct TintLayerKind;
+/// A mask on a drawn layer.
+pub struct CutLayerKind;
+/// A drawn layer whose `code` names one more setting it has: `extra`.
+pub struct CodeLayerKind;
+
+#[derive(Settings, Default)]
+pub struct TintLayer {
+    #[setting(label = "Amount", range(0, 1))]
+    pub amount: f32,
+}
+
+#[derive(Settings)]
+pub struct CutLayer {
+    #[setting(label = "Size", range(0, 1), keyframe, pulse)]
+    pub size: f32,
+    #[setting(label = "Target")]
+    pub target: i32,
+    #[setting(label = "Strokes")]
+    pub strokes: crate::Strokes,
+}
+
+impl Default for CutLayer {
+    fn default() -> Self {
+        Self { size: 0.5, target: -1, strokes: crate::Strokes::default() }
+    }
+}
+
+#[derive(Settings, Default)]
+pub struct CodeLayer {
+    #[setting(label = "Code")]
+    pub code: String,
+}
+
+/// The setting `extra` of a Code layer whose code is "extra".
+pub static EXTRA_DEFS: std::sync::LazyLock<[SettingDef; 1]> = std::sync::LazyLock::new(|| {
+    [SettingDef {
+        key: "extra",
+        label: "Extra",
+        help: "",
+        ty: crate::ValueType::Number,
+        default: crate::Value::Number(0.5),
+        range: Some((0.0, 1.0)),
+        span: None,
+        unit: "",
+        group: "",
+        depth: crate::Depth::Simple,
+        flags: crate::Flags { keyframe: true, pulse: false },
+        when: "",
+    }]
+});
 
 #[derive(Settings)]
 pub struct BaseLayer {
@@ -251,7 +303,7 @@ impl ModuleKind for StackLookKind {
 }
 
 macro_rules! layer_kind {
-    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal) => {
+    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $maskable:literal) => {
         impl LayerKind for $kind {
             fn id(&self) -> &'static str {
                 $id
@@ -277,13 +329,26 @@ macro_rules! layer_kind {
             fn base(&self) -> bool {
                 $base
             }
+            fn maskable(&self) -> bool {
+                $maskable
+            }
+            fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<crate::Value>) -> &'static [SettingDef] {
+                if $id == "layer.code" && get("code") == Some(crate::Value::Text("extra".into())) {
+                    &*EXTRA_DEFS
+                } else {
+                    &[]
+                }
+            }
         }
     };
 }
 
-layer_kind!(BaseLayerKind, "layer.base", "Base", BaseLayer, Drawn, false, true);
-layer_kind!(RingLayerKind, "layer.ring", "Ring", RingLayer, Drawn, true, false);
-layer_kind!(PopLayerKind, "react.pop", "Pop", PopLayer, Reaction, false, false);
+layer_kind!(BaseLayerKind, "layer.base", "Base", BaseLayer, Drawn, false, true, false);
+layer_kind!(RingLayerKind, "layer.ring", "Ring", RingLayer, Drawn, true, false, true);
+layer_kind!(PopLayerKind, "react.pop", "Pop", PopLayer, Reaction, false, false, false);
+layer_kind!(TintLayerKind, "layer.tint", "Tint", TintLayer, Drawn, false, false, false);
+layer_kind!(CutLayerKind, "layer.cut", "Mask", CutLayer, Mask, true, false, false);
+layer_kind!(CodeLayerKind, "layer.code", "Code", CodeLayer, Drawn, true, false, true);
 
 /// A registry with every test plugin.
 pub fn registry() -> Registry {
@@ -297,6 +362,9 @@ pub fn registry() -> Registry {
     r.add_layer(BaseLayerKind);
     r.add_layer(RingLayerKind);
     r.add_layer(PopLayerKind);
+    r.add_layer(TintLayerKind);
+    r.add_layer(CutLayerKind);
+    r.add_layer(CodeLayerKind);
     r
 }
 

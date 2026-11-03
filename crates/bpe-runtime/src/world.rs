@@ -660,6 +660,10 @@ impl Hasher {
                 self.bytes(&[7]);
                 self.bytes(format!("{t:?}").as_bytes());
             }
+            Value::Strokes(s) => {
+                self.bytes(&[8]);
+                self.bytes(&s.hash64().to_le_bytes());
+            }
         }
     }
 }

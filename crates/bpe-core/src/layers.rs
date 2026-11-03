@@ -34,11 +34,15 @@ pub struct Layer {
     /// Off, the layer draws (or does) nothing; its settings stay.
     #[serde(skip_serializing_if = "is_true")]
     pub enabled: bool,
+    /// For a mask, the drawn layer it limits. A mask sits in the card's list straight after its
+    /// layer (and that layer's earlier masks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<LayerId>,
 }
 
 impl Default for Layer {
     fn default() -> Self {
-        Self { id: LayerId(0), kind: KindId::new(), name: String::new(), enabled: true }
+        Self { id: LayerId(0), kind: KindId::new(), name: String::new(), enabled: true, parent: None }
     }
 }
 
@@ -56,17 +60,21 @@ pub fn split_layered(key: &str) -> Option<(LayerId, &str)> {
     Some((LayerId(id.parse().ok()?), rest))
 }
 
-/// A layer as copied: its kind, name, whether it is shown and the values that differ from its
-/// kind's defaults, by plain key. It carries no keyframes or pulses.
+/// A layer as copied: its kind, name, whether it is shown, the values that differ from its
+/// kind's defaults, by plain key, and its masks. It carries no keyframes or pulses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CopiedLayer {
+    /// The id it had where it was copied from.
+    pub id: LayerId,
     pub kind: KindId,
     pub name: String,
     pub enabled: bool,
     pub params: Params,
+    /// Its masks, in order.
+    pub masks: Vec<CopiedLayer>,
 }
 
-/// A whole stack as copied, bottom first.
+/// A whole stack as copied, bottom first; masks ride with their layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CopiedLook {
     pub layers: Vec<CopiedLayer>,
@@ -80,6 +88,29 @@ fn of_layer(key: &str, id: LayerId) -> bool {
 /// Whether the layer at `index` of `card` is its base layer, which stays put.
 fn is_base(reg: &Registry, card: &Slot, index: usize) -> bool {
     index == 0 && card.layers.first().and_then(|l| reg.layer(&l.kind)).is_some_and(|k| k.base())
+}
+
+/// Where the block of layer `index` ends: past the masks that follow it.
+fn block_end(card: &Slot, index: usize) -> usize {
+    let id = card.layers[index].id;
+    let n = card.layers[index + 1..].iter().take_while(|l| l.parent == Some(id)).count();
+    index + 1 + n
+}
+
+/// The masks of layer `id`, in order.
+fn masks_of(card: &Slot, id: LayerId) -> Vec<LayerId> {
+    card.layers.iter().filter(|l| l.parent == Some(id)).map(|l| l.id).collect()
+}
+
+/// `v` fitted to setting `key` of a layer of `kind` whose values are `params` (plain keys).
+fn fitted_in(kind: &dyn LayerKind, params: &Params, key: &str, v: &crate::Value) -> Option<crate::Value> {
+    let get = |k: &str| params.get(k).cloned();
+    let def = crate::layer_def(kind, &get, key)?;
+    if !def.ty.accepts(v) {
+        return None;
+    }
+    let v = def.clamp(v.clone());
+    (v != def.default).then_some(v)
 }
 
 /// Where the drawn layers end: the index of the first reaction, or the length.
@@ -97,17 +128,6 @@ fn free_name(card: &Slot, base: &str) -> String {
         return base.to_owned();
     }
     (2u32..).map(|n| format!("{base} {n}")).find(|n| !taken(n)).expect("a free number exists")
-}
-
-/// `v` fitted to the layer kind's setting `key`: `None` when the kind has no such setting, the
-/// value is of the wrong type, or it is the default.
-fn fitted(kind: &dyn LayerKind, key: &str, v: &crate::Value) -> Option<crate::Value> {
-    let def = kind.settings().iter().find(|d| d.key == key)?;
-    if !def.ty.accepts(v) {
-        return None;
-    }
-    let v = def.clamp(v.clone());
-    (v != def.default).then_some(v)
 }
 
 impl Scene {
@@ -149,11 +169,44 @@ impl Scene {
             match k.section() {
                 LayerSection::Drawn => drawn_end(reg, card),
                 LayerSection::Reaction => card.layers.len(),
+                LayerSection::Mask => return Err(EditError::NotAccepted),
             }
         };
-        let layer =
-            Layer { id: card.next_layer_id(), kind: kind.into(), name: free_name(card, k.name()), enabled: true };
+        let layer = Layer {
+            id: card.next_layer_id(),
+            kind: kind.into(),
+            name: free_name(card, k.name()),
+            enabled: true,
+            parent: None,
+        };
         let id = layer.id;
+        self.layer_card_mut(thing, slot).layers.insert(at, layer);
+        Ok(id)
+    }
+
+    /// Adds a mask to drawn layer `parent` (not the base layer, nor a kind that can't be masked),
+    /// every setting at its default, after the layer's other masks, and returns its id.
+    pub fn add_mask(
+        &mut self,
+        reg: &Registry,
+        thing: ThingId,
+        slot: SlotId,
+        parent: LayerId,
+    ) -> Result<LayerId, EditError> {
+        let card = self.layer_card(thing, slot)?;
+        let index = card.layer_index(parent).ok_or(EditError::NoLayer(parent))?;
+        let pk = reg.layer(&card.layers[index].kind).ok_or(EditError::NotAccepted)?;
+        if pk.section() != LayerSection::Drawn || pk.base() || !pk.maskable() || card.layers[index].parent.is_some() {
+            return Err(EditError::NotAccepted);
+        }
+        let mk = reg
+            .layers_for(&card.kind)
+            .find(|k| k.section() == LayerSection::Mask)
+            .ok_or_else(|| EditError::UnknownKind("mask".into()))?;
+        let id = card.next_layer_id();
+        let layer =
+            Layer { id, kind: mk.id().into(), name: free_name(card, mk.name()), enabled: true, parent: Some(parent) };
+        let at = block_end(card, index);
         self.layer_card_mut(thing, slot).layers.insert(at, layer);
         Ok(id)
     }
@@ -166,18 +219,23 @@ impl Scene {
         if is_base(reg, card, index) {
             return Err(EditError::BaseLayer);
         }
-        for a in self.layer_animation(thing, slot, id) {
-            self.tracks.remove(&a);
-            self.pulses.remove(&a);
+        let mut gone = vec![id];
+        gone.extend(masks_of(card, id));
+        for &g in &gone {
+            for a in self.layer_animation(thing, slot, g) {
+                self.tracks.remove(&a);
+                self.pulses.remove(&a);
+            }
         }
         let card = self.layer_card_mut(thing, slot);
-        card.layers.remove(index);
-        card.params.0.retain(|k, _| !of_layer(k, id));
+        card.layers.retain(|l| !gone.contains(&l.id));
+        card.params.0.retain(|k, _| !gone.iter().any(|&g| of_layer(k, g)));
         Ok(())
     }
 
-    /// Moves drawn layer `id` to `to` in the stack, counting from the bottom. Drawn layers stay
-    /// above the base layer and under the reactions; reactions have no order to change.
+    /// Moves drawn layer `id`, with its masks, to `to` in the stack, counting drawn layers from the
+    /// bottom and leaving masks out of the count. Drawn layers stay above the base layer and under
+    /// the reactions; reactions and masks have no order to change.
     pub fn move_layer(
         &mut self,
         reg: &Registry,
@@ -191,15 +249,22 @@ impl Scene {
         if is_base(reg, card, index) {
             return Err(EditError::BaseLayer);
         }
-        let drawn = reg.layer(&card.layers[index].kind).is_some_and(|k| k.section() == LayerSection::Drawn);
+        let drawn = reg.layer(&card.layers[index].kind).is_some_and(|k| k.section() == LayerSection::Drawn)
+            && card.layers[index].parent.is_none();
         let lowest = usize::from(is_base(reg, card, 0));
-        let highest = drawn_end(reg, card).saturating_sub(1);
+        let tops = |c: &Slot| -> Vec<usize> {
+            (0..drawn_end(reg, c)).filter(|&i| c.layers[i].parent.is_none()).collect::<Vec<_>>()
+        };
+        let highest = tops(card).len().saturating_sub(1);
         if !drawn || to < lowest || to > highest {
             return Err(EditError::NotAccepted);
         }
+        let end = block_end(card, index);
         let card = self.layer_card_mut(thing, slot);
-        let layer = card.layers.remove(index);
-        card.layers.insert(to, layer);
+        let block: Vec<Layer> = card.layers.drain(index..end).collect();
+        let rest = tops(card);
+        let at = rest.get(to).copied().unwrap_or_else(|| drawn_end(reg, card));
+        card.layers.splice(at..at, block);
         Ok(())
     }
 
@@ -223,25 +288,41 @@ impl Scene {
         if !kind.repeats() {
             return Err(EditError::OnlyOne(kind.name().into()));
         }
-        let new = card.next_layer_id();
-        let rekey = |k: &str| split_layered(k).filter(|(l, _)| *l == id).map(|(_, rest)| crate::layered_key(new, rest));
+        // The layer and its masks (a mask on its own copies just itself), each with a new id.
+        let end = if layer.parent.is_some() { index + 1 } else { block_end(card, index) };
+        let first = card.next_layer_id().0;
+        let fresh: Vec<(LayerId, LayerId)> =
+            card.layers[index..end].iter().enumerate().map(|(i, l)| (l.id, LayerId(first + i as u32))).collect();
+        let new_of = |old: LayerId| fresh.iter().find(|(o, _)| *o == old).map(|(_, n)| *n);
+        let rekey = |k: &str| split_layered(k).and_then(|(l, rest)| Some(crate::layered_key(new_of(l)?, rest)));
         let params: Vec<(String, crate::Value)> =
             card.params.iter().filter_map(|(k, v)| Some((rekey(k)?, v.clone()))).collect();
-        let name = format!("{} copy", layer.name);
-        for a in self.layer_animation(thing, slot, id) {
-            let to = Address { key: rekey(&a.key).expect("listed as this layer's"), ..a.clone() };
-            if let Some(t) = self.tracks.get(&a).cloned() {
-                self.tracks.insert(to.clone(), t);
-            }
-            if let Some(p) = self.pulses.get(&a).cloned() {
-                self.pulses.insert(to, p);
+        let copies: Vec<Layer> = card.layers[index..end]
+            .iter()
+            .map(|l| Layer {
+                id: new_of(l.id).expect("listed"),
+                name: if l.id == id { format!("{} copy", l.name) } else { l.name.clone() },
+                parent: if l.id == id { l.parent } else { l.parent.and_then(new_of) },
+                ..l.clone()
+            })
+            .collect();
+        for &(old, _) in &fresh {
+            for a in self.layer_animation(thing, slot, old) {
+                let to = Address { key: rekey(&a.key).expect("listed as this layer's"), ..a.clone() };
+                if let Some(t) = self.tracks.get(&a).cloned() {
+                    self.tracks.insert(to.clone(), t);
+                }
+                if let Some(p) = self.pulses.get(&a).cloned() {
+                    self.pulses.insert(to, p);
+                }
             }
         }
+        let new = LayerId(first);
         let card = self.layer_card_mut(thing, slot);
         for (k, v) in params {
             card.params.set(&k, v);
         }
-        card.layers.insert(index + 1, Layer { id: new, kind: layer.kind, name, enabled: layer.enabled });
+        card.layers.splice(end..end, copies);
         Ok(new)
     }
 
@@ -296,19 +377,37 @@ impl Scene {
                 })
                 .collect(),
         );
-        Some(CopiedLayer { kind: layer.kind.clone(), name: layer.name.clone(), enabled: layer.enabled, params })
+        let masks = if layer.parent.is_none() {
+            masks_of(card, id).into_iter().filter_map(|m| self.copy_layer(thing, slot, m)).collect()
+        } else {
+            Vec::new()
+        };
+        Some(CopiedLayer {
+            id,
+            kind: layer.kind.clone(),
+            name: layer.name.clone(),
+            enabled: layer.enabled,
+            params,
+            masks,
+        })
     }
 
     /// The card's whole stack as copied.
     pub fn copy_look(&self, thing: ThingId, slot: SlotId) -> Option<CopiedLook> {
         let card = self.card(thing, slot)?;
-        let layers = card.layers.iter().map(|l| self.copy_layer(thing, slot, l.id)).collect::<Option<Vec<_>>>()?;
+        let layers = card
+            .layers
+            .iter()
+            .filter(|l| l.parent.is_none())
+            .map(|l| self.copy_layer(thing, slot, l.id))
+            .collect::<Option<Vec<_>>>()?;
         Some(CopiedLook { layers })
     }
 
-    /// Adds a copied layer to the card with its settings and returns its id. Where the card
-    /// already has a layer of a kind that may be there only once (the base layer, a reaction),
-    /// that layer takes the copied settings instead, keeping its name.
+    /// Adds a copied layer to the card with its settings and masks and returns its id. Where the
+    /// card already has a layer of a kind that may be there only once (the base layer, a
+    /// reaction), that layer takes the copied settings instead, keeping its name. A mask can't be
+    /// pasted on its own.
     pub fn paste_layer(
         &mut self,
         reg: &Registry,
@@ -345,21 +444,43 @@ impl Scene {
                 id
             }
         };
-        let card = self.layer_card_mut(thing, slot);
-        for (k, v) in copied.params.iter() {
-            if let Some(v) = fitted(kind, k, v) {
-                card.params.set(&crate::layered_key(id, k), v);
+        self.fill_pasted(kind, thing, slot, id, copied);
+        // Its masks come with it; a kind that can't carry masks leaves them.
+        if kind.section() == LayerSection::Drawn && kind.maskable() && !kind.base() {
+            for m in &copied.masks {
+                let Some(mk) = reg.layer(&m.kind) else { continue };
+                let Ok(mid) = self.add_mask(reg, thing, slot, id) else { continue };
+                let card = self.layer_card_mut(thing, slot);
+                let name = m.name.trim();
+                if !name.is_empty()
+                    && !card.layers.iter().any(|l| l.name == name)
+                    && let Some(l) = card.layers.iter_mut().find(|l| l.id == mid)
+                {
+                    l.name = name.to_owned();
+                }
+                self.fill_pasted(mk, thing, slot, mid, m);
             }
-        }
-        // Shown or hidden as it was copied; the base layer is always shown.
-        if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
-            l.enabled = copied.enabled || kind.base();
         }
         Ok(id)
     }
 
+    /// Sets layer `id`'s settings from a copy and shows or hides it as it was copied (the base
+    /// layer is always shown).
+    fn fill_pasted(&mut self, kind: &dyn LayerKind, thing: ThingId, slot: SlotId, id: LayerId, copied: &CopiedLayer) {
+        let card = self.layer_card_mut(thing, slot);
+        for (k, v) in copied.params.iter() {
+            if let Some(v) = fitted_in(kind, &copied.params, k, v) {
+                card.params.set(&crate::layered_key(id, k), v);
+            }
+        }
+        if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
+            l.enabled = copied.enabled || kind.base();
+        }
+    }
+
     /// Replaces the card's whole stack with a copied one: every layer, its settings, keyframes and
-    /// pulses go, and the copied layers come in with new ids from 0, bottom first.
+    /// pulses go, and the copied layers (and their masks) come in with the ids they had, so a
+    /// mask that names another layer still names it. Copies whose ids clash are numbered from 0.
     pub fn paste_look(
         &mut self,
         reg: &Registry,
@@ -368,26 +489,35 @@ impl Scene {
         copied: &CopiedLook,
     ) -> Result<(), EditError> {
         let card = self.layer_card(thing, slot)?;
-        let mut kinds = Vec::with_capacity(copied.layers.len());
+        // Every layer bottom first, each followed by its masks, with the layer it limits.
+        let mut flat: Vec<(&CopiedLayer, &dyn LayerKind, Option<usize>)> = Vec::new();
         for l in &copied.layers {
-            let kind = reg.layer(&l.kind).ok_or_else(|| EditError::UnknownKind(l.kind.clone()))?;
-            if kind.card() != card.kind {
-                return Err(EditError::NotAccepted);
+            let at = flat.len();
+            flat.push((l, reg.layer(&l.kind).ok_or_else(|| EditError::UnknownKind(l.kind.clone()))?, None));
+            for m in &l.masks {
+                flat.push((m, reg.layer(&m.kind).ok_or_else(|| EditError::UnknownKind(m.kind.clone()))?, Some(at)));
             }
-            kinds.push(kind);
         }
+        if flat.iter().any(|(_, k, _)| k.card() != card.kind) {
+            return Err(EditError::NotAccepted);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let keep_ids = flat.iter().all(|(l, _, _)| seen.insert(l.id));
+        let ids: Vec<LayerId> =
+            (0..flat.len()).map(|i| if keep_ids { flat[i].0.id } else { LayerId(i as u32) }).collect();
         let on = |a: &Address| a.thing == thing && a.slot == Some(slot) && split_layered(&a.key).is_some();
         self.tracks.retain(|a, _| !on(a));
         self.pulses.retain(|a, _| !on(a));
         let card = self.layer_card_mut(thing, slot);
         card.params.0.retain(|k, _| split_layered(k).is_none());
         card.layers.clear();
-        for (i, (l, kind)) in copied.layers.iter().zip(kinds).enumerate() {
-            let id = LayerId(i as u32);
+        for (i, &(l, kind, parent)) in flat.iter().enumerate() {
+            let id = ids[i];
             let name = if l.name.trim().is_empty() { kind.name().to_owned() } else { l.name.clone() };
-            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled: l.enabled || kind.base() });
+            let parent = parent.map(|p| ids[p]);
+            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled: l.enabled || kind.base(), parent });
             for (k, v) in l.params.iter() {
-                if let Some(v) = fitted(kind, k, v) {
+                if let Some(v) = fitted_in(kind, &l.params, k, v) {
                     card.params.set(&crate::layered_key(id, k), v);
                 }
             }
@@ -588,6 +718,174 @@ mod tests {
         assert_eq!(shown, [true, false], "the pasted look shows what the copied one showed");
         let pasted = s.paste_layer(&r, other, LOOK, &layer).unwrap();
         assert!(!s.card(other, LOOK).unwrap().layer(pasted).unwrap().enabled);
+    }
+
+    fn names_and_parents(s: &Scene, b: ThingId) -> Vec<(String, Option<u32>)> {
+        s.card(b, LOOK).unwrap().layers.iter().map(|l| (l.name.clone(), l.parent.map(|p| p.0))).collect()
+    }
+
+    fn np(list: &[(&str, Option<u32>)]) -> Vec<(String, Option<u32>)> {
+        list.iter().map(|(n, p)| ((*n).to_owned(), *p)).collect()
+    }
+
+    #[test]
+    fn masks_go_after_their_layer_and_only_on_maskable_drawn_layers() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let top = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let pop = s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        let tint = s.add_layer(&r, b, LOOK, "layer.tint").unwrap();
+        let m1 = s.add_mask(&r, b, LOOK, ring).unwrap();
+        let m2 = s.add_mask(&r, b, LOOK, ring).unwrap();
+        assert_eq!(
+            names_and_parents(&s, b),
+            np(&[
+                ("Base", None),
+                ("Ring", None),
+                ("Mask", Some(1)),
+                ("Mask 2", Some(1)),
+                ("Ring 2", None),
+                ("Tint", None),
+                ("Pop", None)
+            ])
+        );
+        assert_eq!((m1, m2), (LayerId(5), LayerId(6)));
+        assert_eq!(s.add_mask(&r, b, LOOK, LayerId(0)), Err(EditError::NotAccepted), "not on the base");
+        assert_eq!(s.add_mask(&r, b, LOOK, tint), Err(EditError::NotAccepted), "not on a kind that says no");
+        assert_eq!(s.add_mask(&r, b, LOOK, pop), Err(EditError::NotAccepted), "not on a reaction");
+        assert_eq!(s.add_mask(&r, b, LOOK, m1), Err(EditError::NotAccepted), "not on a mask");
+        assert_eq!(s.add_mask(&r, b, LOOK, LayerId(40)), Err(EditError::NoLayer(LayerId(40))));
+        assert_eq!(s.add_layer(&r, b, LOOK, "layer.cut"), Err(EditError::NotAccepted), "masks need a layer");
+        // A layer added later still goes on top of the drawn layers, above the masks.
+        s.set_layer_enabled(&r, b, LOOK, m1, false).unwrap();
+        assert!(!s.card(b, LOOK).unwrap().layer(m1).unwrap().enabled);
+        assert!(s.card(b, LOOK).unwrap().layer(ring).unwrap().enabled, "only the mask goes off");
+        let _ = top;
+    }
+
+    #[test]
+    fn a_moved_layer_takes_its_masks_and_masks_dont_move() {
+        let (r, mut s, b) = stacked();
+        let a = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        let m = s.add_mask(&r, b, LOOK, a).unwrap();
+        s.move_layer(&r, b, LOOK, a, 2).unwrap();
+        assert_eq!(
+            names_and_parents(&s, b),
+            np(&[("Base", None), ("Ring 2", None), ("Ring", None), ("Mask", Some(1)), ("Pop", None)])
+        );
+        assert_eq!(s.move_layer(&r, b, LOOK, a, 3), Err(EditError::NotAccepted), "positions count layers only");
+        assert_eq!(s.move_layer(&r, b, LOOK, m, 1), Err(EditError::NotAccepted), "a mask stays with its layer");
+        s.move_layer(&r, b, LOOK, a, 1).unwrap();
+        assert_eq!(
+            names_and_parents(&s, b),
+            np(&[("Base", None), ("Ring", None), ("Mask", Some(1)), ("Ring 2", None), ("Pop", None)])
+        );
+    }
+
+    #[test]
+    fn a_duplicate_brings_copies_of_its_masks() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let m = s.add_mask(&r, b, LOOK, ring).unwrap();
+        let size = |id| Address::on(b, LOOK, &layered_key(id, "size"));
+        s.set_at(&r, &size(m), Value::Number(0.9)).unwrap();
+        s.set_key(&r, &size(m), 1.0, Value::Number(0.1)).unwrap();
+        let copy = s.duplicate_layer(&r, b, LOOK, ring).unwrap();
+        assert_eq!(
+            names_and_parents(&s, b),
+            np(&[("Base", None), ("Ring", None), ("Mask", Some(1)), ("Ring copy", None), ("Mask", Some(3))])
+        );
+        assert_eq!(copy, LayerId(3));
+        let mcopy = LayerId(4);
+        assert_eq!(s.value_at(&r, &size(mcopy)), Some(Value::Number(0.9)));
+        assert_eq!(s.tracks[&size(mcopy)], s.tracks[&size(m)]);
+        // A mask duplicated on its own stays on the same layer.
+        let m2 = s.duplicate_layer(&r, b, LOOK, m).unwrap();
+        assert_eq!(s.card(b, LOOK).unwrap().layer(m2).unwrap().parent, Some(ring));
+        assert_eq!(s.card(b, LOOK).unwrap().layer_index(m2), Some(3));
+    }
+
+    #[test]
+    fn removing_a_layer_removes_its_masks_with_their_settings_and_animation() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let keep = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let m = s.add_mask(&r, b, LOOK, ring).unwrap();
+        let k = s.add_mask(&r, b, LOOK, keep).unwrap();
+        let size = |id| Address::on(b, LOOK, &layered_key(id, "size"));
+        s.set_at(&r, &size(m), Value::Number(0.9)).unwrap();
+        s.set_key(&r, &size(m), 1.0, Value::Number(0.1)).unwrap();
+        s.set_pulse(&r, &size(m), crate::PulseSource::Hits, Value::Number(1.0), 0.2).unwrap();
+        s.set_at(&r, &size(k), Value::Number(0.8)).unwrap();
+        s.remove_layer(&r, b, LOOK, ring).unwrap();
+        assert_eq!(names_and_parents(&s, b), np(&[("Base", None), ("Ring 2", None), ("Mask 2", Some(2))]));
+        assert!(s.card(b, LOOK).unwrap().params.get(&layered_key(m, "size")).is_none());
+        assert!(!s.tracks.contains_key(&size(m)) && !s.pulses.contains_key(&size(m)));
+        // Removing a mask leaves its layer.
+        s.remove_layer(&r, b, LOOK, k).unwrap();
+        assert_eq!(names_and_parents(&s, b), np(&[("Base", None), ("Ring 2", None)]));
+    }
+
+    #[test]
+    fn copied_layers_and_looks_keep_their_masks() {
+        let (r, mut s, b) = stacked();
+        let low = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let m = s.add_mask(&r, b, LOOK, ring).unwrap();
+        s.rename_layer(&r, b, LOOK, m, "Cut").unwrap();
+        s.set_at(&r, &Address::on(b, LOOK, &layered_key(m, "target")), Value::Int(low.0 as i64)).unwrap();
+        let layer = s.copy_layer(b, LOOK, ring).unwrap();
+        assert_eq!(layer.masks.len(), 1);
+        assert_eq!(layer.masks[0].params.get("target"), Some(&Value::Int(1)));
+        let look = s.copy_look(b, LOOK).unwrap();
+        assert_eq!(look.layers.len(), 3, "masks ride inside their layer");
+
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        let pasted = s.paste_layer(&r, other, LOOK, &layer).unwrap();
+        assert_eq!(names_and_parents(&s, other), np(&[("Base", None), ("Ring 2", None), ("Cut", Some(pasted.0))]));
+        let mid = s.card(other, LOOK).unwrap().layers[2].id;
+        assert_eq!(s.value_at(&r, &Address::on(other, LOOK, &layered_key(mid, "target"))), Some(Value::Int(1)));
+        assert_eq!(s.paste_layer(&r, other, LOOK, &layer.masks[0]), Err(EditError::NotAccepted));
+
+        s.paste_look(&r, other, LOOK, &look).unwrap();
+        let card = s.card(other, LOOK).unwrap();
+        let ids: Vec<(u32, Option<u32>)> = card.layers.iter().map(|l| (l.id.0, l.parent.map(|p| p.0))).collect();
+        assert_eq!(ids, [(0, None), (1, None), (2, None), (3, Some(2))], "ids kept, so targets still point right");
+        assert_eq!(card.params.get(&layered_key(m, "target")), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn a_layers_own_values_can_give_it_more_settings() {
+        let (r, mut s, b) = stacked();
+        let code = s.add_layer(&r, b, LOOK, "layer.code").unwrap();
+        let extra = Address::on(b, LOOK, &layered_key(code, "extra"));
+        assert!(s.def_at(&r, &extra).is_none());
+        s.set_at(&r, &Address::on(b, LOOK, &layered_key(code, "code")), Value::Text("extra".into())).unwrap();
+        assert_eq!(s.def_at(&r, &extra).map(|d| d.label), Some("Extra"));
+        s.set_at(&r, &extra, Value::Number(0.25)).unwrap();
+        assert_eq!(s.value_at(&r, &extra), Some(Value::Number(0.25)));
+        let look = crate::resolve(&s, &r);
+        let card = &look.things[&b].slots[&LOOK];
+        assert_eq!(card.params.get(&layered_key(code, "extra")), Some(&Value::Number(0.25)));
+        let back = crate::load(&crate::save(&s), &r).unwrap();
+        assert_eq!(back.things[&b].slots[&LOOK].params.get(&layered_key(code, "extra")), Some(&Value::Number(0.25)));
+    }
+
+    #[test]
+    fn a_mask_whose_layer_is_gone_is_dropped_on_load() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let m = s.add_mask(&r, b, LOOK, ring).unwrap();
+        s.card_mut(b, LOOK).unwrap().layers[2].parent = Some(LayerId(30));
+        s.card_mut(b, LOOK).unwrap().params.set(&layered_key(m, "size"), Value::Number(0.3));
+        let back = crate::load(&crate::save(&s), &r).unwrap();
+        let card = &back.things[&b].slots[&LOOK];
+        assert_eq!(card.layers.len(), 2);
+        assert!(card.params.get(&layered_key(m, "size")).is_none());
     }
 
     #[test]

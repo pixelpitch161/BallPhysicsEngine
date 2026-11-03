@@ -11,6 +11,8 @@ pub struct ResolvedLayer {
     /// The layer kind's plugin id.
     pub kind: KindId,
     pub name: String,
+    /// For a mask, the layer it limits.
+    pub parent: Option<LayerId>,
 }
 
 /// One of a thing's cards, with every setting's value.
@@ -126,12 +128,21 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
                         if !layer.enabled {
                             continue;
                         }
-                        for d in lkind.settings() {
+                        let get = |k: &str| card.params.get(&layered_key(layer.id, k)).cloned();
+                        let with_defaults = |k: &str| {
+                            get(k).or_else(|| lkind.settings().iter().find(|d| d.key == k).map(|d| d.default.clone()))
+                        };
+                        for d in lkind.settings().iter().chain(lkind.dynamic_defs(&with_defaults)) {
                             let key = layered_key(layer.id, d.key);
                             let v = card.params.get(&key).unwrap_or(&d.default).clone();
                             params.set(&key, v);
                         }
-                        layers.push(ResolvedLayer { id: layer.id, kind: layer.kind.clone(), name: layer.name.clone() });
+                        layers.push(ResolvedLayer {
+                            id: layer.id,
+                            kind: layer.kind.clone(),
+                            name: layer.name.clone(),
+                            parent: layer.parent,
+                        });
                     }
                     for (k, v) in card.params.iter().filter(|(k, _)| crate::split_layered(k).is_none()) {
                         params.set(k, v.clone());
