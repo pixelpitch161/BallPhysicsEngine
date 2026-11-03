@@ -327,7 +327,6 @@ mod tests {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
         // Hits are listed for the modules that use them: here the ball's own burst.
         scene.add_slot(&kit.registry, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
-        let m = (ThingId(2), SlotId::Particles);
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -362,7 +361,6 @@ mod tests {
     fn an_effect_on_the_scene_settings_still_gets_the_balls_hits() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
         scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
-        let fx = (ThingId::ROOT, SlotId::Shader);
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         assert!(!resolved.things[&ThingId(2)].slots.contains_key(&SlotId::Shader), "the effect is not passed down");
