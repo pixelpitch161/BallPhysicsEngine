@@ -184,10 +184,10 @@ mod tests {
         still.velocity = glam::Vec2::ZERO;
         thing.params = still.to_params();
         let resolved = resolve(&scene, &reg);
-        for id in [arena, ball] {
-            let look = BasicLook::from_params(&resolved.things[&id].slots[&SlotId::Look].params);
-            assert_eq!(look.glow, 0.0, "{}", scene.things[&id].name);
-        }
+        let look = BasicLook::from_params(&resolved.things[&arena].slots[&SlotId::Look].params);
+        assert_eq!(look.glow, 0.0, "the arena");
+        let stack = modules::look::layers::gpu::Stack::of(&resolved.things[&ball].slots[&SlotId::Look]).unwrap();
+        assert!(stack.drawn.is_empty(), "a new ball is its body alone, with no glow");
         let motion = BasicMotion::from_params(&resolved.things[&ball].slots[&SlotId::Motion].params);
         assert_eq!(motion.gravity_scale, 0.0);
         let mut world = World::build(&scene, &resolved, &sims());

@@ -862,6 +862,7 @@ pub fn problem_words(p: &Problem) -> String {
     match &p.kind {
         ProblemKind::UnknownKind(k) => format!("Its kind \"{k}\" isn't installed"),
         ProblemKind::UnknownCardKind(k) => format!("{slot} uses \"{k}\", which isn't installed or doesn't fit here"),
+        ProblemKind::UnknownLayerKind(k) => format!("{slot} has a layer of kind \"{k}\", which isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
     }
 }

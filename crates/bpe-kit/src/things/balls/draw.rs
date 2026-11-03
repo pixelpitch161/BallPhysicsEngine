@@ -1,12 +1,12 @@
-//! Drawing the balls and their hit flashes.
+//! Drawing the balls and their hit flashes, through the layers of their Look.
 
-use bpe_core::{SlotId, ThingId};
-use bpe_gfx::{BallInstance, DrawCx, FlashInstance, Frame, HitMark, ThingDraw, blend_alpha, thing_code};
-use bpe_runtime::EventKind;
+use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
+use bpe_gfx::{DrawCx, FlashInstance, Frame, HitMark, ThingDraw, blend_alpha, thing_code};
+use bpe_runtime::{Bodies, EventKind};
 
-use crate::modules::look::basic::{self, BallColours};
-use crate::modules::look::draw::{BallInputs, colors, for_balls, look_of};
-use crate::paint::{Pattern, colour_at, inside_gpu, vary_gpu};
+use crate::modules::look::draw::{BallInputs, for_balls};
+use crate::modules::look::layers::gpu::Stack;
+use crate::paint::{colour_at, vary_gpu};
 
 pub struct BallsDraw;
 
@@ -27,13 +27,31 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// The linear-light colour of each ball of the thing being drawn, from its look's Colours
-/// (painted by place, start, order, speed, hits, steps or time) and its hue shift per hit, when
-/// it has a look and bodies. Trails and particles take their colours from here too.
+/// The stack of layers the thing being drawn wears, when its Look card is a layered one.
+fn stack_of(cx: &DrawCx) -> Option<Stack> {
+    Stack::of(cx.resolved.slots.get(&SlotId::Look)?)
+}
+
+/// The linear-light colour of each ball of the thing being drawn: its Body's colours (painted by
+/// place, start, order, speed, hits, steps or time), then turned by its colour reactions (Colour
+/// on hit and Colour over time), when it has a layered look and bodies. Trails and particles take
+/// their colours from here too.
 pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + 'a> {
-    let look = look_of(cx)?;
+    let stack = stack_of(cx)?;
     let bodies = cx.world.bodies.get(&cx.thing.id)?;
-    Some(colors(look, cx, bodies))
+    Some(colours(&stack, cx, bodies))
+}
+
+/// [`ball_colors`] for `stack` and `bodies`.
+fn colours<'a>(stack: &Stack, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + use<'a> {
+    let fill = for_balls(stack.body.fill.clone());
+    let inputs = BallInputs::new(cx, bodies, &[&fill]);
+    let (hue_per_hit, turn) = (stack.hue_per_hit(), stack.rainbow() * cx.time as f32);
+    move |i| {
+        let base = colour_at(&fill, &inputs.get(&fill, i));
+        let hits = bodies.hits.get(i).copied().unwrap_or(0);
+        crate::modules::look::layers::gpu::recoloured(base, hue_per_hit, turn, hits)
+    }
 }
 
 impl ThingDraw for BallsDraw {
@@ -41,68 +59,50 @@ impl ThingDraw for BallsDraw {
         "balls"
     }
 
+    fn blend(&self, resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
+        Stack::of(resolved.slots.get(&SlotId::Look)?).map(|s| s.whole_blend())
+    }
+
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let id = cx.thing.id;
         let Some(bodies) = cx.world.bodies.get(&id) else { return };
-        let Some(look) = look_of(cx) else { return };
-        let Some(color) = ball_colors(cx) else { return };
-        let classic = look.is_classic_ball();
-        // The outline of a styled ball reads the same balls as the fill.
-        let fill = for_balls(look.fill.clone());
-        let outline = if classic { Default::default() } else { for_balls(look.outline_paint.clone()) };
-        let inputs = BallInputs::new(cx, bodies, &[&fill, &outline]);
+        let Some(stack) = stack_of(cx) else { return };
+        let color = colours(&stack, cx, bodies);
         let time = cx.time as f32;
-        let painted = look.inside.pattern != Pattern::None;
-        let inside = if painted { look.inside_at(time) } else { look.inside.clone() };
+        let first = frame.look_layers.len() as u32;
+        let records = stack.records(&mut frame.gradients, time);
+        let count = records.len() as u32;
+        frame.look_layers.extend(records);
+        // Each ball's own variation, only read when a pattern paints from its own gradient.
+        let fill = for_balls(stack.body.fill.clone());
+        let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
                 continue;
             }
             let seed = ball_seed(id, i);
             let code = thing_code(id) + seed * 0.5;
-            let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
-            let mut paint = bpe_gfx::PaintGpu::default();
-            if painted {
-                let at = inputs.get(&fill, i);
-                paint = inside_gpu(&inside, vary_gpu(&fill, at.seed, at.time), &mut frame.gradients, time);
-            }
-            if !classic {
-                if painted {
-                    // Measured on the turned shape: the pattern follows the ball's way only when
-                    // it turns with the ball, not when the shape faces its motion.
-                    paint.angle += look.inside_turn_on_shape(velocity);
-                }
-                let colours =
-                    BallColours { fill: color(i), outline: colour_at(&outline, &inputs.get(&outline, i)), paint };
-                frame.looks.push(basic::instance(&look, colours, center, velocity, radius, time, code, seed));
-                continue;
-            }
-            if painted {
-                // The pattern turns with the ball's own Turn and Spin, as on a styled ball.
-                paint.angle += look.inside_turn(velocity, time);
-            }
-            frame.balls.push(BallInstance {
-                center: center.into(),
-                radius,
-                glow: look.glow,
-                color: blend_alpha(color(i)),
-                code: [code, seed, 0.0, 0.0],
-                paint,
+            let own = vary.as_ref().map_or(bpe_gfx::NO_VARY, |v| {
+                let at = v.get(&fill, i);
+                vary_gpu(&fill, at.seed, at.time)
             });
+            let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
+            let body = blend_alpha(color(i));
+            frame.layered.push(stack.instance(body, center, velocity, radius, time, code, seed, own, first, count));
         }
 
         // Recent hits, for the flashes here and for the particle and shader modules. Only the
         // flashes' worth is scanned when nothing else wants them.
         let rate = cx.world.steps_per_second;
-        let flashing = look.flash > 0.0 && look.flash_seconds > 0.0;
+        let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
         // The scene settings' effects aren't passed down but still pulse on every hit.
         let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
         let wants_hits =
             scene_effects || [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
         let memory = if wants_hits {
             HIT_MEMORY
-        } else if flashing {
-            look.flash_seconds as f64
+        } else if let Some(f) = flash {
+            f.flash_seconds as f64
         } else {
             return;
         };
@@ -124,21 +124,19 @@ impl ThingDraw for BallsDraw {
                 speed: e.speed,
                 color: color(e.a.item as usize),
             });
-            if !flashing {
-                continue;
-            }
-            let age = (cx.time - time) as f32 / look.flash_seconds;
+            let Some(f) = flash else { continue };
+            let age = (cx.time - time) as f32 / f.flash_seconds;
             if !(0.0..=1.0).contains(&age) {
                 continue;
             }
-            let intensity = (e.speed / FULL_FLASH_SPEED).min(1.5) * (-3.0 * age).exp() * 0.35 * look.flash / 0.4;
+            let intensity = (e.speed / FULL_FLASH_SPEED).min(1.5) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
             if intensity < 0.002 {
                 continue;
             }
             let c = color(e.a.item as usize);
             frame.flashes.push(FlashInstance {
                 center: e.point.into(),
-                size: look.flash_size,
+                size: f.flash_size,
                 color: [
                     (c[0] + 1.0) * 0.5 * intensity,
                     (c[1] + 1.0) * 0.5 * intensity,
@@ -152,115 +150,138 @@ impl ThingDraw for BallsDraw {
 
 #[cfg(test)]
 mod tests {
+    use crate::modules::look::layers::{BODY, HUE, PATTERN};
+    use crate::testing::set_layer;
     use crate::{kit, new_scene, registry};
-    use bpe_core::{Params, Slot, SlotId, ThingId, Value};
-    use bpe_gfx::{Frame, build_frame};
+    use bpe_core::{Scene, Slot, SlotId, ThingId, Value};
+    use bpe_gfx::{Frame, LayerGpu, build_frame};
     use bpe_runtime::{Log, World};
+
+    const BALL: ThingId = ThingId(2);
 
     #[test]
     fn a_look_of_an_unknown_kind_is_reported_and_leaves_the_balls_undrawn() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        scene.things.get_mut(&ThingId(2)).unwrap().slots.insert(SlotId::Look, Slot::new("look.hologram"));
+        scene.things.get_mut(&BALL).unwrap().slots.insert(SlotId::Look, Slot::new("look.hologram"));
         let resolved = bpe_core::resolve(&scene, &reg);
         assert!(!resolved.problems.is_empty());
         let kit = kit();
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "no look, nothing to draw them with");
+        assert!(frame.layered.is_empty() && frame.look_layers.is_empty(), "no look, nothing to draw them with");
         assert_eq!(frame.shapes.len(), 1, "the arena still draws");
         assert_eq!((frame.width, frame.height), (1080, 1920));
     }
 
-    #[test]
-    fn a_styled_look_draws_looks_instead_of_balls_and_still_flashes() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        scene.add_slot(&reg, ThingId(2), SlotId::Look, "look.basic").unwrap();
-        let styled = (ThingId(2), SlotId::Look);
-        let module = scene.card_mut(styled.0, styled.1).unwrap();
-        module.params.set("ball_shape", bpe_core::Value::Choice("star".into()));
-        module.params.set("flash", bpe_core::Value::Number(1.0));
-
-        let resolved = bpe_core::resolve(&scene, &reg);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    /// The frame at `time` for the new scene's ball after `f`'s changes, played to `time`.
+    fn frame_after(time: f64, f: impl FnOnce(&mut Scene)) -> Frame {
         let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        f(&mut scene);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
-        playback.seek(3.0);
+        playback.seek(time);
         let mut frame = Frame::default();
-        build_frame(&scene, &resolved, playback.world(), playback.log(), 3.0, &kit.draws, &mut frame);
-        assert!(frame.balls.is_empty());
-        assert_eq!(frame.looks.len(), 1);
-        assert_eq!(frame.looks[0].form[0], 5.0);
-        assert_eq!(frame.looks[0].extent[1], bpe_gfx::thing_code(ThingId(2)) + frame.looks[0].seed * 0.5);
-        let rate = playback.world().steps_per_second;
-        let recent = playback.log().events().iter().filter(|e| e.time(rate) > 3.0 - 0.25).count();
-        assert_eq!(frame.flashes.len(), recent);
-    }
-
-    /// The frame for one ball wearing a look.basic module set up by `f`.
-    fn basic_frame(f: impl FnOnce(&mut Params)) -> Frame {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        scene.add_slot(&reg, ThingId(2), SlotId::Look, "look.basic").unwrap();
-        let look = (ThingId(2), SlotId::Look);
-        f(&mut scene.card_mut(look.0, look.1).unwrap().params);
-
-        let resolved = bpe_core::resolve(&scene, &reg);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        let kit = kit();
-        let world = World::build(&scene, &resolved, &kit.sims);
-        let mut frame = Frame::default();
-        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+        build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
         frame
     }
 
     #[test]
-    fn shiny_circle_draws_through_the_classic_ball_path() {
-        let frame = basic_frame(|_| {});
-        assert!(!frame.balls.is_empty());
-        assert!(frame.looks.is_empty());
+    fn the_classic_ball_draws_its_body_shine_and_glow_through_one_layered_instance() {
+        let frame = frame_after(0.0, |_| {});
+        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "the old paths draw no ball");
+        assert_eq!(frame.layered.len(), 1);
+        let codes: Vec<u32> = frame.look_layers.iter().map(|l| l.head[0]).collect();
+        assert_eq!(codes, [LayerGpu::BODY, LayerGpu::SHINE, LayerGpu::GLOW]);
+        assert_eq!(frame.layered[0].range[..2], [0, 3]);
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        assert_eq!(frame.layered[0].body, pink);
     }
 
     #[test]
-    fn flat_or_see_through_or_another_shape_draws_a_styled_instance() {
-        let flat = basic_frame(|p| p.set("style", Value::Choice("flat".into())));
-        assert!(!flat.looks.is_empty() && flat.balls.is_empty());
-        assert_eq!(flat.looks[0].form[1], 0.0, "flat is unlit");
-        // A shiny circle the classic ball can't draw: half see-through.
-        let shiny = basic_frame(|p| {
-            p.set("style", Value::Choice("shiny".into()));
-            p.set("opacity", Value::Number(0.5));
+    fn a_new_ball_is_one_white_body_record_and_does_not_flash() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        scene.remove_thing(BALL).unwrap();
+        let ball = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let thing = scene.things.get_mut(&ball).unwrap();
+        thing.params.set("velocity", Value::Vec2([0.0, 900.0]));
+        scene.add_slot(&reg, ball, SlotId::Particles, "particles.burst").unwrap();
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let kit = kit();
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(4.0);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
+        assert_eq!(frame.layered.len(), 1);
+        assert_eq!(frame.layered[0].range[..2], [0, 1], "the body alone");
+        assert_eq!(frame.look_layers[0].head[0], LayerGpu::BODY);
+        assert_eq!(frame.layered[0].body, [1.0; 4], "white");
+        assert!(!frame.hits.is_empty(), "the ball hit the arena");
+        assert!(frame.flashes.is_empty(), "no Flash on hit, no flash");
+    }
+
+    #[test]
+    fn a_ball_in_another_shape_still_flashes_and_carries_its_thing_code() {
+        let frame = frame_after(3.0, |s| {
+            set_layer(s, BALL, BODY, "ball_shape", Value::Choice("star".into()));
         });
-        assert!(!shiny.looks.is_empty() && shiny.balls.is_empty());
-        assert_eq!(shiny.looks[0].form[1], 1.0, "shiny is lit like a sphere");
-        let star = basic_frame(|p| {
-            p.set("ball_shape", Value::Choice("star".into()));
-            p.set("style", Value::Choice("shiny".into()));
+        assert_eq!(frame.layered.len(), 1);
+        let ball = frame.layered[0];
+        assert_eq!(ball.form[0], 5.0);
+        assert_eq!(ball.misc[1], bpe_gfx::thing_code(BALL) + ball.seed * 0.5);
+        assert!(!frame.flashes.is_empty() || frame.hits.is_empty());
+    }
+
+    #[test]
+    fn flashes_come_from_the_flash_on_hit_reaction_only() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(8.0);
+        let rate = playback.world().steps_per_second;
+        let first = playback.log().events().first().expect("the ball hits the arena").time(rate);
+        // Just after the first hit, while it still flashes.
+        let at = first + 0.05;
+        playback.seek(at);
+        let recent = playback.log().events().iter().filter(|e| e.time(rate) > at - 0.25 && e.time(rate) <= at).count();
+        assert!(recent > 0);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
+        assert_eq!(frame.flashes.len(), recent);
+        // Without the reaction, no flash.
+        let card = scene.card_mut(BALL, SlotId::Look).unwrap();
+        let flash = card.layers.iter().find(|l| l.kind == crate::modules::look::layers::FLASH).unwrap().id;
+        scene.remove_layer(&kit.registry, BALL, SlotId::Look, flash).unwrap();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
+        assert!(frame.flashes.is_empty());
+    }
+
+    #[test]
+    fn a_hidden_reaction_does_nothing() {
+        let frame = frame_after(0.0, |s| {
+            let reg = registry();
+            let hue = set_layer(s, BALL, HUE, "hue_per_hit", Value::Number(120.0));
+            s.set_layer_enabled(&reg, BALL, SlotId::Look, hue, false).unwrap();
+            s.things.get_mut(&BALL).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
         });
-        assert!(!star.looks.is_empty() && star.balls.is_empty());
-        assert_eq!(star.looks[0].form[..2], [5.0, 1.0], "a shiny star is lit like the classic ball");
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        assert_eq!(frame.layered[0].body, pink);
     }
 
     #[test]
-    fn a_shiny_circle_with_an_outline_draws_a_styled_shiny_instance() {
-        let frame = basic_frame(|p| p.set("outline", Value::Number(3.0)));
-        assert!(frame.balls.is_empty());
-        assert_eq!(frame.looks.len(), 1);
-        assert_eq!(frame.looks[0].form[..2], [0.0, 1.0]);
-        assert_eq!(frame.looks[0].look[0], 3.0);
-        // Its default sibling still takes the classic path.
-        let plain = basic_frame(|_| {});
-        assert!(plain.looks.is_empty() && plain.balls.len() == 1);
-    }
-
-    #[test]
-    fn inside_linear_on_a_ball_sets_its_paint() {
-        let frame = basic_frame(|p| p.set("in_pattern", Value::Choice("linear".into())));
-        assert_eq!(frame.balls.len(), 1);
-        assert_eq!(frame.balls[0].paint.pattern, 1.0);
-        assert_eq!(frame.balls[0].paint.row, -2.0, "a shade of the ball's own colour by default");
+    fn inside_linear_on_a_ball_adds_a_pattern_record() {
+        let frame = frame_after(0.0, |s| {
+            set_layer(s, BALL, PATTERN, "in_pattern", Value::Choice("linear".into()));
+        });
+        let pattern = frame.look_layers.iter().find(|l| l.head[0] == LayerGpu::PATTERN).unwrap();
+        assert_eq!(pattern.paint.pattern, 1.0);
+        assert_eq!(pattern.paint.row, -2.0, "a shade of the ball's own colour by default");
     }
 
     #[test]
@@ -268,13 +289,13 @@ mod tests {
         let reg = registry();
         let mut scene = new_scene(&reg);
         scene.remove_slot(ThingId(1), SlotId::Look);
-        scene.remove_slot(ThingId(2), SlotId::Look);
+        scene.remove_slot(BALL, SlotId::Look);
         let resolved = bpe_core::resolve(&scene, &reg);
         let kit = kit();
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert!(frame.balls.is_empty() && frame.shapes.is_empty());
+        assert!(frame.layered.is_empty() && frame.shapes.is_empty());
     }
 
     #[test]
@@ -284,47 +305,57 @@ mod tests {
             p.set("rows", bpe_core::Value::Int(1));
             p.set("velocity", bpe_core::Value::Vec2([0.0, 0.0]));
         });
-        let m = (ThingId(2), SlotId::Look);
-        let look = scene.card_mut(m.0, m.1).unwrap();
-        look.params.set(
-            "colours",
-            bpe_core::Value::Gradient(bpe_core::Gradient::even(&[
-                bpe_core::Color::rgb(255, 0, 0),
-                bpe_core::Color::rgb(0, 0, 255),
-            ])),
-        );
-        look.params.set("follow", bpe_core::Value::Choice("hits".into()));
-        look.params.set("span", bpe_core::Value::Number(2.0));
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("hits".into()));
+        set_layer(&mut scene, BALL, BODY, "span", Value::Number(2.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut world = World::build(&scene, &resolved, &kit.sims);
-        world.bodies.get_mut(&ThingId(2)).unwrap().hits[1] = 2;
+        world.bodies.get_mut(&BALL).unwrap().hits[1] = 2;
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[0].color, [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(frame.balls[1].color, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(frame.layered[0].body, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.layered[1].body, [0.0, 0.0, 1.0, 1.0]);
         // By order: first and last colour.
-        scene.card_mut(m.0, m.1).unwrap().params.set("follow", bpe_core::Value::Choice("order".into()));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("order".into()));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!((frame.balls[0].color, frame.balls[1].color), ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]));
+        assert_eq!((frame.layered[0].body, frame.layered[1].body), ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]));
         // By speed: both still, so both red.
-        scene.card_mut(m.0, m.1).unwrap().params.set("follow", bpe_core::Value::Choice("speed".into()));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("speed".into()));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[1].color, [1.0, 0.0, 0.0, 1.0]);
-        // Red turned 240° (two hits of 120°) is blue; the first ball with no hits stays red.
-        scene.card_mut(m.0, m.1).unwrap().params.set("hue_per_hit", bpe_core::Value::Number(120.0));
+        assert_eq!(frame.layered[1].body, [1.0, 0.0, 0.0, 1.0]);
+        // Colour on hit: red turned 240° (two hits of 120°) is blue; the first ball with no hits
+        // stays red. Its hit marks and trails take the same colour.
+        set_layer(&mut scene, BALL, HUE, "hue_per_hit", Value::Number(120.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[0].color, [1.0, 0.0, 0.0, 1.0]);
-        assert!(frame.balls[1].color[2] > 0.9 && frame.balls[1].color[0] < 0.1, "{:?}", frame.balls[1].color);
+        assert_eq!(frame.layered[0].body, [1.0, 0.0, 0.0, 1.0]);
+        let b = frame.layered[1].body;
+        assert!(b[2] > 0.9 && b[0] < 0.1, "{b:?}");
+    }
+
+    #[test]
+    fn colour_over_time_turns_the_body_round_the_wheel() {
+        let at = |time: f64| {
+            frame_after(time, |s| {
+                s.things.get_mut(&BALL).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+                set_layer(s, BALL, crate::modules::look::layers::RAINBOW, "rainbow", Value::Number(0.5));
+            })
+            .layered[0]
+                .body
+        };
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        assert_eq!(at(0.0), pink);
+        let half = crate::modules::look::basic::shift_linear_hue(pink, 0.5);
+        assert_eq!(bpe_core::Color::from_linear(at(1.0)), bpe_core::Color::from_linear(half));
     }
 
     #[test]
     fn balls_leave_a_hit_mark_in_their_colour() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
         // Hits are listed for the modules that use them: here the ball's own burst.
-        scene.add_slot(&kit.registry, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
+        scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -336,7 +367,7 @@ mod tests {
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
         assert_eq!(frame.hits.len(), recent.len());
         let mark = frame.hits[0];
-        assert_eq!((mark.thing, mark.other), (ThingId(2), Some(ThingId(1))));
+        assert_eq!((mark.thing, mark.other), (BALL, Some(ThingId(1))));
         assert_eq!(mark.point, <[f32; 2]>::from(recent[0].point));
         assert_eq!(mark.speed, recent[0].speed);
         assert!((mark.time - recent[0].time(rate) as f32).abs() < 1e-6);
@@ -348,7 +379,7 @@ mod tests {
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         assert_eq!(frame.hits.len(), old.len());
         // Without a module that wants them, only the flashes' quarter second is listed.
-        scene.remove_slot(ThingId(2), SlotId::Particles);
+        scene.remove_slot(BALL, SlotId::Particles);
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         let flash_worth = playback.log().events().iter().filter(|e| e.time(rate) > 10.0 - 0.25).count();
@@ -361,7 +392,7 @@ mod tests {
         scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
-        assert!(!resolved.things[&ThingId(2)].slots.contains_key(&SlotId::Shader), "the effect is not passed down");
+        assert!(!resolved.things[&BALL].slots.contains_key(&SlotId::Shader), "the effect is not passed down");
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(4.0);
         let rate = playback.world().steps_per_second;
@@ -378,30 +409,23 @@ mod tests {
             p.set("columns", Value::Int(4));
             p.set("rows", Value::Int(3));
         });
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
-        params.set("follow", Value::Choice("step".into()));
-        params.set("take_hit_colour", Value::Bool(true));
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("step".into()));
+        set_layer(&mut scene, BALL, BODY, "take_hit_colour", Value::Bool(true));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(6.0);
-        let hit = playback.world().bodies[&ThingId(2)].hits.iter().filter(|&&h| h > 0).count();
+        let hit = playback.world().bodies[&BALL].hits.iter().filter(|&&h| h > 0).count();
         assert!(hit >= 4, "only {hit} balls hit something");
         let (searches, reads) = (&crate::paint::eval::LOG_SEARCHES, &crate::modules::look::draw::LOOK_READS);
         let (s0, r0) = (searches.with(|n| n.get()), reads.with(|n| n.get()));
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 6.0, &kit.draws, &mut frame);
         let (s1, r1) = (searches.with(|n| n.get()) - s0, reads.with(|n| n.get()) - r0);
-        // The balls' draw reads their colours twice (once for the balls, once for their paints);
-        // each reads the log once, and each other thing's look once, whatever the number of balls.
+        // The balls' draw reads their colours once; that reads the log once, and each other
+        // thing's look once, whatever the number of balls.
         assert!(s1 <= 2, "{s1} searches of the log for {hit} balls that hit");
         assert!(r1 <= 2, "{r1} reads of the hit things' looks for {hit} balls that hit");
-    }
-
-    /// The look module of the balls in `scene`.
-    fn ball_look(_scene: &bpe_core::Scene, _kit: &crate::Kit) -> (ThingId, SlotId) {
-        (ThingId(2), SlotId::Look)
     }
 
     const RED: bpe_core::Color = bpe_core::Color::rgb(255, 0, 0);
@@ -414,28 +438,27 @@ mod tests {
             p.set("rows", Value::Int(3));
             p.set("spacing", Value::Number(40.0));
         });
-        scene.things.get_mut(&ThingId(2)).unwrap().transform.position = glam::Vec2::new(30.0, -200.0);
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
-        params.set("follow", Value::Choice("start".into()));
-        params.set("angle", Value::Number(90.0));
-        params.set("centre", Value::Vec2([30.0, -200.0]));
+        scene.things.get_mut(&BALL).unwrap().transform.position = glam::Vec2::new(30.0, -200.0);
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("start".into()));
+        set_layer(&mut scene, BALL, BODY, "angle", Value::Number(90.0));
+        set_layer(&mut scene, BALL, BODY, "centre", Value::Vec2([30.0, -200.0]));
         // From the first row's middle to the last's.
-        params.set("span", Value::Number(80.0));
+        set_layer(&mut scene, BALL, BODY, "span", Value::Number(80.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(3.0);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 3.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls.len(), 6);
+        assert_eq!(frame.layered.len(), 6);
+        let body: Vec<[f32; 4]> = frame.layered.iter().map(|b| b.body).collect();
         let near = |a: [f32; 4], b: [f32; 4]| (0..4).all(|k| (a[k] - b[k]).abs() < 1e-5);
         let (red, blue) = (RED.to_linear(), BLUE.to_linear());
         // Where the balls started counts, not where they are now.
-        assert!(near(frame.balls[0].color, red) && near(frame.balls[1].color, red), "{:?}", frame.balls);
+        assert!(near(body[0], red) && near(body[1], red), "{body:?}");
         let middle = bpe_core::Gradient::even(&[RED, BLUE]).sample(0.5);
-        assert!(near(frame.balls[2].color, middle) && near(frame.balls[3].color, middle), "{:?}", frame.balls);
-        assert!(near(frame.balls[4].color, blue) && near(frame.balls[5].color, blue), "{:?}", frame.balls);
+        assert!(near(body[2], middle) && near(body[3], middle), "{body:?}");
+        assert!(near(body[4], blue) && near(body[5], blue), "{body:?}");
         // Hits flash: the flashes match the log.
         let rate = playback.world().steps_per_second;
         let recent = playback.log().events().iter().filter(|e| e.time(rate) > 3.0 - 0.25).count();
@@ -443,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_look_paints_nothing_inside_and_rings_paint_from_the_ball_s_place() {
+    fn a_plain_look_bakes_nothing_and_a_pattern_paints_from_the_ball_s_colour_or_its_own() {
         let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
             p.set("columns", Value::Int(3));
             p.set("rows", Value::Int(1));
@@ -453,68 +476,38 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert!(frame.balls.iter().all(|b| b.paint == bpe_gfx::PaintGpu::default()));
+        assert!(frame.look_layers.iter().all(|l| l.head[0] != LayerGpu::PATTERN));
+        assert_eq!(frame.look_layers.len(), 3, "one stack of records shared by the three balls");
+        assert!(frame.layered.iter().all(|b| b.range[..2] == [0, 3]));
         assert!(frame.gradients.len() == 1, "nothing is baked for a plain look");
 
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
-        params.set("follow", Value::Choice("order".into()));
-        params.set("in_pattern", Value::Choice("rings".into()));
-        params.set("in_spin", Value::Number(90.0));
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("order".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("rings".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_spin", Value::Number(90.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
         assert_eq!(frame.gradients.len(), 1, "a shade of each ball's own colour bakes nothing");
-        let paint = frame.balls[1].paint;
+        let paint = frame.look_layers.iter().find(|l| l.head[0] == LayerGpu::PATTERN).unwrap().paint;
         assert_eq!((paint.row, paint.pattern, paint.angle), (-2.0, 6.0, 270.0));
         assert_eq!(paint.t0, -0.5, "the default shade");
         // Its own gradient takes one row the balls share.
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("in_from", Value::Choice("own_gradient".into()));
-        params.set("in_colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("dots".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_from", Value::Choice("own_gradient".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
         assert_eq!(frame.gradients.len(), 2, "the balls share one row");
-        assert!(frame.balls.iter().all(|b| b.paint.row == 1.0 && b.paint.pattern == 6.0));
-    }
-
-    #[test]
-    fn a_styled_ball_paints_its_inside_and_outline_from_their_own_colours() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        scene.add_slot(&reg, ThingId(2), SlotId::Look, "look.basic").unwrap();
-        let styled = (ThingId(2), SlotId::Look);
-        let params = &mut scene.card_mut(styled.0, styled.1).unwrap().params;
-        params.set("style", Value::Choice("flat".into()));
-        params.set("outline", Value::Number(3.0));
-        params.set("outline_colours", Value::Gradient(bpe_core::Gradient::even(&[BLUE, RED])));
-        params.set("outline_follow", Value::Choice("hits".into()));
-        params.set("outline_span", Value::Number(4.0));
-        params.set("in_pattern", Value::Choice("dots".into()));
-        params.set("in_from", Value::Choice("own_gradient".into()));
-        params.set("in_colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
-
-        let resolved = bpe_core::resolve(&scene, &reg);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        let kit = kit();
-        let mut world = World::build(&scene, &resolved, &kit.sims);
-        world.bodies.get_mut(&ThingId(2)).unwrap().hits[0] = 2;
-        let mut frame = Frame::default();
-        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        let ball = frame.looks[0];
-        assert_eq!(ball.outline_color, bpe_core::Gradient::even(&[BLUE, RED]).sample(0.5));
-        assert_eq!((ball.paint.row, ball.paint.pattern), (1.0, 7.0), "the dots inside");
-        assert_eq!(ball.form[1], 0.0, "flat");
+        let paint = frame.look_layers.iter().find(|l| l.head[0] == LayerGpu::PATTERN).unwrap().paint;
+        assert_eq!((paint.row, paint.pattern), (1.0, 7.0));
     }
 
     #[test]
     fn stepping_on_hits_can_take_the_colour_of_what_was_hit() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
-        params.set("follow", Value::Choice("step".into()));
-        params.set("take_hit_colour", Value::Bool(true));
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("step".into()));
+        set_layer(&mut scene, BALL, BODY, "take_hit_colour", Value::Bool(true));
         // Paint the arena's own look green.
         let green = bpe_core::Color::rgb(0, 255, 0);
         let arena_look = &mut scene.card_mut(ThingId(1), SlotId::Look).unwrap().params;
@@ -523,17 +516,38 @@ mod tests {
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[0].color, RED.to_linear(), "no hits yet: the first colour");
+        assert_eq!(frame.layered[0].body, RED.to_linear(), "no hits yet: the first colour");
         playback.seek(4.0);
-        assert!(playback.world().bodies[&ThingId(2)].hits[0] > 0, "the ball hit the wall");
+        assert!(playback.world().bodies[&BALL].hits[0] > 0, "the ball hit the wall");
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[0].color, green.to_linear());
+        assert_eq!(frame.layered[0].body, green.to_linear());
         // Without taking it, the ball steps through its own colours.
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("take_hit_colour", Value::Bool(false));
+        set_layer(&mut scene, BALL, BODY, "take_hit_colour", Value::Bool(false));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
-        assert_ne!(frame.balls[0].color, green.to_linear());
+        assert_ne!(frame.layered[0].body, green.to_linear());
+    }
+
+    #[test]
+    fn a_ball_hit_by_a_layered_ball_takes_its_body_colour() {
+        let reg = registry();
+        let mut scene = new_scene(&reg);
+        let other = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let green = bpe_core::Color::rgb(0, 255, 0);
+        set_layer(&mut scene, other, BODY, "colours", Value::Gradient(bpe_core::Gradient::solid(green)));
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let kit = kit();
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let cx = bpe_gfx::DrawCx {
+            scene: &resolved,
+            resolved: &resolved.things[&BALL],
+            thing: &scene.things[&BALL],
+            world: &world,
+            log: &Log::default(),
+            time: 0.0,
+        };
+        let still = crate::modules::look::draw::StillColours::new(&cx);
+        assert_eq!(still.at(other, glam::Vec2::ZERO), Some(green.to_linear()));
     }
 
     #[test]
@@ -543,16 +557,14 @@ mod tests {
             p.set("rows", Value::Int(2));
             p.set("velocity", Value::Vec2([0.0, 0.0]));
         });
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[RED])));
-        params.set("vary_hue", Value::Number(40.0));
+        set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED])));
+        set_layer(&mut scene, BALL, BODY, "vary_hue", Value::Number(40.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = World::build(&scene, &resolved, &kit.sims);
         let build = || {
             let mut frame = Frame::default();
             build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
-            frame.balls.iter().map(|b| b.color).collect::<Vec<_>>()
+            frame.layered.iter().map(|b| b.body).collect::<Vec<_>>()
         };
         let colours = build();
         assert_eq!(colours.len(), 8);
@@ -574,20 +586,17 @@ mod tests {
             p.set("rows", Value::Int(1));
             p.set("velocity", Value::Vec2([0.0, 0.0]));
         });
-        let m = ball_look(&scene, &kit);
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("in_pattern", Value::Choice("stripes".into()));
-        params.set("in_from", Value::Choice("own_gradient".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("stripes".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_from", Value::Choice("own_gradient".into()));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
-        assert!(frame.balls.iter().all(|b| b.paint.vary == [0.0, 0.0, 1.0, 0.0]), "no variation is the identity");
-        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-        params.set("vary_hue", Value::Number(90.0));
+        assert!(frame.layered.iter().all(|b| b.vary == [0.0, 0.0, 1.0, 0.0]), "no variation is the identity");
+        set_layer(&mut scene, BALL, BODY, "vary_hue", Value::Number(90.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &kit.draws, &mut frame);
-        let turns: Vec<f32> = frame.balls.iter().map(|b| b.paint.vary[0]).collect();
+        let turns: Vec<f32> = frame.layered.iter().map(|b| b.vary[0]).collect();
         assert!(turns.iter().all(|t| t.abs() <= 0.25), "{turns:?}");
         assert!(turns[0] != turns[1] && turns[1] != turns[2], "{turns:?}");
     }

@@ -142,7 +142,13 @@ impl<'a> StillColours<'a> {
             let r = self.scene.things.get(&other)?;
             #[cfg(test)]
             LOOK_READS.with(|n| n.set(n.get() + 1));
-            Some((for_balls(BasicLook::from_params(&r.slots.get(&SlotId::Look)?.params).fill), r.screen))
+            let look = r.slots.get(&SlotId::Look)?;
+            // A layered look paints with its Body's colours; any other with its own.
+            let fill = match super::layers::gpu::Stack::of(look) {
+                Some(stack) => stack.body.fill,
+                None => BasicLook::from_params(&look.params).fill,
+            };
+            Some((for_balls(fill), r.screen))
         });
         let (fill, screen) = look.as_ref()?;
         let place_screen = if *screen { point } else { self.camera.to_screen(point) };
@@ -232,20 +238,6 @@ impl<'a> WallInputs<'a> {
     pub fn paint(&self, p: &Paint, i: usize, place: Vec2, atlas: &mut GradientAtlas) -> ([f32; 4], PaintGpu) {
         let inputs = self.get(p, i, place);
         (colour_at(p, &inputs), paint_gpu(p, &inputs, atlas))
-    }
-}
-
-/// The linear-light colour of each ball in `bodies`: the look's Colours painted the way it
-/// follows (place, start, order, speed, hits, steps or time), then turned round the colour
-/// wheel by "Hue shift per hit" for every hit the ball has taken. The closure owns the look and
-/// borrows the bodies and what `cx` borrows.
-pub fn colors<'a>(look: BasicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + 'a {
-    let fill = for_balls(look.fill);
-    let inputs = BallInputs::new(cx, bodies, &[&fill]);
-    let hue_per_hit = look.hue_per_hit;
-    move |i| {
-        let base = colour_at(&fill, &inputs.get(&fill, i));
-        hue_shifted(base, hue_per_hit, bodies.hits.get(i).copied().unwrap_or(0))
     }
 }
 

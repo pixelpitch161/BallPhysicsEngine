@@ -50,3 +50,13 @@ pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Ki
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, kit)
 }
+
+/// Sets `key` of the first `kind` layer on `thing`'s Look to `v`, adding the layer when the look
+/// has none. Gives back the layer's id.
+pub fn set_layer(scene: &mut Scene, thing: ThingId, kind: &str, key: &str, v: Value) -> bpe_core::LayerId {
+    let reg = crate::registry();
+    let found = scene.card_mut(thing, SlotId::Look).unwrap().layers.iter().find(|l| l.kind == kind).map(|l| l.id);
+    let id = found.unwrap_or_else(|| scene.add_layer(&reg, thing, SlotId::Look, kind).unwrap());
+    scene.card_mut(thing, SlotId::Look).unwrap().params.set(&bpe_core::layered_key(id, key), v);
+    id
+}

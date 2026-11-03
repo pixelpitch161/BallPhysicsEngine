@@ -14,6 +14,13 @@ fn module_of(_scene: &Scene, _kit: &Kit, thing: ThingId, slot: SlotId) -> (Thing
 }
 
 fn set_blend(scene: &mut Scene, module: (bpe_core::ThingId, bpe_core::SlotId), blend: &str, amount: f64) {
+    if scene.card(module.0, module.1).is_some_and(|c| c.kind == crate::modules::look::layers::CARD) {
+        // A layered look mixes through its Blend layer.
+        let layer = crate::modules::look::layers::BLEND;
+        crate::testing::set_layer(scene, module.0, layer, "blend", Value::Choice(blend.into()));
+        crate::testing::set_layer(scene, module.0, layer, "blend_amount", Value::Number(amount));
+        return;
+    }
     let params = &mut scene.card_mut(module.0, module.1).unwrap().params;
     params.set("blend", Value::Choice(blend.into()));
     params.set("blend_amount", Value::Number(amount));
@@ -43,11 +50,11 @@ fn ball_blended(blend: &str, amount: f64) -> (Scene, Kit) {
 fn a_multiply_look_puts_the_ball_in_a_layer() {
     let (scene, kit) = ball_blended("multiply", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
-    assert!(frame.balls.is_empty() && frame.looks.is_empty());
+    assert!(frame.layered.is_empty());
     assert_eq!(frame.layers.len(), 1);
     let layer = &frame.layers[0];
     assert_eq!((layer.blend, layer.amount), (Blend::Multiply, 1.0));
-    assert_eq!(layer.frame.balls.len(), 1);
+    assert_eq!(layer.frame.layered.len(), 1);
     assert!(!frame.shapes.is_empty(), "the arena keeps its plain look");
 }
 
@@ -56,11 +63,11 @@ fn normal_at_full_amount_stays_in_the_main_frame() {
     let (scene, kit) = ball_blended("normal", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     assert!(frame.layers.is_empty());
-    assert_eq!(frame.balls.len(), 1);
+    assert_eq!(frame.layered.len(), 1);
     // Normal at less than full amount fades the whole thing as one, so it is layered too.
     let (scene, kit) = ball_blended("normal", 0.5);
     let frame = frame_at(&scene, &kit, 0.0);
-    assert!(frame.balls.is_empty());
+    assert!(frame.layered.is_empty());
     assert_eq!((frame.layers.len(), frame.layers[0].blend, frame.layers[0].amount), (1, Blend::Normal, 0.5));
 }
 
@@ -71,9 +78,9 @@ fn a_stuck_blended_thing_goes_into_the_overlays_layer() {
     let frame = frame_at(&scene, &kit, 0.0);
     assert!(frame.layers.is_empty());
     let o = frame.overlay.as_deref().unwrap();
-    assert!(o.balls.is_empty());
+    assert!(o.layered.is_empty());
     assert_eq!(o.layers.len(), 1);
-    assert_eq!((o.layers[0].blend, o.layers[0].frame.balls.len()), (Blend::Screen, 1));
+    assert_eq!((o.layers[0].blend, o.layers[0].frame.layered.len()), (Blend::Screen, 1));
     assert!(frame.has_overlay());
 }
 
@@ -110,8 +117,8 @@ fn two_things_with_the_same_mode_and_amount_share_one_layer() {
     let frame = frame_at(&scene, &kit, 0.0);
     assert_eq!(frame.layers.len(), 1);
     let layer = &frame.layers[0].frame;
-    assert!(!layer.shapes.is_empty() && layer.balls.len() == 1, "the arena and the ball");
-    assert!(frame.shapes.is_empty() && frame.balls.is_empty());
+    assert!(!layer.shapes.is_empty() && layer.layered.len() == 1, "the arena and the ball");
+    assert!(frame.shapes.is_empty() && frame.layered.is_empty());
 
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
     set_blend(&mut scene, look, "difference", 0.5);
@@ -135,18 +142,21 @@ fn the_scene_itself_never_goes_into_a_layer() {
 
 #[test]
 fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
+    use crate::modules::look::layers::PATTERN;
+    use crate::testing::set_layer;
     let (mut scene, kit) = ball_blended("normal", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
-    let params = &mut scene.card_mut(look.0, look.1).unwrap().params;
-    params.set("in_pattern", Value::Choice("stripes".into()));
-    params.set("in_from", Value::Choice("own_gradient".into()));
-    params.set("in_colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
+    set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("stripes".into()));
+    set_layer(&mut scene, BALL, PATTERN, "in_from", Value::Choice("own_gradient".into()));
+    let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
+    set_layer(&mut scene, BALL, PATTERN, "in_colours", Value::Gradient(colours));
+    let pattern = |f: &Frame| *f.look_layers.iter().find(|l| l.head[0] == bpe_gfx::LayerGpu::PATTERN).unwrap();
     let plain = frame_at(&scene, &kit, 0.0);
-    let want = plain.gradients.rows()[plain.balls[0].paint.row as usize];
+    let want = plain.gradients.rows()[pattern(&plain).paint.row as usize];
     set_blend(&mut scene, look, "overlay", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     let layer = &frame.layers[0].frame;
-    let row = layer.balls[0].paint.row;
+    let row = pattern(layer).paint.row;
     assert!(row >= 0.0 && (row as usize) < frame.gradients.len(), "row {row} of {}", frame.gradients.len());
     assert_eq!(frame.gradients.rows()[row as usize], want, "the row the renderer uploads is the ball's");
     assert!(layer.gradients.is_empty());
@@ -206,11 +216,11 @@ fn a_look_blending_with_each_other_gets_its_own_layer() {
     let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
     set_blend(&mut scene, arena_look, "screen", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
-    scene.card_mut(look.0, look.1).unwrap().params.set("blend_each", Value::Bool(true));
+    crate::testing::set_layer(&mut scene, BALL, crate::modules::look::layers::BLEND, "blend_each", Value::Bool(true));
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
     assert_eq!(kept, [(Blend::Screen, 1.0, false), (Blend::Screen, 1.0, true)], "the arena, then the ball");
-    assert_eq!(frame.layers[1].frame.balls.len(), 1);
+    assert_eq!(frame.layers[1].frame.layered.len(), 1);
 
     // Overlay cannot blend with itself: the switch is ignored and the two share again.
     set_blend(&mut scene, arena_look, "overlay", 1.0);

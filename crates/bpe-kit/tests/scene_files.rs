@@ -39,7 +39,30 @@ fn every_saved_test_scene_loads_with_known_keys() {
             bad.extend(bad_keys(&thing.params, kind.settings(), &format!("thing {}", thing.kind)));
             for card in thing.slots.values() {
                 let kind = reg.module(&card.kind).unwrap_or_else(|| panic!("{name}: card kind {:?}", card.kind));
-                bad.extend(bad_keys(&card.params, kind.settings(), &format!("card {}", card.kind)));
+                // A layer's settings are kept under "<layer id>/<key>" and checked by its kind.
+                let (layered, plain): (Vec<_>, Vec<_>) =
+                    card.params.iter().partition(|(k, _)| bpe_core::split_layered(k).is_some());
+                let plain = Params(plain.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                bad.extend(bad_keys(&plain, kind.settings(), &format!("card {}", card.kind)));
+                for layer in &card.layers {
+                    let lk = reg.layer(&layer.kind).unwrap_or_else(|| panic!("{name}: layer kind {:?}", layer.kind));
+                    let own = Params(
+                        layered
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                let (id, key) = bpe_core::split_layered(k)?;
+                                (id == layer.id).then(|| (key.to_owned(), (*v).clone()))
+                            })
+                            .collect(),
+                    );
+                    bad.extend(bad_keys(&own, lk.settings(), &format!("layer {} of {}", layer.kind, card.kind)));
+                }
+                for (k, _) in &layered {
+                    let (id, _) = bpe_core::split_layered(k).unwrap();
+                    if card.layer(id).is_none() {
+                        bad.push(format!("card {}: `{k}` belongs to no layer", card.kind));
+                    }
+                }
             }
         }
         assert!(bad.is_empty(), "{name}:\n{}", bad.join("\n"));

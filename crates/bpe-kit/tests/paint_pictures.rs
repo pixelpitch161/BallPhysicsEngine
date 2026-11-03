@@ -1,6 +1,6 @@
 //! Picture tests for the balls' Colours paint on the software GPU.
 
-use bpe_core::{Color, Gradient, SlotId, ThingId, Value};
+use bpe_core::{Color, Gradient, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
@@ -36,10 +36,11 @@ fn solid_paint_matches_plain_colour() {
     let mut renderer = Renderer::new(&device, W, H);
     renderer.render(&device, &queue, &frame);
     let pixels = renderer.read_output(&device, &queue).unwrap();
-    // Drawn by the commit before the ball's colour became a paint (one-stop Colours).
+    // Drawn by the commit before the ball's colour became a paint (one-stop Colours), with the
+    // classic ball's own shader. Its layers (Body, Shine, Glow) draw it again to within 2/255.
     let before = saved("one-ball.png");
-    let differ = pixels.iter().zip(&before).filter(|(a, b)| a != b).count();
-    assert_eq!(differ, 0, "{differ} bytes differ from the picture before Colours");
+    let worst = pixels.iter().zip(&before).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+    assert!(worst <= 2, "a pixel is {worst}/255 off the picture before Colours");
 }
 
 #[test]
@@ -54,11 +55,16 @@ fn inside_rings_draw_on_classic_balls() {
     ball.transform.position = glam::Vec2::ZERO;
     ball.params.set("radius", Value::Number(300.0));
     ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
-    let m = (ThingId(2), SlotId::Look);
-    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
+    let (ball, look) = (ThingId(2), SlotId::Look);
+    let layer_of = |scene: &bpe_core::Scene, kind: &str| {
+        scene.card(ball, look).unwrap().layers.iter().find(|l| l.kind == kind).map(|l| l.id)
+    };
+    let body = layer_of(&scene, "layer.body").unwrap();
     let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
-    params.set("colours", Value::Gradient(Gradient::even(&[red, blue])));
-    params.set("glow", Value::Number(0.0));
+    let params = &mut scene.card_mut(ball, look).unwrap().params;
+    params.set(&layered_key(body, "colours"), Value::Gradient(Gradient::even(&[red, blue])));
+    let glow = layer_of(&scene, "layer.glow").unwrap();
+    scene.remove_layer(&kit.registry, ball, look, glow).unwrap();
     let resolved = bpe_core::resolve(&scene, &kit.registry);
     let playback = Playback::new(&scene, &resolved, kit.sims.clone());
     let mut renderer = Renderer::new(&device, W, H);
@@ -82,11 +88,14 @@ fn inside_rings_draw_on_classic_balls() {
     assert!(middle[0] > 40 && middle[2] > 40, "{middle:?}");
     assert!(edge[0] > 20 && edge[2] > 20, "{edge:?}: the same colour, lit darker");
 
-    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-    // Rings of their own gradient, from red at the middle to blue at the edge.
-    params.set("in_pattern", Value::Choice("rings".into()));
-    params.set("in_from", Value::Choice("own_gradient".into()));
-    params.set("in_colours", Value::Gradient(Gradient::even(&[red, blue])));
+    // Rings of their own gradient, from red at the middle to blue at the edge, under the shine
+    // as on the classic ball.
+    let pattern = scene.add_layer(&kit.registry, ball, look, "layer.pattern").unwrap();
+    scene.move_layer(&kit.registry, ball, look, pattern, 1).unwrap();
+    let params = &mut scene.card_mut(ball, look).unwrap().params;
+    params.set(&layered_key(pattern, "in_pattern"), Value::Choice("rings".into()));
+    params.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
+    params.set(&layered_key(pattern, "in_colours"), Value::Gradient(Gradient::even(&[red, blue])));
     let rings = draw(&scene);
     if std::env::var_os("BPE_SAVE_RENDERS").is_some() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pictures");
