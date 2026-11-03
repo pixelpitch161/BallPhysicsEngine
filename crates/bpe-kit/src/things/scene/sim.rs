@@ -45,7 +45,7 @@ mod tests {
         assert_eq!(World::build(&scene, &resolved, &kit.sims).seed, 77);
     }
 
-    /// Random blocks and chance rules read the seed, so a new seed is a new clip.
+    /// The camera's shake reads the seed, so a new seed is a new run.
     #[test]
     fn changing_the_seed_rebuilds_the_world() {
         let kit = kit();

@@ -134,7 +134,7 @@ impl World {
             modules: BTreeMap::new(),
             animated: None,
         };
-        // Things that need the walls (a liquid finding its pool) are built in a second pass, so
+        // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
         for needs_walls in [false, true] {

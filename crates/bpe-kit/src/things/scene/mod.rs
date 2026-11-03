@@ -35,9 +35,8 @@ pub struct SceneSettings {
     /// How many times a second the physics moves everything.
     #[setting(label = "Physics rate", range(60, 2000), unit = "per s", group = "World")]
     pub steps_per_second: u32,
-    /// Where the scene's random numbers start. Change it for a different clip from the same
-    /// settings.
-    #[setting(label = "Seed", range(0, 1000000), group = "World", random)]
+    /// Where the scene's random numbers start. For now only the camera's shake reads it.
+    #[setting(label = "Seed", range(0, 1000000), group = "World")]
     pub seed: u32,
     /// The colours behind everything, at any angle or spreading from a centre.
     #[setting(

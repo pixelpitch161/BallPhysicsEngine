@@ -870,11 +870,13 @@ mod tests {
         let rolled = roll(
             &mut scene,
             &reg,
-            &Scope::Group { thing: ThingId::ROOT, group: "World" },
+            &Scope::Group { thing: ThingId::ROOT, group: "Background" },
             Roll { seed: 3, amount: 1.0 },
         );
-        assert!(rolled.changed.contains(&own("seed")));
+        assert!(!rolled.changed.is_empty());
         assert!(!rolled.changed.contains(&own("bloom")));
-        assert!(rolled.changed.iter().all(|a| a.key == "seed"), "{:?}", rolled.changed);
+        let defs = <crate::things::scene::SceneSettings as bpe_core::Settings>::defs();
+        let group = |key: &str| defs.iter().find(|d| key.starts_with(d.key)).map(|d| d.group);
+        assert!(rolled.changed.iter().all(|a| group(&a.key) == Some("Background")), "{:?}", rolled.changed);
     }
 }

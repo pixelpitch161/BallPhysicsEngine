@@ -213,8 +213,9 @@ pub fn show(
                     }
                 });
                 ui.end_row();
-                let tags_label = grid_label(ui, lw, "Tags")
-                    .on_hover_text("Words that rules and other things can pick this out by, separated by spaces");
+                let tags_label = grid_label(ui, lw, "Tags").on_hover_text(
+                    "Words that bounce targets and the camera can pick this out by, separated by spaces",
+                );
                 let mut tags = thing.tags.iter().cloned().collect::<Vec<_>>().join(" ");
                 let tag_edit = ui
                     .add(egui::TextEdit::singleline(&mut tags).desired_width(f32::INFINITY).hint_text("none"))
@@ -823,7 +824,7 @@ fn placement_rows(
         position_rows(ui, scene, thing, lw, right, edits);
         if kind.can_stick_to_screen() {
             let label = grid_label(ui, lw, "Stick to screen")
-                .on_hover_text("Stay put on the screen while the camera moves, like a caption");
+                .on_hover_text("Stay put on the screen while the camera moves, like a title");
             let mut on = thing.sticks_to_screen(kind);
             if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
                 edits.push(Edit::Screen((on != kind.sticks_to_screen()).then_some(on)));
@@ -2525,7 +2526,7 @@ mod tests {
     }
 
     #[test]
-    fn world_card_dice_rolls_only_the_world() {
+    fn background_card_dice_rolls_only_the_background() {
         let mut h = harness(Some(ThingId::ROOT));
         let headings: Vec<(&str, f32)> = bpe_kit::ROOT_CARDS.iter().map(|n| (*n, heading_top(&h, n))).collect();
         // Which card each dice button sits in: the last heading above it.
@@ -2537,7 +2538,7 @@ mod tests {
             })
             .collect();
         // The background's paint rolls its colours, so Background has dice too.
-        assert_eq!(cards, ["World", "Background", "Picture"], "only cards with something random have dice");
+        assert_eq!(cards, ["Background", "Picture"], "only cards with something random have dice");
         let reg = bpe_kit::registry();
         let values = |s: &State| -> Vec<(&str, Value)> {
             bpe_kit::SceneSettings::defs()
@@ -2549,12 +2550,16 @@ mod tests {
                 .collect()
         };
         let before = values(h.state());
-        let world = cards.iter().position(|c| *c == "World").unwrap();
-        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(world).unwrap().click();
+        let background = cards.iter().position(|c| *c == "Background").unwrap();
+        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(background).unwrap().click();
         h.run();
         let after = values(h.state());
         let changed: Vec<&str> = before.iter().zip(&after).filter(|(b, a)| b != a).map(|(b, _)| b.0).collect();
-        assert_eq!(changed, ["seed"]);
+        let groups: Vec<&str> = changed
+            .iter()
+            .map(|k| bpe_kit::SceneSettings::defs().iter().find(|d| d.key == *k).unwrap().group)
+            .collect();
+        assert!(!groups.is_empty() && groups.iter().all(|g| *g == "Background"), "{changed:?}");
     }
 
     fn selected_in_bar(h: &Harness<'_, State>) -> Vec<String> {
