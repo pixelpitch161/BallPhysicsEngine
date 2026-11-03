@@ -62,6 +62,10 @@ pub struct BallView {
     built: Option<u64>,
     /// Where the picture was last drawn.
     rect: Option<Rect>,
+    /// The brush strokes are painted with.
+    pub brush: super::brush::Brush,
+    /// The stroke being painted, until the button is let go.
+    pub painting: Option<super::brush::Painting>,
     /// A layer whose masks the view shows alone (white where they let it show, black where they
     /// hide it), until Alt-click again or another thing is picked.
     pub solo: Option<(ThingId, bpe_core::LayerId)>,
@@ -69,6 +73,7 @@ pub struct BallView {
 
 impl BallView {
     /// Where the picture was last drawn, in points.
+    #[cfg(test)]
     pub fn last_rect(&self) -> Option<Rect> {
         self.rect
     }

@@ -3,6 +3,7 @@
 //! them the settings of the one picked.
 
 pub mod ball_view;
+mod brush;
 mod clipboard;
 mod code_box;
 mod handles;
@@ -82,16 +83,34 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         if ball_view.solo.is_some_and(|(t, l)| t == cx.id && card.layer(l).is_none()) {
             ball_view.solo = None;
         }
-        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time, None);
-        if let Some(out) = out {
-            let on_handle = match (out.map, card.layer(picked)) {
-                (Some(map), Some(layer)) => handles::show(ui, cx, layer, map, out.radius, edits),
-                _ => false,
-            };
-            // A click on the ball, off the handles, picks the layer showing there.
-            if !on_handle && let Some(layer) = out.picked {
-                inspector.selected_layer.insert(cx.id, layer);
+        let layer = card.layer(picked);
+        // A Brush shading or mask paints on the ball instead of picking layers.
+        let strokes = layer.and_then(|l| brush::target(cx, l));
+        // A stroke left from another layer, ball or brush setting is dropped.
+        if strokes.is_none() || ball_view.painting.as_ref().is_some_and(|p| p.thing != cx.id || p.layer != picked) {
+            ball_view.painting = None;
+        }
+        let swap = brush::preview(ball_view, cx.id, picked);
+        let swap = swap.as_ref().map(|(key, value)| (key.as_str(), value.clone()));
+        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time, swap);
+        match (out, layer, strokes) {
+            (Some(out), Some(_), Some(key)) => {
+                if let Some(map) = out.map {
+                    brush::paint(ui, ball_view, &out.response, map, cx, picked, key, edits);
+                }
+                brush::bar(ui, &mut ball_view.brush);
             }
+            (Some(out), layer, None) => {
+                let on_handle = match (out.map, layer) {
+                    (Some(map), Some(layer)) => handles::show(ui, cx, layer, map, out.radius, edits),
+                    _ => false,
+                };
+                // A click on the ball, off the handles, picks the layer showing there.
+                if !on_handle && let Some(layer) = out.picked {
+                    inspector.selected_layer.insert(cx.id, layer);
+                }
+            }
+            _ => {}
         }
     }
     ui.add_space(6.0);
@@ -789,5 +808,75 @@ mod tests {
         h.drop_at(at);
         h.run();
         assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&pattern.id));
+    }
+
+    /// A new Shading layer set to Brush, picked.
+    fn brush_shading(h: &mut Harness<'_, State>) -> LayerId {
+        add(h, "+ Add layer", "Shading");
+        let shading = layer_named(h, BALL, "Shading");
+        let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
+        params.set(&layered_key(shading.id, "kind"), Value::Choice("brush".into()));
+        h.run();
+        shading.id
+    }
+
+    fn strokes(h: &Harness<'_, State>, layer: LayerId) -> bpe_core::Strokes {
+        match param(h, BALL, layer, "strokes") {
+            Some(Value::Strokes(s)) => s,
+            other => panic!("no strokes: {other:?}"),
+        }
+    }
+
+    /// Drags across the view through `points`, given as shares of the picture (0 to 1).
+    fn paint(h: &mut Harness<'_, State>, points: &[(f32, f32)]) {
+        let rect = h.state().inspector.ball_view.last_rect().expect("the view was drawn");
+        let at = |(x, y): (f32, f32)| rect.min + egui::vec2(x * rect.width(), y * rect.height());
+        h.drag_at(at(points[0]));
+        h.step();
+        for &p in &points[1..] {
+            h.hover_at(at(p));
+            h.step();
+        }
+        h.drop_at(at(*points.last().unwrap()));
+        h.run();
+    }
+
+    #[test]
+    fn a_drag_across_the_ball_paints_one_stroke_in_ball_space() {
+        let mut h = harness();
+        let shading = brush_shading(&mut h);
+        assert!(h.query_all_by_label("Brush size").next().is_some(), "the brush bar shows");
+        let rect = h.state().inspector.ball_view.last_rect().unwrap();
+        // Half way through the drag nothing is saved yet.
+        h.drag_at(rect.center());
+        h.step();
+        h.hover_at(rect.center() + egui::vec2(20.0, 0.0));
+        h.step();
+        h.hover_at(rect.center() + egui::vec2(40.0, 5.0));
+        h.step();
+        assert!(strokes(&h, shading).list.is_empty(), "no edit while painting");
+        assert!(h.state().inspector.ball_view.painting.is_some());
+        h.drop_at(rect.center() + egui::vec2(40.0, 5.0));
+        h.run();
+        let list = strokes(&h, shading).list;
+        assert_eq!(list.len(), 1, "one stroke, one edit");
+        let s = &list[0];
+        assert!(s.points.len() >= 2, "{:?}", s.points);
+        assert!(s.points.iter().all(|p| p[0] >= -1e-3 && p[0] <= 1.0 && p[1].abs() <= 1.0), "{:?}", s.points);
+        assert!(s.points.last().unwrap()[0] > 0.2, "to the right of the middle: {:?}", s.points);
+        assert_eq!((s.size, s.erase), (0.15, false));
+    }
+
+    #[test]
+    fn erase_strokes_say_so_and_points_off_the_ball_are_kept_to_its_square() {
+        let mut h = harness();
+        let shading = brush_shading(&mut h);
+        h.get_by_role_and_label(Role::Button, "Erase").click();
+        h.run();
+        paint(&mut h, &[(0.5, 0.5), (0.02, 0.02)]);
+        let list = strokes(&h, shading).list;
+        assert_eq!(list.len(), 1);
+        assert!(list[0].erase);
+        assert_eq!(list[0].points.last(), Some(&[-1.0, -1.0]), "the corner of the view is held to the ball's square");
     }
 }
