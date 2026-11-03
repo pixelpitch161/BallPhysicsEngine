@@ -294,7 +294,6 @@ impl ThingSim for CanvasSim {
                 | "under"
                 | "under_colour"
                 | "under_colours"
-                | "under_picture"
                 | "under_text"
                 | "under_text_size"
                 | "under_text_colour"
@@ -910,7 +909,8 @@ mod tests {
         for k in ["light_angle", "gloss", "grain", "edge_dark", "glow_size", "glow_strength", "style"] {
             assert!(!sim.affects_physics(k), "{k}");
         }
-        for k in ["dry_time", "bleed", "drips", "fit"] {
+        // The picture table is filled when the world is built, so a new picture restarts it.
+        for k in ["dry_time", "bleed", "drips", "fit", "under_picture"] {
             assert!(sim.affects_physics(k), "{k}");
         }
     }
