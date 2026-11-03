@@ -61,8 +61,15 @@ impl Scene {
         }
         let id = ThingId(self.next_thing);
         self.next_thing += 1;
-        let thing =
-            Thing { id, name: self.free_name(k.name()), kind: kind.into(), parent: Some(parent), ..Thing::default() };
+        let colour = Some(self.colour_for(Some(k)));
+        let thing = Thing {
+            id,
+            name: self.free_name(k.name()),
+            kind: kind.into(),
+            parent: Some(parent),
+            colour,
+            ..Thing::default()
+        };
         self.things.insert(id, thing);
         let at = self.subtree(parent).end;
         self.order.insert(at, id);

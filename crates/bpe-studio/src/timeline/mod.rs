@@ -1,23 +1,26 @@
-//! The timeline panel: the transport, the scrub bar, and a lane for every keyed or pulsing
-//! setting of the selection, with its keys as diamonds that can be moved, eased and deleted.
+//! The timeline panel: the transport, the ruler, the Hits lane, and a group per thing with keys or
+//! pulses. The selected thing's group is open, a lane per setting drawn as a clip in its track
+//! colour, with keys as diamonds that can be moved, eased and deleted; the others are one bar.
 
 pub mod ease;
 pub mod lanes;
 
 use crate::app::{Studio, clock};
-use crate::theme;
+use crate::style;
 use crate::transport;
-use bpe_core::{Address, Ease, PulseSource, Value};
+use bpe_core::{Address, Ease, PulseSource, ThingId, Value};
 use bpe_runtime::EventKind;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
-use lanes::{Lane, lanes_for};
+use lanes::{Group, Lane, groups_for};
+use std::collections::BTreeSet;
 
 /// The width of the column naming each lane.
-pub const LABEL_WIDTH: f32 = 230.0;
-pub const LANE_HEIGHT: f32 = 22.0;
+pub const LABEL_WIDTH: f32 = style::LANE_NAME_W;
+pub const LANE_HEIGHT: f32 = style::LANE_H;
+const GROUP_HEIGHT: f32 = style::GROUP_H;
 /// Keys dragged this close to a hit or a whole second snap to it.
 const SNAP_PX: f32 = 6.0;
-const KEY_SIZE: f32 = 6.0;
+const KEY_SIZE: f32 = 4.5;
 
 /// What the timeline remembers between frames.
 #[derive(Default)]
@@ -46,10 +49,11 @@ impl Ruler {
 
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     transport::controls(ui, studio);
-    ui.add_space(4.0);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
     let ruler = Ruler { track, duration: studio.duration().max(0.001) };
-    let lanes = lanes_for(&studio.scene, &studio.kit, studio.selection.primary);
+    let groups = groups_for(&studio.scene, &studio.kit);
+    // Only the selected thing's group is open; with nothing selected, the scene settings'.
+    let open = studio.selection.primary.unwrap_or(ThingId::ROOT);
     let mut timeline = std::mem::take(&mut studio.panels.timeline);
     // A selection that points at a key that is gone is no selection.
     if let Some((a, i)) = &timeline.selected
@@ -58,21 +62,44 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected = None;
         timeline.curve_open = false;
     }
-    if lanes.is_empty() {
-        ui.add_space(6.0);
-        let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \
-                    right-click it to pulse with the hits. Keys appear here as lanes.";
-        ui.label(RichText::new(hint).small().color(theme::MUTED));
-    } else {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (index, lane) in lanes.iter().enumerate() {
-                if lane.pulse {
-                    pulse_lane(ui, studio, lane, &ruler);
-                } else {
-                    track_lane(ui, studio, &mut timeline, lane, index, &ruler);
-                }
+    // A key in a folded group is out of sight, so it is not selected (Delete would remove it unseen).
+    if timeline.selected.as_ref().is_some_and(|(a, _)| a.thing != open) {
+        timeline.selected = None;
+        timeline.dragging = None;
+        timeline.curve_open = false;
+    }
+    let mut picked = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        hits_lane(ui, studio, &ruler);
+        if groups.is_empty() {
+            ui.add_space(6.0);
+            let hint = "Right-click a setting and pick Create keyframe. Its lane shows up here under its thing.";
+            ui.label(RichText::new(hint).small().color(style::MUTED));
+        }
+        let mut index = 0;
+        for group in &groups {
+            let colour = studio.scene.things.get(&group.thing).and_then(|t| t.colour).map(style::track_color);
+            let is_open = group.thing == open;
+            if group_header(ui, studio, group, colour, is_open, &ruler) {
+                picked = Some(group.thing);
             }
-        });
+            if !is_open {
+                index += group.lanes.len();
+                continue;
+            }
+            for lane in &group.lanes {
+                if lane.pulse {
+                    pulse_lane(ui, studio, lane, colour, &ruler);
+                } else {
+                    track_lane(ui, studio, &mut timeline, lane, index, colour, &ruler);
+                }
+                index += 1;
+            }
+        }
+    });
+    if let Some(id) = picked {
+        studio.selection.set(id);
     }
     // Delete removes the selected key, and is used up so the tree keeps its thing.
     if let Some((a, i)) = timeline.selected.clone()
@@ -87,26 +114,135 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     studio.panels.timeline = timeline;
 }
 
-/// The lane's name and its strip, with the playhead drawn across it.
-fn lane_frame(ui: &mut Ui, studio: &Studio, lane: &Lane, ruler: &Ruler) -> (Rect, Rect, egui::Response) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::click());
-    let label_rect = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
-    ui.put(label_rect, egui::Label::new(RichText::new(&lane.label).small()).truncate().selectable(false));
-    let strip = Rect::from_min_max(
-        Pos2::new(ruler.track.left(), rect.top() + 1.0),
-        Pos2::new(ruler.track.right(), rect.bottom() - 1.0),
-    );
+/// The Hits lane: a tick per hit at its time, in the colour of the thing that hit.
+fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::hover());
+    let name = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
+    name_cell(ui, name, egui::Label::new(RichText::new("Hits").small().color(style::MUTED)).selectable(false));
+    let strip = strip_of(rect, ruler);
     let painter = ui.painter_at(rect);
-    painter.rect_filled(strip, 3.0, theme::CARD);
+    // One tick per pixel column and hitter is enough, however many hits land there.
+    let rate = studio.playback.world().steps_per_second;
+    let mut ticks: BTreeSet<(i32, ThingId)> = BTreeSet::new();
+    for e in studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit) {
+        ticks.insert((ruler.x_of(e.time(rate)).round() as i32, e.a.thing));
+    }
+    for (x, thing) in ticks {
+        let x = x as f32;
+        let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
+        painter.rect_filled(tick, 0.0, hit_colour(&studio.scene, thing));
+    }
+    playhead(&painter, studio, ruler, rect);
+}
+
+/// The colour of a hit's tick: the track colour of the thing that hit, or plain text for a
+/// thing without one.
+pub fn hit_colour(scene: &bpe_core::Scene, thing: ThingId) -> Color32 {
+    style::colour_of(scene, thing)
+}
+
+/// A group's header: its swatch and name, and across the track a thin line in its colour when
+/// open, or when folded a bar with every key of the thing on it. A click selects the thing,
+/// which opens its group. True when clicked.
+fn group_header(
+    ui: &mut Ui,
+    studio: &Studio,
+    group: &Group,
+    colour: Option<Color32>,
+    open: bool,
+    ruler: &Ruler,
+) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), GROUP_HEIGHT), Sense::click());
+    let name = format!("{} lanes", group.name);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+    let painter = ui.painter_at(rect);
+    painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0, style::LINE_SOFT));
+    let swatch = Rect::from_center_size(Pos2::new(rect.left() + 5.0, rect.center().y), egui::vec2(10.0, 10.0));
+    match colour {
+        Some(c) => painter.rect_filled(swatch, 0.0, c),
+        None => painter.rect_filled(swatch.shrink(1.0), 2.0, style::MUTED),
+    };
+    let ink = if response.hovered() { style::TEXT_STRONG } else { style::TEXT };
+    let mut job = egui::text::LayoutJob::simple_singleline(group.name.clone(), style::semibold(12.0), ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(LABEL_WIDTH - 22.0);
+    let text = painter.layout_job(job);
+    painter.galley(Pos2::new(swatch.right() + 7.0, rect.center().y - text.size().y / 2.0), text, ink);
+    let strip = strip_of(rect, ruler);
+    let edge = colour.unwrap_or(style::MUTED);
+    if open {
+        let line = Rect::from_center_size(Pos2::new(strip.center().x, rect.center().y), egui::vec2(strip.width(), 3.0));
+        painter.rect_filled(line, 0.0, edge.gamma_multiply(0.55));
+    } else {
+        let bar = strip.shrink2(egui::vec2(0.0, 2.0));
+        let (fill, edge) = style::clip_colours(colour);
+        painter.rect_filled(bar, 0.0, fill);
+        painter.hline(bar.x_range(), bar.top() + 0.5, Stroke::new(1.0, edge));
+        for lane in group.lanes.iter().filter(|l| !l.pulse) {
+            for key in studio.scene.tracks.get(&lane.address).map(|t| t.keys.as_slice()).unwrap_or_default() {
+                style::paint_diamond(&painter, Pos2::new(ruler.x_of(key.time), bar.center().y), 3.5, false);
+            }
+        }
+    }
+    playhead(&painter, studio, ruler, rect);
+    response.on_hover_text(if open { "This thing's lanes" } else { "Click to open this thing's lanes" }).clicked()
+}
+
+/// A lane's name, at the left of its column and centred up and down.
+fn name_cell(ui: &mut Ui, rect: Rect, label: egui::Label) -> egui::Response {
+    let mut cell = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)));
+    cell.add(label)
+}
+
+/// Where a row's track is: under the ruler, inside the row.
+fn strip_of(rect: Rect, ruler: &Ruler) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(ruler.track.left(), rect.top() + 2.0),
+        Pos2::new(ruler.track.right(), rect.bottom() - 2.0),
+    )
+}
+
+/// The playhead's line across one row.
+fn playhead(painter: &egui::Painter, studio: &Studio, ruler: &Ruler, rect: Rect) {
     let x = ruler.x_of(studio.time);
-    painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, theme::ACCENT));
+    painter.vline(x, rect.y_range(), Stroke::new(1.0, style::TEXT_STRONG));
+}
+
+/// The lane's name and its strip drawn as a clip in the thing's colour, with the playhead across.
+fn lane_frame(
+    ui: &mut Ui,
+    studio: &Studio,
+    lane: &Lane,
+    colour: Option<Color32>,
+    ruler: &Ruler,
+) -> (Rect, Rect, egui::Response) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::click());
+    let label_rect =
+        Rect::from_min_max(rect.min + egui::vec2(17.0, 0.0), Pos2::new(rect.left() + LABEL_WIDTH, rect.bottom()));
+    let label = egui::Label::new(RichText::new(&lane.short).small().color(style::MUTED)).truncate().selectable(false);
+    let shown = name_cell(ui, label_rect, label);
+    let full = lane.label.clone();
+    shown.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, full.clone()));
+    let strip = strip_of(rect, ruler);
+    let painter = ui.painter_at(rect);
+    let (fill, edge) = style::clip_colours(colour);
+    painter.rect_filled(strip, 0.0, fill);
+    painter.hline(strip.x_range(), strip.top() + 0.5, Stroke::new(1.0, edge));
+    playhead(&painter, studio, ruler, rect);
     (rect, strip, response)
 }
 
 /// A keyed setting: a diamond per key. Click selects, drag moves, double-click on empty space
 /// adds a key, right-click eases or deletes.
-fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &Lane, index: usize, ruler: &Ruler) {
-    let (rect, strip, response) = lane_frame(ui, studio, lane, ruler);
+fn track_lane(
+    ui: &mut Ui,
+    studio: &mut Studio,
+    timeline: &mut Timeline,
+    lane: &Lane,
+    index: usize,
+    colour: Option<Color32>,
+    ruler: &Ruler,
+) {
+    let (rect, strip, response) = lane_frame(ui, studio, lane, colour, ruler);
     let a = &lane.address;
     let keys: Vec<(f64, Ease)> =
         studio.scene.tracks.get(a).map(|t| t.keys.iter().map(|k| (k.time, k.ease)).collect()).unwrap_or_default();
@@ -120,14 +256,8 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         let name = format!("Key at {} of {}", clock(video), lane.label);
         key.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
         let selected = timeline.selected.as_ref() == Some(&(a.clone(), i));
-        let color = if selected {
-            Color32::WHITE
-        } else if key.hovered() {
-            theme::WARNING
-        } else {
-            theme::ACCENT_TEXT
-        };
-        paint_diamond(ui.painter(), center, KEY_SIZE, true, color);
+        let size = if key.hovered() { KEY_SIZE + 1.0 } else { KEY_SIZE };
+        style::paint_diamond(ui.painter(), center, size, selected);
         if key.clicked() || key.drag_started() {
             timeline.selected = Some((a.clone(), i));
         }
@@ -137,7 +267,7 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         }
         key.context_menu(|ui| {
             timeline.selected = Some((a.clone(), i));
-            ui.label(RichText::new("Eases into the next key").small().color(theme::MUTED));
+            ui.label(RichText::new("Eases into the next key").small().color(style::MUTED));
             if let Some(picked) = ease::ease_menu(ui, ease) {
                 ease_pick = Some((i, picked, matches!(picked, Ease::Curve { .. })));
             }
@@ -209,8 +339,8 @@ fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
 }
 
 /// A pulsing setting: its source, how much it moves and how fast the pulse dies away.
-fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
-    let (_rect, strip, _response) = lane_frame(ui, studio, lane, ruler);
+fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, colour: Option<Color32>, ruler: &Ruler) {
+    let (_rect, strip, _response) = lane_frame(ui, studio, lane, colour, ruler);
     let a = &lane.address;
     let Some(pulse) = studio.scene.pulses.get_mut(a) else { return };
     let mut remove = false;
@@ -218,7 +348,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
         UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6.0, 0.0))).layout(Layout::left_to_right(Align::Center)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
-    child.label(RichText::new("Pulse with").small().color(theme::MUTED));
+    child.label(RichText::new("Pulse with").small().color(style::MUTED));
     egui::ComboBox::from_id_salt(("pulse-source", &lane.label)).selected_text(pulse.source.name()).width(80.0).show_ui(
         &mut child,
         |ui| {
@@ -230,7 +360,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
             }
         },
     );
-    child.label(RichText::new("Amount").small().color(theme::MUTED));
+    child.label(RichText::new("Amount").small().color(style::MUTED));
     match &mut pulse.amount {
         Value::Number(x) => _ = child.add(egui::DragValue::new(x).speed(0.01)),
         Value::Int(x) => _ = child.add(egui::DragValue::new(x)),
@@ -241,7 +371,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
         Value::Color(_) => _ = child.label(RichText::new("towards white").small()),
         _ => {}
     }
-    child.label(RichText::new("Decay").small().color(theme::MUTED));
+    child.label(RichText::new("Decay").small().color(style::MUTED));
     child.add(egui::DragValue::new(&mut pulse.decay).speed(0.01).range(0.01..=5.0).suffix(" s"));
     if child.add(egui::Button::new("×").small()).on_hover_text("Stop pulsing").clicked() {
         remove = true;
@@ -283,30 +413,12 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
     }
 }
 
-/// A key's diamond: filled, or just its outline.
-fn paint_diamond(painter: &egui::Painter, center: egui::Pos2, size: f32, filled: bool, color: egui::Color32) {
-    let points = vec![
-        center + egui::vec2(0.0, -size),
-        center + egui::vec2(size, 0.0),
-        center + egui::vec2(0.0, size),
-        center + egui::vec2(-size, 0.0),
-    ];
-    if filled {
-        painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::new(1.0, color)));
-    } else {
-        painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.5, color)));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bpe_core::ThingId;
-    use eframe::egui::{PointerButton, accesskit::Role};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use eframe::egui::PointerButton;
+    use egui_kittest::{Harness, kittest::Queryable};
 
     fn size_address() -> Address {
         Address::own(ThingId(2), "radius")
@@ -325,7 +437,7 @@ mod tests {
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(60)
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(|ui, s: &mut Studio| show(ui, s), studio);
         h.run();
         h
@@ -354,16 +466,48 @@ mod tests {
     }
 
     #[test]
-    fn the_timeline_shows_lanes_for_the_selection_then_scene_settings() {
+    fn only_the_selected_group_is_open() {
         let h = harness();
-        let labels: Vec<String> = h
-            .get_all_by_role(Role::Label)
-            .filter_map(|n| n.accesskit_node().label().or_else(|| n.accesskit_node().value()))
-            .filter(|l| l.contains(" · ") && !l.starts_with("Drag"))
-            .collect();
-        assert_eq!(labels, ["Ball · Size", "Scene settings · Gravity"]);
+        assert!(h.query_by_label("Ball lanes").is_some(), "the ball's group header");
+        assert!(h.query_by_label("Scene settings lanes").is_some(), "the scene settings' group header");
+        assert!(h.query_by_label("Ball · Size").is_some(), "the ball's lane is open");
         assert!(h.query_by_label("Key at 0:02.00 of Ball · Size").is_some());
-        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some());
+        assert!(h.query_by_label("Scene settings · Gravity").is_none(), "folded: no lanes");
+        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_none());
+    }
+
+    #[test]
+    fn clicking_a_group_header_selects_its_thing() {
+        let mut h = harness();
+        h.get_by_label("Scene settings lanes").click();
+        h.run();
+        assert_eq!(h.state().selection.primary, Some(ThingId::ROOT));
+        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some(), "now open");
+        assert!(h.query_by_label("Ball · Size").is_none(), "the ball's group folded");
+    }
+
+    #[test]
+    fn a_key_in_a_folded_group_is_not_selected() {
+        let mut h = harness();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click();
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_some());
+        h.state_mut().selection.set(ThingId::ROOT);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected, None);
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(h.state().scene.tracks.contains_key(&size_address()), "Delete leaves a hidden key alone");
+    }
+
+    #[test]
+    fn a_hit_tick_takes_its_hitters_colour() {
+        let h = harness();
+        let scene = &h.state().scene;
+        let ball = scene.things[&ThingId(2)].colour.expect("a ball has a colour");
+        assert_eq!(hit_colour(scene, ThingId(2)), style::track_color(ball));
+        assert_eq!(hit_colour(scene, ThingId::ROOT), style::TEXT, "no colour: plain text");
+        assert_eq!(hit_colour(scene, ThingId(99)), style::TEXT, "gone: plain text");
     }
 
     #[test]
@@ -389,8 +533,9 @@ mod tests {
         assert!(!h.state().scene.tracks.contains_key(&size_address()));
         assert!(h.state().scene.things.contains_key(&ThingId(2)));
         assert_eq!(h.state().panels.timeline.selected, None);
-        // The gravity lane is still there.
-        assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some());
+        // The gravity key is still there, in the scene settings' folded group.
+        assert!(h.query_by_label("Scene settings lanes").is_some());
+        assert_eq!(h.state().scene.tracks.len(), 1);
     }
 
     #[test]

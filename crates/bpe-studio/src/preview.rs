@@ -3,12 +3,12 @@
 
 use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::grid::{snap_length, snap_point};
-use crate::theme;
+use crate::style;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
 use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
 use bpe_runtime::{CameraView, Outline, Pose, World};
-use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
+use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
 pub mod world_view;
@@ -156,12 +156,28 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.label("The preview needs the wgpu renderer.");
         return Outcome::default();
     };
+    // A two-part switch in the corner: the on part is inverted.
     ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.selectable_value(&mut studio.preview_mode, PreviewMode::Camera, "Camera")
-            .on_hover_text("Exactly what the video shows");
-        ui.selectable_value(&mut studio.preview_mode, PreviewMode::World, "World")
-            .on_hover_text("The whole world: scroll to zoom, drag with the middle button to pan, F to frame");
+        ui.add_space(8.0);
+        let frame = egui::Frame::new().stroke(Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
+        frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let modes = [
+                (PreviewMode::Camera, "Camera", "Exactly what the video shows"),
+                (
+                    PreviewMode::World,
+                    "World",
+                    "The whole world: scroll to zoom, drag with the middle button to pan, F to frame",
+                ),
+            ];
+            for (mode, name, help) in modes {
+                let on = studio.preview_mode == mode;
+                let button = style::toggle_button(name, on).frame_when_inactive(on).min_size(egui::vec2(0.0, 24.0));
+                if ui.add(button).on_hover_text(help).clicked() {
+                    studio.preview_mode = mode;
+                }
+            }
+        });
     });
     let settings = studio.settings();
     let (video_width, video_height) = (settings.width.max(1), settings.height.max(1));
@@ -220,7 +236,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-    ui.painter().image(preview.texture, rect, uv, Color32::WHITE);
+    ui.painter().image(preview.texture, rect, uv, style::UNTINTED);
 
     let camera = if world_mode { studio.world_nav.camera() } else { studio.playback.world().camera };
     let mut view = View { rect, scale: view_scale, camera, world: world_mode };
@@ -539,7 +555,7 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2, s
 
 fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, selected: Option<ThingId>) {
     let painter = ui.painter_at(view.rect);
-    let faint = Color32::from_white_alpha(110);
+    let faint = style::FAINT_MARK;
     let world = studio.playback.world();
     let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
 
@@ -547,9 +563,10 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         let Some(view) = view.of(studio, *id) else { continue };
         let edge_active = active == Some(Handle::Edge(*id));
         let highlighted = edge_active || selected == Some(*id);
+        let mark = style::colour_of(&studio.scene, *id);
         if highlighted {
             let stroke =
-                Stroke::new(if edge_active { 2.5 } else { 1.0 }, if edge_active { theme::ACCENT } else { faint });
+                Stroke::new(if edge_active { 2.5 } else { 1.5 }, if edge_active { style::TEXT_STRONG } else { mark });
             let center = wall.outline.center();
             let points: Vec<Pos2> = (0..=96)
                 .map(|i| {
@@ -563,8 +580,14 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         painter.circle(
             dot,
             5.0,
-            if edge_active { theme::ACCENT } else { theme::TEXT },
-            Stroke::new(1.5, Color32::BLACK),
+            if edge_active {
+                style::TEXT_STRONG
+            } else if highlighted {
+                mark
+            } else {
+                style::TEXT
+            },
+            Stroke::new(1.5, style::OUTLINE),
         );
     }
 
@@ -576,7 +599,11 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         && let Some(place) = place_of(&studio.scene, world, id)
     {
         let center = view.to_screen(place);
-        let color = if active.is_some_and(|h| h.thing() == id) { theme::ACCENT } else { Color32::WHITE };
+        let color = if active.is_some_and(|h| h.thing() == id) {
+            style::TEXT_STRONG
+        } else {
+            style::colour_of(&studio.scene, id)
+        };
         let ring: Vec<Pos2> =
             (0..=48).map(|i| center + egui::Vec2::angled(i as f32 / 48.0 * std::f32::consts::TAU) * 24.0).collect();
         painter.add(egui::Shape::dashed_line(&ring, Stroke::new(1.2, color), 4.0, 4.0));
@@ -592,13 +619,20 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     for (id, thing) in studio.scene.things.iter().filter(|(id, t)| t.enabled && world.bodies.contains_key(id)) {
         let Some(view) = view.of(studio, *id) else { continue };
         let highlighted = selected == Some(*id) || active.is_some_and(|h| h.thing() == *id);
-        let color = if highlighted { theme::ACCENT } else { faint };
+        let mark = style::colour_of(&studio.scene, *id);
+        let color = if highlighted { mark } else { faint };
         let center = view.to_screen(place_of(&studio.scene, world, *id).unwrap_or(thing.transform.position));
         painter.circle_stroke(center, 6.0, Stroke::new(1.2, color));
         let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id) else { continue };
         let tip = view.to_screen(tip);
         let aim_active = active == Some(Handle::Aim(*id));
-        let arrow_color = if aim_active { theme::ACCENT } else { Color32::WHITE };
+        let arrow_color = if aim_active {
+            style::TEXT_STRONG
+        } else if highlighted {
+            mark
+        } else {
+            style::TEXT
+        };
         painter.line_segment([center, tip], Stroke::new(2.0, arrow_color));
         let dir = (tip - center).normalized();
         if dir.length() > 0.5 {
@@ -610,7 +644,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
                 Stroke::NONE,
             ));
         }
-        painter.circle(tip, if aim_active { 7.0 } else { 5.5 }, theme::ACCENT, Stroke::new(1.5, Color32::WHITE));
+        painter.circle(tip, if aim_active { 7.0 } else { 5.5 }, arrow_color, Stroke::new(1.5, style::OUTLINE));
         if aim_active || highlighted {
             let speed =
                 studio.resolved.things.get(id).map_or(0.0, |r| BallsSettings::from_params(&r.params).velocity.length());
@@ -619,7 +653,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
                 Align2::LEFT_BOTTOM,
                 format!("{speed:.0} px/s"),
                 FontId::proportional(12.0),
-                Color32::WHITE,
+                style::TEXT_STRONG,
             );
         }
     }
@@ -627,14 +661,14 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
 
 fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
     let painter = ui.painter_at(rect);
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.5), theme::TEXT);
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.0), style::TEXT);
     let size = galley.size() + egui::vec2(24.0, 10.0);
     if size.x > rect.width() {
         return;
     }
     let pill = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, size.y / 2.0 + 10.0), size);
-    painter.rect_filled(pill, size.y / 2.0, Color32::from_black_alpha(190));
-    painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, theme::TEXT);
+    painter.rect_filled(pill, f32::from(style::RADIUS), style::PILL);
+    painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, style::TEXT);
 }
 
 #[cfg(test)]

@@ -27,6 +27,49 @@ pub enum Target {
     Anything,
 }
 
+/// The colour that marks a thing in the editor (its tree tag, timeline group and selection), like
+/// a track colour in a DAW. Only the editor reads it; it never changes the video.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackColour {
+    Pink,
+    Cyan,
+    Lime,
+    Orange,
+    Violet,
+    Yellow,
+    Red,
+    Teal,
+}
+
+impl TrackColour {
+    /// Every colour, in the order new things take them.
+    pub const ALL: [TrackColour; 8] = [
+        TrackColour::Pink,
+        TrackColour::Cyan,
+        TrackColour::Lime,
+        TrackColour::Orange,
+        TrackColour::Violet,
+        TrackColour::Yellow,
+        TrackColour::Red,
+        TrackColour::Teal,
+    ];
+
+    /// What the editor calls it: "Pink".
+    pub fn name(self) -> &'static str {
+        match self {
+            TrackColour::Pink => "Pink",
+            TrackColour::Cyan => "Cyan",
+            TrackColour::Lime => "Lime",
+            TrackColour::Orange => "Orange",
+            TrackColour::Violet => "Violet",
+            TrackColour::Yellow => "Yellow",
+            TrackColour::Red => "Red",
+            TrackColour::Teal => "Teal",
+        }
+    }
+}
+
 /// Where a thing sits and how it is turned, relative to its parent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -111,6 +154,9 @@ pub struct Thing {
     /// kind's own choice ([`crate::ThingKind::sticks_to_screen`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<bool>,
+    /// The thing's colour in the editor. `None` only for the scene settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<TrackColour>,
 }
 
 impl Thing {
@@ -140,6 +186,7 @@ impl Default for Thing {
             params: Params::default(),
             slots: BTreeMap::new(),
             screen: None,
+            colour: None,
         }
     }
 }
@@ -186,6 +233,38 @@ impl Scene {
         let kind = reg.thing("scene").expect("the registry needs a \"scene\" thing kind");
         let root = Thing { id: ThingId::ROOT, name: kind.name().into(), kind: "scene".into(), ..Thing::default() };
         Scene { things: BTreeMap::from([(ThingId::ROOT, root)]), order: vec![ThingId::ROOT], ..Scene::default() }
+    }
+
+    /// The colour a new thing takes: the first nobody uses yet, or once all are taken, the one
+    /// the fewest things use (earliest first on a tie).
+    pub fn next_colour(&self) -> TrackColour {
+        let used = |c: TrackColour| self.things.values().filter(|t| t.colour == Some(c)).count();
+        TrackColour::ALL.into_iter().min_by_key(|&c| used(c)).expect("there are eight colours")
+    }
+
+    /// The colour a new thing of `kind` takes: the kind's own when nobody has it yet, else the
+    /// next free one.
+    pub fn colour_for(&self, kind: Option<&dyn crate::ThingKind>) -> TrackColour {
+        match kind.and_then(|k| k.track_colour()) {
+            Some(own) if !self.things.values().any(|t| t.colour == Some(own)) => own,
+            _ => self.next_colour(),
+        }
+    }
+
+    /// Gives every thing but the scene settings a colour if it has none, in tree order (scenes
+    /// saved before colours existed), and takes the scene settings' away.
+    pub fn give_colours(&mut self, reg: &Registry) {
+        if let Some(root) = self.things.get_mut(&ThingId::ROOT) {
+            root.colour = None;
+        }
+        for id in self.order.clone() {
+            let Some(thing) = self.things.get(&id) else { continue };
+            if id == ThingId::ROOT || thing.colour.is_some() {
+                continue;
+            }
+            let colour = self.colour_for(reg.thing(&thing.kind));
+            self.things.get_mut(&id).expect("looked up above").colour = Some(colour);
+        }
     }
 
     /// The thing's card in `slot`, if it has one.

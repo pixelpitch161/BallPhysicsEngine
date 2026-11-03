@@ -74,6 +74,9 @@ const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Particles, Slot
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce];
 
 impl ThingKind for ArenaKind {
+    fn track_colour(&self) -> Option<bpe_core::TrackColour> {
+        Some(bpe_core::TrackColour::Orange)
+    }
     fn id(&self) -> &'static str {
         "arena"
     }

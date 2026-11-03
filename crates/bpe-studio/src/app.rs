@@ -8,11 +8,11 @@ use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
-use crate::{inspector, preview, settings, theme, timeline, tree};
+use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
-use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -105,7 +105,7 @@ pub struct Studio {
 
 impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
-        theme::apply(&cc.egui_ctx);
+        style::apply(&cc.egui_ctx);
         crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
         let mut studio = Self::blank();
         studio.grid = Grid::load();
@@ -459,8 +459,7 @@ impl Studio {
                 self.toolbar_left(ui);
             });
             let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                let export = egui::Button::new(RichText::new("Export video…").strong().color(Color32::WHITE))
-                    .fill(theme::ACCENT);
+                let export = style::primary_button("Export video…").fill(style::TEXT);
                 if ui.add(export).on_hover_text("Render the scene to an mp4").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
@@ -476,10 +475,13 @@ impl Studio {
 
     /// The toolbar's buttons left of Export, ending with the scene's name and its save status.
     fn toolbar_left(&mut self, ui: &mut egui::Ui) {
-        if ui.button("New").on_hover_text("Start a new blank scene with just a camera (Ctrl+N)").clicked() {
+        if style::toolbar_button(ui, "New")
+            .on_hover_text("Start a new blank scene with just a camera (Ctrl+N)")
+            .clicked()
+        {
             self.clicked = Some(ToolbarClick::New);
         }
-        if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
+        if style::toolbar_button(ui, "Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
             self.clicked = Some(ToolbarClick::Open);
         }
         ui.menu_button("Recent", |ui| {
@@ -495,31 +497,33 @@ impl Studio {
         })
         .response
         .on_hover_text("Open a scene you opened or saved lately");
-        if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
+        if style::toolbar_button(ui, "Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
             self.clicked = Some(ToolbarClick::Save);
         }
-        if ui.button("Save as…").on_hover_text("Save this scene under a new name (Ctrl+Shift+S)").clicked() {
+        if style::toolbar_button(ui, "Save as…")
+            .on_hover_text("Save this scene under a new name (Ctrl+Shift+S)")
+            .clicked()
+        {
             self.clicked = Some(ToolbarClick::SaveAs);
         }
-        ui.separator();
-        let undo = egui::Button::new("Undo");
+        style::bar_separator(ui);
+        let undo = egui::Button::new("Undo").frame_when_inactive(false);
         if ui.add_enabled(self.history.can_undo(), undo).on_hover_text("Undo (Ctrl+Z)").clicked() {
             self.clicked = Some(ToolbarClick::Undo);
         }
-        let redo = egui::Button::new("Redo");
+        let redo = egui::Button::new("Redo").frame_when_inactive(false);
         if ui.add_enabled(self.history.can_redo(), redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
             self.clicked = Some(ToolbarClick::Redo);
         }
-        ui.separator();
-        ui.separator();
+        style::bar_separator(ui);
         self.grid_controls(ui);
-        ui.separator();
-        ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(150.0).hint_text("Scene name"))
+        style::bar_separator(ui);
+        ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
             .on_hover_text("The scene's name. Exported videos are named after it.");
         let saved_label = match (&self.path, self.unsaved()) {
-            (None, _) => RichText::new("Not saved yet").color(theme::MUTED),
-            (Some(_), true) => RichText::new("• Unsaved changes").color(theme::WARNING),
-            (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(theme::MUTED),
+            (None, _) => RichText::new("Not saved yet").color(style::MUTED),
+            (Some(_), true) => RichText::new("• Unsaved changes").color(style::TEXT),
+            (Some(path), false) => RichText::new(format!("Saved as {}", file_label(path))).color(style::MUTED),
         };
         // A slot of its own, so a long file name is cut short; with too little room on this
         // line it goes to the next.
@@ -547,7 +551,7 @@ impl Studio {
             .min_size(*settings::INSPECTOR_RANGE.start())
             .max_size(*settings::INSPECTOR_RANGE.end())
             .resizable(true)
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
+            .frame(side_frame())
             .show(ui, |ui| {
                 // Claim the panel's whole width, or it shrinks to its widest row on the first frame.
                 ui.set_min_width(ui.available_width());
@@ -590,21 +594,27 @@ impl Studio {
     fn grid_controls(&mut self, ui: &mut egui::Ui) {
         let before = self.grid;
         let grid = ui
-            .add(egui::Button::selectable(self.grid.show, "Grid"))
+            .add(style::toggle_button("Grid", self.grid.show))
             .on_hover_text("Show grid lines over the preview. They never show in the video.");
         if grid.clicked() {
             self.grid.show = !self.grid.show;
         }
         if ui
-            .add(egui::Button::selectable(self.grid.snap, "Snap"))
+            .add(style::toggle_button("Snap", self.grid.snap))
             .on_hover_text("Drags land on the grid: moving, resizing the arena and aiming. Hold Alt to place freely.")
             .clicked()
         {
             self.grid.snap = !self.grid.snap;
         }
-        ui.add(
-            egui::DragValue::new(&mut self.grid.spacing).range(grid::SPACING).speed(1.0).max_decimals(0).suffix(" px"),
-        )
+        style::wells(ui, |ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.grid.spacing)
+                    .range(grid::SPACING)
+                    .speed(1.0)
+                    .max_decimals(0)
+                    .suffix(" px"),
+            )
+        })
         .labelled_by(grid.id)
         .on_hover_text("The size of one grid square, in video pixels");
         if self.grid != before && self.persist_settings {
@@ -613,13 +623,13 @@ impl Studio {
     }
 
     fn status_line(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&self.status).small().color(theme::MUTED));
+        ui.horizontal_centered(|ui| {
+            ui.label(RichText::new(&self.status).small().color(style::MUTED));
             if let Some(problem) = &self.shader_problem {
-                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(theme::ERROR));
+                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(style::TEXT));
             }
             if self.panels.export.busy() {
-                ui.label(RichText::new("· Exporting…").small().color(theme::MUTED));
+                ui.label(RichText::new("· Exporting…").small().color(style::MUTED));
             }
         });
     }
@@ -633,10 +643,10 @@ impl Studio {
         egui::Modal::new(egui::Id::unique("save-changes")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading(format!("Save changes to \"{name}\"?"));
-            ui.label(RichText::new("Your changes will be lost if you don't save them.").color(theme::MUTED));
+            ui.label(RichText::new("Your changes will be lost if you don't save them.").color(style::MUTED));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                let save = egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE)).fill(theme::ACCENT);
+                let save = style::primary_button("Save");
                 if ui.add(save).clicked() {
                     choice = Some(true);
                 }
@@ -677,23 +687,34 @@ impl eframe::App for Studio {
             self.shortcuts(&ctx);
         }
 
-        egui::Panel::top("toolbar").frame(bar_frame()).show(ui, |ui| self.toolbar(ui));
+        egui::Panel::top("toolbar").frame(bar_frame()).min_size(style::TOOLBAR_H).show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4)))
+            .frame(
+                egui::Frame::new()
+                    .fill(style::GROUND)
+                    .inner_margin(egui::Margin::symmetric(10, 0))
+                    .stroke(Stroke::new(1.0, style::LINE_SOFT)),
+            )
+            .exact_size(style::STATUS_H)
             .show(ui, |ui| self.status_line(ui));
         egui::Panel::bottom("timeline")
-            .frame(bar_frame())
+            .frame(
+                egui::Frame::new()
+                    .fill(style::PANEL)
+                    .inner_margin(egui::Margin { left: 10, right: 10, top: 0, bottom: 6 })
+                    .stroke(Stroke::new(1.0, style::LINE_SOFT)),
+            )
             .resizable(true)
             .default_size(190.0)
             .min_size(110.0)
             .max_size(520.0)
             .show(ui, |ui| timeline::show(ui, self));
         let tree = egui::Panel::left("tree")
-            .default_size(260.0)
+            .default_size(style::TREE_W)
             .min_size(180.0)
             .max_size(480.0)
             .resizable(true)
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)))
+            .frame(side_frame().inner_margin(egui::Margin::symmetric(8, 10)))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selection)
@@ -716,7 +737,7 @@ impl eframe::App for Studio {
             self.set_playing(false);
         }
         let outcome = egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BACKGROUND))
+            .frame(egui::Frame::new().fill(style::STAGE))
             .show(ui, |ui| preview::show(ui, frame, self))
             .inner;
         if outcome.clicked {
@@ -772,11 +793,20 @@ impl eframe::App for Studio {
     }
 }
 
+/// The toolbar's frame: the panel grey with a soft line under it.
 fn bar_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(theme::PANEL)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .fill(style::PANEL)
+        .inner_margin(egui::Margin::symmetric(8, 7))
+        .stroke(Stroke::new(1.0, style::LINE_SOFT))
+}
+
+/// The tree's and the inspector's frame: the panel grey, touching its neighbours with a soft line.
+fn side_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(style::PANEL)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .stroke(Stroke::new(1.0, style::LINE_SOFT))
 }
 
 /// Seconds as m:ss.ff.
@@ -816,7 +846,7 @@ mod tests {
             .with_size(egui::vec2(1400.0, 900.0))
             .with_max_steps(120)
             .allow_missing_glyphs()
-            .with_context_setup(theme::apply)
+            .with_context_setup(style::apply)
             .build_ui_state(
                 |ui, (studio, width): &mut (Studio, f32)| {
                     *width = studio.inspector_panel(ui);
@@ -843,14 +873,14 @@ mod tests {
         let mut h = inspector_harness(ThingId(2));
         h.set_size(egui::vec2(380.0, 900.0));
         h.run();
-        assert!(h.state().1 < 420.0, "the window squeezes the panel to {}", h.state().1);
-        assert_eq!(h.state().0.inspector_width, 420.0);
+        assert!(h.state().1 < 370.0, "the window squeezes the panel to {}", h.state().1);
+        assert_eq!(h.state().0.inspector_width, 370.0);
     }
 
     #[test]
     fn dragging_the_inspector_edge_saves_its_width() {
         let mut h = inspector_harness(ThingId(2));
-        let edge = egui::pos2(1400.0 - 420.0, 450.0);
+        let edge = egui::pos2(1400.0 - 370.0, 450.0);
         let to = egui::pos2(1400.0 - 500.0, 450.0);
         h.hover_at(edge);
         h.step();
@@ -863,7 +893,7 @@ mod tests {
         h.step();
         h.event(egui::Event::PointerMoved(to));
         h.step();
-        assert_eq!(h.state().0.inspector_width, 420.0, "nothing is saved while the button is down");
+        assert_eq!(h.state().0.inspector_width, 370.0, "nothing is saved while the button is down");
         h.event(egui::Event::PointerButton {
             pos: to,
             button: egui::PointerButton::Primary,
@@ -885,7 +915,7 @@ mod tests {
             .with_size(egui::vec2(width, 80.0))
             .with_max_steps(20)
             .allow_missing_glyphs()
-            .with_context_setup(theme::apply)
+            .with_context_setup(style::apply)
             .build_ui_state(|ui, studio: &mut Studio| studio.toolbar(ui), studio);
         h.run();
         let saved = |n: &egui_kittest::Node<'_>| {
@@ -927,7 +957,7 @@ mod tests {
             .with_size(egui::vec2(1000.0, 2400.0))
             .with_max_steps(120)
             .allow_missing_glyphs()
-            .with_context_setup(theme::apply)
+            .with_context_setup(style::apply)
             .build_ui_state(
                 |ui, (studio, width): &mut (Studio, f32)| {
                     *width = studio.inspector_panel(ui);

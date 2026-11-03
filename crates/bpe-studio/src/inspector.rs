@@ -2,14 +2,14 @@
 //! one card per slot it has. Every card's settings are the thing's own.
 
 use crate::selection::Selection;
-use crate::theme;
+use crate::style;
 use crate::widgets::{
     GridCx, KeyMark, TargetChoices, fold_toggle, grid_label, label_width, settings_grid, settings_like_grid,
     widget_cell,
 };
 use bpe_core::{
-    Address, Attach, FOLDED_SECTIONS, ModuleKind, Resolved, Scene, SettingDef, SlotId, ThingId, Transform, Value,
-    section_rank,
+    Address, Attach, FOLDED_SECTIONS, ModuleKind, Resolved, Scene, SettingDef, SlotId, ThingId, TrackColour, Transform,
+    Value, section_rank,
 };
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
@@ -62,6 +62,8 @@ impl Card {
 /// A change the panel asks for, applied once the drawing is done.
 enum Edit {
     Name(String),
+    /// The thing's track colour; only the primary thing's.
+    Colour(TrackColour),
     Tags(BTreeSet<String>),
     Enabled(bool),
     /// Drawn on the screen or in the world; `None` is the kind's own choice.
@@ -119,11 +121,11 @@ pub fn show(
     let reg = &kit.registry;
     let Some((id, thing)) = selection.primary.and_then(|id| scene.things.get(&id).map(|t| (id, t.clone()))) else {
         ui.add_space(8.0);
-        ui.label(RichText::new("Select something in the tree to see its settings.").color(theme::MUTED));
+        ui.label(RichText::new("Select something in the tree to see its settings.").color(style::MUTED));
         return false;
     };
     let Some(kind) = reg.thing(&thing.kind) else {
-        ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", thing.kind)).color(theme::WARNING));
+        ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", thing.kind)).color(style::TEXT));
         return false;
     };
     let selected = selection.all(scene);
@@ -134,7 +136,7 @@ pub fn show(
     inspector.card_tops.clear();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if selected.len() > 1 {
-            ui.label(RichText::new(format!("Editing {} things", selected.len())).color(theme::MUTED).small())
+            ui.label(RichText::new(format!("Editing {} things", selected.len())).color(style::MUTED).small())
                 .on_hover_text("Settings changed here apply to every selected thing that has them.");
         }
         // ---------- header ----------
@@ -150,7 +152,16 @@ pub fn show(
                         if eye_toggle(ui, thing.enabled) {
                             edits.push(Edit::Enabled(!thing.enabled));
                         }
-                        ui.label(RichText::new(kind.name()).small().color(theme::MUTED)).on_hover_text(kind.help());
+                        ui.label(RichText::new(kind.name()).small().color(style::MUTED)).on_hover_text(kind.help());
+                        // The track colour, which opens the eight colours to pick from.
+                        let swatch = style::swatch_button(ui, thing.colour, "Track colour")
+                            .on_hover_text("This thing's colour in the tree, the preview and the timeline");
+                        egui::Popup::menu(&swatch).show(|ui| {
+                            if let Some(colour) = style::track_picker(ui, thing.colour) {
+                                edits.push(Edit::Colour(colour));
+                                ui.close();
+                            }
+                        });
                     }
                     let mut name = thing.name.clone();
                     let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
@@ -195,7 +206,8 @@ pub fn show(
                 let title = kind.name().to_owned();
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
-                    ui.label(RichText::new(&title).strong());
+                    ui.label(RichText::new(&title).font(style::semibold(13.0)));
+                    folded_summary(ui, open, thing.params.iter().count());
                     open
                 });
                 card_header(ui, inspector, Card::Thing, &header.response);
@@ -212,7 +224,7 @@ pub fn show(
             card(ui, |ui| {
                 let header = ui.horizontal(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
-                    ui.label(RichText::new("Placement").strong());
+                    ui.label(RichText::new("Placement").font(style::semibold(13.0)));
                     open
                 });
                 card_header(ui, inspector, Card::Placement, &header.response);
@@ -235,14 +247,15 @@ pub fn show(
                 let title = kind.slot_label(slot);
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), title);
-                    ui.label(RichText::new(title).strong());
+                    ui.label(RichText::new(title).font(style::semibold(13.0)));
+                    folded_summary(ui, open, card_now.params.iter().count());
                     // The Type menu: what kind of card fills the slot, when more than one fits.
                     let fitting: Vec<&dyn ModuleKind> = reg.kinds_fitting(slot, kind).collect();
                     if let Some(current) = reg.module(&card_now.kind)
                         && fitting.len() > 1
                     {
                         ui.add_space(4.0);
-                        let label = ui.label(RichText::new("Type").small().color(theme::MUTED));
+                        let label = ui.label(RichText::new("Type").small().color(style::MUTED));
                         ui.menu_button(current.name(), |ui| {
                             ui.set_min_width(180.0);
                             for k in &fitting {
@@ -280,7 +293,7 @@ pub fn show(
                     .map(crate::tree::problem_words)
                     .collect();
                 if !problems.is_empty() {
-                    ui.label(RichText::new(problems.join("\n")).small().color(theme::ERROR));
+                    ui.label(RichText::new(problems.join("\n")).small().color(style::TEXT));
                 }
                 if !header.inner {
                     return;
@@ -310,6 +323,7 @@ pub fn show(
                     applies: &applies,
                     folded: Some(&folded),
                     label_width: lw,
+                    track: style::colour_of(scene, id),
                 };
                 let out = settings_grid(ui, ("slot", id, slot), defs, get, &cx);
                 fold_groups(inspector, (id, Some(slot)), &out.folds);
@@ -354,6 +368,7 @@ pub fn show(
                 scene.set_thing_name(id, &name);
                 true
             }
+            Edit::Colour(colour) => set_thing(scene, id, |t| t.colour = Some(colour)),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -447,7 +462,7 @@ fn placement_rows(
             let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a title");
             let mut on = thing.sticks_to_screen(kind);
-            if ui.checkbox(&mut on, "").labelled_by(label.id).changed() {
+            if style::switch(ui, &mut on).labelled_by(label.id).changed() {
                 edits.push(Edit::Screen((on != kind.sticks_to_screen()).then_some(on)));
             }
             ui.end_row();
@@ -517,7 +532,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
         ui.end_row();
         let label = grid_label(ui, lw, "Turns with it").on_hover_text("Swing around as the parent turns");
         let mut turns = turn_with_parent;
-        let turned = ui.checkbox(&mut turns, "").labelled_by(label.id).changed();
+        let turned = style::switch(ui, &mut turns).labelled_by(label.id).changed();
         ui.end_row();
         let mut picked = item;
         let mut item_changed = false;
@@ -541,7 +556,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
 fn eye_toggle(ui: &mut Ui, shown: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, shown, "Shown"));
-    let ink = if response.hovered() { theme::TEXT } else { theme::MUTED };
+    let ink = if response.hovered() { style::TEXT } else { style::MUTED };
     crate::tree::paint_eye(ui.painter(), rect, shown, ink);
     let help = if shown {
         "Shown. A hidden thing is left out of the video and the physics."
@@ -599,6 +614,7 @@ fn own_grid(
         applies: cx.applies,
         folded: Some(&folded),
         label_width: cx.label_width,
+        track: style::colour_of(scene, id),
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
@@ -617,7 +633,7 @@ fn root_card(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, name: &'static 
     card(ui, |ui| {
         let header = ui.horizontal_wrapped(|ui| {
             let open = fold_arrow(ui, &mut inspector.collapsed, card_kind.fold_key(cx.id), name);
-            ui.label(RichText::new(name).strong());
+            ui.label(RichText::new(name).font(style::semibold(13.0)));
             open
         });
         card_header(ui, inspector, card_kind, &header.response);
@@ -767,14 +783,24 @@ fn card_header(ui: &Ui, inspector: &mut Inspector, card: Card, header: &egui::Re
 /// The space inside a card's edge.
 const CARD_MARGIN: i8 = 10;
 
+/// After a folded section's title, how many of its settings this thing changed.
+fn folded_summary(ui: &mut Ui, open: bool, changed: usize) {
+    if !open && changed > 0 {
+        ui.label(RichText::new(format!("{changed} changed")).small().color(style::MUTED));
+    }
+}
+
+/// A flat section of settings: no fill or corners, a soft line under it.
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(theme::CARD).corner_radius(8).inner_margin(CARD_MARGIN).show(ui, |ui| {
+    let margin = egui::Margin { left: CARD_MARGIN, right: CARD_MARGIN, top: 0, bottom: 6 };
+    egui::Frame::new().inner_margin(margin).show(ui, |ui| {
         // As wide as the scroll area shows, less the margin: a card above that couldn't fit
         // stretches the scroll area's insides, and the cards under it mustn't follow.
         let shown = ui.clip_rect().right() - f32::from(CARD_MARGIN) - ui.max_rect().left();
         ui.set_width(ui.available_width().min(shown).max(0.0));
         add_contents(ui);
     });
+    style::divider(ui);
 }
 
 #[cfg(test)]
@@ -819,7 +845,7 @@ mod tests {
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
                     if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, s.time) {
@@ -869,6 +895,16 @@ mod tests {
     fn menu_of(h: &mut Harness<'_, State>, label: &str) {
         h.get_by_role_and_label(Role::Label, label).click_secondary();
         h.run();
+    }
+
+    #[test]
+    fn the_header_colour_button_sets_the_track_colour() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Track colour").click();
+        h.run();
+        h.get_by_label("Track colour Lime").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour::Lime));
     }
 
     #[test]
@@ -1784,7 +1820,7 @@ mod tests {
         let mut h = Harness::builder()
             .with_size(egui::vec2(420.0, 800.0))
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
                     let choices = TargetChoices::from_scene(&s.scene, &s.kit.registry);

@@ -1,7 +1,7 @@
 //! The "Export video" window: pick a file, the quality and the size, then render the mp4 on a
 //! thread.
 
-use crate::theme;
+use crate::style;
 use bpe_cli::{Encoder, ExportOptions, export_video, find_ffmpeg, frame_count, gpu_encoders, output_size};
 use bpe_core::Scene;
 use bpe_kit::{Kit, SceneSettings};
@@ -151,12 +151,12 @@ impl ExportWindow {
 
     fn settings(&mut self, ui: &mut egui::Ui, scene: &Scene, settings: &SceneSettings, base_dir: Option<&Path>) {
         let path = self.output_path(scene, base_dir);
-        ui.label(RichText::new("SAVE AS").size(12.0).color(theme::MUTED));
+        ui.label(RichText::new("SAVE AS").size(12.0).color(style::MUTED));
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new(path.file_name().unwrap_or_default().to_string_lossy()).strong());
                 let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-                ui.label(RichText::new(format!("in {folder}")).small().color(theme::MUTED));
+                ui.label(RichText::new(format!("in {folder}")).small().color(style::MUTED));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Change…").clicked()
@@ -172,14 +172,12 @@ impl ExportWindow {
         });
         if path.exists() {
             ui.label(
-                RichText::new("A video with this name already exists and will be replaced.")
-                    .small()
-                    .color(theme::WARNING),
+                RichText::new("A video with this name already exists and will be replaced.").small().color(style::TEXT),
             );
         }
 
         ui.add_space(8.0);
-        ui.label(RichText::new("SIZE AND QUALITY").size(12.0).color(theme::MUTED));
+        ui.label(RichText::new("SIZE AND QUALITY").size(12.0).color(style::MUTED));
         egui::Grid::new("export-settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label("Size").on_hover_text("A smaller draft exports much faster, for checking timing.");
             ui.horizontal(|ui| {
@@ -187,7 +185,7 @@ impl ExportWindow {
                     ui.radio_value(&mut self.scale, scale, name);
                 }
                 let (w, h) = output_size(settings.width.max(1), settings.height.max(1), self.scale);
-                ui.label(RichText::new(format!("{w} × {h}")).small().color(theme::MUTED));
+                ui.label(RichText::new(format!("{w} × {h}")).small().color(style::MUTED));
             });
             ui.end_row();
             let compression = ui
@@ -199,7 +197,7 @@ impl ExportWindow {
             let frames = frame_count(settings);
             ui.label(
                 RichText::new(format!("{} s at {} fps · {frames} frames", settings.duration, settings.fps))
-                    .color(theme::MUTED),
+                    .color(style::MUTED),
             );
             ui.end_row();
             ui.label("Encoder").on_hover_text(
@@ -208,7 +206,7 @@ impl ExportWindow {
             );
             match self.gpu_encoders() {
                 None if self.ffmpeg.is_some() => {
-                    ui.label(RichText::new("Checking your graphics card…").small().color(theme::MUTED));
+                    ui.label(RichText::new("Checking your graphics card…").small().color(style::MUTED));
                 }
                 found => {
                     let mut choices = vec![Encoder::Auto, Encoder::Cpu];
@@ -248,7 +246,7 @@ impl ExportWindow {
                     "Ball Studio needs the free program ffmpeg to make videos, and couldn't find it. \
                      Install it, or point to ffmpeg.exe with Choose…",
                 )
-                .color(theme::WARNING),
+                .color(style::TEXT),
             );
         }
     }
@@ -278,9 +276,7 @@ impl ExportWindow {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
-        let export = egui::Button::new(RichText::new("Export").strong().color(egui::Color32::WHITE))
-            .fill(theme::ACCENT)
-            .min_size(egui::vec2(120.0, 32.0));
+        let export = style::primary_button("Export").fill(style::TEXT).min_size(egui::vec2(120.0, 32.0));
         if ui.add_enabled(self.ffmpeg.is_some(), export).clicked() {
             self.start(ctx, scene, settings, base_dir, kit);
         }
@@ -288,9 +284,9 @@ impl ExportWindow {
             Some(Ok(done)) => {
                 ui.add_space(6.0);
                 let name = done.path.file_name().unwrap_or_default().to_string_lossy();
-                ui.label(RichText::new(format!("Saved {name} in {}.", minutes(done.seconds))).color(theme::TEXT));
+                ui.label(RichText::new(format!("Saved {name} in {}.", minutes(done.seconds))).color(style::TEXT));
                 ui.label(
-                    RichText::new(format!("Encoded with the {}.", done.encoder.name())).small().color(theme::MUTED),
+                    RichText::new(format!("Encoded with the {}.", done.encoder.name())).small().color(style::MUTED),
                 );
                 ui.horizontal(|ui| {
                     if ui.button("Play video").clicked() {
@@ -303,7 +299,7 @@ impl ExportWindow {
             }
             Some(Err(message)) => {
                 ui.add_space(6.0);
-                ui.label(RichText::new(message).color(theme::ERROR));
+                ui.label(RichText::new(message).color(style::TEXT));
             }
             None => {}
         }

@@ -4,8 +4,10 @@
 use std::collections::BTreeSet;
 
 use crate::selection::Selection;
-use crate::theme;
-use bpe_core::{Address, Attach, EditError, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId};
+use crate::style;
+use bpe_core::{
+    Address, Attach, EditError, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId, TrackColour,
+};
 use bpe_kit::Kit;
 use eframe::egui::{self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
@@ -64,6 +66,8 @@ enum Action {
     /// Move under another thing, hanging off it the way it hangs off its parent now.
     MoveInto(ThingId, ThingId),
     Drop(ThingId, ThingId, Drop),
+    /// Give the thing another track colour.
+    Colour(ThingId, TrackColour),
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
@@ -87,9 +91,10 @@ pub fn show(
         ui.label(
             RichText::new("Drag rows to reorder · drop on a row to group · hold Alt to ride")
                 .small()
-                .color(theme::MUTED),
+                .color(style::MUTED),
         );
         ui.menu_button("+ Add thing", |ui| {
+            ui.set_min_width(160.0);
             let present = |k: &str| scene.things.values().any(|t| t.kind == k);
             let kinds: Vec<_> =
                 reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
@@ -104,7 +109,7 @@ pub fn show(
                 if in_family.peek().is_none() {
                     continue;
                 }
-                ui.label(RichText::new(family).small().color(theme::MUTED));
+                ui.label(RichText::new(family).small().color(style::MUTED));
                 for kind in in_family {
                     button(ui, *kind);
                 }
@@ -121,7 +126,7 @@ pub fn show(
         ui.add_space(4.0);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.horizontal(|ui| {
-                let label = ui.label(RichText::new("Filter").small().color(theme::MUTED));
+                let label = ui.label(RichText::new("Filter").small().color(style::MUTED));
                 let edit = egui::TextEdit::singleline(&mut tree.filter)
                     .desired_width(f32::INFINITY)
                     .hint_text("name, kind or tag");
@@ -197,6 +202,14 @@ pub fn show(
             tree.renaming = None;
             // Its own starters are renamed with it.
             if scene.rename_thing(id, &name) {
+                out.edited = true;
+            }
+        }
+        Some(Action::Colour(id, colour)) => {
+            if let Some(thing) = scene.things.get_mut(&id)
+                && thing.colour != Some(colour)
+            {
+                thing.colour = Some(colour);
                 out.edited = true;
             }
         }
@@ -412,7 +425,7 @@ fn drop_target(ui: &mut Ui, scene: &Scene, rows: &[(ThingId, Rect)], action: &mu
     };
     let (alt, released) = ctx.input(|i| (i.modifiers.alt, i.pointer.any_released()));
     let drop = drop_action(*rect, pointer, alt);
-    let stroke = Stroke::new(2.0, theme::ACCENT);
+    let stroke = Stroke::new(2.0, style::TEXT);
     match &drop {
         Drop::Before => {
             ui.painter().hline(rect.x_range(), rect.top() - gap, stroke);
@@ -440,12 +453,12 @@ fn drop_target(ui: &mut Ui, scene: &Scene, rows: &[(ThingId, Rect)], action: &mu
 /// A word by the pointer while dragging: what is dragged, or what letting go would do.
 fn bubble(ui: &Ui, pointer: Pos2, words: String) {
     let font = egui::TextStyle::Small.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(words, font, theme::TEXT);
+    let galley = ui.painter().layout_no_wrap(words, font, style::TEXT);
     let at = pointer + Vec2::new(14.0, 12.0);
     let rect = Rect::from_min_size(at, galley.size() + Vec2::splat(8.0));
     let painter = ui.painter().clone().with_clip_rect(ui.ctx().content_rect());
-    painter.rect(rect, 4.0, theme::RAISED, Stroke::new(1.0, theme::LINE), egui::StrokeKind::Inside);
-    painter.galley(at + Vec2::splat(4.0), galley, theme::TEXT);
+    painter.rect(rect, 4.0, style::RAISED, Stroke::new(1.0, style::LINE), egui::StrokeKind::Inside);
+    painter.galley(at + Vec2::splat(4.0), galley, style::TEXT);
 }
 
 /// Whether the filter text appears in the thing's name, kind or tags.
@@ -466,32 +479,49 @@ struct RowCx<'a> {
     single: bool,
 }
 
-/// Draws one row and returns the rectangle it covers.
+/// Draws one row and returns the rectangle it covers: a rounded row with the thing's track colour
+/// tag, its kind icon, its name and its eye. The selected row is filled and ringed.
 fn row(ui: &mut Ui, tree: &mut Tree, scene: &Scene, thing: &Thing, cx: &RowCx, action: &mut Option<Action>) -> Rect {
     let id = thing.id;
-    let ink = if thing.enabled { theme::ACCENT_TEXT } else { theme::MUTED };
+    let track = thing.colour.map(style::track_color);
+    let ink = if thing.enabled { style::MUTED } else { style::FAINT };
+    // The fill goes under the row, so it is painted once the row's size is known.
+    let background = ui.painter().add(egui::Shape::Noop);
     let response = ui.horizontal(|ui| {
-        ui.add_space(cx.depth as f32 * 16.0);
+        ui.set_min_height(style::TREE_ROW_H);
+        // The whole width, so the selection fills the row whatever is on it.
+        ui.set_min_width(ui.available_width());
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.add_space(4.0 + cx.depth as f32 * 14.0);
         // The fold toggle, or its empty place so icons line up.
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::click());
         if cx.has_children {
             let collapsed = tree.collapsed.contains(&id);
             let name = format!("{} {}", if collapsed { "Expand" } else { "Collapse" }, thing.name);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-            paint_fold(ui.painter(), rect, collapsed, theme::MUTED);
+            style::paint_chevron(ui.painter(), rect, !collapsed, style::MUTED);
             if response.clicked() {
                 *action = Some(Action::Collapse(id, !collapsed));
             }
+        }
+        // The track colour tag; the scene settings has none, but keeps its place.
+        let (tag, _) = ui.allocate_exact_size(Vec2::new(4.0, 16.0), Sense::hover());
+        if let Some(track) = track {
+            ui.painter().rect_filled(tag, 2.0, if thing.enabled { track } else { track.gamma_multiply(0.45) });
         }
         if thing.rides() {
             let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
             let words = format!("Rides on {}", cx.parent_name.unwrap_or("its parent"));
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, words.clone()));
-            paint_hook(ui.painter(), rect, theme::MUTED);
+            paint_hook(ui.painter(), rect, style::MUTED);
             response.on_hover_text(words);
         }
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-        paint_icon(ui.painter(), rect, &thing.kind, ink);
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        let icon_ink = match track {
+            Some(track) if cx.selected && thing.enabled => track,
+            _ => ink,
+        };
+        paint_icon(ui.painter(), rect, &thing.kind, icon_ink);
 
         if tree.renaming == Some(id) {
             rename_field(ui, tree, id, action);
@@ -500,28 +530,50 @@ fn row(ui: &mut Ui, tree: &mut Tree, scene: &Scene, thing: &Thing, cx: &RowCx, a
         }
         if !thing.tags.is_empty() {
             let tags: Vec<&str> = thing.tags.iter().map(String::as_str).collect();
-            ui.label(RichText::new(tags.join(" ")).small().color(theme::MUTED));
+            ui.label(RichText::new(tags.join(" ")).small().color(style::MUTED));
         }
         if !cx.problems.is_empty() {
-            let (dot, response) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-            ui.painter().circle_filled(dot.center(), 3.5, theme::ERROR);
+            let (mark, response) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
+            ui.painter().text(mark.center(), egui::Align2::CENTER_CENTER, "!", style::semibold(13.0), style::TEXT);
             response.on_hover_text(cx.problems.join("\n"));
         }
         // Hiding the root would hide the whole scene, so it has no eye.
         if id != ThingId::ROOT {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
                 let help = if thing.enabled { "Shown. Click to hide it." } else { "Hidden. Click to show it." };
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
                 let name = format!("{} {}", if thing.enabled { "Hide" } else { "Show" }, thing.name);
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-                paint_eye(ui.painter(), rect, thing.enabled, ink);
+                let eye = if response.hovered() {
+                    style::TEXT
+                } else if cx.selected {
+                    style::MUTED
+                } else {
+                    style::FAINT
+                };
+                paint_eye(ui.painter(), rect, thing.enabled, eye);
                 if response.on_hover_text(help).clicked() {
                     *action = Some(Action::Toggle(id));
                 }
             });
         }
     });
-    response.response.rect
+    let rect = response.response.rect;
+    let radius = egui::CornerRadius::same(style::RADIUS_ROW);
+    if cx.selected {
+        let shape = egui::epaint::RectShape::new(
+            rect,
+            radius,
+            style::SELECTED,
+            Stroke::new(1.5, style::TEXT),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().set(background, shape);
+    } else if ui.rect_contains_pointer(rect) {
+        ui.painter().set(background, egui::epaint::RectShape::filled(rect, radius, style::HOVER));
+    }
+    rect
 }
 
 /// The in-place rename field, taking the keyboard on its first frame.
@@ -535,7 +587,7 @@ fn rename_field(ui: &mut Ui, tree: &mut Tree, id: ThingId, action: &mut Option<A
         state.store(ui.ctx(), edit_id);
         ui.memory_mut(|m| m.request_focus(edit_id));
     }
-    let label = ui.label(RichText::new("Name").small().color(theme::MUTED));
+    let label = ui.label(RichText::new("Name").small().color(style::MUTED));
     let edit = egui::TextEdit::singleline(&mut tree.rename_text).id(edit_id).desired_width(f32::INFINITY);
     let response = ui.add(edit).labelled_by(label.id);
     if ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -549,8 +601,13 @@ fn rename_field(ui: &mut Ui, tree: &mut Tree, id: ThingId, action: &mut Option<A
 /// right-click menu.
 fn name_button(ui: &mut Ui, scene: &Scene, thing: &Thing, cx: &RowCx, action: &mut Option<Action>) {
     let id = thing.id;
-    let color = if thing.enabled { theme::TEXT } else { theme::MUTED };
-    let mut button = egui::Button::selectable(cx.selected, RichText::new(&thing.name).color(color));
+    let text = match (cx.selected, thing.enabled) {
+        (_, false) => RichText::new(&thing.name).color(style::FAINT),
+        (true, true) => RichText::new(&thing.name).font(style::medium(13.0)).color(style::TEXT_STRONG),
+        (false, true) => RichText::new(&thing.name).color(style::TEXT),
+    };
+    // Frameless: the row behind it shows the selection and the hover.
+    let mut button = egui::Button::new(text).frame(false);
     if id != ThingId::ROOT {
         // A drag-only layer over the button would swallow its clicks, so the button drags too.
         button = button.sense(Sense::click_and_drag());
@@ -574,6 +631,12 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
         ui.close();
     }
     if id != ThingId::ROOT {
+        ui.label(RichText::new("Track colour").small().color(style::MUTED));
+        if let Some(colour) = style::track_picker(ui, thing.colour) {
+            *action = Some(Action::Colour(id, colour));
+            ui.close();
+        }
+        ui.separator();
         if !single && ui.button("Duplicate").clicked() {
             *action = Some(Action::Duplicate(id));
             ui.close();
@@ -606,7 +669,7 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
             ui.close();
         }
         ui.menu_button("Attach to", |ui| {
-            ui.label(RichText::new("Ride on…").small().color(theme::MUTED));
+            ui.label(RichText::new("Ride on…").small().color(style::MUTED));
             // Everything but the thing itself, what hangs under it, and Scene settings.
             let under = scene.descendants(id);
             for other in scene.order.iter().filter(|o| **o != id && **o != ThingId::ROOT && !under.contains(o)) {
@@ -642,18 +705,6 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
             .on_disabled_hover_text("Make a folder first");
         });
     }
-}
-
-/// A right-pointing triangle when folded, a down-pointing one when open.
-fn paint_fold(painter: &egui::Painter, rect: Rect, collapsed: bool, ink: Color32) {
-    let c = rect.center();
-    let r = 3.5;
-    let points = if collapsed {
-        vec![c + Vec2::new(-r * 0.6, -r), c + Vec2::new(r * 0.9, 0.0), c + Vec2::new(-r * 0.6, r)]
-    } else {
-        vec![c + Vec2::new(-r, -r * 0.6), c + Vec2::new(r, -r * 0.6), c + Vec2::new(0.0, r * 0.9)]
-    };
-    painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
 }
 
 /// A hook from above into the icon: this thing rides on the one over it.
@@ -856,7 +907,7 @@ mod tests {
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(
                 |ui, s: &mut State| {
                     let before = s.scene.clone();
@@ -1337,6 +1388,22 @@ mod tests {
         h.get_by_label("Balls").click();
         h.run();
         assert_eq!(h.state().added, [ThingId(3)]);
+    }
+
+    #[test]
+    fn a_row_menu_changes_the_track_colour() {
+        let mut h = harness();
+        let before = h.state().scene.clone();
+        assert_ne!(before.things[&ThingId(2)].colour, Some(TrackColour::Teal));
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        h.get_by_label("Track colour Teal").click();
+        h.run();
+        let s = h.state_mut();
+        assert_eq!(s.scene.things[&ThingId(2)].colour, Some(TrackColour::Teal));
+        assert_eq!(s.history.undo.len(), 1, "one undo step");
+        assert!(s.history.undo(&mut s.scene));
+        assert_eq!(s.scene, before);
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub use ids::{KindId, SlotId, ThingId};
 pub use registry::{ModuleKind, Registry, ThingKind};
 pub use resolve::{Problem, ProblemKind, Resolved, ResolvedSlot, ResolvedThing, resolve};
 pub use save::{LoadError, load, save};
-pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, Transform};
+pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
 pub use settings::{
     Choice, Depth, FOLDED_SECTIONS, Flags, GroupOpts, SECTION_ORDER, SettingDef, SettingGroup, SettingValue, Settings,
     section_rank,

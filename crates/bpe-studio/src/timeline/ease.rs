@@ -42,12 +42,12 @@ pub fn curve_editor(ui: &mut Ui, ease: &mut Ease) -> bool {
     }
     let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 80.0), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, crate::theme::CARD);
+    painter.rect_filled(rect, 4.0, crate::style::GROUND);
     let inner = rect.shrink2(egui::vec2(6.0, 16.0));
     let at = |t: f32, v: f32| Pos2::new(inner.left() + t * inner.width(), inner.bottom() - v * inner.height());
-    painter.line_segment([at(0.0, 0.0), at(1.0, 0.0)], Stroke::new(1.0, crate::theme::LINE));
-    painter.line_segment([at(0.0, 1.0), at(1.0, 1.0)], Stroke::new(1.0, crate::theme::LINE));
+    painter.line_segment([at(0.0, 0.0), at(1.0, 0.0)], Stroke::new(1.0, crate::style::LINE));
+    painter.line_segment([at(0.0, 1.0), at(1.0, 1.0)], Stroke::new(1.0, crate::style::LINE));
     let points: Vec<Pos2> = (0..=48).map(|i| i as f32 / 48.0).map(|t| at(t, ease.apply(t))).collect();
-    painter.add(egui::Shape::line(points, Stroke::new(2.0, crate::theme::ACCENT_TEXT)));
+    painter.add(egui::Shape::line(points, Stroke::new(2.0, crate::style::TEXT)));
     changed
 }

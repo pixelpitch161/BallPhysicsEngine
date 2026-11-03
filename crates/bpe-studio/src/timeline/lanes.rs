@@ -1,4 +1,4 @@
-//! Which keyed and pulsing settings the timeline shows for a selection, and in what order.
+//! Which keyed and pulsing settings the timeline shows, grouped under their things, in what order.
 
 use bpe_core::{Address, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
@@ -10,37 +10,50 @@ pub struct Lane {
     pub address: Address,
     /// "Thing · Setting", or "Thing · Card · Setting" for a card's setting.
     pub label: String,
+    /// The label without the thing's name, as the lane shows it under its group.
+    pub short: String,
     /// A pulse lane rather than a track lane.
     pub pulse: bool,
     /// The setting moves the physics, so it can't pulse with hits.
     pub physics: bool,
 }
 
-/// The lanes for `selected`: its tracks then its pulses, then the scene settings' when
-/// something else is selected, each setting at most once per kind of lane.
-pub fn lanes_for(scene: &Scene, kit: &Kit, selected: Option<ThingId>) -> Vec<Lane> {
+/// One thing's lanes on the timeline, under a header with its name and track colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub thing: ThingId,
+    pub name: String,
+    pub lanes: Vec<Lane>,
+}
+
+/// A group for every thing with keys or pulses, in tree order (the scene settings first). Keys
+/// on a thing that is gone are left out.
+pub fn groups_for(scene: &Scene, kit: &Kit) -> Vec<Group> {
+    scene
+        .order
+        .iter()
+        .filter_map(|&id| {
+            let thing = scene.things.get(&id)?;
+            let lanes = lanes_for(scene, kit, id);
+            (!lanes.is_empty()).then(|| Group { thing: id, name: thing.name.clone(), lanes })
+        })
+        .collect()
+}
+
+/// The lanes of one thing: its tracks then its pulses, each setting at most once per kind of
+/// lane.
+pub fn lanes_for(scene: &Scene, kit: &Kit, thing: ThingId) -> Vec<Lane> {
     let mut lanes = Vec::new();
     let mut seen: BTreeSet<(Address, bool)> = BTreeSet::new();
-    let mut ids = Vec::new();
-    if let Some(id) = selected.filter(|id| scene.things.contains_key(id)) {
-        ids.push(id);
-    }
-    if !ids.contains(&ThingId::ROOT) {
-        ids.push(ThingId::ROOT);
-    }
-    for id in ids {
-        let tracks: Vec<&Address> = scene.tracks.keys().collect();
-        let pulses: Vec<&Address> = scene.pulses.keys().collect();
-        for (pulse, addresses) in [(false, tracks), (true, pulses)] {
-            for a in addresses.into_iter().filter(|a| a.thing == id) {
-                if seen.insert((a.clone(), pulse)) {
-                    lanes.push(Lane {
-                        address: a.clone(),
-                        label: label_of(scene, kit, a),
-                        pulse,
-                        physics: moves_physics(scene, kit, a),
-                    });
-                }
+    let tracks: Vec<&Address> = scene.tracks.keys().collect();
+    let pulses: Vec<&Address> = scene.pulses.keys().collect();
+    for (pulse, addresses) in [(false, tracks), (true, pulses)] {
+        for a in addresses.into_iter().filter(|a| a.thing == thing) {
+            if seen.insert((a.clone(), pulse)) {
+                let label = label_of(scene, kit, a);
+                // The thing's name is on the group's header; the lane shows the rest.
+                let short = label.split_once(" · ").map_or(label.clone(), |(_, rest)| rest.to_owned());
+                lanes.push(Lane { address: a.clone(), label, short, pulse, physics: moves_physics(scene, kit, a) });
             }
         }
     }
@@ -80,7 +93,7 @@ mod tests {
     use bpe_core::Value;
 
     #[test]
-    fn lanes_follow_the_selection_then_the_scene_settings() {
+    fn groups_follow_the_tree_with_each_things_lanes() {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let reg = &kit.registry;
@@ -92,24 +105,24 @@ mod tests {
         scene.set_key(reg, &size, 2.0, Value::Number(60.0)).unwrap();
         scene.set_key(reg, &glow, 0.0, Value::Number(0.5)).unwrap();
         scene.set_pulse(reg, &bloom, bpe_core::PulseSource::Hits, Value::Number(0.3), 0.25).unwrap();
-        let labels =
-            |selected| lanes_for(&scene, &kit, selected).into_iter().map(|l| (l.label, l.pulse)).collect::<Vec<_>>();
-        // The ball's own key first, then its look card's, then the scene settings'.
-        assert_eq!(
-            labels(Some(ThingId(2))),
-            [
-                ("Ball · Size".to_owned(), false),
-                ("Ball · Look · Glow".to_owned(), false),
-                ("Scene settings · Gravity".to_owned(), false),
-                ("Scene settings · Bloom".to_owned(), true),
-            ]
-        );
-        assert_eq!(labels(None).len(), 2, "nothing selected shows the scene's lanes");
-        assert_eq!(labels(Some(ThingId::ROOT)).len(), 2);
-        let lanes = lanes_for(&scene, &kit, Some(ThingId(2)));
-        assert!(
-            lanes[0].physics && !lanes[1].physics && lanes[2].physics && !lanes[3].physics,
-            "a ball's size and gravity move the physics; glow doesn't"
-        );
+        let groups = groups_for(&scene, &kit);
+        let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["Scene settings", "Ball"], "tree order, the arena has no keys");
+        let labels = |g: &Group| g.lanes.iter().map(|l| (l.short.clone(), l.pulse)).collect::<Vec<_>>();
+        assert_eq!(labels(&groups[0]), [("Gravity".to_owned(), false), ("Bloom".to_owned(), true)]);
+        assert_eq!(labels(&groups[1]), [("Size".to_owned(), false), ("Look · Glow".to_owned(), false)]);
+        assert_eq!(groups[1].lanes[0].label, "Ball · Size");
+        let ball = &groups[1].lanes;
+        assert!(ball[0].physics && !ball[1].physics, "a ball's size moves the physics; glow doesn't");
+        assert!(groups[0].lanes[0].physics && !groups[0].lanes[1].physics);
+    }
+
+    #[test]
+    fn groups_skip_missing_things() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let gone = Address::own(ThingId(99), "radius");
+        scene.tracks.insert(gone, bpe_core::Track::default());
+        assert!(groups_for(&scene, &kit).is_empty());
     }
 }
