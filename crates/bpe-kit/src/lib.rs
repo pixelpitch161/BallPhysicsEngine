@@ -5,7 +5,6 @@
 mod layer_tests;
 pub mod modules;
 pub mod paint;
-pub mod random;
 pub mod rng;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
@@ -31,7 +30,7 @@ pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
-pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
+pub use starters::{add_thing, fill_slot};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};

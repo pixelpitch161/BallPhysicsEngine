@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use bpe_core::{ModuleId, Params, ThingId, Value};
+use bpe_core::{Params, SlotId, ThingId, Value};
 use bpe_gfx::effects::{Builtin, Header, MAX_PARAM_FLOATS, ParamKind};
 use bpe_gfx::{DrawCx, EffectCall, Frame, ModuleDraw, thing_code};
 
@@ -25,7 +25,7 @@ impl ModuleDraw for EffectDraw {
             _ => 1.0,
         };
         frame.effects.push(EffectCall {
-            key: call_key(cx.thing.id, rslot.module),
+            key: call_key(cx.thing.id, slot),
             wgsl: Cow::Borrowed(self.0.wgsl),
             params: pack_params(header, &rslot.params),
             blend,
@@ -35,9 +35,9 @@ impl ModuleDraw for EffectDraw {
     }
 }
 
-/// Tells one thing's use of one module apart from every other, for the effect's history.
-fn call_key(thing: ThingId, module: ModuleId) -> u64 {
-    ((thing.0 as u64) << 32) | module.0 as u64
+/// Tells one thing's effect apart from every other, for the effect's history.
+fn call_key(thing: ThingId, slot: SlotId) -> u64 {
+    ((thing.0 as u64) << 32) | slot as u64
 }
 
 /// The settings packed the way the shader reads them: in header order, numbers and toggles one

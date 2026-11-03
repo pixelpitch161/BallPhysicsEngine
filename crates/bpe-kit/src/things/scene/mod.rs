@@ -156,9 +156,6 @@ impl ThingKind for SceneKind {
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
     }
-    fn passes_down(&self) -> bool {
-        false
-    }
     fn slot_label(&self, slot: SlotId) -> &'static str {
         match slot {
             SlotId::Shader => "Effects",

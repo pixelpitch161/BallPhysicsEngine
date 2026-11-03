@@ -85,11 +85,11 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
         ty: ValueType::Number,
         default: Value::Number(1.0),
         range: Some((0.0, 1.0)),
-        dice: None,
+        span: None,
         unit: "",
         group: "Basics",
         depth: Depth::Simple,
-        flags: Flags { keyframe: true, random: true, pulse: true, structural: false },
+        flags: Flags { keyframe: true, pulse: true },
         when: "",
     }];
     for p in &header.params {
@@ -102,25 +102,25 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
                 ValueType::Number,
                 Value::Number(default as f64),
                 Some((min as f64, max as f64)),
-                Flags { keyframe: true, random: true, pulse: true, structural: false },
+                Flags { keyframe: true, pulse: true },
             ),
             ParamKind::Number { default, min, max, int: true } => (
                 ValueType::Int,
                 Value::Int(default.round() as i64),
                 Some((min as f64, max as f64)),
-                Flags { keyframe: true, random: true, pulse: true, structural: false },
+                Flags { keyframe: true, pulse: true },
             ),
             ParamKind::Toggle { default } => (
                 ValueType::Bool,
                 Value::Bool(default),
                 None,
-                Flags { keyframe: false, random: true, pulse: false, structural: false },
+                Flags { keyframe: false, pulse: false },
             ),
             ParamKind::Color { default } => (
                 ValueType::Color,
                 Value::Color(Color::from_linear([default[0], default[1], default[2], 1.0])),
                 None,
-                Flags { keyframe: true, random: true, pulse: false, structural: false },
+                Flags { keyframe: true, pulse: false },
             ),
         };
         defs.push(SettingDef {
@@ -130,7 +130,7 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
             ty,
             default,
             range,
-            dice: None,
+            span: None,
             unit: "",
             group: "Basics",
             depth: if p.simple { Depth::Simple } else { Depth::More },
