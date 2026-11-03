@@ -561,6 +561,11 @@ pub struct Frame {
     pub look_layers: Vec<LayerGpu>,
     /// The brush tiles the records name (`MASK_TILE`² bytes each) with a hash to tell them apart.
     pub mask_tiles: Vec<(u64, std::sync::Arc<[u8]>)>,
+    /// The in-ball programs stacks with shader layers draw with, and which instances of
+    /// `layered` draw with which (in order). No runs draws every instance with the plain
+    /// pipeline.
+    pub programs: Vec<crate::LookProgram>,
+    pub layered_runs: Vec<crate::LayeredRun>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
@@ -677,6 +682,8 @@ impl Default for Frame {
             layered: Vec::new(),
             look_layers: Vec::new(),
             mask_tiles: Vec::new(),
+            programs: Vec::new(),
+            layered_runs: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
             hits: Vec::new(),
@@ -702,6 +709,8 @@ impl Frame {
         self.layered.clear();
         self.look_layers.clear();
         self.mask_tiles.clear();
+        self.programs.clear();
+        self.layered_runs.clear();
         self.trails.clear();
         self.bursts.clear();
         self.hits.clear();

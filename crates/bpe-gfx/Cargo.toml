@@ -14,6 +14,7 @@ glam.workspace = true
 anyhow.workspace = true
 pollster.workspace = true
 
+naga = { version = "30", features = ["wgsl-in"] }
+
 [dev-dependencies]
 bpe-core = { workspace = true, features = ["testkit"] }
-naga = { version = "30", features = ["wgsl-in"] }

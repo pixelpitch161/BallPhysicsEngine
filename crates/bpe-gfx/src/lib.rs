@@ -21,6 +21,9 @@ mod paint_tests;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
+mod programs;
+#[cfg(test)]
+mod programs_tests;
 mod util;
 
 pub use frame::{
@@ -30,6 +33,7 @@ pub use frame::{
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};
+pub use programs::{LayeredRun, LookProgram};
 pub use wgpu;
 
 use bpe_runtime::CameraView;
@@ -56,7 +60,7 @@ const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
-const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Uint32x4
 ];
@@ -274,6 +278,9 @@ pub struct Renderer {
     paint_layout: wgpu::BindGroupLayout,
     /// The layer records of layered balls: group 2 of their pipelines.
     layers_layout: wgpu::BindGroupLayout,
+    layered_pipeline_layout: wgpu::PipelineLayout,
+    /// The pipelines of stacks with shader layers.
+    programs: programs::Programs,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
@@ -312,6 +319,8 @@ struct FrameBuffers {
     layers_group: Option<wgpu::BindGroup>,
     /// The brush tiles the records name.
     masks: Option<masks::MaskAtlas>,
+    /// The frame's time and hits, for shader layers inside balls.
+    fx: Option<wgpu::Buffer>,
     flashes: GrowableBuffer,
     bursts: particles::BurstList,
 }
@@ -327,6 +336,7 @@ impl Default for FrameBuffers {
             look_layers: GrowableBuffer::storage("ball layer records"),
             layers_group: None,
             masks: None,
+            fx: None,
             flashes: GrowableBuffer::new("flash instances"),
             bursts: particles::BurstList::default(),
         }
@@ -341,6 +351,7 @@ impl FrameBuffers {
         particles: &particles::Particles,
         layers_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
+        fx: &effects::chain::Fx,
         f: &Frame,
     ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
@@ -354,7 +365,17 @@ impl FrameBuffers {
             let grown = self.look_layers.upload(device, queue, bytemuck::cast_slice(records));
             let atlas = self.masks.get_or_insert_with(|| masks::MaskAtlas::new(device, 1));
             let remade = atlas.upload(device, queue, &f.mask_tiles);
-            if grown || remade || self.layers_group.is_none() {
+            let fresh = self.fx.is_none();
+            let fx_buffer = self.fx.get_or_insert_with(|| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("in-ball effect values"),
+                    size: std::mem::size_of::<effects::chain::Fx>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            });
+            queue.write_buffer(fx_buffer, 0, bytemuck::bytes_of(fx));
+            if grown || remade || fresh || self.layers_group.is_none() {
                 let buffer = self.look_layers.buffer.as_ref().expect("just uploaded");
                 self.layers_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("ball layer records"),
@@ -363,6 +384,7 @@ impl FrameBuffers {
                         wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas.view) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry { binding: 3, resource: fx_buffer.as_entire_binding() },
                     ],
                 }));
             }
@@ -536,6 +558,16 @@ impl Renderer {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<effects::chain::Fx>() as u64),
+                    },
                     count: None,
                 },
             ],
@@ -872,6 +904,8 @@ impl Renderer {
             composite_layout,
             paint_layout,
             layers_layout,
+            layered_pipeline_layout: layered_pipeline_layout.clone(),
+            programs: programs::Programs::default(),
             sampler,
             background,
             trail,
@@ -927,6 +961,12 @@ impl Renderer {
         frame.width as f32 / self.targets.width.max(1) as f32
     }
 
+    /// Why the in-ball programs the last frame named could not be built, by program key (see
+    /// [`LookProgram::key`]).
+    pub fn program_errors(&self) -> Vec<(u64, String)> {
+        self.programs.errors().map(|(k, e)| (k, e.to_owned())).collect()
+    }
+
     /// Why shader effects in the last frame could not be built, one line each: "{name}: {why}".
     pub fn shader_problems(&self) -> Vec<String> {
         self.chain.problems().map(str::to_owned).collect()
@@ -942,6 +982,8 @@ impl Renderer {
             bytemuck::bytes_of(&Globals::new(frame, &frame.camera, self.targets.width)),
         );
         let overlay = frame.overlay.as_deref().filter(|_| frame.has_overlay());
+        // The frame's time and hits, for effects inside balls.
+        let fx = effects::chain::base_uniform(frame, frame.width, frame.height);
         if let Some(o) = overlay {
             let identity = CameraView::default();
             queue.write_buffer(
@@ -949,17 +991,22 @@ impl Renderer {
                 0,
                 bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
             );
-            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, o);
+            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, o);
         }
-        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, frame);
+        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, frame);
         // Every blend layer's lists, the frame's then the overlay's, each in its own buffers.
         let overlay_layers = overlay.map_or(&[][..], |o| &o.layers[..]);
         let layers: Vec<&BlendLayer> = frame.layers.iter().chain(overlay_layers).collect();
         let mut layer_buffers = std::mem::take(&mut self.layer_buffers);
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
-            b.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &l.frame);
+            b.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, &l.frame);
         }
+        // The programs of stacks with shader layers, built the first time a frame names them.
+        let frames = std::iter::once((frame, None))
+            .chain(overlay.map(|o| (o, None)))
+            .chain(layers.iter().map(|l| (&l.frame, l.each.then_some(l.blend))));
+        self.programs.ensure(device, &self.layered_pipeline_layout, frames);
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
         self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
@@ -1154,10 +1201,22 @@ impl Renderer {
             pass.draw(0..4, 0..f.looks.len() as u32);
         }
         if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
-            pass.set_pipeline(self.pipeline(&self.layered, each::Kind::Layered, through));
+            let plain = self.pipeline(&self.layered, each::Kind::Layered, through);
             pass.set_bind_group(2, group, &[]);
             pass.set_vertex_buffer(0, b.layered.slice());
-            pass.draw(0..4, 0..f.layered.len() as u32);
+            let all = [LayeredRun { program: None, start: 0, end: f.layered.len() as u32 }];
+            let runs = if f.layered_runs.is_empty() { &all[..] } else { &f.layered_runs[..] };
+            let each = through.each.map(|b| b.shader_code());
+            for run in runs {
+                // A program that didn't build draws with the plain pipeline, leaving shader layers out.
+                let program = run.program.and_then(|i| f.programs.get(i as usize));
+                let pipeline = program.and_then(|p| self.programs.pipeline(p.key, each)).unwrap_or(plain);
+                let end = run.end.min(f.layered.len() as u32);
+                if run.start < end {
+                    pass.set_pipeline(pipeline);
+                    pass.draw(0..4, run.start..end);
+                }
+            }
         }
     }
 

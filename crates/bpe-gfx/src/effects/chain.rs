@@ -22,7 +22,7 @@ const KEEP_COMPILED: usize = 64;
 /// Matches `struct Fx` in prelude.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Fx {
+pub(crate) struct Fx {
     resolution: [f32; 2],
     time: f32,
     blend: f32,
@@ -353,7 +353,7 @@ pub(crate) fn canvas_of(frame: &Frame, call: &EffectCall) -> Canvas {
 }
 
 /// The uniform values every effect in a frame shares: the picture, the time and the hits.
-fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
+pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
     let mut base = Fx::zeroed();
     base.resolution = [width as f32, height as f32];
     base.time = frame.time;
