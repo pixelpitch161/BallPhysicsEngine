@@ -11,10 +11,12 @@
 // A glow is light added outside the shape with no coverage, as the halo always was.
 
 struct LayerGpu {
-    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow, 5 shading, 6 shader, 7 mask), blend
-    // code, flags, how many mask records follow it.
+    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow, 5 shading, 6 shader, 7 mask, 8 group
+    // colour, 9 group shader), blend code, flags (1 kind's own, 2 and 4 see LayerGpu, 8 the group
+    // colour mixes into this layer, 16 the ball doesn't wear it), how many mask records follow it.
     head: vec4<u32>,
-    // Opacity, then per kind (shine and glow: strength; mask: target record, parent angle, shape).
+    // Opacity, then per kind (shine and glow: strength; mask: target record, parent angle, shape;
+    // a drawn layer a group shader changes: the first group record and a bit mask of them).
     amount: vec4<f32>,
     // Outline: width in pixels, where it sits (0 inside, 1 centre, 2 outside). Shine: spot xy,
     // size. Glow: size in radii. Shading: kind, softness, space, amount. Mask: from, invert,
@@ -48,8 +50,12 @@ struct LayeredIn {
     // Opacity, thing code, heading in degrees, 1 when the shape faces its motion.
     @location(6) misc: vec4<f32>,
     @location(7) vary: vec4<f32>,
-    // First record, count.
+    // First record, count, spare, group mode (0 none, else 1 + blend code).
     @location(8) range: vec4<u32>,
+    // The ball's group colour (straight, linear) and how much of it mixes in.
+    @location(9) group: vec4<f32>,
+    // Where the ball started from its group's middle, and the group's side (world units).
+    @location(10) place: vec4<f32>,
 };
 
 struct LayeredOut {
@@ -63,6 +69,8 @@ struct LayeredOut {
     @location(5) @interpolate(flat) vary: vec4<f32>,
     @location(6) @interpolate(flat) range: vec4<u32>,
     @location(7) @interpolate(flat) dir: vec2<f32>,
+    @location(8) @interpolate(flat) group: vec4<f32>,
+    @location(9) @interpolate(flat) place: vec4<f32>,
 };
 
 @vertex
@@ -83,6 +91,8 @@ fn vs_layers(@builtin(vertex_index) i: u32, b: LayeredIn) -> LayeredOut {
     out.vary = b.vary;
     out.range = b.range;
     out.dir = dir;
+    out.group = b.group;
+    out.place = b.place;
     return out;
 }
 
@@ -145,9 +155,42 @@ struct LayeredBall {
     // The ball's first record and how many it has.
     first: u32,
     count: u32,
+    // The ball's group colour (straight, linear) and how much of it mixes in, and the group mode
+    // (0 none, else 1 + blend code).
+    group: vec4<f32>,
+    group_mode: u32,
+    // Where the ball started from its group's middle, and the group's side (world units).
+    place: vec4<f32>,
 };
 
 var<private> layered_ball: LayeredBall;
+
+// `c` (straight) with the ball's group colour mixed in by the instance's group mode and amount.
+fn with_group(c: vec3<f32>) -> vec3<f32> {
+    let mode = layered_ball.group_mode;
+    if mode == 0u {
+        return c;
+    }
+    var r = layered_ball.group.rgb;
+    if mode > 1u {
+        r = blended(mode - 1u, c, layered_ball.group.rgb);
+    }
+    return mix(c, r, clamp(layered_ball.group.a, 0.0, 1.0));
+}
+
+// The finished `acc` (premultiplied) with the group colour mixed over what it covers; light with
+// no coverage (a glow) is tinted as a colour at its own brightness.
+fn group_over(acc: vec4<f32>) -> vec4<f32> {
+    if acc.a > 1e-5 {
+        return vec4<f32>(with_group(acc.rgb / acc.a) * acc.a, acc.a);
+    }
+    let m = max(acc.r, max(acc.g, acc.b));
+    if m <= 1e-5 {
+        return acc;
+    }
+    return vec4<f32>(with_group(acc.rgb / m) * m, acc.a);
+}
+
 
 // What a walk over the stack gives at one point: as if wholly inside the shape, and as if wholly
 // outside it.
@@ -286,7 +329,21 @@ fn mask_value(
 // What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
 fn shade_layers(in: LayeredOut) -> vec4<f32> {
     let aa = 1.0 / max(in.radius.x, 0.5);
-    layered_ball = LayeredBall(in.body, in.radius, in.form, in.misc, in.vary, in.dir, aa, in.range.x, in.range.y);
+    layered_ball =
+        LayeredBall(
+            in.body,
+            in.radius,
+            in.form,
+            in.misc,
+            in.vary,
+            in.dir,
+            aa,
+            in.range.x,
+            in.range.y,
+            in.group,
+            in.range.w,
+            in.place,
+        );
     let p = rotate(in.local, -in.form.z);
     let d = ball_shape(p, in.form.x, in.form.y);
     let cover = clamp(-d / aa + 0.5, 0.0, 1.0);

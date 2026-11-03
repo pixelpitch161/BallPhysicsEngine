@@ -1,8 +1,9 @@
 // One walk over a ball's stack of layer records, bottom to top, at quad point `local` (-1 to 1
 // across the ball before it turns or stretches): records `first` to `first + count`. Pasted in
-// by `layers::source` with WALK, COV_IN and COV_OUT named, and SHADER_CASE either empty or the
-// shader layers' case: a stack without shader layers, and the walk shader layers sample (which
-// can't call itself), leave shader records out.
+// by `layers::source` with WALK, COV_IN and COV_OUT named, and SHADER_CASE and GROUP_SHADED either
+// empty or the shader layers' case and the group shaders mixed into a layer: a stack without
+// shader layers, and the walk shader layers sample (which can't call itself), leave shader and
+// group shader records out.
 
 var<private> COV_IN: array<f32, 64>;
 var<private> COV_OUT: array<f32, 64>;
@@ -30,8 +31,18 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32) -> Walked {
         let l = look_layers[first + k];
         let mode = l.head.y;
         let flag = (l.head.z & 1u) != 0u;
+        // The group colour mixes into this layer's own colour.
+        let grouped = (l.head.z & 8u) != 0u;
         let opacity = clamp(l.amount.x, 0.0, 1.0);
         let masks = min(l.head.w, count - k - 1u);
+        // A layer this ball doesn't wear is passed over: it covers nothing and isn't the layer
+        // below the next one.
+        if (l.head.z & 16u) != 0u {
+            COV_IN[k] = 0.0;
+            COV_OUT[k] = 0.0;
+            k += 1u + masks;
+            continue;
+        }
         // The layer's colour and how much it covers, inside the shape and outside it.
         var c = vec3<f32>(0.0);
         var a_in = 0.0;
@@ -96,8 +107,17 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32) -> Walked {
                 a_in = shading_factor(l, p, screen, aa) * clamp(l.p0.w, 0.0, 1.0) * opacity;
             }
             //SHADER_CASE
+            case 8u: {
+                // The group colour over the whole ball as it stands here.
+                inner = group_over(inner);
+                outer = group_over(outer);
+            }
             default: {}
         }
+        if grouped {
+            c = with_group(c);
+        }
+        //GROUP_SHADED
         // Its masks multiply into how much it covers.
         var masked = vec2<f32>(1.0);
         for (var j = 1u; j <= masks; j++) {

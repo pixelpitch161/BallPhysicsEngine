@@ -68,13 +68,16 @@ pub trait ModuleKind: Send + Sync + 'static {
 }
 
 /// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, with
-/// the reactions, which change the whole finished stack when something happens, or as a mask
-/// under the drawn layer it limits (its `Layer::parent`).
+/// the reactions, which change the whole finished stack when something happens, as a mask
+/// under the drawn layer it limits (its `Layer::parent`), or with the group layers, which spread
+/// one look across every ball of the thing (applied in their order, after the reactions and
+/// masks in the card's list).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerSection {
     Drawn,
     Reaction,
     Mask,
+    Group,
 }
 
 /// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline
@@ -102,6 +105,11 @@ pub trait LayerKind: Send + Sync + 'static {
     }
     /// Whether layers of this kind may carry masks (a drawn layer that isn't the base layer).
     fn maskable(&self) -> bool {
+        true
+    }
+    /// Whether some balls of a group can wear this drawn layer alone (`Layer.only`). A layer
+    /// that sets how the whole finished ball mixes with what is behind it can't.
+    fn per_ball(&self) -> bool {
         true
     }
     /// Settings a layer of this kind has beyond `settings()` because of its own values, such as

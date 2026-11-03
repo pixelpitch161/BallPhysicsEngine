@@ -245,6 +245,10 @@ pub static EXTRA_DEFS: std::sync::LazyLock<[SettingDef; 1]> = std::sync::LazyLoc
         when: "",
     }]
 });
+/// A group layer, at most one.
+pub struct WashLayerKind;
+/// A group layer that may repeat.
+pub struct SwirlLayerKind;
 
 #[derive(Settings)]
 pub struct BaseLayer {
@@ -349,6 +353,8 @@ layer_kind!(PopLayerKind, "react.pop", "Pop", PopLayer, Reaction, false, false, 
 layer_kind!(TintLayerKind, "layer.tint", "Tint", TintLayer, Drawn, false, false, false);
 layer_kind!(CutLayerKind, "layer.cut", "Mask", CutLayer, Mask, true, false, false);
 layer_kind!(CodeLayerKind, "layer.code", "Code", CodeLayer, Drawn, true, false, true);
+layer_kind!(WashLayerKind, "group.wash", "Wash", RingLayer, Group, false, false, false);
+layer_kind!(SwirlLayerKind, "group.swirl", "Swirl", RingLayer, Group, true, false, false);
 
 /// A registry with every test plugin.
 pub fn registry() -> Registry {
@@ -365,6 +371,8 @@ pub fn registry() -> Registry {
     r.add_layer(TintLayerKind);
     r.add_layer(CutLayerKind);
     r.add_layer(CodeLayerKind);
+    r.add_layer(WashLayerKind);
+    r.add_layer(SwirlLayerKind);
     r
 }
 

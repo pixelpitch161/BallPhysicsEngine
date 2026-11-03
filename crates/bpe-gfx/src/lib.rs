@@ -60,9 +60,9 @@ const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
-pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4, 7 => Float32x4, 8 => Uint32x4
+    6 => Float32x4, 7 => Float32x4, 8 => Uint32x4, 9 => Float32x4, 10 => Float32x4
 ];
 const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
@@ -417,18 +417,24 @@ pub(crate) fn scene_source(effects: Option<&str>) -> String {
 /// the walk that runs them, with `effects` (the effect code and `run_effect`) after.
 pub(crate) fn layers_source(effects: Option<&str>) -> String {
     let walk = include_str!("shaders/layers_walk.wgsl");
-    let named = |name: &str, cov: &str, case: &str| {
+    let named = |name: &str, cov: &str, case: &str, shaded: &str| {
         walk.replace("WALK", name)
             .replace("COV_IN", &format!("{cov}_in"))
             .replace("COV_OUT", &format!("{cov}_out"))
             .replace("//SHADER_CASE", case)
+            .replace("//GROUP_SHADED", shaded)
     };
     let mut out = String::from(include_str!("shaders/layers.wgsl"));
     match effects {
-        None => out.push_str(&named("walk_layers", "cov", "")),
+        None => out.push_str(&named("walk_layers", "cov", "", "")),
         Some(code) => {
-            out.push_str(&named("walk_plain", "cov_plain", ""));
-            out.push_str(&named("walk_layers", "cov", include_str!("shaders/layers_shader_case.wgsl")));
+            out.push_str(&named("walk_plain", "cov_plain", "", ""));
+            out.push_str(&named(
+                "walk_layers",
+                "cov",
+                include_str!("shaders/layers_shader_case.wgsl"),
+                include_str!("shaders/layers_group_shaded.wgsl"),
+            ));
             out.push_str(code);
         }
     }

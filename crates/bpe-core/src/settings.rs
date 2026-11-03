@@ -272,6 +272,18 @@ impl SettingValue for String {
     }
 }
 
+impl SettingValue for Vec<[f32; 2]> {
+    fn value_type() -> ValueType {
+        ValueType::Points
+    }
+    fn to_value(&self) -> Value {
+        Value::Points(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Points(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Target {
     fn value_type() -> ValueType {
         ValueType::Target
@@ -349,6 +361,7 @@ fn is_on(v: &Value) -> bool {
         Value::Int(x) => *x != 0,
         Value::Text(t) => !t.trim().is_empty(),
         Value::Gradient(g) => g.stops.len() > 1,
+        Value::Points(ps) => !ps.is_empty(),
         _ => true,
     }
 }

@@ -2,7 +2,9 @@
 // the stack under the shader layer: `sample(uv)` walks the records under it again at the ball
 // point `uv` maps to (leaving out other shader layers, as a walk can't run itself). `uv` covers
 // the ball's square, 0 to 1, scaled by the layer's Scale about the middle; it turns with the ball
-// or stays upright on the screen. `prev` has no history here and samples the same picture.
+// or stays upright on the screen. For a group shader `uv` covers the group's square instead
+// (upright), so one effect spreads across every ball; `sample` still sees only this ball. `prev`
+// has no history here and samples the same picture.
 
 const MAX_HITS: u32 = 16u;
 
@@ -33,12 +35,13 @@ struct Fx {
 var<private> fx: Fx;
 
 // The shader layer being run: its ball's first record, how many records are under it, its
-// Scale, and whether it stays upright on the screen.
+// Scale, whether it stays upright on the screen, and whether it spreads across the group.
 struct InBall {
     first: u32,
     below: u32,
     scale: f32,
     screen: f32,
+    group: f32,
 };
 
 var<private> in_ball: InBall;
@@ -46,7 +49,7 @@ var<private> in_ball: InBall;
 // Sets up the effect of shader record `l`, the `k`th record of a ball whose records start at
 // `first`, and gives the uv of ball point `q` (turning with it) or `screen` (upright).
 fn in_ball_begin(l: LayerGpu, first: u32, k: u32, q: vec2<f32>, screen: vec2<f32>) -> vec2<f32> {
-    in_ball = InBall(first, k, max(l.p0.y, 0.1), l.p0.z);
+    in_ball = InBall(first, k, max(l.p0.y, 0.1), l.p0.z, 0.0);
     fx = fx_frame;
     fx.time = fx_frame.time * l.p0.x;
     let side = max(2.0 * layered_ball.radius.x, 1.0);
@@ -59,9 +62,33 @@ fn in_ball_begin(l: LayerGpu, first: u32, k: u32, q: vec2<f32>, screen: vec2<f32
     return pt * 0.5 / in_ball.scale + vec2<f32>(0.5);
 }
 
+// Sets up group shader record `l` of a ball whose records start at `first`, with `below`
+// records under it for `sample`, and gives the uv of upright ball point `screen` (in radii) in
+// the group's square.
+fn group_begin(l: LayerGpu, first: u32, below: u32, screen: vec2<f32>) -> vec2<f32> {
+    in_ball = InBall(first, below, max(l.p0.y, 0.1), 1.0, 1.0);
+    fx = fx_frame;
+    fx.time = fx_frame.time * l.p0.x;
+    let side = max(layered_ball.place.z, 1e-3);
+    // Output pixels per world unit.
+    let px = layered_ball.radius.x / max(layered_ball.radius.y, 1e-3);
+    fx.resolution = vec2<f32>(max(side * px, 1.0), max(side * px, 1.0));
+    fx.scale = 1.0;
+    fx.blend = 1.0;
+    fx.apply_to = 0.0;
+    fx.in_layer = 0.0;
+    let world = layered_ball.place.xy + screen * layered_ball.radius.y;
+    return world / side / in_ball.scale + vec2<f32>(0.5);
+}
+
 // The quad point (see layers_walk.wgsl) a shader uv stands for.
 fn in_ball_local(uv: vec2<f32>) -> vec2<f32> {
-    let pt = (uv - vec2<f32>(0.5)) * 2.0 * in_ball.scale;
+    var pt = (uv - vec2<f32>(0.5)) * 2.0 * in_ball.scale;
+    if in_ball.group > 0.5 {
+        // From the group's square back to this ball, in its radii.
+        let world = (uv - vec2<f32>(0.5)) * in_ball.scale * max(layered_ball.place.z, 1e-3);
+        pt = (world - layered_ball.place.xy) / max(layered_ball.radius.y, 1e-3);
+    }
     if in_ball.screen > 0.5 {
         let dir = layered_ball.dir;
         return vec2<f32>(dot(pt, dir), dot(pt, vec2<f32>(-dir.y, dir.x)));
@@ -79,10 +106,14 @@ fn fold_uv(uv: vec2<f32>) -> vec2<f32> {
     return 1.0 - abs(1.0 - abs(uv) % vec2<f32>(2.0));
 }
 
-// The layers under the shader layer at `uv`.
+// The layers under the shader layer at `uv`. A group shader sees them as if the ball's shape
+// went on past its edge, so a ring Around it is lit by the ball's own colours.
 fn sample(uv: vec2<f32>) -> vec3<f32> {
     let local = in_ball_local(uv);
     let w = walk_plain(local, in_ball.first, in_ball.below);
+    if in_ball.group > 0.5 {
+        return w.inner.rgb;
+    }
     let cover = in_ball_cover(local);
     return (cover * w.inner + (1.0 - cover) * w.outer).rgb;
 }

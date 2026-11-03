@@ -12,6 +12,8 @@ bpe-gfx.workspace = true
 glam.workspace = true
 serde.workspace = true
 anyhow.workspace = true
+# Glyph outlines for the Word group shape (the same version egui already uses).
+skrifa = "0.44"
 
 [features]
 # The test scenes (and the arena-plus-ball `new_scene`): only tests turn this on, so the program ships

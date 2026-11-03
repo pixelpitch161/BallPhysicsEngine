@@ -36,7 +36,7 @@ pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
-pub use things::balls::{Arrangement, BallsKind, BallsSettings};
+pub use things::balls::{BallsKind, BallsSettings, GroupShape, Launch, Release, ReleaseOrder};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::folder::{FolderKind, FolderSettings, FolderSim};

@@ -23,6 +23,8 @@ fn ball(x: f32, first: u32, count: u32) -> LayeredInstance {
         misc: [1.0, 3.0, 0.0, 0.0],
         vary: crate::NO_VARY,
         range: [first, count, 0, 0],
+        group: [0.0; 4],
+        place: [0.0; 4],
     }
 }
 
@@ -183,4 +185,90 @@ fn own_code_problems_are_found_without_a_gpu() {
     let syntax = "// name: Broken\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(1.0 }\n";
     assert!(crate::in_ball_problem(syntax).is_some());
     assert!(crate::in_ball_problem("no header at all").is_some());
+}
+
+/// A group shader record running effect slot `slot` with `effect`'s default settings at `amount`:
+/// over the whole ball when `whole`, reaching `around` radii past its edge.
+fn group_shader(effect: &str, slot: u32, amount: f32, whole: bool, around: f32) -> LayerGpu {
+    let s = shader(effect, slot, amount);
+    LayerGpu {
+        head: [LayerGpu::GROUP_SHADER, Blend::Normal.shader_code(), 0, 0],
+        p0: [1.0, 1.0, if whole { 1.0 } else { 0.0 }, slot as f32],
+        p1: [around, 0.0, 0.0, 0.0],
+        ..s
+    }
+}
+
+/// Two white balls of radius 150 at y = ∓200, each wearing `records`, as one group 700 across.
+fn pair_with(records: Vec<LayerGpu>, sources: &[Cow<'static, str>]) -> Frame {
+    let mut frame = Frame { bloom: 0.0, time: 0.4, ..Frame::default() };
+    let n = records.len() as u32;
+    frame.look_layers = records.iter().chain(&records).copied().collect();
+    for (i, y) in [-200.0f32, 200.0].into_iter().enumerate() {
+        let mut b = ball(0.0, i as u32 * n, n);
+        b.center = [0.0, y];
+        b.radius = 150.0;
+        b.place = [0.0, y, 700.0, 0.0];
+        frame.layered.push(b);
+    }
+    frame.programs.push(LookProgram::new(sources.to_vec()));
+    frame.layered_runs.push(LayeredRun { program: Some(0), start: 0, end: 2 });
+    frame
+}
+
+#[test]
+fn a_group_shader_spreads_one_effect_across_the_balls_where_a_ball_shader_repeats_on_each() {
+    let flow = [builtin("rainbow_flow")];
+    let group = pair_with(vec![body(), group_shader("rainbow_flow", 0, 1.0, true, 0.0)], &flow);
+    let each = pair_with(vec![body(), shader("rainbow_flow", 0, 1.0)], &flow);
+    let Some((g, errors)) = draw(&group) else { return };
+    save("program-group-shader", &g, W, H);
+    assert!(errors.is_empty(), "{errors:?}");
+    let (e, _) = draw(&each).unwrap();
+    let far = |a: [u8; 4], b: [u8; 4]| (0..3).map(|i| a[i].abs_diff(b[i]) as u32).sum::<u32>();
+    let (top, bottom) = (at(&g, 0.0, -200.0), at(&g, 0.0, 200.0));
+    assert!(far(top, bottom) > 60, "one effect across the group: {top:?} vs {bottom:?}");
+    let (top, bottom) = (at(&e, 0.0, -200.0), at(&e, 0.0, 200.0));
+    assert!(far(top, bottom) <= 3, "the same on each ball: {top:?} vs {bottom:?}");
+}
+
+#[test]
+fn a_group_shader_at_amount_zero_changes_nothing_and_around_reaches_past_the_edge() {
+    let flow = [builtin("rainbow_flow")];
+    let plain = pair_with(vec![body()], &[]);
+    let none = pair_with(vec![body(), group_shader("rainbow_flow", 0, 0.0, true, 1.0)], &flow);
+    let Some((a, _)) = draw(&plain) else { return };
+    let (b, errors) = draw(&none).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(a == b, "amount 0 changes nothing");
+    let inside = pair_with(vec![body(), group_shader("rainbow_flow", 0, 1.0, true, 0.0)], &flow);
+    let mut around = pair_with(vec![body(), group_shader("rainbow_flow", 0, 1.0, true, 1.0)], &flow);
+    for b in &mut around.layered {
+        b.form[3] = 2.6;
+    }
+    let (i, _) = draw(&inside).unwrap();
+    let (o, _) = draw(&around).unwrap();
+    save("program-group-around", &o, W, H);
+    // Just past the top ball's edge, to its side.
+    let past = (175.0, -200.0);
+    assert_eq!(at(&i, past.0, past.1), at(&a, past.0, past.1), "inside only stays in the ball");
+    assert_ne!(at(&o, past.0, past.1), at(&a, past.0, past.1), "around shows past the edge");
+}
+
+#[test]
+fn a_group_shader_can_change_one_layer_only() {
+    let flow = [builtin("rainbow_flow")];
+    let plain = pair_with(vec![body()], &[]);
+    // The body names the group record after it (index 1, bit 0).
+    let mut b = body();
+    b.amount[2] = 1.0;
+    b.amount[3] = 1.0;
+    let shaded = pair_with(vec![b, group_shader("rainbow_flow", 0, 1.0, false, 0.0)], &flow);
+    let unnamed = pair_with(vec![body(), group_shader("rainbow_flow", 0, 1.0, false, 0.0)], &flow);
+    let Some((a, _)) = draw(&plain) else { return };
+    let (s, errors) = draw(&shaded).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let (u, _) = draw(&unnamed).unwrap();
+    assert_ne!(at(&s, 0.0, -200.0), at(&a, 0.0, -200.0), "the body takes the effect");
+    assert!(u == a, "a group shader no layer names, not over the whole ball, does nothing");
 }

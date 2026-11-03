@@ -6,12 +6,16 @@ pub mod ball_view;
 mod brush;
 mod clipboard;
 mod code_box;
+pub mod group;
+pub mod group_view;
 mod handles;
 mod layer_list;
 mod layer_rows;
 
 pub use ball_view::BallView;
 pub use clipboard::Clipboard;
+pub use group::LookMode;
+pub use group_view::GroupView;
 
 use bpe_core::{Address, LayerId, LayerSection, Params, Scene, SettingDef, SlotId, ThingId, Value, layered_key};
 use bpe_kit::Kit;
@@ -36,11 +40,11 @@ pub struct LookCx<'a> {
 }
 
 impl LookCx<'_> {
-    fn reg(&self) -> &bpe_core::Registry {
+    pub(crate) fn reg(&self) -> &bpe_core::Registry {
         &self.kit.registry
     }
 
-    fn card(&self) -> Option<&bpe_core::Slot> {
+    pub(crate) fn card(&self) -> Option<&bpe_core::Slot> {
         self.scene.card(self.id, self.slot)
     }
 
@@ -77,6 +81,14 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         return;
     };
     // ---------- the ball view ----------
+    // A layer some balls wear alone shows on the first of them.
+    let count = cx.scene.things.get(&cx.id).map_or(1, |t| {
+        bpe_kit::things::balls::shapes::offsets(&<bpe_kit::BallsSettings as bpe_core::Settings>::from_params(&t.params))
+            .len()
+    });
+    // A mask shows on the balls its layer does.
+    let wearer = card.layer(picked).and_then(|l| l.parent.and_then(|p| card.layer(p)).or(Some(l)));
+    let number = wearer.and_then(|l| l.only.iter().copied().find(|n| (*n as usize) < count)).unwrap_or(0);
     {
         let Inspector { ball_view, render, own_step, .. } = inspector;
         // Masks shown alone go back to the look when their layer goes.
@@ -92,7 +104,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         }
         let swap = brush::preview(ball_view, cx.id, picked);
         let swap = swap.as_ref().map(|(key, value)| (key.as_str(), value.clone()));
-        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time, swap);
+        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, number, cx.time, swap);
         match (out, layer, strokes) {
             (Some(out), Some(_), Some(key)) => {
                 if let Some(map) = out.map {
@@ -117,8 +129,10 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     }
     ui.add_space(6.0);
     let section = |kind: &str| reg.layer(kind).map(|k| k.section());
-    let drawn: Vec<&bpe_core::Layer> =
-        layer_list::top_level(card).filter(|l| section(&l.kind) != Some(LayerSection::Reaction)).collect();
+    // The group's layers show in Group mode, not here.
+    let drawn: Vec<&bpe_core::Layer> = layer_list::top_level(card)
+        .filter(|l| !matches!(section(&l.kind), Some(LayerSection::Reaction | LayerSection::Group)))
+        .collect();
     let reactions: Vec<&bpe_core::Layer> =
         layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
 
@@ -238,7 +252,7 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
 }
 
 /// Layer `layer`'s settings grid. Its edits carry the layered keys.
-fn layer_settings(
+pub(crate) fn layer_settings(
     ui: &mut Ui,
     inspector: &mut Inspector,
     cx: &LookCx,
@@ -271,7 +285,7 @@ fn layer_settings(
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), layered_key(layer, key))));
 }
 
-fn mark_for(scene: &Scene, def: &SettingDef, a: &Address) -> KeyMark {
+pub(crate) fn mark_for(scene: &Scene, def: &SettingDef, a: &Address) -> KeyMark {
     KeyMark { can_key: def.flags.keyframe, keyed: scene.keyed(a), pulsed: scene.pulses.contains_key(a) }
 }
 

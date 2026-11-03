@@ -80,7 +80,8 @@ impl BallView {
 }
 
 /// The small scene the view draws: the scene's settings (or plain ones on a dark ground) and a
-/// copy of `id` alone, a single ball at the middle with its Look and nothing else.
+/// copy of `id` alone with its Look and nothing else. A group keeps its balls, every one let go
+/// at once so each has its number in the group; the view shows one of them.
 pub fn mini_scene(scene: &Scene, kit: &Kit, id: ThingId, ground: Ground) -> Option<Scene> {
     let reg = &kit.registry;
     let thing = scene.things.get(&id)?;
@@ -100,7 +101,7 @@ pub fn mini_scene(scene: &Scene, kit: &Kit, id: ThingId, ground: Ground) -> Opti
     ball.enabled = true;
     ball.screen = None;
     ball.slots.retain(|slot, _| *slot == SlotId::Look);
-    ball.params.set("arrangement", Value::Choice("single".into()));
+    ball.params.set("release", Value::Choice("all_at_once".into()));
     // The Look's keys and pulses still move it, and on the scene's ground the scene's own.
     let kept = |a: &Address| {
         (a.thing == id && a.slot == Some(SlotId::Look))
@@ -119,15 +120,16 @@ pub fn view_size(radius: f32) -> u32 {
     (radius.max(1.0) / RADIUS_SHARE).round().max(2.0) as u32
 }
 
-/// The frame of `mini` (from [`mini_scene`]) for thing `id` with radius `radius`, at `time`
-/// seconds into the scene (`clock` of them into the view's loop, after `loops` whole loops: in
-/// Hit the ball has hit once a loop).
+/// The frame of `mini` (from [`mini_scene`]) for ball `number` of thing `id` (0 for a single
+/// ball) with radius `radius`, at `time` seconds into the scene (`clock` of them into the view's
+/// loop, after `loops` whole loops: in Hit the ball has hit once a loop).
 #[allow(clippy::too_many_arguments)]
 pub fn build_view_frame(
     mini: &Scene,
     resolved: &Resolved,
     kit: &Kit,
     id: ThingId,
+    number: u32,
     radius: f32,
     mode: ViewMode,
     time: f64,
@@ -138,19 +140,23 @@ pub fn build_view_frame(
     let mut world = World::build(mini, resolved, &kit.sims);
     let mut log = Log::default();
     let rate = world.steps_per_second;
+    // Every ball is let go at once, so a ball's row is its number.
+    let shown = |n: usize| n.min(world.bodies.get(&id).map_or(1, |b| b.len()).max(1) - 1);
+    let row = shown(number as usize);
     if let Some(bodies) = world.bodies.get_mut(&id) {
         for i in 0..bodies.len() {
             bodies.position[i] = Vec2::ZERO;
             bodies.radius[i] = radius;
             bodies.velocity[i] = if mode == ViewMode::Moving { Vec2::new(MOVING_SPEED, 0.0) } else { Vec2::ZERO };
+            bodies.alive[i] = i == row;
         }
-        if mode == ViewMode::Hit && !bodies.hits.is_empty() {
-            bodies.hits[0] = loops + 1;
+        if mode == ViewMode::Hit && row < bodies.hits.len() {
+            bodies.hits[row] = loops + 1;
             let start = time - clock;
             log.push(Event {
                 step: (start * rate as f64).round().max(0.0) as u64,
                 kind: EventKind::Hit,
-                a: Party { thing: id, item: 0 },
+                a: Party { thing: id, item: row as u32 },
                 b: None,
                 point: Vec2::new(0.0, radius),
                 normal: Vec2::new(0.0, -1.0),
@@ -201,8 +207,8 @@ pub struct ViewOut {
     pub picked: Option<bpe_core::LayerId>,
 }
 
-/// Draws the view and its buttons for thing `id` of `scene` at the playhead `time`, with layered
-/// key `swap.0` of its Look holding `swap.1` instead (a stroke being painted).
+/// Draws the view and its buttons for ball `number` of thing `id` of `scene` at the playhead
+/// `time`, with layered key `swap.0` of its Look holding `swap.1` instead (a stroke being painted).
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -211,6 +217,7 @@ pub fn show(
     scene: &Scene,
     kit: &Kit,
     id: ThingId,
+    number: u32,
     time: f64,
     swap: Option<(&str, Value)>,
 ) -> Option<ViewOut> {
@@ -238,11 +245,12 @@ pub fn show(
     let loops = looped.map_or(0, |len| (now / len) as u32);
     let solo = view.solo.filter(|(t, _)| *t == id).map(|(_, layer)| layer);
     let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground)
-        ^ solo.map_or(0, |l| (u64::from(l.0) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        ^ solo.map_or(0, |l| (u64::from(l.0) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        ^ u64::from(number).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
     // The frame is built without a GPU too, so handles and clicks work everywhere.
     if view.built != Some(key) {
         let at = time + clock;
-        build_view_frame(&mini, &resolved, kit, id, radius, view.mode, at, clock, loops, &mut view.frame);
+        build_view_frame(&mini, &resolved, kit, id, number, radius, view.mode, at, clock, loops, &mut view.frame);
         if let Some(layer) = solo {
             show_masks_alone(&mut view.frame, &resolved, id, layer);
         }
@@ -364,7 +372,7 @@ fn buttons(ui: &mut Ui, view: &mut BallView) {
 }
 
 /// A row of buttons, one per choice, the chosen one inverted.
-fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, choices: &[(T, &str, &str)]) {
+pub(crate) fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, choices: &[(T, &str, &str)]) {
     let frame = egui::Frame::new().stroke(egui::Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -405,7 +413,7 @@ mod tests {
         let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
         let resolved = bpe_core::resolve(&mini, reg);
         let mut frame = Frame::default();
-        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+        build_view_frame(&mini, &resolved, &kit, ball, 0, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
         show_masks_alone(&mut frame, &resolved, ball, pattern);
         let solo: Vec<bool> = frame.look_layers.iter().map(|r| r.head[2] & bpe_gfx::LayerGpu::SOLO != 0).collect();
         assert_eq!(solo, [false, false, true, false], "body, outline, pattern, its mask");
@@ -416,27 +424,53 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_studio_scene(&kit.registry);
         let ball = bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
-        scene.things.get_mut(&ball).unwrap().params.set("arrangement", Value::Choice("block".into()));
+        scene.things.get_mut(&ball).unwrap().params.set("group", Value::Bool(true));
         scene.things.get_mut(&ball).unwrap().transform.position = Vec2::new(300.0, -50.0);
         let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
         let resolved = bpe_core::resolve(&mini, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let mut frame = Frame::default();
-        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
-        assert_eq!(frame.layered.len(), 1, "one ball, whatever the arrangement");
+        build_view_frame(&mini, &resolved, &kit, ball, 0, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+        assert_eq!(frame.layered.len(), 1, "one ball, whatever the group");
         assert_eq!(frame.layered[0].center, [0.0, 0.0]);
         assert_eq!(frame.layered[0].radius, 30.0);
         assert_eq!((frame.width, frame.height), (view_size(30.0), view_size(30.0)));
         assert!((30.0 / frame.width as f32 - RADIUS_SHARE).abs() < 0.01);
         // Moving: the ball goes sideways; Hit: it flashes once it has Flash on hit.
-        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Moving, 0.0, 0.0, 0, &mut frame);
+        build_view_frame(&mini, &resolved, &kit, ball, 0, 30.0, ViewMode::Moving, 0.0, 0.0, 0, &mut frame);
         assert_eq!(frame.layered[0].center, [0.0, 0.0], "it stays in the middle");
         let reg = &kit.registry;
         scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::FLASH).unwrap();
         let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
         let resolved = bpe_core::resolve(&mini, reg);
-        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Hit, 0.1, 0.1, 0, &mut frame);
+        build_view_frame(&mini, &resolved, &kit, ball, 0, 30.0, ViewMode::Hit, 0.1, 0.1, 0, &mut frame);
         assert_eq!(frame.flashes.len(), 1);
+    }
+
+    #[test]
+    fn the_view_shows_the_ball_of_the_group_asked_for() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_studio_scene(reg);
+        let ball = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+        let p = &mut scene.things.get_mut(&ball).unwrap().params;
+        p.set("group", Value::Bool(true));
+        p.set("count", Value::Int(10));
+        p.set("release", Value::Choice("one_by_one".into()));
+        let g = scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::GROUP_GRADIENT).unwrap();
+        let look = scene.card_mut(ball, SlotId::Look).unwrap();
+        look.params.set(&bpe_core::layered_key(g, "spread"), Value::Choice("order".into()));
+        let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
+        let resolved = bpe_core::resolve(&mini, reg);
+        let body = |n| {
+            let mut frame = Frame::default();
+            build_view_frame(&mini, &resolved, &kit, ball, n, 24.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+            assert_eq!(frame.layered.len(), 1, "one ball of the ten");
+            assert_eq!(frame.layered[0].center, [0.0, 0.0]);
+            frame.layered[0].body
+        };
+        assert_ne!(body(0), body(9), "the first and last of the group take the gradient's two ends");
+        assert_eq!(body(9), body(50), "past the last, the last");
     }
 
     #[test]
@@ -451,7 +485,7 @@ mod tests {
         let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
         let resolved = bpe_core::resolve(&mini, &kit.registry);
         let mut frame = Frame::default();
-        build_view_frame(&mini, &resolved, &kit, ball, 24.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+        build_view_frame(&mini, &resolved, &kit, ball, 0, 24.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
         let mut renderer = Renderer::new(&device, 100, 100);
         renderer.render(&device, &queue, &frame);
         let pixels = renderer.read_output(&device, &queue).unwrap();
@@ -505,7 +539,7 @@ mod tests {
         let resolved = bpe_core::resolve(&mini, reg);
         let body = |loops| {
             let mut frame = Frame::default();
-            build_view_frame(&mini, &resolved, &kit, ball, 24.0, ViewMode::Hit, 0.5, 0.5, loops, &mut frame);
+            build_view_frame(&mini, &resolved, &kit, ball, 0, 24.0, ViewMode::Hit, 0.5, 0.5, loops, &mut frame);
             frame.layered[0].body
         };
         assert_ne!(body(0), body(1), "each loop's hit turns the colour once more");

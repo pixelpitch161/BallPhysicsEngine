@@ -11,9 +11,10 @@ use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance, LookProgram};
 use glam::Vec2;
 
 use super::{
-    BLEND, BODY, BlendLayer, BodyLayer, ColourFrom, ColourOnHit, ColourOverTime, FLASH, FlashOnHit, GLOW, GlowLayer,
-    HUE, MASK, MaskLayer, OUTLINE, OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE,
-    STRETCH, ShaderLayer, ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
+    BLEND, BODY, BlendLayer, BodyLayer, Changes, ColourFrom, ColourOnHit, ColourOverTime, FLASH, FlashOnHit, GLOW,
+    GROUP_GRADIENT, GROUP_SHADER, GlowLayer, GroupGradient, GroupMix, GroupShader, HUE, MASK, MaskLayer, OUTLINE,
+    OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE, STRETCH, ShaderLayer,
+    ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
 };
 use super::{MaskFrom, ShadingKind};
 use crate::modules::look::BallShape;
@@ -47,6 +48,8 @@ pub struct DrawnLayer {
     pub id: LayerId,
     /// Its shown masks, in order; they multiply.
     pub masks: Vec<MaskLayer>,
+    /// The balls of a group it is given to (empty: every ball), from [`bpe_core::Layer::only`].
+    pub only: Vec<u32>,
 }
 
 impl DrawnLayer {
@@ -56,6 +59,15 @@ impl DrawnLayer {
     }
 }
 
+/// A group layer that writes a record after the ball's own layers, in the group list's order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GroupEnd {
+    /// The group gradient's record, when it changes every layer.
+    Gradient,
+    /// A group shader, with its id.
+    Shader(LayerId, Box<GroupShader>),
+}
+
 /// A thing's shown stack, read from its resolved Look card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stack {
@@ -63,6 +75,10 @@ pub struct Stack {
     pub body: BodyLayer,
     /// The drawn layers above the body, bottom first.
     pub drawn: Vec<DrawnLayer>,
+    /// The group gradient, when the look has one shown and it mixes in.
+    pub group: Option<GroupGradient>,
+    /// The group layers that write records after the ball's own, in order.
+    pub ends: Vec<GroupEnd>,
     pub blend: Option<BlendLayer>,
     pub flash: Option<FlashOnHit>,
     pub hue: Option<ColourOnHit>,
@@ -82,6 +98,8 @@ impl Stack {
             body_id: body.id,
             body: BodyLayer::from_params(&slot.layer_params(body.id)),
             drawn: Vec::new(),
+            group: None,
+            ends: Vec::new(),
             blend: None,
             flash: None,
             hue: None,
@@ -91,7 +109,9 @@ impl Stack {
         };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
-            let mut push = |d: Drawn| stack.drawn.push(DrawnLayer { layer: d, id: layer.id, masks: Vec::new() });
+            let mut push = |d: Drawn| {
+                stack.drawn.push(DrawnLayer { layer: d, id: layer.id, masks: Vec::new(), only: layer.only.clone() })
+            };
             match layer.kind.as_str() {
                 PATTERN => push(Drawn::Pattern(PatternLayer::from_params(&p))),
                 OUTLINE => push(Drawn::Outline(OutlineLayer::from_params(&p))),
@@ -112,6 +132,19 @@ impl Stack {
                 STRETCH => stack.stretch = stack.stretch.take().or(Some(StretchWhenFast::from_params(&p))),
                 RAINBOW => stack.rainbow = stack.rainbow.take().or(Some(ColourOverTime::from_params(&p))),
                 TURNING => stack.turning = stack.turning.take().or(Some(Turning::from_params(&p))),
+                GROUP_GRADIENT => {
+                    let g = GroupGradient::from_params(&p);
+                    if stack.group.is_none() && g.mix != GroupMix::Off {
+                        stack.group = Some(g);
+                        stack.ends.push(GroupEnd::Gradient);
+                    }
+                }
+                GROUP_SHADER => {
+                    let gs = GroupShader::from_params(&p);
+                    if gs.writes() {
+                        stack.ends.push(GroupEnd::Shader(layer.id, Box::new(gs)));
+                    }
+                }
                 _ => {}
             }
         }
@@ -149,13 +182,43 @@ impl Stack {
         self.turning.as_ref().is_some_and(|t| t.face_motion) && self.body.ball_shape != BallShape::Circle
     }
 
+    /// How the group gradient reaches the GPU: `None` when it doesn't (no gradient, or it
+    /// changes only the body, which is mixed on the CPU).
+    pub fn group_on_gpu(&self) -> Option<&GroupGradient> {
+        self.group.as_ref().filter(|g| g.changes != Changes::Body)
+    }
+
+    /// The group gradient when it changes the body colour (mixed on the CPU).
+    pub fn group_on_body(&self) -> Option<&GroupGradient> {
+        self.group.as_ref().filter(|g| g.changes == Changes::Body)
+    }
+
+    /// Whether some drawn layer is given to some balls only.
+    pub fn has_only(&self) -> bool {
+        self.drawn.iter().any(|d| !d.only.is_empty())
+    }
+
+    /// Whether drawn layer `index` (in `drawn`) applies to ball `number`.
+    pub fn applies(&self, index: usize, number: u32) -> bool {
+        self.drawn.get(index).is_none_or(|d| d.only.is_empty() || d.only.binary_search(&number).is_ok())
+    }
+
     /// The records the stack draws with at `time` seconds, bottom first, its gradients baked into
     /// `atlas` and its brush strokes added to `tiles` (a frame's [`bpe_gfx::Frame::mask_tiles`]).
-    /// Hidden layers, Blend and the reactions have none; each drawn layer's masks follow it.
+    /// Hidden layers, Blend and the reactions have none; each drawn layer's masks follow it, and
+    /// the group colour's record comes last when the group gradient changes every layer. Layers
+    /// the group gradient's Choose picks are flagged [`LayerGpu::GROUPED`].
     pub fn records(&self, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>, time: f32) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |on: bool| if on { LayerGpu::FLAG } else { 0 };
-        let mut out = vec![LayerGpu { amount: [1.0, 0.0, 0.0, 0.0], ..LayerGpu::ZERO }];
+        let chosen = self.group_on_gpu().filter(|g| g.changes == Changes::Choose).map(|g| g.chosen_ids());
+        let grouped =
+            |id: LayerId| if chosen.as_ref().is_some_and(|c| c.contains(&id.0)) { LayerGpu::GROUPED } else { 0 };
+        let mut out = vec![LayerGpu {
+            head: [LayerGpu::BODY, 0, grouped(self.body_id), 0],
+            amount: [1.0, 0.0, 0.0, 0.0],
+            ..LayerGpu::ZERO
+        }];
         // Where each layer's record is, by id, for masks that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let sources = self.effect_sources();
@@ -236,7 +299,7 @@ impl Stack {
                 Drawn::Pattern(p) => (r.paint.angle - p.inside.angle).to_radians(),
                 _ => 0.0,
             };
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], d.masks.len() as u32], ..r });
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), d.masks.len() as u32], ..r });
             for m in &d.masks {
                 // A mask on a layer that is missing, hidden, not under it or not drawn passes nothing.
                 let target =
@@ -251,6 +314,52 @@ impl Stack {
                 });
             }
             placed.push((d.id, at));
+        }
+        // The group records, in the group list's order. A group shader that changes some layers
+        // only is named by them: their `amount.z` is the first group record and `amount.w` a bit
+        // mask of the group records after it.
+        let ends_at = out.len();
+        for end in &self.ends {
+            match end {
+                GroupEnd::Gradient => {
+                    if self.group_on_gpu().is_some_and(|g| g.changes == Changes::EveryLayer) {
+                        out.push(LayerGpu { head: [LayerGpu::GROUP, 0, 0, 0], ..LayerGpu::ZERO });
+                    }
+                }
+                GroupEnd::Shader(_, gs) => {
+                    let sh = &gs.shader;
+                    let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
+                    let mut extra = [[0.0; 4]; 4];
+                    for (i, v) in sh.params.iter().enumerate() {
+                        extra[i / 4][i % 4] = *v;
+                    }
+                    let whole = gs.changes == Changes::EveryLayer;
+                    let bit = out.len() - ends_at;
+                    out.push(LayerGpu {
+                        head: [LayerGpu::GROUP_SHADER, blend(gs.mix.blend()), 0, 0],
+                        amount: [gs.amount, 0.0, 0.0, 0.0],
+                        p0: [sh.speed, sh.scale, if whole { 1.0 } else { 0.0 }, slot as f32],
+                        p1: [gs.around.unwrap_or(0.0), 0.0, 0.0, 0.0],
+                        extra,
+                        ..LayerGpu::ZERO
+                    });
+                    if whole || bit >= 24 {
+                        continue;
+                    }
+                    let targets: Vec<usize> = match gs.changes {
+                        Changes::Body => vec![0],
+                        _ => {
+                            let chosen = gs.chosen_ids();
+                            placed.iter().filter(|(id, _)| chosen.contains(&id.0)).map(|&(_, i)| i).collect()
+                        }
+                    };
+                    for t in targets {
+                        let r = &mut out[t];
+                        r.amount[2] = ends_at as f32;
+                        r.amount[3] = (r.amount[3] as u32 | 1 << bit) as f32;
+                    }
+                }
+            }
         }
         out
     }
@@ -312,13 +421,44 @@ impl Stack {
                 out.push(sh.source.clone());
             }
         }
+        for end in &self.ends {
+            if let GroupEnd::Shader(_, gs) = end
+                && !out.contains(&gs.shader.source)
+            {
+                out.push(gs.shader.source.clone());
+            }
+        }
         out
     }
 
-    /// The in-ball program the stack draws with: `None` without shader layers.
+    /// The group shaders, in the group list's order.
+    pub fn group_shaders(&self) -> impl Iterator<Item = &GroupShader> {
+        self.ends.iter().filter_map(|e| match e {
+            GroupEnd::Shader(_, gs) => Some(gs.as_ref()),
+            GroupEnd::Gradient => None,
+        })
+    }
+
+    /// The in-ball program the stack draws with: `None` without shader layers or group shaders.
     pub fn program(&self) -> Option<LookProgram> {
         let sources = self.effect_sources();
         (!sources.is_empty()).then(|| LookProgram::new(sources))
+    }
+
+    /// The records for a ball that wears only the drawn layers `wears` says (by index in
+    /// `drawn`): `all` (from [`Stack::records`]) with the others marked [`LayerGpu::UNWORN`] (and
+    /// at opacity 0), so every record stays where masks and the group records expect it.
+    pub fn records_for(&self, all: &[LayerGpu], wears: impl Fn(usize) -> bool) -> Vec<LayerGpu> {
+        let mut out = all.to_vec();
+        for (i, d) in self.drawn.iter().enumerate() {
+            if !wears(i)
+                && let Some(k) = self.record_of(d.id)
+            {
+                out[k].amount[0] = 0.0;
+                out[k].head[2] |= LayerGpu::UNWORN;
+            }
+        }
+        out
     }
 
     /// How far past the centre a ball of `radius` with this stack reaches, in radii.
@@ -336,6 +476,12 @@ impl Stack {
                     past_edge = past_edge.max(out.max(0.0) / radius.max(1e-3));
                 }
                 _ => {}
+            }
+        }
+        // A group shader's ring fades out a little past its size.
+        for gs in self.group_shaders() {
+            if let Some(around) = gs.around.filter(|_| gs.amount > 0.0) {
+                past_edge = past_edge.max(1.25 * around);
             }
         }
         (SHAPE_REACH + past_edge).min(MAX_REACH)
@@ -387,6 +533,8 @@ impl Stack {
             misc: [1.0, code, facing_degrees(velocity), if faces { 1.0 } else { 0.0 }],
             vary,
             range: [first, count, 0, 0],
+            group: [0.0; 4],
+            place: [0.0; 4],
         }
     }
 }
@@ -441,6 +589,7 @@ pub fn choice_label<C: Choice>(c: C) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::GROUP_SHADER;
     use super::*;
     use crate::registry;
     use bpe_core::{Scene, SlotId, ThingId, Value, layered_key, resolve};
@@ -692,6 +841,39 @@ mod tests {
                 .unwrap();
         });
         assert!(stack.reach(24.0) >= SHAPE_REACH + HALO_REACH * 4.0);
+    }
+
+    #[test]
+    fn group_shaders_write_records_after_the_balls_own_and_join_the_program() {
+        let set = |reg: &bpe_core::Registry, s: &mut Scene, b: ThingId, id: LayerId, key: &str, v: Value| {
+            s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(id, key)), v).unwrap();
+        };
+        let stack = stack_after(|reg, s, b| {
+            let outline = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            let whole = s.add_layer(reg, b, SlotId::Look, GROUP_SHADER).unwrap();
+            set(reg, s, b, whole, "effect", Value::Choice("rainbow_flow".into()));
+            set(reg, s, b, whole, "shows", Value::Choice("around".into()));
+            set(reg, s, b, whole, "around", Value::Number(1.0));
+            let body = s.add_layer(reg, b, SlotId::Look, GROUP_SHADER).unwrap();
+            set(reg, s, b, body, "changes", Value::Choice("body".into()));
+            let chosen = s.add_layer(reg, b, SlotId::Look, GROUP_SHADER).unwrap();
+            set(reg, s, b, chosen, "changes", Value::Choice("choose".into()));
+            set(reg, s, b, chosen, "chosen", Value::Text(outline.0.to_string()));
+        });
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let codes: Vec<u32> = records.iter().map(|r| r.head[0]).collect();
+        let gs = LayerGpu::GROUP_SHADER;
+        assert_eq!(codes, [LayerGpu::BODY, LayerGpu::OUTLINE, gs, gs, gs]);
+        let sources = stack.effect_sources();
+        assert_eq!(sources.len(), 2, "rainbow flow and lava, each once");
+        assert_eq!(records[2].p0[2..], [1.0, 0.0], "over the whole ball, effect slot 0");
+        assert_eq!(records[2].p1[0], 1.0);
+        assert_eq!(records[3].p0[2..], [0.0, 1.0]);
+        // The body names the second group record (bit 1), the outline the third (bit 2).
+        assert_eq!(records[0].amount[2..], [2.0, 2.0]);
+        assert_eq!(records[1].amount[2..], [2.0, 4.0]);
+        assert!(stack.program().is_some());
+        assert_eq!(stack.reach(24.0), SHAPE_REACH + 1.25, "the ring raises the reach");
     }
 
     #[test]

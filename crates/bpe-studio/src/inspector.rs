@@ -48,6 +48,12 @@ pub struct Inspector {
     pub focus_layer_rename: bool,
     /// The Look editor's view of the ball.
     pub ball_view: crate::look_editor::BallView,
+    /// Whether each Balls thing's look shows on one ball or across its group.
+    pub look_mode: BTreeMap<ThingId, crate::look_editor::LookMode>,
+    /// The group layer of each thing's Look shown in Group mode; its first when none is.
+    pub selected_group_layer: BTreeMap<ThingId, LayerId>,
+    /// The view of the whole group, in Group mode.
+    pub group_view: crate::look_editor::GroupView,
     /// The window's GPU, for the ball view; none in tests.
     pub render: Option<eframe::egui_wgpu::RenderState>,
 }
@@ -88,6 +94,8 @@ pub(crate) enum Edit {
     Attach(Attach),
     /// One of the kind's own settings, for every selected thing of the kind.
     SetOwn(String, Value),
+    /// One of the primary thing's own settings, for it alone: what was dragged in its Group view.
+    SetOwnHere(String, Value),
     /// The card in a slot becomes another kind, for every selected thing whose card there is of
     /// the same kind.
     SetKind(SlotId, &'static str),
@@ -117,6 +125,10 @@ pub(crate) enum Edit {
     LayerEnabled(SlotId, LayerId, bool),
     PasteLayer(SlotId, CopiedLayer),
     PasteLook(SlotId, CopiedLook),
+    /// The balls of the group that wear a drawn layer, by number; none is every ball.
+    LayerOnly(SlotId, LayerId, Vec<u32>),
+    /// A new drawn layer that only these balls of the group wear.
+    AddLayerFor(SlotId, &'static str, Vec<u32>),
 }
 
 /// The things an edit to `id`'s setting reaches: every selected thing of `id`'s kind for its own
@@ -227,6 +239,31 @@ pub fn show(
                     }
                 }
                 ui.end_row();
+                // Row 3, for balls: their look on one ball or across the whole group.
+                if kind.id() == BALLS {
+                    use crate::look_editor::LookMode;
+                    let label = grid_label(ui, lw, "Edit")
+                        .on_hover_text("One ball's look, or the whole group: where the balls start and their colours");
+                    let mut mode = inspector.look_mode.get(&id).copied().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        crate::look_editor::ball_view::segmented(
+                            ui,
+                            &mut mode,
+                            &[
+                                (LookMode::Ball, "Ball", "One ball's look, layer by layer"),
+                                (
+                                    LookMode::Group,
+                                    "Group",
+                                    "The whole group: where the balls start and the colours across them",
+                                ),
+                            ],
+                        );
+                    })
+                    .response
+                    .labelled_by(label.id);
+                    inspector.look_mode.insert(id, mode);
+                    ui.end_row();
+                }
             })
         });
         ui.add_space(6.0);
@@ -255,7 +292,36 @@ pub fn show(
                 });
                 card_header(ui, inspector, Card::Thing, &header.response);
                 if header.inner {
-                    own_grid(ui, inspector, &cx, ("kind", id), kind.settings(), &mut edits);
+                    if kind.id() == BALLS {
+                        // The group's settings show in Group mode instead.
+                        let defs: Vec<SettingDef> = kind
+                            .settings()
+                            .iter()
+                            .filter(|d| !bpe_kit::things::balls::GROUP_HEADINGS.contains(&d.group))
+                            .cloned()
+                            .collect();
+                        own_grid(ui, inspector, &cx, ("kind", id), &defs, &mut edits);
+                        // With no layered Look card, Group mode shows here.
+                        let layered = thing
+                            .slots
+                            .get(&SlotId::Look)
+                            .is_some_and(|c| c.kind == bpe_kit::modules::look::layers::CARD);
+                        if group_mode(inspector, id) && !layered {
+                            let look = crate::look_editor::LookCx {
+                                scene,
+                                kit,
+                                choices: &choices,
+                                id,
+                                slot: SlotId::Look,
+                                time,
+                                label_width: lw,
+                            };
+                            ui.add_space(6.0);
+                            crate::look_editor::group::show(ui, inspector, &look, &mut edits);
+                        }
+                    } else {
+                        own_grid(ui, inspector, &cx, ("kind", id), kind.settings(), &mut edits);
+                    }
                 }
             });
         }
@@ -345,7 +411,11 @@ pub fn show(
                     ui.add_space(4.0);
                     let look =
                         crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
-                    crate::look_editor::show(ui, inspector, &look, &mut edits);
+                    if kind.id() == BALLS && group_mode(inspector, id) {
+                        crate::look_editor::group::show(ui, inspector, &look, &mut edits);
+                    } else {
+                        crate::look_editor::show(ui, inspector, &look, &mut edits);
+                    }
                     return;
                 }
                 let Some(ckind) = reg.module(&card_now.kind) else { return };
@@ -432,6 +502,9 @@ pub fn show(
                 }
                 any
             }
+            Edit::SetOwnHere(key, value) => {
+                set_or_key(scene, reg, &Address::own(id, &key), value, time, &mut inspector.keyed_edit)
+            }
             Edit::SetKind(slot, kind) => {
                 let mut any = false;
                 for t in reached(scene, &selected, id, Some(slot)) {
@@ -477,6 +550,14 @@ pub fn show(
     changed
 }
 
+/// The kind whose things have a Ball / Group switch.
+const BALLS: &str = "balls";
+
+/// Whether thing `id`'s look shows across its group.
+fn group_mode(inspector: &Inspector, id: ThingId) -> bool {
+    inspector.look_mode.get(&id) == Some(&crate::look_editor::LookMode::Group)
+}
+
 /// Applies a change to the layers of `id`'s card, selecting the layer it adds. True when the
 /// scene changed.
 fn apply_layer_edit(
@@ -505,11 +586,23 @@ fn apply_layer_edit(
             inspector.selected_layer.remove(&id);
             scene.paste_look(reg, id, slot, &copied).map(|_| None)
         }
+        Edit::LayerOnly(slot, layer, only) => scene.set_layer_only(reg, id, slot, layer, only).map(|_| None),
+        Edit::AddLayerFor(slot, kind, only) => scene.add_layer(reg, id, slot, kind).and_then(|layer| {
+            scene.set_layer_only(reg, id, slot, layer, only)?;
+            Ok(Some(layer))
+        }),
         _ => unreachable!("only layer edits come here"),
     };
     match added {
         Ok(Some(layer)) => {
-            inspector.selected_layer.insert(id, layer);
+            // A group layer is picked in Group mode, any other in the ball's lists.
+            let card = scene.things.get(&id).and_then(|t| t.slots.values().find(|c| c.layer(layer).is_some()));
+            let kind = card.and_then(|c| c.layer(layer)).and_then(|l| reg.layer(&l.kind));
+            if kind.is_some_and(|k| k.section() == bpe_core::LayerSection::Group) {
+                inspector.selected_group_layer.insert(id, layer);
+            } else {
+                inspector.selected_layer.insert(id, layer);
+            }
             true
         }
         Ok(None) => true,
@@ -1481,7 +1574,8 @@ mod tests {
         // The Target menu's Thing, not the jump bar's.
         h.get_all_by_label("Thing").last().expect("the Thing submenu").hover();
         h.run();
-        assert!(h.query_by_label("Ball").is_some(), "the ball is offered by name");
+        // The header's Ball / Group switch is named Ball too.
+        assert_eq!(h.query_all_by_label("Ball").count(), 2, "the ball is offered by name");
         h.get_by_label("Tag").hover();
         h.run();
         h.get_by_label("bouncers").click();

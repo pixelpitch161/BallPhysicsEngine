@@ -38,7 +38,7 @@ pub fn show(
             mask_rows(ui, cx, card, layer, parent, edits);
             vec!["from", "target"]
         }
-        (None, kinds::SHADER) => {
+        (None, kinds::SHADER | kinds::GROUP_SHADER) => {
             shader_rows(ui, cx, layer.id, edits);
             vec!["effect", "code"]
         }
