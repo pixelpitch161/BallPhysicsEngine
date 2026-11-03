@@ -47,7 +47,11 @@ Dependencies go bottom to top:
   `LayerKind` (drawn or reaction; index 0 is the base layer, which can't move, hide or go). A layer's settings
   live in the card's params under layered keys `"<layer id>/<key>"` (`layered_key`, `split_layered`); edits are
   `add_layer`, `remove_layer`, `move_layer`, `duplicate_layer`, `rename_layer`, `set_layer_enabled`,
-  `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. Scene files are format 4.
+  `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. A **mask** is a layer too (kind `layer.mask`, section
+  `LayerSection::Mask`) whose `Layer.parent` is the drawn layer it limits; it sits right after its parent in
+  `Slot.layers`, and moving, duplicating, copying or deleting a layer carries its masks (`add_mask`). A layer kind can
+  add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
+  Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). Scene files are format 5.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them.
@@ -55,10 +59,18 @@ Dependencies go bottom to top:
   shader effects, particles and trails. Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
   its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
   older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
+  The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5),
+  Shader (6) and Mask (7) layers; a mask record follows its layer's (whose `head[3]` counts them). Brush strokes reach
+  the GPU as 128² tiles in a `MaskAtlas` (`masks.rs`, `Frame.mask_tiles`). Shader layers run **inside** the ball: a
+  stack with them draws with a generated program (`programs.rs`, `LookProgram`, `Frame.programs` and
+  `Frame.layered_runs`) made of `layers.wgsl` plus each effect once, renamed by `effects::prefixed` and given the
+  `effects/in_ball.wgsl` prelude, whose `sample()` walks the layers under the shader layer. `in_ball_problem(code)`
+  checks own code without a GPU. The `SOLO` record bit makes a layer show its masks alone (the editor's view).
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
-  `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Blend and the reactions Flash on
-  hit, Colour on hit, Stretch when fast, Colour over time, Turning; `gpu.rs` turns a stack into records); the
+  `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Shading, Shader, Blend, the reactions
+  Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, and Mask; `gpu.rs` turns a stack into
+  records and has `topmost_at` for clicks on the ball; `paint/brush.rs` rasterises strokes to tiles); the
   arena keeps `look.basic`. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
   into layers (`layers_from_basic`). A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
@@ -75,8 +87,10 @@ Dependencies go bottom to top:
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
   A `look.layers` card shows the Look editor (`look_editor/`: the ball view, the Layers and Reactions lists with
-  their menus, drag to reorder and rename, then the picked layer's settings; the copied layer/look live in
-  `Inspector.clipboard`). The
+  their menus, drag to reorder and rename, masks indented under their layer, then the picked layer's settings; the
+  copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a mask's From/Layer and a Shader's
+  Effect, `code_box.rs` the own-code box, `handles.rs` the handles on the ball view and `brush.rs` painting strokes
+  there. The
   timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open.
 
 ## Working rules

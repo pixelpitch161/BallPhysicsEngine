@@ -99,6 +99,7 @@ pub fn bar(ui: &mut Ui, brush: &mut Brush) {
 /// Paints with the pointer on the view: a press starts a stroke, dragging adds to it, and
 /// letting go keeps it as one edit of `key` on layer `layer`. A circle the size of the brush
 /// follows the pointer over the view.
+#[allow(clippy::too_many_arguments)]
 pub fn paint(
     ui: &Ui,
     view: &mut BallView,

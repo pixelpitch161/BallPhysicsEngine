@@ -177,13 +177,13 @@ pub struct ViewMap {
 
 impl ViewMap {
     /// Ball point `q` in the view.
-    pub fn to_view(&self, q: Vec2) -> Pos2 {
+    pub fn to_view(self, q: Vec2) -> Pos2 {
         let v = Vec2::from_angle(self.turn).rotate(q) * self.radius;
         self.centre + egui::vec2(v.x, v.y)
     }
 
     /// View point `p` on the ball.
-    pub fn to_ball(&self, p: Pos2) -> Vec2 {
+    pub fn to_ball(self, p: Pos2) -> Vec2 {
         let v = Vec2::new(p.x - self.centre.x, p.y - self.centre.y) / self.radius.max(1e-3);
         Vec2::from_angle(-self.turn).rotate(v)
     }
