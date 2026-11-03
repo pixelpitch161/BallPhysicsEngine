@@ -158,7 +158,7 @@ mod tests {
     use bpe_runtime::{Log, World};
 
     #[test]
-    fn a_look_of_an_unknown_kind_still_draws_the_balls() {
+    fn a_look_of_an_unknown_kind_is_reported_and_leaves_the_balls_undrawn() {
         let reg = registry();
         let mut scene = new_scene(&reg);
         scene.things.get_mut(&ThingId(2)).unwrap().slots.insert(SlotId::Look, Slot::new("look.hologram"));
@@ -168,10 +168,8 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls.len(), 1);
-        assert_eq!(frame.shapes.len(), 1);
-        assert_eq!(frame.balls[0].color, [1.0, 1.0, 1.0, 1.0]); // the folder's plain look
-        assert_eq!(frame.balls[0].glow, 0.0, "a new look has no glow");
+        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "no look, nothing to draw them with");
+        assert_eq!(frame.shapes.len(), 1, "the arena still draws");
         assert_eq!((frame.width, frame.height), (1080, 1920));
     }
 

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::selection::Selection;
 use crate::theme;
-use bpe_core::{Attach, EditError, ModuleId, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId};
+use bpe_core::{Address, Attach, EditError, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
@@ -57,7 +57,6 @@ enum Action {
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
-    SelectUsers(ModuleId),
     /// How the thing hangs off the parent it already has.
     Attach(ThingId, Attach),
     /// Ride on another thing, keeping the place on screen.
@@ -65,8 +64,6 @@ enum Action {
     /// Move under another thing, hanging off it the way it hangs off its parent now.
     MoveInto(ThingId, ThingId),
     Drop(ThingId, ThingId, Drop),
-    /// A module dragged from the Library lands on a thing.
-    Link(ThingId, ModuleId),
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
@@ -245,7 +242,7 @@ pub fn show(
                 .and_then(|s| scene.things.get(&s))
                 .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
                 .unwrap_or(ThingId::ROOT);
-            // The kit links the starter modules a kind needs, such as a ball's look.
+            // The kit gives the thing the cards its kind starts with, such as a ball's look.
             let added = bpe_kit::add_thing(scene, reg, kind, parent);
             if let Ok(id) = added {
                 selection.set(id);
@@ -253,41 +250,29 @@ pub fn show(
                 out.added = Some(id);
             }
         }
-        Some(Action::Folder(ids)) => match bpe_kit::make_folder(scene, reg, &ids) {
+        Some(Action::Folder(ids)) => match scene.make_folder(reg, &ids) {
             Ok(folder) => {
                 selection.set(folder);
                 out.edited = true;
             }
             Err(e) => out.message = Some(refusal(&e)),
         },
-        Some(Action::SelectUsers(m)) => {
-            let users = scene.users_of(m);
-            selection.clear();
-            if let Some((&first, rest)) = users.split_first() {
-                selection.set(first);
-                selection.extra.extend(rest.iter().copied());
-            }
-        }
         Some(Action::Attach(id, attach)) => match reattach(scene, id, attach) {
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
         },
         Some(Action::AttachTo(id, parent)) => {
             let ride = Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None };
-            match apply_drop(scene, reg, id, parent, Drop::Into(ride)) {
+            match apply_drop(scene, id, parent, Drop::Into(ride)) {
                 Ok(()) => out.edited = true,
                 Err(e) => out.message = Some(refusal(&e)),
             }
         }
-        Some(Action::MoveInto(id, parent)) => match move_into(scene, reg, id, parent) {
+        Some(Action::MoveInto(id, parent)) => match move_into(scene, id, parent) {
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
         },
-        Some(Action::Drop(dragged, onto, drop)) => match apply_drop(scene, reg, dragged, onto, drop) {
-            Ok(()) => out.edited = true,
-            Err(e) => out.message = Some(refusal(&e)),
-        },
-        Some(Action::Link(id, m)) => match link_dropped(scene, reg, id, m) {
+        Some(Action::Drop(dragged, onto, drop)) => match apply_drop(scene, dragged, onto, drop) {
             Ok(()) => out.edited = true,
             Err(e) => out.message = Some(refusal(&e)),
         },
@@ -296,23 +281,9 @@ pub fn show(
 }
 
 /// Moves `id` under `parent`, keeping how it hangs off its parent: the tree's Move into.
-fn move_into(scene: &mut Scene, reg: &Registry, id: ThingId, parent: ThingId) -> Result<(), EditError> {
+fn move_into(scene: &mut Scene, id: ThingId, parent: ThingId) -> Result<(), EditError> {
     let attach = scene.things.get(&id).map(|t| t.attach).unwrap_or_default();
-    apply_drop(scene, reg, id, parent, Drop::Into(attach))
-}
-
-/// Links a module dropped onto a thing into the slot the module is made for.
-pub(crate) fn link_dropped(
-    scene: &mut Scene,
-    reg: &Registry,
-    onto: ThingId,
-    module: ModuleId,
-) -> Result<(), EditError> {
-    let slot = scene.library.modules.get(&module).ok_or(EditError::MissingModule(module))?.slot;
-    let before = bpe_core::resolve(scene, reg);
-    scene.link(reg, onto, slot, module)?;
-    bpe_kit::keep_followers(scene, reg, &before);
-    Ok(())
+    apply_drop(scene, id, parent, Drop::Into(attach))
 }
 
 /// Where in a row a drop lands: the top quarter puts the thing before the row, the bottom
@@ -333,13 +304,7 @@ pub fn drop_action(row: Rect, pointer: Pos2, alt: bool) -> Drop {
 /// Moves `dragged` where it was dropped. Before and after another row keep how the thing hangs
 /// off its parent; into a row groups or rides it there, and riding keeps the thing where it is
 /// on screen by measuring its offset from the new parent.
-pub fn apply_drop(
-    scene: &mut Scene,
-    reg: &Registry,
-    dragged: ThingId,
-    onto: ThingId,
-    drop: Drop,
-) -> Result<(), EditError> {
+pub fn apply_drop(scene: &mut Scene, dragged: ThingId, onto: ThingId, drop: Drop) -> Result<(), EditError> {
     if dragged == onto {
         return Ok(());
     }
@@ -352,8 +317,7 @@ pub fn apply_drop(
         Drop::Into(attach) => (onto, attach),
     };
     let attach = keeping_place(scene, dragged, parent, attach, world);
-    // Whatever the thing (and what hangs under it) followed, it still looks and moves the same.
-    bpe_kit::move_thing(scene, reg, dragged, parent, attach)?;
+    scene.set_parent(dragged, parent, attach)?;
     if attach == Attach::Group {
         // Grouped, the thing's own position is where it shows: the spot it had while riding.
         scene.things.get_mut(&dragged).expect("moved above").transform.position = world;
@@ -431,19 +395,15 @@ fn refusal(e: &EditError) -> String {
     }
 }
 
-/// Paints where a dragged row or module would land and, when it is let go, says so.
+/// Paints where a dragged row would land and, when it is let go, says so.
 fn drop_target(ui: &mut Ui, scene: &Scene, rows: &[(ThingId, Rect)], action: &mut Option<Action>) {
     let ctx = ui.ctx();
-    let thing = egui::DragAndDrop::payload::<ThingId>(ctx);
-    let module = egui::DragAndDrop::payload::<ModuleId>(ctx);
-    if thing.is_none() && module.is_none() {
-        return;
-    }
+    let Some(thing) = egui::DragAndDrop::payload::<ThingId>(ctx) else { return };
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
-    let dragged_name = thing.as_deref().and_then(|t| scene.things.get(t)).map(|t| t.name.clone());
+    let dragged_name = scene.things.get(&thing).map(|t| t.name.clone());
     let gap = ui.spacing().item_spacing.y * 0.5;
     let over = rows.iter().find(|(_, r)| r.expand2(Vec2::new(0.0, gap)).contains(pointer));
-    let Some((id, rect)) = over.filter(|(id, _)| thing.as_deref() != Some(id)) else {
+    let Some((id, rect)) = over.filter(|(id, _)| *thing != *id) else {
         // Nothing to land on here: just the name travelling with the pointer.
         if let Some(name) = dragged_name {
             bubble(ui, pointer, name);
@@ -451,10 +411,7 @@ fn drop_target(ui: &mut Ui, scene: &Scene, rows: &[(ThingId, Rect)], action: &mu
         return;
     };
     let (alt, released) = ctx.input(|i| (i.modifiers.alt, i.pointer.any_released()));
-    let drop = match &thing {
-        Some(_) => drop_action(*rect, pointer, alt),
-        None => Drop::Into(Attach::Group),
-    };
+    let drop = drop_action(*rect, pointer, alt);
     let stroke = Stroke::new(2.0, theme::ACCENT);
     match &drop {
         Drop::Before => {
@@ -468,20 +425,15 @@ fn drop_target(ui: &mut Ui, scene: &Scene, rows: &[(ThingId, Rect)], action: &mu
         }
     }
     let onto = scene.things.get(id).map(|t| t.name.as_str()).unwrap_or_default();
-    let what = dragged_name.unwrap_or_else(|| "Module".to_owned());
+    let what = dragged_name.unwrap_or_default();
     let words = match &drop {
         Drop::Before | Drop::After => format!("{what} beside {onto}"),
         Drop::Into(Attach::Ride { .. }) => format!("{what} rides on {onto}"),
-        Drop::Into(Attach::Group) if thing.is_some() => format!("{what} into {onto}"),
-        Drop::Into(Attach::Group) => format!("{what} on {onto}"),
+        Drop::Into(Attach::Group) => format!("{what} into {onto}"),
     };
     bubble(ui, pointer, words);
     if released {
-        *action = match (thing, module) {
-            (Some(dragged), _) => Some(Action::Drop(*dragged, *id, drop)),
-            (None, Some(m)) => Some(Action::Link(*id, *m)),
-            (None, None) => None,
-        };
+        *action = Some(Action::Drop(*thing, *id, drop));
     }
 }
 
@@ -690,27 +642,6 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
             .on_disabled_hover_text("Make a folder first");
         });
     }
-    let linked: Vec<(String, ModuleId)> = thing
-        .slots
-        .iter()
-        .filter_map(|(slot, link)| match link {
-            bpe_core::SlotLink::Linked { module, .. } => {
-                let name = scene.library.modules.get(module).map(|m| m.name.as_str()).unwrap_or("missing");
-                Some((format!("{}: {name}", slot.name()), *module))
-            }
-            _ => None,
-        })
-        .collect();
-    if !linked.is_empty() {
-        ui.menu_button("Select things using the same module", |ui| {
-            for (words, m) in linked {
-                if ui.button(words).clicked() {
-                    *action = Some(Action::SelectUsers(m));
-                    ui.close();
-                }
-            }
-        });
-    }
 }
 
 /// A right-pointing triangle when folded, a down-pointing one when open.
@@ -850,8 +781,17 @@ pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<Thing
     thing.enabled = source.enabled;
     thing.params = source.params;
     thing.slots = source.slots;
-    // The copy gets its own copies of the original's starters rather than sharing them.
-    scene.copy_owned_starters(id, copy);
+    // The copy's settings move the way the original's do.
+    let tracks: Vec<_> =
+        scene.tracks.iter().filter(|(a, _)| a.thing == id).map(|(a, t)| (a.clone(), t.clone())).collect();
+    for (a, t) in tracks {
+        scene.tracks.insert(Address { thing: copy, ..a }, t);
+    }
+    let pulses: Vec<_> =
+        scene.pulses.iter().filter(|(a, _)| a.thing == id).map(|(a, p)| (a.clone(), p.clone())).collect();
+    for (a, p) in pulses {
+        scene.pulses.insert(Address { thing: copy, ..a }, p);
+    }
     // Right after the original, not at the end of the parent's children.
     let _ = scene.move_before(copy, next_sibling(scene, id).unwrap_or(copy));
     Some(copy)
@@ -870,9 +810,7 @@ pub fn problem_words(p: &Problem) -> String {
     let slot = p.slot.map(|s| s.name()).unwrap_or("A slot");
     match &p.kind {
         ProblemKind::UnknownKind(k) => format!("Its kind \"{k}\" isn't installed"),
-        ProblemKind::MissingModule(m) => format!("{slot} links a module that is missing (id {})", m.0),
-        ProblemKind::WrongSlot(m) => format!("{slot} links a module made for another slot (id {})", m.0),
-        ProblemKind::UnknownModuleKind(k) => format!("{slot} links a module whose kind \"{k}\" isn't installed"),
+        ProblemKind::UnknownCardKind(k) => format!("{slot} uses \"{k}\", which isn't installed or doesn't fit here"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
     }
 }
@@ -1223,33 +1161,33 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let f = scene.add_thing(&kit.registry, "folder", ThingId::ROOT).unwrap();
-        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, ThingId(2), f, Drop::Into(Attach::Group)).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(f));
-        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Before).unwrap();
+        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Before).unwrap();
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(2), ThingId(1), f]);
-        apply_drop(&mut scene, &kit.registry, f, ThingId(2), Drop::After).unwrap();
+        apply_drop(&mut scene, f, ThingId(2), Drop::After).unwrap();
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(2), f, ThingId(1)]);
         scene.things.get_mut(&ThingId(2)).unwrap().transform.position = glam::Vec2::new(50.0, 0.0);
         let ride = Attach::Ride { offset: glam::Vec2::ZERO, turn_with_parent: true, item: None };
-        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
         assert!(
             matches!(scene.things[&ThingId(2)].attach, Attach::Ride { offset, .. } if offset == glam::Vec2::new(50.0, 0.0))
         );
         // Moved beside the folder, the rider keeps riding its new parent from the same spot.
-        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Before).unwrap();
+        apply_drop(&mut scene, ThingId(2), f, Drop::Before).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(50.0, 0.0));
         // Back under the arena, nothing can make the arena hang under it.
-        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(Attach::Group)).unwrap();
         assert!(matches!(
-            apply_drop(&mut scene, &kit.registry, ThingId(1), ThingId(2), Drop::Into(Attach::Group)),
+            apply_drop(&mut scene, ThingId(1), ThingId(2), Drop::Into(Attach::Group)),
             Err(EditError::WouldLoop)
         ));
-        assert!(matches!(apply_drop(&mut scene, &kit.registry, f, ThingId::ROOT, Drop::Before), Err(EditError::Root)));
+        assert!(matches!(apply_drop(&mut scene, f, ThingId::ROOT, Drop::Before), Err(EditError::Root)));
         // Dropping a thing on itself changes nothing.
         let before = scene.clone();
-        apply_drop(&mut scene, &kit.registry, f, f, Drop::Into(Attach::Group)).unwrap();
+        apply_drop(&mut scene, f, f, Drop::Into(Attach::Group)).unwrap();
         assert_eq!(scene, before);
     }
 
@@ -1283,20 +1221,20 @@ mod tests {
         let ride = Attach::Ride { offset: glam::Vec2::new(0.0, -50.0), turn_with_parent: true, item: None };
         scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
         // Dropped beside the folder at the top level, the balls stop riding where they were.
-        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Before).unwrap();
+        apply_drop(&mut scene, ThingId(2), f, Drop::Before).unwrap();
         assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(100.0, 50.0));
         // The arena is turned a quarter: riding it from (100, 50) is an offset of (-50, 0) before
         // the turn, which the turn puts above the centre.
         scene.things.get_mut(&ThingId(1)).unwrap().transform.rotation = std::f32::consts::FRAC_PI_2;
-        apply_drop(&mut scene, &kit.registry, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(ride)).unwrap();
         let Attach::Ride { offset, .. } = scene.things[&ThingId(2)].attach else { panic!() };
         assert!((offset - glam::Vec2::new(-50.0, 0.0)).length() < 1e-3, "{offset:?}");
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
         // A folder riding the arena carries its own riders' places along.
-        apply_drop(&mut scene, &kit.registry, f, ThingId(1), Drop::Into(ride)).unwrap();
-        apply_drop(&mut scene, &kit.registry, ThingId(2), f, Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, f, ThingId(1), Drop::Into(ride)).unwrap();
+        apply_drop(&mut scene, ThingId(2), f, Drop::Into(ride)).unwrap();
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
     }
 

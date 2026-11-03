@@ -1,4 +1,4 @@
-//! Names for things, modules, plugin kinds and slots.
+//! Names for things, plugin kinds and the slots a thing's cards fill.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,15 +12,10 @@ impl ThingId {
     pub const ROOT: ThingId = ThingId(0);
 }
 
-/// One module in a scene's library. Never reused within a scene.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ModuleId(pub u32);
-
 /// A plugin's id, such as `"balls"` or `"look.plain"`.
 pub type KindId = String;
 
-/// A place on a thing that a module fills.
+/// A place on a thing that one of its cards fills.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SlotId {
     #[default]
