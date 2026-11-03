@@ -1,7 +1,7 @@
 //! One row of the Look editor's lists, and dragging the drawn layers into another order.
 
 use bpe_core::{Color, Layer, LayerId, LayerSection, Settings, Slot};
-use bpe_kit::modules::look::layers::{self as kinds, gpu::choice_label};
+use bpe_kit::modules::look::layers::{self as kinds, MaskFrom, MaskLayer, MaskShape, gpu::choice_label};
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::LookCx;
@@ -15,17 +15,42 @@ const ROW_H: f32 = 28.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dragged(bpe_core::ThingId, LayerId);
 
-/// Draws `layer`'s row (at `index` in the card) and returns the rectangle it covers: its grip,
-/// thumbnail, name and summary, and its eye. A click picks it; a double click renames it; the
-/// right-click menu duplicates, copies, pastes, moves and deletes it.
-#[allow(clippy::too_many_arguments)]
+/// The layers not inside another (masks are inside the layer they limit), in card order. A
+/// layer's place among them is the place [`Edit::MoveLayer`] counts.
+pub fn top_level(card: &Slot) -> impl Iterator<Item = &Layer> {
+    card.layers.iter().filter(|l| l.parent.is_none())
+}
+
+/// Where layer `id` is among the [`top_level`] layers, the Body 0.
+pub fn place_of(card: &Slot, id: LayerId) -> Option<usize> {
+    top_level(card).position(|l| l.id == id)
+}
+
+/// Layer `parent`'s masks, in card order.
+pub fn masks_of(card: &Slot, parent: LayerId) -> impl Iterator<Item = &Layer> {
+    card.layers.iter().filter(move |l| l.parent == Some(parent))
+}
+
+/// The drawn layers under `parent` that a mask on it can follow, the Body first.
+pub fn layers_below<'a>(cx: &LookCx, card: &'a Slot, parent: LayerId) -> Vec<&'a Layer> {
+    let reg = cx.reg();
+    let end = card.layer_index(parent).unwrap_or(0);
+    card.layers[..end]
+        .iter()
+        .filter(|l| l.parent.is_none() && reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Drawn))
+        .collect()
+}
+
+/// Draws `layer`'s row and returns the rectangle it covers: its grip, thumbnail, name and
+/// summary, and its eye. A mask's row sits indented under its layer's. A click picks it; a
+/// double click renames it; the right-click menu duplicates, copies, pastes, moves, masks and
+/// deletes it. Alt-click on a mask's picture shows the masks alone in the ball view.
 pub fn row(
     ui: &mut Ui,
     inspector: &mut Inspector,
     cx: &LookCx,
     card: &Slot,
     layer: &Layer,
-    index: usize,
     picked: LayerId,
     edits: &mut Vec<Edit>,
 ) -> Rect {
@@ -33,6 +58,8 @@ pub fn row(
     let kind = reg.layer(&layer.kind);
     let base = kind.is_some_and(|k| k.base());
     let reaction = kind.is_some_and(|k| k.section() == LayerSection::Reaction);
+    let mask = layer.parent.is_some();
+    let draggable = !base && !reaction && !mask;
     let selected = layer.id == picked;
     let ink = if layer.enabled { style::MUTED } else { style::FAINT };
     let background = ui.painter().add(egui::Shape::Noop);
@@ -40,14 +67,30 @@ pub fn row(
         ui.set_min_height(ROW_H);
         ui.set_min_width(ui.available_width());
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.add_space(4.0);
+        ui.add_space(if mask { 30.0 } else { 4.0 });
         // The grip, on rows that can be dragged; its empty place on the others.
         let (grip, _) = ui.allocate_exact_size(Vec2::new(8.0, 14.0), Sense::hover());
-        if !base && !reaction {
+        if draggable {
             paint_grip(ui.painter(), grip, style::FAINT);
         }
-        let (thumb, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-        paint_thumbnail(ui.painter(), thumb, cx, card, layer);
+        let solo = layer.parent.unwrap_or(layer.id);
+        let (thumb, thumb_response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+        if mask {
+            paint_mask_thumbnail(ui.painter(), thumb, &mask_params(cx, layer), layer.enabled);
+            alt_click_solo(ui, inspector, cx, &thumb_response, solo, layer);
+        } else {
+            paint_thumbnail(ui.painter(), thumb, cx, card, layer);
+            // A masked layer shows its first mask's picture after its own.
+            if let Some(first) = masks_of(card, layer.id).next() {
+                let (pic, response) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::click());
+                let pic = Rect::from_center_size(pic.center(), Vec2::splat(12.0));
+                paint_mask_thumbnail(ui.painter(), pic, &mask_params(cx, first), first.enabled);
+                alt_click_solo(ui, inspector, cx, &response, solo, layer);
+            }
+        }
+        if thumb_response.clicked() && !ui.input(|i| i.modifiers.alt) {
+            inspector.selected_layer.insert(cx.id, layer.id);
+        }
 
         let renaming = inspector.renaming_layer.as_ref().is_some_and(|(t, l, _)| *t == cx.id && *l == layer.id);
         if renaming {
@@ -59,12 +102,12 @@ pub fn row(
                 (false, true) => RichText::new(&layer.name).color(style::TEXT),
             };
             let mut button = egui::Button::new(text).frame(false);
-            if !base && !reaction {
+            if draggable {
                 // A drag-only layer over the button would swallow its clicks, so the button drags.
                 button = button.sense(Sense::click_and_drag());
             }
             let response = ui.add(button);
-            if !base && !reaction {
+            if draggable {
                 response.dnd_set_drag_payload(Dragged(cx.id, layer.id));
             }
             if response.double_clicked() {
@@ -75,7 +118,13 @@ pub fn row(
             }
             let help = kind.map_or("A layer of a kind that isn't installed", |k| k.help());
             let response = response.on_hover_text(help);
-            response.context_menu(|ui| menu(ui, inspector, cx, card, layer, index, edits));
+            response.context_menu(|ui| {
+                if mask {
+                    mask_menu(ui, cx, layer, edits);
+                } else {
+                    menu(ui, inspector, cx, card, layer, edits);
+                }
+            });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(6.0);
@@ -90,7 +139,7 @@ pub fn row(
                     edits.push(Edit::LayerEnabled(cx.slot, layer.id, !layer.enabled));
                 }
             }
-            let words = summary(cx, layer);
+            let words = summary(cx, card, layer);
             if !words.is_empty() {
                 ui.add(egui::Label::new(RichText::new(words).small().color(ink)).truncate());
             }
@@ -138,27 +187,52 @@ fn rename_field(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, layer: &Lay
     }
 }
 
-/// The row's right-click menu. What can't apply to the row is greyed: the Body can't be
-/// duplicated, moved or deleted, and a reaction doesn't move.
-fn menu(
-    ui: &mut Ui,
+/// Alt-click on a mask's picture shows layer `solo`'s masks alone in the ball view, or stops.
+fn alt_click_solo(
+    ui: &Ui,
     inspector: &mut Inspector,
     cx: &LookCx,
-    card: &Slot,
+    response: &egui::Response,
+    solo: LayerId,
     layer: &Layer,
-    index: usize,
-    edits: &mut Vec<Edit>,
 ) {
+    let name = format!("Mask picture of {}", layer.name);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+    let response = response.clone().on_hover_text("Alt-click to see the mask alone in the view above");
+    if response.clicked() && ui.input(|i| i.modifiers.alt) {
+        let view = &mut inspector.ball_view;
+        view.solo = if view.solo == Some((cx.id, solo)) { None } else { Some((cx.id, solo)) };
+    }
+}
+
+/// A mask's settings as they are at the playhead.
+fn mask_params(cx: &LookCx, layer: &Layer) -> MaskLayer {
+    MaskLayer::from_params(&cx.params_of(layer.id, MaskLayer::defs()))
+}
+
+/// A mask row's right-click menu: it can only go. Its values copy and paste in its settings.
+fn mask_menu(ui: &mut Ui, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edit>) {
+    ui.set_min_width(170.0);
+    if ui.button("Delete").clicked() {
+        edits.push(Edit::RemoveLayer(cx.slot, layer.id));
+        ui.close();
+    }
+}
+
+/// The row's right-click menu. What can't apply to the row is greyed: the Body can't be
+/// duplicated, moved, masked or deleted, and a reaction doesn't move.
+fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer: &Layer, edits: &mut Vec<Edit>) {
     let reg = cx.reg();
     let kind = reg.layer(&layer.kind);
     let base = kind.is_some_and(|k| k.base());
     let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
+    let maskable = drawn && kind.is_some_and(|k| k.maskable());
     let repeats = kind.is_some_and(|k| k.repeats());
-    let top_drawn = card
-        .layers
-        .iter()
-        .rposition(|l| reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Drawn))
-        .unwrap_or(0);
+    let index = place_of(card, layer.id).unwrap_or(0);
+    let top_drawn = top_level(card)
+        .filter(|l| reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Drawn))
+        .count()
+        .saturating_sub(1);
     let (slot, id) = (cx.slot, layer.id);
     ui.set_min_width(170.0);
     if ui.add_enabled(!base && repeats, egui::Button::new("Duplicate")).clicked() {
@@ -197,6 +271,19 @@ fn menu(
     }
     if ui.add_enabled(drawn && index > 1, egui::Button::new("Move down")).clicked() {
         edits.push(Edit::MoveLayer(slot, id, index - 1));
+        ui.close();
+    }
+    ui.separator();
+    let add = ui.add_enabled(maskable, egui::Button::new("Add mask"));
+    let add = add.on_hover_text("Shows the layer on part of the ball only: half of it to start with");
+    if add.on_disabled_hover_text("This layer can't be masked").clicked() {
+        edits.push(Edit::AddMask(slot, id, "shape"));
+        ui.close();
+    }
+    let below = ui.add_enabled(maskable, egui::Button::new("Mask with layer below"));
+    let below = below.on_hover_text("Shows the layer only where the layer under it covers the ball");
+    if below.on_disabled_hover_text("This layer can't be masked").clicked() {
+        edits.push(Edit::AddMask(slot, id, "layer_below"));
         ui.close();
     }
     ui.separator();
@@ -241,16 +328,19 @@ pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect
         _ => gap,
     };
     let to = others.len() + 1 - place;
-    if card.layer_index(layer) != Some(to) {
+    if place_of(card, layer) != Some(to) {
         edits.push(Edit::MoveLayer(cx.slot, layer, to));
     }
     egui::DragAndDrop::clear_payload(&ctx);
 }
 
 /// A few words on the right of a row about its main settings: "4 px · Inside", "Add 100 %".
-fn summary(cx: &LookCx, layer: &Layer) -> String {
+fn summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     let Some(kind) = cx.reg().layer(&layer.kind) else { return String::new() };
     let p = cx.params_of(layer.id, kind.settings());
+    if let Some(parent) = layer.parent {
+        return mask_words(cx, card, parent, &MaskLayer::from_params(&p));
+    }
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     match layer.kind.as_str() {
         kinds::BODY => {
@@ -275,6 +365,16 @@ fn summary(cx: &LookCx, layer: &Layer) -> String {
             let l = kinds::GlowLayer::from_params(&p);
             with_blend(format!("{:.1} · size {:.1}", l.strength, l.size), l.blend)
         }
+        kinds::SHADING => {
+            let l = kinds::ShadingLayer::from_params(&p);
+            with_blend(format!("{} · {}", choice_label(l.kind), percent(l.amount)), l.blend)
+        }
+        kinds::SHADER => {
+            let l = kinds::ShaderLayer::from_params(&p);
+            let broken = l.effect == kinds::shader::OWN && super::code_box::problem(&l.source).is_some();
+            let name = if broken { "Own code that doesn't run".to_owned() } else { l.effect_name() };
+            with_blend(name, l.blend)
+        }
         kinds::BLEND => {
             let l = kinds::BlendLayer::from_params(&p);
             format!("{} {}", choice_label(l.blend), percent(l.blend_amount))
@@ -289,6 +389,27 @@ fn summary(cx: &LookCx, layer: &Layer) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// What a mask on `parent` shows by: "Layer below", "Top half", "Brush · 3 strokes", or a
+/// warning when the layer it follows can't be followed.
+fn mask_words(cx: &LookCx, card: &Slot, parent: LayerId, m: &MaskLayer) -> String {
+    let words = match m.from {
+        MaskFrom::LayerBelow => "Layer below".to_owned(),
+        MaskFrom::Layer => {
+            let below = layers_below(cx, card, parent);
+            match below.iter().find(|l| i64::from(l.id.0) == i64::from(m.target) && l.enabled) {
+                Some(l) => l.name.clone(),
+                None => return "masked by a missing layer".to_owned(),
+            }
+        }
+        MaskFrom::Shape if m.shape == MaskShape::Half && m.angle == 0.0 => "Top half".to_owned(),
+        MaskFrom::Shape => choice_label(m.shape),
+        MaskFrom::Brush => format!("Brush · {}", crate::widgets::strokes_words(&m.strokes).to_lowercase()),
+        MaskFrom::Light => "Light parts".to_owned(),
+        MaskFrom::Dark => "Dark parts".to_owned(),
+    };
+    if m.invert { format!("{words} · inverted") } else { words }
 }
 
 /// `words`, then the blend when it isn't Normal.
@@ -353,6 +474,25 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
                 painter.rect_filled(stripe, 1.0, fade(body));
             }
         }
+        kinds::SHADING => {
+            // The body, darker towards one side.
+            painter.circle_filled(c, r, fade(body));
+            let dark = style::OUTLINE.gamma_multiply(0.55);
+            for (k, a) in [(1.0, 0.35), (0.7, 0.6)] {
+                painter.circle_filled(c + Vec2::new(r * 0.35, r * 0.35), r * k * 0.75, fade(dark.gamma_multiply(a)));
+            }
+        }
+        kinds::SHADER => {
+            // A wave over the body.
+            painter.circle_filled(c, r, fade(style::RAISED));
+            let points: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let t = i as f32 / 8.0;
+                    c + Vec2::new((t - 0.5) * 1.6 * r, (t * std::f32::consts::TAU).sin() * r * 0.35)
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(1.3, fade(body))));
+        }
         kinds::BLEND => {
             let stroke = Stroke::new(1.3, fade(style::TEXT));
             painter.circle_stroke(c + Vec2::new(-r * 0.3, 0.0), r * 0.6, stroke);
@@ -368,6 +508,69 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
             }
         }
     }
+}
+
+/// A small black disc, white where the mask lets its layer show.
+fn paint_mask_thumbnail(painter: &egui::Painter, rect: Rect, m: &MaskLayer, enabled: bool) {
+    let c = rect.center();
+    let r = rect.width() * 0.42;
+    let (mut on, mut off) = (style::TEXT_STRONG, style::OUTLINE);
+    if m.invert {
+        std::mem::swap(&mut on, &mut off);
+    }
+    if !enabled {
+        on = on.gamma_multiply(0.4);
+    }
+    painter.circle_filled(c, r, off);
+    // A pie from angle `a` (radians, 0 up, clockwise) across `share` of a turn.
+    let pie = |a: f32, share: f32| {
+        let mut points = vec![c];
+        for i in 0..=16 {
+            let t = a + share * std::f32::consts::TAU * (i as f32 / 16.0 - 0.5);
+            points.push(c + Vec2::new(t.sin(), -t.cos()) * r);
+        }
+        egui::Shape::convex_polygon(points, on, Stroke::NONE)
+    };
+    let angle = m.angle.to_radians();
+    match m.from {
+        MaskFrom::LayerBelow | MaskFrom::Layer => {
+            painter.circle_filled(c, r * 0.55, on);
+        }
+        MaskFrom::Shape => match m.shape {
+            MaskShape::Half => {
+                painter.add(pie(angle, 0.5));
+            }
+            MaskShape::Wedge => {
+                painter.add(pie(angle, m.size.clamp(0.05, 1.0)));
+            }
+            MaskShape::Quarters => {
+                painter.add(pie(angle - std::f32::consts::FRAC_PI_4, 0.25));
+                painter.add(pie(angle + std::f32::consts::PI - std::f32::consts::FRAC_PI_4, 0.25));
+            }
+            MaskShape::Ring => {
+                painter.circle_stroke(c, r * 0.65, Stroke::new(r * 0.35, on));
+            }
+            MaskShape::Circle => {
+                painter.circle_filled(c, r * m.size.clamp(0.15, 1.0), on);
+            }
+            MaskShape::Band => {
+                let d = Vec2::new(angle.cos(), angle.sin()) * r;
+                painter.line_segment([c - d, c + d], Stroke::new(r * m.size.clamp(0.2, 1.0), on));
+            }
+        },
+        MaskFrom::Brush => {
+            let points =
+                [c + Vec2::new(-r * 0.6, r * 0.2), c + Vec2::new(-r * 0.1, -r * 0.4), c + Vec2::new(r * 0.5, r * 0.3)];
+            painter.add(egui::Shape::line(points.to_vec(), Stroke::new(r * 0.35, on)));
+        }
+        MaskFrom::Light => {
+            painter.circle_filled(c + Vec2::new(-r * 0.3, -r * 0.3), r * 0.45, on);
+        }
+        MaskFrom::Dark => {
+            painter.circle_filled(c + Vec2::new(r * 0.3, r * 0.3), r * 0.45, on);
+        }
+    }
+    painter.circle_stroke(c, r, Stroke::new(1.0, style::LINE));
 }
 
 /// The grip's two columns of dots.

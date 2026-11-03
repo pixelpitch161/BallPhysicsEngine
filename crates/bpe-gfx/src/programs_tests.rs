@@ -74,7 +74,10 @@ fn builtin(id: &str) -> Cow<'static, str> {
 }
 
 /// Draws `frame`, giving the pixels and the renderer's program errors.
-fn draw(frame: &Frame) -> Option<(Vec<u8>, Vec<(u64, String)>)> {
+/// A frame's pixels and the programs' errors.
+type Drawn = Option<(Vec<u8>, Vec<(u64, String)>)>;
+
+fn draw(frame: &Frame) -> Drawn {
     let (device, queue) = headless_device().ok()?;
     let mut r = Renderer::new(&device, W, H);
     r.render(&device, &queue, frame);
@@ -170,4 +173,14 @@ fn two_balls_with_different_effects_draw_with_two_programs_the_same_every_time()
     assert_ne!(at(&a, -260.0, 0.0), at(&p, -260.0, 0.0), "lava on the left");
     let (b, _) = draw(&frame).unwrap();
     assert!(a == b, "drawing is repeatable");
+}
+
+#[test]
+fn own_code_problems_are_found_without_a_gpu() {
+    assert_eq!(crate::in_ball_problem(Builtin::find("lava").unwrap().wgsl), None);
+    let unknown = "// name: Broken\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return nope(uv); }\n";
+    assert!(crate::in_ball_problem(unknown).is_some_and(|e| e.contains("nope")));
+    let syntax = "// name: Broken\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(1.0 }\n";
+    assert!(crate::in_ball_problem(syntax).is_some());
+    assert!(crate::in_ball_problem("no header at all").is_some());
 }

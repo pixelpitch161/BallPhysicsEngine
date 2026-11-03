@@ -33,7 +33,7 @@ pub use frame::{
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};
-pub use programs::{LayeredRun, LookProgram};
+pub use programs::{LayeredRun, LookProgram, in_ball_problem};
 pub use wgpu;
 
 use bpe_runtime::CameraView;
@@ -344,6 +344,7 @@ impl Default for FrameBuffers {
 }
 
 impl FrameBuffers {
+    #[allow(clippy::too_many_arguments)]
     fn upload(
         &mut self,
         device: &wgpu::Device,

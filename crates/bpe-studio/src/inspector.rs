@@ -105,6 +105,8 @@ pub(crate) enum Edit {
     // layer they add.
     AddLayer(SlotId, &'static str),
     RemoveLayer(SlotId, LayerId),
+    /// A mask on a layer, its From set to the choice named (such as "layer_below").
+    AddMask(SlotId, LayerId, &'static str),
     /// To the index given, counted from the bottom of the card's layers.
     MoveLayer(SlotId, LayerId, usize),
     DuplicateLayer(SlotId, LayerId),
@@ -484,6 +486,12 @@ fn apply_layer_edit(
     let added = match edit {
         Edit::AddLayer(slot, kind) => scene.add_layer(reg, id, slot, kind).map(Some),
         Edit::RemoveLayer(slot, layer) => scene.remove_layer(reg, id, slot, layer).map(|_| None),
+        Edit::AddMask(slot, parent, from) => scene.add_mask(reg, id, slot, parent).map(|mask| {
+            if let Some(card) = scene.card_mut(id, slot) {
+                card.params.set(&bpe_core::layered_key(mask, "from"), Value::Choice(from.into()));
+            }
+            Some(mask)
+        }),
         Edit::MoveLayer(slot, layer, to) => scene.move_layer(reg, id, slot, layer, to).map(|_| None),
         Edit::DuplicateLayer(slot, layer) => scene.duplicate_layer(reg, id, slot, layer).map(Some),
         Edit::RenameLayer(slot, layer, name) => scene.rename_layer(reg, id, slot, layer, &name).map(|_| None),

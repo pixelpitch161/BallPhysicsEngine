@@ -65,6 +65,9 @@ pub enum ColourFrom {
     Own,
 }
 
+/// How a kind finds the settings a layer's own values add.
+type DynamicDefs = fn(&dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef];
+
 /// One layer kind of the stack: its id, name, help, section, settings and whether it repeats.
 pub struct Kind {
     pub id: &'static str,
@@ -77,7 +80,7 @@ pub struct Kind {
     pub maskable: bool,
     pub settings: fn() -> &'static [SettingDef],
     /// The settings a layer's own values add (a Shader layer's own code).
-    pub dynamic: fn(&dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef],
+    pub dynamic: DynamicDefs,
 }
 
 /// No settings beyond the kind's own.

@@ -58,6 +58,9 @@ pub struct BallView {
     frame: Frame,
     /// What the picture shows now, so a still one is drawn again only when that changes.
     drawn: Option<u64>,
+    /// A layer whose masks the view shows alone (white where they let it show, black where they
+    /// hide it), until Alt-click again or another thing is picked.
+    pub solo: Option<(ThingId, bpe_core::LayerId)>,
 }
 
 /// The small scene the view draws: the scene's settings (or plain ones on a dark ground) and a
@@ -193,10 +196,15 @@ pub fn show(
     let now = ui.input(|i| i.time);
     let clock = looped.map_or(0.0, |len| now % len);
     let loops = looped.map_or(0, |len| (now / len) as u32);
-    let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground);
+    let solo = view.solo.filter(|(t, _)| *t == id).map(|(_, layer)| layer);
+    let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground)
+        ^ solo.map_or(0, |l| (u64::from(l.0) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
     if view.drawn != Some(key) {
         let at = time + clock;
         build_view_frame(&mini, &resolved, kit, id, radius, view.mode, at, clock, loops, &mut view.frame);
+        if let Some(layer) = solo {
+            show_masks_alone(&mut view.frame, &resolved, id, layer);
+        }
         renderer.render(device, &render.queue, &view.frame);
         view.drawn = Some(key);
     }
@@ -205,6 +213,17 @@ pub fn show(
     ui.painter().image(*texture, rect, uv, style::UNTINTED);
     if looped.is_some() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+}
+
+/// Makes the frame of [`build_view_frame`] show layer `layer`'s masks alone: white where they let
+/// it show, black where they hide it. Nothing changes when the layer draws nothing.
+pub fn show_masks_alone(frame: &mut Frame, resolved: &Resolved, id: ThingId, layer: bpe_core::LayerId) {
+    let Some(slot) = resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Look)) else { return };
+    let Some(stack) = bpe_kit::modules::look::layers::gpu::Stack::of(slot) else { return };
+    let (Some(at), Some(ball)) = (stack.record_of(layer), frame.layered.first()) else { return };
+    if let Some(record) = frame.look_layers.get_mut(ball.range[0] as usize + at) {
+        record.head[2] |= bpe_gfx::LayerGpu::SOLO;
     }
 }
 
@@ -277,6 +296,24 @@ fn segmented<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, choices: &[(T, &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masks_alone_mark_their_layer_s_record_only() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_studio_scene(reg);
+        let ball = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+        scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::OUTLINE).unwrap();
+        let pattern = scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::PATTERN).unwrap();
+        scene.add_mask(reg, ball, SlotId::Look, pattern).unwrap();
+        let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
+        let resolved = bpe_core::resolve(&mini, reg);
+        let mut frame = Frame::default();
+        build_view_frame(&mini, &resolved, &kit, ball, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
+        show_masks_alone(&mut frame, &resolved, ball, pattern);
+        let solo: Vec<bool> = frame.look_layers.iter().map(|r| r.head[2] & bpe_gfx::LayerGpu::SOLO != 0).collect();
+        assert_eq!(solo, [false, false, true, false], "body, outline, pattern, its mask");
+    }
 
     #[test]
     fn the_view_puts_one_ball_at_its_middle_at_a_third_of_its_size() {

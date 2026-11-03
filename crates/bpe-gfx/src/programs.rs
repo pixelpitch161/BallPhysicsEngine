@@ -97,13 +97,8 @@ fn pipeline(
 /// Builds a program, or says why it can't be.
 fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, program: &LookProgram) -> Result<Made, String> {
     let sources: Vec<&str> = program.sources.iter().map(|s| s.as_ref()).collect();
-    let effects = crate::effects::in_ball_effects(&sources)?;
-    let full = crate::scene_source(Some(&effects));
     // Checked first, so a mistake in own code reads as a line about the code.
-    let module = naga::front::wgsl::parse_str(&full).map_err(|e| first_line(&e.emit_to_string(&full)))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-        .validate(&module)
-        .map_err(|e| first_line(&format!("{}", e.as_inner())))?;
+    let full = checked_source(&sources)?;
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("layered balls with shader layers"),
@@ -114,6 +109,27 @@ fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, program: &LookPro
         None => Ok(Made { module, normal, each: BTreeMap::new() }),
         Some(error) => Err(first_line(&error.to_string())),
     }
+}
+
+/// The whole layered shader with `sources` as its in-ball effects, checked as the GPU would check
+/// it, or the first line of why it can't be built.
+fn checked_source(sources: &[&str]) -> Result<String, String> {
+    let effects = crate::effects::in_ball_effects(sources)?;
+    let full = crate::scene_source(Some(&effects));
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| first_line(&e.emit_to_string(&full)))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+        .validate(&module)
+        .map_err(|e| first_line(&format!("{}", e.as_inner())))?;
+    Ok(full)
+}
+
+/// Why an effect's `code` can't run inside a ball, in one line: its header, then its WGSL as
+/// part of the ball shader. `None` when it can. No GPU is needed.
+pub fn in_ball_problem(code: &str) -> Option<String> {
+    if let Err(e) = crate::effects::parse(code) {
+        return Some(e);
+    }
+    checked_source(&[code]).err()
 }
 
 fn first_line(text: &str) -> String {

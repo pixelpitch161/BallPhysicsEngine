@@ -99,6 +99,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32) -> Walked {
             default: {}
         }
         // Its masks multiply into how much it covers.
+        var masked = vec2<f32>(1.0);
         for (var j = 1u; j <= masks; j++) {
             let m = look_layers[first + k + j];
             let t = i32(m.amount.y);
@@ -109,6 +110,11 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32) -> Walked {
             let v = mask_value(m, p, screen, vec2<f32>(COV_IN[below], COV_OUT[below]), chosen, inner, outer, aa);
             a_in *= v.x;
             a_out *= v.y;
+            masked *= v;
+        }
+        // Showing its masks alone (the editor's view): white where they let it show, black elsewhere.
+        if (l.head.z & 4u) != 0u {
+            return Walked(vec4<f32>(vec3<f32>(masked.x), 1.0), vec4<f32>(0.0));
         }
         if l.head.x == 4u {
             // Light, covering nothing: mixed with what reaches past the edge, then added.

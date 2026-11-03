@@ -143,6 +143,8 @@ impl LayerGpu {
     pub const MASK: u32 = 7;
     /// A radial shading darkens the middle instead of the outside.
     pub const INVERT: u32 = 2;
+    /// The editor's view shows this layer's masks alone: white where they let it show.
+    pub const SOLO: u32 = 4;
     /// The pattern turns with the ball's heading, or the outline or glow takes the body's colour.
     pub const FLAG: u32 = 1;
 }

@@ -49,6 +49,13 @@ pub struct DrawnLayer {
     pub masks: Vec<MaskLayer>,
 }
 
+impl DrawnLayer {
+    /// Whether it writes a record: all do but a Shader layer whose own code doesn't read.
+    pub fn writes(&self) -> bool {
+        !matches!(&self.layer, Drawn::Shader(sh) if sh.header.is_err())
+    }
+}
+
 /// A thing's shown stack, read from its resolved Look card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stack {
@@ -205,11 +212,9 @@ impl Stack {
                         ..LayerGpu::ZERO
                     }
                 }
+                // Own code that doesn't read draws nothing; the editor says why.
+                Drawn::Shader(_) if !d.writes() => continue,
                 Drawn::Shader(sh) => {
-                    // Own code that doesn't read draws nothing; the editor says why.
-                    if sh.header.is_err() {
-                        continue;
-                    }
                     let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
                     let mut extra = [[0.0; 4]; 4];
                     for (i, v) in sh.params.iter().enumerate() {
@@ -243,6 +248,22 @@ impl Stack {
             placed.push((d.id, at));
         }
         out
+    }
+
+    /// Where drawn layer `id`'s record is in [`Stack::records`] (the body's is 0); `None` for a
+    /// layer that writes none.
+    pub fn record_of(&self, id: LayerId) -> Option<usize> {
+        if id == self.body_id {
+            return Some(0);
+        }
+        let mut at = 1;
+        for d in self.drawn.iter().filter(|d| d.writes()) {
+            if d.id == id {
+                return Some(at);
+            }
+            at += 1 + d.masks.len();
+        }
+        None
     }
 
     /// The effects the stack's shader layers run, each once, in order: a shader record's effect
@@ -517,6 +538,10 @@ mod tests {
         assert_eq!(records[5].head[3], 0);
         assert_eq!(tiles.len(), 1);
         assert_eq!(records[6].p1[3], 0.0, "the brush names its tile");
+        assert_eq!(stack.record_of(stack.body_id), Some(0));
+        assert_eq!(stack.record_of(ids[0]), Some(2), "the pattern");
+        assert_eq!(stack.record_of(ids[1]), Some(5), "the outline, after the pattern's masks");
+        assert_eq!(stack.record_of(LayerId(999)), None);
         let middle = (bpe_gfx::MASK_TILE / 2) * bpe_gfx::MASK_TILE + bpe_gfx::MASK_TILE / 2;
         assert_eq!(tiles[0].1[middle], 255, "the tile holds the stroke");
         assert_eq!(stack.reach(10.0), stack.reach(10.0));

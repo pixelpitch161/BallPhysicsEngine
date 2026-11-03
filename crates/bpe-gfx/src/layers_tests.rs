@@ -320,7 +320,9 @@ fn a_light_mask_over_a_shine_layer_shows_only_in_the_highlight() {
 
 #[test]
 fn two_masks_multiply_and_a_missing_target_hides_the_layer() {
-    let both = white(|f| vec![body(), red_pattern(f, 2), mask(2.0, 0.0, 0.0, 0.5), mask(2.0, 0.0, 1.5708, 0.5)]);
+    let both = white(|f| {
+        vec![body(), red_pattern(f, 2), mask(2.0, 0.0, 0.0, 0.5), mask(2.0, 0.0, std::f32::consts::FRAC_PI_2, 0.5)]
+    });
     let Some(px) = render_sized(&both, W, H) else { return };
     save("layers-mask-two", &px, W, H);
     // The top half and, turned a quarter, the right half: only the top right quarter is red.
@@ -338,4 +340,19 @@ fn two_masks_multiply_and_a_missing_target_hides_the_layer() {
     assert!(a == plain, "a mask on a missing layer passes nothing");
     let again = render_sized(&both, W, H).unwrap();
     assert!(px == again, "drawing is repeatable");
+}
+
+#[test]
+fn a_solo_layer_shows_its_masks_alone_in_white_and_black() {
+    // A red ball under a red pattern with a half mask, shown solo: white top, black bottom.
+    let frame = white(|f| {
+        let mut p = red_pattern(f, 1);
+        p.head[2] |= LayerGpu::SOLO;
+        vec![body(), p, mask(2.0, 0.0, 0.0, 0.5)]
+    });
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    save("layers-mask-solo", &px, W, H);
+    let (top, bottom) = (at(&px, 0.0, -100.0), at(&px, 0.0, 100.0));
+    assert!(top.iter().take(3).all(|&c| c > 240), "white where the mask lets it show: {top:?}");
+    assert!(bottom.iter().take(3).all(|&c| c < 15), "black where it hides: {bottom:?}");
 }
