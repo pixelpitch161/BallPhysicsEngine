@@ -2,11 +2,12 @@
 //! written once per thing per frame, and one instance per ball naming them. Only the body's
 //! colour, the ball's own variation and its motion differ from ball to ball.
 
+use std::borrow::Cow;
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
 use bpe_core::{Blend, Choice, LayerId, ResolvedSlot, Settings};
-use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance};
+use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance, LookProgram};
 use glam::Vec2;
 
 use super::{
@@ -150,6 +151,7 @@ impl Stack {
         let mut out = vec![LayerGpu { amount: [1.0, 0.0, 0.0, 0.0], ..LayerGpu::ZERO }];
         // Where each layer's record is, by id, for masks that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
+        let sources = self.effect_sources();
         let turn = self.rainbow() * time;
         for d in &self.drawn {
             let r = match &d.layer {
@@ -203,7 +205,24 @@ impl Stack {
                         ..LayerGpu::ZERO
                     }
                 }
-                Drawn::Shader(_) => continue,
+                Drawn::Shader(sh) => {
+                    // Own code that doesn't read draws nothing; the editor says why.
+                    if sh.header.is_err() {
+                        continue;
+                    }
+                    let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
+                    let mut extra = [[0.0; 4]; 4];
+                    for (i, v) in sh.params.iter().enumerate() {
+                        extra[i / 4][i % 4] = *v;
+                    }
+                    LayerGpu {
+                        head: [LayerGpu::SHADER, blend(sh.blend), 0, 0],
+                        amount: [sh.opacity, 0.0, 0.0, 0.0],
+                        p0: [sh.speed, sh.scale, sh.space.code(), slot as f32],
+                        extra,
+                        ..LayerGpu::ZERO
+                    }
+                }
             };
             let at = out.len();
             let angle = if let Drawn::Pattern(_) = &d.layer { r.paint.angle.to_radians() } else { 0.0 };
@@ -224,6 +243,27 @@ impl Stack {
             placed.push((d.id, at));
         }
         out
+    }
+
+    /// The effects the stack's shader layers run, each once, in order: a shader record's effect
+    /// slot is its place here. Own code that doesn't read is left out.
+    pub fn effect_sources(&self) -> Vec<Cow<'static, str>> {
+        let mut out: Vec<Cow<'static, str>> = Vec::new();
+        for d in &self.drawn {
+            if let Drawn::Shader(sh) = &d.layer
+                && sh.header.is_ok()
+                && !out.contains(&sh.source)
+            {
+                out.push(sh.source.clone());
+            }
+        }
+        out
+    }
+
+    /// The in-ball program the stack draws with: `None` without shader layers.
+    pub fn program(&self) -> Option<LookProgram> {
+        let sources = self.effect_sources();
+        (!sources.is_empty()).then(|| LookProgram::new(sources))
     }
 
     /// How far past the centre a ball of `radius` with this stack reaches, in radii.
@@ -481,6 +521,48 @@ mod tests {
         assert_eq!(tiles[0].1[middle], 255, "the tile holds the stroke");
         assert_eq!(stack.reach(10.0), stack.reach(10.0));
         let _ = ids;
+    }
+
+    /// A ball's stack with shader layers running `effects` (an id, or own code).
+    fn shaders(effects: &[&str]) -> Stack {
+        let effects: Vec<String> = effects.iter().map(|e| (*e).to_owned()).collect();
+        stack_after(move |reg, s, b| {
+            for e in &effects {
+                let id = s.add_layer(reg, b, SlotId::Look, SHADER).unwrap();
+                let at = |k: &str| bpe_core::Address::on(b, SlotId::Look, &layered_key(id, k));
+                if e.contains("fn ") {
+                    s.set_at(reg, &at("effect"), Value::Choice("own".into())).unwrap();
+                    s.set_at(reg, &at("code"), Value::Text(e.clone())).unwrap();
+                } else {
+                    s.set_at(reg, &at("effect"), Value::Choice(e.clone())).unwrap();
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn shader_layers_share_a_slot_per_distinct_effect() {
+        let lava = shaders(&["lava", "lava"]);
+        let records = lava.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let slots: Vec<f32> = records.iter().filter(|r| r.head[0] == LayerGpu::SHADER).map(|r| r.p0[3]).collect();
+        assert_eq!(slots, [0.0, 0.0]);
+        assert_eq!(lava.program().unwrap().sources.len(), 1);
+        let two = shaders(&["lava", "glitch"]);
+        let records = two.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let slots: Vec<f32> = records.iter().filter(|r| r.head[0] == LayerGpu::SHADER).map(|r| r.p0[3]).collect();
+        assert_eq!(slots, [0.0, 1.0]);
+        assert_ne!(two.program().unwrap().key, lava.program().unwrap().key);
+        let lava_heat = records[1].extra;
+        assert!(lava_heat.iter().flatten().any(|v| *v != 0.0), "the effect's settings ride in extra");
+        assert!(stack_after(|_, _, _| {}).program().is_none());
+    }
+
+    #[test]
+    fn own_code_that_does_not_read_writes_no_record() {
+        let broken = shaders(&["fn main() {}"]);
+        let records = broken.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        assert_eq!(records.len(), 1, "the body alone");
+        assert!(broken.program().is_none());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
 use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
-use bpe_gfx::{DrawCx, FlashInstance, Frame, HitMark, ThingDraw, blend_alpha, thing_code};
+use bpe_gfx::{DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::{Bodies, EventKind};
 
 use crate::modules::look::draw::{BallInputs, for_balls};
@@ -76,6 +76,7 @@ impl ThingDraw for BallsDraw {
         // Each ball's own variation, only read when a pattern paints from its own gradient.
         let fill = for_balls(stack.body.fill.clone());
         let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
+        let start = frame.layered.len() as u32;
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
                 continue;
@@ -90,6 +91,16 @@ impl ThingDraw for BallsDraw {
             let body = blend_alpha(color(i));
             frame.layered.push(stack.instance(body, center, velocity, radius, time, code, seed, own, first, count));
         }
+        // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
+        let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
+            Some(i) => i as u32,
+            None => {
+                frame.programs.push(p);
+                frame.programs.len() as u32 - 1
+            }
+        });
+        let end = frame.layered.len() as u32;
+        frame.layered_runs.push(LayeredRun { program, start, end });
 
         // Recent hits, for the flashes here and for the particle and shader modules. Only the
         // flashes' worth is scanned when nothing else wants them.
@@ -199,6 +210,28 @@ mod tests {
         assert_eq!(frame.layered[0].range[..2], [0, 3]);
         let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
         assert_eq!(frame.layered[0].body, pink);
+    }
+
+    #[test]
+    fn runs_cover_every_ball_in_order_and_name_one_program_per_distinct_stack() {
+        let reg = registry();
+        let frame = frame_after(0.0, |scene| {
+            let look = crate::modules::look::layers::SHADER;
+            let other = crate::add_thing(scene, &reg, "balls", ThingId::ROOT).unwrap();
+            let third = crate::add_thing(scene, &reg, "balls", ThingId::ROOT).unwrap();
+            scene.add_layer(&reg, other, SlotId::Look, look).unwrap();
+            scene.add_layer(&reg, third, SlotId::Look, look).unwrap();
+        });
+        assert_eq!(frame.layered.len(), 3);
+        let mut at = 0;
+        for run in &frame.layered_runs {
+            assert_eq!(run.start, at, "runs follow each other");
+            at = run.end;
+        }
+        assert_eq!(at, 3, "every ball is in a run");
+        let programs: Vec<Option<u32>> = frame.layered_runs.iter().map(|r| r.program).collect();
+        assert_eq!(programs, [None, Some(0), Some(0)], "two lava stacks share one program");
+        assert_eq!(frame.programs.len(), 1);
     }
 
     #[test]
