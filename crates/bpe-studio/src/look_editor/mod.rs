@@ -5,6 +5,7 @@
 pub mod ball_view;
 mod clipboard;
 mod code_box;
+mod handles;
 mod layer_list;
 mod layer_rows;
 
@@ -81,7 +82,17 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         if ball_view.solo.is_some_and(|(t, l)| t == cx.id && card.layer(l).is_none()) {
             ball_view.solo = None;
         }
-        ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time);
+        let out = ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time, None);
+        if let Some(out) = out {
+            let on_handle = match (out.map, card.layer(picked)) {
+                (Some(map), Some(layer)) => handles::show(ui, cx, layer, map, out.radius, edits),
+                _ => false,
+            };
+            // A click on the ball, off the handles, picks the layer showing there.
+            if !on_handle && let Some(layer) = out.picked {
+                inspector.selected_layer.insert(cx.id, layer);
+            }
+        }
     }
     ui.add_space(6.0);
     let section = |kind: &str| reg.layer(kind).map(|k| k.section());
@@ -742,5 +753,41 @@ mod tests {
             assert!(history.undo(&mut scene));
             assert_eq!(&scene, want);
         }
+    }
+
+    #[test]
+    fn dragging_the_outline_handle_changes_its_width() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let handle = h.get_by_label("Width handle").rect().center();
+        let to = handle - egui::vec2(15.0, 0.0);
+        h.drag_at(handle);
+        h.run();
+        h.hover_at(to);
+        h.run();
+        h.drop_at(to);
+        h.run();
+        let Some(Value::Number(width)) = param(&h, BALL, outline.id, "width") else { panic!("no width") };
+        assert!(width > 6.0, "dragged inwards, the outline is wider: {width}");
+    }
+
+    #[test]
+    fn a_click_on_the_ball_picks_the_layer_showing_there() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Pattern");
+        add(&mut h, "+ Add layer", "Outline");
+        let pattern = layer_named(&h, BALL, "Pattern");
+        // The Body picked, so no handles are in the way.
+        h.get_by_role_and_label(Role::Button, "Body").click();
+        h.run();
+        let picture = h.state().inspector.ball_view.last_rect().expect("the view was drawn");
+        // A press and a release in the same place is a click.
+        let at = picture.center() + egui::vec2(10.0, 20.0);
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.run();
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&pattern.id));
     }
 }

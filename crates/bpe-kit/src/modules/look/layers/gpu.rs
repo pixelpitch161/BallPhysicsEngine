@@ -250,6 +250,35 @@ impl Stack {
         out
     }
 
+    /// The layer a click at ball point `q` (in radii, y down, before the ball turns) picks: the
+    /// topmost shown drawn layer covering it, else the Body inside the shape, else nothing.
+    /// Patterns, shine, shading and shaders cover the shape; an outline its band (`radius` is the
+    /// ball's, in pixels); a glow the ring just outside. Masks don't change what a click picks.
+    pub fn topmost_at(&self, q: Vec2, radius: f32) -> Option<LayerId> {
+        let d = shape_distance(self.body.ball_shape, self.body.roundness, q);
+        // Thin bands still take a click a few pixels wide.
+        let slack = (3.0 / radius.max(1.0)).max(0.03);
+        for layer in self.drawn.iter().rev().filter(|l| l.writes()) {
+            let covers = match &layer.layer {
+                Drawn::Outline(o) => {
+                    let w = o.width.max(0.0) / radius.max(1.0);
+                    let (lo, hi) = match o.sits {
+                        OutlineSits::Inside => (-w, 0.0),
+                        OutlineSits::Centre => (-0.5 * w, 0.5 * w),
+                        OutlineSits::Outside => (0.0, w),
+                    };
+                    w > 0.0 && d >= lo - slack && d <= hi + slack
+                }
+                Drawn::Glow(g) => d > slack && d <= g.size.max(0.05),
+                _ => d <= 0.0,
+            };
+            if covers {
+                return Some(layer.id);
+            }
+        }
+        (d <= 0.0).then_some(self.body_id)
+    }
+
     /// Where drawn layer `id`'s record is in [`Stack::records`] (the body's is 0); `None` for a
     /// layer that writes none.
     pub fn record_of(&self, id: LayerId) -> Option<usize> {
@@ -359,6 +388,20 @@ impl Stack {
 
 /// Where `strokes`' tile is in `tiles`, adding it if it isn't there yet; -1 for no strokes or
 /// past the most a frame holds.
+/// How far ball point `q` is from the edge of `shape`, in radii; negative inside. The circle,
+/// square and donut are exact; the other shapes are taken as a circle.
+pub fn shape_distance(shape: BallShape, roundness: f32, q: Vec2) -> f32 {
+    let k = roundness.clamp(0.0, 1.0) * 0.35;
+    match shape {
+        BallShape::Square => {
+            let d = q.abs() - Vec2::splat(0.84 - k);
+            d.max(Vec2::ZERO).length() + d.x.max(d.y).min(0.0) - k
+        }
+        BallShape::Donut => (q.length() - 0.72).abs() - 0.28,
+        _ => q.length() - 1.0,
+    }
+}
+
 fn tile_index(tiles: &mut Vec<(u64, Arc<[u8]>)>, strokes: &bpe_core::Strokes) -> f32 {
     if strokes.list.is_empty() {
         return -1.0;
@@ -546,6 +589,26 @@ mod tests {
         assert_eq!(tiles[0].1[middle], 255, "the tile holds the stroke");
         assert_eq!(stack.reach(10.0), stack.reach(10.0));
         let _ = ids;
+    }
+
+    #[test]
+    fn a_click_picks_the_topmost_layer_covering_the_point() {
+        let mut ids = Vec::new();
+        let stack = stack_after(|reg, s, b| {
+            let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            let outline = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(outline, "width")), Value::Number(6.0))
+                .unwrap();
+            let glow = s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
+            ids.extend([pat, outline, glow]);
+        });
+        let r = 60.0;
+        assert_eq!(stack.topmost_at(Vec2::new(0.97, 0.0), r), Some(ids[1]), "the outline on the rim");
+        assert_eq!(stack.topmost_at(Vec2::new(0.0, 0.2), r), Some(ids[0]), "the pattern in the middle");
+        assert_eq!(stack.topmost_at(Vec2::new(0.0, -1.3), r), Some(ids[2]), "the glow just outside");
+        assert_eq!(stack.topmost_at(Vec2::new(2.5, 2.5), r), None, "nothing far outside");
+        let plain = stack_after(|_, _, _| {});
+        assert_eq!(plain.topmost_at(Vec2::new(0.3, 0.3), r), Some(plain.body_id), "the Body with nothing over it");
     }
 
     /// A ball's stack with shader layers running `effects` (an id, or own code).
