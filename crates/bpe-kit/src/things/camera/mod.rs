@@ -99,6 +99,9 @@ impl Default for CameraSettings {
 }
 
 impl ThingKind for CameraKind {
+    fn track_colour(&self) -> Option<bpe_core::TrackColour> {
+        Some(bpe_core::TrackColour::Violet)
+    }
     fn id(&self) -> &'static str {
         "camera"
     }

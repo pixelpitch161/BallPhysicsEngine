@@ -45,6 +45,7 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
     if !scene.mend() {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
+    scene.give_colours(reg);
 
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {

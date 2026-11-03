@@ -33,6 +33,11 @@ pub trait ThingKind: Send + Sync + 'static {
     fn single(&self) -> bool {
         false
     }
+    /// The editor track colour a new one of these starts with, when the kind has its own (the
+    /// arena is orange); `None` takes the next free colour.
+    fn track_colour(&self) -> Option<crate::TrackColour> {
+        None
+    }
     /// The heading the editor's "Add thing" menu lists this kind under.
     fn family(&self) -> &'static str {
         "Other"

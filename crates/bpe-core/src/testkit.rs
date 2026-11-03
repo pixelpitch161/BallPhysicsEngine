@@ -197,8 +197,15 @@ pub fn registry() -> Registry {
 pub fn push(scene: &mut Scene, kind: &str, parent: ThingId) -> ThingId {
     let id = ThingId(scene.next_thing);
     scene.next_thing += 1;
-    let thing =
-        Thing { id, name: format!("{kind} {}", id.0), kind: kind.into(), parent: Some(parent), ..Thing::default() };
+    let colour = Some(scene.next_colour());
+    let thing = Thing {
+        id,
+        name: format!("{kind} {}", id.0),
+        kind: kind.into(),
+        parent: Some(parent),
+        colour,
+        ..Thing::default()
+    };
     scene.things.insert(id, thing);
     scene.order.push(id);
     id
