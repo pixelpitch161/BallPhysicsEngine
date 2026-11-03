@@ -23,15 +23,16 @@ mod pictures;
 pub mod text;
 
 pub use canvas::pictures::{picture_path, picture_readable};
+pub use canvas::shapes::chip_distance;
 pub use canvas::{CanvasTextures, MAX_TEXELS, clamp_texels};
 use flow::surface::THICKNESS_FORMAT;
 pub use flow::{FlowLayers, FlowSource, FlowStatus};
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, CanvasLayer, CanvasPlace, DrawCx, Draws, EffectCall,
-    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, HitMark, LiquidLayer, LookInstance, MAX_MASK_SHAPES,
-    MaskShape, ModuleDraw, PaintLook, PaintStyle, Points, ShapeInstance, SoftVertex, Stage, SwarmLayer, SwarmLook,
-    SwarmStart, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_at, hit_strength, push_streak,
-    push_streak_colours, thing_code,
+    FlashInstance, Flock, Frame, GlyphInstance, GpuLiquid, Grade, GridImage, HitMark, LiquidLayer, LookInstance,
+    MAX_MASK_SHAPES, MaskShape, ModuleDraw, PaintLook, PaintStyle, Points, ShapeInstance, SoftVertex, Stage, Surface,
+    SwarmLayer, SwarmLook, SwarmStart, ThingDraw, TrailVertex, Under, blend_alpha, build_frame, build_frame_at,
+    hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use text::Atlas;
@@ -339,6 +340,8 @@ struct FrameBuffers {
     looks: GrowableBuffer,
     flashes: GrowableBuffer,
     glyphs: GrowableBuffer,
+    /// Every canvas's text-under-a-cover glyphs, in canvas order.
+    under_glyphs: GrowableBuffer,
     bursts: particles::BurstList,
 }
 
@@ -352,6 +355,7 @@ impl Default for FrameBuffers {
             looks: GrowableBuffer::new("styled ball instances"),
             flashes: GrowableBuffer::new("flash instances"),
             glyphs: GrowableBuffer::new("glyph instances"),
+            under_glyphs: GrowableBuffer::new("canvas text instances"),
             bursts: particles::BurstList::default(),
         }
     }
@@ -366,6 +370,8 @@ impl FrameBuffers {
         self.looks.upload(device, queue, bytemuck::cast_slice(&f.looks));
         self.flashes.upload(device, queue, bytemuck::cast_slice(&f.flashes));
         self.glyphs.upload(device, queue, bytemuck::cast_slice(&f.glyphs));
+        let under: Vec<frame::GlyphInstance> = f.canvases.iter().flat_map(|c| c.under_glyphs.iter().copied()).collect();
+        self.under_glyphs.upload(device, queue, bytemuck::cast_slice(&under));
         particles.fill(&mut self.bursts, device, queue, particles::pick(&f.bursts, f.time));
     }
 }
@@ -1005,7 +1011,11 @@ impl Renderer {
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
             b.upload(device, queue, &self.particles, &l.frame);
         }
-        let glyphs = |f: &Frame| !f.glyphs.is_empty() || f.layers.iter().any(|l| !l.frame.glyphs.is_empty());
+        let glyphs = |f: &Frame| {
+            !f.glyphs.is_empty()
+                || f.canvases.iter().any(|c| !c.under_glyphs.is_empty())
+                || f.layers.iter().any(|l| !l.frame.glyphs.is_empty())
+        };
         if glyphs(frame) || overlay.is_some_and(glyphs) {
             self.sync_atlas(device, queue);
         }
@@ -1037,7 +1047,14 @@ impl Renderer {
         let mut slot = 0;
         // The composite lets go of the textures of canvases gone since the last frame.
         let flow = self.flow.as_ref();
-        let current: Vec<_> = frame.canvases.iter().map(|c| flow.and_then(|f| f.canvas_textures(c.key))).collect();
+        let current: Vec<_> = frame
+            .canvases
+            .iter()
+            .flat_map(|c| {
+                let textures = flow.and_then(|f| f.canvas_textures(c.key));
+                [textures, textures]
+            })
+            .collect();
         self.canvas.keep(&current);
         {
             let mut pass =
@@ -1047,15 +1064,15 @@ impl Renderer {
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
         }
-        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindEverything, &mut slot);
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindEverything, &world, &mut slot);
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_back(&mut pass, frame, &self.buffers, &world);
         }
-        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnThing, &mut slot);
-        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindBalls, &mut slot);
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnThing, &world, &mut slot);
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::BehindBalls, &world, &mut slot);
         if !frame.liquids.is_empty() {
             self.copy_under(&mut encoder);
         }
@@ -1091,7 +1108,7 @@ impl Renderer {
             &self.targets.hdr,
             object_view.as_ref(),
         );
-        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnTop, &mut slot);
+        self.draw_canvases(device, queue, &mut encoder, frame, CanvasPlace::OnTop, &world, &mut slot);
         if !frame.flashes.is_empty() || !frame.bursts.is_empty() || !frame.glyphs.is_empty() {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
@@ -1174,6 +1191,7 @@ impl Renderer {
     /// Draws `frame`'s canvases at `place` into the HDR picture through the camera: Normal and
     /// Add straight in, any other blend drawn into the layer picture and mixed in by the blend
     /// composite. `slot` counts the blend composites so far this frame.
+    #[allow(clippy::too_many_arguments)]
     fn draw_canvases(
         &mut self,
         device: &wgpu::Device,
@@ -1181,29 +1199,75 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         frame: &Frame,
         place: CanvasPlace,
+        world: &Through,
         slot: &mut usize,
     ) {
-        for (i, c) in frame.canvases.iter().enumerate().filter(|(_, c)| c.place == place) {
+        // Where each canvas's under-text glyphs start in the shared buffer.
+        let mut text_from = Vec::with_capacity(frame.canvases.len());
+        let mut total = 0;
+        for c in &frame.canvases {
+            text_from.push(total);
+            total += c.under_glyphs.len();
+        }
+        for (i, c) in frame.canvases.iter().enumerate() {
+            let fog = matches!(c.surface, Surface::Fog { .. });
+            // Fog always lies on top of everything, whatever its place says.
+            if (if fog { CanvasPlace::OnTop } else { c.place }) != place {
+                continue;
+            }
             // Read from the flow layers directly (see `canvas_textures`) to borrow alongside
             // the composite.
             let textures = self.flow.as_ref().and_then(|flow| flow.canvas_textures(c.key));
-            if canvas::composite::Composite::direct(c.blend) {
-                let mut pass = begin_pass(encoder, &self.targets.hdr, "canvas", wgpu::LoadOp::Load);
-                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+            let atlas = self.flow.as_ref().and_then(|flow| flow.picture_atlas());
+            if fog {
+                self.copy_under(encoder);
+                let behind = self.canvas.fog_group(device, &self.targets.behind_view);
+                let mut pass = begin_pass(encoder, &self.targets.hdr, "fog", wgpu::LoadOp::Load);
+                self.canvas.draw_fog(device, queue, &mut pass, &self.globals_group, 2 * i, c, &behind);
                 continue;
             }
-            self.targets.ensure_layer(device);
-            self.copy_under(encoder);
-            let (_, layer) = self.targets.layer.clone().expect("made above");
-            {
-                let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
-                let mut pass = begin_pass(encoder, &layer, "canvas layer", clear);
-                self.canvas.draw(device, queue, &mut pass, &self.globals_group, i, c, textures);
+            let text = (!c.under_glyphs.is_empty() && self.atlas.is_some())
+                .then(|| text_from[i]..text_from[i] + c.under_glyphs.len());
+            let (target, layered) = if canvas::composite::Composite::direct(c.blend) {
+                (self.targets.hdr.clone(), false)
+            } else {
+                self.targets.ensure_layer(device);
+                self.copy_under(encoder);
+                (self.targets.layer.clone().expect("made above").1, true)
+            };
+            let load = if layered { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load };
+            match text {
+                None => {
+                    let mut pass = begin_pass(encoder, &target, "canvas", load);
+                    self.canvas.draw(device, queue, &mut pass, &self.globals_group, 2 * i, c, textures, atlas, 0);
+                }
+                Some(range) => {
+                    {
+                        let mut pass = begin_pass(encoder, &target, "canvas below text", load);
+                        self.canvas.draw(device, queue, &mut pass, &self.globals_group, 2 * i, c, textures, atlas, 1);
+                    }
+                    {
+                        let atlas = self.atlas.as_ref().expect("checked above");
+                        let mut pass = begin_pass(encoder, &target, "canvas text", wgpu::LoadOp::Load);
+                        pass.set_bind_group(0, &world.globals, &[]);
+                        pass.set_pipeline(self.pipeline(&self.glyph, each::Kind::Glyph, world));
+                        pass.set_bind_group(1, &atlas.group, &[]);
+                        pass.set_bind_group(2, &world.paint, &[]);
+                        let stride = std::mem::size_of::<frame::GlyphInstance>() as u64;
+                        let slice = self.buffers.under_glyphs.slice();
+                        pass.set_vertex_buffer(0, slice.slice(range.start as u64 * stride..range.end as u64 * stride));
+                        pass.draw(0..4, 0..(range.end - range.start) as u32);
+                    }
+                    let mut pass = begin_pass(encoder, &target, "canvas cover", wgpu::LoadOp::Load);
+                    self.canvas.draw(device, queue, &mut pass, &self.globals_group, 2 * i + 1, c, textures, atlas, 2);
+                }
             }
-            // The opacity is in the layer's coverage already.
-            let (under, hdr) = (&self.targets.behind_view, &self.targets.hdr);
-            self.blend.composite(device, queue, encoder, *slot, c.blend, 1.0, false, under, &layer, hdr);
-            *slot += 1;
+            if layered {
+                // The opacity is in the layer's coverage already.
+                let (under, hdr) = (&self.targets.behind_view, &self.targets.hdr);
+                self.blend.composite(device, queue, encoder, *slot, c.blend, 1.0, false, under, &target, hdr);
+                *slot += 1;
+            }
         }
     }
 

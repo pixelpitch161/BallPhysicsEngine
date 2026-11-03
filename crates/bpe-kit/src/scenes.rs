@@ -68,11 +68,28 @@ pub fn stage7(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[jelly_drop, rope_bridge, cloth_hammock, captioned_reel, drum_beat])
 }
 
-/// The seven Marks scenes: trails on a canvas, paint thrown onto a ring and a spinning bar, pegs
-/// that take paint, and then the rich paint demos: wet paint that drips, a watercolour garden,
-/// neon ink on a ring and colours that mix.
+/// The twelve Marks scenes: trails on a canvas, paint thrown onto a ring and a spinning bar, pegs
+/// that take paint, the rich paint demos (wet paint that drips, a watercolour garden, neon ink on a
+/// ring and colours that mix), and the surfaces: a scratch card, a colour war, a land grab, a
+/// sand garden and fog glass.
 pub fn marks(reg: &Registry) -> Vec<(String, Scene)> {
-    build_all(reg, &[paint_pour, splat_ring, peg_paint, wet_pour, watercolour_garden, neon_splat_ring, colour_mixing])
+    build_all(
+        reg,
+        &[
+            paint_pour,
+            splat_ring,
+            peg_paint,
+            wet_pour,
+            watercolour_garden,
+            neon_splat_ring,
+            colour_mixing,
+            scratch_to_reveal,
+            colour_war,
+            territory,
+            sand_garden,
+            fog_glass,
+        ],
+    )
 }
 
 /// Every shipped scene, stage by stage.
@@ -1724,6 +1741,184 @@ fn pour(reg: &Registry, name: &str, tweak: impl FnOnce(&mut CanvasSettings, &mut
     b.finish()
 }
 
+/// A box arena 900×1500 under `gravity`, 20 s, balls in a ring at (0, −200) called `balls_name`,
+/// and a canvas called `canvas_name` with `canvas`, the balls' brushes set to `brush`.
+#[allow(clippy::too_many_arguments)]
+fn surface_demo(
+    reg: &Registry,
+    name: &str,
+    canvas_name: &str,
+    gravity: Vec2,
+    colours: &[Color],
+    balls: impl FnOnce(&mut BallsSettings),
+    canvas: CanvasSettings,
+    brush: MarksBrushes,
+) -> Scene {
+    let mut b = Builder::new(reg, name);
+    b.scene_settings(|s| {
+        s.gravity = gravity;
+        s.duration = 20.0;
+    });
+    b.arena(|a| {
+        a.shape = ArenaShape::Box;
+        a.width = 900.0;
+        a.height = 1500.0;
+    });
+    b.balls("Balls", Vec2::new(0.0, -200.0), |s| {
+        s.arrangement = Arrangement::Ring;
+        balls(s);
+    });
+    b.bounce(|s| s.bounciness = 1.0);
+    b.ball_look(|l| {
+        l.fill = Paint { colours: Gradient::even(colours), follow: Follow::Order, ..Paint::default() };
+    });
+    // Added last, so the balls already have their brushes.
+    b.add("canvas", ThingId::ROOT, canvas_name, Vec2::ZERO, canvas.to_params());
+    let brushes = b.module_of(BALLS, SlotId::Marks);
+    b.set_params(brushes, brush.to_params());
+    b.finish()
+}
+
+/// The colours `values` (0xrrggbb).
+fn hexes(values: &[u32]) -> Vec<Color> {
+    values.iter().map(|v| Color::rgb((v >> 16) as u8, (v >> 8) as u8, *v as u8)).collect()
+}
+
+/// A foil scratch card: five balls scratch the cover off a "YOU WIN", chipping flakes away.
+fn scratch_to_reveal(reg: &Registry) -> Scene {
+    surface_demo(
+        reg,
+        "Scratch to reveal",
+        "Card",
+        Vec2::new(0.0, 600.0),
+        &hexes(&[0xffffff, 0xffd23e, 0xff5c8a, 0x3ee0d0, 0xa04dff]),
+        |s| {
+            s.count = 5;
+            s.radius = 30.0;
+            s.ring_radius = 160.0;
+            s.velocity = Vec2::new(300.0, -150.0);
+        },
+        crate::CanvasStart::ScratchCard.settings(),
+        MarksBrushes {
+            paint_on: false,
+            scrape_on: true,
+            scrape_width_by: WidthBy::Size,
+            scrape_width: 1.0,
+            chip_on: true,
+            chip_shape: crate::ChipShape::Splat,
+            chip_size: 30.0,
+            chip_min_speed: 80.0,
+            ..MarksBrushes::default()
+        },
+    )
+}
+
+/// Four colours fight over a dark floor, tile by tile, in no gravity.
+fn colour_war(reg: &Registry) -> Scene {
+    surface_demo(
+        reg,
+        "Colour war",
+        "War",
+        Vec2::ZERO,
+        &hexes(&[0xff3e5c, 0x3e9bff, 0x3ee07a, 0xffd23e]),
+        |s| {
+            s.count = 4;
+            s.radius = 34.0;
+            s.ring_radius = 250.0;
+            s.velocity = Vec2::new(420.0, -260.0);
+        },
+        crate::CanvasStart::ColourWar.settings(),
+        MarksBrushes {
+            paint_on: false,
+            claim_on: true,
+            claim_width_by: WidthBy::Size,
+            claim_width: 1.2,
+            claim_hits: true,
+            claim_hit_size: 60.0,
+            claim_team: crate::ClaimTeam::ByColour,
+            ..MarksBrushes::default()
+        },
+    )
+}
+
+/// Three colours claim land that keeps spreading on its own, smooth rather than tiled.
+fn territory(reg: &Registry) -> Scene {
+    let canvas = CanvasSettings {
+        kind: crate::CanvasKind::Paint,
+        starts_as: StartsAs::Colour,
+        start_colour: Color::rgb(0x10, 0x10, 0x18),
+        tile_size: 0.0,
+        grow: 0.6,
+        take_over: true,
+        border: 0.3,
+        ..CanvasSettings::default()
+    };
+    surface_demo(
+        reg,
+        "Territory",
+        "Land",
+        Vec2::new(0.0, 400.0),
+        &hexes(&[0xff5ca8, 0x3ee0d0, 0xb6ff3b]),
+        |s| {
+            s.count = 3;
+            s.radius = 26.0;
+            s.ring_radius = 200.0;
+            s.velocity = Vec2::new(320.0, -200.0);
+        },
+        canvas,
+        MarksBrushes {
+            paint_on: false,
+            claim_on: true,
+            claim_width: 1.0,
+            claim_hits: true,
+            claim_hit_size: 80.0,
+            claim_team: crate::ClaimTeam::ByColour,
+            ..MarksBrushes::default()
+        },
+    )
+}
+
+/// Balls plough furrows through a bed of sand that settles back.
+fn sand_garden(reg: &Registry) -> Scene {
+    let canvas = CanvasSettings { ridges: 0.7, grows_back: 6.0, ..crate::CanvasStart::Sand.settings() };
+    surface_demo(
+        reg,
+        "Sand garden",
+        "Sand",
+        Vec2::new(0.0, 300.0),
+        &hexes(&[0x5b3a29, 0x2f4858, 0x33658a, 0x86bbd8, 0xf26419, 0xf6ae2d]),
+        |s| {
+            s.count = 6;
+            s.radius = 22.0;
+            s.ring_radius = 200.0;
+            s.velocity = Vec2::new(260.0, -120.0);
+        },
+        canvas,
+        MarksBrushes { paint_on: false, scrape_on: true, scrape_width: 1.0, ..MarksBrushes::default() },
+    )
+}
+
+/// Balls wipe clear a misted window; drops run down the clear streaks.
+fn fog_glass(reg: &Registry) -> Scene {
+    let canvas =
+        CanvasSettings { density: 0.75, grows_back: 5.0, drops: 0.6, ..crate::CanvasStart::FogGlass.settings() };
+    surface_demo(
+        reg,
+        "Fog glass",
+        "Fog",
+        Vec2::new(0.0, 500.0),
+        &hexes(&[0xff3e5c, 0xffb82e, 0x3ee07a, 0x3e9bff, 0xa04dff]),
+        |s| {
+            s.count = 5;
+            s.radius = 30.0;
+            s.ring_radius = 180.0;
+            s.velocity = Vec2::new(300.0, -200.0);
+        },
+        canvas,
+        MarksBrushes { paint_on: false, scrape_on: true, scrape_width: 1.4, ..MarksBrushes::default() },
+    )
+}
+
 /// Balls in a ring arena throw paint at the ring, which smears it along its line, and at a
 /// spinning bar, which wears the prints and carries them round. No canvas: the things hold it.
 fn splat_ring(reg: &Registry) -> Scene {
@@ -2040,7 +2235,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 40);
+        assert_eq!(scenes.len(), 45);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -2082,7 +2277,12 @@ mod tests {
                 "Wet pour",
                 "Watercolour garden",
                 "Neon splat ring",
-                "Colour mixing"
+                "Colour mixing",
+                "Scratch to reveal",
+                "Colour war",
+                "Territory",
+                "Sand garden",
+                "Fog glass"
             ]
         );
         let mut scenes = scenes;
@@ -2114,7 +2314,12 @@ mod tests {
                 "Wet pour",
                 "Watercolour garden",
                 "Neon splat ring",
-                "Colour mixing"
+                "Colour mixing",
+                "Scratch to reveal",
+                "Colour war",
+                "Territory",
+                "Sand garden",
+                "Fog glass"
             ]
         );
         for (name, scene) in &marks {

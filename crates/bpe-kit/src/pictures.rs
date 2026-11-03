@@ -13,6 +13,7 @@ use bpe_core::{Params, Scene, SlotId, SlotLink, Value};
 use bpe_runtime::World;
 
 use crate::modules::marks::{MarksBrushes, SplatShape};
+use crate::things::canvas::{CanvasKind, CanvasState, Underneath};
 
 /// Most pictures one scene can show.
 pub const MAX_PICTURES: usize = 16;
@@ -32,6 +33,16 @@ pub fn collect(world: &World) -> Vec<String> {
             found.insert(b.splat_picture.clone());
         }
     }
+    // A cover's picture underneath.
+    for &thing in world.order() {
+        let Some(st) = world.states.get(&thing).and_then(|s| s.as_any().downcast_ref::<CanvasState>()) else {
+            continue;
+        };
+        let s = &st.settings;
+        if s.kind == CanvasKind::Cover && s.under == Underneath::Picture && !s.under_picture.trim().is_empty() {
+            found.insert(s.under_picture.clone());
+        }
+    }
     found.into_iter().take(MAX_PICTURES).collect()
 }
 
@@ -45,15 +56,17 @@ pub fn fill(world: &mut World) {
     world.pictures = collect(world);
 }
 
-/// The setting every picture path is stored under.
-const KEY: &str = "splat_picture";
+/// The settings picture paths are stored under.
+const KEYS: [&str; 2] = ["splat_picture", "under_picture"];
 
-/// Calls `f` for every non-empty `splat_picture` among `params`.
+/// Calls `f` for every non-empty picture setting among `params`.
 fn visit_params(params: &mut Params, f: &mut dyn FnMut(&mut String)) {
-    if let Some(Value::Text(text)) = params.0.get_mut(KEY)
-        && !text.is_empty()
-    {
-        f(text);
+    for key in KEYS {
+        if let Some(Value::Text(text)) = params.0.get_mut(key)
+            && !text.is_empty()
+        {
+            f(text);
+        }
     }
 }
 
@@ -70,6 +83,8 @@ fn visit(scene: &mut Scene, f: &mut dyn FnMut(&mut String)) {
         }
     }
     for thing in scene.things.values_mut() {
+        // A canvas's own settings live on the thing.
+        visit_params(&mut thing.params, f);
         for link in thing.slots.values_mut() {
             if let SlotLink::Linked { overrides, .. } = link {
                 visit_params(overrides, f);
@@ -457,7 +472,7 @@ mod tests {
         fill_slot(&mut scene, &kit.registry, BALLS, SlotId::Marks).unwrap();
         let link = scene.things.get_mut(&BALLS).unwrap().slots.get_mut(&SlotId::Marks).unwrap();
         let SlotLink::Linked { overrides, .. } = link else { panic!("a linked slot") };
-        overrides.set(KEY, Value::Text(source.to_str().unwrap().into()));
+        overrides.set(KEYS[0], Value::Text(source.to_str().unwrap().into()));
         assert_eq!(adopt(&mut scene, None, &tmp.join("work/My scene.ron")), Ok(1));
         assert_eq!(the_picture(&scene), "My scene pictures/star.png");
     }
@@ -494,5 +509,39 @@ mod tests {
         }
         let note = picture_note(&scene, Some(&tmp)).expect("a note");
         assert!(note.contains("only 16 can show"), "{note}");
+    }
+
+    fn cover_with_picture(picture: &str) -> Scene {
+        with_canvas(|scene| {
+            let p = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+            p.set("kind", Value::Choice("cover".into()));
+            p.set("under", Value::Choice("picture".into()));
+            p.set("under_picture", Value::Text(picture.into()));
+        })
+    }
+
+    #[test]
+    fn under_pictures_join_the_table() {
+        let scene = cover_with_picture("under.png");
+        let (world, _) = world_of(&scene, 0.0);
+        assert_eq!(world.pictures, vec!["under.png".to_string()]);
+        assert_eq!(slot_of(&world, "under.png"), 0);
+        // Only a cover whose underneath is a picture counts.
+        let scene = with_canvas(|scene| {
+            let p = &mut scene.things.get_mut(&CANVAS).unwrap().params;
+            p.set("under_picture", Value::Text("under.png".into()));
+        });
+        assert!(world_of(&scene, 0.0).0.pictures.is_empty());
+    }
+
+    #[test]
+    fn adopting_copies_under_pictures() {
+        let tmp = temp("under");
+        let source = tmp.join("elsewhere/star.png");
+        write_png(&source, 10);
+        let mut scene = cover_with_picture(source.to_str().unwrap());
+        assert_eq!(adopt(&mut scene, None, &tmp.join("work/My scene.ron")), Ok(1));
+        assert!(tmp.join("work/My scene pictures/star.png").exists());
+        assert_eq!(the_picture(&scene), "My scene pictures/star.png");
     }
 }

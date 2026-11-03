@@ -1,13 +1,16 @@
 //! The canvas composite: draws a canvas's rectangle of the world into the picture with the Flat
 //! style or a paint style, sampling its three textures (see canvas.wgsl).
 
+use std::sync::Arc;
+
 use bpe_core::Blend;
 use bpe_runtime::MarkTarget;
 use bytemuck::{Pod, Zeroable};
 
 use super::CanvasTextures;
+use super::pictures::PictureAtlas;
 use crate::flow::util;
-use crate::{CanvasLayer, HDR_FORMAT, MAX_MASK_SHAPES, MaskShape, PaintStyle};
+use crate::{CanvasLayer, HDR_FORMAT, MAX_MASK_SHAPES, MaskShape, PaintStyle, Surface, Under};
 
 /// One canvas's uniform, laid out as `Canvas` in canvas.wgsl.
 #[repr(C)]
@@ -22,12 +25,49 @@ struct CanvasUniform {
     look: [f32; 4],
     /// Grain, edge darkening, glow size, glow strength.
     look2: [f32; 4],
+    /// x: surface (0 paint, 1 cover, 2 powder, 3 fog); y: its look (0 matte/sand/frost, 1 foil/snow/steam);
+    /// z: ridges (powder) or blur in world px (fog); w: density (fog) or the light angle in radians (powder).
+    surface: [f32; 4],
+    /// x: underneath (0 scene, 1 colour, 2 gradient, 3 picture, 4 text); y: picture slot; z: the part (0 all,
+    /// 1 underneath only, 2 cover only); w: 1 when there is a grid image.
+    under: [f32; 4],
+    /// Linear light: the underneath colour.
+    under_colour: [f32; 4],
+    /// x, y: the grid image's size in texels; z: world px per texel; w: border.
+    grid: [f32; 4],
+    stops: [[f32; 4]; 16],
 }
 
 impl CanvasUniform {
-    fn new(c: &CanvasLayer) -> Self {
+    fn new(c: &CanvasLayer, part: u32) -> Self {
         let skin = matches!(c.key, MarkTarget::Skin(_));
+        let surface = match c.surface {
+            Surface::Paint => [0.0; 4],
+            Surface::Cover { foil, .. } => [1.0, foil as u32 as f32, 0.0, 0.0],
+            Surface::Powder { snow, ridges, light_angle } => {
+                [2.0, snow as u32 as f32, ridges, light_angle.to_radians()]
+            }
+            Surface::Fog { steam, blur, density } => [3.0, steam as u32 as f32, blur, density],
+        };
+        let (mut under, mut under_colour, mut stops) = ([0.0; 4], [0.0; 4], [[0.0; 4]; 16]);
+        if let Surface::Cover { under: u, .. } = c.surface {
+            match u {
+                Under::Scene => {}
+                Under::Colour(col) => (under[0], under_colour) = (1.0, col),
+                Under::Gradient(s) => (under[0], stops) = (2.0, s),
+                Under::Picture(slot) => (under[0], under[1]) = (3.0, slot as f32),
+                Under::Text(col) => (under[0], under_colour) = (4.0, col),
+            }
+        }
+        under[2] = part as f32;
+        under[3] = c.grid.is_some() as u32 as f32;
+        let grid = c.grid.as_ref().map_or([0.0; 4], |g| [g.size[0] as f32, g.size[1] as f32, g.cell, c.border]);
         Self {
+            surface,
+            under,
+            under_colour,
+            grid,
+            stops,
             pose: [c.center[0], c.center[1], c.angle, 0.0],
             size: [c.size[0], c.size[1], c.fade, c.opacity],
             start: c.start.unwrap_or([0.0; 4]),
@@ -48,6 +88,40 @@ impl CanvasUniform {
     }
 }
 
+/// The ten bindings of a canvas's bind group.
+fn group_entries<'a>(
+    uniform: &'a wgpu::Buffer,
+    mask: &'a wgpu::Buffer,
+    textures: &'a CanvasTextures,
+    sampler: &'a wgpu::Sampler,
+    [grid_view, atlas_view]: [&'a wgpu::TextureView; 2],
+    [grid_sampler, atlas_sampler]: [&'a wgpu::Sampler; 2],
+) -> [wgpu::BindGroupEntry<'a>; 10] {
+    use wgpu::BindingResource::{Sampler, TextureView};
+    [
+        wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: TextureView(&textures.paint_view) },
+        wgpu::BindGroupEntry { binding: 2, resource: TextureView(&textures.aux_view) },
+        wgpu::BindGroupEntry { binding: 3, resource: Sampler(sampler) },
+        wgpu::BindGroupEntry { binding: 4, resource: mask.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 5, resource: TextureView(&textures.body_view) },
+        wgpu::BindGroupEntry { binding: 6, resource: TextureView(grid_view) },
+        wgpu::BindGroupEntry { binding: 7, resource: Sampler(grid_sampler) },
+        wgpu::BindGroupEntry { binding: 8, resource: TextureView(atlas_view) },
+        wgpu::BindGroupEntry { binding: 9, resource: Sampler(atlas_sampler) },
+    ]
+}
+
+/// A canvas's grid image on the graphics card.
+struct GridTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    size: [u32; 2],
+    srgb: bool,
+    /// What was last written, to skip uploading the same picture again.
+    last: Arc<Vec<u8>>,
+}
+
 pub(crate) struct Composite {
     layout: wgpu::BindGroupLayout,
     /// Over what is there, by the canvas's coverage: Normal, and every blend drawn into the blend
@@ -55,6 +129,10 @@ pub(crate) struct Composite {
     over: wgpu::RenderPipeline,
     /// Light added on top: Add.
     add: wgpu::RenderPipeline,
+    /// Fog: writes the final colour, mixing in a copy of what was there (group 2).
+    fog: wgpu::RenderPipeline,
+    fog_layout: wgpu::BindGroupLayout,
+    fog_sampler: wgpu::Sampler,
     sampler: wgpu::Sampler,
     /// Cleared 1×1 textures for a canvas whose own are not made yet: only its start colour shows.
     blank: CanvasTextures,
@@ -63,6 +141,14 @@ pub(crate) struct Composite {
     uniforms: Vec<(wgpu::Buffer, wgpu::Buffer)>,
     /// Each slot's bind group, kept while the slot draws the same paint texture.
     groups: Vec<Option<(wgpu::Texture, wgpu::BindGroup)>>,
+    /// Each slot's grid image, when its canvas has one.
+    grids: Vec<Option<GridTexture>>,
+    /// Samples a grid image smoothly (the other samples it nearest).
+    grid_sampler: wgpu::Sampler,
+    grid_nearest: wgpu::Sampler,
+    /// Stand-ins for a canvas with no grid image and no pictures: clear 1×1 textures.
+    blank_grid: wgpu::TextureView,
+    blank_atlas: wgpu::TextureView,
 }
 
 impl Composite {
@@ -82,6 +168,29 @@ impl Composite {
                 },
                 util::storage_entry(4, S::FRAGMENT, true),
                 util::float_texture_entry(5, S::FRAGMENT),
+                util::float_texture_entry(6, S::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let globals = util::globals_layout(device);
@@ -123,6 +232,54 @@ impl Composite {
         };
         let over = make("canvas over", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let add = make("canvas add", util::ADDITIVE);
+        let fog_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fog layout"),
+            entries: &[
+                util::float_texture_entry(0, S::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let fog_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fog"),
+            bind_group_layouts: &[Some(&globals), Some(&layout), Some(&fog_layout)],
+            immediate_size: 0,
+        });
+        let fog = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fog"),
+            layout: Some(&fog_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_canvas"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_fog"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fog"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("canvas"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -130,7 +287,48 @@ impl Composite {
             ..Default::default()
         });
         let blank = CanvasTextures::new(device, [1, 1]);
-        Self { layout, over, add, sampler, blank, uniforms: Vec::new(), groups: Vec::new() }
+        let grid_sampler = |filter| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("canvas grid"),
+                mag_filter: filter,
+                min_filter: filter,
+                ..Default::default()
+            })
+        };
+        let (grid_smooth, grid_nearest) =
+            (grid_sampler(wgpu::FilterMode::Linear), grid_sampler(wgpu::FilterMode::Nearest));
+        let stand_in = |dimension, layers| {
+            // A new texture is all zeros: clear, which is what a canvas with nothing there reads.
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("canvas stand-in"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: layers },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor { dimension: Some(dimension), ..Default::default() })
+        };
+        Self {
+            layout,
+            over,
+            add,
+            fog,
+            fog_layout,
+            fog_sampler,
+            sampler,
+            blank,
+            uniforms: Vec::new(),
+            groups: Vec::new(),
+            grids: Vec::new(),
+            grid_sampler: grid_smooth,
+            grid_nearest,
+            blank_grid: stand_in(wgpu::TextureViewDimension::D2, 1),
+            blank_atlas: stand_in(wgpu::TextureViewDimension::D2Array, 1),
+        }
     }
 
     /// Whether `blend` is drawn straight into the picture; any other goes through the blend
@@ -144,6 +342,7 @@ impl Composite {
     /// textures changed, lets its old textures go.
     pub(crate) fn keep(&mut self, current: &[Option<&CanvasTextures>]) {
         self.groups.truncate(current.len());
+        self.grids.truncate(current.len());
         for (cached, textures) in self.groups.iter_mut().zip(current) {
             let paint = &textures.unwrap_or(&self.blank).paint;
             if cached.as_ref().is_some_and(|(held, _)| held != paint) {
@@ -158,9 +357,47 @@ impl Composite {
         self.groups.iter().flatten().count()
     }
 
+    /// Uploads `canvas`'s grid image into slot `slot`'s texture, making the texture when it is
+    /// new or a different size or kind.
+    fn upload_grid(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, slot: usize, canvas: &CanvasLayer) {
+        self.grids.resize_with(self.grids.len().max(slot + 1), || None);
+        let Some(image) = &canvas.grid else {
+            self.grids[slot] = None;
+            return;
+        };
+        let held = &mut self.grids[slot];
+        if held.as_ref().is_none_or(|g| g.size != image.size || g.srgb != image.srgb) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("canvas grid"),
+                size: wgpu::Extent3d { width: image.size[0], height: image.size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: if image.srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            *held = Some(GridTexture { texture, view, size: image.size, srgb: image.srgb, last: Arc::new(Vec::new()) });
+        }
+        let g = held.as_mut().expect("made above");
+        let same = Arc::ptr_eq(&g.last, &image.pixels) || *g.last == *image.pixels;
+        if !same {
+            queue.write_texture(
+                g.texture.as_image_copy(),
+                &image.pixels,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(image.size[0] * 4), rows_per_image: None },
+                wgpu::Extent3d { width: image.size[0], height: image.size[1], depth_or_array_layers: 1 },
+            );
+            g.last = image.pixels.clone();
+        }
+    }
+
     /// Records `canvas` into `pass`, seen through `globals`, sampling `textures` (none: only its
-    /// start colour). Add adds its light; every other blend paints over what is there by its
-    /// coverage. `slot` tells the canvases of one frame apart.
+    /// start colour) and, for covers with a picture underneath, `atlas`. Add adds its light; every
+    /// other blend paints over what is there by its coverage. `slot` tells the canvases of one
+    /// frame apart; a cover with text underneath draws twice, parts 1 and 2, in slots `2 i` and
+    /// `2 i + 1` of its own, so `part` says which part (0: all of it).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
@@ -171,6 +408,53 @@ impl Composite {
         slot: usize,
         canvas: &CanvasLayer,
         textures: Option<&CanvasTextures>,
+        atlas: Option<&PictureAtlas>,
+        part: u32,
+    ) {
+        self.record(device, queue, pass, globals, slot, canvas, textures, atlas, part, None);
+    }
+
+    /// The bind group (group 2) that lets a fog canvas read `behind`, a copy of the picture.
+    pub(crate) fn fog_group(&self, device: &wgpu::Device, behind: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fog"),
+            layout: &self.fog_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(behind) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.fog_sampler) },
+            ],
+        })
+    }
+
+    /// Records a fog canvas: it writes the final colour of its pixels from `behind_group`'s copy
+    /// of the picture (see [`Self::fog_group`]), so it ignores blend.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_fog(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        slot: usize,
+        canvas: &CanvasLayer,
+        behind_group: &wgpu::BindGroup,
+    ) {
+        self.record(device, queue, pass, globals, slot, canvas, None, None, 0, Some(behind_group));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals: &wgpu::BindGroup,
+        slot: usize,
+        canvas: &CanvasLayer,
+        textures: Option<&CanvasTextures>,
+        atlas: Option<&PictureAtlas>,
+        part: u32,
+        fog: Option<&wgpu::BindGroup>,
     ) {
         while self.uniforms.len() <= slot {
             let buffer = |label, size, usage| {
@@ -186,42 +470,68 @@ impl Composite {
             self.uniforms.push((uniform, buffer("canvas mask", mask_bytes, wgpu::BufferUsages::STORAGE)));
         }
         let (uniform, mask) = &self.uniforms[slot];
-        queue.write_buffer(uniform, 0, bytemuck::bytes_of(&CanvasUniform::new(canvas)));
+        queue.write_buffer(uniform, 0, bytemuck::bytes_of(&CanvasUniform::new(canvas, part)));
         let shapes = &canvas.mask[..canvas.mask.len().min(MAX_MASK_SHAPES)];
         if !shapes.is_empty() {
             queue.write_buffer(mask, 0, bytemuck::cast_slice(shapes));
         }
+        self.upload_grid(device, queue, slot, canvas);
         let textures = textures.unwrap_or(&self.blank);
         self.groups.resize_with(self.groups.len().max(slot + 1), || None);
-        let cached = &mut self.groups[slot];
-        if cached.as_ref().is_none_or(|(paint, _)| *paint != textures.paint) {
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("canvas"),
+        let (uniform, mask) = &self.uniforms[slot];
+        let grid = self.grids[slot].as_ref();
+        let picture = matches!(canvas.surface, Surface::Cover { under: Under::Picture(_), .. });
+        let entries = |grid_view, grid_sampler, atlas_view, atlas_sampler| {
+            group_entries(
+                uniform,
+                mask,
+                textures,
+                &self.sampler,
+                [grid_view, atlas_view],
+                [grid_sampler, atlas_sampler],
+            )
+        };
+        let fresh;
+        let group = if grid.is_none() && !picture {
+            // The cached path: nothing but the paint textures changes the group.
+            let cached = &mut self.groups[slot];
+            if cached.as_ref().is_none_or(|(paint, _)| *paint != textures.paint) {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("canvas"),
+                    layout: &self.layout,
+                    entries: &entries(&self.blank_grid, &self.grid_sampler, &self.blank_atlas, &self.sampler),
+                });
+                *cached = Some((textures.paint.clone(), group));
+            }
+            &cached.as_ref().expect("made above").1
+        } else {
+            let (grid_view, grid_sampler) = match (grid, &canvas.grid) {
+                (Some(g), Some(image)) => {
+                    (&g.view, if image.nearest { &self.grid_nearest } else { &self.grid_sampler })
+                }
+                _ => (&self.blank_grid, &self.grid_sampler),
+            };
+            let (atlas_view, atlas_sampler) = match atlas {
+                Some(a) if picture => (&a.view, &a.sampler),
+                _ => (&self.blank_atlas, &self.sampler),
+            };
+            fresh = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas surface"),
                 layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&textures.paint_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&textures.aux_view),
-                    },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 4, resource: mask.as_entire_binding() },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&textures.body_view),
-                    },
-                ],
+                entries: &entries(grid_view, grid_sampler, atlas_view, atlas_sampler),
             });
-            *cached = Some((textures.paint.clone(), group));
-        }
-        let (_, group) = cached.as_ref().expect("made above");
-        pass.set_pipeline(if canvas.blend == Blend::Add { &self.add } else { &self.over });
+            &fresh
+        };
+        pass.set_pipeline(match fog {
+            Some(_) => &self.fog,
+            None if canvas.blend == Blend::Add => &self.add,
+            None => &self.over,
+        });
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, group, &[]);
+        if let Some(behind) = fog {
+            pass.set_bind_group(2, behind, &[]);
+        }
         pass.draw(0..4, 0..1);
     }
 }
@@ -261,6 +571,10 @@ mod tests {
             look: Default::default(),
             time: 0.0,
             mask: Vec::new(),
+            surface: crate::Surface::Paint,
+            grid: None,
+            border: 0.0,
+            under_glyphs: Vec::new(),
         }
     }
 
@@ -409,6 +723,18 @@ mod tests {
         canvas: &CanvasLayer,
         textures: &CanvasTextures,
     ) -> impl Fn(u32, u32) -> [f32; 2] + use<> {
+        draw_part(device, queue, canvas, textures, None, 0)
+    }
+
+    /// Like `draw_alone`, with a picture atlas and one `part` of the canvas.
+    fn draw_part(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        canvas: &CanvasLayer,
+        textures: &CanvasTextures,
+        atlas: Option<&PictureAtlas>,
+        part: u32,
+    ) -> impl Fn(u32, u32) -> [f32; 2] + use<> {
         const SIDE: u32 = 64;
         let frame = Frame { width: SIDE, height: SIDE, ..Frame::default() };
         let globals_data = crate::Globals::new(&frame, &frame.camera, SIDE);
@@ -439,7 +765,7 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = crate::begin_pass(&mut encoder, &view, "test", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            composite.draw(device, queue, &mut pass, &globals_group, 0, canvas, Some(textures));
+            composite.draw(device, queue, &mut pass, &globals_group, 0, canvas, Some(textures), atlas, part);
         }
         let row = (SIDE * 8) as usize;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -559,8 +885,8 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = crate::begin_pass(&mut encoder, &view, "test", wgpu::LoadOp::Load);
-            composite.draw(&device, &queue, &mut pass, &globals, 0, &c, Some(&a));
-            composite.draw(&device, &queue, &mut pass, &globals, 1, &c, Some(&b));
+            composite.draw(&device, &queue, &mut pass, &globals, 0, &c, Some(&a), None, 0);
+            composite.draw(&device, &queue, &mut pass, &globals, 1, &c, Some(&b), None, 0);
         }
         queue.submit([encoder.finish()]);
         assert_eq!(composite.cached(), 2);
@@ -572,4 +898,265 @@ mod tests {
         composite.keep(&[]);
         assert!(composite.groups.is_empty(), "no canvases, nothing held");
     }
+
+    /// A hash of every pixel of `read`'s 64×64 picture.
+    fn picture_hash(read: impl Fn(u32, u32) -> [f32; 2]) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325_u64;
+        for y in 0..64 {
+            for x in 0..64 {
+                for v in read(x, y) {
+                    for b in v.to_bits().to_le_bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+            }
+        }
+        h
+    }
+
+    #[test]
+    fn a_paint_canvas_without_claims_draws_as_before() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = CanvasTextures::new(&device, [2, 1]);
+        write_row(&queue, &textures.paint, &[[1.0, 0.0, 0.0, 1.0], [0.0; 4]]);
+        write_row(&queue, &textures.aux, &[[0.0; 4], [0.0; 4]]);
+        let mut hashes = Vec::new();
+        for style in [PaintStyle::Flat, PaintStyle::WetPaint, PaintStyle::Watercolour, PaintStyle::NeonInk] {
+            let mut c = canvas(CanvasPlace::BehindBalls, Some([0.0, 1.0, 0.0, 1.0]));
+            c.size = [32.0, 32.0];
+            c.texels = [2, 1];
+            c.look.style = style;
+            c.time = 0.5;
+            hashes.push(picture_hash(draw_alone(&device, &queue, &c, &textures)));
+        }
+        // Recorded before covers, powder and claimed ground existed.
+        assert_eq!(hashes, BEFORE, "{hashes:?}");
+    }
+
+    /// A 2×1 grid image: `left` and `right` texels.
+    fn grid2(left: [u8; 4], right: [u8; 4], srgb: bool) -> Option<crate::GridImage> {
+        let pixels = std::sync::Arc::new([left, right].concat());
+        Some(crate::GridImage { size: [2, 1], pixels, srgb, nearest: true, cell: 16.0 })
+    }
+
+    fn blank(device: &wgpu::Device, queue: &wgpu::Queue) -> CanvasTextures {
+        let textures = CanvasTextures::new(device, [2, 1]);
+        write_row(queue, &textures.paint, &[[0.0; 4]; 2]);
+        write_row(queue, &textures.aux, &[[0.0; 4]; 2]);
+        textures
+    }
+
+    fn small(start: Option<[f32; 4]>) -> CanvasLayer {
+        let mut c = canvas(CanvasPlace::BehindBalls, start);
+        c.size = [32.0, 32.0];
+        c.texels = [2, 1];
+        c
+    }
+
+    #[test]
+    fn claimed_ground_shows_under_paint() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(None);
+        c.grid = grid2([255, 0, 0, 255], [0; 4], true);
+        let read = draw_alone(&device, &queue, &c, &textures);
+        let (left, right) = (read(20, 32), read(44, 32));
+        assert!(left[0] > 0.9 && left[1] < 0.05, "{left:?}: the claimed half is red");
+        assert!(right[0] < 0.01 && right[1] < 0.01, "{right:?}: the unclaimed half is clear");
+    }
+
+    #[test]
+    fn borders_darken_team_edges() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(None);
+        c.grid = grid2([255, 0, 0, 255], [0, 255, 0, 255], true);
+        let plain = draw_alone(&device, &queue, &c, &textures);
+        c.border = 1.0;
+        let bordered = draw_alone(&device, &queue, &c, &textures);
+        assert!(bordered(31, 32)[0] < plain(31, 32)[0] - 0.1, "the seam is darker with a border");
+        assert!((bordered(20, 32)[0] - plain(20, 32)[0]).abs() < 0.01, "away from the seam nothing changes");
+    }
+
+    #[test]
+    fn a_cover_hides_and_reveals() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(Some([1.0, 0.0, 0.0, 1.0]));
+        c.surface = crate::Surface::Cover { foil: false, under: crate::Under::Colour([0.0, 1.0, 0.0, 1.0]) };
+        c.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        let read = draw_alone(&device, &queue, &c, &textures);
+        let (left, right) = (read(20, 32), read(44, 32));
+        assert!(left[0] > 0.8 && left[1] < 0.1, "{left:?}: the cover is where the amount is full");
+        assert!(right[0] < 0.1 && right[1] > 0.9, "{right:?}: scraped ground shows what is underneath");
+    }
+
+    #[test]
+    fn foil_shines_where_matte_does_not() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(Some([0.5, 0.5, 0.5, 1.0]));
+        c.grid = grid2([255, 0, 0, 255], [255, 0, 0, 255], false);
+        c.surface = crate::Surface::Cover { foil: false, under: crate::Under::Scene };
+        let matte = picture_hash(draw_alone(&device, &queue, &c, &textures));
+        c.surface = crate::Surface::Cover { foil: true, under: crate::Under::Scene };
+        let foil = draw_alone(&device, &queue, &c, &textures);
+        let spread = (0..64).map(|x| foil(x, 32)[0]).filter(|v| *v > 0.0);
+        let (lo, hi) = spread.fold((f32::MAX, 0.0f32), |(l, h), v| (l.min(v), h.max(v)));
+        assert!(hi - lo > 0.1, "foil varies across its face ({lo}..{hi})");
+        assert_ne!(matte, picture_hash(foil), "foil and matte differ");
+    }
+
+    #[test]
+    fn cover_parts_add_up() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(Some([1.0, 0.0, 0.0, 1.0]));
+        c.surface = crate::Surface::Cover { foil: false, under: crate::Under::Colour([0.0, 1.0, 0.0, 1.0]) };
+        c.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        let under = draw_part(&device, &queue, &c, &textures, None, 1);
+        let over = draw_part(&device, &queue, &c, &textures, None, 2);
+        assert!(under(20, 32)[1] > 0.9 && under(44, 32)[1] > 0.9, "part 1 is the underneath everywhere");
+        assert!(over(20, 32)[0] > 0.8, "part 2 is the cover where it is whole");
+        assert!(over(44, 32)[0] < 0.1 && over(44, 32)[1] < 0.1, "part 2 is clear where scraped");
+    }
+
+    #[test]
+    fn powder_ridges_catch_light() {
+        let Some((device, queue)) = gpu() else { return };
+        let textures = blank(&device, &queue);
+        let mut c = small(Some([0.8, 0.7, 0.4, 1.0]));
+        c.surface = crate::Surface::Powder { snow: false, ridges: 1.0, light_angle: 45.0 };
+        // Full on the left, bare on the right.
+        c.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        let read = draw_alone(&device, &queue, &c, &textures);
+        assert!(read(20, 32)[0] > 0.1, "powder is there where the amount is");
+        assert!(read(44, 32)[0] < 0.01, "and bare ground is clear");
+        // The slope at the heap's edge is lit differently from its flat top.
+        assert!((read(30, 32)[0] - read(20, 32)[0]).abs() > 0.005, "the edge shades");
+    }
+
+    #[test]
+    fn under_picture_shows_the_atlas() {
+        let Some((device, queue)) = gpu() else { return };
+        let dir = std::env::temp_dir().join(format!("bpe-under-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 255, 0, 255])).save(dir.join("g.png")).unwrap();
+        let atlas = PictureAtlas::load(&device, &queue, &["g.png".to_string()], Some(&dir));
+        let textures = blank(&device, &queue);
+        let mut c = small(Some([1.0, 0.0, 0.0, 1.0]));
+        c.surface = crate::Surface::Cover { foil: false, under: crate::Under::Picture(0) };
+        c.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        let read = draw_part(&device, &queue, &c, &textures, Some(&atlas), 0);
+        let right = read(44, 32);
+        assert!(right[1] > 0.5 && right[0] < 0.2, "{right:?}: the picture shows where scraped");
+        assert!(read(20, 32)[0] > 0.8, "the cover is still whole on the left");
+    }
+
+    /// How many pixels along y = 0 of a frame are strictly between the dark and the bright side.
+    fn soft_pixels(pixels: &[u8]) -> usize {
+        (-540..540).step_by(4).filter(|x| (30..225).contains(&pixel(pixels, *x as f32, 0.0)[0])).count()
+    }
+
+    /// A left half white, right half black picture under any fog (a white canvas behind balls).
+    fn edge_frame() -> Frame {
+        let mut frame = Frame::default();
+        let mut white = canvas(CanvasPlace::BehindEverything, Some([1.0, 1.0, 1.0, 1.0]));
+        white.center = [-270.0, 0.0];
+        white.size = [540.0, 1920.0];
+        frame.canvases.push(white);
+        frame
+    }
+
+    fn fog_over(amount: u8, blur: f32) -> CanvasLayer {
+        let mut fog = canvas(CanvasPlace::OnTop, Some([0.5, 0.5, 0.5, 1.0]));
+        fog.size = [1080.0, 1920.0];
+        fog.surface = crate::Surface::Fog { steam: false, blur, density: 0.0 };
+        fog.grid = grid2([amount, 0, 0, 255], [amount, 0, 0, 255], false);
+        if let Some(g) = fog.grid.as_mut() {
+            g.cell = 540.0;
+        }
+        fog
+    }
+
+    #[test]
+    fn fog_blurs_what_is_behind() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut frame = edge_frame();
+        let sharp = soft_pixels(&render(&device, &queue, &frame));
+        frame.canvases.push(fog_over(255, 80.0));
+        let blurred = soft_pixels(&render(&device, &queue, &frame));
+        assert!(sharp <= 2 && blurred > 10, "the edge spreads from {sharp} to {blurred} px");
+        let mut clear = edge_frame();
+        let plain = render(&device, &queue, &clear);
+        clear.canvases.push(fog_over(0, 80.0));
+        assert_eq!(render(&device, &queue, &clear), plain, "wiped fog changes nothing");
+    }
+
+    #[test]
+    fn fog_is_drawn_over_balls() {
+        let Some((device, queue)) = gpu() else { return };
+        let ball = BallInstance {
+            center: [0.0, 0.0],
+            radius: 100.0,
+            glow: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            code: [0.0; 4],
+            paint: PaintGpu::default(),
+        };
+        let mut frame = Frame::default();
+        frame.balls.push(ball);
+        let soft = |pixels: &[u8]| {
+            (0..400).step_by(4).filter(|x| (30..225).contains(&pixel(pixels, *x as f32, 0.0)[0])).count()
+        };
+        let before = soft(&render(&device, &queue, &frame));
+        let mut fog = fog_over(255, 80.0);
+        fog.place = CanvasPlace::BehindBalls;
+        frame.canvases.push(fog);
+        let after = soft(&render(&device, &queue, &frame));
+        assert!(after > before + 4, "a ball under fog has a softer edge ({before} soft px before, {after} after)");
+    }
+
+    #[test]
+    fn text_shows_under_a_cover_only_where_revealed() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut frame = Frame::default();
+        let mut cover = canvas(CanvasPlace::OnTop, Some([1.0, 0.0, 0.0, 1.0]));
+        cover.size = [800.0, 800.0];
+        cover.surface = crate::Surface::Cover { foil: false, under: crate::Under::Text([0.0, 0.0, 1.0, 1.0]) };
+        cover.grid = grid2([255, 0, 0, 255], [0; 4], false);
+        if let Some(g) = cover.grid.as_mut() {
+            g.cell = 400.0;
+        }
+        let style = crate::text::TextStyle { color: [1.0; 4], outline: 0.0, outline_color: [0.0; 4], glow: 0.0 };
+        crate::text::layout_text(
+            "HELLO",
+            crate::text::FontFace::Anton,
+            300.0,
+            glam::Vec2::ZERO,
+            crate::text::TextAlign::Center,
+            0.0,
+            usize::MAX,
+            &style,
+            &mut cover.under_glyphs,
+        );
+        frame.canvases.push(cover);
+        let pixels = render(&device, &queue, &frame);
+        let white = |p: [u8; 4]| p[0] > 150 && p[1] > 150 && p[2] > 150;
+        let count = |lo: i32, hi: i32| {
+            (lo..hi)
+                .step_by(4)
+                .flat_map(|x| (-100..100).step_by(4).map(move |y| (x, y)))
+                .filter(|(x, y)| white(pixel(&pixels, *x as f32, *y as f32)))
+                .count()
+        };
+        assert!(count(10, 380) > 20, "the glyphs show where the cover is scraped");
+        assert_eq!(count(-380, -10), 0, "and not where the cover is whole");
+        assert!(pixel(&pixels, -300.0, 0.0)[0] > 200, "the cover colour covers the left");
+        let corner = pixel(&pixels, 380.0, 380.0);
+        assert!(corner[2] > 200 && corner[0] < 40, "{corner:?}: the text's own background shows when scraped");
+    }
+
+    const BEFORE: [u64; 4] = [16326282278750507301, 12348260933151833957, 7236297003248527420, 17745117802717598613];
 }

@@ -29,6 +29,20 @@ struct Canvas {
     look: vec4<f32>,
     // Grain, edge darkening, glow size in world pixels, glow strength.
     look2: vec4<f32>,
+    // x: the surface (0 paint, 1 cover, 2 powder, 3 fog), y: its look (matte/sand/frost 0,
+    // foil/snow/steam 1), z: ridges (powder) or blur in world px (fog), w: density (fog) or the
+    // light angle in radians (powder).
+    surface: vec4<f32>,
+    // x: what shows under a cover (0 scene, 1 colour, 2 gradient, 3 picture, 4 text), y: the
+    // picture slot, z: the part to draw (0 all, 1 underneath only, 2 cover only), w: 1 when
+    // there is a grid image.
+    under: vec4<f32>,
+    // The underneath colour, linear light, straight.
+    under_colour: vec4<f32>,
+    // x, y: the grid image's size in texels, z: world px per texel, w: the border darkness.
+    grid: vec4<f32>,
+    // A gradient underneath: 16 stops from top to bottom.
+    stops: array<vec4<f32>, 16>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -41,6 +55,12 @@ struct Canvas {
 @group(1) @binding(4) var<storage, read> mask: array<f32>;
 // How thick the paint is (ink / 255, added up).
 @group(1) @binding(5) var body: texture_2d<f32>;
+// A cover's, powder's or fog's amounts (red), or a colour war's claimed ground.
+@group(1) @binding(6) var grid_tex: texture_2d<f32>;
+@group(1) @binding(7) var grid_sampler: sampler;
+// The scene's pictures, for a cover with a picture underneath.
+@group(1) @binding(8) var atlas: texture_2d_array<f32>;
+@group(1) @binding(9) var atlas_sampler: sampler;
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -156,6 +176,65 @@ fn mask_cover(p: vec2<f32>) -> f32 {
     return cover;
 }
 
+// A colour war's border: how much darker the claimed texel at uv_g is near an edge it shares
+// with other ground, 0 to 1 (0 with no border set).
+fn border_dark(uv_g: vec2<f32>, size: vec2<f32>, here: vec4<f32>) -> f32 {
+    if canvas.grid.w <= 0.0 {
+        return 0.0;
+    }
+    let at = uv_g * size;
+    let t = vec2<i32>(floor(at));
+    let f = at - floor(at);
+    let cell = canvas.grid.z;
+    let reach = max(2.0, 0.08 * cell);
+    var dark = 0.0;
+    for (var k = 0; k < 4; k++) {
+        var step = vec2<i32>(1, 0);
+        var e = (1.0 - f.x) * cell;
+        if k == 1 {
+            step = vec2<i32>(-1, 0);
+            e = f.x * cell;
+        } else if k == 2 {
+            step = vec2<i32>(0, 1);
+            e = (1.0 - f.y) * cell;
+        } else if k == 3 {
+            step = vec2<i32>(0, -1);
+            e = f.y * cell;
+        }
+        let n = clamp(t + step, vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
+        let there = textureLoad(grid_tex, n, 0);
+        let differs = abs(there.a - here.a) > 0.5 || (there.a > 0.5 && any(abs(there.rgb - here.rgb) > vec3<f32>(0.002)));
+        if differs {
+            dark = max(dark, canvas.grid.w * 0.6 * (1.0 - smoothstep(0.0, reach, e)));
+        }
+    }
+    return dark;
+}
+
+// What the canvas is before anything paints it: its start colour, or the ground a colour war's
+// teams have claimed there (straight colour and alpha).
+fn ground(local: vec2<f32>) -> vec4<f32> {
+    if canvas.under.w < 0.5 || canvas.surface.x > 0.5 {
+        return canvas.start;
+    }
+    let size = canvas.grid.xy;
+    let uv_g = (local / canvas.grid.z + size * 0.5) / size;
+    let c = textureSampleLevel(grid_tex, grid_sampler, uv_g, 0.0);
+    if c.a <= 0.0 {
+        return canvas.start;
+    }
+    let claimed = clamp(c.a, 0.0, 1.0);
+    var rgb = max(c.rgb, vec3<f32>(0.0)) / max(c.a, 1e-4);
+    // The border reads the nearest texel, not the filtered one.
+    let here = textureLoad(grid_tex, clamp(vec2<i32>(floor(uv_g * size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1)), 0);
+    if here.a > 0.5 {
+        rgb *= 1.0 - border_dark(uv_g, size, here);
+    }
+    let start = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - claimed);
+    let a = claimed + start;
+    return vec4<f32>((rgb * claimed + canvas.start.rgb * start) / max(a, 1e-4), a);
+}
+
 // Flat: the marks' own colours, as they were put down.
 fn flat(in: CanvasOut) -> vec4<f32> {
     let p = textureSample(paint, smooth_sampler, in.uv);
@@ -171,9 +250,10 @@ fn flat(in: CanvasOut) -> vec4<f32> {
     // Flat: the marks' own colour, as much as was put down.
     let colour = max(p.rgb, vec3<f32>(0.0)) / max(p.a, 1e-4);
     let amount = clamp(p.a, 0.0, 1.0) * fade;
-    // The start colour shows under the marks.
-    let under = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - amount);
-    let rgb = colour * amount + canvas.start.rgb * under;
+    // The start colour (or claimed ground) shows under the marks.
+    let ground = ground(in.local);
+    let under = clamp(ground.a, 0.0, 1.0) * (1.0 - amount);
+    let rgb = colour * amount + ground.rgb * under;
     var shown = clamp(canvas.size.w, 0.0, 1.0);
     if canvas.clock.z > 0.5 && amount + under > 0.0 {
         shown *= mask_cover(in.local);
@@ -253,7 +333,8 @@ fn wet_paint(in: CanvasOut) -> vec4<f32> {
     let fade = fade_of(painted);
     let colour = max(p.rgb, vec3<f32>(0.0)) / max(p.a, 1e-4);
     let amount = clamp(p.a, 0.0, 1.0) * fade;
-    let under = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - amount);
+    let ground = ground(in.local);
+    let under = clamp(ground.a, 0.0, 1.0) * (1.0 - amount);
     let dims = vec2<f32>(textureDimensions(paint));
     let texel_uv = 1.0 / dims;
     // The slope of the paint's height, in height pixels per canvas pixel.
@@ -272,7 +353,7 @@ fn wet_paint(in: CanvasOut) -> vec4<f32> {
     let wet = wetness(painted);
     let strength = canvas.look.w * mix(0.12, 1.0, wet);
     let base = colour * (1.0 - 0.08 * wet);
-    let rgb = base * amount + vec3<f32>(gain * strength * 1.5) * amount + canvas.start.rgb * under;
+    let rgb = base * amount + vec3<f32>(gain * strength * 1.5) * amount + ground.rgb * under;
     var shown = clamp(canvas.size.w, 0.0, 1.0);
     if canvas.clock.z > 0.5 && amount + under > 0.0 {
         shown *= mask_cover(in.local);
@@ -318,8 +399,9 @@ fn watercolour(in: CanvasOut) -> vec4<f32> {
     let fade = fade_of(painted);
     let alpha = clamp(cov * 0.75 * (1.0 - grain * 0.5 * gn) * fade, 0.0, 1.0);
     let rgb = colour * (1.0 - canvas.look2.y * edge * 0.6) * (1.0 - grain * 0.25 * (1.0 - gn));
-    let under = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - alpha);
-    let start = canvas.start.rgb * (1.0 - grain * 0.08 * gn);
+    let ground = ground(in.local);
+    let under = clamp(ground.a, 0.0, 1.0) * (1.0 - alpha);
+    let start = ground.rgb * (1.0 - grain * 0.08 * gn);
     var shown = clamp(canvas.size.w, 0.0, 1.0);
     if canvas.clock.z > 0.5 && alpha + under > 0.0 {
         shown *= mask_cover(in.local);
@@ -333,9 +415,10 @@ fn neon_ink(in: CanvasOut) -> vec4<f32> {
     let fade = fade_of(painted);
     let colour = max(p.rgb, vec3<f32>(0.0)) / max(p.a, 1e-4);
     let amount = clamp(p.a, 0.0, 1.0) * fade;
-    let under = clamp(canvas.start.a, 0.0, 1.0) * (1.0 - amount);
+    let ground = ground(in.local);
+    let under = clamp(ground.a, 0.0, 1.0) * (1.0 - amount);
     let wet = wetness(painted);
-    let line = colour * (1.5 + 1.5 * wet) * amount + canvas.start.rgb * under;
+    let line = colour * (1.5 + 1.5 * wet) * amount + ground.rgb * under;
     // The glow: two rings of eight taps, their light falling off with the distance and with
     // how dry the paint there is.
     let g = max(canvas.look2.z, 1e-3);
@@ -370,8 +453,132 @@ fn neon_ink(in: CanvasOut) -> vec4<f32> {
     return vec4<f32>(line * shown_line + glow * shown_glow, (amount + under) * shown_line);
 }
 
+// A grid hash from 0 to 1, for grain.
+fn hash2f(p: vec2<f32>) -> f32 {
+    return hash2(vec2<i32>(floor(p)));
+}
+
+// The amount at canvas point `local` from the grid image (red), 0 to 1.
+fn grid_amount(local: vec2<f32>) -> f32 {
+    let size = canvas.grid.xy;
+    let uv = (local / canvas.grid.z + size * 0.5) / size;
+    return textureSampleLevel(grid_tex, grid_sampler, uv, 0.0).r;
+}
+
+// What shows under a cover at this point: straight colour and alpha.
+fn under_at(in: CanvasOut) -> vec4<f32> {
+    let kind = canvas.under.x;
+    if kind < 0.5 {
+        return vec4<f32>(0.0);
+    }
+    if kind < 1.5 || kind > 3.5 {
+        return canvas.under_colour;
+    }
+    if kind < 2.5 {
+        let t = clamp(in.uv.y, 0.0, 1.0) * 15.0;
+        let i = u32(floor(t));
+        return mix(canvas.stops[i], canvas.stops[min(i + 1u, 15u)], fract(t));
+    }
+    let slot = u32(round(canvas.under.y));
+    if slot >= textureNumLayers(atlas) {
+        return canvas.under_colour;
+    }
+    let lod = max(0.0, log2(512.0 * max(g.view.z, 1e-4) / max(canvas.size.x, 1.0)));
+    return textureSampleLevel(atlas, atlas_sampler, in.uv, slot, lod);
+}
+
+// A cover over what is underneath, with the grid's amounts saying how much of it is left.
+fn cover(in: CanvasOut) -> vec4<f32> {
+    let a = grid_amount(in.local);
+    let k = smoothstep(0.35, 0.65, a);
+    var base = canvas.start.rgb;
+    let grain = hash2f(in.local * 0.7) - 0.5;
+    if canvas.surface.y < 0.5 {
+        base = base * (0.94 + 0.12 * grain);
+    } else {
+        let t = dot(in.local, vec2<f32>(0.7071, 0.7071)) / max(canvas.size.x, 1.0);
+        let shine = 0.5 + 0.5 * sin(t * TAU * 3.0 + g.view.w * 0.8);
+        base = base * (0.7 + 0.5 * shine) + vec3<f32>(0.06 * grain);
+    }
+    // A darker rim on the cover's side of a scratched edge.
+    let rim = k * (1.0 - smoothstep(0.65, 0.95, a));
+    base = base * (1.0 - 0.35 * rim);
+    let part = canvas.under.z;
+    let u = under_at(in);
+    let o = clamp(canvas.size.w, 0.0, 1.0);
+    if part > 1.5 {
+        return vec4<f32>(base * k * o, k * o);
+    }
+    if part > 0.5 {
+        return vec4<f32>(u.rgb * u.a * o, u.a * o);
+    }
+    let ua = u.a * (1.0 - k);
+    return vec4<f32>((base * k + u.rgb * ua) * o, (k + ua) * o);
+}
+
+// Sand or snow lit from a side; the grid's amounts are its height.
+fn powder(in: CanvasOut) -> vec4<f32> {
+    let cell = canvas.grid.z;
+    let h = grid_amount(in.local);
+    let k = smoothstep(0.02, 0.12, h);
+    let dx = grid_amount(in.local + vec2<f32>(cell, 0.0)) - grid_amount(in.local - vec2<f32>(cell, 0.0));
+    let dy = grid_amount(in.local + vec2<f32>(0.0, cell)) - grid_amount(in.local - vec2<f32>(0.0, cell));
+    let n = normalize(vec3<f32>(-dx * 6.0, -dy * 6.0, 1.0));
+    let ang = canvas.surface.w - canvas.pose.z;
+    let l = normalize(vec3<f32>(sin(ang), -cos(ang), 0.8));
+    let lit = 0.55 + 0.45 * max(dot(n, l), 0.0);
+    let grain = hash2f(in.local * 0.5) - 0.5;
+    var c = canvas.start.rgb * lit;
+    if canvas.surface.y < 0.5 {
+        c = c * (0.92 + 0.16 * grain);
+    } else {
+        c = mix(canvas.start.rgb * vec3<f32>(0.72, 0.8, 1.0), canvas.start.rgb, lit);
+        if hash2f(in.local * 0.5 + vec2<f32>(17.0, 3.0)) > 0.996 {
+            c = c + vec3<f32>(0.6 * lit);
+        }
+    }
+    let o = clamp(canvas.size.w, 0.0, 1.0);
+    return vec4<f32>(c * k * o, k * o);
+}
+
+// Fog's view of the picture so far (a copy), and how to sample it.
+@group(2) @binding(0) var behind: texture_2d<f32>;
+@group(2) @binding(1) var behind_sampler: sampler;
+
+// Mist on glass: blurs what is behind it more where the grid's amount is high.
+@fragment
+fn fs_fog(in: CanvasOut) -> @location(0) vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(behind));
+    let uv = in.pos.xy / dims;
+    let sharp = textureSampleLevel(behind, behind_sampler, uv, 0.0);
+    let f = grid_amount(in.local);
+    let radius = canvas.surface.z * f / max(g.view.z, 1e-4);
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < 12u; i++) {
+        let ring = select(1.0, 0.5, i < 6u);
+        let a = f32(i % 6u) / 6.0 * TAU + select(0.0, 0.5236, i >= 6u);
+        let off = vec2<f32>(cos(a), sin(a)) * radius * ring / dims;
+        sum += textureSampleLevel(behind, behind_sampler, uv + off, 0.0).rgb;
+    }
+    let blurred = sum / 12.0;
+    let density = canvas.surface.w;
+    let grain = hash2f(floor(in.local * 0.6)) - 0.5;
+    var fogged = mix(blurred, canvas.start.rgb, 0.35 * density) + vec3<f32>(0.04 * grain);
+    if canvas.surface.y > 0.5 {
+        fogged = mix(blurred, canvas.start.rgb, 0.25 * density) + vec3<f32>(0.05);
+    }
+    let amount = clamp(f * clamp(canvas.size.w, 0.0, 1.0), 0.0, 1.0);
+    return vec4<f32>(mix(sharp.rgb, fogged, amount), sharp.a);
+}
+
 @fragment
 fn fs_canvas(in: CanvasOut) -> @location(0) vec4<f32> {
+    if canvas.surface.x > 1.5 {
+        return powder(in);
+    }
+    if canvas.surface.x > 0.5 {
+        return cover(in);
+    }
     if canvas.look.x < 0.5 {
         return flat(in);
     }

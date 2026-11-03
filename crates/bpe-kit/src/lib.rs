@@ -38,8 +38,8 @@ pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_
 pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
 pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
 pub use modules::marks::{
-    MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape, SplatSkin, Tip, Turn,
-    WidthBy,
+    ChipShape, ClaimTeam, MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape,
+    SplatSkin, Tip, Turn, WidthBy,
 };
 pub use modules::melody::mix::MelodySoundMix;
 pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
@@ -62,7 +62,7 @@ pub use music::{
     Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
     uses_live_inputs, wants_beats, warp_for,
 };
-pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
+pub use starters::{CanvasStart, add_canvas, add_thing, fill_slot, keep_followers, make_folder, move_thing};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -73,7 +73,8 @@ pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
 pub use things::canvas::{
     CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
-    CanvasThingKind, Cell, Fit, SkinSettings, StartsAs, canvas_area, skin_area,
+    CanvasThingKind, Cell, CoverLook, Fit, FogLook, PowderLook, SkinSettings, StartsAs, Underneath, canvas_area,
+    skin_area,
 };
 pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
 pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};

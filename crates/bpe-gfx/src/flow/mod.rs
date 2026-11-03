@@ -328,6 +328,11 @@ impl FlowLayers {
     }
 
     /// The textures a canvas's or skin's marks are painted into; `None` until its layer runs.
+    /// The scene's picture atlas, once the layers hold one.
+    pub(crate) fn picture_atlas(&self) -> Option<&PictureAtlas> {
+        self.atlas.as_ref().map(|(_, a)| a)
+    }
+
     pub fn canvas_textures(&self, key: MarkTarget) -> Option<&CanvasTextures> {
         match self.layers.get(&LayerKey::Marks(key))? {
             Layer::Canvas(c) => Some(&c.textures),
@@ -1477,6 +1482,10 @@ mod tests {
             look: crate::PaintLook::default(),
             time: 0.0,
             mask: Vec::new(),
+            surface: crate::Surface::Paint,
+            grid: None,
+            border: 0.0,
+            under_glyphs: Vec::new(),
         }
     }
 

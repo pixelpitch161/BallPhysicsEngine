@@ -129,6 +129,14 @@ pub enum MarkShape {
     /// One bleed pass over a rectangle (`from` min corner, `to` max corner, in canvas pixels from
     /// the canvas middle): `radius` is the dry time in seconds, `radius_to` the Bleed setting.
     Bleed,
+    /// A ball scraping along its track: a capsule like a Stroke's (from → to, radius → radius_to,
+    /// the joints in variant bits 1 and 2, angle the previous piece's direction) that takes paint
+    /// away. colour[3] is the strength, 0 to 1. Not paint: it leaves no ink.
+    Scrape,
+    /// A piece knocked out by a hit: a splat shape at `from` of `radius`, turned by `angle`.
+    /// variant bits 0-4 are the splat's layout and squash, bits 5-7 the shape (0 splat, 1 ring,
+    /// 2 star, 3 crack, 4 burst, 5 dots). colour[3] is the strength. Not paint.
+    Chip,
 }
 
 /// What a mark is painted onto: a canvas thing, or the skin of an arena or obstacle.
