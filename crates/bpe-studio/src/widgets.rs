@@ -813,9 +813,9 @@ fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices) -> Respon
 /// turns it into plain transparent black, so "Additive" would undo itself on the next frame.
 pub(crate) fn picker_color(c: Color) -> Color32 {
     if c.is_additive() {
-        Color32::from_rgba_premultiplied(c.r, c.g, c.b, 0)
+        Color32::from_rgba_premultiplied(c.r, c.g, c.b, 0) // scene colour
     } else {
-        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a) // scene colour
     }
 }
 

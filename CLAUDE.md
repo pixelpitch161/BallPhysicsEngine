@@ -56,9 +56,14 @@ Dependencies go bottom to top:
   the old look/motion values with `classic_*` helpers so goldens don't move. Never add built-in or example scenes
   to the program unless the owner asks.
 - `bpe-cli`: headless export.
-- `bpe-studio`: the egui 0.37 editor. Its layout has the tree on the left, the inspector on the right, the preview
+- `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
+  `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
+  fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
+  file may make up a colour (a test checks; a real scene colour line ends in `// scene colour`). Every thing but
+  the scene settings has a `Thing.colour` (`TrackColour`, editor only, never read by physics or export). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
-  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`. The
+  timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open.
 
 ## Working rules
 

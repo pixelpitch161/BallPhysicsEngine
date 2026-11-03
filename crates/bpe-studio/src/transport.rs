@@ -26,10 +26,13 @@ pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
         );
         ui.add_space(8.0);
         let looped = style::switch(ui, &mut studio.looping);
-        let label = ui.label("Loop");
+        let label = ui.add(egui::Label::new("Loop").selectable(false).sense(Sense::click()));
+        if label.clicked() {
+            studio.looping = !studio.looping;
+        }
         looped.labelled_by(label.id).on_hover_text("Start again from the beginning at the end");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let hint = "Drag the ruler to scrub";
+            let hint = "Lanes are grouped under the thing they belong to";
             ui.label(RichText::new(hint).small().color(style::MUTED));
         });
     });

@@ -167,6 +167,7 @@ mod tests {
             "Color32::BLACK",
             "from_white_alpha(",
             "from_black_alpha(",
+            "from_rgba_",
         ];
         let mut found = Vec::new();
         let mut stack = vec![root];

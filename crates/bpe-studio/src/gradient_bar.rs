@@ -174,7 +174,7 @@ fn shown(c: Color) -> Color32 {
     if c.is_additive() {
         Color32::from_rgb(c.r, c.g, c.b) // scene colour
     } else {
-        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a) // scene colour
     }
 }
 

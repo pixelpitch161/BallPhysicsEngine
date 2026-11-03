@@ -62,6 +62,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected = None;
         timeline.curve_open = false;
     }
+    // A key in a folded group is out of sight, so it is not selected (Delete would remove it unseen).
+    if timeline.selected.as_ref().is_some_and(|(a, _)| a.thing != open) {
+        timeline.selected = None;
+        timeline.dragging = None;
+        timeline.curve_open = false;
+    }
     let mut picked = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -147,7 +153,7 @@ fn group_header(
     ruler: &Ruler,
 ) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), GROUP_HEIGHT), Sense::click());
-    let name = group.name.clone();
+    let name = format!("{} lanes", group.name);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
     let painter = ui.painter_at(rect);
     painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0, style::LINE_SOFT));
@@ -157,7 +163,9 @@ fn group_header(
         None => painter.rect_filled(swatch.shrink(1.0), 2.0, style::MUTED),
     };
     let ink = if response.hovered() { style::TEXT_STRONG } else { style::TEXT };
-    let text = painter.layout(group.name.clone(), style::semibold(12.0), ink, LABEL_WIDTH - 20.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(group.name.clone(), style::semibold(12.0), ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(LABEL_WIDTH - 22.0);
+    let text = painter.layout_job(job);
     painter.galley(Pos2::new(swatch.right() + 7.0, rect.center().y - text.size().y / 2.0), text, ink);
     let strip = strip_of(rect, ruler);
     let edge = colour.unwrap_or(style::MUTED);
@@ -409,11 +417,8 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
 mod tests {
     use super::*;
     use bpe_core::ThingId;
-    use eframe::egui::{PointerButton, accesskit::Role};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use eframe::egui::PointerButton;
+    use egui_kittest::{Harness, kittest::Queryable};
 
     fn size_address() -> Address {
         Address::own(ThingId(2), "radius")
@@ -463,8 +468,8 @@ mod tests {
     #[test]
     fn only_the_selected_group_is_open() {
         let h = harness();
-        assert!(h.query_by_label("Ball").is_some(), "the ball's group header");
-        assert!(h.query_by_label("Scene settings").is_some(), "the scene settings' group header");
+        assert!(h.query_by_label("Ball lanes").is_some(), "the ball's group header");
+        assert!(h.query_by_label("Scene settings lanes").is_some(), "the scene settings' group header");
         assert!(h.query_by_label("Ball · Size").is_some(), "the ball's lane is open");
         assert!(h.query_by_label("Key at 0:02.00 of Ball · Size").is_some());
         assert!(h.query_by_label("Scene settings · Gravity").is_none(), "folded: no lanes");
@@ -474,11 +479,25 @@ mod tests {
     #[test]
     fn clicking_a_group_header_selects_its_thing() {
         let mut h = harness();
-        h.get_by_label("Scene settings").click();
+        h.get_by_label("Scene settings lanes").click();
         h.run();
         assert_eq!(h.state().selection.primary, Some(ThingId::ROOT));
         assert!(h.query_by_label("Key at 0:01.00 of Scene settings · Gravity").is_some(), "now open");
         assert!(h.query_by_label("Ball · Size").is_none(), "the ball's group folded");
+    }
+
+    #[test]
+    fn a_key_in_a_folded_group_is_not_selected() {
+        let mut h = harness();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click();
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_some());
+        h.state_mut().selection.set(ThingId::ROOT);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected, None);
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(h.state().scene.tracks.contains_key(&size_address()), "Delete leaves a hidden key alone");
     }
 
     #[test]
@@ -515,7 +534,7 @@ mod tests {
         assert!(h.state().scene.things.contains_key(&ThingId(2)));
         assert_eq!(h.state().panels.timeline.selected, None);
         // The gravity key is still there, in the scene settings' folded group.
-        assert!(h.query_by_label("Scene settings").is_some());
+        assert!(h.query_by_label("Scene settings lanes").is_some());
         assert_eq!(h.state().scene.tracks.len(), 1);
     }
 

@@ -687,7 +687,7 @@ impl eframe::App for Studio {
             self.shortcuts(&ctx);
         }
 
-        egui::Panel::top("toolbar").frame(bar_frame()).exact_size(style::TOOLBAR_H).show(ui, |ui| self.toolbar(ui));
+        egui::Panel::top("toolbar").frame(bar_frame()).min_size(style::TOOLBAR_H).show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::new()

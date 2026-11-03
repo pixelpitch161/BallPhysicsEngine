@@ -163,6 +163,24 @@ Panels touch with 1px `LINE_SOFT` dividers; no gaps, shadows or rounded panels.
 - **Other windows** (export window, gradient bar, curve editor, palettes, confirm dialog, add-thing menu): same
   layout, only colours from tokens, switches instead of checkboxes, the export window's Export button primary.
 
+## As built (differences from the plan above)
+
+- Section headers keep the inspector's existing fold arrow (`widgets::fold_toggle`, now drawn with
+  `style::paint_chevron`) and a semibold title; the folded summary is "N changed" (values this thing set).
+  There is no separate `section_header`.
+- `clip_fill` is `style::track::mix_over_panel(track_color(c))`; `style::clip_colours` gives a clip's fill and
+  edge (raised grey and muted for the scene settings).
+- The source colour test allows a line that ends in `// scene colour` (swatches and the gradient checkerboard),
+  instead of a list of exceptions in the test.
+- Sliders: the trailing fill is turned on per slider in `widgets::number_slider`, with `selection.bg_fill` set to
+  `SLIDER_FILL` only in that scope. Value fields are wells through `style::wells`; dropdowns in rows through
+  `style::raised`.
+- Group headings inside a card stay in the label column and wrap (a heading that overflows widens the column).
+- The folded-card summary is only "N changed"; there is no "Off" summary. The slider handle aspect is 0.25.
+- In a tree row only the name takes clicks and drags (as before); the rest of the row shows hover and selection.
+- Timeline group headers are named "{thing} lanes" for screen readers and tests (the tree row is "{thing}").
+- The saved inspector width moved to a new file (`inspector-width-v2.txt`) so everyone starts at 370.
+
 ## 4. Testing
 
 - Existing editor tests keep passing; tests whose labels or drawing change are updated to the new labels (only
