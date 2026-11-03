@@ -4,12 +4,12 @@
 use bpe_core::{Address, Registry, Resolved, Scene, Settings, Value};
 use bpe_kit::CameraSettings;
 use bpe_runtime::{CameraView, Log, World};
-use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Stroke};
+use eframe::egui::{self, Align2, FontId, Painter, Pos2, Stroke};
 use glam::Vec2;
 
 use super::{Drag, Handle, View};
 use crate::grid::snap_point;
-use crate::theme;
+use crate::style;
 
 /// What the preview shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,7 +166,7 @@ pub fn draw_camera(
     let camera = world.camera;
     let video = world.video;
     let on = |h: Handle| active == Some(h);
-    let accent = theme::ACCENT;
+    let accent = style::TEXT;
 
     if let Some(settings) = resolved.things.get(&id).map(|r| CameraSettings::from_params(&r.params))
         && settings.stay_inside
@@ -177,7 +177,7 @@ pub fn draw_camera(
             .iter()
             .map(|&(x, y)| view.to_screen(c + Vec2::new(x, y) * h))
             .collect();
-        painter.extend(egui::Shape::dashed_line(&points, Stroke::new(1.2, theme::MUTED), 8.0, 6.0));
+        painter.extend(egui::Shape::dashed_line(&points, Stroke::new(1.2, style::MUTED), 8.0, 6.0));
     }
 
     // Where the shot's middle has been, fading out over two seconds.
@@ -188,7 +188,7 @@ pub fn draw_camera(
         .map(|s| view.to_screen(log.camera_at(s).center))
         .collect();
     if path.len() > 1 {
-        painter.add(egui::Shape::line(path, Stroke::new(1.0, Color32::from_white_alpha(60))));
+        painter.add(egui::Shape::line(path, Stroke::new(1.0, style::PATH_LINE)));
     }
 
     let corners = shot_corners(&camera, video).map(|c| view.to_screen(c));
@@ -200,11 +200,16 @@ pub fn draw_camera(
         painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(size, size) * 2.0), 1.0, accent);
     }
     let middle = view.to_screen(camera.center);
-    painter.circle(middle, 5.0, accent, Stroke::new(1.5, Color32::BLACK));
+    painter.circle(middle, 5.0, accent, Stroke::new(1.5, style::OUTLINE));
     let top = view.to_screen(camera.to_world(Vec2::new(0.0, -video.y * 0.5)));
     let turn = turn_handle(view, &camera, video);
     painter.line_segment([top, turn], Stroke::new(1.2, accent));
-    painter.circle(turn, if on(Handle::CameraTurn(id)) { 7.0 } else { 5.5 }, Color32::WHITE, Stroke::new(1.5, accent));
+    painter.circle(
+        turn,
+        if on(Handle::CameraTurn(id)) { 7.0 } else { 5.5 },
+        style::TEXT_STRONG,
+        Stroke::new(1.5, accent),
+    );
     painter.text(corners[0] + egui::vec2(0.0, -6.0), Align2::LEFT_BOTTOM, "Camera", FontId::proportional(12.0), accent);
 }
 

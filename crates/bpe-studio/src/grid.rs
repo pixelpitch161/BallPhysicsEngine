@@ -3,7 +3,8 @@
 //! file) and is remembered between runs in the settings folder.
 
 use crate::settings::settings_dir;
-use eframe::egui::{Color32, Painter, Pos2, Rect, Stroke};
+use crate::style;
+use eframe::egui::{Painter, Pos2, Rect, Stroke};
 use glam::Vec2;
 use std::path::Path;
 
@@ -50,8 +51,8 @@ impl Grid {
         if gap <= 0.0 {
             return;
         }
-        let faint = Stroke::new(1.0, Color32::from_white_alpha(28));
-        let middle = Stroke::new(1.0, Color32::from_white_alpha(80));
+        let faint = Stroke::new(1.0, style::GRID_LINE);
+        let middle = Stroke::new(1.0, style::GRID_MIDDLE);
         let first = ((rect.left() - centre.x) / gap).ceil() as i32;
         let last = ((rect.right() - centre.x) / gap).floor() as i32;
         for i in first..=last {

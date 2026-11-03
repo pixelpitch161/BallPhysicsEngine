@@ -1,7 +1,7 @@
 //! Play, pause, the clock, and the scrub bar with its lane of hits.
 
 use crate::app::{Studio, clock};
-use crate::theme;
+use crate::style;
 use bpe_runtime::EventKind;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
@@ -23,9 +23,11 @@ pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
         }
         ui.monospace(format!("{} / {}", clock(studio.time), clock(studio.duration())));
         ui.add_space(8.0);
-        ui.checkbox(&mut studio.looping, "Loop").on_hover_text("Start again from the beginning at the end");
+        let looped = style::switch(ui, &mut studio.looping);
+        let label = ui.label("Loop");
+        looped.labelled_by(label.id).on_hover_text("Start again from the beginning at the end");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("Drag the bar to scrub · ticks are hits").small().color(theme::MUTED));
+            ui.label(RichText::new("Drag the bar to scrub · ticks are hits").small().color(style::MUTED));
         });
     });
 }
@@ -38,7 +40,7 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::click_and_drag());
     let track = Rect::from_min_max(Pos2::new(rect.left() + inset, rect.top() + 6.0), rect.max - egui::vec2(0.0, 6.0));
     let painter = ui.painter_at(rect);
-    painter.rect_filled(track, 6.0, theme::RAISED);
+    painter.rect_filled(track, 6.0, style::RAISED);
 
     // Hits per pixel column, as far as the playback has got.
     let columns = track.width().max(1.0) as usize;
@@ -59,7 +61,7 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
         }
         let x = track.left() + column as f32 + 0.5;
         let alpha = (0.35 + c as f32 * 0.2).min(1.0);
-        let color = theme::ACCENT_TEXT.gamma_multiply(alpha);
+        let color = style::TEXT.gamma_multiply(alpha);
         painter.line_segment(
             [Pos2::new(x, track.top() + 5.0), Pos2::new(x, track.bottom() - 5.0)],
             Stroke::new(1.0, color),
@@ -71,18 +73,14 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
         let x = track.left() + (second as f64 / duration) as f32 * track.width();
         painter.line_segment(
             [Pos2::new(x, track.bottom() - 3.0), Pos2::new(x, track.bottom())],
-            Stroke::new(1.0, theme::LINE),
+            Stroke::new(1.0, style::LINE),
         );
     }
     // The playhead.
     let x = track.left() + (studio.time / duration) as f32 * track.width();
-    painter.rect_filled(
-        Rect::from_min_max(track.min, Pos2::new(x, track.max.y)),
-        6.0,
-        theme::ACCENT.gamma_multiply(0.2),
-    );
-    painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, theme::ACCENT));
-    painter.circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, theme::ACCENT);
+    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(x, track.max.y)), 6.0, style::TEXT.gamma_multiply(0.2));
+    painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, style::TEXT));
+    painter.circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, style::TEXT);
 
     if response.drag_started() {
         studio.resume_after_scrub = studio.playing;
@@ -109,16 +107,16 @@ fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {
     let fill = match icon {
         Icon::Play | Icon::Pause => {
             if response.hovered() {
-                theme::ACCENT_TEXT
+                style::TEXT
             } else {
-                theme::ACCENT
+                style::TEXT
             }
         }
         Icon::Restart => {
             if response.hovered() {
-                theme::HOVER
+                style::HOVER
             } else {
-                theme::RAISED
+                style::RAISED
             }
         }
     };
@@ -126,7 +124,7 @@ fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {
     painter.circle_filled(rect.center(), size / 2.0, fill);
     let c = rect.center();
     let s = size * 0.2;
-    let white = Color32::WHITE;
+    let white = style::ON_LIGHT;
     match icon {
         Icon::Play => {
             let points = vec![c + egui::vec2(-s * 0.7, -s), c + egui::vec2(s * 1.1, 0.0), c + egui::vec2(-s * 0.7, s)];

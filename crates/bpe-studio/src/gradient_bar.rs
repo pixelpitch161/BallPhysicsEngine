@@ -14,7 +14,7 @@ use eframe::egui::{
 };
 
 use crate::palettes;
-use crate::theme;
+use crate::style;
 use crate::widgets::{color_button, picker_color, pretty, scene_color};
 
 /// How many samples the bar is drawn from.
@@ -137,7 +137,7 @@ fn paint_bar(painter: &egui::Painter, bar: Rect, g: &Gradient) {
             let dark = (col + row) % 2 == 0;
             let min = Pos2::new(bar.left() + col as f32 * cell, bar.top() + row as f32 * cell);
             let cell_rect = Rect::from_min_size(min, Vec2::splat(cell)).intersect(board);
-            painter.rect_filled(cell_rect, 0.0, if dark { Color32::from_gray(90) } else { Color32::from_gray(150) });
+            painter.rect_filled(cell_rect, 0.0, if dark { CHECK_DARK } else { CHECK_LIGHT });
         }
     }
     let baked = g.bake(SAMPLES);
@@ -162,12 +162,20 @@ fn paint_bar(painter: &egui::Painter, bar: Rect, g: &Gradient) {
         }
     }
     painter.add(mesh);
-    painter.rect_stroke(bar, 2.0, Stroke::new(1.0, theme::MUTED), egui::StrokeKind::Outside);
+    painter.rect_stroke(bar, 2.0, Stroke::new(1.0, style::MUTED), egui::StrokeKind::Outside);
 }
+
+/// The checkerboard under see-through stops.
+const CHECK_DARK: Color32 = Color32::from_gray(90); // scene colour
+const CHECK_LIGHT: Color32 = Color32::from_gray(150); // scene colour
 
 /// A colour as the bar shows it: see-through over the checkerboard, an additive one solid.
 fn shown(c: Color) -> Color32 {
-    if c.is_additive() { Color32::from_rgb(c.r, c.g, c.b) } else { Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a) }
+    if c.is_additive() {
+        Color32::from_rgb(c.r, c.g, c.b) // scene colour
+    } else {
+        Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+    }
 }
 
 /// The menu picking how the colours blend. True when a new one was picked.
@@ -308,7 +316,7 @@ fn palette_menu(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str, small: 
         .response
         .on_hover_text("Replace the colours with the first one and colours that go with it");
         if let Some(error) = ui.data(|d| d.get_temp::<String>(error_key)) {
-            ui.colored_label(theme::ERROR, error);
+            ui.colored_label(style::TEXT, error);
         }
     });
     if !Popup::is_id_open(ui.ctx(), popup_id) {
@@ -464,7 +472,7 @@ fn handles(
 /// A stop's handle: a point up at the bar over a swatch of its colour. Lit when hovered or
 /// focused, faded when it is about to come off.
 fn paint_handle(painter: &egui::Painter, rect: Rect, color: Color, lit: bool, leaving: bool) {
-    let edge = if lit { theme::ACCENT_TEXT } else { Color32::from_gray(220) };
+    let edge = if lit { style::TEXT } else { style::MUTED };
     let edge = if leaving { edge.gamma_multiply(0.35) } else { edge };
     let fill = if leaving { shown(color).gamma_multiply(0.35) } else { shown(color) };
     let tip = Pos2::new(rect.center().x, rect.top());
@@ -496,7 +504,7 @@ mod tests {
             .with_size(egui::vec2(420.0, 900.0))
             .allow_missing_glyphs()
             .with_context_setup(move |ctx| {
-                crate::theme::apply(ctx);
+                crate::style::apply(ctx);
                 if let Some(store) = store {
                     palettes::install(ctx, store);
                 }

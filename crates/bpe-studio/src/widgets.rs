@@ -6,7 +6,7 @@ use eframe::egui::{
 };
 
 use crate::gradient_bar::gradient_bar_named;
-use crate::theme;
+use crate::style;
 
 /// What a Target setting can point at: the scene's things, tags and kinds, by name.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,7 +203,7 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         if fold && fold_toggle(ui, !shut, group) {
             clicked = true;
         }
-        let heading = RichText::new(group).strong().color(theme::MUTED);
+        let heading = RichText::new(group).strong().color(style::MUTED);
         let label = egui::Label::new(heading).wrap().selectable(false);
         let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
         let dot = shut && changed;
@@ -216,7 +216,7 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         if dot {
             let (rect, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Changes inside"));
-            ui.painter().circle_filled(rect.center(), 3.0, theme::ACCENT);
+            ui.painter().circle_filled(rect.center(), 3.0, style::TEXT);
             response.on_hover_text("Something in here is changed, keyed or pulsing.");
         }
     });
@@ -550,7 +550,7 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
 
 /// The label cell, clickable for the reset shortcut, in the accent colour when `lit`.
 fn label(ui: &mut Ui, text: &str, help: &str, lit: bool) -> Response {
-    let text = if lit { RichText::new(text).color(theme::ACCENT_TEXT) } else { RichText::new(text) };
+    let text = if lit { RichText::new(text).color(style::TEXT) } else { RichText::new(text) };
     let response = ui.add(egui::Label::new(text).wrap().selectable(false).sense(Sense::click()));
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
@@ -632,7 +632,7 @@ pub fn number_slider<N: egui::emath::Numeric>(
     // Leave room for the number box at its widest, so the row never pushes the panel wider.
     let widest = format!("{}{:.*}{unit}", if min < 0.0 { "-" } else { "" }, feel.decimals, min.abs().max(max.abs()));
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let number = ui.fonts_mut(|f| f.layout_no_wrap(widest, font, egui::Color32::WHITE).size().x);
+    let number = ui.fonts_mut(|f| f.layout_no_wrap(widest, font, style::TEXT).size().x);
     let room = number + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x + 4.0;
     ui.spacing_mut().slider_width = (ui.available_width() - room).clamp(48.0, 320.0);
     let mut slider = Slider::new(x, N::from_f64(min)..=N::from_f64(max))
@@ -671,7 +671,7 @@ fn widget(
             Some(range) => number_slider(ui, x, range, feel, unit).labelled_by(name),
             None => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
         },
-        (ValueType::Bool, Value::Bool(b)) => ui.checkbox(b, "").labelled_by(name),
+        (ValueType::Bool, Value::Bool(b)) => style::switch(ui, b).labelled_by(name),
         // In a narrow panel y goes under x.
         (ValueType::Vec2, Value::Vec2(v)) => {
             ui.horizontal_wrapped(|ui| {
@@ -735,7 +735,7 @@ fn widget(
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
-        _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(theme::WARNING)),
+        _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(style::TEXT)),
     }
 }
 
@@ -873,7 +873,7 @@ mod tests {
             let mut h = Harness::builder()
                 .with_size(egui::vec2(420.0, 2600.0))
                 .allow_missing_glyphs()
-                .with_context_setup(crate::theme::apply)
+                .with_context_setup(crate::style::apply)
                 .build_ui_state(
                     |ui, g: &mut Gradient| {
                         let id = ui.make_persistent_id("bar");
@@ -1029,7 +1029,7 @@ mod tests {
         let mut h = egui_kittest::Harness::builder()
             .with_size(egui::vec2(420.0, 900.0))
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(
                 move |ui, state: &mut State| {
                     let marks = |key: &str| {
@@ -1248,7 +1248,7 @@ mod tests {
         let mut h = egui_kittest::Harness::builder()
             .with_size(egui::vec2(420.0, 2400.0))
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui(move |ui| {
                 let choices = TargetChoices::default();
                 let cx = GridCx {

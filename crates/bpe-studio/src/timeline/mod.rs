@@ -5,7 +5,7 @@ pub mod ease;
 pub mod lanes;
 
 use crate::app::{Studio, clock};
-use crate::theme;
+use crate::style;
 use crate::transport;
 use bpe_core::{Address, Ease, PulseSource, Value};
 use bpe_runtime::EventKind;
@@ -62,7 +62,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         ui.add_space(6.0);
         let hint = "Click a setting's diamond in the inspector to add a keyframe at the playhead, or \
                     right-click it to pulse with the hits. Keys appear here as lanes.";
-        ui.label(RichText::new(hint).small().color(theme::MUTED));
+        ui.label(RichText::new(hint).small().color(style::MUTED));
     } else {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (index, lane) in lanes.iter().enumerate() {
@@ -97,9 +97,9 @@ fn lane_frame(ui: &mut Ui, studio: &Studio, lane: &Lane, ruler: &Ruler) -> (Rect
         Pos2::new(ruler.track.right(), rect.bottom() - 1.0),
     );
     let painter = ui.painter_at(rect);
-    painter.rect_filled(strip, 3.0, theme::CARD);
+    painter.rect_filled(strip, 3.0, style::PANEL);
     let x = ruler.x_of(studio.time);
-    painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, theme::ACCENT));
+    painter.line_segment([Pos2::new(x, strip.top()), Pos2::new(x, strip.bottom())], Stroke::new(1.0, style::TEXT));
     (rect, strip, response)
 }
 
@@ -121,11 +121,11 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         key.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
         let selected = timeline.selected.as_ref() == Some(&(a.clone(), i));
         let color = if selected {
-            Color32::WHITE
+            style::TEXT_STRONG
         } else if key.hovered() {
-            theme::WARNING
+            style::TEXT
         } else {
-            theme::ACCENT_TEXT
+            style::TEXT
         };
         paint_diamond(ui.painter(), center, KEY_SIZE, true, color);
         if key.clicked() || key.drag_started() {
@@ -137,7 +137,7 @@ fn track_lane(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline, lane: &
         }
         key.context_menu(|ui| {
             timeline.selected = Some((a.clone(), i));
-            ui.label(RichText::new("Eases into the next key").small().color(theme::MUTED));
+            ui.label(RichText::new("Eases into the next key").small().color(style::MUTED));
             if let Some(picked) = ease::ease_menu(ui, ease) {
                 ease_pick = Some((i, picked, matches!(picked, Ease::Curve { .. })));
             }
@@ -218,7 +218,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
         UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6.0, 0.0))).layout(Layout::left_to_right(Align::Center)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
-    child.label(RichText::new("Pulse with").small().color(theme::MUTED));
+    child.label(RichText::new("Pulse with").small().color(style::MUTED));
     egui::ComboBox::from_id_salt(("pulse-source", &lane.label)).selected_text(pulse.source.name()).width(80.0).show_ui(
         &mut child,
         |ui| {
@@ -230,7 +230,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
             }
         },
     );
-    child.label(RichText::new("Amount").small().color(theme::MUTED));
+    child.label(RichText::new("Amount").small().color(style::MUTED));
     match &mut pulse.amount {
         Value::Number(x) => _ = child.add(egui::DragValue::new(x).speed(0.01)),
         Value::Int(x) => _ = child.add(egui::DragValue::new(x)),
@@ -241,7 +241,7 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, ruler: &Ruler) {
         Value::Color(_) => _ = child.label(RichText::new("towards white").small()),
         _ => {}
     }
-    child.label(RichText::new("Decay").small().color(theme::MUTED));
+    child.label(RichText::new("Decay").small().color(style::MUTED));
     child.add(egui::DragValue::new(&mut pulse.decay).speed(0.01).range(0.01..=5.0).suffix(" s"));
     if child.add(egui::Button::new("×").small()).on_hover_text("Stop pulsing").clicked() {
         remove = true;
@@ -325,7 +325,7 @@ mod tests {
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(60)
             .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
+            .with_context_setup(crate::style::apply)
             .build_ui_state(|ui, s: &mut Studio| show(ui, s), studio);
         h.run();
         h

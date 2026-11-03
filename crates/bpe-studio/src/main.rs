@@ -13,7 +13,7 @@ mod palettes;
 mod preview;
 mod selection;
 mod settings;
-mod theme;
+mod style;
 mod timeline;
 mod transport;
 mod tree;

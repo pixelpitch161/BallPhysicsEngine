@@ -51,10 +51,10 @@ pub fn remember_scene_in(dir: &Path, path: &Path) {
     let _ = std::fs::write(dir.join(RECENT_SCENES), text.join("\n"));
 }
 
-const INSPECTOR_WIDTH: &str = "inspector-width-next.txt";
+const INSPECTOR_WIDTH: &str = "inspector-width-v2.txt";
 
 /// The inspector's width when nothing is saved.
-pub const INSPECTOR_DEFAULT: f32 = 420.0;
+pub const INSPECTOR_DEFAULT: f32 = crate::style::INSPECTOR_W;
 /// The narrowest and widest the inspector can be dragged.
 pub const INSPECTOR_RANGE: std::ops::RangeInclusive<f32> = 320.0..=640.0;
 
@@ -115,12 +115,12 @@ mod tests {
     fn a_saved_width_is_clamped_and_garbage_ignored() {
         let dir = std::env::temp_dir().join(format!("ball-studio-width-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(load_inspector_width_in(&dir), 420.0, "a missing file");
+        assert_eq!(load_inspector_width_in(&dir), 370.0, "a missing file");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(INSPECTOR_WIDTH), "1000").unwrap();
         assert_eq!(load_inspector_width_in(&dir), 640.0);
         std::fs::write(dir.join(INSPECTOR_WIDTH), "abc").unwrap();
-        assert_eq!(load_inspector_width_in(&dir), 420.0);
+        assert_eq!(load_inspector_width_in(&dir), 370.0);
         save_inspector_width_in(&dir, 500.0);
         assert_eq!(load_inspector_width_in(&dir), 500.0);
         let _ = std::fs::remove_dir_all(dir);
