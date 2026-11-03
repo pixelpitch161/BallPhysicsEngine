@@ -1,6 +1,6 @@
 //! The plugin registry: every kind of thing and module the editor knows about.
 
-use crate::{Params, SettingDef, SlotId};
+use crate::{SettingDef, SlotId};
 use std::collections::BTreeMap;
 
 /// A kind of thing that can sit in the scene tree, such as balls, a folder or an arena.
@@ -37,22 +37,14 @@ pub trait ThingKind: Send + Sync + 'static {
     fn family(&self) -> &'static str {
         "Other"
     }
-    /// Whether the things under one of these use its modules for slots they don't fill
-    /// themselves. A kind that says no keeps its slots to itself, like Scene settings.
-    fn passes_down(&self) -> bool {
-        true
-    }
     /// What the editor calls `slot` on one of these, such as "Effects" for a shader.
     fn slot_label(&self, slot: SlotId) -> &'static str {
         slot.name()
     }
-    /// Whether a module of `module_kind` may fill `slot` on one of these.
-    fn accepts(&self, _slot: SlotId, _module_kind: &str) -> bool {
-        true
-    }
 }
 
-/// A kind of module that fills one slot, such as a plain look or a pluck sound.
+/// A kind of card that fills one of a thing's slots, such as a look or one effect. Each thing
+/// owns its cards; the kind only describes the settings and does the work.
 pub trait ModuleKind: Send + Sync + 'static {
     /// Unique among every thing and module kind, and written into saved scenes: `"look.plain"`.
     fn id(&self) -> &'static str;
@@ -128,30 +120,14 @@ impl Registry {
         self.modules().filter(move |m| m.slot() == slot)
     }
 
-    /// The module kinds that fill `slot` on `thing`: ones the thing accepts and that fit it,
+    /// The card kinds that fill `slot` on `thing`: the ones that fit it,
     /// in id order.
     pub fn kinds_fitting<'a>(
         &'a self,
         slot: SlotId,
         thing: &'a dyn ThingKind,
     ) -> impl Iterator<Item = &'a dyn ModuleKind> {
-        self.modules().filter(move |m| m.slot() == slot && thing.accepts(slot, m.id()) && m.fits(thing.id()))
-    }
-
-    /// The values of `params` that module kind `to` also has, with the same type: what a module
-    /// keeps when it becomes another kind, such as a look's colour and glow. An unknown kind
-    /// keeps nothing.
-    pub fn carry_over(&self, params: &Params, to: &str) -> Params {
-        let Some(kind) = self.module(to) else {
-            return Params::default();
-        };
-        let mut kept = Params::default();
-        for def in kind.settings() {
-            if let Some(value) = params.get(def.key).filter(|v| def.ty.accepts(v)) {
-                kept.set(def.key, value.clone());
-            }
-        }
-        kept
+        self.modules().filter(move |m| m.slot() == slot && m.fits(thing.id()))
     }
 }
 

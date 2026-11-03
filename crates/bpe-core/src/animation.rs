@@ -8,7 +8,7 @@
 //! when they are made, and the runtime and the renderer only read them.
 
 use crate::{
-    Address, Color, EditError, Gradient, Owner, Registry, Resolved, Scene, SettingDef, SlotId, SlotLink, Stop, ThingId,
+    Address, Color, EditError, Gradient, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId,
     Value,
 };
 use serde::{Deserialize, Serialize};
@@ -332,17 +332,11 @@ impl Scene {
     /// Checks that `a` names a setting that can be written here, like `set_at` does, and that
     /// the setting has the `keyframe` (or `pulse`) flag.
     fn animatable(&self, reg: &Registry, a: &Address, pulse: bool) -> Result<&'static SettingDef, EditError> {
-        match a.owner {
-            Owner::Thing(id) if !self.things.contains_key(&id) => return Err(EditError::Missing(id)),
-            Owner::Module(m) if !self.library.modules.contains_key(&m) => return Err(EditError::MissingModule(m)),
-            _ => {}
-        }
-        if let (Owner::Thing(id), Some(slot)) = (a.owner, a.slot) {
-            match self.things[&id].slots.get(&slot) {
-                Some(SlotLink::Linked { module, .. }) if self.library.modules.contains_key(module) => {}
-                Some(SlotLink::Linked { module, .. }) => return Err(EditError::MissingModule(*module)),
-                _ => return Err(EditError::NotLinked),
-            }
+        let thing = self.things.get(&a.thing).ok_or(EditError::Missing(a.thing))?;
+        if let Some(slot) = a.slot
+            && !thing.slots.contains_key(&slot)
+        {
+            return Err(EditError::NoSlot(slot));
         }
         let def = self.def_at(reg, a).ok_or_else(|| EditError::UnknownSetting(a.key.clone()))?;
         let allowed = if pulse { def.flags.pulse } else { def.flags.keyframe };
@@ -444,12 +438,10 @@ struct Target {
     pulse: Option<Pulse>,
 }
 
-/// A scene's tracks and pulses, worked out to where each one lands in the resolved scene: a
-/// module's track lands on every thing that uses the module, unless the thing overrides that
-/// setting; a thing's override track lands on the thing and whatever inherits the slot from it.
+/// A scene's tracks and pulses, worked out to where each one lands in the resolved scene: on
+/// the setting's own thing, when the thing (and the card) is there.
 #[derive(Clone, Debug, Default)]
 pub struct Animation {
-    /// Module-owned targets first, then things', so an override wins where both land.
     targets: Vec<Target>,
 }
 
@@ -457,16 +449,14 @@ impl Animation {
     pub fn new(scene: &Scene, resolved: &Resolved) -> Animation {
         let addresses: BTreeSet<&Address> = scene.tracks.keys().chain(scene.pulses.keys()).collect();
         let mut targets = Vec::new();
-        let of_module = |a: &Address| matches!(a.owner, Owner::Module(_));
-        let modules = addresses.iter().copied().filter(|a| of_module(a));
-        let things = addresses.iter().copied().filter(|a| !of_module(a));
-        for a in modules.chain(things) {
+        for a in addresses {
             let track = scene.tracks.get(a).filter(|t| !t.keys.is_empty()).cloned();
             let pulse = scene.pulses.get(a).cloned();
             if track.is_none() && pulse.is_none() {
                 continue;
             }
-            for (thing, slot) in lands_on(scene, resolved, a) {
+            let (thing, slot) = (a.thing, a.slot);
+            {
                 let Some(r) = resolved.things.get(&thing) else { continue };
                 let params = match slot {
                     None => Some(&r.params),
@@ -532,46 +522,10 @@ impl Animation {
     }
 }
 
-/// Where the setting at `a` shows up in the resolved scene.
-fn lands_on(scene: &Scene, resolved: &Resolved, a: &Address) -> Vec<(ThingId, Option<SlotId>)> {
-    let mut out = Vec::new();
-    match (a.owner, a.slot) {
-        (Owner::Thing(t), None) => {
-            if resolved.things.contains_key(&t) {
-                out.push((t, None));
-            }
-        }
-        (Owner::Thing(t), Some(slot)) => {
-            for (id, r) in &resolved.things {
-                if r.slots.get(&slot).is_some_and(|s| s.from == t) {
-                    out.push((*id, Some(slot)));
-                }
-            }
-        }
-        (Owner::Module(m), _) => {
-            let Some(module) = scene.library.modules.get(&m) else { return out };
-            let slot = module.slot;
-            for (id, r) in &resolved.things {
-                let Some(s) = r.slots.get(&slot) else { continue };
-                if s.module != m {
-                    continue;
-                }
-                let overridden = scene.things.get(&s.from).and_then(|from| from.slots.get(&slot)).is_some_and(
-                    |link| matches!(link, SlotLink::Linked { overrides, .. } if overrides.get(&a.key).is_some()),
-                );
-                if !overridden {
-                    out.push((*id, Some(slot)));
-                }
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModuleId, Transition, resolve, testkit};
+    use crate::{Transition, resolve, testkit};
 
     const RED: Color = Color::rgb(255, 0, 0);
     const BLUE: Color = Color::rgb(0, 0, 255);
@@ -675,37 +629,35 @@ mod tests {
         assert_eq!(Value::Bool(false).lerp(&Value::Bool(true), 1.0), Value::Bool(true));
     }
 
-    /// Scene settings with a Plain look, and two balls things linking a second look module.
-    fn scene() -> (Registry, Scene, ModuleId, ThingId, ThingId) {
+    /// Two balls, each with its own Plain look.
+    fn scene() -> (Registry, Scene, ThingId, ThingId) {
         let reg = testkit::registry();
         let mut scene = Scene::empty(&reg);
-        let root_look = scene.add_module(&reg, "look.plain", "Root look").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Look, root_look).unwrap();
-        let shared = scene.add_module(&reg, "look.plain", "Shared").unwrap();
         let a = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
         let b = scene.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
-        scene.link(&reg, a, SlotId::Look, shared).unwrap();
-        scene.link(&reg, b, SlotId::Look, shared).unwrap();
-        (reg, scene, shared, a, b)
+        for t in [a, b] {
+            scene.add_slot(&reg, t, SlotId::Look, "look.plain").unwrap();
+        }
+        (reg, scene, a, b)
     }
 
-    fn glow_of(m: ModuleId) -> Address {
-        Address { owner: Owner::Module(m), slot: None, key: "glow".into() }
+    fn glow_of(t: ThingId) -> Address {
+        Address::on(t, SlotId::Look, "glow")
     }
 
     #[test]
     fn scene_set_key_checks_the_flag_and_the_type() {
-        let (reg, mut scene, shared, a, _) = scene();
-        let length = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "duration".into() };
+        let (reg, mut scene, a, _) = scene();
+        let length = Address::own(ThingId::ROOT, "duration");
         assert_eq!(scene.set_key(&reg, &length, 1.0, key(5.0)), Err(EditError::UnknownSetting("duration".into())));
-        assert_eq!(scene.set_key(&reg, &glow_of(shared), 1.0, Value::Color(Color::WHITE)), Err(EditError::WrongType));
-        assert_eq!(scene.set_key(&reg, &glow_of(shared), 1.0, key(9.0)), Ok(0));
-        let track = &scene.tracks[&glow_of(shared)];
+        assert_eq!(scene.set_key(&reg, &glow_of(a), 1.0, Value::Color(Color::WHITE)), Err(EditError::WrongType));
+        assert_eq!(scene.set_key(&reg, &glow_of(a), 1.0, key(9.0)), Ok(0));
+        let track = &scene.tracks[&glow_of(a)];
         assert_eq!(track.range, Some((0.0, 2.0)));
         assert_eq!(track.keys[0].value, key(2.0), "pulled into range");
-        let inherited = Address { owner: Owner::Thing(a), slot: Some(SlotId::Trail), key: "width".into() };
-        assert_eq!(scene.set_key(&reg, &inherited, 1.0, key(0.0)), Err(EditError::NotLinked));
-        let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
+        let missing = Address::on(a, SlotId::Trail, "width");
+        assert_eq!(scene.set_key(&reg, &missing, 1.0, key(0.0)), Err(EditError::NoSlot(SlotId::Trail)));
+        let size = Address::own(a, "radius");
         assert_eq!(scene.set_key(&reg, &size, 2.0, key(10.0)), Ok(0));
         assert!(scene.keyed(&size));
         assert!(scene.remove_key(&size, 0));
@@ -715,8 +667,8 @@ mod tests {
 
     #[test]
     fn value_at_time_prefers_the_track() {
-        let (reg, mut scene, shared, _, _) = scene();
-        let glow = glow_of(shared);
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
         assert_eq!(scene.value_at_time(&reg, &glow, 1.0), Some(key(0.0)));
         scene.set_key(&reg, &glow, 0.0, key(0.0)).unwrap();
         scene.set_key(&reg, &glow, 2.0, key(2.0)).unwrap();
@@ -728,48 +680,24 @@ mod tests {
     }
 
     #[test]
-    fn a_module_track_lands_on_every_user_but_an_overriding_one() {
-        let (reg, mut scene, shared, a, b) = scene();
-        scene.set_key(&reg, &glow_of(shared), 0.0, key(1.0)).unwrap();
+    fn a_track_lands_only_on_its_own_thing() {
+        let (reg, mut scene, a, b) = scene();
+        scene.set_key(&reg, &glow_of(a), 0.0, key(1.0)).unwrap();
         let resolved = resolve(&scene, &reg);
-        let anim = Animation::new(&scene, &resolved);
-        assert_eq!(anim.destinations(), vec![(a, Some(SlotId::Look), "glow"), (b, Some(SlotId::Look), "glow")]);
-        let over = Address { owner: Owner::Thing(b), slot: Some(SlotId::Look), key: "glow".into() };
-        scene.set_at(&reg, &over, key(1.5)).unwrap();
-        let resolved = resolve(&scene, &reg);
-        let anim = Animation::new(&scene, &resolved);
+        let mut anim = Animation::new(&scene, &resolved);
         assert_eq!(anim.destinations(), vec![(a, Some(SlotId::Look), "glow")]);
         let mut animated = resolved.clone();
         anim.apply(&mut animated, 0.0, &Inputs::NONE);
         assert_eq!(animated.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(1.0)));
-        assert_eq!(animated.things[&b].slots[&SlotId::Look].params.get("glow"), Some(&key(1.5)));
-    }
-
-    #[test]
-    fn an_override_track_lands_on_the_thing_and_its_inheriting_children() {
-        let (reg, mut scene, shared, a, _) = scene();
-        let child = scene.add_thing(&reg, "balls", a).unwrap();
-        let over = Address { owner: Owner::Thing(a), slot: Some(SlotId::Look), key: "glow".into() };
-        scene.set_key(&reg, &over, 0.0, key(1.2)).unwrap();
-        let resolved = resolve(&scene, &reg);
-        assert_eq!(resolved.things[&child].slots[&SlotId::Look].from, a);
-        let anim = Animation::new(&scene, &resolved);
-        assert_eq!(anim.destinations(), vec![(a, Some(SlotId::Look), "glow"), (child, Some(SlotId::Look), "glow")]);
-        // The module's own track lands on the other user only: `a` overrides glow by keying it,
-        // so once a value is stored there the module track skips it.
-        scene.set_at(&reg, &over, key(0.5)).unwrap();
-        scene.set_key(&reg, &glow_of(shared), 0.0, key(0.1)).unwrap();
-        let resolved = resolve(&scene, &reg);
-        let mut anim = Animation::new(&scene, &resolved);
-        assert_eq!(anim.destinations().len(), 3);
-        anim.retain(|t, _, _| t == a);
-        assert_eq!(anim.destinations().len(), 1);
+        assert_eq!(animated.things[&b].slots[&SlotId::Look].params.get("glow"), Some(&key(0.0)));
+        anim.retain(|t, _, _| t == b);
+        assert!(anim.is_empty());
     }
 
     #[test]
     fn apply_writes_keys_and_pulses_and_clamps() {
-        let (reg, mut scene, shared, a, _) = scene();
-        let glow = glow_of(shared);
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
         scene.set_key(&reg, &glow, 0.0, key(1.8)).unwrap();
         // A hits pulse adds nothing until something hits.
         scene.set_pulse(&reg, &glow, PulseSource::Hits, key(0.1), 0.25).unwrap();
@@ -800,33 +728,13 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_thing_or_module_drops_its_tracks_and_pulses() {
-        let (reg, mut scene, shared, a, b) = scene();
-        let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
-        scene.set_key(&reg, &size, 0.5, key(3.0)).unwrap();
-        scene.set_key(&reg, &glow_of(shared), 1.0, key(1.0)).unwrap();
-        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Hits, key(0.3), 0.5).unwrap();
-        let own_glow = Address { owner: Owner::Thing(a), slot: Some(SlotId::Look), key: "glow".into() };
-        scene.set_pulse(&reg, &own_glow, PulseSource::Hits, key(0.3), 0.5).unwrap();
-        scene.remove_thing(a).unwrap();
-        assert!(!scene.tracks.contains_key(&size), "the thing's own key went with it");
-        assert!(!scene.pulses.contains_key(&own_glow), "and its override's pulse");
-        assert!(scene.tracks.contains_key(&glow_of(shared)), "the shared module's track stays");
-        assert!(scene.pulses.contains_key(&glow_of(shared)));
-        // Once nothing uses the module, removing it takes its track and pulse too.
-        scene.things.get_mut(&b).unwrap().slots.insert(SlotId::Look, SlotLink::Inherit);
-        scene.remove_module(shared).unwrap();
-        assert!(scene.tracks.is_empty() && scene.pulses.is_empty(), "{:?} {:?}", scene.tracks, scene.pulses);
-    }
-
-    #[test]
     fn a_scene_with_tracks_saves_and_loads() {
-        let (reg, mut scene, shared, a, _) = scene();
-        scene.set_key(&reg, &glow_of(shared), 1.0, key(1.0)).unwrap();
-        scene.set_ease(&glow_of(shared), 0, Ease::Curve { x1: 0.2, y1: 0.0, x2: 0.8, y2: 1.0 });
-        let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
+        let (reg, mut scene, a, _) = scene();
+        scene.set_key(&reg, &glow_of(a), 1.0, key(1.0)).unwrap();
+        scene.set_ease(&glow_of(a), 0, Ease::Curve { x1: 0.2, y1: 0.0, x2: 0.8, y2: 1.0 });
+        let size = Address::own(a, "radius");
         scene.set_key(&reg, &size, 0.5, key(3.0)).unwrap();
-        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Hits, key(0.3), 0.5).unwrap();
+        scene.set_pulse(&reg, &glow_of(a), PulseSource::Hits, key(0.3), 0.5).unwrap();
         let text = crate::save(&scene);
         let back = crate::load(&text, &reg).unwrap();
         assert_eq!(back.tracks, scene.tracks);

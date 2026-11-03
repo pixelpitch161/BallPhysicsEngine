@@ -22,7 +22,7 @@ pub enum ArenaShape {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ArenaSettings {
     /// A round ring, a box, a regular polygon or a capsule.
-    #[setting(label = "Shape", simple, random, structural)]
+    #[setting(label = "Shape", simple)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
     #[setting(
@@ -31,15 +31,13 @@ pub struct ArenaSettings {
         range(20, 20000),
         unit = "px",
         simple,
-        keyframe,
-        random(150, 500)
-    )]
+        keyframe)]
     pub radius: f32,
     /// How thick the wall is drawn.
     #[setting(label = "Thickness", range(0, 40), unit = "px", simple, keyframe)]
     pub thickness: f32,
     /// How fast the arena turns, clockwise.
-    #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe, random(-120, 120))]
+    #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe)]
     pub spin: f32,
     /// Box only.
     #[setting(label = "Width", when = "shape=box|capsule", range(20, 40000), unit = "px")]
@@ -48,10 +46,10 @@ pub struct ArenaSettings {
     #[setting(label = "Height", when = "shape=box|capsule", range(20, 40000), unit = "px")]
     pub height: f32,
     /// Box only: how round the corners are.
-    #[setting(label = "Corner radius", when = "shape=box", range(0, 1000), unit = "px", keyframe, random(0, 200))]
+    #[setting(label = "Corner radius", when = "shape=box", range(0, 1000), unit = "px", keyframe)]
     pub corner: f32,
     /// Polygon only.
-    #[setting(label = "Sides", when = "shape=polygon", range(3, 12), random)]
+    #[setting(label = "Sides", when = "shape=polygon", range(3, 12))]
     pub sides: u32,
     /// How much of its size the arena loses each second.
     #[setting(label = "Shrink", range(0, 1), unit = "per s", keyframe)]

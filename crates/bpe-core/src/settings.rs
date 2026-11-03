@@ -1,5 +1,5 @@
-//! The settings schema: one description of each setting drives the inspector, keyframes, dice,
-//! locks and pulses.
+//! The settings schema: one description of each setting drives the inspector, keyframes and
+//! pulses.
 
 use crate::{Color, Gradient, Params, Target, Value, ValueType};
 
@@ -15,13 +15,8 @@ pub enum Depth {
 pub struct Flags {
     /// It can change over time on the timeline.
     pub keyframe: bool,
-    /// The dice can pick it.
-    pub random: bool,
-    /// It can pulse to the beat or to hits.
+    /// It can pulse with the hits.
     pub pulse: bool,
-    /// It decides what the thing is, such as its shape or how its balls are arranged, so the
-    /// dice only change it close to "All new".
-    pub structural: bool,
 }
 
 /// One setting of a thing or module kind.
@@ -36,9 +31,8 @@ pub struct SettingDef {
     pub default: Value,
     /// Smallest and largest allowed values, for numbers.
     pub range: Option<(f64, f64)>,
-    /// The part of the range the dice roll in, when it is narrower than `range` (or when a
-    /// setting such as a speed has no range of its own).
-    pub dice: Option<(f64, f64)>,
+    /// The usual span a slider covers when the setting has no hard `range`, such as a speed.
+    pub span: Option<(f64, f64)>,
     pub unit: &'static str,
     /// A heading the inspector groups it under.
     pub group: &'static str,
@@ -53,11 +47,6 @@ pub struct SettingDef {
 }
 
 impl SettingDef {
-    /// Where the dice roll: the dice range when one is set, else the whole range.
-    pub fn dice_range(&self) -> Option<(f64, f64)> {
-        self.dice.or(self.range)
-    }
-
     /// Whether the setting does anything for a thing of `kind` (`None`: any kind) whose
     /// other settings read as `get` says. See `when`.
     pub fn applies(&self, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {

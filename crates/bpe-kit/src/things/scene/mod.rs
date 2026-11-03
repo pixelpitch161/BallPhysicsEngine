@@ -55,7 +55,7 @@ pub struct SceneSettings {
     #[setting(label = "Background stays on screen", group = "Background")]
     pub background_on_screen: bool,
     /// How much bright things bleed light around them.
-    #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse, group = "Picture")]
+    #[setting(label = "Bloom", range(0, 1), simple, keyframe, pulse, group = "Picture")]
     pub bloom: f32,
     /// How bright the whole picture is.
     #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse, group = "Picture")]

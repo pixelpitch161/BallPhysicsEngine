@@ -62,6 +62,19 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
                 _ => fail(d.key, "only numbers can have a range".into()),
             }
         }
+        if let Some((lo, hi)) = d.span {
+            if lo >= hi {
+                fail(d.key, format!("the span {lo} to {hi} is empty"));
+            }
+            if let Some((min, max)) = d.range
+                && (lo < min || hi > max)
+            {
+                fail(d.key, format!("the span {lo} to {hi} sits outside the range {min} to {max}"));
+            }
+            if !matches!(d.ty, ValueType::Number | ValueType::Int | ValueType::Vec2) {
+                fail(d.key, "only numbers can have a span".into());
+            }
+        }
         if d.flags.pulse && !matches!(d.ty, ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color) {
             fail(d.key, format!("a {:?} setting can't be pulsed", d.ty));
         }
@@ -104,28 +117,22 @@ mod tests {
     use crate::{Settings, ThingKind, testkit};
 
     #[test]
-    fn random_takes_an_optional_dice_range() {
+    fn span_sets_a_sliders_usual_span() {
         #[derive(Settings)]
         struct S {
-            #[setting(label = "A", range(0.0, 100.0), random(5.0, 20.0))]
+            #[setting(label = "A", span(5.0, 20.0))]
             a: f64,
-            #[setting(label = "B", range(0.0, 1.0), random)]
+            #[setting(label = "B", range(0.0, 1.0))]
             b: f64,
-            #[setting(label = "C")]
-            c: bool,
         }
         impl Default for S {
             fn default() -> Self {
-                Self { a: 10.0, b: 0.5, c: false }
+                Self { a: 10.0, b: 0.5 }
             }
         }
         let defs = S::defs();
-        assert_eq!(defs[0].dice, Some((5.0, 20.0)));
-        assert_eq!(defs[0].dice_range(), Some((5.0, 20.0)));
-        assert_eq!(defs[1].dice, None);
-        assert_eq!(defs[1].dice_range(), Some((0.0, 1.0)));
-        assert_eq!(defs[2].dice_range(), None);
-        assert!(defs[0].flags.random && defs[1].flags.random && !defs[2].flags.random);
+        assert_eq!((defs[0].span, defs[0].range), (Some((5.0, 20.0)), None));
+        assert_eq!((defs[1].span, defs[1].range), (None, Some((0.0, 1.0))));
     }
 
     #[test]

@@ -1,6 +1,6 @@
-//! The scene: a tree of things, and the library of modules they link to.
+//! The scene: a tree of things, each with its own cards of settings.
 
-use crate::{Address, KindId, Library, ModuleId, Params, Pulse, Registry, SlotId, ThingId, Track};
+use crate::{Address, KindId, Params, Pulse, Registry, SlotId, ThingId, Track};
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,20 +50,36 @@ pub enum Attach {
     },
 }
 
-/// What fills one slot on a thing.
+/// One of a thing's own cards of settings, such as its Look or its Trail: which kind of card it
+/// is and the values that differ from that kind's defaults. Nothing else shares it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub enum SlotLink {
-    /// Whatever the parent uses.
-    #[default]
-    Inherit,
-    /// A library module, with this thing's own changes on top.
-    Linked {
-        module: ModuleId,
-        #[serde(default, skip_serializing_if = "Params::is_empty")]
-        overrides: Params,
-    },
-    /// Nothing, and the parent's module isn't used either.
-    Off,
+#[serde(default)]
+pub struct Slot {
+    /// The card kind's plugin id, such as `"look.basic"`.
+    pub kind: KindId,
+    /// Values that differ from the kind's defaults.
+    #[serde(skip_serializing_if = "Params::is_empty")]
+    pub params: Params,
+    /// What earlier kinds of this card left behind, by kind, to restore if it switches back.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub stash: BTreeMap<KindId, SlotStash>,
+}
+
+impl Slot {
+    /// A card of `kind` with every setting at its default.
+    pub fn new(kind: impl Into<KindId>) -> Slot {
+        Slot { kind: kind.into(), ..Slot::default() }
+    }
+}
+
+/// What a card set aside when it changed kind: the settings, keyframes and pulses its new kind has
+/// no use for, by setting key. Switching back to the old kind puts them back.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlotStash {
+    pub params: Params,
+    pub tracks: BTreeMap<String, Track>,
+    pub pulses: BTreeMap<String, Pulse>,
 }
 
 /// One thing in the tree.
@@ -88,8 +104,9 @@ pub struct Thing {
     /// Values that differ from the kind's defaults.
     #[serde(skip_serializing_if = "Params::is_empty")]
     pub params: Params,
-    /// Slots shown in the inspector. A slot left out behaves as `Inherit`.
-    pub slots: BTreeMap<SlotId, SlotLink>,
+    /// The thing's own cards of settings. A slot left out isn't there.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub slots: BTreeMap<SlotId, Slot>,
     /// Drawn on the screen instead of in the world, whatever the camera does. `None` is the
     /// kind's own choice ([`crate::ThingKind::sticks_to_screen`]).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,20 +153,14 @@ pub struct Scene {
     pub things: BTreeMap<ThingId, Thing>,
     /// Every thing once, root first, each thing before its children and siblings in tree order.
     pub order: Vec<ThingId>,
-    pub library: Library,
     /// The id the next added thing gets.
     pub next_thing: u32,
-    /// The id the next added module gets.
-    pub next_module: u32,
     /// Keyframes, by the setting they move.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<Address, Track>,
-    /// Settings that pulse with the music or the hits.
+    /// Settings that pulse with the hits.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub pulses: BTreeMap<Address, Pulse>,
-    /// Settings the dice leave alone.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub locks: BTreeSet<Address>,
 }
 
 impl Default for Scene {
@@ -159,29 +170,16 @@ impl Default for Scene {
             name: String::new(),
             things: BTreeMap::new(),
             order: Vec::new(),
-            library: Library::default(),
             next_thing: 1,
-            next_module: 0,
             tracks: BTreeMap::new(),
             pulses: BTreeMap::new(),
-            locks: BTreeSet::new(),
         }
     }
 }
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 2;
-
-    /// The dice leave this setting alone.
-    pub fn is_locked(&self, a: &Address) -> bool {
-        self.locks.contains(a)
-    }
-
-    /// Locks or unlocks a setting against the dice; true when that changed something.
-    pub fn set_locked(&mut self, a: Address, locked: bool) -> bool {
-        if locked { self.locks.insert(a) } else { self.locks.remove(&a) }
-    }
+    pub const FORMAT: u32 = 3;
 
     /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
@@ -190,7 +188,6 @@ impl Scene {
             id: ThingId::ROOT,
             name: kind.name().into(),
             kind: "scene".into(),
-            slots: kind.default_slots().iter().map(|&s| (s, SlotLink::Inherit)).collect(),
             ..Thing::default()
         };
         Scene { things: BTreeMap::from([(ThingId::ROOT, root)]), order: vec![ThingId::ROOT], ..Scene::default() }
@@ -259,9 +256,6 @@ impl Scene {
         for (id, t) in &mut self.things {
             t.id = *id;
         }
-        for (id, m) in &mut self.library.modules {
-            m.id = *id;
-        }
         let Some(root) = self.things.get_mut(&ThingId::ROOT) else { return false };
         root.parent = None;
         root.kind = "scene".into();
@@ -327,25 +321,12 @@ impl Scene {
         }
         reached
     }
-
-    /// The things that link module `m` in any slot, in tree order.
-    pub fn users_of(&self, m: ModuleId) -> Vec<ThingId> {
-        self.order
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.things.get(id).is_some_and(|t| {
-                    t.slots.values().any(|l| matches!(l, SlotLink::Linked { module, .. } if *module == m))
-                })
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Owner, testkit};
+    use crate::testkit;
 
     /// Balls that may never be stuck to the screen, standing in for a canvas.
     struct Unstuck;
@@ -391,29 +372,11 @@ mod tests {
     }
 
     #[test]
-    fn locks_round_trip_and_old_files_load_without_them() {
-        let mut scene = Scene::default();
-        let a = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
-        assert!(scene.set_locked(a.clone(), true));
-        assert!(!scene.set_locked(a.clone(), true), "locking twice changes nothing");
-        assert!(scene.is_locked(&a));
-        let text = ron::to_string(&scene).unwrap();
-        assert!(text.contains("locks"));
-        let back: Scene = ron::from_str(&text).unwrap();
-        assert!(back.is_locked(&a));
-        let old: Scene = ron::from_str(&ron::to_string(&Scene::default()).unwrap()).unwrap();
-        assert!(old.locks.is_empty());
-        assert!(!ron::to_string(&Scene::default()).unwrap().contains("locks"), "empty locks are not written");
-        assert!(scene.set_locked(a.clone(), false));
-        assert!(!scene.is_locked(&a));
-    }
-
-    #[test]
     fn empty_scene_has_only_the_root() {
         let s = Scene::empty(&testkit::registry());
         assert_eq!(s.order, vec![ThingId::ROOT]);
         assert_eq!(s.things[&ThingId::ROOT].name, "Scene settings");
-        assert_eq!(s.format, 2);
+        assert_eq!(s.format, 3);
         assert_eq!(s.next_thing, 1);
     }
 
