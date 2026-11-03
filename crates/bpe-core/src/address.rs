@@ -108,7 +108,10 @@ mod tests {
         assert!(matches!(s.set_at(&r, &nope, Value::Number(1.0)), Err(EditError::UnknownSetting(_))));
         let look = Address::on(b, SlotId::Look, "glow");
         assert_eq!(s.set_at(&r, &look, Value::Number(1.0)), Err(EditError::NoSlot(SlotId::Look)));
-        assert_eq!(s.set_at(&r, &Address::own(ThingId(9), "radius"), Value::Number(1.0)), Err(EditError::Missing(ThingId(9))));
+        assert_eq!(
+            s.set_at(&r, &Address::own(ThingId(9), "radius"), Value::Number(1.0)),
+            Err(EditError::Missing(ThingId(9)))
+        );
     }
 
     #[test]

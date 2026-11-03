@@ -855,7 +855,7 @@ fn file_label(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Address, ModuleId, Owner, ThingId, Value};
+    use bpe_core::{Address, ModuleId, ThingId, Value};
     use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
     use std::time::Duration;
@@ -1051,7 +1051,7 @@ mod tests {
         // is up and the edits have stopped. The next edit is a step of its own.
         studio.history.end_merging();
         let before = studio.scene.clone();
-        let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        let gravity = Address { thing: ThingId::ROOT, slot: None, key: "gravity".into() };
         studio.scene.set_at(&studio.kit.registry, &gravity, Value::Vec2([0.0, 10.0])).unwrap();
         studio.after_edit(before);
         assert_eq!(studio.playback.time(), 0.0);

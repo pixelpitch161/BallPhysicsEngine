@@ -1,6 +1,6 @@
 //! Which keyed and pulsing settings the timeline shows for a selection, and in what order.
 
-use bpe_core::{Address, Owner, Resolved, Scene, SlotId, SlotLink, ThingId};
+use bpe_core::{Address, Resolved, Scene, SlotId, SlotLink, ThingId};
 use bpe_kit::Kit;
 use std::collections::BTreeSet;
 
@@ -101,10 +101,10 @@ mod tests {
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let reg = &kit.registry;
         let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
-        let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        let gravity = Address { thing: ThingId::ROOT, slot: None, key: "gravity".into() };
         let ball_look = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().id;
         let glow = Address { owner: Owner::Module(ball_look), slot: None, key: "glow".into() };
-        let bloom = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "bloom".into() };
+        let bloom = Address { thing: ThingId::ROOT, slot: None, key: "bloom".into() };
         scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         scene.set_key(reg, &size, 2.0, Value::Number(60.0)).unwrap();
         scene.set_key(reg, &glow, 0.0, Value::Number(0.5)).unwrap();

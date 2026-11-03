@@ -150,7 +150,7 @@ impl ThingSim for ArenaSim {
 mod tests {
     use crate::testing::ARENA;
     use crate::{kit, new_scene};
-    use bpe_core::{Address, Owner, Scene, Value, resolve};
+    use bpe_core::{Address, Scene, Value, resolve};
     use bpe_runtime::{Log, Outline, World};
     use glam::Vec2;
 
@@ -158,7 +158,7 @@ mod tests {
     fn a_radius_key_resizes_the_wall_while_running() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        let radius = Address { owner: Owner::Thing(ARENA), slot: None, key: "radius".into() };
+        let radius = Address { thing: ARENA, slot: None, key: "radius".into() };
         scene.set_key(&kit.registry, &radius, 0.0, Value::Number(508.0)).unwrap();
         scene.set_key(&kit.registry, &radius, 1.0, Value::Number(254.0)).unwrap();
         let resolved = resolve(&scene, &kit.registry);

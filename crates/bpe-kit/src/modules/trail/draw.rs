@@ -138,8 +138,9 @@ mod tests {
     fn a_streak_follows_the_ball_in_its_colour() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let trail = scene.add_module(&reg, "trail.streak", "Streak").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Trail, trail).unwrap();
+        scene.add_slot(&reg, ThingId(2), SlotId::Trail, "trail.streak").unwrap();
+        let trail = (ThingId(2), SlotId::Trail);
+
         let resolved = bpe_core::resolve(&scene, &reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let kit = kit();
@@ -168,7 +169,7 @@ mod tests {
         assert!((c[2] / c[0] - pink[2] / pink[0]).abs() < 1e-4, "{c:?}");
 
         // Its own colour, covering, at the brightness as opacity.
-        let m = scene.library.modules.get_mut(&trail).unwrap();
+        let m = scene.card_mut(trail.0, trail.1).unwrap();
         m.params.set("source", Value::Choice("own".into()));
         m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(0, 255, 0))));
@@ -178,7 +179,7 @@ mod tests {
         assert_eq!(c[..3], [0.0, 1.0, 0.0]);
         assert!(c[3] > 0.45 && c[3] <= 0.5, "{c:?}");
         // Without a trail nothing is drawn and no history is kept.
-        scene.set_slot_off(ThingId(2), SlotId::Trail);
+        scene.remove_slot(ThingId(2), SlotId::Trail);
         let resolved = bpe_core::resolve(&scene, &reg);
         let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
         assert!(world.history.is_empty());
@@ -207,10 +208,11 @@ mod tests {
     fn trail_life_runs_head_to_tail() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let trail = scene.add_module(&reg, "trail.streak", "Streak").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Trail, trail).unwrap();
+        scene.add_slot(&reg, ThingId(2), SlotId::Trail, "trail.streak").unwrap();
+        let trail = (ThingId(2), SlotId::Trail);
+
         let (red, blue) = (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255));
-        let m = scene.library.modules.get_mut(&trail).unwrap();
+        let m = scene.card_mut(trail.0, trail.1).unwrap();
         m.params.set("source", Value::Choice("own".into()));
         m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::even(&[red, blue])));
@@ -235,7 +237,7 @@ mod tests {
 
         // Following time, each part keeps the colour of when the ball was there: at a quarter
         // of a cycle a second, half a second back is an eighth of the way less.
-        let m = scene.library.modules.get_mut(&trail).unwrap();
+        let m = scene.card_mut(trail.0, trail.1).unwrap();
         m.params.set("follow", Value::Choice("time".into()));
         let resolved = bpe_core::resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 2.01, &kit.draws, &mut frame);
@@ -253,9 +255,10 @@ mod tests {
             p.set("rows", Value::Int(1));
         });
         let reg = &kit.registry;
-        let trail = scene.add_module(reg, "trail.streak", "Streak").unwrap();
-        scene.link(reg, ThingId(2), SlotId::Trail, trail).unwrap();
-        let m = scene.library.modules.get_mut(&trail).unwrap();
+        scene.add_slot(reg, ThingId(2), SlotId::Trail, "trail.streak").unwrap();
+        let trail = (ThingId(2), SlotId::Trail);
+
+        let m = scene.card_mut(trail.0, trail.1).unwrap();
         m.params.set("source", Value::Choice("own".into()));
         m.params.set("blend", Value::Choice("normal".into()));
         m.params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0))));

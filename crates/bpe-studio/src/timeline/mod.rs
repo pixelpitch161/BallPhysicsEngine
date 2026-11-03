@@ -287,7 +287,7 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Owner, ThingId};
+    use bpe_core::ThingId;
     use eframe::egui::{PointerButton, accesskit::Role};
     use egui_kittest::{
         Harness,
@@ -302,7 +302,7 @@ mod tests {
     fn harness() -> Harness<'static, Studio> {
         let mut studio = Studio::headless();
         let reg = &studio.kit.registry;
-        let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        let gravity = Address { thing: ThingId::ROOT, slot: None, key: "gravity".into() };
         studio.scene.set_key(reg, &size_address(), 2.0, Value::Number(60.0)).unwrap();
         studio.scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         studio.selection.set(ThingId(2));

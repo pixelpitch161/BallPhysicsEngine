@@ -26,7 +26,8 @@ pub struct BasicBounce {
         when = "thing!=arena or takes_over",
         range(0.5, 1.5),
         simple,
-        keyframe)]
+        keyframe
+    )]
     pub speed_gain: f32,
     /// The ball never goes faster than this.
     #[setting(
@@ -40,12 +41,7 @@ pub struct BasicBounce {
     )]
     pub top_speed: f32,
     /// How much sideways speed rubs off when the ball touches walls or other balls.
-    #[setting(
-        label = "Friction",
-        group = "Basics",
-        when = "thing!=arena or takes_over",
-        range(0, 1),
-        keyframe)]
+    #[setting(label = "Friction", group = "Basics", when = "thing!=arena or takes_over", range(0, 1), keyframe)]
     pub friction: f32,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
     #[setting(label = "Takes over", group = "Basics", when = "thing=arena")]
@@ -83,7 +79,8 @@ pub struct BasicBounce {
         when = "thing!=arena and special",
         range(0, 1.5),
         group = "Against some things",
-        keyframe)]
+        keyframe
+    )]
     pub special_bounciness: f32,
     /// How much the ball grows on each hit against those things.
     #[setting(label = "Grow against them", when = "thing!=arena and special", range(-20, 20), unit = "px", group = "Against some things", keyframe)]

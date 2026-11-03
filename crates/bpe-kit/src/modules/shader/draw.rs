@@ -107,11 +107,11 @@ mod tests {
     fn a_root_shader_is_a_picture_effect_and_a_thing_shader_is_a_material() {
         let (mut scene, _, kit) = scene_with_balls("single", |_| {});
         let reg = &kit.registry;
-        let k = scene.add_module(reg, "shader.kaleidoscope", "Slices").unwrap();
-        scene.link(reg, ThingId::ROOT, SlotId::Shader, k).unwrap();
-        let lava = scene.add_module(reg, "shader.lava", "Lava").unwrap();
-        scene.library.modules.get_mut(&lava).unwrap().params.set("blend", Value::Number(0.5));
-        scene.link(reg, BALLS, SlotId::Shader, lava).unwrap();
+        scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
+        scene.add_slot(reg, BALLS, SlotId::Shader, "shader.lava").unwrap();
+        let lava = (BALLS, SlotId::Shader);
+        scene.card_mut(lava.0, lava.1).unwrap().params.set("blend", Value::Number(0.5));
+
         let resolved = resolve(&scene, reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         assert!(!resolved.things[&ARENA].slots.contains_key(&SlotId::Shader), "Scene settings' effect isn't inherited");

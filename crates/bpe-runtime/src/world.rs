@@ -978,7 +978,15 @@ mod tests {
         // Keeping a history is a rebuild, but how the trail looks is not.
         let with_trail = fingerprint(&scene, &resolved, &sims);
         assert_ne!(with_trail, before);
-        scene.things.get_mut(&DOTS).unwrap().slots.get_mut(&SlotId::Trail).unwrap().params.set("width", Value::Number(3.0));
+        scene
+            .things
+            .get_mut(&DOTS)
+            .unwrap()
+            .slots
+            .get_mut(&SlotId::Trail)
+            .unwrap()
+            .params
+            .set("width", Value::Number(3.0));
         let resolved = resolve(&scene, &reg());
         assert_eq!(fingerprint(&scene, &resolved, &sims), with_trail);
 

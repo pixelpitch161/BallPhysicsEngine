@@ -7,10 +7,7 @@
 //! or reordered. Nothing here needs the registry once the keys are in: the editor checks them
 //! when they are made, and the runtime and the renderer only read them.
 
-use crate::{
-    Address, Color, EditError, Gradient, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId,
-    Value,
-};
+use crate::{Address, Color, EditError, Gradient, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

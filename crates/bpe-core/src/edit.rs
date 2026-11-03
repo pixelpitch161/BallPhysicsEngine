@@ -61,7 +61,8 @@ impl Scene {
         }
         let id = ThingId(self.next_thing);
         self.next_thing += 1;
-        let thing = Thing { id, name: self.free_name(k.name()), kind: kind.into(), parent: Some(parent), ..Thing::default() };
+        let thing =
+            Thing { id, name: self.free_name(k.name()), kind: kind.into(), parent: Some(parent), ..Thing::default() };
         self.things.insert(id, thing);
         let at = self.subtree(parent).end;
         self.order.insert(at, id);
@@ -214,8 +215,7 @@ impl Scene {
             return Err(EditError::NotAccepted);
         }
         let old_kind = card.kind.clone();
-        let accepts =
-            |key: &str, v: &crate::Value| new.settings().iter().any(|d| d.key == key && d.ty.accepts(v));
+        let accepts = |key: &str, v: &crate::Value| new.settings().iter().any(|d| d.key == key && d.ty.accepts(v));
         let mut out = SlotStash::default();
 
         // 1. The card's own settings.
@@ -381,7 +381,10 @@ mod tests {
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         assert_eq!(s.add_slot(&r, b, SlotId::Shader, "look.plain"), Err(EditError::SlotNotSupported(SlotId::Shader)));
         assert_eq!(s.add_slot(&r, b, SlotId::Trail, "look.plain"), Err(EditError::WrongSlot));
-        assert_eq!(s.add_slot(&r, b, SlotId::Look, "look.hologram"), Err(EditError::UnknownKind("look.hologram".into())));
+        assert_eq!(
+            s.add_slot(&r, b, SlotId::Look, "look.hologram"),
+            Err(EditError::UnknownKind("look.hologram".into()))
+        );
         assert_eq!(s.add_slot(&r, ThingId(99), SlotId::Look, "look.plain"), Err(EditError::Missing(ThingId(99))));
         assert!(s.things[&b].slots.is_empty());
         s.add_slot(&r, b, SlotId::Trail, "trail.streak").unwrap();
@@ -611,7 +614,8 @@ mod tests {
         let mut s = Scene::empty(&r);
         let t = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.add_slot(&r, t, SlotId::Look, "look.a").unwrap();
-        s.things.get_mut(&t).unwrap().slots.get_mut(&SlotId::Look).unwrap().params = params_of(&[("glow", 1.0), ("ring", 2.0)]);
+        s.things.get_mut(&t).unwrap().slots.get_mut(&SlotId::Look).unwrap().params =
+            params_of(&[("glow", 1.0), ("ring", 2.0)]);
         (r, s, t)
     }
 

@@ -2,7 +2,7 @@
 //! for `resolve` and quietly drops values of the wrong type, so this compares the file's own keys
 //! with the registry instead of trusting a load that "worked".
 
-use bpe_core::{Params, Scene, SettingDef, SlotLink};
+use bpe_core::{Params, Scene, SettingDef};
 use bpe_kit::registry;
 
 /// What is wrong with one set of saved settings: keys no setting has, values the setting can't
@@ -34,19 +34,12 @@ fn every_saved_test_scene_loads_with_known_keys() {
         // The file as written, before the loader cleans anything.
         let raw: Scene = ron::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
         let mut bad = Vec::new();
-        for module in raw.library.modules.values() {
-            let kind = reg.module(&module.kind).unwrap_or_else(|| panic!("{name}: module kind {:?}", module.kind));
-            bad.extend(bad_keys(&module.params, kind.settings(), &format!("module {}", module.kind)));
-        }
         for thing in raw.things.values() {
             let kind = reg.thing(&thing.kind).unwrap_or_else(|| panic!("{name}: thing kind {:?}", thing.kind));
             bad.extend(bad_keys(&thing.params, kind.settings(), &format!("thing {}", thing.kind)));
-            for link in thing.slots.values() {
-                if let SlotLink::Linked { module, overrides } = link {
-                    let kind = &raw.library.modules[module].kind;
-                    let defs = reg.module(kind).unwrap().settings();
-                    bad.extend(bad_keys(overrides, defs, &format!("override on {kind}")));
-                }
+            for card in thing.slots.values() {
+                let kind = reg.module(&card.kind).unwrap_or_else(|| panic!("{name}: card kind {:?}", card.kind));
+                bad.extend(bad_keys(&card.params, kind.settings(), &format!("card {}", card.kind)));
             }
         }
         assert!(bad.is_empty(), "{name}:\n{}", bad.join("\n"));

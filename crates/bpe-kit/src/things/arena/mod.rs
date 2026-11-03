@@ -25,13 +25,7 @@ pub struct ArenaSettings {
     #[setting(label = "Shape", simple)]
     pub shape: ArenaShape,
     /// How big the ring or polygon is, from the middle to the wall.
-    #[setting(
-        label = "Radius",
-        when = "shape=circle|polygon",
-        range(20, 20000),
-        unit = "px",
-        simple,
-        keyframe)]
+    #[setting(label = "Radius", when = "shape=circle|polygon", range(20, 20000), unit = "px", simple, keyframe)]
     pub radius: f32,
     /// How thick the wall is drawn.
     #[setting(label = "Thickness", range(0, 40), unit = "px", simple, keyframe)]

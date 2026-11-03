@@ -1118,7 +1118,7 @@ mod tests {
         h.run();
         let s = h.state();
         let look = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_eq!(s.scene.library.modules[&look].name, "Hero look");
+        assert_eq!(s.scene.card(look.0, look.1).unwrap().name, "Hero look");
         assert!(h.query_by_label("Hero").is_some());
     }
 
@@ -1130,8 +1130,8 @@ mod tests {
         for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce] {
             let (a, b) = (linked(&scene, ThingId(2), slot), linked(&scene, copy, slot));
             assert_ne!(a, b, "{slot:?} is the copy's own");
-            assert_eq!(scene.library.modules[&b].owner, Some(copy));
-            assert_eq!(scene.library.modules[&b].params, scene.library.modules[&a].params);
+            assert_eq!(scene.card(b.0, b.1).unwrap().owner, Some(copy));
+            assert_eq!(scene.card(b.0, b.1).unwrap().params, scene.card(a.0, a.1).unwrap().params);
         }
         assert_eq!(scene.library.modules[&linked(&scene, copy, SlotId::Look)].name, "Ball copy look");
     }
@@ -1147,7 +1147,7 @@ mod tests {
         assert!(!scene.library.modules.contains_key(&look), "the ball's own starters go with it");
         assert!(history.undo(&mut scene));
         assert_eq!(linked(&scene, ThingId(2), SlotId::Look), look);
-        assert_eq!(scene.library.modules[&look].owner, Some(ThingId(2)));
+        assert_eq!(scene.card(look.0, look.1).unwrap().owner, Some(ThingId(2)));
     }
 
     #[test]
@@ -1171,7 +1171,10 @@ mod tests {
         assert_eq!(s.scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         let own = linked(&s.scene, ThingId(2), SlotId::Look);
         assert_ne!(own, folder_look);
-        assert_eq!(s.scene.library.modules[&own].params, s.scene.library.modules[&folder_look].params);
+        assert_eq!(
+            s.scene.card(own.0, own.1).unwrap().params,
+            s.scene.card(folder_look.0, folder_look.1).unwrap().params
+        );
     }
 
     #[test]
@@ -1378,7 +1381,7 @@ mod tests {
         bpe_kit::fill_slot(&mut scene, reg, folder, SlotId::Look).unwrap();
         let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
         let other = scene.add_module(reg, "look.basic", "Other").unwrap();
-        scene.library.modules.get_mut(&other).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
+        scene.card_mut(other.0, other.1).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
         let look = |s: &Scene| bpe_core::resolve_slot(s, reg, balls, SlotId::Look, &mut Vec::new()).map(|r| r.params);
         let before = look(&scene);
         link_dropped(&mut scene, reg, folder, other).unwrap();

@@ -87,7 +87,7 @@ impl ThingSim for BallsSim {
 mod tests {
     use crate::testing::{ARENA, BALLS, scene_with_balls};
     use crate::{kit, new_scene};
-    use bpe_core::{Address, Attach, Owner, Value, resolve};
+    use bpe_core::{Address, Attach, Value, resolve};
     use bpe_runtime::{Log, World};
     use glam::Vec2;
     use std::f32::consts::FRAC_PI_2;
@@ -142,7 +142,7 @@ mod tests {
             p.set("columns", Value::Int(2));
             p.set("rows", Value::Int(1));
         });
-        let size = Address { owner: Owner::Thing(BALLS), slot: None, key: "radius".into() };
+        let size = Address { thing: BALLS, slot: None, key: "radius".into() };
         scene.set_key(&kit.registry, &size, 0.0, Value::Number(24.0)).unwrap();
         scene.set_key(&kit.registry, &size, 1.0, Value::Number(48.0)).unwrap();
         let resolved = resolve(&scene, &kit.registry);

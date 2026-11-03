@@ -222,9 +222,8 @@ mod tests {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
         assert_eq!(k.slots(), &[SlotId::Shader]);
-        assert!(k.default_slots().is_empty() && !k.passes_down());
+        assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
-        assert!(k.accepts(SlotId::Shader, "shader.echo"));
     }
 
     #[test]

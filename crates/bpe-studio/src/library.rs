@@ -7,7 +7,7 @@ use crate::presets::{self, Preset};
 use crate::settings;
 use crate::theme;
 use crate::widgets::{GridCx, TargetChoices, label_width, settings_grid_marked};
-use bpe_core::{Address, EditError, ModuleId, Owner, Resolved, Scene, SlotId, ThingId};
+use bpe_core::{Address, EditError, ModuleId, Resolved, Scene, SlotId, ThingId};
 use bpe_kit::Kit;
 use eframe::egui::{self, Key, RichText, Sense, Ui};
 
@@ -188,7 +188,7 @@ pub fn show(
                 let id = presets::add_to_scene(scene, &preset.module);
                 lib.selected = Some(id);
                 out.edited = true;
-                out.message = Some(format!("Added {} to the scene.", scene.library.modules[&id].name));
+                out.message = Some(format!("Added {} to the scene.", scene.card(id.0, id.1).unwrap().name));
             }
         }
         Some(Action::AskDeletePreset(i)) => lib.confirm_delete = Some(i),
@@ -566,7 +566,7 @@ mod tests {
         h.event(egui::Event::Text("Soft look".into()));
         h.key_press(Key::Enter);
         h.run();
-        assert_eq!(h.state().scene.library.modules[&look].name, "Soft look");
+        assert_eq!(h.state().scene.card(look.0, look.1).unwrap().name, "Soft look");
         assert_eq!(h.state().lib.renaming, None);
         // The arena still links it.
         assert!(
@@ -593,7 +593,7 @@ mod tests {
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let id = scene.library.modules.values().find(|m| m.name == "Ball look").expect("the ball look").id;
         scene.rename_module(id, "Neon").unwrap();
-        crate::presets::save_in(&dir, &scene.library.modules[&id]).unwrap();
+        crate::presets::save_in(&dir, &scene.card(id.0, id.1).unwrap()).unwrap();
         let mut h = harness();
         h.state_mut().lib.presets_dir = Some(dir.clone());
         h.state_mut().lib.look_again();

@@ -165,7 +165,7 @@ pub fn show(ctx: &egui::Context, studio: &mut Studio) {
 mod tests {
     use super::*;
     use crate::app::Studio;
-    use bpe_core::{Address, Owner, ThingId};
+    use bpe_core::{Address, ThingId};
     use egui_kittest::{Harness, kittest::Queryable};
 
     fn harness() -> Harness<'static, Studio> {

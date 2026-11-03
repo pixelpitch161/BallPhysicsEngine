@@ -83,7 +83,7 @@ pub fn slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Address, Owner, Value};
+    use bpe_core::{Address, Value};
     use bpe_kit::{kit, new_scene};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -100,7 +100,7 @@ mod tests {
         scene.rename_module(id, "Neon").unwrap();
         let glow = Address { owner: Owner::Module(id), slot: None, key: "glow".into() };
         scene.set_at(&kit.registry, &glow, Value::Number(0.8)).unwrap();
-        let module = scene.library.modules[&id].clone();
+        let module = scene.card(id.0, id.1).unwrap().clone();
         (scene, module)
     }
 
@@ -134,12 +134,12 @@ mod tests {
         let id = add_to_scene(&mut scene, &preset);
         assert_ne!(id, module.id);
         assert_eq!(scene.library.modules.len(), before + 1);
-        let added = &scene.library.modules[&id];
+        let added = &scene.card(id.0, id.1).unwrap();
         assert_eq!(added.name, "Neon (2)");
         assert_eq!(added.params, module.params);
         assert_eq!(added.slot, SlotId::Look);
         let again = add_to_scene(&mut scene, &preset);
-        assert_eq!(scene.library.modules[&again].name, "Neon (3)");
+        assert_eq!(scene.card(again.0, again.1).unwrap().name, "Neon (3)");
     }
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
         let saved = save_in(&dir, &owned).unwrap();
         assert_eq!(list_in(&dir)[0].module.owner, None, "{saved:?}");
         let id = add_to_scene(&mut scene, &owned);
-        assert_eq!(scene.library.modules[&id].owner, None);
+        assert_eq!(scene.card(id.0, id.1).unwrap().owner, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

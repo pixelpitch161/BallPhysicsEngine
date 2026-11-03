@@ -53,15 +53,7 @@ pub struct HitBurst {
     #[setting(label = "Count", group = "Burst", range(1, 200), simple, keyframe)]
     pub count: i32,
     /// How fast the particles fly.
-    #[setting(
-        label = "Speed",
-        group = "Burst",
-        range(0, 2000),
-        unit = "px/s",
-        simple,
-        keyframe,
-        pulse
-    )]
+    #[setting(label = "Speed", group = "Burst", range(0, 2000), unit = "px/s", simple, keyframe, pulse)]
     pub speed: f32,
     /// How wide the burst fans out from the direction of the bounce.
     #[setting(label = "Spread", group = "Burst", range(0, 360), unit = "°", keyframe)]

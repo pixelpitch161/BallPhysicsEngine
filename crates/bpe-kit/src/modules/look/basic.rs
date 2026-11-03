@@ -66,14 +66,7 @@ pub struct BasicLook {
     #[setting(label = "Shape", group = "Shape", when = "thing=balls", simple)]
     pub ball_shape: BallShape,
     /// How wide the outline just inside the edge is; 0 means none.
-    #[setting(
-        label = "Outline",
-        group = "Shape",
-        when = "thing=balls",
-        range(0, 24),
-        unit = "px",
-        simple,
-        keyframe)]
+    #[setting(label = "Outline", group = "Shape", when = "thing=balls", range(0, 24), unit = "px", simple, keyframe)]
     pub outline: f32,
     /// The outline's colours.
     #[setting(
@@ -91,7 +84,8 @@ pub struct BasicLook {
         when = "thing=balls and ball_shape!=circle",
         range(0, 1),
         group = "Shape",
-        keyframe)]
+        keyframe
+    )]
     pub roundness: f32,
     /// Turns the shape to point the way the ball is going.
     #[setting(label = "Face motion", when = "thing=balls and ball_shape!=circle", group = "Shape")]
@@ -389,16 +383,19 @@ mod tests {
     fn a_saved_style_that_is_gone_loads_as_the_default() {
         let reg = crate::registry();
         let mut scene = crate::scenes::all(&reg).swap_remove(0).1;
-        let looks: Vec<_> =
-            scene.library.modules.iter().filter(|(_, m)| m.kind == "look.basic").map(|(id, _)| *id).collect();
+        let looks: Vec<_> = scene
+            .things
+            .iter()
+            .filter(|(_, t)| t.slots.get(&SlotId::Look).is_some_and(|c| c.kind == "look.basic"))
+            .map(|(id, _)| *id)
+            .collect();
         assert!(!looks.is_empty());
         for id in &looks {
-            let m = scene.library.modules.get_mut(id).unwrap();
-            m.params.set("style", Value::Choice("glow".into()));
+            scene.card_mut(*id, SlotId::Look).unwrap().params.set("style", Value::Choice("glow".into()));
         }
         let loaded = bpe_core::load(&bpe_core::save(&scene), &reg).expect("an unknown style still loads");
         for id in &looks {
-            let params = &loaded.library.modules[id].params;
+            let params = &loaded.card(*id, SlotId::Look).unwrap().params;
             assert!(params.get("style").is_none(), "the unknown style is dropped");
             assert_eq!(BasicLook::from_params(params).style, Style::Shiny);
         }

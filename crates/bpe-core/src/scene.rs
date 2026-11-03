@@ -184,13 +184,18 @@ impl Scene {
     /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
         let kind = reg.thing("scene").expect("the registry needs a \"scene\" thing kind");
-        let root = Thing {
-            id: ThingId::ROOT,
-            name: kind.name().into(),
-            kind: "scene".into(),
-            ..Thing::default()
-        };
+        let root = Thing { id: ThingId::ROOT, name: kind.name().into(), kind: "scene".into(), ..Thing::default() };
         Scene { things: BTreeMap::from([(ThingId::ROOT, root)]), order: vec![ThingId::ROOT], ..Scene::default() }
+    }
+
+    /// The thing's card in `slot`, if it has one.
+    pub fn card(&self, id: ThingId, slot: SlotId) -> Option<&Slot> {
+        self.things.get(&id)?.slots.get(&slot)
+    }
+
+    /// The thing's card in `slot`, for changing, if it has one.
+    pub fn card_mut(&mut self, id: ThingId, slot: SlotId) -> Option<&mut Slot> {
+        self.things.get_mut(&id)?.slots.get_mut(&slot)
     }
 
     /// The things directly under `id`, in tree order.

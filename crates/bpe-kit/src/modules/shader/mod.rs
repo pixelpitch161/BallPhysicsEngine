@@ -110,12 +110,9 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
                 Some((min as f64, max as f64)),
                 Flags { keyframe: true, pulse: true },
             ),
-            ParamKind::Toggle { default } => (
-                ValueType::Bool,
-                Value::Bool(default),
-                None,
-                Flags { keyframe: false, pulse: false },
-            ),
+            ParamKind::Toggle { default } => {
+                (ValueType::Bool, Value::Bool(default), None, Flags { keyframe: false, pulse: false })
+            }
             ParamKind::Color { default } => (
                 ValueType::Color,
                 Value::Color(Color::from_linear([default[0], default[1], default[2], 1.0])),

@@ -159,7 +159,11 @@ mod tests {
         assert_eq!(
             res.problems,
             vec![
-                Problem { thing: b, slot: Some(SlotId::Look), kind: ProblemKind::UnknownCardKind("trail.streak".into()) },
+                Problem {
+                    thing: b,
+                    slot: Some(SlotId::Look),
+                    kind: ProblemKind::UnknownCardKind("trail.streak".into())
+                },
                 Problem {
                     thing: b,
                     slot: Some(SlotId::Trail),

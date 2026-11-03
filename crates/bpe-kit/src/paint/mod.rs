@@ -205,7 +205,7 @@ impl SettingGroup for Paint {
         }
         v.push(colours);
 
-        let mut follow = def(
+        let follow = def(
             "follow",
             "Colours follow",
             "What decides where along the colours each thing is painted.",
