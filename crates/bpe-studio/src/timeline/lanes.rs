@@ -48,11 +48,16 @@ pub fn lanes_for(scene: &Scene, kit: &Kit, selected: Option<ThingId>) -> Vec<Lan
 }
 
 fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
-    let thing = scene.things.get(&a.thing).map(|t| t.name.as_str()).unwrap_or("?");
+    let found = scene.things.get(&a.thing);
+    let thing = found.map(|t| t.name.as_str()).unwrap_or("?");
     let setting = scene.def_at(&kit.registry, a).map(|d| d.label).unwrap_or(a.key.as_str());
     match a.slot {
         None => format!("{thing} · {setting}"),
-        Some(slot) => format!("{thing} · {} · {setting}", slot.name()),
+        Some(slot) => {
+            // The card's title as the inspector shows it ("Effects" for the Shader slot).
+            let title = found.and_then(|t| kit.registry.thing(&t.kind)).map_or(slot.name(), |k| k.slot_label(slot));
+            format!("{thing} · {title} · {setting}")
+        }
     }
 }
 

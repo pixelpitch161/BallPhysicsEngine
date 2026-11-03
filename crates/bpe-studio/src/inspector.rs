@@ -79,8 +79,10 @@ enum Edit {
     /// A key at the playhead holding the setting's value as it stands (a slot's setting, or the
     /// thing's own with `None`), for every selected thing that has the setting.
     NewKey(Option<SlotId>, &'static str),
-    /// A card for a slot the thing doesn't have yet, with its kind's starting settings.
+    /// A card for a slot the thing doesn't have yet, with its kind's starting settings, for
+    /// every selected thing of the kind without one.
     AddSlot(SlotId),
+    /// Takes the card off every selected thing whose card in the slot is of the same kind.
     RemoveSlot(SlotId),
 }
 
@@ -215,7 +217,12 @@ pub fn show(
                 });
                 card_header(ui, inspector, Card::Placement, &header.response);
                 if header.inner {
-                    placement_rows(ui, scene, kind, &thing, lw, &mut edits);
+                    let mut placed = Vec::new();
+                    placement_rows(ui, scene, kind, &thing, lw, &mut placed);
+                    // Number boxes move under any mouse button; a right-click changes nothing.
+                    if !crate::widgets::right_button_busy(ui) {
+                        edits.extend(placed);
+                    }
                 }
             });
         }
@@ -383,8 +390,22 @@ pub fn show(
                 }
                 any
             }
-            Edit::AddSlot(slot) => bpe_kit::fill_slot(scene, reg, id, slot).is_ok(),
-            Edit::RemoveSlot(slot) => scene.remove_slot(id, slot),
+            Edit::AddSlot(slot) => {
+                let mut any = false;
+                for t in reached(scene, &selected, id, None) {
+                    if !scene.things[&t].slots.contains_key(&slot) {
+                        any |= bpe_kit::fill_slot(scene, reg, t, slot).is_ok();
+                    }
+                }
+                any
+            }
+            Edit::RemoveSlot(slot) => {
+                let mut any = false;
+                for t in reached(scene, &selected, id, Some(slot)) {
+                    any |= scene.remove_slot(t, slot);
+                }
+                any
+            }
         };
     }
     changed
@@ -1082,6 +1103,55 @@ mod tests {
         h.run();
         let card = &h.state().scene.things[&ThingId(2)].slots[&SlotId::Look];
         assert_eq!((card.kind.as_str(), card.params.is_empty()), ("look.basic", true), "a fresh look");
+    }
+
+    #[test]
+    fn remove_and_add_reach_every_selected_thing() {
+        let mut h = harness(Some(ThingId(2)));
+        let other = {
+            let s = h.state_mut();
+            let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "balls", ThingId::ROOT).unwrap();
+            s.selection.extra.insert(other);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            other
+        };
+        h.run();
+        h.get_by_label("Remove Look").click();
+        h.run();
+        let has_look =
+            |h: &Harness<'_, State>, t: ThingId| h.state().scene.things[&t].slots.contains_key(&SlotId::Look);
+        assert!(!has_look(&h, ThingId(2)) && !has_look(&h, other));
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        h.get_by_label("Look").click();
+        h.run();
+        assert!(has_look(&h, ThingId(2)) && has_look(&h, other));
+    }
+
+    #[test]
+    fn right_dragging_a_position_box_moves_nothing() {
+        let mut h = harness(Some(ThingId(2)));
+        let before = h.state().scene.clone();
+        let rect = h.get_all_by_role_and_label(Role::SpinButton, "Position").next().unwrap().rect();
+        let (from, to) = (rect.center(), rect.center() + egui::vec2(80.0, 0.0));
+        h.hover_at(from);
+        h.event(egui::Event::PointerButton {
+            pos: from,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+        h.event(egui::Event::PointerMoved(to));
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: to,
+            button: PointerButton::Secondary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+        assert_eq!(h.state().scene, before);
     }
 
     #[test]

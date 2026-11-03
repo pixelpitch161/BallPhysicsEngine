@@ -407,7 +407,7 @@ pub fn setting(
 
 /// Whether the right mouse button is down or was just let go: a slider or number box under it is
 /// opening the row's menu, not being dragged.
-fn right_button_busy(ui: &Ui) -> bool {
+pub fn right_button_busy(ui: &Ui) -> bool {
     ui.input(|i| {
         let right = PointerButton::Secondary;
         i.pointer.button_down(right) || i.pointer.button_released(right) || i.pointer.button_pressed(right)

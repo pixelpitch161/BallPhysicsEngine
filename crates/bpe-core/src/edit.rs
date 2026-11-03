@@ -215,15 +215,20 @@ impl Scene {
             return Err(EditError::NotAccepted);
         }
         let old_kind = card.kind.clone();
-        let accepts = |key: &str, v: &crate::Value| new.settings().iter().any(|d| d.key == key && d.ty.accepts(v));
+        let def = |key: &str| new.settings().iter().find(|d| d.key == key);
+        let accepts = |key: &str, v: &crate::Value| def(key).is_some_and(|d| d.ty.accepts(v));
         let mut out = SlotStash::default();
 
         // 1. The card's own settings.
         let card = self.things.get_mut(&id).expect("checked above").slots.get_mut(&slot).expect("checked above");
         let mut kept = Params::default();
         for (k, v) in std::mem::take(&mut card.params).0 {
-            if accepts(&k, &v) {
-                kept.set(&k, v);
+            if let Some(d) = def(&k).filter(|d| d.ty.accepts(&v)) {
+                // Fitted to the new kind: inside its range, and left out when it is its default.
+                let v = d.clamp(v);
+                if v != d.default {
+                    kept.set(&k, v);
+                }
             } else {
                 out.params.set(&k, v);
             }
@@ -236,15 +241,25 @@ impl Scene {
         let gone: Vec<Address> = self
             .tracks
             .iter()
-            .filter(|(a, t)| on(a) && !t.keys.first().is_some_and(|k| accepts(&a.key, &k.value)))
+            .filter(|(a, t)| {
+                let keyable = def(&a.key).is_some_and(|d| d.flags.keyframe);
+                on(a) && !(keyable && t.keys.first().is_some_and(|k| accepts(&a.key, &k.value)))
+            })
             .map(|(a, _)| a.clone())
             .collect();
         for a in gone {
             let track = self.tracks.remove(&a).expect("listed above");
             out.tracks.insert(a.key, track);
         }
-        let gone: Vec<Address> =
-            self.pulses.iter().filter(|(a, p)| on(a) && !accepts(&a.key, &p.amount)).map(|(a, _)| a.clone()).collect();
+        let gone: Vec<Address> = self
+            .pulses
+            .iter()
+            .filter(|(a, p)| {
+                let pulses = def(&a.key).is_some_and(|d| d.flags.pulse);
+                on(a) && !(pulses && accepts(&a.key, &p.amount))
+            })
+            .map(|(a, _)| a.clone())
+            .collect();
         for a in gone {
             let pulse = self.pulses.remove(&a).expect("listed above");
             out.pulses.insert(a.key, pulse);
@@ -265,7 +280,16 @@ impl Scene {
             }
         }
 
-        // 4. The kind.
+        // 4. A setting the new kind has is current now, so an older copy set aside under any other
+        // kind is stale: switching back must not bring it over a newer value (or a newer default).
+        for stash in card.stash.values_mut() {
+            stash.params.0.retain(|k, _| def(k).is_none());
+            stash.tracks.retain(|k, _| def(k).is_none());
+            stash.pulses.retain(|k, _| def(k).is_none());
+        }
+        card.stash.retain(|_, s| *s != SlotStash::default());
+
+        // 5. The kind.
         if out != SlotStash::default() {
             card.stash.insert(old_kind, out);
         }
@@ -548,9 +572,9 @@ mod tests {
     // Three look kinds that share `glow`: A also has `ring`; B and C have only `glow`.
     #[derive(crate::Settings)]
     struct LookASettings {
-        #[setting(label = "Glow", range(0, 9))]
+        #[setting(label = "Glow", range(0, 9), keyframe, pulse)]
         glow: f32,
-        #[setting(label = "Ring", range(0, 9))]
+        #[setting(label = "Ring", range(0, 9), keyframe, pulse)]
         ring: f32,
     }
     impl Default for LookASettings {
@@ -560,7 +584,7 @@ mod tests {
     }
     #[derive(crate::Settings)]
     struct LookBSettings {
-        #[setting(label = "Glow", range(0, 9))]
+        #[setting(label = "Glow", range(0, 9), keyframe, pulse)]
         glow: f32,
     }
     impl Default for LookBSettings {
@@ -684,6 +708,18 @@ mod tests {
         s.set_slot_kind(&r, t, SlotId::Look, "look.c").unwrap();
         s.set_slot_kind(&r, t, SlotId::Look, "look.a").unwrap();
         assert_eq!(card(&s, t).params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
+    }
+
+    #[test]
+    fn a_stashed_value_never_comes_back_over_a_newer_default() {
+        let (r, mut s, t) = switchable();
+        // D sets both aside (its glow is another type), B has glow again, which is set back to
+        // its default there: returning to A keeps that default rather than the old 1.
+        s.set_slot_kind(&r, t, SlotId::Look, "look.d").unwrap();
+        s.set_slot_kind(&r, t, SlotId::Look, "look.b").unwrap();
+        s.set_at(&r, &look_addr(t, "glow"), Value::Number(0.0)).unwrap();
+        s.set_slot_kind(&r, t, SlotId::Look, "look.a").unwrap();
+        assert_eq!(card(&s, t).params, params_of(&[("ring", 2.0)]));
     }
 
     #[test]
