@@ -2,9 +2,8 @@
 //! nothing.
 
 use crate::{
-    Address, Attach, Instrument, InstrumentId, InstrumentRef, KindId, Module, ModuleGraph, ModuleId, Owner, Params,
-    Progression, ProgressionId, ProgressionRef, Registry, Scene, SettingValue, SlotId, SlotLink, Stash, Thing, ThingId,
-    Value, ValueType,
+    Address, Attach, KindId, Module, ModuleId, Owner, Params, Registry, Scene, SlotId, SlotLink, Stash,
+    Thing, ThingId, Value,
 };
 use glam::Vec2;
 use std::collections::BTreeSet;
@@ -28,19 +27,13 @@ pub enum EditError {
     InUse(Vec<ThingId>),
     WrongType,
     UnknownSetting(String),
-    MissingProgression(ProgressionId),
-    /// These settings still point at the progression.
-    ProgressionInUse(Vec<Address>),
-    MissingInstrument(InstrumentId),
-    /// These settings still point at the instrument.
-    InstrumentInUse(Vec<Address>),
     /// A scene has only one of these.
     OnlyOne(KindId),
     /// The thing's kind doesn't take that kind of module in that slot.
     NotAccepted,
 }
 
-/// What a thing's own starter in `slot` is called: "Ball look", "Ball 2 sound".
+/// What a thing's own starter in `slot` is called: "Ball look", "Ball 2 trail".
 pub fn starter_name(thing: &str, slot: SlotId) -> String {
     format!("{thing} {}", slot.name().to_lowercase())
 }
@@ -60,16 +53,6 @@ impl fmt::Display for EditError {
             EditError::InUse(users) => write!(f, "{} things still use this module", users.len()),
             EditError::WrongType => write!(f, "That kind of value doesn't fit this setting"),
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
-            EditError::MissingProgression(_) => write!(f, "That chord progression isn't in the library any more"),
-            EditError::ProgressionInUse(users) if users.len() == 1 => {
-                write!(f, "One setting still uses this chord progression")
-            }
-            EditError::ProgressionInUse(users) => {
-                write!(f, "{} settings still use this chord progression", users.len())
-            }
-            EditError::MissingInstrument(_) => write!(f, "That instrument isn't in the library any more"),
-            EditError::InstrumentInUse(users) if users.len() == 1 => write!(f, "One sound still uses this instrument"),
-            EditError::InstrumentInUse(users) => write!(f, "{} sounds still use this instrument", users.len()),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
             EditError::NotAccepted => write!(f, "That kind of module can't go there"),
         }
@@ -373,22 +356,12 @@ impl Scene {
             self.locks.insert(thing_at(t, k));
         }
 
-        // 5. The kind and its graph. `channel` and `macros` stay as they are.
+        // 5. The kind.
         let module = self.library.modules.get_mut(&m).expect("checked above");
         if out != Stash::default() {
             module.stash.insert(old_kind, out);
         }
         module.kind = kind.into();
-        module.graph = match module.graph.take() {
-            Some(g) if !g.custom => new.template().map(|graph| ModuleGraph {
-                graph,
-                template: kind.into(),
-                custom: false,
-                // The old graph's node ids mean nothing in the new one.
-                simple: Default::default(),
-            }),
-            _ => None,
-        };
         Ok(())
     }
 
@@ -719,218 +692,12 @@ impl Scene {
         self.locks.retain(|a| a.owner != Owner::Module(m));
         Ok(())
     }
-
-    /// Adds a chord progression to the library.
-    pub fn add_progression(&mut self, p: Progression) -> ProgressionId {
-        let id = ProgressionId(self.next_progression);
-        self.next_progression += 1;
-        self.library.progressions.insert(id, clamped(p));
-        id
-    }
-
-    /// Replaces a progression, folding every chord's pitches into 0..=11 and its length into range.
-    pub fn set_progression(&mut self, id: ProgressionId, p: Progression) -> Result<(), EditError> {
-        let slot = self.library.progressions.get_mut(&id).ok_or(EditError::MissingProgression(id))?;
-        *slot = clamped(p);
-        Ok(())
-    }
-
-    /// Adds a copy of a progression, named "<name> copy".
-    pub fn copy_progression(&mut self, id: ProgressionId) -> Result<ProgressionId, EditError> {
-        let source = self.library.progressions.get(&id).ok_or(EditError::MissingProgression(id))?;
-        let copy = Progression { name: format!("{} copy", source.name), ..source.clone() };
-        Ok(self.add_progression(copy))
-    }
-
-    /// Every setting that points at progression `id`: things' own settings, their slot
-    /// changes and library modules'.
-    pub fn progression_users(&self, reg: &Registry, id: ProgressionId) -> Vec<Address> {
-        self.settings_set_to(reg, ValueType::Progression, &ProgressionRef(Some(id)).to_value())
-    }
-
-    /// Every setting of type `ty` that is set to `wanted`.
-    fn settings_set_to(&self, reg: &Registry, ty: ValueType, wanted: &Value) -> Vec<Address> {
-        let mut out = Vec::new();
-        let mut look = |owner: Owner, slot: Option<SlotId>, params: &Params, defs: &[crate::SettingDef]| {
-            for d in defs.iter().filter(|d| d.ty == ty) {
-                if params.get(d.key) == Some(wanted) {
-                    out.push(Address { owner, slot, key: d.key.into() });
-                }
-            }
-        };
-        for (&tid, t) in &self.things {
-            if let Some(kind) = reg.thing(&t.kind) {
-                look(Owner::Thing(tid), None, &t.params, kind.settings());
-            }
-            for (&slot, link) in &t.slots {
-                if let SlotLink::Linked { module, overrides } = link
-                    && let Some(kind) = self.library.modules.get(module).and_then(|m| reg.module(&m.kind))
-                {
-                    look(Owner::Thing(tid), Some(slot), overrides, kind.settings());
-                }
-            }
-        }
-        for (&mid, m) in &self.library.modules {
-            if let Some(kind) = reg.module(&m.kind) {
-                look(Owner::Module(mid), None, &m.params, kind.settings());
-            }
-        }
-        out
-    }
-
-    /// Removes a progression no setting points at any more.
-    pub fn remove_progression(&mut self, reg: &Registry, id: ProgressionId) -> Result<(), EditError> {
-        if !self.library.progressions.contains_key(&id) {
-            return Err(EditError::MissingProgression(id));
-        }
-        let users = self.progression_users(reg, id);
-        if !users.is_empty() {
-            return Err(EditError::ProgressionInUse(users));
-        }
-        self.library.progressions.remove(&id);
-        Ok(())
-    }
-}
-
-impl Scene {
-    /// Adds an instrument to the library.
-    pub fn add_instrument(&mut self, i: Instrument) -> InstrumentId {
-        let id = InstrumentId(self.next_instrument);
-        self.next_instrument += 1;
-        self.library.instruments.insert(id, i);
-        id
-    }
-
-    /// Replaces an instrument.
-    pub fn set_instrument(&mut self, id: InstrumentId, i: Instrument) -> Result<(), EditError> {
-        let slot = self.library.instruments.get_mut(&id).ok_or(EditError::MissingInstrument(id))?;
-        *slot = i;
-        Ok(())
-    }
-
-    /// Adds a copy of an instrument, named "<name> copy".
-    pub fn copy_instrument(&mut self, id: InstrumentId) -> Result<InstrumentId, EditError> {
-        let source = self.library.instruments.get(&id).ok_or(EditError::MissingInstrument(id))?;
-        let copy = Instrument { name: format!("{} copy", source.name), ..source.clone() };
-        Ok(self.add_instrument(copy))
-    }
-
-    /// Every setting that points at instrument `id`.
-    pub fn instrument_users(&self, reg: &Registry, id: InstrumentId) -> Vec<Address> {
-        self.settings_set_to(reg, ValueType::Instrument, &InstrumentRef(Some(id)).to_value())
-    }
-
-    /// Removes an instrument no setting points at any more.
-    pub fn remove_instrument(&mut self, reg: &Registry, id: InstrumentId) -> Result<(), EditError> {
-        if !self.library.instruments.contains_key(&id) {
-            return Err(EditError::MissingInstrument(id));
-        }
-        let users = self.instrument_users(reg, id);
-        if !users.is_empty() {
-            return Err(EditError::InstrumentInUse(users));
-        }
-        self.library.instruments.remove(&id);
-        Ok(())
-    }
-
-    /// Sets a module's own value for one of its instrument's macros, or with `None` goes back to
-    /// the instrument's.
-    pub fn set_macro(&mut self, module: ModuleId, key: &str, value: Option<f32>) -> Result<(), EditError> {
-        let m = self.library.modules.get_mut(&module).ok_or(EditError::MissingModule(module))?;
-        match value {
-            Some(v) if v.is_finite() => {
-                m.macros.insert(key.into(), v);
-            }
-            Some(_) => return Err(EditError::WrongType),
-            None => {
-                m.macros.remove(key);
-            }
-        }
-        Ok(())
-    }
-}
-
-fn clamped(mut p: Progression) -> Progression {
-    p.key.root %= 12;
-    p.chords = p.chords.into_iter().map(|c| c.clamp()).collect();
-    p
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testkit;
-
-    #[test]
-    fn progressions_get_fresh_ids_and_copies() {
-        let mut s = Scene::default();
-        assert_eq!(s.add_progression(Progression::starter()), ProgressionId(0));
-        assert_eq!(s.add_progression(Progression::default()), ProgressionId(1));
-        let copy = s.copy_progression(ProgressionId(0)).unwrap();
-        assert_eq!(copy, ProgressionId(2));
-        assert_eq!(s.library.progressions[&copy].name, "Starter copy");
-        assert_eq!(s.copy_progression(ProgressionId(9)), Err(EditError::MissingProgression(ProgressionId(9))));
-    }
-
-    #[test]
-    fn copying_an_instrument_names_it_copy() {
-        let mut s = Scene::default();
-        let a = s.add_instrument(Instrument::default());
-        let copy = s.copy_instrument(a).unwrap();
-        assert_eq!(copy, InstrumentId(1));
-        assert_eq!(s.library.instruments[&copy].name, "Pluck copy");
-        assert_eq!(s.copy_instrument(InstrumentId(7)), Err(EditError::MissingInstrument(InstrumentId(7))));
-    }
-
-    #[test]
-    fn an_instrument_in_use_cannot_be_removed() {
-        let r = testkit::registry();
-        let mut s = Scene::empty(&r);
-        let i = s.add_instrument(Instrument::default());
-        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
-        let a = Address { owner: Owner::Module(m), slot: None, key: "instrument".into() };
-        s.set_at(&r, &a, InstrumentRef(Some(i)).to_value()).unwrap();
-        assert_eq!(s.remove_instrument(&r, i), Err(EditError::InstrumentInUse(vec![a.clone()])));
-        s.set_at(&r, &a, Value::Int(-1)).unwrap();
-        assert_eq!(s.remove_instrument(&r, i), Ok(()));
-        assert!(s.library.instruments.is_empty());
-    }
-
-    #[test]
-    fn a_macro_override_is_set_and_cleared() {
-        let r = testkit::registry();
-        let mut s = Scene::empty(&r);
-        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
-        s.set_macro(m, "3.cutoff", Some(500.0)).unwrap();
-        assert_eq!(s.library.modules[&m].macros["3.cutoff"], 500.0);
-        assert_eq!(s.set_macro(m, "3.cutoff", Some(f32::NAN)), Err(EditError::WrongType));
-        s.set_macro(m, "3.cutoff", None).unwrap();
-        assert!(s.library.modules[&m].macros.is_empty());
-    }
-
-    #[test]
-    fn a_progression_in_use_cannot_be_removed() {
-        let r = testkit::registry();
-        let mut s = Scene::empty(&r);
-        let p = s.add_progression(Progression::starter());
-        let m = s.add_module(&r, "sound.pluck", "Sound").unwrap();
-        let a = Address { owner: Owner::Module(m), slot: None, key: "chords".into() };
-        s.set_at(&r, &a, ProgressionRef(Some(p)).to_value()).unwrap();
-        assert_eq!(s.remove_progression(&r, p), Err(EditError::ProgressionInUse(vec![a.clone()])));
-        s.set_at(&r, &a, Value::Int(-1)).unwrap();
-        assert_eq!(s.remove_progression(&r, p), Ok(()));
-        assert!(s.library.progressions.is_empty());
-    }
-
-    #[test]
-    fn set_progression_clamps_chords() {
-        let mut s = Scene::default();
-        let id = s.add_progression(Progression::default());
-        let chord = crate::Chord { root: 14, beats: 0, ..crate::Chord::default() };
-        s.set_progression(id, Progression { chords: vec![chord], ..Progression::default() }).unwrap();
-        let stored = s.library.progressions[&id].chords[0];
-        assert_eq!((stored.root, stored.beats), (2, 1));
-    }
 
     #[test]
     fn removing_a_thing_or_module_drops_its_locks() {
@@ -958,7 +725,7 @@ mod tests {
         assert_eq!((s.things[&a].name.as_str(), s.things[&b].name.as_str()), ("Balls", "Balls 2"));
         assert_eq!(
             s.things[&a].slots.keys().copied().collect::<Vec<_>>(),
-            [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
+            [SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce]
         );
         assert!(matches!(s.add_thing(&r, "magnet", ThingId::ROOT), Err(EditError::UnknownKind(_))));
     }
@@ -973,7 +740,7 @@ mod tests {
         assert_eq!((module.name.as_str(), module.owner, module.slot), ("Balls look", Some(balls), SlotId::Look));
         assert_eq!(s.users_of(m), [balls]);
         assert!(matches!(s.things[&balls].slots[&SlotId::Look], SlotLink::Linked { module, .. } if module == m));
-        assert_eq!(starter_name("Ball 2", SlotId::Sound), "Ball 2 sound");
+        assert_eq!(starter_name("Ball 2", SlotId::Trail), "Ball 2 trail");
     }
 
     #[test]
@@ -982,7 +749,7 @@ mod tests {
         let mut s = Scene::empty(&r);
         let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         let look = s.add_starter(&r, balls, "look.plain").unwrap();
-        let sound = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        let sound = s.add_starter(&r, balls, "trail.streak").unwrap();
         s.rename_module(sound, "Mine").unwrap();
         assert!(s.rename_thing(balls, "Red"));
         assert_eq!(s.things[&balls].name, "Red");
@@ -1000,8 +767,8 @@ mod tests {
         let mut s = Scene::empty(&r);
         let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         let look = s.add_starter(&r, balls, "look.plain").unwrap();
-        let mine = s.add_module(&r, "sound.pluck", "Made in the Library").unwrap();
-        s.link(&r, balls, SlotId::Sound, mine).unwrap();
+        let mine = s.add_module(&r, "trail.streak", "Made in the Library").unwrap();
+        s.link(&r, balls, SlotId::Trail, mine).unwrap();
         s.remove_thing(balls).unwrap();
         assert!(!s.library.modules.contains_key(&look));
         assert!(s.library.modules.contains_key(&mine));
@@ -1027,7 +794,7 @@ mod tests {
         let folder = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
         let balls = s.add_thing(&r, "balls", folder).unwrap();
         let mine = s.add_starter(&r, folder, "look.plain").unwrap();
-        let theirs = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        let theirs = s.add_starter(&r, balls, "trail.streak").unwrap();
         s.remove_thing(folder).unwrap();
         assert!(!s.library.modules.contains_key(&mine) && !s.library.modules.contains_key(&theirs));
     }
@@ -1096,12 +863,12 @@ mod tests {
         let unique = s.make_unique(folder, SlotId::Look).unwrap();
         assert!(is_animated(&s, unique), "make_unique");
         let copy = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        let mine = s.add_starter(&r, balls, "sound.pluck").unwrap();
+        let mine = s.add_starter(&r, balls, "trail.streak").unwrap();
         animate(&mut s, mine);
         let theirs = s.things[&balls].slots.clone();
         s.things.get_mut(&copy).unwrap().slots = theirs;
         s.copy_owned_starters(balls, copy);
-        let Some(SlotLink::Linked { module, .. }) = s.things[&copy].slots.get(&SlotId::Sound) else { panic!() };
+        let Some(SlotLink::Linked { module, .. }) = s.things[&copy].slots.get(&SlotId::Trail) else { panic!() };
         assert_ne!(*module, mine);
         assert!(is_animated(&s, *module), "copy_owned_starters");
         assert!(is_animated(&s, f) && is_animated(&s, mine), "the originals keep theirs");
@@ -1152,7 +919,7 @@ mod tests {
         let Some(SlotLink::Linked { module, overrides }) = s.things[&b].slots.get(&SlotId::Look) else { panic!() };
         assert_eq!((*module, overrides.get("glow")), (own, Some(&Value::Number(0.5))));
         assert_eq!(s.users_of(shared), [a]);
-        assert_eq!(s.own_linked(b, SlotId::Sound), Err(EditError::NotLinked));
+        assert_eq!(s.own_linked(b, SlotId::Trail), Err(EditError::NotLinked));
     }
 
     #[test]
@@ -1162,8 +929,8 @@ mod tests {
         let a = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         let look = s.add_starter(&r, a, "look.plain").unwrap();
         s.library.modules.get_mut(&look).unwrap().params.set("glow", Value::Number(3.0));
-        let shared = s.add_module(&r, "sound.pluck", "Shared").unwrap();
-        s.link(&r, a, SlotId::Sound, shared).unwrap();
+        let shared = s.add_module(&r, "trail.streak", "Shared").unwrap();
+        s.link(&r, a, SlotId::Trail, shared).unwrap();
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.things.get_mut(&b).unwrap().name = "Copy".into();
         s.things.get_mut(&b).unwrap().slots = s.things[&a].slots.clone();
@@ -1181,11 +948,11 @@ mod tests {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         let sealed = s.add_thing(&r, "sealed", ThingId::ROOT).unwrap();
-        let pluck = s.add_module(&r, "sound.pluck", "Pluck").unwrap();
-        assert_eq!(s.link(&r, sealed, SlotId::Sound, pluck), Err(EditError::NotAccepted));
-        assert!(!s.things[&sealed].slots.contains_key(&SlotId::Sound));
+        let pluck = s.add_module(&r, "trail.streak", "Pluck").unwrap();
+        assert_eq!(s.link(&r, sealed, SlotId::Trail, pluck), Err(EditError::NotAccepted));
+        assert!(!s.things[&sealed].slots.contains_key(&SlotId::Trail));
         let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        assert_eq!(s.link(&r, balls, SlotId::Sound, pluck), Ok(()));
+        assert_eq!(s.link(&r, balls, SlotId::Trail, pluck), Ok(()));
     }
 
     #[test]
@@ -1407,26 +1174,16 @@ mod tests {
         assert!(
             matches!(&s.things[&a].slots[&SlotId::Look], SlotLink::Linked { overrides, .. } if overrides.is_empty())
         );
-        assert!(matches!(s.reset_override(a, SlotId::Sound, "glow"), Err(EditError::NotLinked)));
-    }
-
-    #[test]
-    fn make_unique_copies_the_graph_too() {
-        let (_, mut s, a, _, m) = shared_look();
-        let graph = crate::ModuleGraph { template: "glow".into(), custom: true, ..Default::default() };
-        s.library.modules.get_mut(&m).unwrap().graph = Some(graph.clone());
-        let copy = s.make_unique(a, SlotId::Look).unwrap();
-        assert_eq!(s.library.modules[&copy].graph, Some(graph));
-        assert_eq!(s.library.modules[&copy].kind, "look.plain");
+        assert!(matches!(s.reset_override(a, SlotId::Trail, "glow"), Err(EditError::NotLinked)));
     }
 
     #[test]
     fn linking_into_the_wrong_slot_is_refused() {
         let (r, mut s, a, _, m) = shared_look();
-        assert!(matches!(s.link(&r, a, SlotId::Sound, m), Err(EditError::WrongSlot)));
+        assert!(matches!(s.link(&r, a, SlotId::Trail, m), Err(EditError::WrongSlot)));
     }
 
-    // Three look kinds that share `glow`: A also has `ring`; B has a template; C has neither.
+    // Three look kinds that share `glow`: A also has `ring`; B and C have only `glow`.
     #[derive(crate::Settings)]
     struct LookASettings {
         #[setting(label = "Glow", range(0, 9))]
@@ -1453,7 +1210,7 @@ mod tests {
     struct LookB;
     struct LookC;
     macro_rules! look_kind {
-        ($t:ident, $id:literal, $s:ty $(, $tpl:expr)?) => {
+        ($t:ident, $id:literal, $s:ty) => {
             impl crate::ModuleKind for $t {
                 fn id(&self) -> &'static str {
                     $id
@@ -1470,14 +1227,11 @@ mod tests {
                 fn settings(&self) -> &'static [crate::SettingDef] {
                     <$s as crate::Settings>::defs()
                 }
-                $(fn template(&self) -> Option<bpe_graph::Graph> {
-                    Some($tpl)
-                })?
             }
         };
     }
     look_kind!(LookA, "look.a", LookASettings);
-    look_kind!(LookB, "look.b", LookBSettings, bpe_graph::Graph::new("B template"));
+    look_kind!(LookB, "look.b", LookBSettings);
     look_kind!(LookC, "look.c", LookBSettings);
     // A look whose `glow` is a yes/no rather than a number, and one that fits no balls.
     #[derive(Default, crate::Settings)]
@@ -1509,7 +1263,7 @@ mod tests {
         }
     }
 
-    /// A scene root whose Sound slot (the Music) takes only `sound.drums`, like the kit's.
+    /// A scene root whose Sound slot (the Music) takes only `trail.dashes`, like the kit's.
     struct MusicRoot;
     impl crate::ThingKind for MusicRoot {
         fn id(&self) -> &'static str {
@@ -1534,13 +1288,13 @@ mod tests {
             &[]
         }
         fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
-            slot != SlotId::Sound || module_kind == "sound.drums"
+            slot != SlotId::Trail || module_kind == "trail.dashes"
         }
     }
     struct Drums;
     impl crate::ModuleKind for Drums {
         fn id(&self) -> &'static str {
-            "sound.drums"
+            "trail.dashes"
         }
         fn name(&self) -> &'static str {
             "Drums"
@@ -1549,10 +1303,10 @@ mod tests {
             "A test drum beat."
         }
         fn slot(&self) -> SlotId {
-            SlotId::Sound
+            SlotId::Trail
         }
         fn settings(&self) -> &'static [crate::SettingDef] {
-            <testkit::Pluck as crate::Settings>::defs()
+            <testkit::Streak as crate::Settings>::defs()
         }
     }
 
@@ -1683,27 +1437,10 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_graph_is_dropped_and_a_template_one_replaced() {
-        let (r, mut s, _, _, m) = switchable();
-        let graph = |custom| Some(crate::ModuleGraph { template: "look.a".into(), custom, ..Default::default() });
-        s.library.modules.get_mut(&m).unwrap().graph = graph(true);
-        s.set_module_kind(&r, m, "look.b").unwrap();
-        assert_eq!(s.library.modules[&m].graph, None);
-        s.set_module_kind(&r, m, "look.a").unwrap();
-        s.library.modules.get_mut(&m).unwrap().graph = graph(false);
-        s.set_module_kind(&r, m, "look.b").unwrap();
-        let g = s.library.modules[&m].graph.clone().unwrap();
-        assert_eq!((g.template.as_str(), g.custom), ("look.b", false));
-        assert_eq!(g.graph, bpe_graph::Graph::new("B template"));
-        s.set_module_kind(&r, m, "look.c").unwrap();
-        assert_eq!(s.library.modules[&m].graph, None);
-    }
-
-    #[test]
     fn a_kind_of_another_slot_is_refused() {
         let (r, mut s, _, _, m) = switchable();
         let before = s.clone();
-        assert!(matches!(s.set_module_kind(&r, m, "sound.pluck"), Err(EditError::WrongSlot)));
+        assert!(matches!(s.set_module_kind(&r, m, "trail.streak"), Err(EditError::WrongSlot)));
         assert!(matches!(s.set_module_kind(&r, m, "nope"), Err(EditError::UnknownKind(_))));
         assert!(matches!(s.set_module_kind(&r, ModuleId(99), "look.b"), Err(EditError::MissingModule(_))));
         assert_eq!(s, before);
@@ -1727,18 +1464,18 @@ mod tests {
         r.add_thing(MusicRoot);
         r.add_thing(testkit::BallsKind);
         r.add_module(Drums);
-        r.add_module(testkit::PluckKind);
+        r.add_module(testkit::StreakKind);
         let mut s = Scene::empty(&r);
         let ball = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        let m = s.add_module(&r, "sound.drums", "Beat").unwrap();
-        s.add_slot(&r, ThingId::ROOT, SlotId::Sound).unwrap();
-        s.link(&r, ThingId::ROOT, SlotId::Sound, m).unwrap();
-        s.link(&r, ball, SlotId::Sound, m).unwrap();
-        s.library.modules.get_mut(&m).unwrap().params.set("volume", Value::Number(-3.0));
-        assert!(s.kind_suits_users(&r, m, "sound.drums"));
-        assert!(!s.kind_suits_users(&r, m, "sound.pluck"));
+        let m = s.add_module(&r, "trail.dashes", "Beat").unwrap();
+        s.add_slot(&r, ThingId::ROOT, SlotId::Trail).unwrap();
+        s.link(&r, ThingId::ROOT, SlotId::Trail, m).unwrap();
+        s.link(&r, ball, SlotId::Trail, m).unwrap();
+        s.library.modules.get_mut(&m).unwrap().params.set("width", Value::Number(3.0));
+        assert!(s.kind_suits_users(&r, m, "trail.dashes"));
+        assert!(!s.kind_suits_users(&r, m, "trail.streak"));
         let before = s.clone();
-        assert!(matches!(s.set_module_kind(&r, m, "sound.pluck"), Err(EditError::NotAccepted)));
+        assert!(matches!(s.set_module_kind(&r, m, "trail.streak"), Err(EditError::NotAccepted)));
         assert_eq!(s, before);
     }
 
@@ -1760,17 +1497,5 @@ mod tests {
         assert_eq!(module.stash["look.a"].params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
         s.set_module_kind(&r, m, "look.a").unwrap();
         assert_eq!(s.library.modules[&m].params, params_of(&[("glow", 1.0), ("ring", 2.0)]));
-    }
-
-    #[test]
-    fn a_template_graph_swapped_in_drops_the_old_simple_rows() {
-        let (r, mut s, _, _, m) = switchable();
-        let simple = [(7, "value".to_string())].into_iter().collect();
-        s.library.modules.get_mut(&m).unwrap().graph =
-            Some(crate::ModuleGraph { template: "look.a".into(), custom: false, simple, ..Default::default() });
-        s.set_module_kind(&r, m, "look.b").unwrap();
-        let g = s.library.modules[&m].graph.clone().unwrap();
-        assert_eq!(g.template, "look.b");
-        assert!(g.simple.is_empty(), "node 7 was A's, not B's: {:?}", g.simple);
     }
 }

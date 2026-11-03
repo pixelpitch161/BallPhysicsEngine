@@ -38,7 +38,7 @@ pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Op
     for id in world.matching(&settings.follow_target, me) {
         if let Some(bodies) = world.bodies.get(&id) {
             for i in 0..bodies.len() {
-                if !bodies.alive[i] || bodies.silent {
+                if !bodies.alive[i] {
                     continue;
                 }
                 let (p, r) = (bodies.position[i], bodies.radius[i]);
@@ -318,7 +318,7 @@ mod tests {
         p.set("fit_all", Value::Bool(true));
         let resolved = resolve(&scene, &kit.registry);
         let (world, _) = run(&scene, &resolved, &kit, 3.0);
-        for bodies in world.bodies.values().filter(|b| !b.silent) {
+        for bodies in world.bodies.values() {
             for i in 0..bodies.len() {
                 assert!(world.camera.sees(video(), bodies.position[i], -bodies.radius[i]), "{:?}", world.camera);
             }

@@ -39,8 +39,6 @@ pub enum ProblemKind {
     UnknownModuleKind(KindId),
     /// A setting points at a thing that isn't in the scene.
     MissingTarget(ThingId),
-    /// The module's graph doesn't compile; the message says why. The link is skipped.
-    BrokenGraph(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,12 +78,8 @@ enum Step<'a> {
     Pass,
 }
 
-/// Modules whose graph doesn't compile, with the compiler's message; `resolve_with` skips their
-/// links.
-pub type Broken = BTreeMap<ModuleId, String>;
-
 /// Links in slots the thing's kind doesn't offer are ignored, like `link` refuses to make them.
-fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId, broken: &Broken) -> Step<'a> {
+fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId) -> Step<'a> {
     let Some(thing) = scene.things.get(&id) else { return Step::Pass };
     if reg.thing(&thing.kind).is_none_or(|k| !k.slots().contains(&slot)) {
         return Step::Pass;
@@ -94,7 +88,6 @@ fn step<'a>(scene: &'a Scene, reg: &Registry, id: ThingId, slot: SlotId, broken:
         Some(SlotLink::Off) => Step::Off,
         Some(SlotLink::Linked { module, overrides }) => match scene.library.modules.get(module) {
             None => Step::Bad(ProblemKind::MissingModule(*module)),
-            Some(_) if broken.contains_key(module) => Step::Bad(ProblemKind::BrokenGraph(broken[module].clone())),
             Some(m) if m.slot != slot => Step::Bad(ProblemKind::WrongSlot(*module)),
             Some(m) if reg.module(&m.kind).is_none() => Step::Bad(ProblemKind::UnknownModuleKind(m.kind.clone())),
             Some(m) => Step::Use(Source { from: id, module: *module, kind: m, overrides }),
@@ -128,7 +121,7 @@ pub(crate) fn find_slot<'a>(
     // An ancestor whose kind keeps its slots to itself is skipped; the thing itself never is.
     let passes = |at: &ThingId| scene.things.get(at).and_then(|t| reg.thing(&t.kind)).is_none_or(|k| k.passes_down());
     for at in std::iter::once(id).chain(scene.ancestors(id).into_iter().filter(passes)) {
-        match step(scene, reg, at, slot, &Broken::new()) {
+        match step(scene, reg, at, slot) {
             Step::Off => return None,
             Step::Use(source) => return Some(source),
             Step::Bad(kind) => problems.push(Problem { thing: at, slot: Some(slot), kind }),
@@ -152,12 +145,6 @@ pub fn resolve_slot(
 
 /// Works out every enabled thing's settings and lists what couldn't be used.
 pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
-    resolve_with(scene, reg, &Broken::new())
-}
-
-/// Like [`resolve`], treating the `broken` modules (whose graphs don't compile) as unusable:
-/// a link to one is reported and the slot falls back to the parent's.
-pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved {
     let mut out = Resolved::default();
     let mut left_out = BTreeSet::new();
     // For each thing and slot, the thing whose link fills it for the thing's children: its own
@@ -181,7 +168,7 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
         let mut here = [None; SlotId::ALL.len()];
         for slot in SlotId::ALL {
             let i = slot as usize;
-            here[i] = match step(scene, reg, id, slot, broken) {
+            here[i] = match step(scene, reg, id, slot) {
                 Step::Off => None,
                 Step::Use(..) => Some(id),
                 Step::Bad(kind) => {
@@ -199,7 +186,7 @@ pub fn resolve_with(scene: &Scene, reg: &Registry, broken: &Broken) -> Resolved 
         let mut resolved = ResolvedThing { id, kind: thing.kind.clone(), params, slots: BTreeMap::new(), screen };
         for &slot in kind.slots() {
             if let Some(from) = here[slot as usize]
-                && let Step::Use(source) = step(scene, reg, from, slot, broken)
+                && let Step::Use(source) = step(scene, reg, from, slot)
             {
                 resolved.slots.insert(slot, build(reg, source));
             }
@@ -232,28 +219,6 @@ mod tests {
     use crate::{Color, testkit};
 
     #[test]
-    fn a_broken_module_falls_back_to_the_parent() {
-        let reg = testkit::registry();
-        let mut scene = Scene::empty(&reg);
-        let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
-        let root_look = scene.add_module(&reg, "look.plain", "Root").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Look, root_look).unwrap();
-        let own = scene.add_module(&reg, "look.plain", "Own").unwrap();
-        scene.link(&reg, balls, SlotId::Look, own).unwrap();
-        let broken = BTreeMap::from([(own, "A loop".to_string())]);
-        let r = resolve_with(&scene, &reg, &broken);
-        assert_eq!(r.things[&balls].slots[&SlotId::Look].module, root_look);
-        assert_eq!(r.things[&balls].slots[&SlotId::Look].from, ThingId::ROOT);
-        assert_eq!(
-            r.problems,
-            vec![Problem { thing: balls, slot: Some(SlotId::Look), kind: ProblemKind::BrokenGraph("A loop".into()) }]
-        );
-        let plain = resolve(&scene, &reg);
-        assert!(plain.problems.is_empty());
-        assert_eq!(plain.things[&balls].slots[&SlotId::Look].module, own);
-    }
-
-    #[test]
     fn a_kind_that_does_not_pass_down_is_skipped_by_children() {
         // ROOT(look A) > sealed(look B) > balls: the balls get A, the sealed thing gets B.
         let reg = testkit::registry();
@@ -281,7 +246,7 @@ mod tests {
         for (i, slot) in SlotId::ALL.into_iter().enumerate() {
             assert_eq!(slot as usize, i);
         }
-        assert_eq!(SlotId::ALL[SlotId::Marks as usize], SlotId::Marks);
+        assert_eq!(SlotId::ALL[SlotId::Shader as usize], SlotId::Shader);
     }
 
     #[test]
@@ -325,7 +290,7 @@ mod tests {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         let plain = s.add_module(&r, "look.plain", "Plain").unwrap();
-        let pluck = s.add_module(&r, "sound.pluck", "Pluck").unwrap();
+        let pluck = s.add_module(&r, "trail.streak", "Pluck").unwrap();
         s.link(&r, ThingId::ROOT, SlotId::Look, plain).unwrap();
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.things
@@ -400,9 +365,9 @@ mod tests {
         let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
         let inner = s.add_thing(&r, "balls", f).unwrap();
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        let m = s.add_module(&r, "sound.pluck", "Pluck").unwrap();
+        let m = s.add_module(&r, "trail.streak", "Pluck").unwrap();
         s.library.modules.get_mut(&m).unwrap().params.set("target", Value::Target(Target::Thing(inner)));
-        s.link(&r, b, SlotId::Sound, m).unwrap();
+        s.link(&r, b, SlotId::Trail, m).unwrap();
         s.remove_thing(f).unwrap();
         let res = resolve(&s, &r);
         assert!(res.problems.iter().any(|p| p.thing == b && p.kind == ProblemKind::MissingTarget(inner)));

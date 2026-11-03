@@ -4,10 +4,10 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use bpe_core::{ModuleGraph, Params, ResolvedThing, Target, Thing, ThingId};
+use bpe_core::{Params, ResolvedThing, Target, Thing, ThingId};
 use glam::Vec2;
 
-use crate::{Action, Bodies, Contact, Event, Log, World, reflect};
+use crate::{Bodies, Contact, Log, World, reflect};
 
 /// Anything a plugin keeps per thing or per module while the world runs. Implemented for every
 /// `Clone + Send + Sync + 'static` type.
@@ -67,14 +67,14 @@ pub struct PairRule {
     pub friction: f32,
 }
 
-/// What a module's step knows about the world around it, for graphs that ask.
+/// What a module's step knows about the world around it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimCx {
     /// The thing whose module is running.
     pub thing: ThingId,
     /// Seconds since the start.
     pub time: f32,
-    /// The scene's seed, so random blocks follow the seed explorer.
+    /// The scene's seed, for anything random.
     pub seed: u64,
 }
 
@@ -85,24 +85,22 @@ pub trait ThingSim: Send + Sync + 'static {
     /// Puts the thing into the world: its bodies, its wall, its state.
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World);
     /// Runs once every thing is built, in the world's order, for what depends on the whole
-    /// scene: a wall's paint skin waits for brushes that splat onto the things they hit.
+    /// scene.
     fn after_build(&self, _thing: ThingId, _world: &mut World) {}
     /// Whether `build` reads the walls other things put into the world. Such things are built
     /// after everything else, whatever their place in the tree.
     fn needs_walls(&self) -> bool {
         false
     }
-    /// The Spawn stage, first in every step: emitters add bodies (to any thing) and log
-    /// `Spawn` events for them.
+    /// The Spawn stage, first in every step: a thing may add bodies (to any thing).
     fn spawn(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// Runs once a step before the physics: scripted motion such as a wall's spin.
     fn scripted(&self, _thing: ThingId, _world: &mut World) {}
-    /// The Forces stage of every substep, before the Motion modules: fields push bodies.
+    /// The Forces stage of every substep, before the Motion modules.
     fn forces(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
-    /// After Integrate and before Collide in every substep: a liquid relaxes its particles.
+    /// After Integrate and before Collide in every substep.
     fn settle(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
-    /// The Events stage, last in every step, with the log: zone entries and leaves, a soft
-    /// body's impacts, the scene's beats.
+    /// The Events stage, last in every step, with the log.
     fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
     /// A keyframe or pulse moved one of the thing's settings while the world runs: re-read
     /// whatever can change without rebuilding. `resolved` holds the settings as they are now.
@@ -112,36 +110,14 @@ pub trait ThingSim: Send + Sync + 'static {
     fn affects_physics(&self, _key: &str) -> bool {
         true
     }
-    /// Whether changing this setting changes the marks the simulation makes (a wall's paint
-    /// skin) without changing the physics. Such settings count in the fingerprint only when the
-    /// scene has a Marks module.
-    fn affects_marks(&self, _key: &str) -> bool {
-        false
-    }
 }
 
-/// What a Rules module sees when it runs at the end of a step.
-pub struct RuleCx<'a> {
-    /// The thing whose link supplies the module: "me" for its rules.
-    pub thing: ThingId,
-    pub world: &'a World,
-    /// This step's events.
-    pub events: &'a [Event],
-    /// Where the module queues what it wants done; applied at the start of the next step.
-    pub actions: &'a mut Vec<Action>,
-}
-
-/// How a Motion, Bounce or Rules module moves, bounces and directs the things that use it.
+/// How a Motion or Bounce module moves and bounces the things that use it.
 pub trait ModuleSim: Send + Sync + 'static {
     /// The module kind's id, as registered in `bpe_core`.
     fn kind(&self) -> &'static str;
     /// Reads the settings once, into whatever the module wants to keep.
     fn prepare(&self, params: &Params) -> Box<dyn ThingState>;
-    /// Like [`ModuleSim::prepare`], also given the module's graph when it has one, so a custom
-    /// module can compile it. The default ignores the graph.
-    fn prepare_graph(&self, params: &Params, _graph: Option<&ModuleGraph>) -> Box<dyn ThingState> {
-        self.prepare(params)
-    }
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
     /// Like [`ModuleSim::forces`], also told which thing, what time it is and the scene's seed,
@@ -149,8 +125,6 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _cx: &SimCx) {
         self.forces(state, bodies, gravity, dt)
     }
-    /// Runs a Rules module on the step's events and queues actions. The default does nothing.
-    fn rules(&self, _state: &mut dyn ThingState, _cx: &mut RuleCx) {}
     /// Answers a contact for one item. The default bounce keeps all the speed.
     fn respond(&self, _state: &dyn ThingState, contact: &Contact, bodies: &mut Bodies, item: usize, _limits: &Limits) {
         bodies.velocity[item] = reflect(bodies.velocity[item], contact, 1.0);
@@ -186,7 +160,7 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn special_target(&self, _state: &dyn ThingState) -> Option<Target> {
         None
     }
-    /// Answers a contact for one item against a wall or solid; `special` says the thing hit
+    /// Answers a contact for one item against a wall; `special` says the thing hit
     /// matches [`ModuleSim::special_target`]. The default ignores that and calls `respond`.
     fn respond_against(
         &self,

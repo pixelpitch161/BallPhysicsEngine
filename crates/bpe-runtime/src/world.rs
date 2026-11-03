@@ -1,39 +1,33 @@
 //! The world: every thing's simulation state, stepped at a fixed rate.
 //!
 //! Each step runs the spec's stages in order: Spawn, Scripted, Forces, Integrate, Collide,
-//! Respond, Events, Rules. Things are built and scripted in tree order (parents first, so riders
-//! find their parent's pose) and collide in `ThingId` order, so two runs of the same scene give
-//! the same log. Rules queue actions; the next step's Spawn stage applies them.
+//! Respond, Events. Things are built and scripted in tree order (parents first, so riders find
+//! their parent's pose) and collide in `ThingId` order, so two runs of the same scene give the
+//! same log.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
-use bpe_core::{
-    Animation, Attach, Inputs, ModuleGraph, Params, PulseInputs, Resolved, Scene, SlotId, Target, ThingId, Transform,
-    Value,
-};
+use bpe_core::{Animation, Attach, Inputs, Params, Resolved, Scene, SlotId, Target, ThingId, Transform, Value};
 use glam::Vec2;
 
 use crate::camera::CameraView;
-use crate::events::{HASH_OFFSET, MOTION_RATE, SceneSample, TRACK_SECONDS, TrackSample};
+use crate::events::HASH_OFFSET;
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
-use crate::plugins::{Limits, ModuleSim, RuleCx, SimCx, Sims, ThingState};
+use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
-use crate::solids::Solids;
-use crate::{Action, Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, keep_outside, reflect};
+use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
 /// The most substeps a step is split into.
 pub const MAX_SUBSTEPS: u32 = 64;
 
-/// One module a thing uses, prepared: its kind, the settings it was prepared from, its graph
-/// and its state.
+/// One module a thing uses, prepared: its kind, the settings it was prepared from and its
+/// state.
 #[derive(Clone)]
 pub(crate) struct Slotted {
     pub(crate) kind: String,
     pub(crate) params: Params,
-    pub(crate) graph: Option<ModuleGraph>,
     pub(crate) state: Box<dyn ThingState>,
 }
 
@@ -41,7 +35,7 @@ pub(crate) struct Slotted {
 pub(crate) type Prepared = BTreeMap<SlotId, Slotted>;
 
 /// Which slots the runtime asks a `ModuleSim` about.
-const SIM_SLOTS: [SlotId; 4] = [SlotId::Motion, SlotId::Bounce, SlotId::Rules, SlotId::Marks];
+const SIM_SLOTS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 
 /// Everything that moves, and what it moves against.
 #[derive(Clone)]
@@ -55,40 +49,12 @@ pub struct World {
     pub bodies: BTreeMap<ThingId, Bodies>,
     /// The closed wall of every thing that is one.
     pub walls: BTreeMap<ThingId, Wall>,
-    /// The solid pieces of every thing that has some: pegs, bars, rings balls bounce off.
-    pub solids: BTreeMap<ThingId, Solids>,
     /// Whatever a thing's sim keeps between steps.
     pub states: BTreeMap<ThingId, Box<dyn ThingState>>,
     /// Where every placed thing is right now. Sims write it in `build` and `scripted`; riders
     /// read their parent's through [`World::anchor`].
     pub poses: BTreeMap<ThingId, Pose>,
-    /// The Look settings of every thing with a Look, kept only when the scene has a Marks
-    /// module, so marks can take the balls' colours in the simulation. Only then do looks count
-    /// in the fingerprint.
-    pub looks: BTreeMap<ThingId, Params>,
-    /// The paint skin of every arena and obstacle that takes paint, kept only when some brush
-    /// splats onto the things it hits: the skin's state (a canvas held by the thing, in the
-    /// thing's own frame), written by the thing's sim. Cloned with the world, so checkpoints
-    /// rewind it.
-    pub skins: BTreeMap<ThingId, Box<dyn ThingState>>,
-    /// Paint each ball has picked up from wet paint, per ball thing, one entry per ball row
-    /// (grown when first written). Cloned with the world, so checkpoints rewind it. Never in the
-    /// fingerprint or the log hash.
-    pub picked: BTreeMap<ThingId, Vec<crate::picked::Picked>>,
-    /// The picture files the scene's brushes splat, sorted, at most 16: a Picture mark names one
-    /// by its index here. Filled by the kit at build.
-    pub pictures: Vec<String>,
-    /// Each canvas's numbers as it last reported them (see [`World::report_canvas`]). Cloned with
-    /// the world, so checkpoints rewind it. Never in the fingerprint or the log hash.
-    pub canvas_numbers: BTreeMap<ThingId, crate::canvas_numbers::CanvasNumbers>,
-    /// Each canvas's colour-war teams, in the order they first claimed (see
-    /// [`World::set_teams`]). Cloned with the world; never in the fingerprint or the log hash.
-    pub teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
-    /// The step the video ends at, when a rule ended it. Cloned with the world; never in the
-    /// fingerprint.
-    pub end_step: Option<u64>,
-    /// Every built thing's name, as the scene names it, for things that are named by captions,
-    /// rules and the synth (a canvas).
+    /// Every built thing's name, as the scene names it.
     pub names: BTreeMap<ThingId, String>,
     /// Every built thing's tags, for matching targets.
     pub tags: BTreeMap<ThingId, BTreeSet<String>>,
@@ -101,10 +67,8 @@ pub struct World {
     /// The video's size: how much of the world the shot covers at Zoom 1. The scene's sim sets
     /// it.
     pub video: Vec2,
-    /// What the rules asked for in the last step, applied at the start of the next.
-    pub pending: Vec<Action>,
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
-    /// (a canvas's grid). Their sims note it; [`World::memory`] counts it for playback budgets.
+    /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
     /// The kind of every built thing, in id order.
     pub(crate) kinds: BTreeMap<ThingId, String>,
@@ -114,21 +78,8 @@ pub struct World {
     pairs: Pairs,
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
-    /// Per thing and slot, the module kind and its prepared state (Motion, Bounce and Rules).
+    /// Per thing and slot, the module kind and its prepared state (Motion and Bounce).
     modules: BTreeMap<ThingId, Prepared>,
-    /// Per thing that links a Rules module, the things whose Rules slot comes from it: what
-    /// "me" means to that module.
-    scope: BTreeMap<ThingId, BTreeSet<ThingId>>,
-    /// What pulses follow: the beat grid and the song's bands. The scene's sim sets it.
-    pub pulse_inputs: Option<Arc<PulseInputs>>,
-    /// How many Beat events the run has logged so far; the scene's sim counts them. Kept here so
-    /// things the simulation colours by the beat need not count the log, which may be trimmed.
-    pub beats: u32,
-    /// Whether to record each ball's track after its hits into the log, for sounds that follow
-    /// balls. The scene's motion is always recorded.
-    pub record_tracks: bool,
-    /// Per thing and ball: the hits seen so far and the step of the latest.
-    last_hit: BTreeMap<ThingId, Vec<(u32, Option<u64>)>>,
     /// The keyframes and pulses that move physics settings, with the resolved scene they are
     /// written into step by step. `None` when nothing physical is animated.
     animated: Option<Animated>,
@@ -141,16 +92,13 @@ struct Animated {
     resolved: Resolved,
 }
 
-/// The scene's tracks and pulses that change how it simulates: those on Motion, Bounce and
-/// Marks modules, those on Look modules when the scene has a Marks module (marks take the balls'
-/// colours), and those on a thing's own settings that its sim says affect the physics. `None`
+/// The scene's tracks and pulses that change how it simulates: those on Motion and Bounce
+/// modules, and those on a thing's own settings that its sim says affect the physics. `None`
 /// when there are none.
 pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Option<Animation> {
     let mut animation = Animation::new(scene, resolved);
-    let any_marks = scene_has_marks(resolved, sims);
     animation.retain(|thing, slot, key| match slot {
         Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
-        Some(SlotId::Marks) | Some(SlotId::Look) => any_marks,
         Some(_) => false,
         None => resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)).is_some_and(|s| s.affects_physics(key)),
     });
@@ -160,9 +108,9 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
 const NO_TAGS: &BTreeSet<String> = &BTreeSet::new();
 
 impl World {
-    /// Builds the world: every resolved thing in tree order through its sim, then the Motion,
-    /// Bounce and Rules modules it uses. Modules without a sim are left out; a thing without one
-    /// builds nothing, but can still be named by a target and carry a Rules module.
+    /// Builds the world: every resolved thing in tree order through its sim, then the Motion
+    /// and Bounce modules it uses. Modules without a sim are left out; a thing without one
+    /// builds nothing, but can still be named by a target.
     pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
         let mut world = World {
             step: 0,
@@ -170,37 +118,22 @@ impl World {
             gravity: Vec2::ZERO,
             bodies: BTreeMap::new(),
             walls: BTreeMap::new(),
-            solids: BTreeMap::new(),
             states: BTreeMap::new(),
             poses: BTreeMap::new(),
-            looks: BTreeMap::new(),
-            skins: BTreeMap::new(),
-            picked: BTreeMap::new(),
-            pictures: Vec::new(),
-            canvas_numbers: BTreeMap::new(),
-            teams: BTreeMap::new(),
-            end_step: None,
             names: BTreeMap::new(),
             tags: BTreeMap::new(),
             history: BTreeMap::new(),
             seed: 0,
             camera: CameraView::default(),
             video: Vec2::new(1080.0, 1920.0),
-            pending: Vec::new(),
             state_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
-            scope: BTreeMap::new(),
-            pulse_inputs: None,
-            beats: 0,
-            record_tracks: false,
-            last_hit: BTreeMap::new(),
             animated: None,
         };
-        let any_marks = scene_has_marks(resolved, sims);
         // Things that need the walls (a liquid finding its pool) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
@@ -227,22 +160,10 @@ impl World {
                 let mut prepared = Prepared::new();
                 for slot in SIM_SLOTS {
                     let Some(s) = r.slots.get(&slot) else { continue };
-                    if slot == SlotId::Rules {
-                        // A Rules module runs once, on the thing that links it, for every thing
-                        // that inherits it.
-                        world.scope.entry(s.from).or_default().insert(*id);
-                        if s.from != *id {
-                            continue;
-                        }
-                    }
                     if let Some(msim) = sims.module(&s.kind) {
-                        let graph = scene.library.modules.get(&s.module).and_then(|m| m.graph.clone());
-                        let state = msim.prepare_graph(&s.params, graph.as_ref());
-                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), graph, state });
+                        let state = msim.prepare(&s.params);
+                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), state });
                     }
-                }
-                if any_marks && let Some(look) = r.slots.get(&SlotId::Look) {
-                    world.looks.insert(*id, look.params.clone());
                 }
                 if !prepared.is_empty() {
                     world.modules.insert(*id, prepared);
@@ -260,18 +181,13 @@ impl World {
         world
     }
 
-    /// Writes this step's keyframed and pulsed physics settings and hands them to the sims:
-    /// Motion, Bounce and Marks modules are prepared again, looks the marks read are written
-    /// into [`World::looks`], things hear `settings_changed`. Pulses follow the beat and the
-    /// song only; hits never move the physics.
+    /// Writes this step's keyframed physics settings and hands them to the sims: Motion and
+    /// Bounce modules are prepared again, things hear `settings_changed`. Hits never move the
+    /// physics, so pulses add nothing here.
     fn animate(&mut self, sims: &Sims) {
         let Some(mut animated) = self.animated.take() else { return };
         let time = self.time();
-        animated.animation.apply(
-            &mut animated.resolved,
-            time,
-            &Inputs { pulse: self.pulse_inputs.as_deref(), hits: 0.0, video_time: None },
-        );
+        animated.animation.apply(&mut animated.resolved, time, &Inputs::NONE);
         let mut done = BTreeSet::new();
         for (thing, slot, _) in animated.animation.destinations() {
             if !done.insert((thing, slot)) {
@@ -279,22 +195,13 @@ impl World {
             }
             let Some(r) = animated.resolved.things.get(&thing) else { continue };
             match slot {
-                Some(SlotId::Look) => {
-                    if let Some(s) = r.slots.get(&SlotId::Look)
-                        && let Some(look) = self.looks.get_mut(&thing)
-                    {
-                        look.clone_from(&s.params);
-                    }
-                }
                 Some(slot) => {
                     if let Some(s) = r.slots.get(&slot)
                         && let Some(msim) = sims.module(&s.kind)
                     {
-                        // The module keeps its graph; only its settings moved.
                         let prepared = self.modules.entry(thing).or_default();
-                        let graph = prepared.get(&slot).and_then(|p| p.graph.clone());
-                        let state = msim.prepare_graph(&s.params, graph.as_ref());
-                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), graph, state });
+                        let state = msim.prepare(&s.params);
+                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), state });
                     }
                 }
                 None => {
@@ -348,31 +255,6 @@ impl World {
         self.tags.get(&id)
     }
 
-    /// Whether `thing` uses the Rules module linked on `owner`. A thing is always in its own
-    /// scope, so "me" means at least the thing itself.
-    pub fn in_scope(&self, owner: ThingId, thing: ThingId) -> bool {
-        (owner == thing && self.kinds.contains_key(&thing))
-            || self.scope.get(&owner).is_some_and(|s| s.contains(&thing))
-    }
-
-    /// Whether a thing belongs to a target, as the rules on `me` see it: the same rules as
-    /// `Scene::target_matches` over the things the world was built from, except that "me"
-    /// reaches everything in `me`'s Rules scope.
-    pub fn matches(&self, me: ThingId, thing: ThingId, target: &Target) -> bool {
-        match target {
-            Target::Me => self.in_scope(me, thing),
-            Target::Thing(id) => *id == thing && self.kinds.contains_key(&thing),
-            Target::Tag(tag) => self.tags.get(&thing).is_some_and(|t| t.contains(tag)),
-            Target::Kind(kind) => self.kinds.get(&thing).is_some_and(|k| k == kind),
-            Target::Anything => self.kinds.contains_key(&thing),
-        }
-    }
-
-    /// Every built thing a target names, as the rules on `me` see it, in id order.
-    pub fn things_of(&self, me: ThingId, target: &Target) -> Vec<ThingId> {
-        self.kinds.keys().copied().filter(|&t| self.matches(me, t, target)).collect()
-    }
-
     /// The settings a thing's module in a slot was prepared from, when the runtime tracks it.
     pub fn slot_params(&self, thing: ThingId, slot: SlotId) -> Option<&Params> {
         self.modules.get(&thing)?.get(&slot).map(|s| &s.params)
@@ -406,8 +288,7 @@ impl World {
     }
 
     /// The built things that `target` names, seen from `me`, in id order, by the physics'
-    /// rules (where "me" is the thing itself, not its Rules scope): what fields and emitters
-    /// use. `Anything` is every one of them, `me` included. Rules graphs use [`World::things_of`].
+    /// rules: "me" is the thing itself. `Anything` is every one of them, `me` included.
     pub fn matching(&self, target: &Target, me: ThingId) -> Vec<ThingId> {
         self.kinds.keys().copied().filter(|&other| matches(&self.kinds, &self.tags, target, me, other)).collect()
     }
@@ -417,30 +298,11 @@ impl World {
         self.modules.get(&thing)?.get(&slot).map(|s| (s.kind.as_str(), s.state.as_ref()))
     }
 
-    /// Changes one setting of the module a thing uses in a slot and prepares it again. A thing
-    /// without that slot, or a setting the module doesn't have, is left alone.
-    pub(crate) fn set_slot_param(&mut self, thing: ThingId, slot: SlotId, key: &str, value: Value, sims: &Sims) {
-        let Some(s) = self.modules.get_mut(&thing).and_then(|m| m.get_mut(&slot)) else { return };
-        // A rule sends a number; the setting keeps its own type.
-        let value = match (s.params.get(key), value) {
-            (None, _) => return,
-            (Some(Value::Bool(_)), Value::Number(x)) => Value::Bool(x != 0.0),
-            (Some(Value::Int(_)), Value::Number(x)) => Value::Int(x.round() as i64),
-            (Some(old), new) if std::mem::discriminant(old) == std::mem::discriminant(&new) => new,
-            // A number can't stand in for a colour, a choice or a target.
-            _ => return,
-        };
-        let Some(sim) = sims.module(&s.kind) else { return };
-        s.params.set(key, value);
-        s.state = sim.prepare_graph(&s.params, s.graph.as_ref());
-    }
-
     /// Bytes the world takes, for playback budgets.
     pub fn memory(&self) -> usize {
         self.bodies.values().map(Bodies::memory).sum::<usize>()
             + self.history.values().map(History::memory).sum::<usize>()
             + self.state_memory.values().sum::<usize>()
-            + self.picked.values().map(|v| v.len() * std::mem::size_of::<crate::picked::Picked>()).sum::<usize>()
             + std::mem::size_of::<World>()
     }
 
@@ -468,17 +330,11 @@ impl World {
         // parent moved to.
         let order = self.order.clone();
 
-        // Spawn: emitters add what they release this step.
+        // Spawn: things add what they release this step.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.spawn(*id, self, log);
             }
-        }
-
-        // Spawn: what the rules asked for last step.
-        if !self.pending.is_empty() {
-            let pending = std::mem::take(&mut self.pending);
-            self.apply(pending, sims, log);
         }
 
         // Clamp speeds, remember where everything started and find the fastest ball.
@@ -492,11 +348,7 @@ impl World {
                 if speed > limits.ceiling {
                     bodies.velocity[i] *= limits.ceiling / speed;
                 }
-                // Silent bodies (liquid particles) are held inside the walls by their own solver,
-                // so they never decide how finely everything else is stepped.
-                if !bodies.silent {
-                    fastest = fastest.max(speed.min(limits.ceiling));
-                }
+                fastest = fastest.max(speed.min(limits.ceiling));
                 bodies.previous[i] = bodies.position[i];
             }
         }
@@ -515,8 +367,7 @@ impl World {
             self.substep(sims, &order, sub_dt, &limits, log);
         }
 
-        // Events: things log what happened to them this step, in tree order: zone entries and
-        // leaves, a soft body's impacts, the scene's beats.
+        // Events: things log what happened to them this step, in tree order.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.after_step(*id, self, log);
@@ -527,62 +378,10 @@ impl World {
                 history.record(self.step, &bodies.position);
             }
         }
-        // Rules: every Rules module in owner order, on this step's events.
-        let owners: Vec<ThingId> =
-            self.modules.iter().filter(|(_, m)| m.contains_key(&SlotId::Rules)).map(|(id, _)| *id).collect();
-        let mut actions = Vec::new();
-        for owner in owners {
-            let Some(mut slotted) = self.modules.get_mut(&owner).and_then(|m| m.remove(&SlotId::Rules)) else {
-                continue;
-            };
-            if let Some(sim) = sims.module(&slotted.kind) {
-                let mut cx = RuleCx { thing: owner, world: self, events: log.since(self.step), actions: &mut actions };
-                sim.rules(slotted.state.as_mut(), &mut cx);
-            }
-            self.modules.entry(owner).or_default().insert(SlotId::Rules, slotted);
-        }
-        self.pending = actions;
-        self.record_motion(log);
-    }
-
-    /// Notes the scene's motion 60 times a second, and each recently hit ball's track when
-    /// asked to. Nothing here changes the physics.
-    fn record_motion(&mut self, log: &mut Log) {
-        let every = (self.steps_per_second / MOTION_RATE).max(1) as u64;
-        let sample = self.step.is_multiple_of(every);
-        let reach = (TRACK_SECONDS * self.steps_per_second as f64) as u64;
-        let (mut balls, mut energy) = (0u32, 0.0f32);
-        for (id, bodies) in &self.bodies {
-            if bodies.silent {
-                continue;
-            }
-            let seen = self.last_hit.entry(*id).or_default();
-            seen.resize(bodies.len(), (0, None));
-            for (i, seen) in seen.iter_mut().enumerate() {
-                let hit_now = bodies.hits[i] > seen.0;
-                if hit_now {
-                    *seen = (bodies.hits[i], Some(self.step));
-                }
-                if !bodies.alive[i] {
-                    continue;
-                }
-                let (v, r) = (bodies.velocity[i], bodies.radius[i]);
-                balls += 1;
-                energy += 0.5 * (r / 20.0).powi(2) * v.length_squared() / 1e6;
-                let recent = seen.1.is_some_and(|at| self.step - at <= reach);
-                if self.record_tracks && (hit_now || (sample && recent)) {
-                    let s = TrackSample { step: self.step, position: bodies.position[i], velocity: v, radius: r };
-                    log.push_track(Party { thing: *id, item: i as u32 }, s);
-                }
-            }
-        }
-        if sample {
-            log.push_scene(SceneSample { step: self.step, balls, energy });
-        }
     }
 
     fn substep(&mut self, sims: &Sims, order: &[ThingId], dt: f32, limits: &Limits, log: &mut Log) {
-        // Forces from things: fields and the like, before the Motion modules.
+        // Forces from things, before the Motion modules.
         for id in order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.forces(*id, self, dt);
@@ -590,7 +389,7 @@ impl World {
         }
         self.move_bodies(sims, dt);
 
-        // Settle: liquids relax their particles against each other and the walls.
+        // Settle: things relax what they hold against each other and the walls.
         for id in order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
                 sim.settle(*id, self, dt);
@@ -622,11 +421,9 @@ impl World {
     }
 
     /// Collide and Respond, then the Hit events: first the walls around the balls, then the
-    /// solids among them, then the balls against each other. What each ball touched holds it
-    /// up in the pair solve. Silent bodies (liquid particles) are kept in and bounced like the
-    /// rest but never log a hit.
+    /// balls against each other. What each ball touched holds it up in the pair solve.
     fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, steps_per_second, bodies, walls, solids, modules, kinds, tags, pairs, seed, .. } = self;
+        let World { step, steps_per_second, bodies, walls, modules, kinds, tags, pairs, seed, .. } = self;
         let step = *step;
         let seed = *seed;
         let time = step as f32 / *steps_per_second as f32;
@@ -654,7 +451,7 @@ impl World {
                         wall_velocity: contact.wall_velocity,
                     });
                     respond(decider, &contact, bodies, i, limits, special, &cx);
-                    if contact.speed >= limits.resting && !bodies.silent {
+                    if contact.speed >= limits.resting {
                         bodies.hits[i] += 1;
                         log.push(Event {
                             step,
@@ -669,62 +466,6 @@ impl World {
                             && sim.effects(state, bodies, i, contact.speed, limits)
                         {
                             pop(bodies, i, *mover, step, log);
-                        }
-                    }
-                }
-            }
-            for (solid_id, solids) in solids.iter() {
-                if solid_id == mover {
-                    continue;
-                }
-                let solid_bounce = modules.get(solid_id).and_then(|m| m.get(&SlotId::Bounce));
-                let decider = decide(sims, solid_bounce, mover_bounce);
-                let special = is_special(own, &matcher, *mover, *solid_id);
-                for i in 0..bodies.len() {
-                    if !bodies.alive[i] {
-                        continue;
-                    }
-                    let radius = bodies.radius[i];
-                    let near = solids.reach + radius + SAFE_MOVE;
-                    if (bodies.position[i] - solids.pose.position).length_squared() > near * near {
-                        continue;
-                    }
-                    let previous = bodies.start[i];
-                    for (part, (solid, (center, bound))) in solids.parts.iter().zip(&solids.bounds).enumerate() {
-                        let near = bound + radius + SAFE_MOVE;
-                        if (bodies.position[i] - *center).length_squared() > near * near {
-                            continue;
-                        }
-                        let velocity = bodies.velocity[i];
-                        let Some(contact) =
-                            keep_outside(&mut bodies.position[i], previous, velocity, radius, solid, &solids.pose)
-                        else {
-                            continue;
-                        };
-                        supports.push(Support {
-                            thing: *mover,
-                            item: i as u32,
-                            normal: contact.normal,
-                            wall_velocity: contact.wall_velocity,
-                        });
-                        respond(decider, &contact, bodies, i, limits, special, &cx);
-                        if contact.speed >= limits.resting && !bodies.silent {
-                            bodies.hits[i] += 1;
-                            log.push(Event {
-                                step,
-                                kind: EventKind::Hit,
-                                a: Party { thing: *mover, item: i as u32 },
-                                b: Some(Party { thing: *solid_id, item: part as u32 }),
-                                point: contact.point,
-                                normal: contact.normal,
-                                speed: contact.speed,
-                            });
-                            if let Some((sim, state)) = own
-                                && sim.effects(state, bodies, i, contact.speed, limits)
-                            {
-                                pop(bodies, i, *mover, step, log);
-                                break;
-                            }
                         }
                     }
                 }
@@ -791,18 +532,11 @@ fn respond(
     }
 }
 
-/// Whether any thing in the scene has a Marks module the processor simulates. Only then are
-/// looks kept in the world and counted in the fingerprint.
-fn scene_has_marks(resolved: &Resolved, sims: &Sims) -> bool {
-    resolved.things.values().any(|r| r.slots.get(&SlotId::Marks).is_some_and(|s| sims.module(&s.kind).is_some()))
-}
-
 /// A hash of everything about a scene that changes how it simulates. Scenes that differ only
-/// in how they look or sound fingerprint the same, so the editor can keep playing through
+/// in how they look fingerprint the same, so the editor can keep playing through
 /// those edits.
 pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
     let mut h = Hasher(HASH_OFFSET);
-    let any_marks = scene_has_marks(resolved, sims);
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
@@ -830,7 +564,7 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics(key) || (any_marks && sim.affects_marks(key)) {
+                if sim.affects_physics(key) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
@@ -844,7 +578,7 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
         for tag in &thing.tags {
             h.bytes(tag.as_bytes());
         }
-        // Only modules the processor simulates count; a swarm's Flocking is the graphics card's.
+        // Only modules the processor simulates count.
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot)
                 && sims.module(&s.kind).is_some()
@@ -856,23 +590,6 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
-                // An edited graph runs instead of the native path, and a rules graph always
-                // runs, so both change the physics.
-                if let Some(g) = scene.library.modules.get(&s.module).and_then(|m| m.graph.as_ref())
-                    && (g.custom || slot == SlotId::Rules)
-                {
-                    h.graph(g);
-                }
-            }
-        }
-        // What a thing paints with its marks depends on its colours, so a colour change restarts
-        // the canvas, and a brush can take the colour of any thing it touches; scenes without
-        // a Marks module keep looks out of the fingerprint.
-        if any_marks && let Some(look) = r.slots.get(&SlotId::Look) {
-            h.bytes(b"look");
-            for (key, value) in look.params.iter() {
-                h.bytes(key.as_bytes());
-                h.value(value);
             }
         }
     }
@@ -898,35 +615,6 @@ impl Hasher {
         for &b in bytes {
             self.0 ^= b as u64;
             self.0 = self.0.wrapping_mul(0x100_0000_01b3);
-        }
-    }
-
-    /// What a graph does: its blocks by id with their kind, switch and settings, and its
-    /// wires. Where the blocks sit, the notes, the name and what the cards show are the
-    /// editor's, so moving a block does not rebuild the world.
-    fn graph(&mut self, g: &bpe_core::ModuleGraph) {
-        let g = &g.graph;
-        self.bytes(&[g.enabled as u8]);
-        let mut nodes: Vec<_> = g.nodes.iter().collect();
-        nodes.sort_by_key(|n| n.id);
-        for n in nodes {
-            self.bytes(&n.id.to_le_bytes());
-            self.bytes(n.kind.as_bytes());
-            self.bytes(&[n.enabled as u8]);
-            for (key, param) in &n.params {
-                self.bytes(key.as_bytes());
-                if let Ok(text) = ron::to_string(param) {
-                    self.bytes(text.as_bytes());
-                }
-            }
-        }
-        let mut links: Vec<_> = g.links.iter().collect();
-        links.sort();
-        for l in links {
-            self.bytes(&l.from.0.to_le_bytes());
-            self.bytes(&[l.from.1]);
-            self.bytes(&l.to.0.to_le_bytes());
-            self.bytes(&[l.to.1]);
         }
     }
 
@@ -974,73 +662,15 @@ impl Hasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Action;
     use crate::plugins::Sims;
     use crate::testing::{
-        DOTS, DOTS2, EMITTER, PEG, TestDots, TestRoot, WALL, dots_and_peg, dots_in_ring, dots_in_sticky_ring,
-        dots_pair, dots_pair_popping, dots_pile, dots_with_emitter, dots_with_rules, reg, ring_with_rider,
+        DOTS, DOTS2, TestDots, TestRoot, WALL, dots_in_ring, dots_in_sticky_ring, dots_pair, dots_pair_popping,
+        dots_pile, reg, ring_with_rider,
     };
-    use bpe_core::{Address, Attach, Ease, ModuleGraph, Owner, SlotId, Target, ThingId, Value, resolve};
+    use bpe_core::{Address, Attach, Ease, Owner, SlotId, Target, ThingId, Value, resolve};
 
     fn root_setting(key: &str) -> Address {
         Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: key.into() }
-    }
-
-    fn run_dots(count: u32, seconds: f64, record: bool) -> (World, Log) {
-        let (scene, resolved, sims) = dots_in_ring(count);
-        let mut w = World::build(&scene, &resolved, &sims);
-        w.record_tracks = record;
-        let mut log = Log::default();
-        w.advance_to(seconds, &sims, &mut log);
-        (w, log)
-    }
-
-    #[test]
-    fn world_starts_with_no_picked_paint_or_pictures() {
-        let (scene, resolved, sims) = dots_in_ring(1);
-        let w = World::build(&scene, &resolved, &sims);
-        assert!(w.picked.is_empty());
-        assert!(w.pictures.is_empty());
-    }
-
-    #[test]
-    fn tracks_follow_a_ball_for_twelve_seconds_after_a_hit() {
-        let (w, log) = run_dots(1, 20.0, true);
-        let ball = Party { thing: DOTS, item: 0 };
-        let hits: Vec<u64> =
-            log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a == ball).map(|e| e.step).collect();
-        let track = log.track(ball);
-        assert!(!hits.is_empty() && !track.is_empty());
-        assert_eq!(track[0].step, hits[0], "the first sample is on the first hit's step");
-        let every = (w.steps_per_second / crate::MOTION_RATE).max(1) as u64;
-        let last_hit = *hits.last().unwrap();
-        for s in track {
-            assert!(s.step >= hits[0]);
-            assert!(s.step % every == 0 || hits.contains(&s.step), "off the 60 Hz grid: {}", s.step);
-        }
-        let end = track.last().unwrap().step;
-        let limit = last_hit + (crate::TRACK_SECONDS * w.steps_per_second as f64) as u64 + every;
-        assert!(end <= limit.min(w.step), "{end} past {limit}");
-        assert!(track.windows(2).all(|p| p[0].step < p[1].step));
-        let (_, quiet) = run_dots(1, 20.0, false);
-        assert!(quiet.track(ball).is_empty());
-    }
-
-    #[test]
-    fn scene_samples_count_the_balls() {
-        let (_, log) = run_dots(3, 1.0, false);
-        let samples = log.scene_samples();
-        assert!((59..=61).contains(&samples.len()), "{}", samples.len());
-        assert!(samples.iter().all(|s| s.balls == 3));
-        assert!(samples.last().unwrap().energy > 0.0);
-    }
-
-    #[test]
-    fn motion_never_changes_the_hash() {
-        let (_, a) = run_dots(3, 4.0, true);
-        let (_, b) = run_dots(3, 4.0, false);
-        assert_eq!(a.hash(), b.hash());
-        assert!(!a.track(Party { thing: DOTS, item: 0 }).is_empty());
     }
 
     #[test]
@@ -1184,7 +814,7 @@ mod tests {
         let mut w = World::build(&scene, &resolved, &sims);
         let mut log = Log::default();
         w.advance_to(1.0, &sims, &mut log);
-        let counts: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Custom("tick".into())).collect();
+        let counts: Vec<&Event> = log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == counter).collect();
         assert_eq!(counts.len(), 240);
         assert_eq!(counts.first().unwrap().step, 1);
         assert_eq!(counts.last().unwrap().step, 240);
@@ -1236,45 +866,7 @@ mod tests {
         assert_eq!(w.poses[&late].position, Vec2::new(300.0, 0.0));
     }
 
-    #[test]
-    fn a_wall_bounce_does_not_fake_a_path_through_a_peg_outside() {
-        // A peg sits just outside the ring's top. A dot shot up at the top bounces off the ring in
-        // the same substep as its sweep against the peg: the sweep must follow the path the dot
-        // took (up to the ring), not one made up from its bounced-back speed, which would cross
-        // the peg and throw the dot out of the ring.
-        let (mut scene, _, sims) = dots_and_peg();
-        let reg = reg();
-        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
-        let inner = 100.0 - 1.0 - 5.0;
-        scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, -(inner + 5.0 + 10.0 + 2.0));
-        scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -(inner - 1.0));
-        scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, -600.0]));
-        let resolved = resolve(&scene, &reg);
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        for _ in 0..30 {
-            w.step(&sims, &mut log);
-            let p = w.bodies[&DOTS].position[0];
-            assert!(p.length() <= inner + 1e-3, "the dot stays inside the ring: {p:?}");
-        }
-        assert!(log.events().iter().all(|e| e.b.is_none_or(|b| b.thing != PEG)), "{:?}", log.events());
-        assert!(log.events().iter().any(|e| e.b.is_some_and(|b| b.thing == WALL)), "it did bounce off the ring");
-    }
 
-    #[test]
-    fn balls_bounce_off_a_peg_and_log_it_against_its_part() {
-        let (scene, resolved, sims) = dots_and_peg();
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        w.advance_to(1.0, &sims, &mut log);
-        let hit = log.events().iter().find(|e| e.b.is_some_and(|b| b.thing == PEG)).expect("the dot lands on the peg");
-        assert_eq!(hit.b, Some(Party { thing: PEG, item: 0 }));
-        assert!(hit.normal.y < 0.0, "{hit:?}");
-        assert_eq!(hit.a, Party { thing: DOTS, item: 0 });
-        let p = w.bodies[&DOTS].position[0];
-        assert!(p.is_finite() && (p - Vec2::new(0.0, 40.0)).length() >= 15.0 - 1e-3, "{p:?}");
-        assert_eq!(w.solids[&PEG].reach, 10.0);
-    }
 
     #[test]
     fn two_balls_heading_at_each_other_bounce_and_log_one_hit() {
@@ -1305,10 +897,9 @@ mod tests {
         w.advance_to(1.0, &sims, &mut Log::default());
         // Only the second ball is tagged soft: the first wants it, it doesn't want the first.
         assert!(w.bodies[&DOTS].position[0].x > 0.0);
-        assert!(w.matches(DOTS, DOTS2, &Target::Tag("soft".into())));
-        assert!(!w.matches(DOTS2, DOTS, &Target::Tag("soft".into())));
-        assert!(w.matches(DOTS, DOTS2, &Target::Kind("dots".into())) && w.matches(DOTS, DOTS, &Target::Me));
-        assert!(!w.matches(DOTS, ThingId(99), &Target::Thing(ThingId(99))));
+        assert_eq!(w.matching(&Target::Tag("soft".into()), DOTS), vec![DOTS2]);
+        assert_eq!(w.matching(&Target::Kind("dots".into()), DOTS), vec![DOTS, DOTS2]);
+        assert!(w.matching(&Target::Thing(ThingId(99)), DOTS).is_empty());
         // Both sides pointing at the other's thing: they bump.
         let (scene, resolved, sims) = dots_pair(30.0, Target::Kind("dots".into()));
         let mut w = World::build(&scene, &resolved, &sims);
@@ -1407,183 +998,12 @@ mod tests {
         assert_eq!(bare_log.events(), log.events());
     }
 
-    #[test]
-    fn rules_run_after_the_step_and_act_on_the_next_one() {
-        let (scene, resolved, sims) = dots_with_rules(1, false);
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        w.advance_to(5.0, &sims, &mut log);
-        let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit).count() as f32;
-        assert!(hits >= 3.0);
-        let grown = w.bodies[&DOTS].radius[0] - 5.0;
-        // Every hit but any in the very last step has been applied.
-        assert!(grown == hits || grown == hits - 1.0, "grown {grown} after {hits} hits");
-        assert_eq!(w.pending.len() as f32, hits - grown);
-        w.step(&sims, &mut log);
-        assert!(w.pending.is_empty() || log.since(w.step).iter().any(|e| e.kind == EventKind::Hit));
-    }
 
-    #[test]
-    fn a_root_rules_module_runs_once_with_every_thing_in_scope() {
-        let (scene, resolved, sims) = dots_with_rules(1, true);
-        let w = World::build(&scene, &resolved, &sims);
-        assert!(w.module_state(ThingId::ROOT, SlotId::Rules).is_some());
-        assert!(w.module_state(DOTS, SlotId::Rules).is_none());
-        assert!(w.in_scope(ThingId::ROOT, DOTS));
-        assert!(w.in_scope(ThingId::ROOT, ThingId::ROOT));
-        assert!(w.matches(ThingId::ROOT, DOTS, &Target::Me));
-        assert!(!w.matches(DOTS, WALL, &Target::Me));
-        assert!(w.matches(DOTS, WALL, &Target::Kind("wall".into())));
-        assert!(w.matches(DOTS, WALL, &Target::Thing(WALL)));
-        assert!(w.matches(DOTS, WALL, &Target::Anything));
-        assert_eq!(w.kind_of(DOTS), Some("dots"));
-        assert_eq!(w.things_of(ThingId::ROOT, &Target::Me), vec![ThingId::ROOT, WALL, DOTS]);
-        // The root's rule still grows the dots: hits by things in its scope count.
-        let mut w = w;
-        let mut log = Log::default();
-        w.advance_to(5.0, &sims, &mut log);
-        assert!(w.bodies[&DOTS].radius[0] > 5.0);
-        // On the dots alone, the scope is just the dots.
-        let (scene, resolved, sims) = dots_with_rules(1, false);
-        let w = World::build(&scene, &resolved, &sims);
-        assert!(!w.in_scope(DOTS, WALL));
-        assert_eq!(w.things_of(DOTS, &Target::Me), vec![DOTS]);
-    }
 
-    #[test]
-    fn a_missing_target_matches_nothing() {
-        let (mut scene, _, sims) = dots_in_ring(1);
-        scene.things.get_mut(&DOTS).unwrap().tags.insert("red".into());
-        let resolved = resolve(&scene, &reg());
-        let w = World::build(&scene, &resolved, &sims);
-        assert!(w.matches(DOTS, DOTS, &Target::Tag("red".into())));
-        assert_eq!(w.tags_of(DOTS).map(|t| t.len()), Some(1));
-        for t in [Target::Thing(ThingId(99)), Target::Tag("nope".into()), Target::Kind("ghost".into())] {
-            assert!(!w.matches(DOTS, DOTS, &t));
-            assert!(!w.matches(DOTS, ThingId(99), &t));
-            assert!(w.things_of(DOTS, &t).is_empty());
-        }
-        assert!(!w.in_scope(ThingId(99), DOTS));
-    }
 
-    #[test]
-    fn set_changes_a_motion_setting_live() {
-        let (scene, resolved, sims) = dots_in_ring(1);
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        assert_eq!(w.module_state(DOTS, SlotId::Motion).map(|(_, s)| *crate::state::<f32>(s)), Some(1.0));
-        w.apply(
-            vec![Action::Set { thing: DOTS, slot: SlotId::Motion, key: "scale".into(), value: Value::Number(0.0) }],
-            &sims,
-            &mut log,
-        );
-        assert_eq!(w.module_state(DOTS, SlotId::Motion).map(|(_, s)| *crate::state::<f32>(s)), Some(0.0));
-        assert_eq!(w.slot_params(DOTS, SlotId::Motion).and_then(|p| p.get("scale")), Some(&Value::Number(0.0)));
-        let v = w.bodies[&DOTS].velocity[0];
-        w.step(&sims, &mut log);
-        assert_eq!(w.bodies[&DOTS].velocity[0], v, "no gravity once the scale is 0");
-        // A thing without that slot, or a key the kind doesn't have, is left alone.
-        w.apply(
-            vec![Action::Set { thing: WALL, slot: SlotId::Motion, key: "scale".into(), value: Value::Number(2.0) }],
-            &sims,
-            &mut log,
-        );
-        w.apply(
-            vec![Action::Set { thing: DOTS, slot: SlotId::Motion, key: "nope".into(), value: Value::Number(2.0) }],
-            &sims,
-            &mut log,
-        );
-        assert_eq!(w.slot_params(DOTS, SlotId::Motion).and_then(|p| p.get("nope")), None);
-    }
 
-    #[test]
-    fn custom_graphs_tags_and_rules_change_the_fingerprint() {
-        let (mut scene, resolved, sims) = dots_with_rules(1, false);
-        let before = fingerprint(&scene, &resolved, &sims);
-        let gravity = resolved.things[&DOTS].slots[&SlotId::Motion].module;
-        scene.library.modules.get_mut(&gravity).unwrap().graph = Some(ModuleGraph {
-            graph: bpe_graph::Graph::new("g"),
-            template: "x".into(),
-            custom: false,
-            simple: Default::default(),
-        });
-        assert_eq!(fingerprint(&scene, &resolved, &sims), before, "an unedited graph runs natively");
-        scene.library.modules.get_mut(&gravity).unwrap().graph.as_mut().unwrap().custom = true;
-        let custom = fingerprint(&scene, &resolved, &sims);
-        assert_ne!(custom, before);
-        scene.things.get_mut(&DOTS).unwrap().tags.insert("red".into());
-        let resolved = resolve(&scene, &reg());
-        let tagged = fingerprint(&scene, &resolved, &sims);
-        assert_ne!(tagged, custom);
-        let rules = resolved.things[&DOTS].slots[&SlotId::Rules].module;
-        scene.library.modules.get_mut(&rules).unwrap().graph = Some(ModuleGraph {
-            graph: bpe_graph::Graph::new("r"),
-            template: "rules".into(),
-            custom: false,
-            simple: Default::default(),
-        });
-        assert_ne!(fingerprint(&scene, &resolved, &sims), tagged, "a rules graph always counts");
-    }
 
-    #[test]
-    fn moving_a_block_keeps_the_fingerprint() {
-        use bpe_graph::{Link, Node, Note, Param};
-        let (mut scene, resolved, sims) = dots_with_rules(1, false);
-        let rules = resolved.things[&DOTS].slots[&SlotId::Rules].module;
-        let node = |id: u32, kind: &str, by: Option<f32>| Node {
-            id,
-            kind: kind.into(),
-            pos: [0.0, 0.0],
-            params: by.map(|b| ("by".to_owned(), Param::Number(b))).into_iter().collect(),
-            enabled: true,
-            exposed: Default::default(),
-        };
-        let mut g = bpe_graph::Graph::new("r");
-        g.nodes.push(node(1, "when.hit", None));
-        g.nodes.push(node(2, "do.grow", Some(2.0)));
-        g.links.push(Link { from: (1, 0), to: (2, 0) });
-        scene.library.modules.get_mut(&rules).unwrap().graph =
-            Some(ModuleGraph { graph: g, template: "rules".into(), custom: true, simple: Default::default() });
-        let before = fingerprint(&scene, &resolved, &sims);
-        // Layout, notes, the name, the block order and what the cards show are editor-only.
-        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
-        mg.graph.node_mut(2).unwrap().pos = [500.0, 100.0];
-        mg.graph.name = "moved".into();
-        mg.graph.notes.push(Note { pos: [0.0; 2], size: [0.0; 2], text: "hi".into(), color: [1.0; 4] });
-        mg.graph.nodes.swap(0, 1);
-        mg.graph.node_mut(2).unwrap().exposed.insert("by".into());
-        mg.simple.insert((2, "by".into()));
-        assert_eq!(fingerprint(&scene, &resolved, &sims), before);
-        // What the blocks do is not.
-        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
-        mg.graph.node_mut(2).unwrap().params.insert("by".into(), Param::Number(3.0));
-        let changed = fingerprint(&scene, &resolved, &sims);
-        assert_ne!(changed, before);
-        let mg = scene.library.modules.get_mut(&rules).unwrap().graph.as_mut().unwrap();
-        mg.graph.node_mut(2).unwrap().enabled = false;
-        assert_ne!(fingerprint(&scene, &resolved, &sims), changed);
-    }
 
-    #[test]
-    fn the_pending_queue_survives_a_clone_and_a_replay() {
-        let (scene, resolved, sims) = dots_with_rules(1, false);
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        assert_eq!(w.seed, 0);
-        // Step until a hit leaves something pending.
-        while w.pending.is_empty() && w.step < 5000 {
-            w.step(&sims, &mut log);
-        }
-        assert!(!w.pending.is_empty());
-        let copy = w.clone();
-        assert_eq!(copy.pending, w.pending);
-        let mut log2 = log.clone();
-        let mut copy = copy;
-        w.advance_to(6.0, &sims, &mut log);
-        copy.advance_to(6.0, &sims, &mut log2);
-        assert_eq!(log.hash(), log2.hash());
-        assert_eq!(w.bodies, copy.bodies);
-    }
 
     #[test]
     fn a_thing_without_a_sim_is_skipped() {
@@ -1600,61 +1020,8 @@ mod tests {
         assert_eq!(w.steps_per_second, 240);
         drop(sims);
     }
-    #[test]
-    fn hooks_run_in_spec_order_and_can_add_bodies() {
-        let (scene, resolved, sims) = dots_with_emitter();
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut log = Log::default();
-        w.advance_to(0.5, &sims, &mut log);
-        assert_eq!(w.bodies[&DOTS].len(), 1 + 120);
-        assert_eq!(log.events()[0].kind, EventKind::Spawn, "spawn comes first in a step");
-        assert_eq!(log.events()[0].a, Party { thing: DOTS, item: 1 });
-        assert_eq!(log.events()[0].b, Some(Party { thing: EMITTER, item: 0 }));
-        let ticks = log.events().iter().filter(|e| e.kind == EventKind::Custom("tick".into())).count();
-        assert_eq!(ticks, 120, "after_step once per step");
-        // Within a step: spawn, then any hits, then the tick.
-        let first_step: Vec<_> = log.events().iter().filter(|e| e.step == 1).map(|e| e.kind.tag()).collect();
-        assert_eq!(first_step.first(), Some(&1));
-        assert_eq!(first_step.last(), Some(&7));
-        let settled = *crate::state::<u32>(w.states[&EMITTER].as_ref());
-        assert!(settled > 100, "settle saw the move after integrate on most substeps: {settled}");
-        // One step from the start, before any wall is met: the forces hook has added its push.
-        let mut w = World::build(&scene, &resolved, &sims);
-        w.step(&sims, &mut Log::default());
-        let vx = w.bodies[&DOTS].velocity[0].x;
-        assert!((vx - (300.0 + 1000.0 / 240.0)).abs() < 1e-3, "the forces hook pushed the ball: {vx}");
-    }
 
-    #[test]
-    fn silent_bodies_log_no_hits() {
-        let (scene, resolved, sims) = dots_in_ring(1);
-        let mut w = World::build(&scene, &resolved, &sims);
-        w.bodies.get_mut(&DOTS).unwrap().silent = true;
-        let mut log = Log::default();
-        w.advance_to(5.0, &sims, &mut log);
-        assert!(log.is_empty(), "{:?}", log.events());
-        assert_eq!(w.bodies[&DOTS].hits[0], 0);
-        assert!(w.bodies[&DOTS].position[0].length() < 100.0, "it still bounces off the wall");
-    }
 
-    #[test]
-    fn silent_bodies_do_not_add_substeps() {
-        let (scene, resolved, sims) = dots_in_ring(1);
-        let plain = {
-            let mut w = World::build(&scene, &resolved, &sims);
-            let mut log = Log::default();
-            w.advance_to(3.0, &sims, &mut log);
-            log
-        };
-        let mut w = World::build(&scene, &resolved, &sims);
-        let mut fast = Bodies { silent: true, ..Bodies::default() };
-        fast.push(Vec2::ZERO, Vec2::new(50_000.0, 0.0), 2.0);
-        w.bodies.insert(ThingId(9), fast);
-        let mut log = Log::default();
-        w.advance_to(3.0, &sims, &mut log);
-        assert_eq!(log, plain, "a liquid's speed never changes how the balls are stepped");
-        assert!(w.bodies[&ThingId(9)].position[0].is_finite() && w.bodies[&ThingId(9)].position[0].length() < 100.0);
-    }
 
     #[test]
     fn targets_resolve_by_tag_kind_thing_and_me() {

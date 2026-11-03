@@ -25,11 +25,6 @@ pub fn check_registry(reg: &Registry) -> Vec<String> {
     }
     for kind in reg.modules() {
         check_settings(kind.id(), kind.settings(), &mut fails);
-        if let Some(graph) = kind.template()
-            && bpe_graph::order(&graph).is_err()
-        {
-            fails.push(format!("{}: the template graph has a cycle", kind.id()));
-        }
     }
     if reg.thing("scene").is_some() {
         for p in resolve(&Scene::empty(reg), reg).problems {

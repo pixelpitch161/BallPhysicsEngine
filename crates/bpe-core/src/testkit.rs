@@ -6,15 +6,15 @@ use crate::{Color, ModuleKind, Registry, Scene, SettingDef, Settings, SlotId, Ta
 pub struct SceneKind;
 /// A folder that only groups things.
 pub struct FolderKind;
-/// A group whose slots stay its own (children never inherit them). It refuses `sound.pluck`
+/// A group whose slots stay its own (children never inherit them). It refuses `trail.streak`
 /// in its Sound slot, to test `accepts`.
 pub struct SealedKind;
 /// A set of balls.
 pub struct BallsKind;
 /// A plain coloured look.
 pub struct PlainLookKind;
-/// A plucked-string hit sound.
-pub struct PluckKind;
+/// A trail streak.
+pub struct StreakKind;
 
 #[derive(Settings)]
 pub struct SceneSettings {
@@ -61,31 +61,22 @@ impl Default for PlainLook {
 }
 
 #[derive(Settings)]
-pub struct Pluck {
-    #[setting(label = "Volume", range(-40, 6), unit = "dB", simple, keyframe)]
-    pub volume: f32,
-    /// Which hits make the sound.
-    #[setting(label = "Plays when hitting")]
+pub struct Streak {
+    #[setting(label = "Width", range(0, 40), unit = "px", simple, keyframe)]
+    pub width: f32,
+    /// Which hits leave a streak.
+    #[setting(label = "Shows when hitting")]
     pub target: Target,
-    #[setting(label = "Chords")]
-    pub chords: crate::ProgressionRef,
-    #[setting(label = "Instrument")]
-    pub instrument: crate::InstrumentRef,
 }
 
-impl Default for Pluck {
+impl Default for Streak {
     fn default() -> Self {
-        Self {
-            volume: 0.0,
-            target: Target::Anything,
-            chords: crate::ProgressionRef(None),
-            instrument: crate::InstrumentRef(None),
-        }
+        Self { width: 0.0, target: Target::Anything }
     }
 }
 
 const BALL_SLOTS: &[SlotId] =
-    &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Sound, SlotId::Particles, SlotId::Rules];
+    &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles];
 
 impl ThingKind for SceneKind {
     fn id(&self) -> &'static str {
@@ -161,7 +152,7 @@ impl ThingKind for SealedKind {
         false
     }
     fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
-        !(slot == SlotId::Sound && module_kind == "sound.pluck")
+        !(slot == SlotId::Trail && module_kind == "trail.streak")
     }
 }
 
@@ -185,7 +176,7 @@ impl ThingKind for BallsKind {
         BALL_SLOTS
     }
     fn default_slots(&self) -> &'static [SlotId] {
-        &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
+        &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce]
     }
 }
 
@@ -207,21 +198,21 @@ impl ModuleKind for PlainLookKind {
     }
 }
 
-impl ModuleKind for PluckKind {
+impl ModuleKind for StreakKind {
     fn id(&self) -> &'static str {
-        "sound.pluck"
+        "trail.streak"
     }
     fn name(&self) -> &'static str {
-        "Pluck"
+        "Streak"
     }
     fn help(&self) -> &'static str {
-        "A short plucked note on each hit."
+        "A streak behind each ball."
     }
     fn slot(&self) -> SlotId {
-        SlotId::Sound
+        SlotId::Trail
     }
     fn settings(&self) -> &'static [SettingDef] {
-        Pluck::defs()
+        Streak::defs()
     }
 }
 
@@ -233,7 +224,7 @@ pub fn registry() -> Registry {
     r.add_thing(SealedKind);
     r.add_thing(BallsKind);
     r.add_module(PlainLookKind);
-    r.add_module(PluckKind);
+    r.add_module(StreakKind);
     r
 }
 

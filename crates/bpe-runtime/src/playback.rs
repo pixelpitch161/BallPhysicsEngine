@@ -46,14 +46,6 @@ impl Playback {
         &self.world
     }
 
-    /// Records ball tracks for sounds that follow them, from the start.
-    pub fn set_record_tracks(&mut self, on: bool) {
-        self.world.record_tracks = on;
-        for (w, _) in &mut self.checkpoints {
-            w.record_tracks = on;
-        }
-    }
-
     pub fn log(&self) -> &Log {
         &self.log
     }
@@ -90,8 +82,6 @@ impl Playback {
             self.world = world.clone();
             self.log.truncate(*len);
             self.log.truncate_camera(self.world.step);
-            self.log.truncate_motion(self.world.step);
-            self.log.trim_marks_upto(self.world.step);
         }
         let started = budget.map(|_| Instant::now());
         while self.world.step < target {
@@ -133,50 +123,6 @@ mod tests {
     use super::*;
     use crate::testing::{DOTS, dots_in_ring};
     use std::time::Duration;
-
-    #[test]
-    fn rewind_drops_later_motion() {
-        let (scene, resolved, sims) = dots_in_ring(5);
-        let mut p = Playback::new(&scene, &resolved, Arc::new(sims));
-        p.set_record_tracks(true);
-        p.seek(3.0);
-        let first = p.log().clone();
-        p.seek(1.0);
-        let rate = p.world.steps_per_second as u64;
-        let ball = crate::Party { thing: DOTS, item: 0 };
-        assert!(p.log().track(ball).iter().all(|s| s.step <= rate));
-        assert!(p.log().scene_samples().iter().all(|s| s.step <= rate));
-        p.seek(3.0);
-        assert_eq!(p.log().track(ball), first.track(ball));
-        assert_eq!(p.log().scene_samples(), first.scene_samples());
-    }
-
-    #[test]
-    fn rewind_drops_later_marks() {
-        let (scene, resolved, sims) = dots_in_ring(5);
-        let mut p = Playback::new(&scene, &resolved, Arc::new(sims));
-        p.seek(3.0);
-        let rate = p.world.steps_per_second as u64;
-        let mark = |step| crate::Mark {
-            step,
-            target: crate::MarkTarget::Canvas(DOTS),
-            shape: crate::MarkShape::Splat,
-            from: glam::Vec2::ZERO,
-            to: glam::Vec2::ZERO,
-            radius: 1.0,
-            radius_to: 1.0,
-            angle: 0.0,
-            within: [1.0, 1.0],
-            variant: 0,
-            colour: [1.0; 4],
-            colour_to: [1.0; 4],
-        };
-        for step in [rate / 2, 2 * rate, 3 * rate] {
-            p.log.push_mark(mark(step));
-        }
-        p.seek(1.0);
-        assert_eq!(p.log().marks(), &[mark(rate / 2)]);
-    }
 
     #[test]
     fn seeking_back_and_forth_matches_a_straight_run() {

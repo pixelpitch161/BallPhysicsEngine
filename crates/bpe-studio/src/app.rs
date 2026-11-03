@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn opening_an_old_scene_reports_it_and_keeps_the_current_one() {
         let mut studio = Studio::headless();
-        let old = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenes/reference-reel.ron");
+        let old = concat!(env!("CARGO_MANIFEST_DIR"), "/../bpe-core/tests/data/old-editor-scene.ron");
         studio.open_path(Path::new(old));
         assert_eq!(studio.status, "This scene was made with the old Ball Studio");
         assert_eq!(studio.scene.things.len(), 3);
