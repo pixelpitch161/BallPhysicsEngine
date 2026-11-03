@@ -8,8 +8,8 @@ use crate::widgets::{
     widget_cell,
 };
 use bpe_core::{
-    Address, Attach, FOLDED_SECTIONS, ModuleKind, Resolved, Scene, SettingDef, SlotId, ThingId, Transform, Value,
-    section_rank,
+    Address, Attach, FOLDED_SECTIONS, ModuleKind, Resolved, Scene, SettingDef, SlotId, ThingId, TrackColour, Transform,
+    Value, section_rank,
 };
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
@@ -62,6 +62,8 @@ impl Card {
 /// A change the panel asks for, applied once the drawing is done.
 enum Edit {
     Name(String),
+    /// The thing's track colour; only the primary thing's.
+    Colour(TrackColour),
     Tags(BTreeSet<String>),
     Enabled(bool),
     /// Drawn on the screen or in the world; `None` is the kind's own choice.
@@ -151,6 +153,15 @@ pub fn show(
                             edits.push(Edit::Enabled(!thing.enabled));
                         }
                         ui.label(RichText::new(kind.name()).small().color(style::MUTED)).on_hover_text(kind.help());
+                        // The track colour, which opens the eight colours to pick from.
+                        let swatch = style::swatch_button(ui, thing.colour, "Track colour")
+                            .on_hover_text("This thing's colour in the tree, the preview and the timeline");
+                        egui::Popup::menu(&swatch).show(|ui| {
+                            if let Some(colour) = style::track_picker(ui, thing.colour) {
+                                edits.push(Edit::Colour(colour));
+                                ui.close();
+                            }
+                        });
                     }
                     let mut name = thing.name.clone();
                     let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
@@ -195,7 +206,8 @@ pub fn show(
                 let title = kind.name().to_owned();
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
-                    ui.label(RichText::new(&title).strong());
+                    ui.label(RichText::new(&title).font(style::semibold(13.0)));
+                    folded_summary(ui, open, thing.params.iter().count());
                     open
                 });
                 card_header(ui, inspector, Card::Thing, &header.response);
@@ -212,7 +224,7 @@ pub fn show(
             card(ui, |ui| {
                 let header = ui.horizontal(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, None, "placement"), "Placement");
-                    ui.label(RichText::new("Placement").strong());
+                    ui.label(RichText::new("Placement").font(style::semibold(13.0)));
                     open
                 });
                 card_header(ui, inspector, Card::Placement, &header.response);
@@ -235,7 +247,8 @@ pub fn show(
                 let title = kind.slot_label(slot);
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, (id, Some(slot), ""), title);
-                    ui.label(RichText::new(title).strong());
+                    ui.label(RichText::new(title).font(style::semibold(13.0)));
+                    folded_summary(ui, open, card_now.params.iter().count());
                     // The Type menu: what kind of card fills the slot, when more than one fits.
                     let fitting: Vec<&dyn ModuleKind> = reg.kinds_fitting(slot, kind).collect();
                     if let Some(current) = reg.module(&card_now.kind)
@@ -310,6 +323,7 @@ pub fn show(
                     applies: &applies,
                     folded: Some(&folded),
                     label_width: lw,
+                    track: style::colour_of(scene, id),
                 };
                 let out = settings_grid(ui, ("slot", id, slot), defs, get, &cx);
                 fold_groups(inspector, (id, Some(slot)), &out.folds);
@@ -354,6 +368,7 @@ pub fn show(
                 scene.set_thing_name(id, &name);
                 true
             }
+            Edit::Colour(colour) => set_thing(scene, id, |t| t.colour = Some(colour)),
             Edit::Tags(tags) => set_thing(scene, id, |t| t.tags = tags),
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
@@ -599,6 +614,7 @@ fn own_grid(
         applies: cx.applies,
         folded: Some(&folded),
         label_width: cx.label_width,
+        track: style::colour_of(scene, id),
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
@@ -617,7 +633,7 @@ fn root_card(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, name: &'static 
     card(ui, |ui| {
         let header = ui.horizontal_wrapped(|ui| {
             let open = fold_arrow(ui, &mut inspector.collapsed, card_kind.fold_key(cx.id), name);
-            ui.label(RichText::new(name).strong());
+            ui.label(RichText::new(name).font(style::semibold(13.0)));
             open
         });
         card_header(ui, inspector, card_kind, &header.response);
@@ -767,14 +783,24 @@ fn card_header(ui: &Ui, inspector: &mut Inspector, card: Card, header: &egui::Re
 /// The space inside a card's edge.
 const CARD_MARGIN: i8 = 10;
 
+/// After a folded section's title, how many of its settings this thing changed.
+fn folded_summary(ui: &mut Ui, open: bool, changed: usize) {
+    if !open && changed > 0 {
+        ui.label(RichText::new(format!("{changed} changed")).small().color(style::MUTED));
+    }
+}
+
+/// A flat section of settings: no fill or corners, a soft line under it.
 fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(style::PANEL).corner_radius(8).inner_margin(CARD_MARGIN).show(ui, |ui| {
+    let margin = egui::Margin { left: CARD_MARGIN, right: CARD_MARGIN, top: 0, bottom: 6 };
+    egui::Frame::new().inner_margin(margin).show(ui, |ui| {
         // As wide as the scroll area shows, less the margin: a card above that couldn't fit
         // stretches the scroll area's insides, and the cards under it mustn't follow.
         let shown = ui.clip_rect().right() - f32::from(CARD_MARGIN) - ui.max_rect().left();
         ui.set_width(ui.available_width().min(shown).max(0.0));
         add_contents(ui);
     });
+    style::divider(ui);
 }
 
 #[cfg(test)]
@@ -869,6 +895,16 @@ mod tests {
     fn menu_of(h: &mut Harness<'_, State>, label: &str) {
         h.get_by_role_and_label(Role::Label, label).click_secondary();
         h.run();
+    }
+
+    #[test]
+    fn the_header_colour_button_sets_the_track_colour() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Track colour").click();
+        h.run();
+        h.get_by_label("Track colour Lime").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour::Lime));
     }
 
     #[test]

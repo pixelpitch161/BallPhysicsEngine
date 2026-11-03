@@ -58,26 +58,31 @@ pub struct GridCx<'a> {
     pub folded: Option<&'a dyn Fn(&str) -> bool>,
     /// How wide the label column is, from [`label_width`]. Labels wrap at it.
     pub label_width: f32,
+    /// The thing's track colour: the label colour of a setting with keys or a pulse.
+    pub track: Color32,
 }
 
-/// How wide the label column of every settings grid in a panel `panel` wide is. Every grid in
-/// the panel uses the same width, so the sliders line up from card to card. In a narrow panel
-/// the labels give up their share faster, down to 96, so the widgets still fit beside them.
+/// How wide the label column of every settings grid in a panel `panel` wide is: the Design
+/// System's 108, or 96 in a narrow panel so the widgets still fit beside the labels. Every grid in
+/// the panel uses the same width, so the sliders line up from card to card.
 pub fn label_width(panel: f32) -> f32 {
-    const NARROW: f32 = 380.0;
-    if panel >= NARROW {
-        0.38 * panel
-    } else {
-        // From 96 at a 300-wide panel (the inspector at its narrowest) up to the share at 380.
-        let at_narrow = 0.38 * NARROW;
-        (96.0 + (panel - 300.0) * (at_narrow - 96.0) / (NARROW - 300.0)).clamp(96.0, at_narrow)
-    }
+    if panel >= 330.0 { style::LABEL_W } else { 96.0 }
+}
+
+/// The colour of a setting's label: its thing's track colour when it has keys or a pulse, so it
+/// matches its lane on the timeline; else the grey of every label.
+pub fn label_colour(mark: Option<KeyMark>, track: Color32) -> Color32 {
+    if mark.is_some_and(|m| m.keyed || m.pulsed) { track } else { style::MUTED }
 }
 
 /// The start of a row in a [`settings_like_grid`]: a label in the label column, `width` wide,
 /// wrapping when it is longer.
 pub fn grid_label(ui: &mut Ui, width: f32, text: &str) -> Response {
-    label_cell(ui, width, |ui| ui.add(egui::Label::new(text).wrap()))
+    label_cell(ui, width, |ui| {
+        // The changed dot's place, so these labels line up with the settings'.
+        ui.add_space(9.0);
+        ui.add(egui::Label::new(RichText::new(text).color(style::MUTED)).wrap())
+    })
 }
 
 /// A grid laid out like a settings grid (the label column, then the widgets), so its labels and
@@ -203,7 +208,7 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
         if fold && fold_toggle(ui, !shut, group) {
             clicked = true;
         }
-        let heading = RichText::new(group).strong().color(style::MUTED);
+        let heading = RichText::new(group).font(style::semibold(12.0)).color(style::MUTED);
         let label = egui::Label::new(heading).wrap().selectable(false);
         let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
         let dot = shut && changed;
@@ -336,10 +341,8 @@ pub fn fold_toggle(ui: &mut Ui, open: bool, title: &str) -> bool {
     let name = if open { format!("Hide {title}") } else { format!("Show {title}") };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
     let response = response.on_hover_text(if open { "Hide these settings" } else { "Show these settings" });
-    // The collapsing header's own triangle, pointing down when open.
-    let mut icon = response.clone();
-    icon.rect = rect;
-    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &icon);
+    let ink = if response.hovered() { style::TEXT } else { style::MUTED };
+    style::paint_chevron(ui.painter(), rect, open, ink);
     response.clicked()
 }
 
@@ -359,19 +362,26 @@ pub fn setting(
     cx: &GridCx,
     right: f32,
 ) -> RowAction {
-    let lit = mark.is_some_and(|m| m.keyed || m.pulsed);
+    let ink = label_colour(mark, cx.track);
+    let differs = *value != def.default;
     let name = label_cell(ui, cx.label_width, |ui| {
         // The cell's full height, so the label is centred in it rather than hanging from its middle.
         let room = ui.available_size();
         ui.allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            label(ui, def.label, def.help, lit)
+            ui.spacing_mut().item_spacing.x = 3.0;
+            // A ring before the label when this thing changed the setting from its default.
+            let (dot, _) = ui.allocate_exact_size(Vec2::new(6.0, 10.0), Sense::hover());
+            if differs {
+                style::changed_dot(ui.painter(), dot.center());
+            }
+            label(ui, def.label, def.help, ink)
         })
         .inner
     });
     let before = value.clone();
     let mut changed = false;
     let response = widget_cell(ui, right, |ui| {
-        let r = widget(ui, def, unit, value, name.id, cx.choices);
+        let r = style::wells(ui, |ui| widget(ui, def, unit, value, name.id, cx.choices));
         changed |= r.changed();
         r
     });
@@ -549,8 +559,8 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
 }
 
 /// The label cell, clickable for the reset shortcut, in the accent colour when `lit`.
-fn label(ui: &mut Ui, text: &str, help: &str, lit: bool) -> Response {
-    let text = if lit { RichText::new(text).color(style::TEXT) } else { RichText::new(text) };
+fn label(ui: &mut Ui, text: &str, help: &str, ink: Color32) -> Response {
+    let text = RichText::new(text).color(ink);
     let response = ui.add(egui::Label::new(text).wrap().selectable(false).sense(Sense::click()));
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
@@ -692,12 +702,14 @@ fn widget(
             gradient_bar_named(ui, id, g, def.label)
         }
         (ValueType::Choice(names), Value::Choice(current)) => {
-            let mut response = egui::ComboBox::from_id_salt(def.key).selected_text(pretty(current)).show_ui(ui, |ui| {
-                let mut picked = false;
-                for choice in names.iter() {
-                    picked |= ui.selectable_value(current, (*choice).to_owned(), pretty(choice)).changed();
-                }
-                picked
+            let mut response = style::raised(ui, |ui| {
+                egui::ComboBox::from_id_salt(def.key).selected_text(pretty(current)).show_ui(ui, |ui| {
+                    let mut picked = false;
+                    for choice in names.iter() {
+                        picked |= ui.selectable_value(current, (*choice).to_owned(), pretty(choice)).changed();
+                    }
+                    picked
+                })
             });
             if response.inner.unwrap_or(false) {
                 response.response.mark_changed();
@@ -825,13 +837,22 @@ mod tests {
     use bpe_core::Settings;
 
     #[test]
-    fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
+    fn the_label_column_is_108_wide_and_96_when_narrow() {
         assert_eq!(label_width(200.0), 96.0);
-        assert_eq!(label_width(300.0), 96.0);
-        assert_eq!(label_width(500.0), 190.0);
-        // It grows without a jump from narrow to wide.
-        assert!((label_width(379.9) - label_width(380.0)).abs() < 0.1);
-        assert!(label_width(340.0) > 96.0 && label_width(340.0) < label_width(380.0));
+        assert_eq!(label_width(329.0), 96.0);
+        assert_eq!(label_width(330.0), 108.0);
+        assert_eq!(label_width(500.0), 108.0);
+    }
+
+    #[test]
+    fn a_keyed_label_takes_the_track_colour() {
+        let track = Color32::from_rgb(0x3f, 0xd6, 0xb5);
+        let keyed = KeyMark { can_key: true, keyed: true, pulsed: false };
+        let pulsed = KeyMark { can_key: true, keyed: false, pulsed: true };
+        assert_eq!(label_colour(Some(keyed), track), track);
+        assert_eq!(label_colour(Some(pulsed), track), track);
+        assert_eq!(label_colour(Some(KeyMark::default()), track), style::MUTED);
+        assert_eq!(label_colour(None, track), style::MUTED);
     }
 
     #[test]
@@ -1047,6 +1068,7 @@ mod tests {
                         applies: &|_| true,
                         folded: None,
                         label_width: label_width(420.0),
+                        track: style::TEXT,
                     };
                     let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
                     for (key, value) in got.changes {
@@ -1257,6 +1279,7 @@ mod tests {
                     applies: &|_| true,
                     folded: Some(&|_| false),
                     label_width: label_width(420.0),
+                    track: style::TEXT,
                 };
                 settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
             });
@@ -1310,6 +1333,7 @@ mod tests {
                 applies: &applies,
                 folded: Some(&|_| false),
                 label_width: label_width(420.0),
+                track: style::TEXT,
             };
             settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });
