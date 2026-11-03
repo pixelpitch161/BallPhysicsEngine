@@ -89,10 +89,16 @@ pub struct LookInstance {
 /// | 2    | outline | opacity                        | width px, sits (0 in, 1 centre, 2 out) | -                 | 1 colour from the body   |
 /// | 3    | shine   | opacity, strength              | spot xy, size                          | -                 | -                        |
 /// | 4    | glow    | opacity, strength              | size in radii                          | -                 | 1 colour from the body   |
+/// | 5    | shading | opacity                        | kind (0 linear, 1 radial, 2 brush), softness, space (0 ball, 1 screen), amount | linear: from xy, to xy; radial: centre xy, size; brush: tile in w | 2 radial darkens the middle |
+/// | 6    | shader  | opacity                        | speed, scale, space, effect slot       | -                 | -                        |
+/// | 7    | mask    | -, target record (-1 none), parent angle, shape | from (0 layer below, 1 layer, 2 shape, 3 brush, 4 light, 5 dark), invert, softness, moves (0 layer, 1 ball, 2 screen) | angle rad, size, threshold, tile | - |
 ///
 /// `head.y` is the layer's blend against the layers under it in the same ball
-/// ([`Blend::shader_code`]). `colour` is the layer's own linear colour; `paint` what a pattern
-/// paints (its variation comes from the ball's instance).
+/// ([`Blend::shader_code`]); `head.w` how many mask records follow it (they limit it and are
+/// skipped as layers). `colour` is the layer's own linear colour; `paint` what a pattern paints
+/// (its variation comes from the ball's instance); `extra` a shader layer's effect settings. A
+/// mask's target is a record index within the ball's range; a brush tile indexes
+/// [`Frame::mask_tiles`] (-1 none).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct LayerGpu {
@@ -103,6 +109,7 @@ pub struct LayerGpu {
     pub p1: [f32; 4],
     pub colour: [f32; 4],
     pub paint: PaintGpu,
+    pub extra: [[f32; 4]; 4],
 }
 
 impl LayerGpu {
@@ -124,12 +131,18 @@ impl LayerGpu {
             repeat: 0.0,
             vary: [0.0, 0.0, 1.0, 0.0],
         },
+        extra: [[0.0; 4]; 4],
     };
     pub const BODY: u32 = 0;
     pub const PATTERN: u32 = 1;
     pub const OUTLINE: u32 = 2;
     pub const SHINE: u32 = 3;
     pub const GLOW: u32 = 4;
+    pub const SHADING: u32 = 5;
+    pub const SHADER: u32 = 6;
+    pub const MASK: u32 = 7;
+    /// A radial shading darkens the middle instead of the outside.
+    pub const INVERT: u32 = 2;
     /// The pattern turns with the ball's heading, or the outline or glow takes the body's colour.
     pub const FLAG: u32 = 1;
 }
@@ -546,6 +559,8 @@ pub struct Frame {
     /// Balls drawn with a stack of layers, and the stacks' records they name.
     pub layered: Vec<LayeredInstance>,
     pub look_layers: Vec<LayerGpu>,
+    /// The brush tiles the records name (`MASK_TILE`² bytes each) with a hash to tell them apart.
+    pub mask_tiles: Vec<(u64, std::sync::Arc<[u8]>)>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
@@ -661,6 +676,7 @@ impl Default for Frame {
             looks: Vec::new(),
             layered: Vec::new(),
             look_layers: Vec::new(),
+            mask_tiles: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
             hits: Vec::new(),
@@ -685,6 +701,7 @@ impl Frame {
         self.looks.clear();
         self.layered.clear();
         self.look_layers.clear();
+        self.mask_tiles.clear();
         self.trails.clear();
         self.bursts.clear();
         self.hits.clear();
@@ -1092,7 +1109,7 @@ mod tests {
     #[test]
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<LayerGpu>(), 128, "as layers.wgsl lays it out");
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 192, "as layers.wgsl lays it out");
         assert!(std::mem::size_of::<LayeredInstance>() <= 128);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();

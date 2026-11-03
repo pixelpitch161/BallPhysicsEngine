@@ -4,7 +4,7 @@
 use bpe_core::{Stroke, Strokes};
 
 /// A tile's width and height, in pixels. It covers the ball's square, -1 to 1 both ways.
-pub const TILE: usize = 128;
+pub const TILE: usize = bpe_gfx::MASK_TILE;
 
 /// How far `p` is from the segment `a`-`b`.
 fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {

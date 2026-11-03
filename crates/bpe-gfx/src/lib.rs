@@ -15,6 +15,7 @@ mod grade_tests;
 mod gradients;
 #[cfg(test)]
 mod layers_tests;
+mod masks;
 #[cfg(test)]
 mod paint_tests;
 pub mod particles;
@@ -28,6 +29,7 @@ pub use frame::{
     blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
+pub use masks::{MASK_TILE, MAX_MASK_TILES};
 pub use wgpu;
 
 use bpe_runtime::CameraView;
@@ -308,6 +310,8 @@ struct FrameBuffers {
     /// the buffer grows.
     look_layers: GrowableBuffer,
     layers_group: Option<wgpu::BindGroup>,
+    /// The brush tiles the records name.
+    masks: Option<masks::MaskAtlas>,
     flashes: GrowableBuffer,
     bursts: particles::BurstList,
 }
@@ -322,6 +326,7 @@ impl Default for FrameBuffers {
             layered: GrowableBuffer::new("layered ball instances"),
             look_layers: GrowableBuffer::storage("ball layer records"),
             layers_group: None,
+            masks: None,
             flashes: GrowableBuffer::new("flash instances"),
             bursts: particles::BurstList::default(),
         }
@@ -335,6 +340,7 @@ impl FrameBuffers {
         queue: &wgpu::Queue,
         particles: &particles::Particles,
         layers_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
         f: &Frame,
     ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
@@ -345,18 +351,48 @@ impl FrameBuffers {
         if !f.layered.is_empty() {
             // A ball naming no records still binds something.
             let records: &[LayerGpu] = if f.look_layers.is_empty() { &[LayerGpu::ZERO] } else { &f.look_layers };
-            if self.look_layers.upload(device, queue, bytemuck::cast_slice(records)) || self.layers_group.is_none() {
+            let grown = self.look_layers.upload(device, queue, bytemuck::cast_slice(records));
+            let atlas = self.masks.get_or_insert_with(|| masks::MaskAtlas::new(device, 1));
+            let remade = atlas.upload(device, queue, &f.mask_tiles);
+            if grown || remade || self.layers_group.is_none() {
                 let buffer = self.look_layers.buffer.as_ref().expect("just uploaded");
                 self.layers_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("ball layer records"),
                     layout: layers_layout,
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas.view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                    ],
                 }));
             }
         }
         self.flashes.upload(device, queue, bytemuck::cast_slice(&f.flashes));
         particles.fill(&mut self.bursts, device, queue, particles::pick(&f.bursts, f.time));
     }
+}
+
+/// layers.wgsl with its stack walk: `None` for stacks without shader layers (they are left
+/// out); `Some(effects)` adds the walk shader layers sample (`walk_plain`, leaving them out) and
+/// the walk that runs them, with `effects` (the effect code and `run_effect`) after.
+pub(crate) fn layers_source(effects: Option<&str>) -> String {
+    let walk = include_str!("shaders/layers_walk.wgsl");
+    let named = |name: &str, cov: &str, case: &str| {
+        walk.replace("WALK", name)
+            .replace("COV_IN", &format!("{cov}_in"))
+            .replace("COV_OUT", &format!("{cov}_out"))
+            .replace("//SHADER_CASE", case)
+    };
+    let mut out = String::from(include_str!("shaders/layers.wgsl"));
+    match effects {
+        None => out.push_str(&named("walk_layers", "cov", "")),
+        Some(code) => {
+            out.push_str(&named("walk_plain", "cov_plain", ""));
+            out.push_str(&named("walk_layers", "cov", include_str!("shaders/layers_shader_case.wgsl")));
+            out.push_str(code);
+        }
+    }
+    out
 }
 
 /// How one frame's things are drawn: through which globals and from which gradient atlas.
@@ -387,7 +423,7 @@ impl Renderer {
                     include_str!("shaders/trail.wgsl"),
                     include_str!("shaders/each.wgsl"),
                     include_str!("shaders/blend_maths.wgsl"),
-                    include_str!("shaders/layers.wgsl"),
+                    layers_source(None).as_str(),
                 ]
                 .concat()
                 .into(),
@@ -472,16 +508,34 @@ impl Renderer {
         });
         let layers_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ball layers layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<LayerGpu>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<LayerGpu>() as u64),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let layered_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layered ball pipeline layout"),
@@ -892,16 +946,16 @@ impl Renderer {
                 0,
                 bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
             );
-            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, o);
+            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, o);
         }
-        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, frame);
+        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, frame);
         // Every blend layer's lists, the frame's then the overlay's, each in its own buffers.
         let overlay_layers = overlay.map_or(&[][..], |o| &o.layers[..]);
         let layers: Vec<&BlendLayer> = frame.layers.iter().chain(overlay_layers).collect();
         let mut layer_buffers = std::mem::take(&mut self.layer_buffers);
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
-            b.upload(device, queue, &self.particles, &self.layers_layout, &l.frame);
+            b.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &l.frame);
         }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
         self.grade_map.sync(queue, &frame.grade);
