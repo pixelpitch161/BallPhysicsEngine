@@ -22,7 +22,7 @@ pub struct BasicMotion {
 
 impl Default for BasicMotion {
     fn default() -> Self {
-        Self { gravity_scale: 1.0, drag: 0.0, wind: Vec2::ZERO }
+        Self { gravity_scale: 0.0, drag: 0.0, wind: Vec2::ZERO }
     }
 }
 

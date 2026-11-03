@@ -15,3 +15,6 @@ bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 bpe-kit.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+bpe-kit = { workspace = true, features = ["test-scenes"] }

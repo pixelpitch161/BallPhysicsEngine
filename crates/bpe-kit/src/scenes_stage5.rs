@@ -28,6 +28,7 @@ pub fn stage5_with_twins(reg: &Registry) -> Vec<(String, Scene, String)> {
             let (twin_name, mut scene) = twins[*twin].clone();
             scene.name = (*name).into();
             build(reg, &mut scene);
+            super::classic_modules(&mut scene);
             super::own_everything(&mut scene);
             ((*name).to_owned(), scene, twin_name)
         })
@@ -94,7 +95,7 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
     style_balls(
         scene,
         reg,
-        BasicLook { style: Style::Shiny, glow: 0.6, glow_size: 1.4, ..BasicLook::default() },
+        BasicLook { style: Style::Shiny, glow: 0.6, glow_size: 1.4, ..super::classic_look() },
         |_| {},
     );
     own_module(scene, reg, BALLS, "shader.lava", "Lava", params([number("heat", 1.8), number("scale", 2.0)]));
@@ -148,7 +149,7 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
             outline_paint: Paint::solid(Color::rgb(0xff, 0xff, 0xff)),
             rainbow: 0.15,
             spin: 90.0,
-            ..BasicLook::default()
+            ..super::classic_look()
         },
         // Slices of the ball's own colour and navy. An inside mask's Size counts half as many
         // repeats as the old Pattern size did, so the old 4 is 2; the look's Spin still turns
@@ -185,7 +186,7 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
             outline: 4.0,
             outline_paint: Paint::solid(Color::rgb(0x40, 0xff, 0xff)),
             stretch: 0.6,
-            ..BasicLook::default()
+            ..super::classic_look()
         },
         |_| {},
     );
@@ -212,7 +213,7 @@ mod tests {
     use crate::registry;
 
     #[test]
-    fn stage5_scenes_resolve_round_trip_and_match_their_files() {
+    fn stage5_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = stage5(&reg);
         let names: Vec<&str> = scenes.iter().map(|(n, _)| n.as_str()).collect();
@@ -222,18 +223,6 @@ mod tests {
             assert!(bpe_core::resolve(scene, &reg).problems.is_empty(), "{name}");
             let text = bpe_core::save(scene);
             assert_eq!(&bpe_core::load(&text, &reg).unwrap(), scene, "{name}");
-            let file = format!(
-                "{}/../../scenes/next/{}.ron",
-                env!("CARGO_MANIFEST_DIR"),
-                name.to_lowercase().replace(' ', "-")
-            );
-            if std::env::var_os("BPE_BLESS").is_some() {
-                std::fs::write(&file, &text).unwrap();
-                continue;
-            }
-            let shipped =
-                std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e} (run with BPE_BLESS=1)"));
-            assert_eq!(bpe_core::load(&shipped, &reg).unwrap(), *scene, "{name}: scenes/next is stale, BPE_BLESS=1");
         }
     }
 

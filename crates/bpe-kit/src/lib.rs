@@ -7,6 +7,7 @@ pub mod modules;
 pub mod paint;
 pub mod random;
 pub mod rng;
+#[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
 pub mod starters;
 #[cfg(test)]
@@ -15,11 +16,9 @@ pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, SlotLink, ThingId};
+use bpe_core::{Registry, Resolved, Scene, ThingId};
 use bpe_gfx::Draws;
 use bpe_runtime::Sims;
-use glam::Vec2;
-use paint::Paint;
 
 pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
@@ -109,12 +108,18 @@ pub fn registry() -> Registry {
     r
 }
 
-/// What a brand-new scene holds: a circle arena and one pink ball, sharing the root's plain
-/// look, motion and bounce.
+/// The test scenes' starting point: a circle arena and one pink ball, with the values the
+/// settings had before the blank project (a dark blue background, a little bloom and glow, and
+/// gravity on). Only tests build it; the program starts from [`new_studio_scene`].
+#[cfg(any(test, feature = "test-scenes"))]
 pub fn new_scene(reg: &Registry) -> Scene {
+    use bpe_core::{Color, Settings, SlotId, SlotLink};
+    use glam::Vec2;
+    use paint::Paint;
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
     let root = ThingId::ROOT;
+    scenes::classic_scene_settings(&mut scene);
     add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
     let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
     scene.rename_thing(ball, "Ball");
@@ -122,7 +127,8 @@ pub fn new_scene(reg: &Registry) -> Scene {
         unreachable!("a new ball owns its look")
     };
     scene.library.modules.get_mut(&look).expect("just added").params =
-        BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..BasicLook::default() }.to_params();
+        BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..scenes::classic_look() }.to_params();
+    scenes::classic_modules(&mut scene);
     scene.things.get_mut(&ball).expect("just added").transform.position = Vec2::new(0.0, -200.0);
     scene
 }
@@ -141,9 +147,10 @@ pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
 }
 
-/// A new scene as the editor starts it: [`new_scene`] with a camera.
+/// The blank project the editor opens to: Scene settings and a camera, nothing else.
 pub fn new_studio_scene(reg: &Registry) -> Scene {
-    let mut scene = new_scene(reg);
+    let mut scene = Scene::empty(reg);
+    scene.name = "New scene".into();
     ensure_camera(&mut scene, reg);
     scene
 }
@@ -151,8 +158,43 @@ pub fn new_studio_scene(reg: &Registry) -> Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{SlotId, ThingId, Value, resolve};
+    use bpe_core::{Settings, SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
+
+    #[test]
+    fn the_blank_project_is_scene_settings_and_a_camera() {
+        let reg = registry();
+        let scene = new_studio_scene(&reg);
+        let kinds: Vec<&str> = scene.order.iter().map(|id| scene.things[id].kind.as_str()).collect();
+        assert_eq!(kinds, ["scene", "camera"]);
+        assert!(scene.library.modules.is_empty(), "{:?}", scene.library.modules);
+        let s = SceneSettings::from_params(&resolve(&scene, &reg).things[&ThingId::ROOT].params);
+        assert_eq!(s.background, paint::Paint::solid(bpe_core::Color::rgb(0x80, 0x80, 0x80)), "grey");
+        assert_eq!(s.bloom, 0.0);
+    }
+
+    #[test]
+    fn an_arena_and_a_ball_added_to_the_blank_project_have_no_glow_or_gravity() {
+        let reg = registry();
+        let mut scene = new_studio_scene(&reg);
+        let arena = add_thing(&mut scene, &reg, "arena", ThingId::ROOT).unwrap();
+        let ball = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let thing = scene.things.get_mut(&ball).unwrap();
+        let mut still = BallsSettings::from_params(&thing.params);
+        still.velocity = glam::Vec2::ZERO;
+        thing.params = still.to_params();
+        let resolved = resolve(&scene, &reg);
+        for id in [arena, ball] {
+            let look = BasicLook::from_params(&resolved.things[&id].slots[&SlotId::Look].params);
+            assert_eq!(look.glow, 0.0, "{}", scene.things[&id].name);
+        }
+        let motion = BasicMotion::from_params(&resolved.things[&ball].slots[&SlotId::Motion].params);
+        assert_eq!(motion.gravity_scale, 0.0);
+        let mut world = World::build(&scene, &resolved, &sims());
+        let start = world.bodies[&ball].position[0];
+        world.advance_to(1.0, &sims(), &mut Log::default());
+        assert_eq!(world.bodies[&ball].position[0], start, "a ball at rest stays put");
+    }
 
     #[test]
     fn every_addable_thing_has_a_family() {

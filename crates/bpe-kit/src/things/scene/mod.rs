@@ -95,11 +95,8 @@ impl Default for SceneSettings {
         Self {
             duration: 20.0,
             gravity: Vec2::new(0.0, 500.0),
-            background: Paint {
-                colours: Gradient::even(&[Color::rgb(0x02, 0x02, 0x2a), Color::rgb(0x01, 0x00, 0x06)]),
-                ..Paint::default()
-            },
-            bloom: 0.15,
+            background: Paint::solid(Color::rgb(0x80, 0x80, 0x80)),
+            bloom: 0.0,
             width: 1080,
             height: 1920,
             fps: 60,
@@ -248,7 +245,7 @@ mod tests {
         assert_eq!(follow.ty, bpe_core::ValueType::Choice(&["place", "time"]));
         let d = SceneSettings::default().background;
         assert_eq!((d.angle, d.span, d.centre), (90.0, 1920.0, Vec2::ZERO));
-        assert_eq!(d.colours.stops.len(), 2);
+        assert_eq!(d.colours.stops.len(), 1, "a plain grey");
     }
 
     #[test]

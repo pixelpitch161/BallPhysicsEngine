@@ -11,7 +11,7 @@ Usage:
   bpe-render-next --new <out.mp4> [options]
 
 Without an output name the video is written next to the scene file, with the same name.
-`--new` renders the scene a brand-new document starts with: a circle arena and one ball.
+`--new` renders the blank project the editor opens to: Scene settings and a camera.
 
 Options:
   --scale F        render at a fraction of the scene's size, for quick drafts

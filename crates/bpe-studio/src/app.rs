@@ -8,7 +8,6 @@ use crate::inspector::Inspector;
 use crate::library::LibraryWindow;
 use crate::preview::Preview;
 use crate::selection::Selection;
-use crate::starters::{self, Choice, StartWindow};
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
@@ -31,9 +30,7 @@ pub enum Pending {
     Close,
     Open,
     New,
-    /// A starter scene from the Start window.
-    Starter(Box<Scene>),
-    /// A recent file from the Start window.
+    /// A recent file from the toolbar's Recent menu.
     OpenPath(PathBuf),
 }
 
@@ -48,12 +45,12 @@ pub struct Panels {
     pub timeline: Timeline,
     pub library: LibraryWindow,
     pub randomize: RandomizeWindow,
-    pub start: StartWindow,
 }
 
 enum ToolbarClick {
     New,
     Open,
+    Recent(PathBuf),
     Save,
     SaveAs,
     Undo,
@@ -117,27 +114,32 @@ impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
-        let mut studio = Self::headless();
+        let mut studio = Self::blank();
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
         studio.persist_settings = true;
-        match scene_path {
-            Some(path) => _ = studio.open_path(&path),
-            None => {
-                let opened = settings::last_scene().is_some_and(|path| studio.open_path(&path));
-                if !opened {
-                    studio.new_scene();
-                }
-                studio.show_start();
-            }
+        if let Some(path) = scene_path {
+            studio.open_path(&path);
         }
         studio
     }
 
-    /// The state without a window: no renderer. A brand-new scene is open.
+    /// The state without a window, open on the blank project the editor always starts with.
+    pub fn blank() -> Self {
+        let kit = Arc::new(bpe_kit::kit());
+        let scene = bpe_kit::new_studio_scene(&kit.registry);
+        Self::with_scene(kit, scene)
+    }
+
+    /// The state without a window for tests: the test scene with an arena and a ball.
+    #[cfg(test)]
     pub fn headless() -> Self {
         let kit = Arc::new(bpe_kit::kit());
         let scene = bpe_kit::new_scene(&kit.registry);
+        Self::with_scene(kit, scene)
+    }
+
+    fn with_scene(kit: Arc<Kit>, scene: Scene) -> Self {
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
@@ -360,29 +362,8 @@ impl Studio {
             }
             Pending::Open => self.open(),
             Pending::New => self.new_scene(),
-            Pending::Starter(scene) => {
-                let name = scene.name.clone();
-                self.replace_scene(*scene, None);
-                self.status = format!("Started from {name}. Save it to keep it.");
-            }
             Pending::OpenPath(path) => _ = self.open_path(&path),
         }
-    }
-
-    /// Does what was chosen in the Start window, asking to save changes first.
-    pub fn choose_start(&mut self, choice: Choice, ctx: &egui::Context) {
-        match choice {
-            Choice::Nothing => {}
-            Choice::Blank => self.guard(Pending::New, ctx),
-            Choice::Scene(scene) => self.guard(Pending::Starter(scene), ctx),
-            Choice::Open => self.guard(Pending::Open, ctx),
-            Choice::Recent(path) => self.guard(Pending::OpenPath(path), ctx),
-        }
-    }
-
-    /// Opens the Start window with the recent files.
-    pub fn show_start(&mut self) {
-        self.panels.start.open_with(settings::recent_scenes());
     }
 
     pub fn open(&mut self) {
@@ -465,7 +446,7 @@ impl Studio {
             self.guard(Pending::Open, ctx);
         }
         if pressed(Modifiers::COMMAND, Key::N) {
-            self.show_start();
+            self.guard(Pending::New, ctx);
         }
         if typing {
             return;
@@ -526,12 +507,25 @@ impl Studio {
 
     /// The toolbar's buttons left of Library, ending with the scene's name and its save status.
     fn toolbar_left(&mut self, ui: &mut egui::Ui) {
-        if ui.button("New").on_hover_text("Start a new scene, blank or from a starter (Ctrl+N)").clicked() {
+        if ui.button("New").on_hover_text("Start a new blank scene with just a camera (Ctrl+N)").clicked() {
             self.clicked = Some(ToolbarClick::New);
         }
         if ui.button("Open…").on_hover_text("Open a saved scene (Ctrl+O)").clicked() {
             self.clicked = Some(ToolbarClick::Open);
         }
+        ui.menu_button("Recent", |ui| {
+            let recent = settings::recent_scenes();
+            if recent.is_empty() {
+                ui.label("No scenes opened yet");
+            }
+            for path in recent {
+                if ui.button(file_label(&path)).on_hover_text(path.display().to_string()).clicked() {
+                    self.clicked = Some(ToolbarClick::Recent(path));
+                }
+            }
+        })
+        .response
+        .on_hover_text("Open a scene you opened or saved lately");
         if ui.button("Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
             self.clicked = Some(ToolbarClick::Save);
         }
@@ -799,13 +793,10 @@ impl eframe::App for Studio {
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
         dice::show(&ctx, self);
-        let kit = self.kit.clone();
-        let choice = starters::show(&ctx, &mut self.panels.start, &kit, frame.wgpu_render_state());
-        self.choose_start(choice, &ctx);
-
         match self.clicked.take() {
-            Some(ToolbarClick::New) => self.show_start(),
+            Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
+            Some(ToolbarClick::Recent(path)) => self.guard(Pending::OpenPath(path), &ctx),
             Some(ToolbarClick::Save) => _ = self.save(false),
             Some(ToolbarClick::SaveAs) => _ = self.save(true),
             Some(ToolbarClick::Undo) => _ = self.undo(),
@@ -1065,6 +1056,17 @@ mod tests {
         studio.after_edit(before);
         assert_eq!(studio.playback.time(), 0.0);
         assert_eq!(studio.history.undo.len(), 2);
+    }
+
+    #[test]
+    fn the_editor_starts_on_the_blank_project_and_new_makes_another() {
+        let studio = Studio::blank();
+        assert_eq!(studio.scene, bpe_kit::new_studio_scene(&studio.kit.registry));
+        assert!(!studio.unsaved());
+        let mut studio = Studio::headless();
+        studio.new_scene();
+        let kinds: Vec<&str> = studio.scene.order.iter().map(|id| studio.scene.things[id].kind.as_str()).collect();
+        assert_eq!(kinds, ["scene", "camera"], "New is blank too, with just the camera");
     }
 
     #[test]

@@ -17,7 +17,7 @@ Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. Exports carry a
 | --- | --- |
 | Editor crate / binary | `bpe-studio` / `ball-studio-next` |
 | Command-line renderer | `bpe-cli` / `bpe-render-next` |
-| Scenes | `scenes/next/` |
+| Scenes | none built in: the editor always opens to a blank project (Scene settings + Camera) |
 | Design spec | `docs/superpowers/specs/2026-10-29-modular-studio-design.md` (written before the strip-down) |
 
 The shipped `bin\ball-studio.exe` on the owner's PC is built from **`bpe-studio`** (`-p bpe-studio`), even though
@@ -46,7 +46,9 @@ Dependencies go bottom to top:
   and one per module kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
   colour and gradient system (not the removed canvas). `starters.rs` holds per-thing starter modules and
-  `scenes.rs` holds the built-in scenes.
+  `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
+  the old look/motion values with `classic_*` helpers so goldens don't move. Never add built-in or example scenes
+  to the program unless the owner asks.
 - `bpe-cli`: headless export.
 - `bpe-studio`: the egui 0.37 editor. Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,

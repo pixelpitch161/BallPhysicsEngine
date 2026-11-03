@@ -1,4 +1,4 @@
-//! Every scene file under `scenes/next/` opens cleanly: the loader keeps settings it doesn't know
+//! Every test scene, saved as a file, opens cleanly: the loader keeps settings it doesn't know
 //! for `resolve` and quietly drops values of the wrong type, so this compares the file's own keys
 //! with the registry instead of trusting a load that "worked".
 
@@ -21,19 +21,12 @@ fn bad_keys(params: &Params, defs: &[SettingDef], whose: &str) -> Vec<String> {
 }
 
 #[test]
-fn every_bundled_scene_loads_with_known_keys() {
+fn every_saved_test_scene_loads_with_known_keys() {
     let reg = registry();
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenes/next");
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "ron"))
-        .collect();
-    files.sort();
-    assert!(files.len() >= 15, "found {} scene files", files.len());
-    for file in files {
-        let name = file.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&file).unwrap();
+    let all = bpe_kit::scenes::all(&reg);
+    assert!(all.len() >= 15, "found {} test scenes", all.len());
+    for (name, scene) in all {
+        let text = bpe_core::save(&scene);
         let loaded = bpe_core::load(&text, &reg).unwrap_or_else(|e| panic!("{name}: {e}"));
         let problems = bpe_kit::resolve_scene(&loaded, &reg).problems;
         assert!(problems.is_empty(), "{name}: {problems:?}");

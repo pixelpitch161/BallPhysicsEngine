@@ -23,4 +23,5 @@ anyhow.workspace = true
 glam.workspace = true
 
 [dev-dependencies]
+bpe-kit = { workspace = true, features = ["test-scenes"] }
 egui_kittest = "0.37"

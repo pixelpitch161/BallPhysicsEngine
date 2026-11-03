@@ -17,9 +17,9 @@ mp4 export. The video's sound track is silent for now.
 
 ```sh
 cargo run --release -p bpe-studio                                     # the editor
-cargo run --release -p bpe-studio -- scenes/next/reel-block.ron        # open a scene
-cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4   # export from the command line
-cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4 --scale 0.5 --frames 300 --encoder cpu
+cargo run --release -p bpe-studio -- my-scene.ron                      # open a scene
+cargo run --release -p bpe-cli -- my-scene.ron out.mp4                 # export from the command line
+cargo run --release -p bpe-cli -- my-scene.ron out.mp4 --scale 0.5 --frames 300 --encoder cpu
 ```
 
 Export needs ffmpeg. The editor and the renderer find it by themselves, including a winget install that is not on
@@ -27,9 +27,9 @@ Export needs ffmpeg. The editor and the renderer find it by themselves, includin
 
 ## Scenes
 
-The built-in scenes are saved in `scenes/next/`: one ball, reel block, box drop, spinning hexagon, shrinking ring,
-ball pit, riders, lava ball, confetti drop, spark block, kaleido hexagon, neon ring, colour paints, blend modes,
-graded sunset and long drop.
+The editor always opens to a blank project: Scene settings (a grey background, no bloom) and a camera. A new arena
+or ball has no glow, and a new ball's gravity is 0. There are no built-in or example scenes. The scenes in
+`bpe_kit::scenes` exist only for the tests (behind the `test-scenes` feature) and pin the physics in the goldens.
 
 ## How it fits together
 
@@ -39,7 +39,7 @@ graded sunset and long drop.
 | `bpe-core` | The scene model: the tree of things, the module library, values, colours, keyframes and pulses, save and load, and resolve. |
 | `bpe-runtime` | The deterministic world at a fixed 240 steps per second: collisions, the camera and the event log. |
 | `bpe-gfx` | The wgpu renderer: gradients, blend modes, the grade, shader effects, particles and trails. |
-| `bpe-kit` | Every thing kind (arena, balls, camera, folder, scene) and module kind (look, trail, motion, bounce, particles, shader), and the built-in scenes. |
+| `bpe-kit` | Every thing kind (arena, balls, camera, folder, scene) and module kind (look, trail, motion, bounce, particles, shader), and the test scenes. |
 | `bpe-cli` | Headless export. |
 | `bpe-studio` | The egui editor. |
 
