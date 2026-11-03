@@ -143,6 +143,21 @@ fn glow_reaches_past_the_edge_and_strength_zero_shows_nothing() {
 }
 
 #[test]
+fn a_glow_bigger_than_its_quad_fades_out_before_the_quad_s_edge() {
+    // Size 4 would reach well past a quad of 3 radii: it fades to nothing at the quad's edge
+    // instead of ending in a hard square.
+    let mut big = glow(0.8);
+    big.p0[0] = 4.0;
+    let frame = one(vec![body(), big], WHITE, 40.0, 3.0);
+    let Some(a) = render_sized(&frame, W, H) else { return };
+    save("layers-glow-cut", &a, W, H);
+    assert!(at(&a, 70.0, 0.0)[0] > 60, "the glow near the ball: {:?}", at(&a, 70.0, 0.0));
+    for x in [120.0, 122.0, 123.0] {
+        assert!(at(&a, x, 0.0)[0] < 12, "nearly nothing at the quad's edge ({x}): {:?}", at(&a, x, 0.0));
+    }
+}
+
+#[test]
 fn records_past_the_count_draw_nothing_and_the_same_frame_draws_the_same_bytes() {
     let mut longer = one(vec![body(), outline(20.0, 0.0)], WHITE, 200.0, 1.45);
     longer.layered[0].range[1] = 1;

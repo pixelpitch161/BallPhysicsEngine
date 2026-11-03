@@ -186,7 +186,12 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
             }
             case 4u: {
                 let glow_d = max(d, 0.0) / max(l.p0.x, 0.05);
-                let halo = max(l.amount.y, 0.0) * exp(-glow_d * glow_d) * opacity;
+                // Faded out over the last fifth of the quad, so a glow bigger than the quad
+                // never ends in a hard square.
+                let reach = max(in.form.w, 1.0);
+                let quad = max(abs(in.local.x), abs(in.local.y));
+                let fade = 1.0 - smoothstep(0.8 * reach, reach, quad);
+                let halo = max(l.amount.y, 0.0) * exp(-glow_d * glow_d) * opacity * fade;
                 let c = select(l.colour.rgb, body.rgb, flag);
                 // Light, covering nothing: mixed with what reaches past the edge, then added.
                 var mixed = c;

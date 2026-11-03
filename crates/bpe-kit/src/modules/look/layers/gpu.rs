@@ -22,8 +22,9 @@ use crate::paint::{InsideFrom, inside_gpu};
 const SHAPE_REACH: f32 = 1.45;
 /// How far past the edge a glow reaches, in its sizes; matches HALO_REACH in styled.wgsl.
 const HALO_REACH: f32 = 2.2;
-/// The furthest a stack may reach, in radii, however big its glow and outline.
-const MAX_REACH: f32 = 6.0;
+/// The furthest a stack may reach, in radii, however big its outline: enough for the biggest
+/// glow (Size 4). The shader fades a glow out before the quad's edge.
+const MAX_REACH: f32 = SHAPE_REACH + HALO_REACH * 4.0 + 0.25;
 
 /// One drawn layer of a stack with its settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -334,6 +335,16 @@ mod tests {
         );
         let later = stack.body_colour(red, 0, 2.0);
         assert_eq!(bpe_core::Color::from_linear(later), bpe_core::Color::from_linear(shift_linear_hue(red, 0.5)));
+    }
+
+    #[test]
+    fn the_biggest_glow_fits_its_quad() {
+        let stack = stack_after(|reg, s, b| {
+            let g = s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
+            s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(g, "size")), Value::Number(4.0))
+                .unwrap();
+        });
+        assert!(stack.reach(24.0) >= SHAPE_REACH + HALO_REACH * 4.0);
     }
 
     #[test]

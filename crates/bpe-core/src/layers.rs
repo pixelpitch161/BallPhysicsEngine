@@ -56,12 +56,13 @@ pub fn split_layered(key: &str) -> Option<(LayerId, &str)> {
     Some((LayerId(id.parse().ok()?), rest))
 }
 
-/// A layer as copied: its kind, name and the values that differ from its kind's defaults, by
-/// plain key. It carries no keyframes or pulses.
+/// A layer as copied: its kind, name, whether it is shown and the values that differ from its
+/// kind's defaults, by plain key. It carries no keyframes or pulses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CopiedLayer {
     pub kind: KindId,
     pub name: String,
+    pub enabled: bool,
     pub params: Params,
 }
 
@@ -295,7 +296,7 @@ impl Scene {
                 })
                 .collect(),
         );
-        Some(CopiedLayer { kind: layer.kind.clone(), name: layer.name.clone(), params })
+        Some(CopiedLayer { kind: layer.kind.clone(), name: layer.name.clone(), enabled: layer.enabled, params })
     }
 
     /// The card's whole stack as copied.
@@ -350,6 +351,10 @@ impl Scene {
                 card.params.set(&crate::layered_key(id, k), v);
             }
         }
+        // Shown or hidden as it was copied; the base layer is always shown.
+        if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
+            l.enabled = copied.enabled || kind.base();
+        }
         Ok(id)
     }
 
@@ -380,7 +385,7 @@ impl Scene {
         for (i, (l, kind)) in copied.layers.iter().zip(kinds).enumerate() {
             let id = LayerId(i as u32);
             let name = if l.name.trim().is_empty() { kind.name().to_owned() } else { l.name.clone() };
-            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled: true });
+            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled: l.enabled || kind.base() });
             for (k, v) in l.params.iter() {
                 if let Some(v) = fitted(kind, k, v) {
                     card.params.set(&crate::layered_key(id, k), v);
@@ -566,6 +571,23 @@ mod tests {
         assert_eq!(kinds(&s, other), ["Base", "Ring", "Pop"]);
         assert_eq!(card.params.get("1/width"), Some(&Value::Number(12.0)));
         assert!(card.params.get("2/width").is_none() && !s.tracks.contains_key(&old), "the old stack is gone");
+    }
+
+    #[test]
+    fn a_hidden_layer_stays_hidden_when_copied() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.set_layer_enabled(&r, b, LOOK, ring, false).unwrap();
+        let look = s.copy_look(b, LOOK).unwrap();
+        let layer = s.copy_layer(b, LOOK, ring).unwrap();
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        s.paste_look(&r, other, LOOK, &look).unwrap();
+        let shown: Vec<bool> = s.card(other, LOOK).unwrap().layers.iter().map(|l| l.enabled).collect();
+        assert_eq!(shown, [true, false], "the pasted look shows what the copied one showed");
+        let pasted = s.paste_layer(&r, other, LOOK, &layer).unwrap();
+        assert!(!s.card(other, LOOK).unwrap().layer(pasted).unwrap().enabled);
     }
 
     #[test]
