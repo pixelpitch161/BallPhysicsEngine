@@ -67,11 +67,46 @@ pub trait ModuleKind: Send + Sync + 'static {
     }
 }
 
+/// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, or with
+/// the reactions, which change the whole finished stack when something happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerSection {
+    Drawn,
+    Reaction,
+}
+
+/// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline
+/// or a flash on each hit. Each layer in a card owns its settings, stored in the card's params
+/// under layered keys (see [`crate::layered_key`]).
+pub trait LayerKind: Send + Sync + 'static {
+    /// Unique among every thing, module and layer kind, and written into saved scenes:
+    /// `"layer.outline"`.
+    fn id(&self) -> &'static str;
+    /// What the editor calls one of these, and a new one's name: `"Outline"`.
+    fn name(&self) -> &'static str;
+    /// One plain sentence for the hover help.
+    fn help(&self) -> &'static str;
+    /// Every setting one of these has, in the order the editor shows them.
+    fn settings(&self) -> &'static [SettingDef];
+    fn section(&self) -> LayerSection;
+    /// Whether a card may hold more than one of these.
+    fn repeats(&self) -> bool;
+    /// The card kind this layer goes in: `"look.layers"`.
+    fn card(&self) -> &'static str;
+    /// Whether this is the card's base layer: always the bottom one, exactly one, never removed,
+    /// moved, copied or hidden (the balls' Body).
+    fn base(&self) -> bool {
+        false
+    }
+}
+
 /// Every registered kind, by id.
 #[derive(Default)]
 pub struct Registry {
     things: BTreeMap<&'static str, Box<dyn ThingKind>>,
     modules: BTreeMap<&'static str, Box<dyn ModuleKind>>,
+    /// In the order they were registered, which is the order the editor lists them in.
+    layers: Vec<Box<dyn LayerKind>>,
 }
 
 impl Registry {
@@ -94,8 +129,15 @@ impl Registry {
         self.modules.insert(id, Box::new(k));
     }
 
+    /// Panics if a kind with the same id is already registered.
+    pub fn add_layer(&mut self, k: impl LayerKind) {
+        let id = k.id();
+        self.check_new(id);
+        self.layers.push(Box::new(k));
+    }
+
     fn check_new(&self, id: &str) {
-        if self.things.contains_key(id) || self.modules.contains_key(id) {
+        if self.things.contains_key(id) || self.modules.contains_key(id) || self.layer(id).is_some() {
             panic!("plugin id registered twice: {id}");
         }
     }
@@ -108,6 +150,21 @@ impl Registry {
     /// The module kind with this id.
     pub fn module(&self, id: &str) -> Option<&dyn ModuleKind> {
         self.modules.get(id).map(|k| &**k)
+    }
+
+    /// The layer kind with this id.
+    pub fn layer(&self, id: &str) -> Option<&dyn LayerKind> {
+        self.layers.iter().find(|k| k.id() == id).map(|k| &**k)
+    }
+
+    /// Every layer kind, in the order they were registered.
+    pub fn layers(&self) -> impl Iterator<Item = &dyn LayerKind> {
+        self.layers.iter().map(|k| &**k)
+    }
+
+    /// The layer kinds that go in cards of kind `card`, in the order they were registered.
+    pub fn layers_for<'a>(&'a self, card: &'a str) -> impl Iterator<Item = &'a dyn LayerKind> {
+        self.layers().filter(move |k| k.card() == card)
     }
 
     /// Every thing kind, in id order.
@@ -148,7 +205,7 @@ mod tests {
             r.thing("balls").unwrap().default_slots(),
             &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce]
         );
-        assert_eq!(r.modules_for(SlotId::Look).map(|m| m.id()).collect::<Vec<_>>(), ["look.plain"]);
+        assert_eq!(r.modules_for(SlotId::Look).map(|m| m.id()).collect::<Vec<_>>(), ["look.plain", "look.stack"]);
         assert!(r.thing("magnet").is_none());
     }
 

@@ -8,12 +8,12 @@ use crate::widgets::{
     widget_cell,
 };
 use bpe_core::{
-    Address, Attach, FOLDED_SECTIONS, ModuleKind, Resolved, Scene, SettingDef, SlotId, ThingId, TrackColour, Transform,
-    Value, section_rank,
+    Address, Attach, CopiedLayer, CopiedLook, FOLDED_SECTIONS, LayerId, ModuleKind, Resolved, Scene, SettingDef,
+    SlotId, ThingId, TrackColour, Transform, Value, section_rank,
 };
 use bpe_kit::Kit;
 use eframe::egui::{self, DragValue, RichText, Ui};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct Inspector {
@@ -34,6 +34,19 @@ pub struct Inspector {
     /// The card last jumped to from the bar. The bar marks it until the next scroll, even when
     /// it is too short to reach the top.
     pub jumped: Option<(ThingId, Card)>,
+    /// The layer of each thing's layered Look shown in the Look editor; its Body when none is,
+    /// or when the one stored has gone.
+    pub selected_layer: BTreeMap<ThingId, LayerId>,
+    /// The layer or whole look last copied in the Look editor, kept while the selection changes.
+    pub clipboard: crate::look_editor::Clipboard,
+    /// The layer being renamed in place, and the name typed so far.
+    pub renaming_layer: Option<(ThingId, LayerId, String)>,
+    /// The rename field takes the keyboard on its next frame.
+    pub focus_layer_rename: bool,
+    /// The Look editor's view of the ball.
+    pub ball_view: crate::look_editor::BallView,
+    /// The window's GPU, for the ball view; none in tests.
+    pub render: Option<eframe::egui_wgpu::RenderState>,
 }
 
 /// One of the inspector's cards, as the jump bar names it.
@@ -60,7 +73,7 @@ impl Card {
 }
 
 /// A change the panel asks for, applied once the drawing is done.
-enum Edit {
+pub(crate) enum Edit {
     Name(String),
     /// The thing's track colour; only the primary thing's.
     Colour(TrackColour),
@@ -71,21 +84,34 @@ enum Edit {
     Transform(Transform),
     Attach(Attach),
     /// One of the kind's own settings, for every selected thing of the kind.
-    SetOwn(&'static str, Value),
+    SetOwn(String, Value),
     /// The card in a slot becomes another kind, for every selected thing whose card there is of
     /// the same kind.
     SetKind(SlotId, &'static str),
     /// One of a card's settings, for every selected thing whose card in the slot is of the same
     /// kind.
-    SetSlot(SlotId, &'static str, Value),
+    /// A layer's setting (a layered key, "<layer>/<key>") reaches only the selected things whose
+    /// card has a layer of that id and the same kind.
+    SetSlot(SlotId, String, Value),
     /// A key at the playhead holding the setting's value as it stands (a slot's setting, or the
     /// thing's own with `None`), for every selected thing that has the setting.
-    NewKey(Option<SlotId>, &'static str),
+    NewKey(Option<SlotId>, String),
     /// A card for a slot the thing doesn't have yet, with its kind's starting settings, for
     /// every selected thing of the kind without one.
     AddSlot(SlotId),
     /// Takes the card off every selected thing whose card in the slot is of the same kind.
     RemoveSlot(SlotId),
+    // The layers of a layered card. These change the primary thing's card only, and select the
+    // layer they add.
+    AddLayer(SlotId, &'static str),
+    RemoveLayer(SlotId, LayerId),
+    /// To the index given, counted from the bottom of the card's layers.
+    MoveLayer(SlotId, LayerId, usize),
+    DuplicateLayer(SlotId, LayerId),
+    RenameLayer(SlotId, LayerId, String),
+    LayerEnabled(SlotId, LayerId, bool),
+    PasteLayer(SlotId, CopiedLayer),
+    PasteLook(SlotId, CopiedLook),
 }
 
 /// The things an edit to `id`'s setting reaches: every selected thing of `id`'s kind for its own
@@ -100,6 +126,18 @@ fn reached(scene: &Scene, selected: &[ThingId], id: ThingId, slot: Option<SlotId
     };
     let Some(mine) = what(&id) else { return Vec::new() };
     selected.iter().copied().filter(|t| what(t) == Some(mine)).collect()
+}
+
+/// The things an edit to `id`'s setting `key` in `slot` reaches: as [`reached`], and for a
+/// layer's setting only those whose card has a layer of the same id and kind.
+fn reached_key(scene: &Scene, selected: &[ThingId], id: ThingId, slot: Option<SlotId>, key: &str) -> Vec<ThingId> {
+    let mut out = reached(scene, selected, id, slot);
+    if let (Some(slot), Some((layer, _))) = (slot, bpe_core::split_layered(key)) {
+        let kind_of = |t: &ThingId| Some(scene.card(*t, slot)?.layer(layer)?.kind.clone());
+        let mine = kind_of(&id);
+        out.retain(|t| mine.is_some() && kind_of(t) == mine);
+    }
+    out
 }
 
 /// Draws the inspector for the selection's primary thing and applies its edits, to every
@@ -298,6 +336,13 @@ pub fn show(
                 if !header.inner {
                     return;
                 }
+                if card_now.kind == bpe_kit::modules::look::layers::CARD {
+                    ui.add_space(4.0);
+                    let look =
+                        crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
+                    crate::look_editor::show(ui, inspector, &look, &mut edits);
+                    return;
+                }
                 let Some(ckind) = reg.module(&card_now.kind) else { return };
                 let defs = ckind.settings();
                 debug_assert!(
@@ -327,8 +372,8 @@ pub fn show(
                 };
                 let out = settings_grid(ui, ("slot", id, slot), defs, get, &cx);
                 fold_groups(inspector, (id, Some(slot)), &out.folds);
-                edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key, value)));
-                edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key)));
+                edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
+                edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
             });
         }
 
@@ -377,7 +422,7 @@ pub fn show(
             Edit::SetOwn(key, value) => {
                 let mut any = false;
                 for t in reached(scene, &selected, id, None) {
-                    let a = Address::own(t, key);
+                    let a = Address::own(t, &key);
                     any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
                 }
                 any
@@ -391,16 +436,16 @@ pub fn show(
             }
             Edit::SetSlot(slot, key, value) => {
                 let mut any = false;
-                for t in reached(scene, &selected, id, Some(slot)) {
-                    let a = Address::on(t, slot, key);
+                for t in reached_key(scene, &selected, id, Some(slot), &key) {
+                    let a = Address::on(t, slot, &key);
                     any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
                 }
                 any
             }
             Edit::NewKey(slot, key) => {
                 let mut any = false;
-                for t in reached(scene, &selected, id, slot) {
-                    let a = Address { thing: t, slot, key: key.into() };
+                for t in reached_key(scene, &selected, id, slot, &key) {
+                    let a = Address { thing: t, slot, key: key.clone() };
                     any |= new_key(scene, reg, &a, time);
                 }
                 any
@@ -421,9 +466,44 @@ pub fn show(
                 }
                 any
             }
+            edit => apply_layer_edit(scene, reg, inspector, id, edit),
         };
     }
     changed
+}
+
+/// Applies a change to the layers of `id`'s card, selecting the layer it adds. True when the
+/// scene changed.
+fn apply_layer_edit(
+    scene: &mut Scene,
+    reg: &bpe_core::Registry,
+    inspector: &mut Inspector,
+    id: ThingId,
+    edit: Edit,
+) -> bool {
+    let added = match edit {
+        Edit::AddLayer(slot, kind) => scene.add_layer(reg, id, slot, kind).map(Some),
+        Edit::RemoveLayer(slot, layer) => scene.remove_layer(reg, id, slot, layer).map(|_| None),
+        Edit::MoveLayer(slot, layer, to) => scene.move_layer(reg, id, slot, layer, to).map(|_| None),
+        Edit::DuplicateLayer(slot, layer) => scene.duplicate_layer(reg, id, slot, layer).map(Some),
+        Edit::RenameLayer(slot, layer, name) => scene.rename_layer(reg, id, slot, layer, &name).map(|_| None),
+        Edit::LayerEnabled(slot, layer, on) => scene.set_layer_enabled(reg, id, slot, layer, on).map(|_| None),
+        Edit::PasteLayer(slot, copied) => scene.paste_layer(reg, id, slot, &copied).map(Some),
+        Edit::PasteLook(slot, copied) => {
+            // The old layers are gone, so the body is selected.
+            inspector.selected_layer.remove(&id);
+            scene.paste_look(reg, id, slot, &copied).map(|_| None)
+        }
+        _ => unreachable!("only layer edits come here"),
+    };
+    match added {
+        Ok(Some(layer)) => {
+            inspector.selected_layer.insert(id, layer);
+            true
+        }
+        Ok(None) => true,
+        Err(_) => false,
+    }
 }
 
 /// Writes `value` to `a`: as a key at `time` when the setting has keys (and notes so in
@@ -618,8 +698,8 @@ fn own_grid(
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
-    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key, value)));
-    edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key)));
+    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
+    edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
 }
 
 /// One of the root's cards: the root's own settings whose group is `name`, under a title that
@@ -684,7 +764,7 @@ fn is_folded(inspector: &Inspector, (id, slot): (ThingId, Option<SlotId>), group
 }
 
 /// The groups of a card's settings that are folded shut, as [`is_folded`] says.
-fn folded_groups(
+pub(crate) fn folded_groups(
     inspector: &Inspector,
     card: (ThingId, Option<SlotId>),
     defs: &[SettingDef],
@@ -693,7 +773,11 @@ fn folded_groups(
 }
 
 /// Folds shut or opens the groups of a card's settings, as their headings asked.
-fn fold_groups(inspector: &mut Inspector, (id, slot): (ThingId, Option<SlotId>), folds: &[(&'static str, bool)]) {
+pub(crate) fn fold_groups(
+    inspector: &mut Inspector,
+    (id, slot): (ThingId, Option<SlotId>),
+    folds: &[(&'static str, bool)],
+) {
     for &(group, shut) in folds {
         let key = (id, slot, group);
         match (quiet(group), shut) {
@@ -858,9 +942,19 @@ mod tests {
         h
     }
 
-    /// The slider a setting's name labels.
+    /// The first slider a setting's name labels (a ball's Size shows on its Balls card and again
+    /// on its Look's Body).
     fn slider_rect(h: &Harness<'_, State>, label: &str) -> egui::Rect {
-        h.get_by_role_and_label(Role::Slider, label).rect()
+        h.get_all_by_role_and_label(Role::Slider, label).next().unwrap().rect()
+    }
+
+    /// Where the test ball's Glow layer keeps its Strength.
+    const BALL_GLOW: &str = "2/strength";
+
+    /// Picks the layer named `name` in the Look editor's lists.
+    fn pick_layer(h: &mut Harness<'_, State>, name: &str) {
+        h.get_by_role_and_label(Role::Button, name).click();
+        h.run();
     }
 
     /// Presses on the slider and lets go at `fraction` of its width.
@@ -886,14 +980,17 @@ mod tests {
         h.run();
     }
 
-    /// The ball's look card's own settings.
-    fn ball_look(s: &State) -> &bpe_core::Params {
-        &s.scene.things[&ThingId(2)].slots[&SlotId::Look].params
+    /// The settings of the ball's Body layer (the first of its Look).
+    fn ball_look(s: &State) -> bpe_core::Params {
+        let card = &s.scene.things[&ThingId(2)].slots[&SlotId::Look];
+        bpe_core::Params(
+            card.params.iter().filter_map(|(k, v)| Some((k.strip_prefix("0/")?.to_owned(), v.clone()))).collect(),
+        )
     }
 
-    /// Right-clicks a setting's name, opening its menu.
+    /// Right-clicks the first setting `label` names, opening its menu.
     fn menu_of(h: &mut Harness<'_, State>, label: &str) {
-        h.get_by_role_and_label(Role::Label, label).click_secondary();
+        h.get_all_by_role_and_label(Role::Label, label).next().unwrap().click_secondary();
         h.run();
     }
 
@@ -932,7 +1029,7 @@ mod tests {
     #[test]
     fn keyed_gradient_edit_writes_a_key() {
         let mut h = harness(Some(ThingId(2)));
-        let colours = Address::on(ThingId(2), SlotId::Look, "colours");
+        let colours = Address::on(ThingId(2), SlotId::Look, "0/colours");
         let red_blue = bpe_core::Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
         h.state_mut()
             .scene
@@ -957,11 +1054,11 @@ mod tests {
     fn a_paint_folds_under_its_heading() {
         let mut h = harness(Some(ThingId(2)));
         assert!(h.query_by_label("Add a colour").is_some());
-        h.get_by_label("Hide Across the group").click();
+        h.get_by_label("Hide Colours").click();
         h.run();
         assert!(h.query_by_label("Add a colour").is_none(), "the paint's rows fold away");
-        assert!(h.query_by_role_and_label(Role::Label, "Glow").is_some(), "rows outside the group stay");
-        h.get_by_label("Show Across the group").click();
+        assert!(h.query_by_role_and_label(Role::Label, "Shape").is_some(), "rows outside the group stay");
+        h.get_by_label("Show Colours").click();
         h.run();
         assert!(h.query_by_label("Add a colour").is_some());
     }
@@ -1060,11 +1157,12 @@ mod tests {
         h.get_by_label("Create Keyframe").click();
         h.run();
         assert_eq!(h.state().scene.tracks[&size].keys.len(), 1);
-        // A card's setting keys the same way.
-        menu_of(&mut h, "Glow");
+        // A layer's setting keys the same way.
+        pick_layer(&mut h, "Glow");
+        menu_of(&mut h, "Strength");
         h.get_by_label("Create Keyframe").click();
         h.run();
-        assert!(h.state().scene.tracks.contains_key(&Address::on(ThingId(2), SlotId::Look, "glow")));
+        assert!(h.state().scene.tracks.contains_key(&Address::on(ThingId(2), SlotId::Look, BALL_GLOW)));
         // Launch speed can't have keys, so its Create Keyframe is greyed out.
         menu_of(&mut h, "Launch speed");
         assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled());
@@ -1075,14 +1173,15 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         {
             let s = h.state_mut();
-            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            let glow = Address::on(ThingId(2), SlotId::Look, BALL_GLOW);
             s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.75)).unwrap();
         }
         h.run();
-        menu_of(&mut h, "Glow");
+        pick_layer(&mut h, "Glow");
+        menu_of(&mut h, "Strength");
         h.get_by_label("Copy Value").click();
         h.run();
-        // The arena's look has a Glow too.
+        // The arena's look has a Glow setting too.
         h.state_mut().selection.set(ThingId(1));
         h.run();
         menu_of(&mut h, "Glow");
@@ -1126,7 +1225,7 @@ mod tests {
     #[test]
     fn a_card_can_be_removed_and_added_back() {
         let mut h = harness(Some(ThingId(2)));
-        let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+        let glow = Address::on(ThingId(2), SlotId::Look, BALL_GLOW);
         h.state_mut().scene.set_key(&bpe_kit::kit().registry, &glow, 1.0, Value::Number(0.5)).unwrap();
         h.run();
         h.get_by_label("Remove Look").click();
@@ -1138,7 +1237,7 @@ mod tests {
         h.get_by_label("Look").click();
         h.run();
         let card = &h.state().scene.things[&ThingId(2)].slots[&SlotId::Look];
-        assert_eq!((card.kind.as_str(), card.params.is_empty()), ("look.basic", true), "a fresh look");
+        assert_eq!((card.kind.as_str(), card.layers.len()), ("look.layers", 1), "a fresh look: its Body alone");
     }
 
     #[test]
@@ -1254,22 +1353,47 @@ mod tests {
 
     #[test]
     fn a_card_edit_reaches_every_selected_thing_with_that_card() {
-        let mut h = harness(Some(ThingId(2)));
-        let other = {
+        let mut h = harness(Some(ThingId(1)));
+        let (picked, other) = {
             let s = h.state_mut();
+            let picked = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "arena", ThingId::ROOT).unwrap();
             let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "arena", ThingId::ROOT).unwrap();
-            s.selection.extra.insert(ThingId(1));
+            s.selection.extra.insert(picked);
             s.resolved = resolve(&s.scene, &s.kit.registry);
-            other
+            (picked, other)
         };
         h.run();
         let rect = slider_rect(&h, "Glow");
         drag_slider(&mut h, rect, 0.9);
         let s = h.state();
         let glow = |t| s.scene.value_at(&s.kit.registry, &Address::on(t, SlotId::Look, "glow"));
-        assert!(matches!(glow(ThingId(2)), Some(Value::Number(g)) if g > 1.0));
-        assert_eq!(glow(ThingId(1)), glow(ThingId(2)), "the selected arena's look changed too");
+        assert!(matches!(glow(ThingId(1)), Some(Value::Number(g)) if g > 1.0));
+        assert_eq!(glow(picked), glow(ThingId(1)), "the other selected arena's look changed too");
         assert_eq!(glow(other), Some(Value::Number(0.0)), "an arena that isn't selected is left alone");
+    }
+
+    #[test]
+    fn a_layer_edit_reaches_only_selected_balls_with_the_same_layer() {
+        let mut h = harness(Some(ThingId(2)));
+        let (twin, plain) = {
+            let s = h.state_mut();
+            // A copy has the same layers; a new ball has its Body alone.
+            let twin = crate::tree::duplicate(&mut s.scene, &s.kit.registry, ThingId(2)).unwrap();
+            let plain = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "balls", ThingId::ROOT).unwrap();
+            s.selection.extra.extend([twin, plain]);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            (twin, plain)
+        };
+        let plain_look = h.state().scene.card(plain, SlotId::Look).unwrap().clone();
+        h.run();
+        pick_layer(&mut h, "Glow");
+        let rect = slider_rect(&h, "Strength");
+        drag_slider(&mut h, rect, 0.9);
+        let s = h.state();
+        let glow = |t| s.scene.value_at(&s.kit.registry, &Address::on(t, SlotId::Look, BALL_GLOW));
+        assert!(matches!(glow(ThingId(2)), Some(Value::Number(g)) if g > 1.0));
+        assert_eq!(glow(twin), glow(ThingId(2)), "the copy's Glow changed too");
+        assert_eq!(s.scene.card(plain, SlotId::Look), Some(&plain_look), "a ball with no Glow is left alone");
     }
 
     #[test]
@@ -1357,13 +1481,19 @@ mod tests {
 
     #[test]
     fn look_card_shows_blending_and_variation() {
-        let mut h = harness(Some(ThingId(2)));
+        // The arena's look is the plain card, with its own Blending.
+        let mut h = harness(Some(ThingId(1)));
         assert!(h.query_all_by_label("Blending").next().is_some(), "a Blending group");
         h.get_all_by_label("Blending").next().unwrap().click();
-        h.get_all_by_label("Variation").next().unwrap().click();
         h.run();
         assert!(h.query_all_by_label("Blend").next().is_some(), "the Blend setting");
         assert!(h.query_all_by_label("Blend amount").next().is_some(), "the Blend amount setting");
+        // A ball's Body has the variation; its blend is a layer of its own.
+        h.state_mut().selection.set(ThingId(2));
+        h.run();
+        assert!(h.query_all_by_label("Blending").next().is_none(), "no Blending group on the Body");
+        h.get_all_by_label("Variation").next().unwrap().click();
+        h.run();
         assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
     }
@@ -1372,13 +1502,10 @@ mod tests {
     fn variation_and_blending_start_folded_and_open_when_clicked() {
         let mut h = harness(Some(ThingId(2)));
         assert!(h.query_all_by_label("Variation").next().is_some(), "the Variation heading");
-        assert!(h.query_all_by_label("Blending").next().is_some(), "the Blending heading");
         assert!(h.query_by_label("Vary hue").is_none(), "Variation starts folded");
-        assert!(h.query_by_label("Blend amount").is_none(), "Blending starts folded");
         h.get_all_by_label("Variation").next().unwrap().click();
         h.run();
         assert!(h.query_all_by_label("Vary hue").next().is_some(), "a click opens it");
-        assert!(h.query_by_label("Blend amount").is_none(), "Blending stays folded");
         // It stays open after looking at another thing and coming back.
         h.state_mut().selection.set(ThingId(1));
         h.run();
@@ -1397,7 +1524,7 @@ mod tests {
         assert!(h.query_all_by_label("Variation").next().is_some());
         assert!(h.query_by_label("Variation (changed)").is_none(), "nothing changed yet");
         assert!(h.query_by_label("Changes inside").is_none(), "no dot with defaults");
-        h.state_mut().scene.card_mut(ThingId(2), SlotId::Look).unwrap().params.set("vary_hue", Value::Number(20.0));
+        h.state_mut().scene.card_mut(ThingId(2), SlotId::Look).unwrap().params.set("0/vary_hue", Value::Number(20.0));
         h.run();
         assert!(h.query_by_label("Variation (changed)").is_some(), "the heading says it holds changes");
         assert!(h.query_by_label("Changes inside").is_some(), "the dot is drawn");
@@ -1410,28 +1537,28 @@ mod tests {
     #[test]
     fn a_folded_section_with_a_keyframe_shows_the_dot() {
         let mut h = harness(Some(ThingId(2)));
-        let wobble = Address::on(ThingId(2), SlotId::Look, "wobble");
+        let wobble = Address::on(ThingId(2), SlotId::Look, "0/wobble");
         let reg = bpe_kit::registry();
         let default = h.state().scene.value_at(&reg, &wobble).unwrap();
         h.state_mut().scene.set_key(&reg, &wobble, 0.0, default).unwrap();
         h.run();
         assert!(h.query_by_label("Variation (changed)").is_some(), "a key at the default still moves the video");
         assert!(h.query_by_label("Changes inside").is_some());
-        assert!(h.query_by_label("Blending (changed)").is_none(), "only the section holding it");
     }
 
     #[test]
     fn a_folded_section_with_only_a_pulse_shows_the_dot() {
-        let mut h = harness(Some(ThingId(2)));
-        // The test scene's look keeps the old glow; put it back to the default so Light starts clean.
-        h.state_mut().scene.card_mut(ThingId(2), SlotId::Look).unwrap().params.set("glow", Value::Number(0.0));
+        // The arena's look is the plain card, with a Light section. The test scene keeps the old
+        // glow; put it back to the default so Light starts clean.
+        let mut h = harness(Some(ThingId(1)));
+        h.state_mut().scene.card_mut(ThingId(1), SlotId::Look).unwrap().params.set("glow", Value::Number(0.0));
         h.state_mut().resolved = resolve(&h.state().scene, &h.state().kit.registry);
         h.get_by_label("Hide Light").click();
         h.run();
         assert!(h.query_by_label("Light (changed)").is_none(), "Light holds no changes yet");
-        let def = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "opacity").unwrap();
+        let def = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "glow").unwrap();
         assert!(def.flags.pulse && def.group == "Light");
-        let address = Address::on(ThingId(2), SlotId::Look, def.key);
+        let address = Address::on(ThingId(1), SlotId::Look, def.key);
         let reg = bpe_kit::registry();
         h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, Value::Number(0.25), 0.25).unwrap();
         h.run();
@@ -1696,12 +1823,13 @@ mod tests {
         h.run();
         h.get_by_label("Trail").click();
         h.run();
-        let glow = slider_rect(&h, "Glow");
+        // The Look's Size, under its layer lists, and the Trail's Length.
+        let size = h.get_all_by_role_and_label(Role::Slider, "Size").nth(1).unwrap().rect();
         let length = slider_rect(&h, "Length");
         assert!(
-            (glow.left() - length.left()).abs() <= 1.0,
-            "Glow starts at {}, Length at {}",
-            glow.left(),
+            (size.left() - length.left()).abs() <= 1.0,
+            "Size starts at {}, Length at {}",
+            size.left(),
             length.left()
         );
     }
@@ -1709,7 +1837,7 @@ mod tests {
     #[test]
     fn the_header_and_placement_line_up_with_the_settings() {
         let h = harness(Some(ThingId(2)));
-        let label = |l: &str| h.get_by_role_and_label(Role::Label, l).rect().left();
+        let label = |l: &str| h.get_all_by_role_and_label(Role::Label, l).next().unwrap().rect().left();
         let size = label("Size");
         for row in ["Name", "Tags", "Position", "Rotation"] {
             assert!((label(row) - size).abs() <= 1.0, "{row}'s label starts at {}, Size's at {size}", label(row));

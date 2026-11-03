@@ -257,7 +257,7 @@ impl BasicLook {
 }
 
 /// The turn, in degrees, that points something drawn pointing up the way `velocity` goes.
-fn facing_degrees(velocity: Vec2) -> f32 {
+pub(crate) fn facing_degrees(velocity: Vec2) -> f32 {
     heading(velocity).to_angle().to_degrees() + 90.0
 }
 
@@ -277,19 +277,23 @@ impl ModuleKind for BasicLookKind {
     fn settings(&self) -> &'static [SettingDef] {
         BasicLook::defs()
     }
+    /// Balls wear the layered look (see [`super::layers`]).
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind != "balls"
+    }
 }
 
 /// The speed at which a ball stretches to twice its length at full Stretch.
 pub const STRETCH_SPEED: f32 = 900.0;
 
 /// The way something moving at `velocity` goes; a still one faces right.
-fn heading(velocity: Vec2) -> Vec2 {
+pub(crate) fn heading(velocity: Vec2) -> Vec2 {
     let speed = velocity.length();
     if speed > 1e-3 { velocity / speed } else { Vec2::X }
 }
 
 /// Turns a linear-light colour `turn` of the way around the colour wheel.
-fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
+pub(crate) fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
     let shifted = Color::from_linear([color[0], color[1], color[2], 1.0]).shift_hue(turn).to_linear();
     [shifted[0], shifted[1], shifted[2], color[3]]
 }

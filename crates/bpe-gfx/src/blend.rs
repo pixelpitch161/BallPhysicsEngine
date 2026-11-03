@@ -30,7 +30,11 @@ impl Composite {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let module = util::shader(device, "blend", &[include_str!("shaders/blend.wgsl")]);
+        let module = util::shader(
+            device,
+            "blend",
+            &[include_str!("shaders/blend_maths.wgsl"), include_str!("shaders/blend.wgsl")],
+        );
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blend composite"),
             layout: Some(&pipeline_layout),

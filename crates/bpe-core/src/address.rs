@@ -34,7 +34,15 @@ impl Scene {
         let thing = self.things.get(&a.thing)?;
         let defs = match a.slot {
             None => reg.thing(&thing.kind)?.settings(),
-            Some(slot) => reg.module(&thing.slots.get(&slot)?.kind)?.settings(),
+            Some(slot) => {
+                let card = thing.slots.get(&slot)?;
+                // A layer's setting: its kind's, when the card has that layer.
+                if let Some((id, key)) = crate::split_layered(&a.key) {
+                    let layer = card.layer(id)?;
+                    return find(reg.layer(&layer.kind)?.settings(), key);
+                }
+                reg.module(&card.kind)?.settings()
+            }
         };
         find(defs, &a.key)
     }
@@ -94,6 +102,33 @@ mod tests {
         assert_eq!(s.value_at(&r, &glow), Some(Value::Number(2.0)));
         s.set_at(&r, &glow, Value::Number(0.0)).unwrap(); // the default
         assert!(s.things[&b].slots[&SlotId::Look].params.is_empty());
+    }
+
+    #[test]
+    fn layer_settings_are_found_through_their_layer() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, b, SlotId::Look, "look.stack").unwrap();
+        s.add_layer(&r, b, SlotId::Look, "layer.base").unwrap();
+        let ring = s.add_layer(&r, b, SlotId::Look, "layer.ring").unwrap();
+        let width = Address::on(b, SlotId::Look, &crate::layered_key(ring, "width"));
+        assert_eq!(s.def_at(&r, &width).map(|d| d.label), Some("Width"));
+        assert_eq!(s.value_at(&r, &width), Some(Value::Number(4.0)), "the default when unset");
+        s.set_at(&r, &width, Value::Number(99.0)).unwrap();
+        assert_eq!(s.value_at(&r, &width), Some(Value::Number(60.0)), "pulled into range");
+        assert_eq!(s.card(b, SlotId::Look).unwrap().params.get("1/width"), Some(&Value::Number(60.0)));
+        s.set_at(&r, &width, Value::Number(4.0)).unwrap();
+        assert!(s.card(b, SlotId::Look).unwrap().params.is_empty(), "the default is not stored");
+        // No such layer, a key the layer's kind lacks, or the base's key under another layer.
+        for key in ["7/width", "1/wobble", "0/width", "x/width"] {
+            let a = Address::on(b, SlotId::Look, key);
+            assert_eq!(s.def_at(&r, &a), None, "{key}");
+            assert!(matches!(s.set_at(&r, &a, Value::Number(1.0)), Err(EditError::UnknownSetting(_))), "{key}");
+        }
+        // Layered keys keyframe like any card setting.
+        s.set_key(&r, &width, 1.0, Value::Number(10.0)).unwrap();
+        assert!(s.keyed(&width));
     }
 
     #[test]

@@ -56,7 +56,7 @@ fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, par
             .collect()
     };
     for id in takers {
-        scene.add_slot(reg, id, slot, kind).expect("the kind has the slot");
+        super::put_card(scene, reg, id, slot, kind);
         scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)).expect("just added").params = params.clone();
     }
 }
@@ -64,9 +64,8 @@ fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, par
 /// The ball's look card, replaced by a styled one: `look` with the twin's colours, then
 /// finished by `f`, which sees them.
 fn style_balls(scene: &mut Scene, reg: &Registry, look: BasicLook, f: impl FnOnce(&mut BasicLook)) {
-    let old = scene.things[&BALLS].slots[&SlotId::Look].params.clone();
     // Keep the twin's colours.
-    let mut look = BasicLook { fill: BasicLook::from_params(&old).fill, ..look };
+    let mut look = BasicLook { fill: super::ball_fill(&scene.things[&BALLS].slots[&SlotId::Look]), ..look };
     f(&mut look);
     own_module(scene, reg, BALLS, "look.basic", look.to_params());
 }

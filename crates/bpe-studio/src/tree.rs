@@ -862,6 +862,7 @@ pub fn problem_words(p: &Problem) -> String {
     match &p.kind {
         ProblemKind::UnknownKind(k) => format!("Its kind \"{k}\" isn't installed"),
         ProblemKind::UnknownCardKind(k) => format!("{slot} uses \"{k}\", which isn't installed or doesn't fit here"),
+        ProblemKind::UnknownLayerKind(k) => format!("{slot} has a layer of kind \"{k}\", which isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
     }
 }
@@ -1109,7 +1110,8 @@ mod tests {
         let kit = bpe_kit::kit();
         let reg = &kit.registry;
         let mut scene = bpe_kit::new_scene(reg);
-        let glow = |t| Address::on(t, SlotId::Look, "glow");
+        // The test ball's Glow layer's Strength.
+        let glow = |t| Address::on(t, SlotId::Look, "2/strength");
         scene.set_key(reg, &glow(ThingId(2)), 1.0, Value::Number(0.5)).unwrap();
         let copy = duplicate(&mut scene, reg, ThingId(2)).unwrap();
         assert_eq!(scene.things[&copy].slots, scene.things[&ThingId(2)].slots);
@@ -1140,7 +1142,7 @@ mod tests {
         let f = add_folder(&mut h);
         let look = {
             let s = h.state_mut();
-            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            let glow = Address::on(ThingId(2), SlotId::Look, "2/strength");
             s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.7)).unwrap();
             s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
@@ -1343,7 +1345,7 @@ mod tests {
         let mut h = harness();
         let before = {
             let s = h.state_mut();
-            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            let glow = Address::on(ThingId(2), SlotId::Look, "2/strength");
             s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.7)).unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
             s.selection.set(ThingId(1));

@@ -97,6 +97,10 @@ pub fn registry() -> Registry {
     r.add_thing(FolderKind);
     r.add_thing(CameraKind);
     r.add_module(BasicLookKind);
+    r.add_module(modules::look::LayersLookKind);
+    for k in modules::look::layers::kinds() {
+        r.add_layer(k);
+    }
     r.add_module(StreakTrailKind);
     r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
@@ -112,9 +116,8 @@ pub fn registry() -> Registry {
 /// gravity on). Only tests build it; the program starts from [`new_studio_scene`].
 #[cfg(any(test, feature = "test-scenes"))]
 pub fn new_scene(reg: &Registry) -> Scene {
-    use bpe_core::{Color, Settings, SlotId};
+    use bpe_core::{Settings, SlotId};
     use glam::Vec2;
-    use paint::Paint;
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
     let root = ThingId::ROOT;
@@ -122,8 +125,9 @@ pub fn new_scene(reg: &Registry) -> Scene {
     add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
     let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
     scene.rename_thing(ball, "Ball");
+    scenes::put_card(&mut scene, reg, ball, SlotId::Look, "look.basic");
     let look = scene.things.get_mut(&ball).and_then(|t| t.slots.get_mut(&SlotId::Look)).expect("a new ball's look");
-    look.params = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..scenes::classic_look() }.to_params();
+    look.params = scenes::classic_ball_look().to_params();
     scenes::classic_cards(&mut scene);
     scene.things.get_mut(&ball).expect("just added").transform.position = Vec2::new(0.0, -200.0);
     scene
@@ -180,10 +184,10 @@ mod tests {
         still.velocity = glam::Vec2::ZERO;
         thing.params = still.to_params();
         let resolved = resolve(&scene, &reg);
-        for id in [arena, ball] {
-            let look = BasicLook::from_params(&resolved.things[&id].slots[&SlotId::Look].params);
-            assert_eq!(look.glow, 0.0, "{}", scene.things[&id].name);
-        }
+        let look = BasicLook::from_params(&resolved.things[&arena].slots[&SlotId::Look].params);
+        assert_eq!(look.glow, 0.0, "the arena");
+        let stack = modules::look::layers::gpu::Stack::of(&resolved.things[&ball].slots[&SlotId::Look]).unwrap();
+        assert!(stack.drawn.is_empty(), "a new ball is its body alone, with no glow");
         let motion = BasicMotion::from_params(&resolved.things[&ball].slots[&SlotId::Motion].params);
         assert_eq!(motion.gravity_scale, 0.0);
         let mut world = World::build(&scene, &resolved, &sims());
@@ -305,17 +309,19 @@ mod tests {
             let t = reg.thing(thing).unwrap();
             reg.kinds_fitting(slot, t).map(|m| m.id()).collect()
         };
-        assert_eq!(ids("balls", SlotId::Look), ["look.basic"]);
+        assert_eq!(ids("balls", SlotId::Look), ["look.layers"]);
+        assert_eq!(ids("arena", SlotId::Look), ["look.basic"]);
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
         assert_eq!(ids("balls", SlotId::Shader).len(), 13);
     }
 
     #[test]
-    fn the_look_registry_has_one_ball_look() {
+    fn the_look_registry_has_one_look_for_balls_and_one_for_the_rest() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.basic"]);
+        assert_eq!(looks, ["look.basic", "look.layers"]);
         assert_eq!(reg.module("look.basic").unwrap().name(), "Look");
+        assert_eq!(reg.module("look.layers").unwrap().name(), "Look");
     }
 
     #[test]

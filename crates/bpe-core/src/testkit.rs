@@ -1,6 +1,9 @@
 //! Small example plugins for tests, here and in later crates.
 
-use crate::{Color, ModuleKind, Registry, Scene, SettingDef, Settings, SlotId, Target, Thing, ThingId, ThingKind};
+use crate::{
+    Color, LayerKind, LayerSection, ModuleKind, Registry, Scene, SettingDef, Settings, SlotId, Target, Thing, ThingId,
+    ThingKind,
+};
 
 /// The scene settings.
 pub struct SceneKind;
@@ -182,6 +185,106 @@ impl ModuleKind for StreakKind {
     }
 }
 
+/// A card that holds a stack of layers.
+pub struct StackLookKind;
+/// The stack's base layer.
+pub struct BaseLayerKind;
+/// A drawn layer that may repeat.
+pub struct RingLayerKind;
+/// A reaction, at most one.
+pub struct PopLayerKind;
+
+#[derive(Settings)]
+pub struct BaseLayer {
+    #[setting(label = "Size", range(0, 4), keyframe)]
+    pub size: f32,
+    #[setting(label = "Colour", keyframe)]
+    pub color: Color,
+}
+
+impl Default for BaseLayer {
+    fn default() -> Self {
+        Self { size: 1.0, color: Color::WHITE }
+    }
+}
+
+#[derive(Settings)]
+pub struct RingLayer {
+    #[setting(label = "Width", range(0, 60), unit = "px", keyframe, pulse)]
+    pub width: f32,
+}
+
+impl Default for RingLayer {
+    fn default() -> Self {
+        Self { width: 4.0 }
+    }
+}
+
+#[derive(Settings)]
+pub struct PopLayer {
+    #[setting(label = "Amount", range(0, 1), keyframe)]
+    pub amount: f32,
+}
+
+impl Default for PopLayer {
+    fn default() -> Self {
+        Self { amount: 0.5 }
+    }
+}
+
+impl ModuleKind for StackLookKind {
+    fn id(&self) -> &'static str {
+        "look.stack"
+    }
+    fn name(&self) -> &'static str {
+        "Stack"
+    }
+    fn help(&self) -> &'static str {
+        "Layers drawn bottom to top."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Look
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        &[]
+    }
+}
+
+macro_rules! layer_kind {
+    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal) => {
+        impl LayerKind for $kind {
+            fn id(&self) -> &'static str {
+                $id
+            }
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn help(&self) -> &'static str {
+                "A test layer."
+            }
+            fn settings(&self) -> &'static [SettingDef] {
+                $settings::defs()
+            }
+            fn section(&self) -> LayerSection {
+                LayerSection::$section
+            }
+            fn repeats(&self) -> bool {
+                $repeats
+            }
+            fn card(&self) -> &'static str {
+                "look.stack"
+            }
+            fn base(&self) -> bool {
+                $base
+            }
+        }
+    };
+}
+
+layer_kind!(BaseLayerKind, "layer.base", "Base", BaseLayer, Drawn, false, true);
+layer_kind!(RingLayerKind, "layer.ring", "Ring", RingLayer, Drawn, true, false);
+layer_kind!(PopLayerKind, "react.pop", "Pop", PopLayer, Reaction, false, false);
+
 /// A registry with every test plugin.
 pub fn registry() -> Registry {
     let mut r = Registry::new();
@@ -190,6 +293,10 @@ pub fn registry() -> Registry {
     r.add_thing(BallsKind);
     r.add_module(PlainLookKind);
     r.add_module(StreakKind);
+    r.add_module(StackLookKind);
+    r.add_layer(BaseLayerKind);
+    r.add_layer(RingLayerKind);
+    r.add_layer(PopLayerKind);
     r
 }
 

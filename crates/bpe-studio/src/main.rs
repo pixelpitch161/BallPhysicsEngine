@@ -9,6 +9,7 @@ mod gradient_bar;
 mod grid;
 mod history;
 mod inspector;
+mod look_editor;
 mod palettes;
 mod preview;
 mod selection;

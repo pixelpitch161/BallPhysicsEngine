@@ -19,11 +19,12 @@ pub(crate) enum Kind {
     Shape,
     Ball,
     Look,
+    Layered,
     Flash,
 }
 
 impl Kind {
-    const ALL: [Kind; 5] = [Kind::Trail, Kind::Shape, Kind::Ball, Kind::Look, Kind::Flash];
+    const ALL: [Kind; 6] = [Kind::Trail, Kind::Shape, Kind::Ball, Kind::Look, Kind::Layered, Kind::Flash];
 
     fn used_by(self, f: &Frame) -> bool {
         match self {
@@ -31,6 +32,7 @@ impl Kind {
             Kind::Shape => !f.shapes.is_empty(),
             Kind::Ball => !f.balls.is_empty(),
             Kind::Look => !f.looks.is_empty(),
+            Kind::Layered => !f.layered.is_empty(),
             Kind::Flash => !f.flashes.is_empty(),
         }
     }

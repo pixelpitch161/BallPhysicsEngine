@@ -26,6 +26,10 @@ pub enum EditError {
     OnlyOne(KindId),
     /// That kind of card doesn't fit this kind of thing.
     NotAccepted,
+    /// The card has no layer with that id.
+    NoLayer(crate::LayerId),
+    /// The base layer (the balls' Body) always stays at the bottom and shown.
+    BaseLayer,
 }
 
 impl fmt::Display for EditError {
@@ -42,6 +46,8 @@ impl fmt::Display for EditError {
             EditError::UnknownSetting(k) => write!(f, "There is no setting called \"{k}\" here"),
             EditError::OnlyOne(k) => write!(f, "A scene has only one {k}"),
             EditError::NotAccepted => write!(f, "That kind of card can't go there"),
+            EditError::NoLayer(_) => write!(f, "That layer isn't there any more"),
+            EditError::BaseLayer => write!(f, "The bottom layer can't be removed, moved, copied or hidden"),
         }
     }
 }

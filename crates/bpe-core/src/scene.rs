@@ -1,6 +1,6 @@
 //! The scene: a tree of things, each with its own cards of settings.
 
-use crate::{Address, KindId, Params, Pulse, Registry, SlotId, ThingId, Track};
+use crate::{Address, KindId, Layer, LayerId, Params, Pulse, Registry, SlotId, ThingId, Track};
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,12 +106,31 @@ pub struct Slot {
     /// What earlier kinds of this card left behind, by kind, to restore if it switches back.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub stash: BTreeMap<KindId, SlotStash>,
+    /// The card's stack of layers, bottom first, then its reactions, for a card kind that holds
+    /// layers (the balls' Look). Each layer's settings sit in `params` under layered keys.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<Layer>,
 }
 
 impl Slot {
     /// A card of `kind` with every setting at its default.
     pub fn new(kind: impl Into<KindId>) -> Slot {
         Slot { kind: kind.into(), ..Slot::default() }
+    }
+
+    /// The layer with this id.
+    pub fn layer(&self, id: LayerId) -> Option<&Layer> {
+        self.layers.iter().find(|l| l.id == id)
+    }
+
+    /// Where the layer with this id sits in the stack.
+    pub fn layer_index(&self, id: LayerId) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
+    }
+
+    /// The id a new layer gets: one more than the largest in the card, 0 for the first.
+    pub fn next_layer_id(&self) -> LayerId {
+        LayerId(self.layers.iter().map(|l| l.id.0 + 1).max().unwrap_or(0))
     }
 }
 
@@ -226,7 +245,7 @@ impl Default for Scene {
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 3;
+    pub const FORMAT: u32 = 4;
 
     /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
@@ -460,7 +479,7 @@ mod tests {
         let s = Scene::empty(&testkit::registry());
         assert_eq!(s.order, vec![ThingId::ROOT]);
         assert_eq!(s.things[&ThingId::ROOT].name, "Scene settings");
-        assert_eq!(s.format, 3);
+        assert_eq!(s.format, 4);
         assert_eq!(s.next_thing, 1);
     }
 

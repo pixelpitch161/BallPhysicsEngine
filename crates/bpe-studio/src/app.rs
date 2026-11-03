@@ -680,6 +680,10 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        if self.panels.inspector.render.is_none() {
+            // The Look editor's ball view draws with the window's GPU.
+            self.panels.inspector.render = frame.wgpu_render_state().cloned();
+        }
         let before = self.scene.clone();
         let revision = self.revision;
         self.recorded = false;
@@ -968,7 +972,7 @@ mod tests {
         h.run();
         let panel = h.state().1;
         assert!((panel - 320.0).abs() <= 1.0, "the panel is at its minimum: {panel}");
-        let glow = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Glow").rect();
+        let glow = h.get_all_by_role_and_label(egui::accesskit::Role::Slider, "Size").next().unwrap().rect();
         // The number box sits right of the slider, level with it.
         let value = h
             .root()
@@ -976,8 +980,8 @@ mod tests {
             .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::SpinButton)
             .map(|n| n.rect())
             .find(|r| r.left() > glow.right() - 1.0 && (r.center().y - glow.center().y).abs() < 4.0)
-            .expect("Glow's number box");
-        assert!(value.right() <= 1000.0 - 10.0, "Glow's number box ends at {}, past the panel", value.right());
+            .expect("Size's number box");
+        assert!(value.right() <= 1000.0 - 10.0, "Size's number box ends at {}, past the panel", value.right());
         // An x and y pair that can't fit side by side goes onto two lines, inside its row.
         let speed: Vec<egui::Rect> =
             h.get_all_by_role_and_label(egui::accesskit::Role::SpinButton, "Launch speed").map(|n| n.rect()).collect();
@@ -1014,7 +1018,8 @@ mod tests {
         let mut studio = Studio::headless();
         studio.seek(2.0);
         let before = studio.scene.clone();
-        let look = Address::on(ThingId(2), SlotId::Look, "glow");
+        // The test ball's Glow layer's Strength.
+        let look = Address::on(ThingId(2), SlotId::Look, "2/strength");
         studio.scene.set_at(&studio.kit.registry, &look, Value::Number(1.0)).unwrap();
         studio.after_edit(before);
         assert!(studio.playback.time() >= 2.0);

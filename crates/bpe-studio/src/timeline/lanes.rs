@@ -66,6 +66,11 @@ fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
     let setting = scene.def_at(&kit.registry, a).map(|d| d.label).unwrap_or(a.key.as_str());
     match a.slot {
         None => format!("{thing} · {setting}"),
+        Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {
+            // A layer's setting goes by the layer's own name: "Ball · Outline · Width".
+            let name = found.and_then(|t| t.slots.get(&slot)).and_then(|c| c.layer(layer)).map(|l| l.name.as_str());
+            format!("{thing} · {} · {setting}", name.unwrap_or("?"))
+        }
         Some(slot) => {
             // The card's title as the inspector shows it ("Effects" for the Shader slot).
             let title = found.and_then(|t| kit.registry.thing(&t.kind)).map_or(slot.name(), |k| k.slot_label(slot));
@@ -99,7 +104,8 @@ mod tests {
         let reg = &kit.registry;
         let size = Address::own(ThingId(2), "radius");
         let gravity = Address { thing: ThingId::ROOT, slot: None, key: "gravity".into() };
-        let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+        // The test ball's Glow layer's Strength.
+        let glow = Address::on(ThingId(2), SlotId::Look, "2/strength");
         let bloom = Address { thing: ThingId::ROOT, slot: None, key: "bloom".into() };
         scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         scene.set_key(reg, &size, 2.0, Value::Number(60.0)).unwrap();
@@ -110,7 +116,7 @@ mod tests {
         assert_eq!(names, ["Scene settings", "Ball"], "tree order, the arena has no keys");
         let labels = |g: &Group| g.lanes.iter().map(|l| (l.short.clone(), l.pulse)).collect::<Vec<_>>();
         assert_eq!(labels(&groups[0]), [("Gravity".to_owned(), false), ("Bloom".to_owned(), true)]);
-        assert_eq!(labels(&groups[1]), [("Size".to_owned(), false), ("Look · Glow".to_owned(), false)]);
+        assert_eq!(labels(&groups[1]), [("Size".to_owned(), false), ("Glow · Strength".to_owned(), false)]);
         assert_eq!(groups[1].lanes[0].label, "Ball · Size");
         let ball = &groups[1].lanes;
         assert!(ball[0].physics && !ball[1].physics, "a ball's size moves the physics; glow doesn't");

@@ -2,8 +2,10 @@
 
 pub mod basic;
 pub mod draw;
+pub mod layers;
 
 pub use basic::{BallColours, BallShape, BasicLook, BasicLookKind, Style};
+pub use layers::LayersLookKind;
 
 #[cfg(test)]
 mod tests {

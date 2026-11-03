@@ -1,0 +1,381 @@
+//! One row of the Look editor's lists, and dragging the drawn layers into another order.
+
+use bpe_core::{Color, Layer, LayerId, LayerSection, Settings, Slot};
+use bpe_kit::modules::look::layers::{self as kinds, gpu::choice_label};
+use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+
+use super::LookCx;
+use crate::inspector::{Edit, Inspector};
+use crate::style;
+
+/// The height of a layer's row.
+const ROW_H: f32 = 28.0;
+
+/// What a dragged row carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Dragged(bpe_core::ThingId, LayerId);
+
+/// Draws `layer`'s row (at `index` in the card) and returns the rectangle it covers: its grip,
+/// thumbnail, name and summary, and its eye. A click picks it; a double click renames it; the
+/// right-click menu duplicates, copies, pastes, moves and deletes it.
+#[allow(clippy::too_many_arguments)]
+pub fn row(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &LookCx,
+    card: &Slot,
+    layer: &Layer,
+    index: usize,
+    picked: LayerId,
+    edits: &mut Vec<Edit>,
+) -> Rect {
+    let reg = cx.reg();
+    let kind = reg.layer(&layer.kind);
+    let base = kind.is_some_and(|k| k.base());
+    let reaction = kind.is_some_and(|k| k.section() == LayerSection::Reaction);
+    let selected = layer.id == picked;
+    let ink = if layer.enabled { style::MUTED } else { style::FAINT };
+    let background = ui.painter().add(egui::Shape::Noop);
+    let inner = ui.horizontal(|ui| {
+        ui.set_min_height(ROW_H);
+        ui.set_min_width(ui.available_width());
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.add_space(4.0);
+        // The grip, on rows that can be dragged; its empty place on the others.
+        let (grip, _) = ui.allocate_exact_size(Vec2::new(8.0, 14.0), Sense::hover());
+        if !base && !reaction {
+            paint_grip(ui.painter(), grip, style::FAINT);
+        }
+        let (thumb, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+        paint_thumbnail(ui.painter(), thumb, cx, card, layer);
+
+        let renaming = inspector.renaming_layer.as_ref().is_some_and(|(t, l, _)| *t == cx.id && *l == layer.id);
+        if renaming {
+            rename_field(ui, inspector, cx, layer, edits);
+        } else {
+            let text = match (selected, layer.enabled) {
+                (_, false) => RichText::new(&layer.name).color(style::FAINT),
+                (true, true) => RichText::new(&layer.name).font(style::medium(13.0)).color(style::TEXT_STRONG),
+                (false, true) => RichText::new(&layer.name).color(style::TEXT),
+            };
+            let mut button = egui::Button::new(text).frame(false);
+            if !base && !reaction {
+                // A drag-only layer over the button would swallow its clicks, so the button drags.
+                button = button.sense(Sense::click_and_drag());
+            }
+            let response = ui.add(button);
+            if !base && !reaction {
+                response.dnd_set_drag_payload(Dragged(cx.id, layer.id));
+            }
+            if response.double_clicked() {
+                inspector.renaming_layer = Some((cx.id, layer.id, layer.name.clone()));
+                inspector.focus_layer_rename = true;
+            } else if response.clicked() {
+                inspector.selected_layer.insert(cx.id, layer.id);
+            }
+            let help = kind.map_or("A layer of a kind that isn't installed", |k| k.help());
+            let response = response.on_hover_text(help);
+            response.context_menu(|ui| menu(ui, inspector, cx, card, layer, index, edits));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(6.0);
+            if !base {
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
+                let name = format!("{} {}", if layer.enabled { "Hide" } else { "Show" }, layer.name);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+                let eye = if response.hovered() { style::TEXT } else { ink };
+                crate::tree::paint_eye(ui.painter(), rect, layer.enabled, eye);
+                let help = if layer.enabled { "Shown. Click to hide it." } else { "Hidden. Click to show it." };
+                if response.on_hover_text(help).clicked() {
+                    edits.push(Edit::LayerEnabled(cx.slot, layer.id, !layer.enabled));
+                }
+            }
+            let words = summary(cx, layer);
+            if !words.is_empty() {
+                ui.add(egui::Label::new(RichText::new(words).small().color(ink)).truncate());
+            }
+        });
+    });
+    let rect = inner.response.rect;
+    let radius = egui::CornerRadius::same(style::RADIUS_ROW);
+    if selected {
+        let shape = egui::epaint::RectShape::new(
+            rect,
+            radius,
+            style::SELECTED,
+            Stroke::new(1.5, style::TEXT),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().set(background, shape);
+    } else if ui.rect_contains_pointer(rect) {
+        ui.painter().set(background, egui::epaint::RectShape::filled(rect, radius, style::HOVER));
+    }
+    rect
+}
+
+/// The in-place rename field, taking the keyboard on its first frame. Enter or clicking away
+/// keeps the name, Escape drops it, and an empty name goes back to the kind's.
+fn rename_field(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edit>) {
+    let Some((_, _, text)) = inspector.renaming_layer.as_mut() else { return };
+    let edit_id = ui.make_persistent_id(("rename layer", cx.id, layer.id.0));
+    if std::mem::take(&mut inspector.focus_layer_rename) {
+        // The whole name is selected, so typing replaces it.
+        let mut state = egui::text_edit::TextEditState::default();
+        let end = egui::text::CCursor::new(text.chars().count());
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+        state.store(ui.ctx(), edit_id);
+        ui.memory_mut(|m| m.request_focus(edit_id));
+    }
+    let label = ui.label(RichText::new("Name").small().color(style::MUTED));
+    let response = ui.add(egui::TextEdit::singleline(text).id(edit_id).desired_width(140.0)).labelled_by(label.id);
+    if ui.input(|i| i.key_pressed(Key::Escape)) {
+        inspector.renaming_layer = None;
+    } else if (response.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)))
+        && let Some((_, id, name)) = inspector.renaming_layer.take()
+        && name != layer.name
+    {
+        edits.push(Edit::RenameLayer(cx.slot, id, name));
+    }
+}
+
+/// The row's right-click menu. What can't apply to the row is greyed: the Body can't be
+/// duplicated, moved or deleted, and a reaction doesn't move.
+fn menu(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &LookCx,
+    card: &Slot,
+    layer: &Layer,
+    index: usize,
+    edits: &mut Vec<Edit>,
+) {
+    let reg = cx.reg();
+    let kind = reg.layer(&layer.kind);
+    let base = kind.is_some_and(|k| k.base());
+    let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
+    let repeats = kind.is_some_and(|k| k.repeats());
+    let top_drawn = card
+        .layers
+        .iter()
+        .rposition(|l| reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Drawn))
+        .unwrap_or(0);
+    let (slot, id) = (cx.slot, layer.id);
+    ui.set_min_width(170.0);
+    if ui.add_enabled(!base && repeats, egui::Button::new("Duplicate")).clicked() {
+        edits.push(Edit::DuplicateLayer(slot, id));
+        ui.close();
+    }
+    if ui.button("Copy layer").clicked() {
+        inspector.clipboard.layer = cx.scene.copy_layer(cx.id, slot, id);
+        ui.close();
+    }
+    let copied =
+        inspector.clipboard.layer.clone().filter(|c| reg.layer(&c.kind).is_some_and(|k| k.card() == card.kind));
+    let paste = ui.add_enabled(copied.is_some(), egui::Button::new("Paste layer"));
+    if let Some(copied) = copied
+        && paste.clicked()
+    {
+        edits.push(Edit::PasteLayer(slot, copied));
+        ui.close();
+    }
+    if ui.button("Copy whole look").clicked() {
+        inspector.clipboard.look = cx.scene.copy_look(cx.id, slot);
+        ui.close();
+    }
+    let look = inspector.clipboard.look.clone().filter(|_| card.kind == kinds::CARD);
+    let paste = ui.add_enabled(look.is_some(), egui::Button::new("Paste whole look"));
+    if let Some(look) = look
+        && paste.clicked()
+    {
+        edits.push(Edit::PasteLook(slot, look));
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(drawn && index < top_drawn, egui::Button::new("Move up")).clicked() {
+        edits.push(Edit::MoveLayer(slot, id, index + 1));
+        ui.close();
+    }
+    if ui.add_enabled(drawn && index > 1, egui::Button::new("Move down")).clicked() {
+        edits.push(Edit::MoveLayer(slot, id, index - 1));
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(!base, egui::Button::new("Delete")).clicked() {
+        edits.push(Edit::RemoveLayer(slot, id));
+        ui.close();
+    }
+}
+
+/// Where a drawn layer dragged over `rows` (top first, the Body last) lands: a line marks the
+/// gap, and letting go moves it there. The Body stays at the bottom.
+pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect)], edits: &mut Vec<Edit>) {
+    let ctx = ui.ctx().clone();
+    let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
+    let Dragged(thing, layer) = *dragged;
+    if thing != cx.id {
+        return;
+    }
+    let Some(pointer) = ctx.pointer_latest_pos() else { return };
+    let Some(&(_, list_top)) = rows.first() else { return };
+    let Some(&(_, list_bottom)) = rows.last() else { return };
+    let list = Rect::from_min_max(list_top.min, list_bottom.max).expand2(Vec2::new(0.0, ROW_H * 0.5));
+    if !list.contains(pointer) {
+        return;
+    }
+    // Rows above the Body: the gap the pointer is nearest, never under the Body.
+    let above_body = &rows[..rows.len().saturating_sub(1)];
+    let gap = above_body.iter().position(|(_, r)| pointer.y < r.center().y).unwrap_or(above_body.len());
+    let line_y = match above_body.get(gap) {
+        Some((_, r)) => r.top(),
+        None => rows.last().map_or(list.bottom(), |(_, r)| r.top()),
+    };
+    ui.painter().hline(list_top.x_range(), line_y - 1.0, Stroke::new(2.0, style::TEXT));
+    if !ctx.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    // Counted from the top among the others, the gap gives the index it takes.
+    let others: Vec<LayerId> = above_body.iter().map(|(l, _)| *l).filter(|l| *l != layer).collect();
+    let dragged_at = above_body.iter().position(|(l, _)| *l == layer);
+    let place = match dragged_at {
+        Some(at) if at < gap => gap - 1,
+        _ => gap,
+    };
+    let to = others.len() + 1 - place;
+    if card.layer_index(layer) != Some(to) {
+        edits.push(Edit::MoveLayer(cx.slot, layer, to));
+    }
+    egui::DragAndDrop::clear_payload(&ctx);
+}
+
+/// A few words on the right of a row about its main settings: "4 px · Inside", "Add 100 %".
+fn summary(cx: &LookCx, layer: &Layer) -> String {
+    let Some(kind) = cx.reg().layer(&layer.kind) else { return String::new() };
+    let p = cx.params_of(layer.id, kind.settings());
+    let percent = |v: f32| format!("{:.0} %", v * 100.0);
+    match layer.kind.as_str() {
+        kinds::BODY => {
+            let b = kinds::BodyLayer::from_params(&p);
+            let stops = &b.fill.colours.stops;
+            let colour =
+                if stops.len() > 1 { format!("{} colours", stops.len()) } else { colour_word(b.fill.colours.first()) };
+            format!("{} · {colour}", choice_label(b.ball_shape))
+        }
+        kinds::PATTERN => {
+            let l = kinds::PatternLayer::from_params(&p);
+            with_blend(choice_label(l.inside.pattern), l.blend)
+        }
+        kinds::OUTLINE => {
+            let l = kinds::OutlineLayer::from_params(&p);
+            with_blend(format!("{:.0} px · {}", l.width, choice_label(l.sits)), l.blend)
+        }
+        kinds::SHINE => {
+            with_blend(percent(kinds::ShineLayer::from_params(&p).strength), kinds::ShineLayer::from_params(&p).blend)
+        }
+        kinds::GLOW => {
+            let l = kinds::GlowLayer::from_params(&p);
+            with_blend(format!("{:.1} · size {:.1}", l.strength, l.size), l.blend)
+        }
+        kinds::BLEND => {
+            let l = kinds::BlendLayer::from_params(&p);
+            format!("{} {}", choice_label(l.blend), percent(l.blend_amount))
+        }
+        kinds::FLASH => format!("{:.1}", kinds::FlashOnHit::from_params(&p).flash),
+        kinds::HUE => format!("{:.0}° a hit", kinds::ColourOnHit::from_params(&p).hue_per_hit),
+        kinds::STRETCH => percent(kinds::StretchWhenFast::from_params(&p).stretch),
+        kinds::RAINBOW => format!("{:.2} turns/s", kinds::ColourOverTime::from_params(&p).rainbow),
+        kinds::TURNING => {
+            let t = kinds::Turning::from_params(&p);
+            if t.face_motion { "Faces its way".into() } else { format!("{:.0}°/s", t.spin) }
+        }
+        _ => String::new(),
+    }
+}
+
+/// `words`, then the blend when it isn't Normal.
+fn with_blend(words: String, blend: bpe_core::Blend) -> String {
+    if blend == bpe_core::Blend::Normal { words } else { format!("{words} · {}", choice_label(blend)) }
+}
+
+/// A colour in a word or two: white, black, or its hex.
+fn colour_word(c: Color) -> String {
+    match (c.r.min(c.g).min(c.b), c.r.max(c.g).max(c.b)) {
+        (250.., _) => "white".into(),
+        (_, ..=5) => "black".into(),
+        _ => format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b),
+    }
+}
+
+/// A colour of the scene as a thumbnail shows it.
+fn shown(c: Color) -> Color32 {
+    Color32::from_rgb(c.r, c.g, c.b) // scene colour
+}
+
+/// The body's colour as its thumbnail and same-as-body colours show it.
+fn body_colour(cx: &LookCx, card: &Slot) -> Color {
+    let Some(body) = card.layers.first() else { return Color::WHITE };
+    let p = cx.params_of(body.id, kinds::BodyLayer::defs());
+    kinds::BodyLayer::from_params(&p).fill.colours.first()
+}
+
+/// A small picture of what the layer does, in its main colour.
+fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot, layer: &Layer) {
+    let c = rect.center();
+    let r = rect.width() * 0.42;
+    let body = shown(body_colour(cx, card));
+    let fade = |col: Color32| if layer.enabled { col } else { col.gamma_multiply(0.4) };
+    let Some(kind) = cx.reg().layer(&layer.kind) else { return };
+    let p = cx.params_of(layer.id, kind.settings());
+    let own =
+        |from: kinds::ColourFrom, colour: Color| if from == kinds::ColourFrom::Own { shown(colour) } else { body };
+    match layer.kind.as_str() {
+        kinds::BODY => {
+            painter.circle_filled(c, r, fade(body));
+        }
+        kinds::OUTLINE => {
+            let l = kinds::OutlineLayer::from_params(&p);
+            painter.circle_stroke(c, r - 1.0, Stroke::new(2.0, fade(own(l.colour_from, l.colour))));
+        }
+        kinds::GLOW => {
+            let l = kinds::GlowLayer::from_params(&p);
+            let col = own(l.colour_from, l.colour);
+            for (k, a) in [(1.0, 0.25), (0.7, 0.45), (0.4, 1.0)] {
+                painter.circle_filled(c, r * k, fade(col.gamma_multiply(a)));
+            }
+        }
+        kinds::SHINE => {
+            painter.circle_filled(c, r, fade(style::RAISED));
+            painter.circle_filled(c + Vec2::new(-r * 0.35, -r * 0.35), r * 0.35, fade(style::UNTINTED));
+        }
+        kinds::PATTERN => {
+            painter.circle_filled(c, r, fade(style::RAISED));
+            for dx in [-0.45, 0.15] {
+                let stripe = Rect::from_center_size(c + Vec2::new(dx * r, 0.0), Vec2::new(r * 0.35, r * 1.5));
+                painter.rect_filled(stripe, 1.0, fade(body));
+            }
+        }
+        kinds::BLEND => {
+            let stroke = Stroke::new(1.3, fade(style::TEXT));
+            painter.circle_stroke(c + Vec2::new(-r * 0.3, 0.0), r * 0.6, stroke);
+            painter.circle_stroke(c + Vec2::new(r * 0.3, 0.0), r * 0.6, stroke);
+        }
+        _ => {
+            // A reaction: a small spark.
+            let stroke = Stroke::new(1.3, fade(style::MUTED));
+            for k in 0..4 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4 * 2.0 + std::f32::consts::FRAC_PI_4;
+                let d = Vec2::angled(a);
+                painter.line_segment([c + d * r * 0.3, c + d * r], stroke);
+            }
+        }
+    }
+}
+
+/// The grip's two columns of dots.
+fn paint_grip(painter: &egui::Painter, rect: Rect, ink: Color32) {
+    for row in 0..3 {
+        for col in 0..2 {
+            let at = Pos2::new(rect.left() + 2.0 + col as f32 * 4.0, rect.center().y - 4.0 + row as f32 * 4.0);
+            painter.circle_filled(at, 1.0, ink);
+        }
+    }
+}

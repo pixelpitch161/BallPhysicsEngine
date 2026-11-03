@@ -43,13 +43,24 @@ Dependencies go bottom to top:
   (`save.rs`), edits (`edit.rs`: `add_slot`, `remove_slot`, `set_slot_kind`) and **resolve** (`resolve.rs`: each
   card's defaults under the thing's own values). A setting's `Address` is `{ thing, slot, key }`.
   `registry.rs` holds the plugin registry. `ModuleKind` is the trait for a card kind (the name is historical).
+  A card can hold **layers** (`layers.rs`, `Slot.layers`): each `Layer { id, kind, name, enabled }` is of a
+  `LayerKind` (drawn or reaction; index 0 is the base layer, which can't move, hide or go). A layer's settings
+  live in the card's params under layered keys `"<layer id>/<key>"` (`layered_key`, `split_layered`); edits are
+  `add_layer`, `remove_layer`, `move_layer`, `duplicate_layer`, `rename_layer`, `set_layer_enabled`,
+  `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. Scene files are format 4.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
-  shader effects, particles and trails.
+  shader effects, particles and trails. Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
+  its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
+  older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
-  and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A folder usually has
+  and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
+  `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Blend and the reactions Flash on
+  hit, Colour on hit, Stretch when fast, Colour over time, Turning; `gpu.rs` turns a stack into records); the
+  arena keeps `look.basic`. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
+  into layers (`layers_from_basic`). A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
   colour and gradient system (not the removed canvas). `starters.rs` gives a new thing its starting cards (`add_thing`, `fill_slot`) and
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
@@ -62,7 +73,10 @@ Dependencies go bottom to top:
   file may make up a colour (a test checks; a real scene colour line ends in `// scene colour`). Every thing but
   the scene settings has a `Thing.colour` (`TrackColour`, editor only, never read by physics or export). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
-  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`. The
+  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  A `look.layers` card shows the Look editor (`look_editor/`: the ball view, the Layers and Reactions lists with
+  their menus, drag to reorder and rename, then the picked layer's settings; the copied layer/look live in
+  `Inspector.clipboard`). The
   timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open.
 
 ## Working rules
