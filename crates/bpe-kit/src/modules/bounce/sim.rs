@@ -123,7 +123,7 @@ impl ModuleSim for BasicBounceSim {
 #[cfg(test)]
 mod tests {
     use crate::testing::{ARENA, BALLS, one_ball_with_bounce};
-    use bpe_core::{SlotId, Target, Value, resolve, resolve_slot};
+    use bpe_core::{SlotId, Target, Value, resolve};
     use bpe_runtime::{EventKind, Log, Party, Playback, World};
     use glam::Vec2;
 
@@ -135,9 +135,9 @@ mod tests {
             p.set("spacing", Value::Number(60.0));
             p.set("velocity", Value::Vec2([0.0, 0.0]));
         });
-        let m = resolve_slot(&scene, &kit.registry, BALLS, SlotId::Bounce, &mut Vec::new()).unwrap().module;
-        scene.library.modules.get_mut(&m).unwrap().params.set("hit_balls", Value::Bool(true));
-        scene.library.modules.get_mut(&m).unwrap().params.set("grow", Value::Number(3.0));
+        let m = (BALLS, SlotId::Bounce);
+        scene.card_mut(m.0, m.1).unwrap().params.set("hit_balls", Value::Bool(true));
+        scene.card_mut(m.0, m.1).unwrap().params.set("grow", Value::Number(3.0));
         scene.things.get_mut(&BALLS).unwrap().transform.position = Vec2::new(0.0, 300.0);
         let resolved = resolve(&scene, &kit.registry);
         let mut w = World::build(&scene, &resolved, &kit.sims);
@@ -153,7 +153,7 @@ mod tests {
         assert!(pair.speed > 350.0, "{pair:?}");
         assert!(w.bodies[&BALLS].radius[0] >= 27.0, "a ball hit grows too");
         // Off by default: the same block passes straight through itself.
-        scene.library.modules.get_mut(&m).unwrap().params.remove("hit_balls");
+        scene.card_mut(m.0, m.1).unwrap().params.remove("hit_balls");
         let resolved = resolve(&scene, &kit.registry);
         let mut w = World::build(&scene, &resolved, &kit.sims);
         w.bodies.get_mut(&BALLS).unwrap().velocity[0] = Vec2::new(200.0, 0.0);

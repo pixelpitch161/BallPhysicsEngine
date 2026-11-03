@@ -23,13 +23,13 @@ impl ThingKind for FolderKind {
         "folder"
     }
     fn help(&self) -> &'static str {
-        "Groups things. Anything it links in a slot is used by everything inside it."
+        "Groups things in the tree, so they can be moved, hidden or ridden together."
     }
     fn settings(&self) -> &'static [SettingDef] {
         FolderSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &SlotId::ALL
+        &[]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]

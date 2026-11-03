@@ -25,8 +25,8 @@ pub fn scene_with_balls(arrangement: &str, f: impl FnOnce(&mut Params)) -> (Scen
 pub fn one_ball_with_bounce(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let m = bpe_core::resolve_slot(&scene, &kit.registry, BALLS, SlotId::Bounce, &mut Vec::new()).unwrap().module;
-    f(&mut scene.library.modules.get_mut(&m).unwrap().params);
+    let m = (BALLS, SlotId::Bounce);
+    f(&mut scene.card_mut(m.0, m.1).unwrap().params);
     let resolved = resolve(&scene, &kit.registry);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, kit)
@@ -44,8 +44,8 @@ pub fn run(scene: &Scene, resolved: &Resolved, kit: &Kit, seconds: f64) -> (bpe_
 pub fn one_ball_with_motion(f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let m = bpe_core::resolve_slot(&scene, &kit.registry, BALLS, SlotId::Motion, &mut Vec::new()).unwrap().module;
-    f(&mut scene.library.modules.get_mut(&m).unwrap().params);
+    let m = (BALLS, SlotId::Motion);
+    f(&mut scene.card_mut(m.0, m.1).unwrap().params);
     let resolved = resolve(&scene, &kit.registry);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, kit)

@@ -55,7 +55,7 @@ pub struct SceneSettings {
     #[setting(label = "Background stays on screen", group = "Background")]
     pub background_on_screen: bool,
     /// How much bright things bleed light around them.
-    #[setting(label = "Bloom", range(0, 1), simple, keyframe, random, pulse, group = "Picture")]
+    #[setting(label = "Bloom", range(0, 1), simple, keyframe, pulse, group = "Picture")]
     pub bloom: f32,
     /// How bright the whole picture is.
     #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse, group = "Picture")]
@@ -156,9 +156,6 @@ impl ThingKind for SceneKind {
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
     }
-    fn passes_down(&self) -> bool {
-        false
-    }
     fn slot_label(&self, slot: SlotId) -> &'static str {
         match slot {
             SlotId::Shader => "Effects",
@@ -225,9 +222,8 @@ mod tests {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
         assert_eq!(k.slots(), &[SlotId::Shader]);
-        assert!(k.default_slots().is_empty() && !k.passes_down());
+        assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
-        assert!(k.accepts(SlotId::Shader, "shader.echo"));
     }
 
     #[test]

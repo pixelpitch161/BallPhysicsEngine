@@ -13,6 +13,11 @@ version before that is **Version 1**, kept on the `version-1` branch (with its e
 windows, the canvas and paint marks, the whole sound and chords system (`bpe-synth`, `bpe-mix`), and the Obstacle,
 Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. Exports carry a silent audio track.
 
+Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
+Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }`; nothing is shared,
+linked, inherited from a folder or locked, and there is no Library, presets or randomize (dice). Right-clicking a
+setting opens Copy Value / Paste Value (…) / Create Keyframe; there are no keyframe diamonds in the inspector.
+
 | | |
 | --- | --- |
 | Editor crate / binary | `bpe-studio` / `ball-studio-next` |
@@ -31,28 +36,29 @@ compatibility until they are happy with the software.
 Dependencies go bottom to top:
 
 - `bpe-settings-derive`: `#[derive(Settings, Choice)]` turns a plain struct into a settings schema. Each field's
-  `#[setting(...)]` attribute (label, range, unit, `simple`, `random`, `keyframe`, `structural`, `when`) drives the
-  inspector UI, dice, locks, keyframes and pulses all at once.
-- `bpe-core`: the data model. Things sit in a tree (`scene.rs`), modules sit in a shared library (`library.rs`),
-  values, colours/gradients, blend modes, animation (keyframes and pulses on hits), save/load (`save.rs`) and
-  **resolve** (`resolve.rs`, which follows the order override > linked module > parent's module > Scene settings).
-  `registry.rs` holds the plugin registry.
+  `#[setting(...)]` attribute (label, range, `span`, unit, `simple`, `keyframe`, `pulse`, `when`) drives the
+  inspector UI, keyframes and pulses at once. `span(a, b)` is a slider's usual span when there is no hard `range`.
+- `bpe-core`: the data model. Things sit in a tree (`scene.rs`), each with its own params and its own cards in
+  `slots`. Also values, colours/gradients, blend modes, animation (keyframes and pulses on hits), save/load
+  (`save.rs`), edits (`edit.rs`: `add_slot`, `remove_slot`, `set_slot_kind`) and **resolve** (`resolve.rs`: each
+  card's defaults under the thing's own values). A setting's `Address` is `{ thing, slot, key }`.
+  `registry.rs` holds the plugin registry. `ModuleKind` is the trait for a card kind (the name is historical).
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
   shader effects, particles and trails.
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
-  and one per module kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A folder usually has
+  and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
-  colour and gradient system (not the removed canvas). `starters.rs` holds per-thing starter modules and
+  colour and gradient system (not the removed canvas). `starters.rs` gives a new thing its starting cards (`add_thing`, `fill_slot`) and
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
   the old look/motion values with `classic_*` helpers so goldens don't move. Never add built-in or example scenes
   to the program unless the owner asks.
 - `bpe-cli`: headless export.
 - `bpe-studio`: the egui 0.37 editor. Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
-  `library.rs`, `palettes.rs` and `export_window.rs`.
+  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
 
 ## Working rules
 
@@ -105,9 +111,9 @@ native Windows (libm trig), which is a known gap.
 
 ## Engine pitfalls
 
-- Module states are `MotionState { settings }` and `BounceState { settings }` (in
+- Card sim states are `MotionState { settings }` and `BounceState { settings }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns
   `None`.
 - `World::matching(target, me)` lists the things a target points at (Me = the thing itself); `World::names(target,
   me, other)` asks whether it points at one thing (the camera's hit trigger uses it).
-- An inherited (linked-from-parent) module card is read-only until "Change here".
+- A thing with no Look card draws nothing, and a card of an unknown kind is reported and ignored.

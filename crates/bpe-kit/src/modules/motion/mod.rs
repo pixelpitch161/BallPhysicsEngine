@@ -10,13 +10,13 @@ pub struct BasicMotionKind;
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BasicMotion {
     /// How strongly the scene's gravity pulls these, as a multiple.
-    #[setting(label = "Gravity ×", range(-5, 5), group = "Basics", simple, keyframe, random, pulse)]
+    #[setting(label = "Gravity ×", range(-5, 5), group = "Basics", simple, keyframe, pulse)]
     pub gravity_scale: f32,
     /// How quickly the air slows them.
-    #[setting(label = "Air drag", range(0, 5), unit = "per s", group = "Basics", simple, keyframe, random(0, 1.5))]
+    #[setting(label = "Air drag", range(0, 5), unit = "per s", group = "Basics", simple, keyframe)]
     pub drag: f32,
     /// A steady push on these, in pixels per second squared.
-    #[setting(label = "Wind", group = "Basics", unit = "px/s²", keyframe, random, pulse)]
+    #[setting(label = "Wind", group = "Basics", unit = "px/s²", keyframe, pulse)]
     pub wind: Vec2,
 }
 

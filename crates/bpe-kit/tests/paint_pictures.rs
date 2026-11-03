@@ -54,8 +54,8 @@ fn inside_rings_draw_on_classic_balls() {
     ball.transform.position = glam::Vec2::ZERO;
     ball.params.set("radius", Value::Number(300.0));
     ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
-    let m = bpe_core::resolve_slot(&scene, &kit.registry, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
-    let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+    let m = (ThingId(2), SlotId::Look);
+    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
     let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
     params.set("colours", Value::Gradient(Gradient::even(&[red, blue])));
     params.set("glow", Value::Number(0.0));
@@ -82,7 +82,7 @@ fn inside_rings_draw_on_classic_balls() {
     assert!(middle[0] > 40 && middle[2] > 40, "{middle:?}");
     assert!(edge[0] > 20 && edge[2] > 20, "{edge:?}: the same colour, lit darker");
 
-    let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
     // Rings of their own gradient, from red at the middle to blue at the edge.
     params.set("in_pattern", Value::Choice("rings".into()));
     params.set("in_from", Value::Choice("own_gradient".into()));

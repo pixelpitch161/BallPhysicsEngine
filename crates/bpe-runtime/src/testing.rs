@@ -400,13 +400,28 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s
 }
 
+/// Gives `id` its own card of `kind` in `slot`, with `params` changed from the defaults.
+pub fn give(scene: &mut Scene, id: ThingId, slot: SlotId, kind: &str, params: &[(&str, Value)]) {
+    scene.add_slot(&reg(), id, slot, kind).unwrap();
+    let card = scene.things.get_mut(&id).unwrap().slots.get_mut(&slot).unwrap();
+    for (key, value) in params {
+        card.params.set(key, value.clone());
+    }
+}
+
+/// [`give`] to every thing in the scene.
+pub fn give_all(scene: &mut Scene, slot: SlotId, kind: &str, params: &[(&str, Value)]) {
+    for id in scene.order.clone() {
+        give(scene, id, slot, kind, params);
+    }
+}
+
 pub fn dots_in_ring(count: u32) -> (Scene, Resolved, Sims) {
     let reg = reg();
     let mut scene = Scene::empty(&reg);
-    let gravity = scene.add_module(&reg, "motion.gravity", "Gravity").unwrap();
-    scene.link(&reg, ThingId::ROOT, SlotId::Motion, gravity).unwrap();
     let wall = scene.add_thing(&reg, "wall", ThingId::ROOT).unwrap();
     let dots = scene.add_thing(&reg, "dots", ThingId::ROOT).unwrap();
+    give_all(&mut scene, SlotId::Motion, "motion.gravity", &[]);
     assert_eq!((wall, dots), (WALL, DOTS));
     scene.things.get_mut(&DOTS).unwrap().params.set("count", Value::Int(count as i64));
     let resolved = resolve(&scene, &reg);
@@ -432,15 +447,14 @@ pub fn dots_pair(gap: f32, target: Target) -> (Scene, Resolved, Sims) {
     scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
     let second = scene.add_thing(&reg, "dots", ThingId::ROOT).unwrap();
     assert_eq!(second, DOTS2);
+    give(&mut scene, DOTS2, SlotId::Motion, "motion.gravity", &[]);
     scene.things.get_mut(&DOTS2).unwrap().tags.insert("soft".into());
     for (id, x) in [(DOTS, -gap), (DOTS2, gap)] {
         let t = scene.things.get_mut(&id).unwrap();
         t.transform.position = Vec2::new(x, 0.0);
         t.params.set("velocity", Value::Vec2([if x < 0.0 { 100.0 } else { -100.0 }, 0.0]));
     }
-    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
-    scene.library.modules.get_mut(&bumpy).unwrap().params.set("target", Value::Target(target));
-    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
+    give_all(&mut scene, SlotId::Bounce, "bounce.bumpy", &[("target", Value::Target(target))]);
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)
@@ -451,9 +465,7 @@ pub fn dots_pair_popping(pops: u32) -> (Scene, Resolved, Sims) {
     let (mut scene, _, sims) = dots_pair(30.0, Target::Anything);
     let reg = reg();
     scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 500.0]));
-    let popping = scene.add_module(&reg, "bounce.bumpy", "Popping").unwrap();
-    scene.library.modules.get_mut(&popping).unwrap().params.set("pops_after", Value::Int(pops as i64));
-    scene.link(&reg, DOTS, SlotId::Bounce, popping).unwrap();
+    give(&mut scene, DOTS, SlotId::Bounce, "bounce.bumpy", &[("pops_after", Value::Int(pops as i64))]);
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)
@@ -465,9 +477,7 @@ pub fn dots_pile(count: u32) -> (Scene, Resolved, Sims) {
     let reg = reg();
     scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(150.0));
     scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
-    let bumpy = scene.add_module(&reg, "bounce.bumpy", "Bumpy").unwrap();
-    scene.library.modules.get_mut(&bumpy).unwrap().params.set("bounciness", Value::Number(0.5));
-    scene.link(&reg, ThingId::ROOT, SlotId::Bounce, bumpy).unwrap();
+    give_all(&mut scene, SlotId::Bounce, "bounce.bumpy", &[("bounciness", Value::Number(0.5))]);
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)
@@ -477,10 +487,8 @@ pub fn dots_pile(count: u32) -> (Scene, Resolved, Sims) {
 pub fn dots_in_sticky_ring(takes_over: bool) -> (Scene, Resolved, Sims) {
     let (mut scene, _, _) = dots_in_ring(1);
     let reg = reg();
-    let sticky = scene.add_module(&reg, "bounce.sticky", "Sticky").unwrap();
-    let bouncy = scene.add_module(&reg, "bounce.bouncy", "Bouncy").unwrap();
-    scene.link(&reg, WALL, SlotId::Bounce, sticky).unwrap();
-    scene.link(&reg, DOTS, SlotId::Bounce, bouncy).unwrap();
+    give(&mut scene, WALL, SlotId::Bounce, "bounce.sticky", &[]);
+    give(&mut scene, DOTS, SlotId::Bounce, "bounce.bouncy", &[]);
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(takes_over))

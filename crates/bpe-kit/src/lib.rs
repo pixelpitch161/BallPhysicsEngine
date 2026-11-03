@@ -5,7 +5,6 @@
 mod layer_tests;
 pub mod modules;
 pub mod paint;
-pub mod random;
 pub mod rng;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
@@ -31,7 +30,7 @@ pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
-pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
+pub use starters::{add_thing, fill_slot};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -113,7 +112,7 @@ pub fn registry() -> Registry {
 /// gravity on). Only tests build it; the program starts from [`new_studio_scene`].
 #[cfg(any(test, feature = "test-scenes"))]
 pub fn new_scene(reg: &Registry) -> Scene {
-    use bpe_core::{Color, Settings, SlotId, SlotLink};
+    use bpe_core::{Color, Settings, SlotId};
     use glam::Vec2;
     use paint::Paint;
     let mut scene = Scene::empty(reg);
@@ -123,12 +122,9 @@ pub fn new_scene(reg: &Registry) -> Scene {
     add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
     let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
     scene.rename_thing(ball, "Ball");
-    let SlotLink::Linked { module: look, .. } = scene.things[&ball].slots[&SlotId::Look] else {
-        unreachable!("a new ball owns its look")
-    };
-    scene.library.modules.get_mut(&look).expect("just added").params =
-        BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..scenes::classic_look() }.to_params();
-    scenes::classic_modules(&mut scene);
+    let look = scene.things.get_mut(&ball).and_then(|t| t.slots.get_mut(&SlotId::Look)).expect("a new ball's look");
+    look.params = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..scenes::classic_look() }.to_params();
+    scenes::classic_cards(&mut scene);
     scene.things.get_mut(&ball).expect("just added").transform.position = Vec2::new(0.0, -200.0);
     scene
 }
@@ -167,7 +163,7 @@ mod tests {
         let scene = new_studio_scene(&reg);
         let kinds: Vec<&str> = scene.order.iter().map(|id| scene.things[id].kind.as_str()).collect();
         assert_eq!(kinds, ["scene", "camera"]);
-        assert!(scene.library.modules.is_empty(), "{:?}", scene.library.modules);
+        assert!(scene.things.values().all(|t| t.slots.is_empty()), "nothing has a card yet");
         let s = SceneSettings::from_params(&resolve(&scene, &reg).things[&ThingId::ROOT].params);
         assert_eq!(s.background, paint::Paint::solid(bpe_core::Color::rgb(0x80, 0x80, 0x80)), "grey");
         assert_eq!(s.bloom, 0.0);
@@ -291,37 +287,10 @@ mod tests {
     }
 
     #[test]
-    fn dice_ranges_are_sensible() {
+    fn a_launch_speed_slider_keeps_its_usual_span() {
         let reg = registry();
-        let def = |kind: &str, key: &str| {
-            let defs = reg.thing(kind).map(|k| k.settings()).or_else(|| reg.module(kind).map(|k| k.settings()));
-            defs.unwrap_or_else(|| panic!("no kind {kind}")).iter().find(|d| d.key == key).unwrap().clone()
-        };
-        assert_eq!(def("balls", "radius").dice_range(), Some((6.0, 60.0)));
-        assert_eq!(def("balls", "count").dice_range(), Some((3.0, 200.0)));
-        assert_eq!(def("balls", "columns").dice_range(), Some((1.0, 30.0)));
-        assert_eq!(def("balls", "rows").dice_range(), Some((1.0, 30.0)));
-        assert_eq!(def("balls", "spacing").dice_range(), Some((8.0, 60.0)));
-        assert_eq!(def("balls", "ring_radius").dice_range(), Some((60.0, 400.0)));
-        assert_eq!(def("balls", "velocity").dice_range(), Some((100.0, 900.0)));
-        assert_eq!(def("arena", "radius").dice_range(), Some((150.0, 500.0)));
-        for key in ["duration", "fps", "width", "height", "steps_per_second", "gravity"] {
-            assert!(!def("scene", key).flags.random, "{key} must not roll");
-        }
-        assert!(!def("bounce.basic", "pops_after").flags.random, "popping changes what the scene is");
-        let all = reg.things().flat_map(|k| k.settings()).chain(reg.modules().flat_map(|k| k.settings()));
-        for d in all {
-            if let (Some((lo, hi)), Some((min, max))) = (d.dice, d.range) {
-                assert!(
-                    lo >= min && hi <= max && lo < hi,
-                    "{}: the dice range {lo}..{hi} sits inside {min}..{max}",
-                    d.key
-                );
-            }
-            if d.flags.random && matches!(d.ty, bpe_core::ValueType::Number | bpe_core::ValueType::Int) {
-                assert!(d.dice_range().is_some(), "{}: a rolling number needs a range", d.key);
-            }
-        }
+        let velocity = reg.thing("balls").unwrap().settings().iter().find(|d| d.key == "velocity").unwrap();
+        assert_eq!((velocity.range, velocity.span), (None, Some((100.0, 900.0))));
     }
 
     #[test]

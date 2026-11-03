@@ -28,8 +28,7 @@ pub fn stage5_with_twins(reg: &Registry) -> Vec<(String, Scene, String)> {
             let (twin_name, mut scene) = twins[*twin].clone();
             scene.name = (*name).into();
             build(reg, &mut scene);
-            super::classic_modules(&mut scene);
-            super::own_everything(&mut scene);
+            super::classic_cards(&mut scene);
             ((*name).to_owned(), scene, twin_name)
         })
         .collect()
@@ -40,42 +39,36 @@ pub fn stage5(reg: &Registry) -> Vec<(String, Scene)> {
     stage5_with_twins(reg).into_iter().map(|(name, scene, _)| (name, scene)).collect()
 }
 
-/// A new module linked onto one thing. Asked of Scene settings for a slot it doesn't have
-/// (a burst or a trail), the module is shared by every thing that has the slot instead, as if
-/// they all used one scene-wide module.
-fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, name: &str, params: Params) {
-    let m = scene.add_module(reg, kind, name).expect("kit kinds are registered");
-    scene.library.modules.get_mut(&m).expect("just added").params = params;
-    let slot = scene.library.modules[&m].slot;
+/// A new card on one thing. Asked of Scene settings for a slot it doesn't have (a burst or a
+/// trail), every thing that has the slot gets a copy instead.
+fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, params: Params) {
+    let slot = reg.module(kind).expect("kit kinds are registered").slot();
     let root_has = reg.thing("scene").is_some_and(|k| k.slots().contains(&slot));
-    if thing != ThingId::ROOT || root_has {
-        scene.link(reg, thing, slot, m).expect("the kind has the slot");
-        return;
-    }
-    let takers: Vec<ThingId> = scene
-        .order
-        .iter()
-        .copied()
-        .filter(|id| *id != ThingId::ROOT)
-        .filter(|id| reg.thing(&scene.things[id].kind).is_some_and(|k| k.slots().contains(&slot)))
-        .collect();
+    let takers: Vec<ThingId> = if thing != ThingId::ROOT || root_has {
+        vec![thing]
+    } else {
+        scene
+            .order
+            .iter()
+            .copied()
+            .filter(|id| *id != ThingId::ROOT)
+            .filter(|id| reg.thing(&scene.things[id].kind).is_some_and(|k| k.slots().contains(&slot)))
+            .collect()
+    };
     for id in takers {
-        scene.link(reg, id, slot, m).expect("the kind has the slot");
+        scene.add_slot(reg, id, slot, kind).expect("the kind has the slot");
+        scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&slot)).expect("just added").params = params.clone();
     }
 }
 
-/// The ball's look module, replaced by a styled one: `look` with the twin's colours, then
+/// The ball's look card, replaced by a styled one: `look` with the twin's colours, then
 /// finished by `f`, which sees them.
 fn style_balls(scene: &mut Scene, reg: &Registry, look: BasicLook, f: impl FnOnce(&mut BasicLook)) {
-    let m = bpe_core::resolve_slot(scene, reg, BALLS, SlotId::Look, &mut Vec::new()).expect("a look").module;
-    let old = scene.library.modules[&m].clone();
+    let old = scene.things[&BALLS].slots[&SlotId::Look].params.clone();
     // Keep the twin's colours.
-    let mut look = BasicLook { fill: BasicLook::from_params(&old.params).fill, ..look };
+    let mut look = BasicLook { fill: BasicLook::from_params(&old).fill, ..look };
     f(&mut look);
-    own_module(scene, reg, BALLS, "look.basic", &old.name, look.to_params());
-    if scene.users_of(m).is_empty() {
-        scene.library.modules.remove(&m);
-    }
+    own_module(scene, reg, BALLS, "look.basic", look.to_params());
 }
 
 fn number(key: &str, x: f64) -> (String, Value) {
@@ -98,7 +91,7 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
         BasicLook { style: Style::Shiny, glow: 0.6, glow_size: 1.4, ..super::classic_look() },
         |_| {},
     );
-    own_module(scene, reg, BALLS, "shader.lava", "Lava", params([number("heat", 1.8), number("scale", 2.0)]));
+    own_module(scene, reg, BALLS, "shader.lava", params([number("heat", 1.8), number("scale", 2.0)]));
     let trail = StreakTrail {
         seconds: 0.7,
         width: 0.8,
@@ -107,7 +100,7 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
         colour: Paint { colours: Gradient::solid(Color::rgb(0xff, 0x70, 0x10)), ..StreakTrail::default().colour },
         ..StreakTrail::default()
     };
-    own_module(scene, reg, BALLS, "trail.streak", "Lava streak", trail.to_params());
+    own_module(scene, reg, BALLS, "trail.streak", trail.to_params());
 }
 
 /// The reel block raining confetti, each tiny ball with a short streak.
@@ -124,17 +117,17 @@ fn confetti_drop(reg: &Registry, scene: &mut Scene) {
         blend: Blend::Normal,
         ..HitBurst::default()
     };
-    own_module(scene, reg, ThingId::ROOT, "particles.burst", "Confetti", burst.to_params());
+    own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
     let trail = StreakTrail { seconds: 0.2, width: 0.6, brightness: 0.35, ..StreakTrail::default() };
-    own_module(scene, reg, ThingId::ROOT, "trail.streak", "Short streaks", trail.to_params());
+    own_module(scene, reg, ThingId::ROOT, "trail.streak", trail.to_params());
 }
 
 /// The box drop with sparks flying off every hit and the picture flaring with them.
 fn spark_block(reg: &Registry, scene: &mut Scene) {
     let burst = HitBurst { count: 10, speed: 420.0, size: 2.5, life: 0.5, least_speed: 120.0, ..HitBurst::default() };
-    own_module(scene, reg, ThingId::ROOT, "particles.burst", "Sparks", burst.to_params());
-    own_module(scene, reg, BALLS, "shader.rainbow_flow", "Rainbow blocks", params([number("bands", 1.5)]));
-    own_module(scene, reg, ThingId::ROOT, "shader.hit_glow", "Flare", params([number("punch", 0.6)]));
+    own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
+    own_module(scene, reg, BALLS, "shader.rainbow_flow", params([number("bands", 1.5)]));
+    own_module(scene, reg, ThingId::ROOT, "shader.hit_glow", params([number("punch", 0.6)]));
 }
 
 /// The spinning hexagon seen through a kaleidoscope, with hexagonal balls.
@@ -168,9 +161,9 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
         },
     );
     let trail = StreakTrail { seconds: 0.4, width: 0.5, brightness: 0.6, ..StreakTrail::default() };
-    own_module(scene, reg, ThingId::ROOT, "trail.streak", "Streaks", trail.to_params());
+    own_module(scene, reg, ThingId::ROOT, "trail.streak", trail.to_params());
     let kaleido = params([number("spin", 0.02), number("pulse", 0.3)]);
-    own_module(scene, reg, ThingId::ROOT, "shader.kaleidoscope", "Kaleidoscope", kaleido);
+    own_module(scene, reg, ThingId::ROOT, "shader.kaleidoscope", kaleido);
 }
 
 /// The shrinking ring with a neon ball that stretches as it speeds up, rings on every hit and
@@ -200,11 +193,11 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
         follow_impact: false,
         ..HitBurst::default()
     };
-    own_module(scene, reg, ThingId::ROOT, "particles.burst", "Rings", burst.to_params());
+    own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
     let trail = StreakTrail { seconds: 0.5, width: 1.0, brightness: 0.5, ..StreakTrail::default() };
-    own_module(scene, reg, BALLS, "trail.streak", "Neon streak", trail.to_params());
+    own_module(scene, reg, BALLS, "trail.streak", trail.to_params());
     let echo = params([number("fade", 0.85), number("zoom", 1.03), number("hue", 0.01)]);
-    own_module(scene, reg, ThingId::ROOT, "shader.echo", "Echo", echo);
+    own_module(scene, reg, ThingId::ROOT, "shader.echo", echo);
 }
 
 #[cfg(test)]
@@ -230,12 +223,10 @@ mod tests {
     fn every_stage5_scene_uses_something_from_stage5() {
         let reg = registry();
         for (name, scene) in stage5(&reg) {
-            let kinds: Vec<&str> = scene.library.modules.values().map(|m| m.kind.as_str()).collect();
-            let styled = scene
-                .library
-                .modules
-                .values()
-                .any(|m| m.kind == "look.basic" && !BasicLook::from_params(&m.params).is_classic_ball());
+            let cards: Vec<&bpe_core::Slot> = scene.things.values().flat_map(|t| t.slots.values()).collect();
+            let kinds: Vec<&str> = cards.iter().map(|c| c.kind.as_str()).collect();
+            let styled =
+                cards.iter().any(|c| c.kind == "look.basic" && !BasicLook::from_params(&c.params).is_classic_ball());
             let new = styled
                 || kinds
                     .iter()

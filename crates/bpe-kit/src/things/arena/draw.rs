@@ -36,12 +36,13 @@ mod tests {
     #[test]
     fn a_wall_paints_along_its_line_or_across_itself() {
         let (mut scene, _, kit) = scene_with_balls("single", |_| {});
-        let look = scene.add_module(&kit.registry, "look.basic", "Wall colours").unwrap();
-        let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        scene.add_slot(&kit.registry, ARENA, SlotId::Look, "look.basic").unwrap();
+        let look = (ARENA, SlotId::Look);
+        let params = &mut scene.card_mut(look.0, look.1).unwrap().params;
         let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
         params.set("colours", Value::Gradient(colours.clone()));
         params.set("follow", Value::Choice("path".into()));
-        scene.link(&kit.registry, ARENA, SlotId::Look, look).unwrap();
+
         let draw = |scene: &bpe_core::Scene| {
             let resolved = bpe_core::resolve(scene, &kit.registry);
             assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
@@ -57,7 +58,7 @@ mod tests {
         assert_eq!(frame.gradients.rows()[1].to_vec(), colours.bake(bpe_gfx::ATLAS_WIDTH));
 
         // One colour paints nothing on the line, as before.
-        let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+        let params = &mut scene.card_mut(look.0, look.1).unwrap().params;
         params.set("colours", Value::Gradient(Gradient::solid(Color::rgb(0, 255, 0))));
         params.set("follow", Value::Choice("order".into()));
         let frame = draw(&scene);

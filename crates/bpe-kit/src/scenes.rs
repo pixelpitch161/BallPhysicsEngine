@@ -9,8 +9,7 @@ mod stage5;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
-    Address, Attach, Blend, Color, Ease, Gradient, ModuleId, Owner, Params, Registry, Scene, Settings, SlotId,
-    SlotLink, ThingId, Value,
+    Address, Attach, Blend, Color, Ease, Gradient, Params, Registry, Scene, Settings, Slot, SlotId, ThingId, Value,
 };
 use glam::Vec2;
 use std::collections::BTreeMap;
@@ -78,16 +77,16 @@ pub fn classic_scene_settings(scene: &mut Scene) {
     root.params = s.to_params();
 }
 
-/// Turns every look and motion module still at the new defaults into the classic ones, so a
+/// Turns every look and motion card still at the new defaults into the classic ones, so a
 /// fresh starter in a test scene glows and falls the way it used to.
-pub fn classic_modules(scene: &mut Scene) {
-    for m in scene.library.modules.values_mut() {
-        match m.kind.as_str() {
-            "look.basic" if BasicLook::from_params(&m.params) == BasicLook::default() => {
-                m.params = classic_look().to_params();
+pub fn classic_cards(scene: &mut Scene) {
+    for card in scene.things.values_mut().flat_map(|t| t.slots.values_mut()) {
+        match card.kind.as_str() {
+            "look.basic" if BasicLook::from_params(&card.params) == BasicLook::default() => {
+                card.params = classic_look().to_params();
             }
-            "motion.basic" if BasicMotion::from_params(&m.params) == BasicMotion::default() => {
-                m.params = classic_motion().to_params();
+            "motion.basic" if BasicMotion::from_params(&card.params) == BasicMotion::default() => {
+                card.params = classic_motion().to_params();
             }
             _ => {}
         }
@@ -126,7 +125,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         glow: 0.7,
         ..classic_look()
     };
-    b.own_module(ARENA, "look.basic", "Ring look", ring.to_params());
+    b.own_module(ARENA, "look.basic", ring.to_params());
     b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
         s.arrangement = Arrangement::Block;
         s.columns = 8;
@@ -163,7 +162,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         },
         ..StreakTrail::default()
     };
-    b.own_module(BALLS, "trail.streak", "Life streak", streak.to_params());
+    b.own_module(BALLS, "trail.streak", streak.to_params());
     let sparks = HitBurst {
         count: 6,
         speed: 360.0,
@@ -178,7 +177,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         },
         ..HitBurst::default()
     };
-    b.own_module(BALLS, "particles.burst", "Life sparks", sparks.to_params());
+    b.own_module(BALLS, "particles.burst", sparks.to_params());
     b.finish()
 }
 
@@ -204,7 +203,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         a.thickness = 8.0;
     });
     let rim = BasicLook { fill: Paint::solid(hex(0xffffff)), ..classic_look() };
-    b.own_module(ARENA, "look.basic", "Rim look", rim.to_params());
+    b.own_module(ARENA, "look.basic", rim.to_params());
     // Screen suits the dark top, Multiply the light bottom.
     let rows = [
         ("Screen", Blend::Screen, [0x3ee6ff, 0x4d7bff, 0xff3ec8], -170.0),
@@ -235,7 +234,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             blend,
             ..classic_look()
         };
-        b.own_module(id, "look.basic", &format!("{name} look"), look.to_params());
+        b.own_module(id, "look.basic", look.to_params());
     }
     // Streaks that add their light.
     let comets = b.add(
@@ -254,7 +253,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         .to_params(),
     );
     let comet_look = BasicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..classic_look() };
-    b.own_module(comets, "look.basic", "Comet look", comet_look.to_params());
+    b.own_module(comets, "look.basic", comet_look.to_params());
     let streak = StreakTrail {
         seconds: 0.6,
         width: 0.8,
@@ -268,7 +267,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         blend: Blend::Add,
         ..StreakTrail::default()
     };
-    b.own_module(comets, "trail.streak", "Add streak", streak.to_params());
+    b.own_module(comets, "trail.streak", streak.to_params());
     // Styled balls whose hue drifts around one colour.
     b.balls("Drifters", Vec2::new(-260.0, 600.0), |s| {
         s.arrangement = Arrangement::Block;
@@ -283,7 +282,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         style: Style::Shiny,
         ..classic_look()
     };
-    b.own_module(BALLS, "look.basic", "Drift look", drift.to_params());
+    b.own_module(BALLS, "look.basic", drift.to_params());
     b.finish()
 }
 
@@ -333,7 +332,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         glow: 0.5,
         ..classic_look()
     };
-    b.own_module(ARENA, "look.basic", "Wall look", wall.to_params());
+    b.own_module(ARENA, "look.basic", wall.to_params());
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
         s.arrangement = Arrangement::Block;
         s.columns = 7;
@@ -370,7 +369,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         blend_each: true,
         ..classic_look()
     };
-    b.own_module(glow, "look.basic", "Screen look", screen.to_params());
+    b.own_module(glow, "look.basic", screen.to_params());
     b.track(
         own(ThingId::ROOT, "grade_map_amount"),
         &[(0.0, Value::Number(0.0), Ease::Linear), (duration as f64, Value::Number(0.5), Ease::Linear)],
@@ -378,91 +377,99 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
     b.finish()
 }
 
-/// A new scene with a name, and handles on its things and the modules its things share.
-/// Gives every thing its own modules: a module several things use becomes one copy each (with
-/// the same settings and keyframes), and one only a single thing uses becomes that thing's.
-/// Modules nothing uses are left in the library.
-pub(crate) fn own_everything(scene: &mut Scene) {
-    let links: Vec<(ThingId, SlotId, ModuleId)> = scene
-        .order
-        .iter()
-        .flat_map(|id| {
-            scene.things[id].slots.iter().filter_map(move |(slot, link)| match link {
-                SlotLink::Linked { module, .. } => Some((*id, *slot, *module)),
-                _ => None,
-            })
-        })
-        .collect();
-    let shared: std::collections::BTreeSet<ModuleId> =
-        links.iter().map(|l| l.2).filter(|m| scene.users_of(*m).len() > 1).collect();
-    let mut emptied = Vec::new();
-    for (id, slot, m) in links {
-        let Some(module) = scene.library.modules.get(&m) else { continue };
-        if module.owner == Some(id) {
-            continue;
-        }
-        if !shared.contains(&m) && module.owner.is_none() {
-            scene.library.modules.get_mut(&m).expect("checked").owner = Some(id);
-            continue;
-        }
-        scene.own_linked(id, slot).expect("the slot is linked");
-        if scene.users_of(m).is_empty() {
-            emptied.push(m);
-        }
-    }
-    for m in emptied {
-        let _ = scene.remove_module(m);
-    }
+/// Where one of a thing's cards comes from while a test scene is being built. Every thing ends
+/// up owning its cards; this only lets a scene set "every thing's motion" in one place, the way
+/// these scenes were first written.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Src {
+    /// The builder's shared card for the slot, copied in when the scene is finished.
+    Shared,
+    /// A copy of the card of the nearest thing above that has one (Scene settings excepted).
+    Follow,
 }
 
+/// A new scene with a name, and handles on its things and the cards its things share.
 struct Builder<'a> {
     reg: &'a Registry,
     scene: Scene,
-    /// One module per slot that every thing of a fitting kind uses instead of its own starter,
-    /// so a scene's looks, motion, bounce and sound can be set in one place.
-    shared: BTreeMap<SlotId, ModuleId>,
+    /// One card per slot that every thing of a fitting kind gets a copy of instead of its own
+    /// starter, so a scene's looks, motion and bounce can be set in one place.
+    shared: BTreeMap<SlotId, Slot>,
+    /// The cards that come from somewhere else when the scene is finished. A card not listed is
+    /// the thing's own.
+    src: BTreeMap<(ThingId, SlotId), Src>,
 }
 
 impl<'a> Builder<'a> {
     fn new(reg: &'a Registry, name: &str) -> Builder<'a> {
         let mut scene = new_scene(reg);
         scene.name = name.into();
-        let mut shared = BTreeMap::new();
-        for (slot, kind, module_name) in [
-            (SlotId::Look, "look.basic", "Plain look"),
-            (SlotId::Motion, "motion.basic", "Default motion"),
-            (SlotId::Bounce, "bounce.basic", "Default bounce"),
-        ] {
-            let m = scene.add_module(reg, kind, module_name).expect("kit kinds are registered");
-            shared.insert(slot, m);
-        }
-        let mut b = Builder { reg, scene, shared };
+        let shared = [(SlotId::Look, "look.basic"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")]
+            .into_iter()
+            .map(|(slot, kind)| (slot, Slot::new(kind)))
+            .collect();
+        let mut b = Builder { reg, scene, shared, src: BTreeMap::new() };
         b.share(ARENA, &SlotId::ALL);
         b.share(BALLS, &[SlotId::Motion, SlotId::Bounce]);
         b
     }
 
-    /// Swaps `thing`'s own starters in `slots` for the shared modules of the same kind, and
-    /// drops the starters.
+    /// Makes `thing`'s own starters in `slots` copies of the shared cards of the same kind.
     fn share(&mut self, thing: ThingId, slots: &[SlotId]) {
         for slot in slots {
-            let Some(&shared) = self.shared.get(slot) else { continue };
-            let Some(SlotLink::Linked { module, .. }) = self.scene.things[&thing].slots.get(slot).cloned() else {
+            let (Some(shared), Some(own)) = (self.shared.get(slot), self.scene.things[&thing].slots.get(slot)) else {
                 continue;
             };
-            let own = &self.scene.library.modules[&module];
-            if own.owner != Some(thing) || own.kind != self.scene.library.modules[&shared].kind {
-                continue;
+            if own.kind == shared.kind {
+                self.src.insert((thing, *slot), Src::Shared);
             }
-            self.scene.link(self.reg, thing, *slot, shared).expect("the thing has the slot");
-            self.scene.remove_module(module).expect("nothing else uses a fresh starter");
         }
     }
 
-    /// The finished scene, with every thing owning the modules it uses.
+    /// The thing above `thing` whose card in `slot` it copies: the nearest one, below Scene
+    /// settings, that has a card there.
+    fn followed(&self, thing: ThingId, slot: SlotId) -> Option<ThingId> {
+        self.scene.ancestors(thing).into_iter().filter(|a| *a != ThingId::ROOT).find(|a| {
+            self.src.get(&(*a, slot)).is_some_and(|s| *s == Src::Shared)
+                || (!self.src.contains_key(&(*a, slot)) && self.scene.things[a].slots.contains_key(&slot))
+        })
+    }
+
+    /// The card that `thing` ends up with in `slot`, for changing: the shared one, the followed
+    /// one, or its own.
+    fn card_mut(&mut self, thing: ThingId, slot: SlotId) -> &mut Slot {
+        match self.src.get(&(thing, slot)).copied() {
+            Some(Src::Shared) => self.shared.get_mut(&slot).expect("shared slots are listed"),
+            Some(Src::Follow) => {
+                let above = self.followed(thing, slot).expect("a followed card");
+                self.card_mut(above, slot)
+            }
+            None => self.scene.things.get_mut(&thing).and_then(|t| t.slots.get_mut(&slot)).expect("a card"),
+        }
+    }
+
+    /// The finished scene: every thing owns a copy of the cards it took from elsewhere, and
+    /// cards still at the new defaults get the classic values.
     fn finish(mut self) -> Scene {
-        classic_modules(&mut self.scene);
-        own_everything(&mut self.scene);
+        for id in self.scene.order.clone() {
+            for slot in SlotId::ALL {
+                let card = match self.src.get(&(id, slot)) {
+                    None => continue,
+                    Some(Src::Shared) => Some(self.shared[&slot].clone()),
+                    Some(Src::Follow) => {
+                        self.followed(id, slot).and_then(|a| self.scene.things[&a].slots.get(&slot).cloned())
+                    }
+                };
+                let thing = self.scene.things.get_mut(&id).expect("listed in order");
+                match card {
+                    Some(card) => thing.slots.insert(slot, card),
+                    None => thing.slots.remove(&slot),
+                };
+            }
+            // Parents come first, so a follower copies a finished card.
+            self.src.retain(|(t, _), _| *t != id);
+        }
+        classic_cards(&mut self.scene);
         self.scene
     }
 
@@ -489,21 +496,10 @@ impl<'a> Builder<'a> {
         thing.params = s.to_params();
     }
 
-    /// The module that fills `slot` on `thing`.
-    fn module_of(&self, thing: ThingId, slot: SlotId) -> ModuleId {
-        let resolved = bpe_core::resolve_slot(&self.scene, self.reg, thing, slot, &mut Vec::new());
-        resolved.expect("the thing has a module in that slot").module
-    }
-
-    fn set_params(&mut self, m: ModuleId, params: bpe_core::Params) {
-        self.scene.library.modules.get_mut(&m).expect("module").params = params;
-    }
-
     fn root_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
         let mut s = classic_look();
         f(&mut s);
-        let m = self.shared[&SlotId::Look];
-        self.set_params(m, s.to_params());
+        self.shared.get_mut(&SlotId::Look).expect("shared").params = s.to_params();
     }
 
     /// The balls' look in `colours`, from the block's first row to its last as the balls start
@@ -531,60 +527,47 @@ impl<'a> Builder<'a> {
     fn ball_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
         let mut s = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..classic_look() };
         f(&mut s);
-        let m = self.module_of(BALLS, SlotId::Look);
-        self.set_params(m, s.to_params());
+        self.card_mut(BALLS, SlotId::Look).params = s.to_params();
     }
 
     fn motion(&mut self, f: impl FnOnce(&mut BasicMotion)) {
         let mut s = classic_motion();
         f(&mut s);
-        let m = self.shared[&SlotId::Motion];
-        self.set_params(m, s.to_params());
+        self.shared.get_mut(&SlotId::Motion).expect("shared").params = s.to_params();
     }
 
     fn bounce(&mut self, f: impl FnOnce(&mut BasicBounce)) {
         let mut s = BasicBounce::default();
         f(&mut s);
-        let m = self.shared[&SlotId::Bounce];
-        self.set_params(m, s.to_params());
+        self.shared.get_mut(&SlotId::Bounce).expect("shared").params = s.to_params();
     }
 
-    /// A new module linked onto one thing. On the scene settings it also takes the place of the
-    /// shared module for its slot, so every thing that used that one uses this instead (the way
-    /// they used to inherit it). On a folder, the things inside that used the shared module
-    /// follow the folder instead.
-    fn own_module(&mut self, thing: ThingId, kind: &str, name: &str, params: bpe_core::Params) -> ModuleId {
-        let m = self.scene.add_module(self.reg, kind, name).expect("kit kinds are registered");
-        self.set_params(m, params);
-        let slot = self.scene.library.modules[&m].slot;
-        let shared = self.shared.get(&slot).copied();
-        let users: Vec<ThingId> = self
-            .scene
-            .things
-            .values()
-            .filter(|t| matches!(t.slots.get(&slot), Some(SlotLink::Linked { module, .. }) if Some(*module) == shared))
-            .map(|t| t.id)
-            .collect();
+    /// A new card of `kind` on one thing. On the scene settings it also takes the place of the
+    /// shared card for its slot, so every thing that shared that one gets this instead. On a
+    /// folder (or anything with things under it), the things inside that shared the card copy
+    /// this one instead.
+    fn own_module(&mut self, thing: ThingId, kind: &str, params: Params) {
+        let slot = self.reg.module(kind).expect("kit kinds are registered").slot();
+        let users: Vec<ThingId> =
+            self.src.iter().filter(|(k, s)| k.1 == slot && **s == Src::Shared).map(|(k, _)| k.0).collect();
         if thing == ThingId::ROOT {
-            if self.reg.thing("scene").is_some_and(|k| k.accepts(slot, kind)) {
-                self.scene.link(self.reg, thing, slot, m).expect("the scene settings have the slot");
+            if self.reg.thing("scene").is_some_and(|k| k.slots().contains(&slot)) {
+                self.scene.add_slot(self.reg, thing, slot, kind).expect("the scene settings have the slot");
+                self.card_mut(thing, slot).params = params.clone();
             }
-            if let Some(old) = shared {
-                for user in users {
-                    self.scene.link(self.reg, user, slot, m).expect("the thing has the slot");
-                }
-                self.shared.insert(slot, m);
-                let _ = self.scene.remove_module(old);
+            if self.shared.contains_key(&slot) {
+                self.shared.insert(slot, Slot { kind: kind.into(), params, ..Slot::default() });
             }
-            return m;
+            return;
         }
-        self.scene.link(self.reg, thing, slot, m).expect("the kind has the slot");
+        self.scene.add_slot(self.reg, thing, slot, kind).expect("the kind has the slot");
+        self.src.remove(&(thing, slot));
+        self.card_mut(thing, slot).params = params;
         for user in users {
             if self.scene.ancestors(user).contains(&thing) {
-                self.scene.things.get_mut(&user).expect("thing").slots.insert(slot, SlotLink::Inherit);
+                self.src.insert((user, slot), Src::Follow);
             }
         }
-        m
     }
 
     /// A new thing of `kind` under `parent`, named and placed, with its settings, and the starter
@@ -614,7 +597,7 @@ impl<'a> Builder<'a> {
 }
 
 fn own(thing: ThingId, key: &str) -> Address {
-    Address { owner: Owner::Thing(thing), slot: None, key: key.into() }
+    Address::own(thing, key)
 }
 
 /// The new-scene default: a circle arena and one ball.
@@ -649,7 +632,7 @@ fn reel_block(reg: &Registry) -> Scene {
         Color::rgb(0xff, 0xb8, 0x2e),
     ]);
     let arena_look = BasicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..classic_look() }.to_params();
-    b.own_module(ARENA, "look.basic", "Arena look", arena_look);
+    b.own_module(ARENA, "look.basic", arena_look);
     b.finish()
 }
 
@@ -716,7 +699,7 @@ fn shrinking_ring(reg: &Registry) -> Scene {
         s.max_size = 90.0;
     });
     let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
-    b.own_module(ARENA, "bounce.basic", "Lively wall", lively);
+    b.own_module(ARENA, "bounce.basic", lively);
     b.finish()
 }
 
@@ -788,22 +771,6 @@ mod tests {
     use crate::{registry, scenes};
 
     #[test]
-    fn every_thing_in_a_test_scene_has_its_own_modules() {
-        let reg = registry();
-        let all = scenes::all(&reg);
-        for (name, scene) in &all {
-            for (id, thing) in &scene.things {
-                for (slot, link) in &thing.slots {
-                    let bpe_core::SlotLink::Linked { module, .. } = link else { continue };
-                    let m = &scene.library.modules[module];
-                    assert_eq!(scene.users_of(*module), [*id], "{name}: {} {slot:?} shares {}", thing.name, m.name);
-                    assert_eq!(m.owner, Some(*id), "{name}: {} {slot:?} uses {}", thing.name, m.name);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
@@ -850,11 +817,11 @@ mod tests {
         let all = scenes::all(&reg);
         for (name, scene) in &all {
             let mut values: Vec<(String, &Value)> = Vec::new();
-            for (id, m) in &scene.library.modules {
-                values.extend(m.params.0.iter().map(|(k, v)| (format!("module {id:?} {k}"), v)));
-            }
             for (id, t) in &scene.things {
                 values.extend(t.params.0.iter().map(|(k, v)| (format!("thing {id:?} {k}"), v)));
+                for (slot, card) in &t.slots {
+                    values.extend(card.params.0.iter().map(|(k, v)| (format!("card {id:?} {slot:?} {k}"), v)));
+                }
             }
             for (a, track) in &scene.tracks {
                 values.extend(track.keys.iter().map(|k| (format!("track {a:?}"), &k.value)));

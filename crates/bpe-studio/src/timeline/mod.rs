@@ -7,7 +7,6 @@ pub mod lanes;
 use crate::app::{Studio, clock};
 use crate::theme;
 use crate::transport;
-use crate::widgets::paint_diamond;
 use bpe_core::{Address, Ease, PulseSource, Value};
 use bpe_runtime::EventKind;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -50,7 +49,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     ui.add_space(4.0);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
     let ruler = Ruler { track, duration: studio.duration().max(0.001) };
-    let lanes = lanes_for(&studio.scene, &studio.kit, &studio.resolved, studio.selection.primary);
+    let lanes = lanes_for(&studio.scene, &studio.kit, studio.selection.primary);
     let mut timeline = std::mem::take(&mut studio.panels.timeline);
     // A selection that points at a key that is gone is no selection.
     if let Some((a, i)) = &timeline.selected
@@ -284,10 +283,25 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
     }
 }
 
+/// A key's diamond: filled, or just its outline.
+fn paint_diamond(painter: &egui::Painter, center: egui::Pos2, size: f32, filled: bool, color: egui::Color32) {
+    let points = vec![
+        center + egui::vec2(0.0, -size),
+        center + egui::vec2(size, 0.0),
+        center + egui::vec2(0.0, size),
+        center + egui::vec2(-size, 0.0),
+    ];
+    if filled {
+        painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::new(1.0, color)));
+    } else {
+        painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.5, color)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Owner, ThingId};
+    use bpe_core::ThingId;
     use eframe::egui::{PointerButton, accesskit::Role};
     use egui_kittest::{
         Harness,
@@ -295,14 +309,14 @@ mod tests {
     };
 
     fn size_address() -> Address {
-        Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() }
+        Address::own(ThingId(2), "radius")
     }
 
     /// A studio with the ball selected, a key on its size at 2 s and one on gravity at 1 s.
     fn harness() -> Harness<'static, Studio> {
         let mut studio = Studio::headless();
         let reg = &studio.kit.registry;
-        let gravity = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "gravity".into() };
+        let gravity = Address { thing: ThingId::ROOT, slot: None, key: "gravity".into() };
         studio.scene.set_key(reg, &size_address(), 2.0, Value::Number(60.0)).unwrap();
         studio.scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         studio.selection.set(ThingId(2));

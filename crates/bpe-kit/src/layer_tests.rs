@@ -1,6 +1,6 @@
 //! Things with a Blend other than Normal at full amount are drawn into the frame's layers.
 
-use bpe_core::{Blend, Color, Gradient, Scene, SlotId, ThingId, Value, resolve, resolve_slot};
+use bpe_core::{Blend, Color, Gradient, Scene, SlotId, ThingId, Value, resolve};
 use bpe_gfx::{Frame, build_frame};
 
 use crate::{Kit, kit, new_scene};
@@ -9,12 +9,12 @@ const ARENA: ThingId = ThingId(1);
 const BALL: ThingId = ThingId(2);
 
 /// The module filling `slot` on `thing`.
-fn module_of(scene: &Scene, kit: &Kit, thing: ThingId, slot: SlotId) -> bpe_core::ModuleId {
-    resolve_slot(scene, &kit.registry, thing, slot, &mut Vec::new()).unwrap().module
+fn module_of(_scene: &Scene, _kit: &Kit, thing: ThingId, slot: SlotId) -> (ThingId, SlotId) {
+    (thing, slot)
 }
 
-fn set_blend(scene: &mut Scene, module: bpe_core::ModuleId, blend: &str, amount: f64) {
-    let params = &mut scene.library.modules.get_mut(&module).unwrap().params;
+fn set_blend(scene: &mut Scene, module: (bpe_core::ThingId, bpe_core::SlotId), blend: &str, amount: f64) {
+    let params = &mut scene.card_mut(module.0, module.1).unwrap().params;
     params.set("blend", Value::Choice(blend.into()));
     params.set("blend_amount", Value::Number(amount));
 }
@@ -81,8 +81,9 @@ fn a_stuck_blended_thing_goes_into_the_overlays_layer() {
 fn trail_add_stays_in_the_main_frame_but_trail_screen_uses_a_layer() {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let trail = scene.add_module(&kit.registry, "trail.streak", "Streak").unwrap();
-    scene.link(&kit.registry, BALL, SlotId::Trail, trail).unwrap();
+    scene.add_slot(&kit.registry, BALL, SlotId::Trail, "trail.streak").unwrap();
+    let trail = (BALL, SlotId::Trail);
+
     let frame = frame_at(&scene, &kit, 2.0);
     assert!(!frame.trails.is_empty(), "Add is the trail's own");
     assert!(frame.layers.is_empty(), "an empty layer is never kept");
@@ -136,7 +137,7 @@ fn the_scene_itself_never_goes_into_a_layer() {
 fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
     let (mut scene, kit) = ball_blended("normal", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
-    let params = &mut scene.library.modules.get_mut(&look).unwrap().params;
+    let params = &mut scene.card_mut(look.0, look.1).unwrap().params;
     params.set("in_pattern", Value::Choice("stripes".into()));
     params.set("in_from", Value::Choice("own_gradient".into()));
     params.set("in_colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
@@ -155,13 +156,14 @@ fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
 fn painted_bursts(blend: &str, amount: f64) -> Frame {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    let m = scene.add_module(&kit.registry, "particles.burst", "Sparks").unwrap();
-    let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+    scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
+    let m = (BALL, SlotId::Particles);
+    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
     params.set("life", Value::Number(2.0));
     params.set("source", Value::Choice("own".into()));
     params.set("follow", Value::Choice("life".into()));
     params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
-    scene.link(&kit.registry, BALL, SlotId::Particles, m).unwrap();
+
     set_blend(&mut scene, m, blend, amount);
     frame_at(&scene, &kit, 4.0)
 }
@@ -191,8 +193,7 @@ fn layered_bursts_are_plain_and_still_see_the_hits() {
 #[test]
 fn a_layered_ball_still_hands_its_hits_to_the_frame() {
     let (mut scene, kit) = ball_blended("subtract", 1.0);
-    let m = scene.add_module(&kit.registry, "particles.burst", "Sparks").unwrap();
-    scene.link(&kit.registry, BALL, SlotId::Particles, m).unwrap();
+    scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
     let frame = frame_at(&scene, &kit, 4.0);
     assert!(!frame.hits.is_empty());
     assert!(!frame.bursts.is_empty(), "the ball's additive bursts are drawn in the frame");
@@ -205,7 +206,7 @@ fn a_look_blending_with_each_other_gets_its_own_layer() {
     let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
     set_blend(&mut scene, arena_look, "screen", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
-    scene.library.modules.get_mut(&look).unwrap().params.set("blend_each", Value::Bool(true));
+    scene.card_mut(look.0, look.1).unwrap().params.set("blend_each", Value::Bool(true));
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
     assert_eq!(kept, [(Blend::Screen, 1.0, false), (Blend::Screen, 1.0, true)], "the arena, then the ball");

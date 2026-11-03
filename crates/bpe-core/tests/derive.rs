@@ -10,7 +10,7 @@ enum Shape {
 #[derive(Debug, PartialEq, Settings)]
 struct Look {
     /// How brightly the halo shines.
-    #[setting(label = "Glow", range(0.0, 2.0), simple, keyframe, random, pulse)]
+    #[setting(label = "Glow", range(0.0, 2.0), simple, keyframe, pulse)]
     glow: f32,
     #[setting(label = "Colour", simple)]
     color: Color,
@@ -47,7 +47,7 @@ fn defs_describe_each_field() {
     assert_eq!(d[0].help, "How brightly the halo shines.");
     assert_eq!(d[0].range, Some((0.0, 2.0)));
     assert_eq!(d[0].default, Value::Number(0.5));
-    assert!(d[0].flags.keyframe && d[0].flags.random && d[0].flags.pulse);
+    assert!(d[0].flags.keyframe && d[0].flags.pulse);
     assert_eq!(d[2].depth, Depth::More);
     assert_eq!(Shape::NAMES, &["circle", "round_box"]);
 }

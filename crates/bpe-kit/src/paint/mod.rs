@@ -12,6 +12,7 @@ pub mod eval;
 pub mod gpu;
 pub mod harmony;
 pub mod inside;
+pub mod palette_gen;
 pub mod palettes;
 pub mod vary;
 pub use eval::{Inputs, colour_at, hits_on, last_hit, last_hit_at, offset};
@@ -168,7 +169,7 @@ impl SettingGroup for Paint {
                     ty,
                     default,
                     range: None,
-                    dice: None,
+                    span: None,
                     unit: "",
                     group: o.group,
                     depth: Depth::More,
@@ -176,11 +177,10 @@ impl SettingGroup for Paint {
                     when,
                 }
             };
-        fn num(mut d: SettingDef, range: (f64, f64), unit: &'static str, keyframe: bool, random: bool) -> SettingDef {
+        fn num(mut d: SettingDef, range: (f64, f64), unit: &'static str, keyframe: bool) -> SettingDef {
             d.range = Some(range);
             d.unit = unit;
             d.flags.keyframe = keyframe;
-            d.flags.random = random;
             d
         }
         fn ty<T: SettingValue>(_: &T) -> ValueType {
@@ -200,13 +200,12 @@ impl SettingGroup for Paint {
             o.when,
         );
         colours.flags.keyframe = true;
-        colours.flags.random = true;
         if o.simple {
             colours.depth = Depth::Simple;
         }
         v.push(colours);
 
-        let mut follow = def(
+        let follow = def(
             "follow",
             "Colours follow",
             "What decides where along the colours each thing is painted.",
@@ -214,7 +213,6 @@ impl SettingGroup for Paint {
             val(&d.follow),
             on(""),
         );
-        follow.flags.random = true;
         v.push(follow);
 
         let near = on(&format!(" and {f}=place|start"));
@@ -237,7 +235,6 @@ impl SettingGroup for Paint {
             ),
             (-180.0, 180.0),
             "deg",
-            true,
             true,
         ));
         let mut centre = def(
@@ -272,11 +269,10 @@ impl SettingGroup for Paint {
             (1.0, 20000.0),
             "",
             true,
-            true,
         );
-        span.dice = Some((1.0, 2000.0));
+        span.span = Some((1.0, 2000.0));
         v.push(span);
-        let mut repeat = def(
+        let repeat = def(
             "repeat",
             "Beyond the last colour",
             "What the colours do beyond the last stop.",
@@ -284,7 +280,6 @@ impl SettingGroup for Paint {
             val(&d.repeat),
             on(""),
         );
-        repeat.flags.random = true;
         v.push(repeat);
         v.push(num(
             def(
@@ -297,7 +292,6 @@ impl SettingGroup for Paint {
             ),
             (-4.0, 4.0),
             "cycles/s",
-            true,
             true,
         ));
         v.push(def(
@@ -320,7 +314,6 @@ impl SettingGroup for Paint {
             (0.0, 2.0),
             "s",
             false,
-            false,
         ));
         if o.vary {
             // One paint's variation sits under "Variation"; a prefixed paint (an outline, a
@@ -329,7 +322,7 @@ impl SettingGroup for Paint {
             // Even a one-colour paint can vary, so this ignores the colour count.
             let shown = o.when;
             let mut vary = |key: &str, label: &'static str, help: &'static str, default: f32, range, unit| {
-                let mut d = num(def(key, label, help, ty(&default), val(&default), shown), range, unit, true, false);
+                let mut d = num(def(key, label, help, ty(&default), val(&default), shown), range, unit, true);
                 d.group = heading;
                 v.push(d);
             };

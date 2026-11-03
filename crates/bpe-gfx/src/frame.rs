@@ -906,7 +906,7 @@ pub fn build_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Address, Ease, Owner, Value, resolve, testkit};
+    use bpe_core::{Address, Ease, Value, resolve, testkit};
     use bpe_runtime::{Event, Log, Party, Sims, World};
 
     struct FakeScene;
@@ -967,7 +967,7 @@ mod tests {
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
         let balls = testkit::push(&mut scene, "balls", bpe_core::ThingId::ROOT);
-        let size = Address { owner: Owner::Thing(balls), slot: None, key: "radius".into() };
+        let size = Address { thing: balls, slot: None, key: "radius".into() };
         let first = scene.set_key(&reg, &size, 0.0, Value::Number(2.0)).unwrap();
         scene.set_key(&reg, &size, 2.0, Value::Number(10.0)).unwrap();
         scene.set_ease(&size, first, Ease::Linear);
@@ -1026,11 +1026,10 @@ mod tests {
         }
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
-        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Look, look).unwrap();
+        scene.add_slot(&reg, ThingId::ROOT, SlotId::Look, "look.plain").unwrap();
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
         let resolved = resolve(&scene, &reg);
-        assert_eq!(resolved.things[&balls].slots[&SlotId::Look].from, ThingId::ROOT);
         let world = World::build(&scene, &resolved, &Sims::default());
         let mut draws = Draws::default();
         draws.add(FakeScene);
@@ -1232,9 +1231,9 @@ mod tests {
     fn routed_each(blend: &str, amount: f64, screen: bool, adds_itself: bool, each: bool) -> Frame {
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
-        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
-        scene.link(&reg, balls, SlotId::Look, look).unwrap();
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
+
         let mut resolved = resolve(&scene, &reg);
         let r = resolved.things.get_mut(&balls).unwrap();
         r.screen = screen;
@@ -1330,9 +1329,9 @@ mod tests {
         }
         let reg = testkit::registry();
         let mut scene = bpe_core::Scene::empty(&reg);
-        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
         let balls = testkit::push(&mut scene, "balls", ThingId::ROOT);
-        scene.link(&reg, balls, SlotId::Look, look).unwrap();
+        scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
+
         let mut resolved = resolve(&scene, &reg);
         let params = &mut resolved.things.get_mut(&balls).unwrap().slots.get_mut(&SlotId::Look).unwrap().params;
         params.set("blend", Value::Choice("darken".into()));

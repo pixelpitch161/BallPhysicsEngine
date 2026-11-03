@@ -63,19 +63,10 @@ impl Style {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BasicLook {
     /// The outline the ball is drawn with; it still bounces as a circle.
-    #[setting(label = "Shape", group = "Shape", when = "thing=balls", simple, random)]
+    #[setting(label = "Shape", group = "Shape", when = "thing=balls", simple)]
     pub ball_shape: BallShape,
     /// How wide the outline just inside the edge is; 0 means none.
-    #[setting(
-        label = "Outline",
-        group = "Shape",
-        when = "thing=balls",
-        range(0, 24),
-        unit = "px",
-        simple,
-        keyframe,
-        random
-    )]
+    #[setting(label = "Outline", group = "Shape", when = "thing=balls", range(0, 24), unit = "px", simple, keyframe)]
     pub outline: f32,
     /// The outline's colours.
     #[setting(
@@ -93,16 +84,15 @@ pub struct BasicLook {
         when = "thing=balls and ball_shape!=circle",
         range(0, 1),
         group = "Shape",
-        keyframe,
-        random
+        keyframe
     )]
     pub roundness: f32,
     /// Turns the shape to point the way the ball is going.
-    #[setting(label = "Face motion", when = "thing=balls and ball_shape!=circle", group = "Shape", random)]
+    #[setting(label = "Face motion", when = "thing=balls and ball_shape!=circle", group = "Shape")]
     pub face_motion: bool,
     /// How the ball is lit: Shiny is lit like a sphere; Flat is one even colour. Either way, the
     /// halo is as bright as Glow says.
-    #[setting(label = "Style", when = "thing=balls", group = "Style", simple, random)]
+    #[setting(label = "Style", when = "thing=balls", group = "Style", simple)]
     pub style: Style,
     /// The colours and what spreads them across the balls (or letters, or points).
     #[setting(
@@ -118,22 +108,22 @@ pub struct BasicLook {
     #[setting(paint, label = "Inside each one", prefix = "in_", group = "Inside each one", when = "thing=balls")]
     pub inside: InsidePaint,
     /// How brightly the halo shines.
-    #[setting(label = "Glow", group = "Light", range(0, 2), simple, keyframe, random, pulse)]
+    #[setting(label = "Glow", group = "Light", range(0, 2), simple, keyframe, pulse)]
     pub glow: f32,
     /// How far the halo reaches, in ball radii.
-    #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe, random)]
+    #[setting(label = "Glow size", when = "thing=balls", range(0.05, 4), group = "Light", keyframe)]
     pub glow_size: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", when = "thing=balls", range(0, 1), group = "Light", keyframe, pulse)]
     pub opacity: f32,
     /// Full turns around the colour wheel per second, so the ball cycles through the rainbow.
-    #[setting(label = "Rainbow", when = "thing=balls", range(-2, 2), unit = "turns/s", group = "Light", keyframe, random)]
+    #[setting(label = "Rainbow", when = "thing=balls", range(-2, 2), unit = "turns/s", group = "Light", keyframe)]
     pub rainbow: f32,
     /// Every hit turns the colour this far round the colour wheel.
-    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Light", keyframe, random)]
+    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Light", keyframe)]
     pub hue_per_hit: f32,
     /// How bright the flash on each hit is.
-    #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Light", keyframe, random)]
+    #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Light", keyframe)]
     pub flash: f32,
     /// How big the flash is.
     #[setting(
@@ -149,13 +139,13 @@ pub struct BasicLook {
     #[setting(label = "Flash time", when = "thing=balls and flash", range(0.02, 2), unit = "s", group = "Light")]
     pub flash_seconds: f32,
     /// How much fast balls stretch along their path and thin out across it.
-    #[setting(label = "Stretch", when = "thing=balls", range(0, 1), group = "Motion", keyframe, random)]
+    #[setting(label = "Stretch", when = "thing=balls", range(0, 1), group = "Motion", keyframe)]
     pub stretch: f32,
     /// The shape's starting angle; the pattern inside turns with it.
-    #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Motion", keyframe, random)]
+    #[setting(label = "Turn", when = "thing=balls", range(-180, 180), unit = "°", group = "Motion", keyframe)]
     pub turn: f32,
     /// How fast the shape turns; the pattern inside turns with it.
-    #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Motion", keyframe, random)]
+    #[setting(label = "Spin", when = "thing=balls", range(-720, 720), unit = "°/s", group = "Motion", keyframe)]
     pub spin: f32,
     /// How it mixes with what is under it: Normal paints over it, the others mix with it.
     /// Everything with the same Blend and amount is mixed in once, as one picture, so where its
@@ -393,16 +383,19 @@ mod tests {
     fn a_saved_style_that_is_gone_loads_as_the_default() {
         let reg = crate::registry();
         let mut scene = crate::scenes::all(&reg).swap_remove(0).1;
-        let looks: Vec<_> =
-            scene.library.modules.iter().filter(|(_, m)| m.kind == "look.basic").map(|(id, _)| *id).collect();
+        let looks: Vec<_> = scene
+            .things
+            .iter()
+            .filter(|(_, t)| t.slots.get(&SlotId::Look).is_some_and(|c| c.kind == "look.basic"))
+            .map(|(id, _)| *id)
+            .collect();
         assert!(!looks.is_empty());
         for id in &looks {
-            let m = scene.library.modules.get_mut(id).unwrap();
-            m.params.set("style", Value::Choice("glow".into()));
+            scene.card_mut(*id, SlotId::Look).unwrap().params.set("style", Value::Choice("glow".into()));
         }
         let loaded = bpe_core::load(&bpe_core::save(&scene), &reg).expect("an unknown style still loads");
         for id in &looks {
-            let params = &loaded.library.modules[id].params;
+            let params = &loaded.card(*id, SlotId::Look).unwrap().params;
             assert!(params.get("style").is_none(), "the unknown style is dropped");
             assert_eq!(BasicLook::from_params(params).style, Style::Shiny);
         }

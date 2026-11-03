@@ -1,8 +1,8 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{Color, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType, section_rank};
+use bpe_core::{Color, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType, section_rank};
 use eframe::egui::{
-    self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
+    self, Color32, DragValue, PointerButton, Response, RichText, Sense, Slider, Ui, Vec2, color_picker::Alpha,
 };
 
 use crate::gradient_bar::gradient_bar_named;
@@ -47,16 +47,11 @@ pub fn target_words(t: &Target, choices: &TargetChoices) -> String {
     }
 }
 
-/// What a settings grid needs to know beyond the values: what targets can point at, which
-/// settings this thing changed for itself and what they would be without that change, and
-/// what each setting's keyframe diamond shows (none for a row without a diamond).
+/// What a settings grid needs to know beyond the values: what targets can point at and what each
+/// setting's keys are (none for a setting that can't be keyed or pulsed).
 pub struct GridCx<'a> {
     pub choices: &'a TargetChoices,
-    pub overridden: &'a dyn Fn(&str) -> bool,
-    pub inherited: &'a dyn Fn(&str) -> Option<Value>,
     pub marks: &'a dyn Fn(&str) -> Option<KeyMark>,
-    /// Whether the setting is locked against the dice.
-    pub locked: &'a dyn Fn(&str) -> bool,
     /// Whether the setting does anything here; rows that don't are left out.
     pub applies: &'a dyn Fn(&SettingDef) -> bool,
     /// Which group headings are folded shut. With none, headings have no fold arrow.
@@ -79,17 +74,16 @@ pub fn label_width(panel: f32) -> f32 {
     }
 }
 
-/// The start of a row without a diamond in a [`settings_like_grid`]: an empty diamond cell,
-/// then a label in the label column, `width` wide, wrapping when it is longer.
+/// The start of a row in a [`settings_like_grid`]: a label in the label column, `width` wide,
+/// wrapping when it is longer.
 pub fn grid_label(ui: &mut Ui, width: f32, text: &str) -> Response {
-    empty_cell(ui);
     label_cell(ui, width, |ui| ui.add(egui::Label::new(text).wrap()))
 }
 
-/// A grid laid out like a settings grid (a diamond column, the label column, the widgets), so
-/// its labels and widgets line up with the settings' when its rows start with [`grid_label`].
+/// A grid laid out like a settings grid (the label column, then the widgets), so its labels and
+/// widgets line up with the settings' when its rows start with [`grid_label`].
 pub fn settings_like_grid(id: impl egui::AsIdSalt) -> egui::Grid {
-    egui::Grid::new(id).num_columns(3).spacing([8.0, 6.0]).min_col_width(DIAMOND_CELL)
+    egui::Grid::new(id).num_columns(2).spacing([8.0, 6.0])
 }
 
 /// A grid cell exactly `width` wide, laid out left to right. What it holds wraps rather than
@@ -130,19 +124,14 @@ fn grid_cell<R>(ui: &mut Ui, width: f32, layout: egui::Layout, add: impl FnOnce(
     cell.inner
 }
 
-/// What the user did in a marked grid: values changed, overrides reset to the module, overrides
-/// pushed into the module, keyframe diamonds clicked and pulses picked.
+/// What the user did in a settings grid: values changed (pasted ones too), keyframes asked for
+/// from a row's menu, and groups folded.
 #[derive(Default)]
 pub struct GridOutcome {
     pub changes: Vec<(&'static str, Value)>,
-    pub resets: Vec<&'static str>,
-    pub pushes: Vec<&'static str>,
-    /// The settings whose diamond was clicked: add a key at the playhead, or remove the one there.
-    pub toggled_key: Vec<&'static str>,
-    /// Pulse choices from the diamond's menu: a source, or `None` to stop pulsing.
-    pub pulse: Vec<(&'static str, Option<PulseSource>)>,
-    /// Settings locked (true) or unlocked against the dice from the row's menu.
-    pub locks: Vec<(&'static str, bool)>,
+    /// The settings whose menu's Create Keyframe was picked: a key at the playhead holding the
+    /// value as it stands.
+    pub new_keys: Vec<&'static str>,
     /// Groups folded shut (true) or opened from their heading's arrow.
     pub folds: Vec<(&'static str, bool)>,
 }
@@ -234,56 +223,20 @@ fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, chang
     clicked
 }
 
-/// What a setting's keyframe diamond shows.
+/// What a setting's keys look like, for its label and its right-click menu.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyMark {
     /// Keys are allowed on the setting.
     pub can_key: bool,
-    /// A pulse is allowed on the setting.
-    pub can_pulse: bool,
     /// The setting has keys.
     pub keyed: bool,
-    /// A key sits at the playhead.
-    pub on_key: bool,
     /// The setting pulses with the hits.
     pub pulsed: bool,
-    /// The setting moves the physics, so it can't pulse with hits.
-    pub physics: bool,
 }
 
-/// The width of the diamond cell at the left of every row.
-pub const DIAMOND_CELL: f32 = 16.0;
-
-/// A settings grid of the settings that `applies`, with no marks and nothing for targets to
-/// point at. `get` supplies each setting's value as it stands; the rows the user changed come
-/// back as (key, new value) for the caller to write through `set_at`.
+/// A settings grid of the settings that apply, each row's label in the accent colour when the
+/// setting has keys or pulses, and a right-click menu on every row (see [`setting`]).
 pub fn settings_grid(
-    ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    defs: &[SettingDef],
-    applies: &dyn Fn(&SettingDef) -> bool,
-    label_width: f32,
-    get: impl Fn(&str) -> Value,
-) -> Vec<(&'static str, Value)> {
-    let choices = TargetChoices::default();
-    let cx = GridCx {
-        choices: &choices,
-        overridden: &|_| false,
-        inherited: &|_| None,
-        marks: &|_| None,
-        locked: &|_| false,
-        applies,
-        folded: None,
-        label_width,
-    };
-    settings_grid_marked(ui, id, defs, get, &cx).changes
-}
-
-/// A settings grid of the settings that apply, with a keyframe diamond before each setting that can have one
-/// (click: a key at the playhead; right-click: pulses), and a dot before the settings this thing
-/// changed for itself. Such a row's double-click or Alt+click goes back to the module's value,
-/// and its right-click menu offers to reset or push the change.
-pub fn settings_grid_marked(
     ui: &mut Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     defs: &[SettingDef],
@@ -302,7 +255,6 @@ pub fn settings_grid_marked(
             if !section.group.is_empty() {
                 let group = section.group;
                 let changed = shut && group_changed(defs, group, &get, cx);
-                empty_cell(ui);
                 // A grid can't take spacing, so the heading carries its own air above.
                 label_cell(ui, cx.label_width, |ui| {
                     let room = ui.available_size();
@@ -358,26 +310,12 @@ fn grid_row(
     right: f32,
     out: &mut GridOutcome,
 ) {
-    match (cx.marks)(def.key) {
-        Some(mark) => match diamond(ui, def.label, mark) {
-            DiamondClick::None => {}
-            DiamondClick::Toggle => out.toggled_key.push(def.key),
-            DiamondClick::Pulse(source) => out.pulse.push((def.key, source)),
-        },
-        None => empty_cell(ui),
-    }
     let mut value = get(def.key);
-    let overridden = (cx.overridden)(def.key);
-    let inherited = (cx.inherited)(def.key);
-    let locked = (cx.locked)(def.key);
     let unit = unit_for(def, &|k| Some(get(k)));
-    let row = setting(ui, def, unit, &mut value, inherited.as_ref(), overridden, locked, cx, right);
-    match row {
+    match setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right) {
         RowAction::Nothing => {}
         RowAction::Changed => out.changes.push((def.key, value)),
-        RowAction::Reset => out.resets.push(def.key),
-        RowAction::Push => out.pushes.push(def.key),
-        RowAction::Lock(lock) => out.locks.push((def.key, lock)),
+        RowAction::CreateKey => out.new_keys.push(def.key),
     }
 }
 
@@ -385,14 +323,10 @@ fn grid_row(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RowAction {
     Nothing,
-    /// `value` holds the new value.
+    /// `value` holds the new value: edited, put back to its default, or pasted.
     Changed,
-    /// Drop this thing's own change, so the module's value shows again.
-    Reset,
-    /// Write this thing's own change into the module.
-    Push,
-    /// Lock (true) or unlock the setting against the dice.
-    Lock(bool),
+    /// A key at the playhead, holding the value as it stands.
+    CreateKey,
 }
 
 /// The arrow that folds a card or a group of settings away (pointing right) and back (pointing
@@ -409,189 +343,214 @@ pub fn fold_toggle(ui: &mut Ui, open: bool, title: &str) -> bool {
     response.clicked()
 }
 
-/// The diamond column's cell for a row without a diamond.
-fn empty_cell(ui: &mut Ui) {
-    ui.allocate_exact_size(egui::vec2(DIAMOND_CELL, DIAMOND_CELL), Sense::hover());
-}
-
-enum DiamondClick {
-    None,
-    Toggle,
-    Pulse(Option<PulseSource>),
-}
-
-/// The keyframe diamond of one row: hollow when the setting has no keys, outlined when it has
-/// some, filled when one sits at the playhead, with a small wave beside it when it pulses. A
-/// click toggles a key at the playhead; a right-click offers the pulses.
-fn diamond(ui: &mut Ui, label: &str, mark: KeyMark) -> DiamondClick {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(DIAMOND_CELL, DIAMOND_CELL), Sense::click());
-    let name = format!("Keyframe {label}");
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-    let accent = theme::ACCENT_TEXT;
-    let color = if mark.keyed || response.hovered() { accent } else { theme::MUTED };
-    paint_diamond(ui.painter(), rect.center(), 5.0, mark.on_key, color);
-    if mark.pulsed {
-        let painter = ui.painter();
-        let x0 = rect.right() - 4.0;
-        let y = rect.center().y;
-        let points: Vec<Pos2> =
-            (0..=6).map(|i| Pos2::new(x0 + i as f32 * 0.8, y + ((i as f32) * 1.6).sin() * 3.0)).collect();
-        painter.add(egui::Shape::line(points, Stroke::new(1.0, theme::WARNING)));
-    }
-    let hint = match (mark.can_key, mark.on_key, mark.can_pulse) {
-        (false, _, _) => "Right-click to pulse with the hits. This setting can't have keyframes.",
-        (true, true, true) => "Remove the key here. Right-click for pulses.",
-        (true, false, true) => "Add a keyframe at the playhead. Right-click to pulse with the hits.",
-        (true, true, false) => "Remove the key here.",
-        (true, false, false) => "Add a keyframe at the playhead.",
-    };
-    let mut out = if response.clicked() && mark.can_key { DiamondClick::Toggle } else { DiamondClick::None };
-    if mark.can_pulse {
-        response.context_menu(|ui| {
-            for source in PulseSource::NAMED {
-                if source == PulseSource::Hits && mark.physics {
-                    continue;
-                }
-                if ui.button(format!("Pulse with {}", source.name().to_lowercase())).clicked() {
-                    out = DiamondClick::Pulse(Some(source));
-                    ui.close();
-                }
-            }
-            if mark.pulsed && ui.button("No pulse").clicked() {
-                out = DiamondClick::Pulse(None);
-                ui.close();
-            }
-        });
-    }
-    response.on_hover_text(hint);
-    out
-}
-
-/// A keyframe diamond: filled, or just its outline.
-pub fn paint_diamond(painter: &egui::Painter, center: Pos2, size: f32, filled: bool, color: Color32) {
-    let points = vec![
-        center + egui::vec2(0.0, -size),
-        center + egui::vec2(size, 0.0),
-        center + egui::vec2(0.0, size),
-        center + egui::vec2(-size, 0.0),
-    ];
-    if filled {
-        painter.add(egui::Shape::convex_polygon(points, color, Stroke::new(1.0, color)));
-    } else {
-        painter.add(egui::Shape::closed_line(points, Stroke::new(1.5, color)));
-    }
-}
-
 /// One grid row for `def`, in `unit`: the label, wrapped to the grid's label width (help on
-/// hover; a double-click or Alt+click puts the value back to `inherited`, or the setting's
-/// default), a dot when the setting is `overridden`, a padlock when it is `locked` against the
-/// dice, and the widget for its type, ending by `right`. The label's menu offers the lock on any
-/// setting the dice may pick.
-#[allow(clippy::too_many_arguments)]
+/// hover, in the accent colour when `mark` says the setting has keys or a pulse; a double-click
+/// or Alt+click puts the default back), and the widget for its type, ending by `right`.
+///
+/// A right-click on the label or the widget opens the row's menu ([`row_menu`]) and never
+/// changes the value, though sliders and number boxes otherwise move under any mouse button.
+/// A colour or gradient keeps its own clicks, so only its label has the menu.
 pub fn setting(
     ui: &mut Ui,
     def: &SettingDef,
     unit: &str,
     value: &mut Value,
-    inherited: Option<&Value>,
-    overridden: bool,
-    locked: bool,
+    mark: Option<KeyMark>,
     cx: &GridCx,
     right: f32,
 ) -> RowAction {
-    let fallback = inherited.cloned().unwrap_or_else(|| def.default.clone());
-    let mut action = RowAction::Nothing;
+    let lit = mark.is_some_and(|m| m.keyed || m.pulsed);
     let name = label_cell(ui, cx.label_width, |ui| {
-        if overridden {
-            let (dot, response) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Changed here"));
-            ui.painter().circle_filled(dot.center(), 3.0, theme::OVERRIDE);
-            response.on_hover_text("Changed here: this thing's own value, not the module's.");
-        }
-        // The padlock keeps its room after a label that wraps.
-        let padlock = if locked { 12.0 + ui.spacing().item_spacing.x } else { 0.0 };
         // The cell's full height, so the label is centred in it rather than hanging from its middle.
-        let room = Vec2::new((ui.available_width() - padlock).max(0.0), ui.available_height());
-        let name = ui
-            .allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                label(ui, def.label, def.help)
-            })
-            .inner;
-        if locked {
-            let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Locked when randomizing"));
-            paint_padlock(ui.painter(), rect, theme::MUTED);
-            response.on_hover_text("Locked: the dice leave this setting alone.");
-        }
-        if overridden || def.flags.random {
-            name.context_menu(|ui| {
-                if overridden {
-                    if ui.button("Reset to module").on_hover_text("Follow the module's value again").clicked() {
-                        action = RowAction::Reset;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Push to module")
-                        .on_hover_text("Give every thing using the module this value")
-                        .clicked()
-                    {
-                        action = RowAction::Push;
-                        ui.close();
-                    }
-                }
-                if def.flags.random {
-                    if locked {
-                        if ui.button("Unlock").on_hover_text("Let the dice pick this setting again").clicked() {
-                            action = RowAction::Lock(false);
-                            ui.close();
-                        }
-                    } else if ui
-                        .button("Lock when randomizing")
-                        .on_hover_text("Keep this setting as it is when the dice roll")
-                        .clicked()
-                    {
-                        action = RowAction::Lock(true);
-                        ui.close();
-                    }
-                }
-            });
-        }
-        name
+        let room = ui.available_size();
+        ui.allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            label(ui, def.label, def.help, lit)
+        })
+        .inner
     });
+    let before = value.clone();
     let mut changed = false;
     let response = widget_cell(ui, right, |ui| {
         let r = widget(ui, def, unit, value, name.id, cx.choices);
         changed |= r.changed();
         r
     });
+    let own_clicks = matches!(def.ty, ValueType::Color | ValueType::Gradient);
+    if changed && !own_clicks && right_button_busy(ui) {
+        *value = before.clone();
+        changed = false;
+    }
     // A gradient bar's clicks add and pick stops, so only its label resets it.
+    let fallback = def.default.clone();
     let gradient = def.ty == ValueType::Gradient;
     if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
         changed = true;
     }
+    let mut picks = vec![row_menu(&name, def, unit, &before, mark, cx.choices)];
+    if !own_clicks {
+        picks.push(row_menu(&response, def, unit, &before, mark, cx.choices));
+    }
     ui.end_row();
-    if action == RowAction::Nothing && changed {
-        action = RowAction::Changed;
+    let mut action = if changed { RowAction::Changed } else { RowAction::Nothing };
+    for pick in picks {
+        match pick {
+            MenuPick::Nothing => {}
+            MenuPick::Paste(pasted) => {
+                *value = pasted;
+                action = RowAction::Changed;
+            }
+            MenuPick::CreateKey => action = RowAction::CreateKey,
+        }
     }
     action
 }
 
-/// A small padlock: a body with a shackle over it.
-pub fn paint_padlock(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
-    let c = rect.center();
-    let body = egui::Rect::from_center_size(Pos2::new(c.x, c.y + 2.0), Vec2::new(8.0, 6.0));
-    painter.rect_filled(body, 1.5, color);
-    let shackle: Vec<Pos2> = (0..=8)
-        .map(|i| {
-            let t = std::f32::consts::PI * (1.0 - i as f32 / 8.0);
-            Pos2::new(c.x + 2.5 * t.cos(), c.y - 1.0 - 3.0 * t.sin())
-        })
-        .collect();
-    painter.add(egui::Shape::line(shackle, Stroke::new(1.5, color)));
+/// Whether the right mouse button is down or was just let go: a slider or number box under it is
+/// opening the row's menu, not being dragged.
+pub fn right_button_busy(ui: &Ui) -> bool {
+    ui.input(|i| {
+        let right = PointerButton::Secondary;
+        i.pointer.button_down(right) || i.pointer.button_released(right) || i.pointer.button_pressed(right)
+    })
 }
 
-/// The label cell, clickable for the reset shortcut.
-fn label(ui: &mut Ui, text: &str, help: &str) -> Response {
+/// A value copied from a setting's menu: the value and how it reads in the menu's Paste Value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Copied {
+    pub value: Value,
+    pub words: String,
+}
+
+/// Where the copied value lives: the editor's own clipboard, shared by every card and thing,
+/// until the editor closes.
+fn clipboard_id() -> egui::Id {
+    egui::Id::unique("setting value clipboard")
+}
+
+/// The value last copied from a setting's menu, if any.
+pub fn copied(ctx: &egui::Context) -> Option<Copied> {
+    ctx.data(|d| d.get_temp::<Copied>(clipboard_id()))
+}
+
+/// Puts `value` on the editor's clipboard.
+pub fn copy_value(ctx: &egui::Context, value: Value, words: String) {
+    ctx.data_mut(|d| d.insert_temp(clipboard_id(), Copied { value, words }));
+}
+
+/// What a row's menu asked for.
+#[derive(Clone, Debug, PartialEq)]
+enum MenuPick {
+    Nothing,
+    /// The copied value, made to fit the setting.
+    Paste(Value),
+    CreateKey,
+}
+
+/// The right-click menu of one setting's row: Copy Value, Paste Value (naming what is copied) and
+/// Create Keyframe. Paste is greyed out when nothing is copied or the copied value doesn't fit
+/// this setting; Create Keyframe when the setting can't have keys.
+fn row_menu(
+    response: &Response,
+    def: &SettingDef,
+    unit: &str,
+    value: &Value,
+    mark: Option<KeyMark>,
+    choices: &TargetChoices,
+) -> MenuPick {
+    let mut pick = MenuPick::Nothing;
+    let open = if response.container_secondary_clicked() {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.container_clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    // An id of its own: a menu button's own popup (a target or a choice) already uses the
+    // response's usual popup id.
+    let popup = egui::Popup::menu(response).id(response.id.with("setting menu")).open_memory(open).at_pointer_fixed();
+    popup.show(|ui| {
+        ui.set_min_width(160.0);
+        if ui.button("Copy Value").on_hover_text("Copy this setting's value").clicked() {
+            copy_value(ui.ctx(), value.clone(), value_words(value, unit, choices));
+            ui.close();
+        }
+        let clip = copied(ui.ctx());
+        let text = match &clip {
+            Some(c) => format!("Paste Value ({})", c.words),
+            None => "Paste Value".to_owned(),
+        };
+        let fits = clip.as_ref().and_then(|c| pasted(def, &c.value));
+        let why = if clip.is_none() { "Copy a value first" } else { "The copied value doesn't fit this setting" };
+        let paste = ui.add_enabled(fits.is_some(), egui::Button::new(text)).on_disabled_hover_text(why);
+        if paste.clicked()
+            && let Some(v) = fits
+        {
+            pick = MenuPick::Paste(v);
+            ui.close();
+        }
+        let can_key = mark.is_some_and(|m| m.can_key);
+        let key = ui
+            .add_enabled(can_key, egui::Button::new("Create Keyframe"))
+            .on_hover_text("A keyframe at the playhead holding the value as it is")
+            .on_disabled_hover_text("This setting can't have keyframes");
+        if key.clicked() {
+            pick = MenuPick::CreateKey;
+            ui.close();
+        }
+    });
+    pick
+}
+
+/// `copied` as a value of `def`, kept inside its range, or `None` when it is another kind of
+/// value or a choice this setting doesn't have.
+fn pasted(def: &SettingDef, copied: &Value) -> Option<Value> {
+    let value = match (&def.ty, copied) {
+        // A whole number pastes into a number and back, rounded.
+        (ValueType::Number, Value::Int(i)) => Value::Number(*i as f64),
+        (ValueType::Int, Value::Number(x)) if x.is_finite() => Value::Int(x.round() as i64),
+        // A colour pastes into colours as one, and a one-colour gradient into a colour.
+        (ValueType::Gradient, Value::Color(c)) => Value::Gradient(bpe_core::Gradient::solid(*c)),
+        (ValueType::Color, Value::Gradient(g)) if g.stops.len() == 1 => Value::Color(g.stops[0].color),
+        _ => copied.clone(),
+    };
+    def.ty.accepts(&value).then(|| def.clamp(value))
+}
+
+/// A value in a few words for the menu's Paste Value: a number with its unit, a colour as hex,
+/// a choice as its words, On or Off, a gradient's colours.
+pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String {
+    let number = |x: f64| {
+        let text = format!("{x:.3}");
+        let text = text.trim_end_matches('0').trim_end_matches('.');
+        if text == "-0" { "0".to_owned() } else { text.to_owned() }
+    };
+    let hex = |c: &Color| {
+        if c.a == 255 {
+            format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
+        } else {
+            format!("#{:02X}{:02X}{:02X}{:02X}", c.r, c.g, c.b, c.a)
+        }
+    };
+    match value {
+        Value::Number(x) => format!("{}{}", number(*x), suffix(unit)),
+        Value::Int(i) => format!("{i}{}", suffix(unit)),
+        Value::Bool(b) => if *b { "On" } else { "Off" }.to_owned(),
+        Value::Vec2([x, y]) => format!("{}, {}{}", number(f64::from(*x)), number(f64::from(*y)), suffix(unit)),
+        Value::Color(c) => hex(c),
+        Value::Gradient(g) => match g.stops.as_slice() {
+            [one] => hex(&one.color),
+            stops => format!("{} colours", stops.len()),
+        },
+        Value::Choice(c) => pretty(c),
+        Value::Text(t) if t.chars().count() > 24 => format!("\"{}…\"", t.chars().take(23).collect::<String>()),
+        Value::Text(t) => format!("\"{t}\""),
+        Value::Target(t) => target_words(t, choices),
+    }
+}
+
+/// The label cell, clickable for the reset shortcut, in the accent colour when `lit`.
+fn label(ui: &mut Ui, text: &str, help: &str, lit: bool) -> Response {
+    let text = if lit { RichText::new(text).color(theme::ACCENT_TEXT) } else { RichText::new(text) };
     let response = ui.add(egui::Label::new(text).wrap().selectable(false).sense(Sense::click()));
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
@@ -650,11 +609,11 @@ pub fn number_feel(span: f64, integer: bool) -> NumberFeel {
     NumberFeel { step, decimals, drag_speed }
 }
 
-/// The feel of a setting's number: from its range, else where the dice roll it, else from its
-/// unit (pixels move by whole pixels, other things by hundredths).
+/// The feel of a setting's number: from its range, else its usual span, else from its unit
+/// (pixels move by whole pixels, other things by hundredths).
 pub fn setting_feel(def: &SettingDef) -> NumberFeel {
     let integer = def.ty == ValueType::Int;
-    match def.range.or(def.dice) {
+    match def.range.or(def.span) {
         Some((min, max)) => number_feel(max - min, integer),
         None if def.unit.starts_with("px") => number_feel(400.0, integer),
         None => number_feel(2.0, integer),
@@ -1056,69 +1015,157 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_keyframe_diamond_reports_clicks_and_pulse_menu_items() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::{
-            Harness,
-            kittest::{NodeT, Queryable},
-        };
+    /// The Balls settings' grid, its values in `State::values`, with Size keyed when `keyed`.
+    #[derive(Default)]
+    struct State {
+        values: std::collections::BTreeMap<&'static str, Value>,
+        new_keys: Vec<&'static str>,
+        changes: usize,
+    }
+
+    fn balls_grid(keyed: bool) -> egui_kittest::Harness<'static, State> {
         let defs = bpe_kit::BallsSettings::defs();
-        let mut h = Harness::builder().with_size(egui::vec2(420.0, 600.0)).allow_missing_glyphs().build_ui_state(
-            |ui, out: &mut GridOutcome| {
-                let marks = |key: &str| {
-                    (key == "radius").then_some(KeyMark {
-                        can_key: true,
-                        can_pulse: true,
-                        keyed: true,
-                        on_key: false,
-                        pulsed: true,
-                        physics: false,
-                    })
-                };
-                let choices = TargetChoices::default();
-                let cx = GridCx {
-                    choices: &choices,
-                    overridden: &|_| false,
-                    inherited: &|_| None,
-                    marks: &marks,
-                    locked: &|_| false,
-                    applies: &|_| true,
-                    folded: None,
-                    label_width: label_width(420.0),
-                };
-                let got = settings_grid_marked(
-                    ui,
-                    "g",
-                    defs,
-                    |k| defs.iter().find(|d| d.key == k).unwrap().default.clone(),
-                    &cx,
-                );
-                out.changes.extend(got.changes);
-                out.toggled_key.extend(got.toggled_key);
-                out.pulse.extend(got.pulse);
-            },
-            GridOutcome::default(),
-        );
+        let values = defs.iter().map(|d| (d.key, d.default.clone())).collect();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(420.0, 900.0))
+            .allow_missing_glyphs()
+            .with_context_setup(crate::theme::apply)
+            .build_ui_state(
+                move |ui, state: &mut State| {
+                    let marks = |key: &str| {
+                        let def = defs.iter().find(|d| d.key == key)?;
+                        def.flags.keyframe.then_some(KeyMark {
+                            can_key: true,
+                            keyed: keyed && key == "radius",
+                            pulsed: false,
+                        })
+                    };
+                    let choices = TargetChoices::default();
+                    let cx = GridCx {
+                        choices: &choices,
+                        marks: &marks,
+                        applies: &|_| true,
+                        folded: None,
+                        label_width: label_width(420.0),
+                    };
+                    let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
+                    for (key, value) in got.changes {
+                        state.values.insert(key, value);
+                        state.changes += 1;
+                    }
+                    state.new_keys.extend(got.new_keys);
+                },
+                State { values, ..State::default() },
+            );
         h.run();
-        let diamonds = h
-            .get_all_by_role(Role::Button)
-            .filter(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("Keyframe")))
-            .count();
-        assert_eq!(diamonds, 1);
-        h.get_by_label("Keyframe Size").click();
+        h
+    }
+
+    fn right_click(h: &mut egui_kittest::Harness<'_, State>, at: egui::Pos2) {
+        h.hover_at(at);
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
         h.run();
-        assert_eq!(h.state().toggled_key, ["radius"]);
-        h.get_by_label("Keyframe Size").click_secondary();
+    }
+
+    #[test]
+    fn right_clicking_a_slider_opens_the_menu_and_leaves_the_value() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = balls_grid(false);
+        let before = h.state().values["radius"].clone();
+        let slider = h.get_by_role_and_label(Role::Slider, "Size").rect();
+        // Near the slider's right end, far from where the value sits.
+        right_click(&mut h, egui::pos2(slider.right() - 4.0, slider.center().y));
+        assert_eq!(h.state().values["radius"], before, "a right-click never changes a value");
+        assert_eq!(h.state().changes, 0);
+        assert!(h.query_by_label("Copy Value").is_some(), "the menu is open");
+        assert!(h.query_by_label("Paste Value").is_some());
+        assert!(h.query_by_label("Create Keyframe").is_some());
+        assert!(h.query_by_label("Pulse with hits").is_none(), "no pulses in the menu");
+    }
+
+    #[test]
+    fn copy_then_paste_moves_a_value_between_settings() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = balls_grid(false);
+        h.state_mut().values.insert("spacing", Value::Number(42.0));
         h.run();
-        h.get_by_label("Pulse with hits").click();
+        // Nothing copied yet: Paste is there but greyed out.
+        let size = h.get_by_role_and_label(Role::Label, "Size").rect().center();
+        right_click(&mut h, size);
+        assert!(h.get_by_label("Paste Value").accesskit_node().is_disabled());
+        h.key_press(egui::Key::Escape);
         h.run();
-        assert_eq!(h.state().pulse, [("radius", Some(PulseSource::Hits))]);
-        h.get_by_label("Keyframe Size").click_secondary();
+        let spacing = h.get_by_role_and_label(Role::Label, "Spacing").rect().center();
+        right_click(&mut h, spacing);
+        h.get_by_label("Copy Value").click();
         h.run();
-        h.get_by_label("No pulse").click();
+        assert_eq!(copied(&h.ctx).map(|c| c.words), Some("42 px".to_owned()));
+        right_click(&mut h, size);
+        h.get_by_label("Paste Value (42 px)").click();
         h.run();
-        assert_eq!(h.state().pulse.last(), Some(&("radius", None)));
+        assert_eq!(h.state().values["radius"], Value::Number(42.0));
+        // A number doesn't fit a choice.
+        let arrangement = h.get_by_role_and_label(Role::Label, "Arrangement").rect().center();
+        right_click(&mut h, arrangement);
+        assert!(h.get_by_label("Paste Value (42 px)").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn create_keyframe_is_offered_only_where_keys_are_allowed() {
+        use eframe::egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = balls_grid(true);
+        let speed = h.get_by_role_and_label(Role::Label, "Launch speed").rect().center();
+        right_click(&mut h, speed);
+        assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled(), "launch speed can't have keys");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        let size = h.get_by_role_and_label(Role::Label, "Size").rect().center();
+        right_click(&mut h, size);
+        h.get_by_label("Create Keyframe").click();
+        h.run();
+        assert_eq!(h.state().new_keys, ["radius"]);
+        assert_eq!(h.state().changes, 0);
+        assert!(h.query_by_label("Keyframe Size").is_none(), "no diamonds");
+    }
+
+    #[test]
+    fn pasting_fits_the_value_to_the_setting() {
+        let defs = bpe_kit::BallsSettings::defs();
+        let def = |k: &str| defs.iter().find(|d| d.key == k).unwrap();
+        assert_eq!(pasted(def("radius"), &Value::Number(9999.0)), Some(Value::Number(200.0)), "kept in range");
+        assert_eq!(pasted(def("columns"), &Value::Number(3.6)), Some(Value::Int(4)));
+        assert_eq!(pasted(def("radius"), &Value::Bool(true)), None);
+        assert_eq!(pasted(def("arrangement"), &Value::Choice("nowhere".into())), None);
+    }
+
+    #[test]
+    fn copied_values_read_in_a_few_words() {
+        let c = TargetChoices::default();
+        assert_eq!(value_words(&Value::Number(12.5), "px", &c), "12.5 px");
+        assert_eq!(value_words(&Value::Number(0.25), "", &c), "0.25");
+        assert_eq!(value_words(&Value::Int(3), "", &c), "3");
+        assert_eq!(value_words(&Value::Bool(false), "", &c), "Off");
+        assert_eq!(value_words(&Value::Vec2([0.0, 980.0]), "px/s²", &c), "0, 980 px/s²");
+        assert_eq!(value_words(&Value::Color(Color::rgb(0xff, 0x80, 0x00)), "", &c), "#FF8000");
+        let g = bpe_core::Gradient::even(&[Color::WHITE, Color::rgb(0, 0, 0), Color::WHITE]);
+        assert_eq!(value_words(&Value::Gradient(g), "", &c), "3 colours");
+        assert_eq!(value_words(&Value::Choice("electric_piano".into()), "", &c), "Electric piano");
+        assert_eq!(value_words(&Value::Target(Target::Me), "", &c), "Itself");
     }
 
     #[test]
@@ -1206,15 +1253,12 @@ mod tests {
                 let choices = TargetChoices::default();
                 let cx = GridCx {
                     choices: &choices,
-                    overridden: &|_| false,
-                    inherited: &|_| None,
                     marks: &|_| None,
-                    locked: &|_| false,
                     applies: &|_| true,
                     folded: Some(&|_| false),
                     label_width: label_width(420.0),
                 };
-                settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+                settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
             });
         h.run();
         h
@@ -1262,15 +1306,12 @@ mod tests {
             let applies = |d: &SettingDef| d.applies(Some("arena"), &value);
             let cx = GridCx {
                 choices: &choices,
-                overridden: &|_| false,
-                inherited: &|_| None,
                 marks: &|_| None,
-                locked: &|_| false,
                 applies: &applies,
                 folded: Some(&|_| false),
                 label_width: label_width(420.0),
             };
-            settings_grid_marked(ui, "g", defs, |k| value(k).unwrap(), &cx);
+            settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });
         h.run();
         assert!(h.query_by_label("Hide Shape").is_none(), "no fold arrow for an empty section");
@@ -1309,6 +1350,6 @@ mod tests {
         assert_eq!(number_feel(126.0, true).step, 1.0);
         assert!((feel(2000.0).drag_speed - 5.0).abs() < 1e-9, "a drag crosses the span in 400 pixels");
         let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
-        assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its dice range");
+        assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its usual span");
     }
 }

@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use bpe_core::{ModuleId, Params, ThingId, Value};
+use bpe_core::{Params, SlotId, ThingId, Value};
 use bpe_gfx::effects::{Builtin, Header, MAX_PARAM_FLOATS, ParamKind};
 use bpe_gfx::{DrawCx, EffectCall, Frame, ModuleDraw, thing_code};
 
@@ -25,7 +25,7 @@ impl ModuleDraw for EffectDraw {
             _ => 1.0,
         };
         frame.effects.push(EffectCall {
-            key: call_key(cx.thing.id, rslot.module),
+            key: call_key(cx.thing.id, slot),
             wgsl: Cow::Borrowed(self.0.wgsl),
             params: pack_params(header, &rslot.params),
             blend,
@@ -35,9 +35,9 @@ impl ModuleDraw for EffectDraw {
     }
 }
 
-/// Tells one thing's use of one module apart from every other, for the effect's history.
-fn call_key(thing: ThingId, module: ModuleId) -> u64 {
-    ((thing.0 as u64) << 32) | module.0 as u64
+/// Tells one thing's effect apart from every other, for the effect's history.
+fn call_key(thing: ThingId, slot: SlotId) -> u64 {
+    ((thing.0 as u64) << 32) | slot as u64
 }
 
 /// The settings packed the way the shader reads them: in header order, numbers and toggles one
@@ -107,11 +107,11 @@ mod tests {
     fn a_root_shader_is_a_picture_effect_and_a_thing_shader_is_a_material() {
         let (mut scene, _, kit) = scene_with_balls("single", |_| {});
         let reg = &kit.registry;
-        let k = scene.add_module(reg, "shader.kaleidoscope", "Slices").unwrap();
-        scene.link(reg, ThingId::ROOT, SlotId::Shader, k).unwrap();
-        let lava = scene.add_module(reg, "shader.lava", "Lava").unwrap();
-        scene.library.modules.get_mut(&lava).unwrap().params.set("blend", Value::Number(0.5));
-        scene.link(reg, BALLS, SlotId::Shader, lava).unwrap();
+        scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
+        scene.add_slot(reg, BALLS, SlotId::Shader, "shader.lava").unwrap();
+        let lava = (BALLS, SlotId::Shader);
+        scene.card_mut(lava.0, lava.1).unwrap().params.set("blend", Value::Number(0.5));
+
         let resolved = resolve(&scene, reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         assert!(!resolved.things[&ARENA].slots.contains_key(&SlotId::Shader), "Scene settings' effect isn't inherited");

@@ -92,7 +92,7 @@ impl SettingGroup for InsidePaint {
                 ty,
                 default,
                 range,
-                dice: None,
+                span: None,
                 unit,
                 group: o.group,
                 depth: Depth::More,
@@ -107,7 +107,7 @@ impl SettingGroup for InsidePaint {
         let num = |key, label, help, v: f32, when, range, unit| {
             def(key, label, help, ty(&v), val(&v), when, Some(range), unit, true)
         };
-        let mut pattern = def(
+        let pattern = def(
             "pattern",
             "Pattern",
             "The pattern drawn inside each one.",
@@ -118,8 +118,6 @@ impl SettingGroup for InsidePaint {
             "",
             false,
         );
-        // The dice may roll a pattern, as they did the old inside pattern.
-        pattern.flags.random = true;
         vec![
             pattern,
             def(
@@ -318,8 +316,6 @@ mod tests {
         }
         assert_eq!(defs.iter().find(|d| d.key == "in_shade").unwrap().default, Value::Number(-0.5));
         assert_eq!(defs.iter().find(|d| d.key == "in_pattern").unwrap().default, Value::Choice("none".into()));
-        let random: Vec<&str> = defs.iter().filter(|d| d.flags.random).map(|d| d.key).collect();
-        assert_eq!(random, ["in_pattern"], "the dice roll the pattern, as the old inside pattern");
     }
 
     #[test]

@@ -1,18 +1,15 @@
-//! Ball Studio Next: design a scene from shared modules, watch it play, and export it.
+//! Ball Studio Next: design a scene of things, watch it play, and export it.
 
 // No console window behind the editor in Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod dice;
 mod export_window;
 mod gradient_bar;
 mod grid;
 mod history;
 mod inspector;
-mod library;
 mod palettes;
-mod presets;
 mod preview;
 mod selection;
 mod settings;

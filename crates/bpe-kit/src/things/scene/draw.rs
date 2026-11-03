@@ -170,10 +170,10 @@ mod tests {
 
     #[test]
     fn a_grade_key_at_its_default_value_gives_a_default_grade_at_that_time() {
-        use bpe_core::{Address, Ease, Owner};
+        use bpe_core::{Address, Ease};
         let kit = crate::kit();
         let mut scene = crate::new_scene(&kit.registry);
-        let a = Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: "grade_warmth".into() };
+        let a = Address { thing: ThingId::ROOT, slot: None, key: "grade_warmth".into() };
         for (t, v) in [(0.0, 0.5), (1.0, 0.0), (2.0, 0.5)] {
             let i = scene.set_key(&kit.registry, &a, t, Value::Number(v)).unwrap();
             scene.set_ease(&a, i, Ease::Linear);

@@ -1,6 +1,6 @@
 //! Saving and opening scenes.
 
-use crate::{Params, Registry, Scene, SettingDef, SlotLink};
+use crate::{Params, Registry, Scene, SettingDef};
 use std::fmt;
 
 /// Why a scene file didn't open.
@@ -46,29 +46,18 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
 
-    for module in scene.library.modules.values_mut() {
-        if let Some(kind) = reg.module(&module.kind) {
-            module.slot = kind.slot();
-            clean(&mut module.params, kind.settings());
-        }
-    }
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {
             clean(&mut thing.params, kind.settings());
         }
-        for link in thing.slots.values_mut() {
-            if let SlotLink::Linked { module, overrides } = link
-                && let Some(kind) = scene.library.modules.get(module).and_then(|m| reg.module(&m.kind))
-            {
-                clean(overrides, kind.settings());
+        for card in thing.slots.values_mut() {
+            if let Some(kind) = reg.module(&card.kind) {
+                clean(&mut card.params, kind.settings());
             }
         }
     }
     if let Some(last) = scene.things.keys().next_back() {
         scene.next_thing = scene.next_thing.max(last.0 + 1);
-    }
-    if let Some(last) = scene.library.modules.keys().next_back() {
-        scene.next_module = scene.next_module.max(last.0 + 1);
     }
     Ok(scene)
 }
@@ -103,7 +92,7 @@ fn clean(params: &mut Params, defs: &[SettingDef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Color, SlotId, ThingId, Value, testkit};
+    use crate::{SlotId, ThingId, Value, testkit};
 
     #[test]
     fn scene_round_trips() {
@@ -111,17 +100,6 @@ mod tests {
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
         assert_eq!(load(&save(&s), &r).unwrap(), s);
-    }
-
-    #[test]
-    fn owner_survives_save_and_load() {
-        let r = testkit::registry();
-        let mut s = Scene::empty(&r);
-        let balls = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        let m = s.add_starter(&r, balls, "look.plain").unwrap();
-        let loaded = load(&save(&s), &r).unwrap();
-        assert_eq!(loaded.library.modules[&m].owner, Some(balls));
-        assert_eq!(loaded, s);
     }
 
     #[test]
@@ -134,14 +112,15 @@ mod tests {
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 3)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 4)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
     #[test]
     fn lower_format_numbers_count_as_old() {
         assert_eq!(load("(format: 1)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
-        assert!(matches!(load("(format: 2", &testkit::registry()).unwrap_err(), LoadError::Broken(_)));
+        assert_eq!(load("(format: 2)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
+        assert!(matches!(load("(format: 3", &testkit::registry()).unwrap_err(), LoadError::Broken(_)));
     }
 
     #[test]
@@ -155,30 +134,20 @@ mod tests {
     }
 
     #[test]
-    fn load_cleans_module_params_and_overrides_with_the_module_kinds_settings() {
+    fn load_cleans_card_params_with_the_card_kinds_settings() {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
-        let m = s.add_module(&r, "look.plain", "Plain").unwrap();
-        s.link(&r, b, SlotId::Look, m).unwrap();
-        let module = s.library.modules.get_mut(&m).unwrap();
-        module.params.set("glow", Value::Text("bright".into()));
-        module.params.set("color", Value::Color(Color::rgb(1, 2, 3)));
-        module.slot = SlotId::Trail; // a hand edit the registry corrects
-        if let Some(SlotLink::Linked { overrides, .. }) = s.things.get_mut(&b).unwrap().slots.get_mut(&SlotId::Look) {
-            overrides.set("glow", Value::Number(99.0));
-            overrides.set("color", Value::Bool(true));
-            overrides.set("wobble", Value::Number(1.0));
-        }
+        s.add_slot(&r, b, SlotId::Look, "look.plain").unwrap();
+        let card = s.things.get_mut(&b).unwrap().slots.get_mut(&SlotId::Look).unwrap();
+        card.params.set("glow", Value::Number(99.0));
+        card.params.set("color", Value::Bool(true));
+        card.params.set("wobble", Value::Number(1.0));
         let back = load(&save(&s), &r).unwrap();
-        let module = &back.library.modules[&m];
-        assert_eq!(module.params.get("glow"), None);
-        assert_eq!(module.params.get("color"), Some(&Value::Color(Color::rgb(1, 2, 3))));
-        assert_eq!(module.slot, SlotId::Look);
-        let SlotLink::Linked { overrides, .. } = &back.things[&b].slots[&SlotId::Look] else { panic!("still linked") };
-        assert_eq!(overrides.get("glow"), Some(&Value::Number(2.0)));
-        assert_eq!(overrides.get("color"), None);
-        assert_eq!(overrides.get("wobble"), Some(&Value::Number(1.0)), "unknown keys are left for resolve");
+        let card = &back.things[&b].slots[&SlotId::Look];
+        assert_eq!(card.params.get("glow"), Some(&Value::Number(2.0)));
+        assert_eq!(card.params.get("color"), None);
+        assert_eq!(card.params.get("wobble"), Some(&Value::Number(1.0)), "unknown keys are left for resolve");
     }
 
     #[test]
@@ -196,7 +165,7 @@ mod tests {
         assert_eq!(back.things[&a].parent, Some(ThingId::ROOT));
         assert_eq!(back.things[&b].id, b);
         assert_eq!(back.next_thing, b.0 + 1);
-        let e = load("(format: 2)", &r).unwrap_err();
+        let e = load("(format: 3)", &r).unwrap_err();
         assert_eq!(e.to_string(), "This scene file is damaged: it has no scene settings");
     }
 

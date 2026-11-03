@@ -192,9 +192,10 @@ mod tests {
     fn a_burst_goes_off_at_each_recent_hit_of_the_balls() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        scene.library.modules.get_mut(&m).unwrap().params.set("life", Value::Number(2.0));
-        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
+        scene.add_slot(&reg, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
+        let m = (ThingId(2), SlotId::Particles);
+        scene.card_mut(m.0, m.1).unwrap().params.set("life", Value::Number(2.0));
+
         let resolved = resolve(&scene, &reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         let kit = kit();
@@ -228,7 +229,7 @@ mod tests {
         assert_eq!(again.bursts, frame.bursts);
 
         // Its own colour, a covering preset, and a least speed nothing reaches.
-        let module = scene.library.modules.get_mut(&m).unwrap();
+        let module = scene.card_mut(m.0, m.1).unwrap();
         module.params.set("source", Value::Choice("own".into()));
         module.params.set("preset", Value::Choice("smoke".into()));
         module.params.set("blend", Value::Choice("normal".into()));
@@ -238,7 +239,7 @@ mod tests {
         assert!(!frame.bursts[0].additive);
         assert_eq!(frame.bursts[0].color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(frame.bursts[0].shape, 1);
-        scene.library.modules.get_mut(&m).unwrap().params.set("least_speed", Value::Number(1e6));
+        scene.card_mut(m.0, m.1).unwrap().params.set("least_speed", Value::Number(1e6));
         let resolved = resolve(&scene, &reg);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
         assert!(frame.bursts.is_empty());
@@ -249,18 +250,19 @@ mod tests {
         assert_eq!(super::super::HitBurst::default().blend, bpe_core::Blend::Add);
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "particles.burst", "Smoke").unwrap();
-        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        scene.add_slot(&reg, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
+        let m = (ThingId(2), SlotId::Particles);
+        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
         params.set("preset", Value::Choice("smoke".into()));
         params.set("life", Value::Number(2.0));
-        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
+
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);
         let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
         let mut frame = Frame::default();
         let mut draw = |blend: &str, amount: f64| {
-            let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+            let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
             params.set("blend", Value::Choice(blend.into()));
             params.set("blend_amount", Value::Number(amount));
             let resolved = resolve(&scene, &reg);
@@ -280,15 +282,16 @@ mod tests {
     fn own_colours_go_to_the_gpu_for_life_and_order_and_are_worked_out_once_otherwise() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
+        scene.add_slot(&reg, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
+        let m = (ThingId(2), SlotId::Particles);
+
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);
         let (red, green, blue) =
             (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 255, 0), bpe_core::Color::rgb(0, 0, 255));
         let mut draw = |follow: &str, colours: bpe_core::Gradient| {
-            let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+            let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
             params.set("source", Value::Choice("own".into()));
             params.set("follow", Value::Choice(follow.into()));
             params.set("colours", Value::Gradient(colours));
@@ -340,9 +343,8 @@ mod tests {
     fn the_arena_lets_off_nothing_itself() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        scene.link(&reg, ThingId(1), SlotId::Particles, m).unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
+        scene.add_slot(&reg, ThingId(1), SlotId::Particles, "particles.burst").unwrap();
+        scene.add_slot(&reg, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
         let resolved = resolve(&scene, &reg);
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -357,13 +359,14 @@ mod tests {
     fn each_burst_varies_its_own_colour_on_the_cpu_and_the_gpu() {
         let reg = registry();
         let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "particles.burst", "Sparks").unwrap();
-        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        scene.add_slot(&reg, ThingId(2), SlotId::Particles, "particles.burst").unwrap();
+        let m = (ThingId(2), SlotId::Particles);
+        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
         params.set("life", Value::Number(3.0));
         params.set("source", Value::Choice("own".into()));
         params.set("colours", Value::Gradient(bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0))));
         params.set("vary_hue", Value::Number(60.0));
-        scene.link(&reg, ThingId(2), SlotId::Particles, m).unwrap();
+
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolve(&scene, &reg), kit.sims.clone());
         playback.seek(4.0);
@@ -375,7 +378,7 @@ mod tests {
 
         // Life on the GPU: the same row, a different turn per burst.
         let red_blue = bpe_core::Gradient::even(&[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]);
-        let params = &mut scene.library.modules.get_mut(&m).unwrap().params;
+        let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
         params.set("follow", Value::Choice("life".into()));
         params.set("colours", Value::Gradient(red_blue));
         build_frame(&scene, &resolve(&scene, &reg), playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);

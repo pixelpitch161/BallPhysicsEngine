@@ -29,12 +29,10 @@ struct FieldAttrs {
     group: Option<LitStr>,
     when: Option<LitStr>,
     range: Option<(Expr, Expr)>,
-    dice: Option<(Expr, Expr)>,
+    span: Option<(Expr, Expr)>,
     simple: bool,
     keyframe: bool,
-    random: bool,
     pulse: bool,
-    structural: bool,
     /// The field is a group of settings (such as `Paint`) that expands to several prefixed ones.
     paint: bool,
     prefix: Option<LitStr>,
@@ -73,16 +71,11 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.simple = true;
             } else if p.is_ident("keyframe") {
                 a.keyframe = true;
-            } else if p.is_ident("random") {
-                // `random` on its own rolls over the whole range; `random(min, max)` narrows it.
-                a.random = true;
-                if meta.input.peek(syn::token::Paren) {
-                    a.dice = Some(pair(&meta)?);
-                }
+            } else if p.is_ident("span") {
+                // The usual span a slider covers, for a setting without a hard `range`.
+                a.span = Some(pair(&meta)?);
             } else if p.is_ident("pulse") {
                 a.pulse = true;
-            } else if p.is_ident("structural") {
-                a.structural = true;
             } else if p.is_ident("paint") {
                 a.paint = true;
             } else if p.is_ident("prefix") {
@@ -166,13 +159,13 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
             continue;
         }
         let help = help(field);
-        let span = |r: Option<(Expr, Expr)>| match r {
+        let pair_of = |r: Option<(Expr, Expr)>| match r {
             Some((min, max)) => quote!(::std::option::Option::Some(((#min) as f64, (#max) as f64))),
             None => quote!(::std::option::Option::None),
         };
-        let (range, dice) = (span(a.range), span(a.dice));
+        let (range, span) = (pair_of(a.range), pair_of(a.span));
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
-        let (keyframe, random, pulse, structural) = (a.keyframe, a.random, a.pulse, a.structural);
+        let (keyframe, pulse) = (a.keyframe, a.pulse);
         defs.push(quote! {
             v.push(::bpe_core::SettingDef {
                 key: #key,
@@ -181,11 +174,11 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 ty: <#ty as ::bpe_core::SettingValue>::value_type(),
                 default: ::bpe_core::SettingValue::to_value(&d.#ident),
                 range: #range,
-                dice: #dice,
+                span: #span,
                 unit: #unit,
                 group: #group,
                 depth: #depth,
-                flags: ::bpe_core::Flags { keyframe: #keyframe, random: #random, pulse: #pulse, structural: #structural },
+                flags: ::bpe_core::Flags { keyframe: #keyframe, pulse: #pulse },
                 when: #when,
             });
         });

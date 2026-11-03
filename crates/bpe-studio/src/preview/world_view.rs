@@ -1,7 +1,7 @@
 //! The preview's World view: a free canvas over the whole world, with the camera drawn as the
 //! frame of its shot that can be moved, zoomed and turned by dragging.
 
-use bpe_core::{Address, Owner, Registry, Resolved, Scene, Settings, Value};
+use bpe_core::{Address, Registry, Resolved, Scene, Settings, Value};
 use bpe_kit::CameraSettings;
 use bpe_runtime::{CameraView, Log, World};
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Stroke};
@@ -119,7 +119,7 @@ pub fn apply_camera_drag(
         Handle::CameraMove(id) | Handle::CameraZoom(id) | Handle::CameraTurn(id) => id,
         _ => return false,
     };
-    let address = |key: &str| Address { owner: Owner::Thing(id), slot: None, key: key.into() };
+    let address = |key: &str| Address { thing: id, slot: None, key: key.into() };
     let center = world.camera.center;
     let (key, value) = match drag.handle {
         Handle::CameraMove(_) => {
@@ -276,7 +276,7 @@ mod tests {
     fn dragging_a_keyed_zoom_adds_a_key() {
         let (mut studio, cam) = studio_with_camera();
         let reg = bpe_kit::registry();
-        let zoom = Address { owner: Owner::Thing(cam), slot: None, key: "zoom".into() };
+        let zoom = Address { thing: cam, slot: None, key: "zoom".into() };
         studio.scene.set_key(&reg, &zoom, 0.0, Value::Number(1.0)).unwrap();
         let world = studio.playback.world().clone();
         let drag = Drag { handle: Handle::CameraZoom(cam), offset: Vec2::ZERO };
