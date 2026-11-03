@@ -14,6 +14,8 @@ mod frame;
 mod grade_tests;
 mod gradients;
 #[cfg(test)]
+mod layers_tests;
+#[cfg(test)]
 mod paint_tests;
 pub mod particles;
 #[cfg(test)]
@@ -22,8 +24,8 @@ mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LookInstance, ModuleDraw, ShapeInstance, Stage, ThingDraw, TrailVertex, blend_alpha, build_frame, hit_strength,
-    push_streak, push_streak_colours, thing_code,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, ShapeInstance, Stage, ThingDraw, TrailVertex,
+    blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use wgpu;
@@ -51,6 +53,10 @@ const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
+];
+const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+    6 => Float32x4, 7 => Float32x4, 8 => Uint32x4
 ];
 const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
@@ -264,17 +270,21 @@ pub struct Renderer {
     composite_layout: wgpu::BindGroupLayout,
     /// The gradient atlas: bound at group 1 of the scene passes and group 2 of the particles.
     paint_layout: wgpu::BindGroupLayout,
+    /// The layer records of layered balls: group 2 of their pipelines.
+    layers_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
     shape: wgpu::RenderPipeline,
     ball: wgpu::RenderPipeline,
     look: wgpu::RenderPipeline,
+    layered: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
     /// What is where, for effects on things (see object.wgsl).
     shape_object: wgpu::RenderPipeline,
     ball_object: wgpu::RenderPipeline,
     look_object: wgpu::RenderPipeline,
+    layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     particles: particles::Particles,
     downsample: wgpu::RenderPipeline,
@@ -293,6 +303,11 @@ struct FrameBuffers {
     shapes: GrowableBuffer,
     balls: GrowableBuffer,
     looks: GrowableBuffer,
+    layered: GrowableBuffer,
+    /// The layer records the layered balls name, and the bind group reading them, remade when
+    /// the buffer grows.
+    look_layers: GrowableBuffer,
+    layers_group: Option<wgpu::BindGroup>,
     flashes: GrowableBuffer,
     bursts: particles::BurstList,
 }
@@ -304,6 +319,9 @@ impl Default for FrameBuffers {
             shapes: GrowableBuffer::new("shape instances"),
             balls: GrowableBuffer::new("ball instances"),
             looks: GrowableBuffer::new("styled ball instances"),
+            layered: GrowableBuffer::new("layered ball instances"),
+            look_layers: GrowableBuffer::storage("ball layer records"),
+            layers_group: None,
             flashes: GrowableBuffer::new("flash instances"),
             bursts: particles::BurstList::default(),
         }
@@ -311,11 +329,31 @@ impl Default for FrameBuffers {
 }
 
 impl FrameBuffers {
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, particles: &particles::Particles, f: &Frame) {
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        particles: &particles::Particles,
+        layers_layout: &wgpu::BindGroupLayout,
+        f: &Frame,
+    ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
         self.shapes.upload(device, queue, bytemuck::cast_slice(&f.shapes));
         self.balls.upload(device, queue, bytemuck::cast_slice(&f.balls));
         self.looks.upload(device, queue, bytemuck::cast_slice(&f.looks));
+        self.layered.upload(device, queue, bytemuck::cast_slice(&f.layered));
+        if !f.layered.is_empty() {
+            // A ball naming no records still binds something.
+            let records: &[LayerGpu] = if f.look_layers.is_empty() { &[LayerGpu::ZERO] } else { &f.look_layers };
+            if self.look_layers.upload(device, queue, bytemuck::cast_slice(records)) || self.layers_group.is_none() {
+                let buffer = self.look_layers.buffer.as_ref().expect("just uploaded");
+                self.layers_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ball layer records"),
+                    layout: layers_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                }));
+            }
+        }
         self.flashes.upload(device, queue, bytemuck::cast_slice(&f.flashes));
         particles.fill(&mut self.bursts, device, queue, particles::pick(&f.bursts, f.time));
     }
@@ -348,6 +386,8 @@ impl Renderer {
                     include_str!("shaders/styled.wgsl"),
                     include_str!("shaders/trail.wgsl"),
                     include_str!("shaders/each.wgsl"),
+                    include_str!("shaders/blend_maths.wgsl"),
+                    include_str!("shaders/layers.wgsl"),
                 ]
                 .concat()
                 .into(),
@@ -428,6 +468,24 @@ impl Renderer {
         let scene_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pipeline layout"),
             bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout)],
+            immediate_size: 0,
+        });
+        let layers_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ball layers layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<LayerGpu>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let layered_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("layered ball pipeline layout"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout), Some(&layers_layout)],
             immediate_size: 0,
         });
         let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -547,6 +605,28 @@ impl Renderer {
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
+        );
+        let layered = make(
+            "layered balls",
+            &layered_pipeline_layout,
+            &scene_shader,
+            "vs_layers",
+            "fs_layers",
+            &[Some(instances(std::mem::size_of::<LayeredInstance>() as u64, &LAYERED_ATTRIBUTES))],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
+        let layered_object = make(
+            "layered ball objects",
+            &layered_pipeline_layout,
+            &scene_shader,
+            "vs_layers",
+            "fs_layers_object",
+            &[Some(instances(std::mem::size_of::<LayeredInstance>() as u64, &LAYERED_ATTRIBUTES))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
         );
         let flash = make(
             "flashes",
@@ -686,6 +766,20 @@ impl Renderer {
                     ),
                 ),
                 (
+                    Kind::Layered,
+                    Recipe {
+                        layout: layered_pipeline_layout.clone(),
+                        ..recipe(
+                            "vs_layers",
+                            "fs_layers_each",
+                            size_of::<LayeredInstance>(),
+                            Instance,
+                            &LAYERED_ATTRIBUTES,
+                            TriangleStrip,
+                        )
+                    },
+                ),
+                (
                     Kind::Flash,
                     recipe(
                         "vs_flash",
@@ -720,16 +814,19 @@ impl Renderer {
             post_layout,
             composite_layout,
             paint_layout,
+            layers_layout,
             sampler,
             background,
             trail,
             shape,
             ball,
             look,
+            layered,
             flash,
             shape_object,
             ball_object,
             look_object,
+            layered_object,
             chain: effects::chain::Chain::new(device),
             particles,
             downsample,
@@ -795,16 +892,16 @@ impl Renderer {
                 0,
                 bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
             );
-            self.overlay.upload(device, queue, &self.particles, o);
+            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, o);
         }
-        self.buffers.upload(device, queue, &self.particles, frame);
+        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, frame);
         // Every blend layer's lists, the frame's then the overlay's, each in its own buffers.
         let overlay_layers = overlay.map_or(&[][..], |o| &o.layers[..]);
         let layers: Vec<&BlendLayer> = frame.layers.iter().chain(overlay_layers).collect();
         let mut layer_buffers = std::mem::take(&mut self.layer_buffers);
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
-            b.upload(device, queue, &self.particles, &l.frame);
+            b.upload(device, queue, &self.particles, &self.layers_layout, &l.frame);
         }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
         self.grade_map.sync(queue, &frame.grade);
@@ -999,6 +1096,12 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.looks.slice());
             pass.draw(0..4, 0..f.looks.len() as u32);
         }
+        if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
+            pass.set_pipeline(self.pipeline(&self.layered, each::Kind::Layered, through));
+            pass.set_bind_group(2, group, &[]);
+            pass.set_vertex_buffer(0, b.layered.slice());
+            pass.draw(0..4, 0..f.layered.len() as u32);
+        }
     }
 
     /// Flashes and particles, in front of everything; the globals are bound already.
@@ -1028,6 +1131,12 @@ impl Renderer {
             pass.set_pipeline(&self.look_object);
             pass.set_vertex_buffer(0, b.looks.slice());
             pass.draw(0..4, 0..f.looks.len() as u32);
+        }
+        if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
+            pass.set_pipeline(&self.layered_object);
+            pass.set_bind_group(2, group, &[]);
+            pass.set_vertex_buffer(0, b.layered.slice());
+            pass.draw(0..4, 0..f.layered.len() as u32);
         }
     }
 
@@ -1328,27 +1437,36 @@ struct GrowableBuffer {
     label: &'static str,
     buffer: Option<wgpu::Buffer>,
     len: u64,
+    usage: wgpu::BufferUsages,
 }
 
 impl GrowableBuffer {
     fn new(label: &'static str) -> Self {
-        Self { label, buffer: None, len: 0 }
+        Self { label, buffer: None, len: 0, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST }
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+    /// One read by shaders as a storage buffer.
+    fn storage(label: &'static str) -> Self {
+        Self { usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, ..Self::new(label) }
+    }
+
+    /// Writes `bytes`, first making a bigger buffer if they don't fit. True when it made one.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> bool {
         self.len = bytes.len() as u64;
         if bytes.is_empty() {
-            return;
+            return false;
         }
-        if self.buffer.as_ref().is_none_or(|b| b.size() < self.len) {
+        let grown = self.buffer.as_ref().is_none_or(|b| b.size() < self.len);
+        if grown {
             self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(self.label),
                 size: self.len.next_power_of_two().max(1024),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                usage: self.usage,
                 mapped_at_creation: false,
             }));
         }
         queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
+        grown
     }
 
     fn slice(&self) -> wgpu::BufferSlice<'_> {

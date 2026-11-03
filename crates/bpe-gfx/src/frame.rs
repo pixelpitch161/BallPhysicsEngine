@@ -78,6 +78,90 @@ pub struct LookInstance {
     pub paint: PaintGpu,
 }
 
+/// One layer of a ball's stack of layers, as layers.wgsl draws it. A thing's stack is written
+/// once per frame into [`Frame::look_layers`]; each of its balls is a [`LayeredInstance`] naming
+/// the range of records it is drawn with. Bottom first.
+///
+/// | code | layer   | `amount` (x is always opacity) | `p0`                                   | `p1`              | flags                    |
+/// | ---- | ------- | ------------------------------ | -------------------------------------- | ----------------- | ------------------------ |
+/// | 0    | body    | 1                              | -                                      | -                 | -                        |
+/// | 1    | pattern | opacity                        | -                                      | -                 | 1 turns with the ball    |
+/// | 2    | outline | opacity                        | width px, sits (0 in, 1 centre, 2 out) | -                 | 1 colour from the body   |
+/// | 3    | shine   | opacity, strength              | spot xy, size                          | -                 | -                        |
+/// | 4    | glow    | opacity, strength              | size in radii                          | -                 | 1 colour from the body   |
+///
+/// `head.y` is the layer's blend against the layers under it in the same ball
+/// ([`Blend::shader_code`]). `colour` is the layer's own linear colour; `paint` what a pattern
+/// paints (its variation comes from the ball's instance).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct LayerGpu {
+    /// Kind code, blend code, flags, spare.
+    pub head: [u32; 4],
+    pub amount: [f32; 4],
+    pub p0: [f32; 4],
+    pub p1: [f32; 4],
+    pub colour: [f32; 4],
+    pub paint: PaintGpu,
+}
+
+impl LayerGpu {
+    /// All zeros, for binding something when a frame has no records.
+    pub const ZERO: LayerGpu = LayerGpu {
+        head: [0; 4],
+        amount: [0.0; 4],
+        p0: [0.0; 4],
+        p1: [0.0; 4],
+        colour: [0.0; 4],
+        paint: PaintGpu {
+            row: -1.0,
+            t0: 0.0,
+            pattern: 0.0,
+            steps: 0.0,
+            angle: 0.0,
+            scale: 1.0,
+            scroll: 0.0,
+            repeat: 0.0,
+            vary: [0.0, 0.0, 1.0, 0.0],
+        },
+    };
+    pub const BODY: u32 = 0;
+    pub const PATTERN: u32 = 1;
+    pub const OUTLINE: u32 = 2;
+    pub const SHINE: u32 = 3;
+    pub const GLOW: u32 = 4;
+    /// The pattern turns with the ball's heading, or the outline or glow takes the body's colour.
+    pub const FLAG: u32 = 1;
+}
+
+/// The most layers one ball is drawn with; the rest of a longer stack is left out.
+pub const MAX_LAYERS: u32 = 64;
+
+/// One ball drawn with a stack of layers (see [`LayerGpu`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct LayeredInstance {
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// 0 to 1, the ball's own number.
+    pub seed: f32,
+    /// The body's colour after the reactions, linear light; alpha -1 adds its light (see
+    /// [`blend_alpha`]).
+    pub body: [f32; 4],
+    /// Direction of travel, scale along it, scale across it.
+    pub stretch: [f32; 4],
+    /// Shape code, roundness, angle in radians, how far the stack reaches past the centre in
+    /// radii (the quad's half size before stretching).
+    pub form: [f32; 4],
+    /// Opacity, thing code (see [`thing_code`]), the ball's heading in degrees for patterns that
+    /// turn with it, 1 when the shape faces its motion (the heading is then already turned in).
+    pub misc: [f32; 4],
+    /// The ball's own colour variation for patterns painted from their own gradient.
+    pub vary: [f32; 4],
+    /// First record in the frame's `look_layers`, how many, two spare.
+    pub range: [u32; 4],
+}
+
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
 /// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points), 3 filled
 /// rounded box clipped to an x range, 4 filled arc band.
@@ -459,6 +543,9 @@ pub struct Frame {
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
     pub looks: Vec<LookInstance>,
+    /// Balls drawn with a stack of layers, and the stacks' records they name.
+    pub layered: Vec<LayeredInstance>,
+    pub look_layers: Vec<LayerGpu>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
@@ -572,6 +659,8 @@ impl Default for Frame {
             balls: Vec::new(),
             flashes: Vec::new(),
             looks: Vec::new(),
+            layered: Vec::new(),
+            look_layers: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
             hits: Vec::new(),
@@ -594,6 +683,8 @@ impl Frame {
         self.balls.clear();
         self.flashes.clear();
         self.looks.clear();
+        self.layered.clear();
+        self.look_layers.clear();
         self.trails.clear();
         self.bursts.clear();
         self.hits.clear();
@@ -642,6 +733,7 @@ impl Frame {
         let is = |c: f32| (c.floor() - code).abs() < 0.5;
         self.balls.iter().any(|b| is(b.code[0]))
             || self.looks.iter().any(|l| is(l.extent[1]))
+            || self.layered.iter().any(|l| is(l.misc[1]))
             || self.shapes.iter().any(|s| is(s.c[3]))
     }
 
@@ -651,6 +743,7 @@ impl Frame {
             && self.balls.is_empty()
             && self.flashes.is_empty()
             && self.looks.is_empty()
+            && self.layered.is_empty()
             && self.trails.is_empty()
             && self.bursts.is_empty()
             && self.layers.is_empty()
@@ -703,6 +796,7 @@ impl Frame {
                 && o.balls.is_empty()
                 && o.flashes.is_empty()
                 && o.looks.is_empty()
+                && o.layered.is_empty()
                 && o.trails.is_empty()
                 && o.layers.is_empty())
         })
@@ -738,6 +832,10 @@ impl Frame {
         let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
+        self.layered.retain(|l| {
+            let along = l.stretch[2].max(l.stretch[3]).max(1.0);
+            sees(l.center, l.radius * l.form[3].max(1.0) * along)
+        });
         self.flashes.retain(|f| sees(f.center, f.size));
         for l in &mut self.layers {
             l.frame.cull_through(camera, (width, height));
@@ -794,6 +892,11 @@ pub trait ThingDraw: Send + Sync + 'static {
     /// The thing kind's id, as registered in `bpe_core`.
     fn kind(&self) -> &'static str;
     fn draw(&self, cx: &DrawCx, frame: &mut Frame);
+    /// How the thing mixes with what is under it (blend, amount, blend with each other), when it
+    /// says so itself rather than through its Look card's `blend` settings.
+    fn blend(&self, _resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
+        None
+    }
 }
 
 /// How a module kind draws for every thing whose slot it fills: a trail behind the balls, a
@@ -871,11 +974,11 @@ pub fn build_frame(
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
-        let ((blend, amount), each) = match r.slots.get(&SlotId::Look) {
-            Some(look) if *id != ThingId::ROOT => {
-                (Blend::from_params(&look.params), Blend::each_from_params(&look.params))
-            }
-            _ => ((Blend::Normal, 1.0), false),
+        let ((blend, amount), each) = match (r.slots.get(&SlotId::Look), d.blend(r)) {
+            _ if *id == ThingId::ROOT => ((Blend::Normal, 1.0), false),
+            (_, Some((blend, amount, each))) => ((blend, amount), each),
+            (Some(look), None) => (Blend::from_params(&look.params), Blend::each_from_params(&look.params)),
+            (None, None) => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
@@ -984,6 +1087,50 @@ mod tests {
         assert!((radius_at(1.0, &mut frame) - 6.0).abs() < 1e-5);
         assert_eq!(radius_at(5.0, &mut frame), 10.0);
         assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
+    }
+
+    #[test]
+    fn layer_records_and_layered_instances_fit_the_gpu() {
+        assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 128, "as layers.wgsl lays it out");
+        assert!(std::mem::size_of::<LayeredInstance>() <= 128);
+        assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
+        let mut f = Frame::default();
+        f.layered.push(LayeredInstance { misc: [1.0, 7.25, 0.0, 0.0], ..Default::default() });
+        f.look_layers.push(LayerGpu::default());
+        assert!(f.draws_thing(7.0) && !f.draws_nothing());
+        f.clear();
+        assert!(f.layered.is_empty() && f.look_layers.is_empty());
+    }
+
+    struct OwnBlend;
+    impl ThingDraw for OwnBlend {
+        fn kind(&self) -> &'static str {
+            "balls"
+        }
+        fn draw(&self, _cx: &DrawCx, frame: &mut Frame) {
+            frame.layered.push(LayeredInstance::default());
+        }
+        fn blend(&self, _r: &ResolvedThing) -> Option<(Blend, f32, bool)> {
+            Some((Blend::Screen, 0.5, false))
+        }
+    }
+
+    #[test]
+    fn a_thing_that_names_its_own_blend_is_drawn_into_that_layer() {
+        let reg = testkit::registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        testkit::push(&mut scene, "balls", bpe_core::ThingId::ROOT);
+        let resolved = resolve(&scene, &reg);
+        let world = World::build(&scene, &resolved, &Sims::default());
+        let mut draws = Draws::default();
+        draws.add(OwnBlend);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &draws, &mut frame);
+        assert!(frame.layered.is_empty());
+        assert_eq!(frame.layers.len(), 1);
+        assert_eq!((frame.layers[0].blend, frame.layers[0].amount), (Blend::Screen, 0.5));
+        assert_eq!(frame.layers[0].frame.layered.len(), 1);
     }
 
     #[test]
