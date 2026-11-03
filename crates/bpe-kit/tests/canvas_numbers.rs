@@ -166,14 +166,15 @@ fn wet_falls_as_paint_dries() {
 
 /// Everything a canvas keeps that a seek must reproduce.
 fn fingerprint(pb: &Playback) -> (u64, u64, Vec<bpe_kit::things::canvas::drops::FogDrop>, String, String) {
-    let st = state::<CanvasState>(pb.world().states[&CANVAS].as_ref());
+    let canvas = *pb.world().states.iter().find(|(_, s)| s.as_any().is::<CanvasState>()).expect("a canvas").0;
+    let st = state::<CanvasState>(pb.world().states[&canvas].as_ref());
     let claim_hash = st.claims.as_ref().map_or(0, |c| c.map.hash());
     (
         st.grid.hash(),
         claim_hash,
         st.drops.clone(),
         format!("{:?}", pb.log().canvas_samples()),
-        format!("{:?} {:?}", pb.log().teams_of(CANVAS), pb.world().teams_of(CANVAS)),
+        format!("{:?} {:?}", pb.log().teams_of(canvas), pb.world().teams_of(canvas)),
     )
 }
 
@@ -188,9 +189,80 @@ pub fn seeks_to_the_straight_run(scene: &Scene, resolved: &Resolved, kit: &Kit) 
     assert!(fingerprint(&straight) == fingerprint(&jumpy), "{}", scene.name);
 }
 
+/// A shipped Marks demo, built and resolved, and its canvas.
+fn demo(name: &str) -> (Scene, Resolved, Kit, ThingId) {
+    let kit = kit();
+    let scene = bpe_kit::scenes::marks(&kit.registry)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("no demo called {name}"))
+        .1;
+    let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
+    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+    let canvas = *scene.things.iter().find(|(_, t)| t.kind == "canvas").expect("a canvas").0;
+    (scene, resolved, kit, canvas)
+}
+
+#[test]
+fn scratch_to_reveal_reveals() {
+    let (scene, resolved, kit, card) = demo("Scratch to reveal");
+    let (world, _) = run(&scene, &resolved, &kit, 15.0);
+    let revealed = world.canvas_numbers_of(card).unwrap().revealed;
+    assert!((0.2..0.98).contains(&revealed), "{revealed} of the card is scratched off");
+}
+
+#[test]
+fn colour_war_has_four_teams() {
+    let (scene, resolved, kit, war) = demo("Colour war");
+    let (world, _) = run(&scene, &resolved, &kit, 10.0);
+    let mut names: Vec<_> = world.teams_of(war).iter().map(|t| t.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, ["Blue", "Green", "Red", "Yellow"]);
+    let shares = &world.canvas_numbers_of(war).unwrap().shares;
+    assert!(shares.iter().all(|s| *s > 0.02), "every team holds ground: {shares:?}");
+}
+
+#[test]
+fn territory_grows() {
+    let (scene, resolved, kit, land) = demo("Territory");
+    let claimed = |seconds| {
+        let (world, _) = run(&scene, &resolved, &kit, seconds);
+        world.canvas_numbers_of(land).unwrap().shares.iter().sum::<f32>()
+    };
+    let (early, late) = (claimed(5.0), claimed(15.0));
+    assert!(late > early * 1.5 || late > 0.9, "{early} claimed at 5 s, {late} at 15 s");
+}
+
+#[test]
+fn sand_garden_ridges() {
+    let (scene, resolved, kit, sand) = demo("Sand garden");
+    let (world, _) = run(&scene, &resolved, &kit, 10.0);
+    let grid = &state::<CanvasState>(world.states[&sand].as_ref()).grid;
+    let (w, h) = grid.dims();
+    let ridged = (0..h).any(|y| (0..w).any(|x| grid.get(x, y).amount > 160));
+    assert!(ridged, "ploughed sand piles up above its rest height");
+}
+
+#[test]
+fn fog_glass_runs_drops() {
+    let (scene, resolved, kit, fog) = demo("Fog glass");
+    let mut world = World::build(&scene, &resolved, &kit.sims);
+    let mut log = Log::default();
+    let mut seen = false;
+    for k in 1..=40 {
+        world.advance_to(k as f64 * 0.25, &kit.sims, &mut log);
+        seen |= !state::<CanvasState>(world.states[&fog].as_ref()).drops.is_empty();
+    }
+    assert!(seen, "steam drops ran down the glass");
+}
+
 #[test]
 fn every_new_demo_seeks_to_the_straight_run() {
     for (scene, resolved, kit) in [scratch(), war(), sand(), fog()] {
+        seeks_to_the_straight_run(&scene, &resolved, &kit);
+    }
+    for name in ["Scratch to reveal", "Colour war", "Territory", "Sand garden", "Fog glass"] {
+        let (scene, resolved, kit, _) = demo(name);
         seeks_to_the_straight_run(&scene, &resolved, &kit);
     }
 }
