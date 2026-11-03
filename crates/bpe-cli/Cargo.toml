@@ -15,5 +15,3 @@ bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 bpe-kit.workspace = true
 anyhow.workspace = true
-serde.workspace = true
-ron.workspace = true

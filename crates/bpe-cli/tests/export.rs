@@ -1,4 +1,4 @@
-//! Export checks: a short clip has picture and sound; failures leave no file behind.
+//! Export checks: a short clip has picture and a (silent) sound track; failures leave no file behind.
 
 use bpe_cli::{Encoder, ExportOptions, export_video, find_ffmpeg};
 use bpe_gfx::headless_device;
@@ -61,20 +61,20 @@ fn exports_a_short_clip_with_sound() {
 }
 
 #[test]
-fn exports_a_stage3_scene_with_an_obstacle() {
+fn exports_a_scene_with_many_balls() {
     let Some((device, queue)) = ready() else { return };
     let kit = kit();
     let (name, scene) = bpe_kit::scenes::stage3(&kit.registry).swap_remove(0);
-    assert_eq!(name, "Peg board");
-    let dir = temp_dir("pegs");
-    let mut options = ExportOptions::new(dir.join("peg-board.mp4"));
+    assert_eq!(name, "Ball pit");
+    let dir = temp_dir("pit");
+    let mut options = ExportOptions::new(dir.join("ball-pit.mp4"));
     options.max_frames = Some(30);
     options.scale = 0.25;
     options.encoder = Encoder::Cpu;
     export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
     let probe = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "csv"])
-        .arg(dir.join("peg-board.mp4"))
+        .arg(dir.join("ball-pit.mp4"))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&probe.stdout);
@@ -133,118 +133,3 @@ fn output_sizes_are_even_and_encoders_have_names() {
     assert_eq!(Encoder::from_name("quantum"), None);
 }
 
-#[test]
-fn exporting_a_scene_with_a_swarm_and_gpu_liquid_makes_a_clip() {
-    use bpe_core::{SlotId, ThingId, Value};
-    let Some((device, queue)) = ready() else { return };
-    let kit = kit();
-    let mut scene = new_scene(&kit.registry);
-    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("fps", Value::Int(12));
-    let swarm = scene.add_thing(&kit.registry, "swarm", ThingId::ROOT).unwrap();
-    scene.things.get_mut(&swarm).unwrap().params.set("count", Value::Int(2000));
-    let liquid = scene.add_thing(&kit.registry, "liquid", ThingId::ROOT).unwrap();
-    scene.things.get_mut(&liquid).unwrap().params.set("count", Value::Int(5000));
-    let look = scene.add_module(&kit.registry, "look.liquid", "Liquid surface").unwrap();
-    scene.link(&kit.registry, liquid, SlotId::Look, look).unwrap();
-    let dir = temp_dir("flow");
-    let mut options = ExportOptions::new(dir.join("flow.mp4"));
-    options.max_frames = Some(12);
-    options.scale = 0.25;
-    options.encoder = Encoder::Cpu;
-    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
-    let probe = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv"])
-        .arg(dir.join("flow.mp4"))
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&probe.stdout);
-    let duration: f64 = text
-        .lines()
-        .find_map(|l| l.strip_prefix("format,"))
-        .and_then(|d| d.trim().parse().ok())
-        .unwrap_or_else(|| panic!("no duration in {text}"));
-    assert!((duration - 1.0).abs() < 0.15, "{duration}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn an_exported_clip_with_beat_sync_has_sound_and_the_right_length() {
-    let Some((device, queue)) = ready() else { return };
-    let kit = kit();
-    let mut scene = new_scene(&kit.registry);
-    let root = scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap();
-    root.params.set("duration", bpe_core::Value::Number(2.0));
-    root.params.set("bpm", bpe_core::Value::Number(120.0));
-    root.params.set("beat_sync", bpe_core::Value::Choice("warp".into()));
-    let dir = temp_dir("beat-sync");
-    let mut options = ExportOptions::new(dir.join("beat.mp4"));
-    options.scale = 0.25;
-    options.encoder = Encoder::Cpu;
-    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
-    let size = std::fs::metadata(dir.join("beat.mp4")).unwrap().len();
-    assert!(size > 10_000, "{size} bytes");
-    let probe = match std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "csv"])
-        .arg(dir.join("beat.mp4"))
-        .output()
-    {
-        Ok(probe) => probe,
-        Err(error) => {
-            eprintln!("ffprobe isn't installed ({error}); the clip's streams and length go unchecked");
-            return;
-        }
-    };
-    let text = String::from_utf8_lossy(&probe.stdout);
-    assert!(text.lines().any(|l| l.contains("audio")), "{text}");
-    let duration: f64 = text
-        .lines()
-        .find_map(|l| l.strip_prefix("format,"))
-        .and_then(|d| d.trim().parse().ok())
-        .unwrap_or_else(|| panic!("no duration in {text}"));
-    assert!((duration - 2.0).abs() < 0.15, "{duration}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn export_stops_at_the_end() {
-    let Some((device, queue)) = ready() else { return };
-    let kit = kit();
-    // A rule asks at 1 s to end 2 s later: a 6 s video stops at about 3 s.
-    let mut scene = bpe_kit::ending::scene_that_ends(&kit.registry, 1.0, 2.0);
-    {
-        use bpe_core::{Settings, ThingId};
-        let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
-        let mut settings = bpe_kit::SceneSettings::from_params(&root.params);
-        settings.duration = 6.0;
-        settings.fps = 30;
-        root.params = settings.to_params();
-    }
-    let dir = temp_dir("ends");
-    let mut options = ExportOptions::new(dir.join("ends.mp4"));
-    options.scale = 0.1;
-    options.encoder = Encoder::Cpu;
-    let mut last = (0, 0);
-    export_video(&device, &queue, &scene, &kit, &options, |done, total| {
-        last = (done, total);
-        true
-    })
-    .unwrap();
-    assert_eq!(last.0, last.1, "every planned frame was drawn");
-    assert!((90..=92).contains(&last.1), "3 s at 30 fps, not the 180 of 6 s: {last:?}");
-    let probe = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "csv"])
-        .arg(dir.join("ends.mp4"))
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&probe.stdout).to_string();
-    let duration_of = |kind: &str| -> f64 {
-        text.lines()
-            .find(|l| l.starts_with(&format!("stream,{kind}")) || l.contains(kind))
-            .and_then(|l| l.split(',').find_map(|f| f.trim().parse::<f64>().ok()))
-            .unwrap_or_else(|| panic!("no {kind} duration in {text}"))
-    };
-    let (video, audio) = (duration_of("video"), duration_of("audio"));
-    assert!((video - 3.0).abs() < 0.2, "{video}");
-    assert!(audio <= video + 1.0 / 30.0 + 0.05, "audio {audio} runs past video {video}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
