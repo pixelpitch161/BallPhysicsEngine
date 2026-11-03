@@ -92,6 +92,19 @@ pub struct LookInstance {
 /// | 5    | shading | opacity                        | kind (0 linear, 1 radial, 2 brush), softness, space (0 ball, 1 screen), amount | linear: from xy, to xy; radial: centre xy, size; brush: tile in w | 2 radial darkens the middle |
 /// | 6    | shader  | opacity                        | speed, scale, space, effect slot       | -                 | -                        |
 /// | 7    | mask    | -, target record (-1 none), parent angle, shape | from (0 layer below, 1 layer, 2 shape, 3 brush, 4 light, 5 dark), invert, softness, moves (0 layer, 1 ball, 2 screen) | angle rad, size, threshold, tile | - |
+/// | 8    | group   | -                              | -                                      | -                 | -                        |
+/// | 9    | group shader | amount                    | speed, scale, 1 over the whole ball, effect slot | around in radii (0 inside only) | - |
+///
+/// The group record (code 8) mixes the ball's group colour (`LayeredInstance::group`) over the
+/// whole ball as it stands there, by the mode in `range.w`. Flag 8 ([`LayerGpu::GROUPED`]) on any
+/// other record mixes the group colour into that layer's own colour first.
+///
+/// A group shader record (code 9) runs an effect across the whole group: its uv is the ball's
+/// point in the square of `LayeredInstance::place`. Over the whole ball (`p0.z` 1) it is drawn as
+/// a layer of its own, by its blend; otherwise it changes the layers that name it: a drawn
+/// record's `amount.z` is the first group record's index and `amount.w` a bit mask of the group
+/// records after it (bit 0 that first one) whose effect is mixed into its colour. Group shaders
+/// only run in a stack's in-ball program.
 ///
 /// `head.y` is the layer's blend against the layers under it in the same ball
 /// ([`Blend::shader_code`]); `head.w` how many mask records follow it (they limit it and are
@@ -145,8 +158,17 @@ impl LayerGpu {
     pub const INVERT: u32 = 2;
     /// The editor's view shows this layer's masks alone: white where they let it show.
     pub const SOLO: u32 = 4;
+    /// The group's colour over the whole ball (see the table above).
+    pub const GROUP: u32 = 8;
+    /// An effect across the whole group (see the table above).
+    pub const GROUP_SHADER: u32 = 9;
     /// The pattern turns with the ball's heading, or the outline or glow takes the body's colour.
     pub const FLAG: u32 = 1;
+    /// The group's colour is mixed into this layer's colour.
+    pub const GROUPED: u32 = 8;
+    /// This ball doesn't wear the layer (odd ones out): it is passed over as if it weren't in
+    /// the stack, though it keeps its place so record indices hold.
+    pub const UNWORN: u32 = 16;
 }
 
 /// The most layers one ball is drawn with; the rest of a longer stack is left out.
@@ -173,8 +195,14 @@ pub struct LayeredInstance {
     pub misc: [f32; 4],
     /// The ball's own colour variation for patterns painted from their own gradient.
     pub vary: [f32; 4],
-    /// First record in the frame's `look_layers`, how many, two spare.
+    /// First record in the frame's `look_layers`, how many, spare, and how the group colour mixes
+    /// in: 0 not at all, else one more than the blend's [`Blend::shader_code`] (1 replaces).
     pub range: [u32; 4],
+    /// The ball's colour from its group (linear, straight), and how much of it mixes in.
+    pub group: [f32; 4],
+    /// Where the ball started in its group, from the group's middle (world units), and the
+    /// group's side (world units): the square group shaders spread across.
+    pub place: [f32; 4],
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
@@ -1142,7 +1170,7 @@ mod tests {
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
         assert_eq!(std::mem::size_of::<LayerGpu>(), 192, "as layers.wgsl lays it out");
-        assert!(std::mem::size_of::<LayeredInstance>() <= 128);
+        assert!(std::mem::size_of::<LayeredInstance>() <= 160);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();
         f.layered.push(LayeredInstance { misc: [1.0, 7.25, 0.0, 0.0], ..Default::default() });

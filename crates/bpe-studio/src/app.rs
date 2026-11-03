@@ -835,7 +835,7 @@ fn file_label(path: &Path) -> String {
 mod tests {
     use super::*;
     use bpe_core::{Address, SlotId, ThingId, Value};
-    use bpe_kit::{Arrangement, BallsSettings};
+    use bpe_kit::BallsSettings;
     use std::path::Path;
     use std::time::Duration;
 
@@ -1089,14 +1089,9 @@ mod tests {
     fn scrubbing_a_huge_scene_returns_within_its_budget() {
         let mut studio = Studio::headless();
         let before = studio.scene.clone();
-        let block = BallsSettings {
-            arrangement: Arrangement::Block,
-            columns: 200,
-            rows: 200,
-            spacing: 4.0,
-            radius: 1.5,
-            ..BallsSettings::default()
-        };
+        // As many balls as a group may have.
+        let mut block = BallsSettings { radius: 1.5, ..BallsSettings::default() };
+        block.block(70, 70, 4.0);
         studio.scene.things.get_mut(&ThingId(2)).unwrap().params = block.to_params();
         studio.after_edit(before);
         let started = Instant::now();

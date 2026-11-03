@@ -1,6 +1,7 @@
 //! The balls' Look as a stack of layers: the Look card `look.layers` holds a Body at the bottom,
 //! any number of drawn layers above it (Pattern, Outline, Shine, Glow) and the Blend layer, then
-//! the reactions (Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning).
+//! the reactions (Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning),
+//! then the group layers that spread one look across a whole group (the group gradient).
 //! Each layer kind is a `#[derive(Settings)]` struct in its own file; `gpu.rs` turns a resolved
 //! stack into what the renderer draws.
 
@@ -8,6 +9,8 @@ pub mod blend;
 pub mod body;
 pub mod glow;
 pub mod gpu;
+pub mod group;
+pub mod group_shader;
 pub mod mask;
 pub mod outline;
 pub mod pattern;
@@ -21,6 +24,8 @@ use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, 
 pub use blend::BlendLayer;
 pub use body::BodyLayer;
 pub use glow::GlowLayer;
+pub use group::{Changes, Easing, GroupGradient, GroupMix, Spread};
+pub use group_shader::{GroupShader, GroupShaderMix, Shows};
 pub use mask::{MaskFrom, MaskLayer, MaskMoves, MaskShape};
 pub use outline::{OutlineLayer, OutlineSits};
 pub use pattern::PatternLayer;
@@ -119,6 +124,9 @@ impl LayerKind for Kind {
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
     }
+    fn per_ball(&self) -> bool {
+        self.id != BLEND
+    }
 }
 
 pub const BODY: &str = "layer.body";
@@ -135,6 +143,8 @@ pub const HUE: &str = "react.hue";
 pub const STRETCH: &str = "react.stretch";
 pub const RAINBOW: &str = "react.rainbow";
 pub const TURNING: &str = "react.turning";
+pub const GROUP_GRADIENT: &str = "group.gradient";
+pub const GROUP_SHADER: &str = "group.shader";
 
 /// Every layer kind of the balls' Look, in the order the add menus list them.
 pub fn kinds() -> Vec<Kind> {
@@ -206,6 +216,28 @@ pub fn kinds() -> Vec<Kind> {
             settings: MaskLayer::defs,
             dynamic: no_more,
         },
+        Kind {
+            id: GROUP_GRADIENT,
+            name: "Gradient",
+            help: "Colours spread across the whole group, mixed with each ball's own.",
+            section: LayerSection::Group,
+            repeats: false,
+            base: false,
+            maskable: false,
+            settings: GroupGradient::defs,
+            dynamic: no_more,
+        },
+        Kind {
+            id: GROUP_SHADER,
+            name: "Shader",
+            help: group_shader::HELP,
+            section: LayerSection::Group,
+            repeats: true,
+            base: false,
+            maskable: false,
+            settings: group_shader::defs,
+            dynamic: shader::dynamic_defs,
+        },
     ]
 }
 
@@ -220,7 +252,24 @@ mod tests {
         let ids: Vec<&str> = reg.layers_for(CARD).map(|k| k.id()).collect();
         assert_eq!(
             ids,
-            [BODY, PATTERN, OUTLINE, SHINE, GLOW, SHADING, SHADER, BLEND, FLASH, HUE, STRETCH, RAINBOW, TURNING, MASK],
+            [
+                BODY,
+                PATTERN,
+                OUTLINE,
+                SHINE,
+                GLOW,
+                SHADING,
+                SHADER,
+                BLEND,
+                FLASH,
+                HUE,
+                STRETCH,
+                RAINBOW,
+                TURNING,
+                MASK,
+                GROUP_GRADIENT,
+                GROUP_SHADER
+            ],
             "in the add menus' order"
         );
         assert!(reg.layer(BODY).unwrap().base());
@@ -234,6 +283,18 @@ mod tests {
     }
 
     #[test]
+    fn blend_is_every_ball_s_or_none() {
+        let reg = registry();
+        let mut scene = crate::new_studio_scene(&reg);
+        let ball = crate::add_thing(&mut scene, &reg, "balls", bpe_core::ThingId::ROOT).unwrap();
+        let slot = bpe_core::SlotId::Look;
+        let blend = scene.add_layer(&reg, ball, slot, BLEND).unwrap();
+        assert!(scene.set_layer_only(&reg, ball, slot, blend, vec![1]).is_err());
+        let outline = scene.add_layer(&reg, ball, slot, OUTLINE).unwrap();
+        assert!(scene.set_layer_only(&reg, ball, slot, outline, vec![1]).is_ok());
+    }
+
+    #[test]
     fn drawn_layers_but_body_and_blend_have_opacity_and_blend() {
         let reg = registry();
         for k in reg.layers_for(CARD) {
@@ -242,8 +303,8 @@ mod tests {
             assert_eq!(has("opacity") && has("blend"), drawn, "{}", k.id());
             assert_eq!(
                 k.repeats(),
-                drawn || k.section() == LayerSection::Mask,
-                "{}: drawn layers and masks repeat",
+                drawn || k.section() == LayerSection::Mask || k.id() == GROUP_SHADER,
+                "{}: drawn layers, masks and group shaders repeat",
                 k.id()
             );
             assert_eq!(k.maskable(), drawn, "{}: drawn layers but Body and Blend take masks", k.id());

@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
-    ArenaSettings, ArenaShape, Arrangement, BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst,
+    ArenaSettings, ArenaShape, BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst,
     SceneSettings, StreakTrail, Style, TrailSource, new_scene,
 };
 
@@ -116,7 +116,7 @@ pub fn layers_from_basic(look: &BasicLook) -> Slot {
     let mut card = Slot::new(l::CARD);
     let mut add = |kind: &str, name: &str, params: Params| {
         let id = LayerId(card.layers.len() as u32);
-        card.layers.push(Layer { id, kind: kind.into(), name: name.into(), enabled: true, parent: None });
+        card.layers.push(Layer { id, kind: kind.into(), name: name.into(), ..Layer::default() });
         for (k, v) in params.iter() {
             card.params.set(&layered_key(id, k), v.clone());
         }
@@ -232,11 +232,8 @@ pub fn colour_demo(reg: &Registry) -> Scene {
     };
     b.own_module(ARENA, "look.basic", ring.to_params());
     b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 8;
-        s.rows = 8;
-        s.spacing = 46.0;
         s.radius = 19.0;
+        s.block(8, 8, 46.0);
         s.velocity = Vec2::new(-420.0, 220.0);
     });
     b.ball_look(|l| {
@@ -323,14 +320,10 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             ThingId::ROOT,
             name,
             Vec2::new(-190.0, y),
-            BallsSettings {
-                arrangement: Arrangement::Block,
-                columns: 5,
-                rows: 1,
-                spacing: 95.0,
-                radius: 70.0,
-                velocity: Vec2::new(vx, 0.0),
-                ..BallsSettings::default()
+            {
+                let mut s = BallsSettings { radius: 70.0, velocity: Vec2::new(vx, 0.0), ..BallsSettings::default() };
+                s.block(5, 1, 95.0);
+                s
             }
             .to_params(),
         );
@@ -347,13 +340,10 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         ThingId::ROOT,
         "Comets",
         Vec2::new(0.0, 450.0),
-        BallsSettings {
-            arrangement: Arrangement::Ring,
-            count: 3,
-            ring_radius: 60.0,
-            radius: 14.0,
-            velocity: Vec2::new(520.0, 380.0),
-            ..BallsSettings::default()
+        {
+            let mut s = BallsSettings { radius: 14.0, velocity: Vec2::new(520.0, 380.0), ..BallsSettings::default() };
+            s.ring(3, 60.0);
+            s
         }
         .to_params(),
     );
@@ -375,11 +365,8 @@ pub fn blend_demo(reg: &Registry) -> Scene {
     b.own_module(comets, "trail.streak", streak.to_params());
     // Styled balls whose hue drifts around one colour.
     b.balls("Drifters", Vec2::new(-260.0, 600.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 8;
-        s.rows = 2;
-        s.spacing = 52.0;
         s.radius = 22.0;
+        s.block(8, 2, 52.0);
         s.velocity = Vec2::new(160.0, -90.0);
     });
     let drift = BasicLook {
@@ -439,11 +426,8 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
     };
     b.own_module(ARENA, "look.basic", wall.to_params());
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 7;
-        s.rows = 5;
-        s.spacing = 52.0;
         s.radius = 22.0;
+        s.block(7, 5, 52.0);
         s.velocity = Vec2::new(300.0, -120.0);
     });
     b.ball_look(|l| {
@@ -457,13 +441,10 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         ThingId::ROOT,
         "Glow balls",
         Vec2::new(0.0, 230.0),
-        BallsSettings {
-            arrangement: Arrangement::Ring,
-            count: 5,
-            ring_radius: 50.0,
-            radius: 55.0,
-            velocity: Vec2::new(-260.0, -380.0),
-            ..BallsSettings::default()
+        {
+            let mut s = BallsSettings { radius: 55.0, velocity: Vec2::new(-260.0, -380.0), ..BallsSettings::default() };
+            s.ring(5, 50.0);
+            s
         }
         .to_params(),
     );
@@ -616,8 +597,9 @@ impl<'a> Builder<'a> {
     fn ball_look_by_row(&mut self, colours: &[Color]) {
         let thing = &self.scene.things[&BALLS];
         let s = BallsSettings::from_params(&thing.params);
-        let height = s.rows.saturating_sub(1) as f32 * s.spacing;
-        let fill = if s.arrangement == Arrangement::Block && height > 0.0 {
+        let rows = (s.count.max(1)).div_ceil(s.columns.max(1));
+        let height = rows.saturating_sub(1) as f32 * s.step();
+        let fill = if s.group && s.shape == crate::GroupShape::Grid && height > 0.0 {
             Paint {
                 colours: Gradient::even(colours),
                 follow: Follow::Start,
@@ -729,11 +711,8 @@ fn reel_block(reg: &Registry) -> Scene {
         a.thickness = 3.0;
     });
     b.balls("Block", Vec2::new(37.0, -127.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 28;
-        s.rows = 28;
-        s.spacing = 19.0;
         s.radius = 4.5;
+        s.block(28, 28, 19.0);
         s.velocity = Vec2::new(-480.0, 265.0);
     });
     b.ball_look_by_row(&[
@@ -758,11 +737,8 @@ fn box_drop(reg: &Registry) -> Scene {
         a.height = 1500.0;
     });
     b.balls("Block", Vec2::new(0.0, -500.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 10;
-        s.rows = 10;
-        s.spacing = 40.0;
         s.radius = 12.0;
+        s.block(10, 10, 40.0);
         s.velocity = Vec2::new(200.0, 0.0);
     });
     b.bounce(|s| s.bounciness = 0.85);
@@ -780,10 +756,8 @@ fn spinning_hexagon(reg: &Registry) -> Scene {
         a.spin = 25.0;
     });
     b.balls("Ring", Vec2::ZERO, |s| {
-        s.arrangement = Arrangement::Ring;
-        s.count = 24;
         s.radius = 10.0;
-        s.ring_radius = 200.0;
+        s.ring(24, 200.0);
         s.velocity = Vec2::ZERO;
     });
     b.bounce(|s| {
@@ -828,11 +802,8 @@ fn ball_pit(reg: &Registry) -> Scene {
         a.height = 1400.0;
     });
     b.balls("Pit", Vec2::new(0.0, -300.0), |s| {
-        s.arrangement = Arrangement::Block;
-        s.columns = 10;
-        s.rows = 14;
-        s.spacing = 48.0;
         s.radius = 20.0;
+        s.block(10, 14, 48.0);
         s.velocity = Vec2::new(120.0, 0.0);
     });
     b.bounce(|s| {
@@ -866,10 +837,8 @@ fn riders(reg: &Registry) -> Scene {
         a.spin = 30.0;
     });
     b.balls("Rim riders", Vec2::ZERO, |s| {
-        s.arrangement = Arrangement::Ring;
-        s.count = 6;
         s.radius = 14.0;
-        s.ring_radius = 60.0;
+        s.ring(6, 60.0);
         s.velocity = Vec2::ZERO;
     });
     b.ride(BALLS, ARENA, Vec2::new(0.0, -330.0), true);

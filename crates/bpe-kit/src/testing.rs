@@ -8,14 +8,44 @@ use crate::{Kit, kit, new_scene};
 pub const ARENA: ThingId = ThingId(1);
 pub const BALLS: ThingId = ThingId(2);
 
-/// The new scene with its balls at the origin, in `arrangement`, with `f`'s changes.
+/// The new scene with its balls at the origin, in the old `arrangement` ("single", "block" or
+/// "ring"), with `f`'s changes. A block's `columns`, `rows` and `spacing` (from one ball's middle
+/// to the next; defaults 10, 10 and 19) become the grid that lays out the same.
 pub fn scene_with_balls(arrangement: &str, f: impl FnOnce(&mut Params)) -> (Scene, Resolved, Kit) {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
     let thing = scene.things.get_mut(&BALLS).unwrap();
     thing.transform.position = Vec2::ZERO;
-    thing.params.set("arrangement", Value::Choice(arrangement.into()));
-    f(&mut thing.params);
+    let p = &mut thing.params;
+    match arrangement {
+        "single" => {}
+        "block" => {
+            p.set("group", Value::Bool(true));
+            p.set("shape", Value::Choice("grid".into()));
+            p.set("columns", Value::Int(10));
+            p.set("rows", Value::Int(10));
+            p.set("spacing", Value::Number(19.0));
+        }
+        "ring" => {
+            p.set("group", Value::Bool(true));
+            p.set("shape", Value::Choice("ring".into()));
+            p.set("count", Value::Int(24));
+        }
+        other => panic!("no arrangement {other}"),
+    }
+    f(p);
+    if let (Some(Value::Int(rows)), Some(Value::Number(spacing))) = (p.remove("rows"), p.remove("spacing")) {
+        let columns = match p.get("columns") {
+            Some(Value::Int(c)) => *c,
+            _ => 10,
+        };
+        let radius = match p.get("radius") {
+            Some(Value::Number(r)) => *r,
+            _ => 24.0,
+        };
+        p.set("count", Value::Int(columns * rows));
+        p.set("space", Value::Number(spacing - 2.0 * radius));
+    }
     let resolved = resolve(&scene, &kit.registry);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, kit)

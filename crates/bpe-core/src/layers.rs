@@ -23,6 +23,10 @@ fn is_true(v: &bool) -> bool {
     *v
 }
 
+fn is_empty(v: &[u32]) -> bool {
+    v.is_empty()
+}
+
 /// One layer of a card's stack: which kind it is, what it is called and whether it is shown.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,11 +42,15 @@ pub struct Layer {
     /// layer (and that layer's earlier masks).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<LayerId>,
+    /// The ball numbers (places in the group) this layer applies to; empty for every ball.
+    /// Numbers past the group's last ball do nothing, and come back if it grows.
+    #[serde(skip_serializing_if = "is_empty")]
+    pub only: Vec<u32>,
 }
 
 impl Default for Layer {
     fn default() -> Self {
-        Self { id: LayerId(0), kind: KindId::new(), name: String::new(), enabled: true, parent: None }
+        Self { id: LayerId(0), kind: KindId::new(), name: String::new(), enabled: true, parent: None, only: Vec::new() }
     }
 }
 
@@ -72,9 +80,11 @@ pub struct CopiedLayer {
     pub params: Params,
     /// Its masks, in order.
     pub masks: Vec<CopiedLayer>,
+    /// The balls it applies to (see [`Layer::only`]).
+    pub only: Vec<u32>,
 }
 
-/// A whole stack as copied, bottom first; masks ride with their layers.
+/// A whole stack as copied, bottom first, without the group layers; masks ride with their layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CopiedLook {
     pub layers: Vec<CopiedLayer>,
@@ -113,12 +123,23 @@ fn fitted_in(kind: &dyn LayerKind, params: &Params, key: &str, v: &crate::Value)
     (v != def.default).then_some(v)
 }
 
-/// Where the drawn layers end: the index of the first reaction, or the length.
+/// The section of `layer`'s kind; an unknown kind counts as drawn.
+fn section_of(reg: &Registry, layer: &Layer) -> LayerSection {
+    reg.layer(&layer.kind).map_or(LayerSection::Drawn, |k| k.section())
+}
+
+/// Where the drawn layers (and their masks) end: the index of the first reaction or group layer,
+/// or the length.
 fn drawn_end(reg: &Registry, card: &Slot) -> usize {
     card.layers
         .iter()
-        .position(|l| reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Reaction))
+        .position(|l| matches!(section_of(reg, l), LayerSection::Reaction | LayerSection::Group))
         .unwrap_or(card.layers.len())
+}
+
+/// Where the group layers start: the index of the first one, or the length.
+fn group_start(reg: &Registry, card: &Slot) -> usize {
+    card.layers.iter().position(|l| section_of(reg, l) == LayerSection::Group).unwrap_or(card.layers.len())
 }
 
 /// `base`, or `base` with the lowest free number from 2 ("Outline 2").
@@ -146,8 +167,9 @@ impl Scene {
     }
 
     /// Adds a layer of `kind`, every setting at its default, and returns its id. A drawn layer goes
-    /// on top of the drawn layers (under the reactions), a reaction at the end, and a base layer
-    /// at the bottom. A kind that doesn't repeat may be in a card only once.
+    /// on top of the drawn layers (under the reactions), a reaction after the reactions (under the
+    /// group layers), a group layer at the end and a base layer at the bottom. A kind that doesn't
+    /// repeat may be in a card only once.
     pub fn add_layer(
         &mut self,
         reg: &Registry,
@@ -168,17 +190,13 @@ impl Scene {
         } else {
             match k.section() {
                 LayerSection::Drawn => drawn_end(reg, card),
-                LayerSection::Reaction => card.layers.len(),
+                LayerSection::Reaction => group_start(reg, card),
+                LayerSection::Group => card.layers.len(),
                 LayerSection::Mask => return Err(EditError::NotAccepted),
             }
         };
-        let layer = Layer {
-            id: card.next_layer_id(),
-            kind: kind.into(),
-            name: free_name(card, k.name()),
-            enabled: true,
-            parent: None,
-        };
+        let layer =
+            Layer { id: card.next_layer_id(), kind: kind.into(), name: free_name(card, k.name()), ..Layer::default() };
         let id = layer.id;
         self.layer_card_mut(thing, slot).layers.insert(at, layer);
         Ok(id)
@@ -204,8 +222,13 @@ impl Scene {
             .find(|k| k.section() == LayerSection::Mask)
             .ok_or_else(|| EditError::UnknownKind("mask".into()))?;
         let id = card.next_layer_id();
-        let layer =
-            Layer { id, kind: mk.id().into(), name: free_name(card, mk.name()), enabled: true, parent: Some(parent) };
+        let layer = Layer {
+            id,
+            kind: mk.id().into(),
+            name: free_name(card, mk.name()),
+            parent: Some(parent),
+            ..Layer::default()
+        };
         let at = block_end(card, index);
         self.layer_card_mut(thing, slot).layers.insert(at, layer);
         Ok(id)
@@ -233,9 +256,10 @@ impl Scene {
         Ok(())
     }
 
-    /// Moves drawn layer `id`, with its masks, to `to` in the stack, counting drawn layers from the
+    /// Moves drawn layer `id`, with its masks, to `to` in the stack, counting layers from the
     /// bottom and leaving masks out of the count. Drawn layers stay above the base layer and under
-    /// the reactions; reactions and masks have no order to change.
+    /// the reactions; reactions and masks have no order to change; group layers move among the
+    /// group layers only.
     pub fn move_layer(
         &mut self,
         reg: &Registry,
@@ -249,21 +273,27 @@ impl Scene {
         if is_base(reg, card, index) {
             return Err(EditError::BaseLayer);
         }
-        let drawn = reg.layer(&card.layers[index].kind).is_some_and(|k| k.section() == LayerSection::Drawn)
-            && card.layers[index].parent.is_none();
-        let lowest = usize::from(is_base(reg, card, 0));
-        let tops = |c: &Slot| -> Vec<usize> {
-            (0..drawn_end(reg, c)).filter(|&i| c.layers[i].parent.is_none()).collect::<Vec<_>>()
+        let section = reg.layer(&card.layers[index].kind).map(|k| k.section());
+        let group = section == Some(LayerSection::Group);
+        let drawn = section == Some(LayerSection::Drawn) && card.layers[index].parent.is_none();
+        // Where the layers it may sit among end.
+        let end_of = |c: &Slot| if group { c.layers.len() } else { drawn_end(reg, c) };
+        let tops =
+            |c: &Slot| -> Vec<usize> { (0..end_of(c)).filter(|&i| c.layers[i].parent.is_none()).collect::<Vec<_>>() };
+        let lowest = if group {
+            card.layers[..group_start(reg, card)].iter().filter(|l| l.parent.is_none()).count()
+        } else {
+            usize::from(is_base(reg, card, 0))
         };
         let highest = tops(card).len().saturating_sub(1);
-        if !drawn || to < lowest || to > highest {
+        if !(drawn || group) || to < lowest || to > highest {
             return Err(EditError::NotAccepted);
         }
         let end = block_end(card, index);
         let card = self.layer_card_mut(thing, slot);
         let block: Vec<Layer> = card.layers.drain(index..end).collect();
         let rest = tops(card);
-        let at = rest.get(to).copied().unwrap_or_else(|| drawn_end(reg, card));
+        let at = rest.get(to).copied().unwrap_or_else(|| end_of(card));
         card.layers.splice(at..at, block);
         Ok(())
     }
@@ -389,19 +419,46 @@ impl Scene {
             enabled: layer.enabled,
             params,
             masks,
+            only: layer.only.clone(),
         })
     }
 
-    /// The card's whole stack as copied.
-    pub fn copy_look(&self, thing: ThingId, slot: SlotId) -> Option<CopiedLook> {
+    /// The card's whole stack as copied, leaving out its group layers: those belong to the
+    /// group, not to how one ball looks.
+    pub fn copy_look(&self, reg: &Registry, thing: ThingId, slot: SlotId) -> Option<CopiedLook> {
         let card = self.card(thing, slot)?;
         let layers = card
             .layers
             .iter()
-            .filter(|l| l.parent.is_none())
+            .filter(|l| l.parent.is_none() && section_of(reg, l) != LayerSection::Group)
             .map(|l| self.copy_layer(thing, slot, l.id))
             .collect::<Option<Vec<_>>>()?;
         Some(CopiedLook { layers })
+    }
+
+    /// Makes layer `id` apply only to the balls numbered in `only` (empty: every ball). The base
+    /// layer is every ball's, and only drawn layers can be given to some balls.
+    pub fn set_layer_only(
+        &mut self,
+        reg: &Registry,
+        thing: ThingId,
+        slot: SlotId,
+        id: LayerId,
+        mut only: Vec<u32>,
+    ) -> Result<(), EditError> {
+        let card = self.layer_card(thing, slot)?;
+        let index = card.layer_index(id).ok_or(EditError::NoLayer(id))?;
+        if is_base(reg, card, index) {
+            return Err(EditError::BaseLayer);
+        }
+        let kind = reg.layer(&card.layers[index].kind);
+        if section_of(reg, &card.layers[index]) != LayerSection::Drawn || kind.is_some_and(|k| !k.per_ball()) {
+            return Err(EditError::NotAccepted);
+        }
+        only.sort_unstable();
+        only.dedup();
+        self.layer_card_mut(thing, slot).layers[index].only = only;
+        Ok(())
     }
 
     /// Adds a copied layer to the card with its settings and masks and returns its id. Where the
@@ -464,8 +521,8 @@ impl Scene {
         Ok(id)
     }
 
-    /// Sets layer `id`'s settings from a copy and shows or hides it as it was copied (the base
-    /// layer is always shown).
+    /// Sets layer `id`'s settings from a copy, shows or hides it as it was copied and gives it to
+    /// the balls it was given to (the base layer is always shown and every ball's).
     fn fill_pasted(&mut self, kind: &dyn LayerKind, thing: ThingId, slot: SlotId, id: LayerId, copied: &CopiedLayer) {
         let card = self.layer_card_mut(thing, slot);
         for (k, v) in copied.params.iter() {
@@ -475,12 +532,20 @@ impl Scene {
         }
         if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
             l.enabled = copied.enabled || kind.base();
+            l.only = if kind.base() || kind.section() != LayerSection::Drawn || !kind.per_ball() {
+                Vec::new()
+            } else {
+                copied.only.clone()
+            };
         }
     }
 
-    /// Replaces the card's whole stack with a copied one: every layer, its settings, keyframes and
-    /// pulses go, and the copied layers (and their masks) come in with the ids they had, so a
-    /// mask that names another layer still names it. Copies whose ids clash are numbered from 0.
+    /// Replaces the card's whole stack but its group layers with a copied one: every other layer,
+    /// its settings, keyframes and pulses go, and the copied layers (and their masks) come in
+    /// with the ids they had, under the kept group layers, so a mask that names another layer
+    /// still names it. A copy whose id clashes, with a kept group layer or an earlier copy, takes
+    /// the lowest id nobody has, and masks naming it follow. The kept group layers' chosen layers
+    /// are gone, so their choices are cleared. Group layers in the copy are left out.
     pub fn paste_look(
         &mut self,
         reg: &Registry,
@@ -489,11 +554,16 @@ impl Scene {
         copied: &CopiedLook,
     ) -> Result<(), EditError> {
         let card = self.layer_card(thing, slot)?;
-        // Every layer bottom first, each followed by its masks, with the layer it limits.
+        // Every layer but the group ones bottom first, each followed by its masks, with the layer
+        // it limits.
         let mut flat: Vec<(&CopiedLayer, &dyn LayerKind, Option<usize>)> = Vec::new();
         for l in &copied.layers {
             let at = flat.len();
-            flat.push((l, reg.layer(&l.kind).ok_or_else(|| EditError::UnknownKind(l.kind.clone()))?, None));
+            let kind = reg.layer(&l.kind).ok_or_else(|| EditError::UnknownKind(l.kind.clone()))?;
+            if kind.section() == LayerSection::Group {
+                continue;
+            }
+            flat.push((l, kind, None));
             for m in &l.masks {
                 flat.push((m, reg.layer(&m.kind).ok_or_else(|| EditError::UnknownKind(m.kind.clone()))?, Some(at)));
             }
@@ -501,27 +571,57 @@ impl Scene {
         if flat.iter().any(|(_, k, _)| k.card() != card.kind) {
             return Err(EditError::NotAccepted);
         }
-        let mut seen = std::collections::BTreeSet::new();
-        let keep_ids = flat.iter().all(|(l, _, _)| seen.insert(l.id));
-        let ids: Vec<LayerId> =
-            (0..flat.len()).map(|i| if keep_ids { flat[i].0.id } else { LayerId(i as u32) }).collect();
-        let on = |a: &Address| a.thing == thing && a.slot == Some(slot) && split_layered(&a.key).is_some();
+        let kept: Vec<Layer> =
+            card.layers.iter().filter(|l| section_of(reg, l) == LayerSection::Group).cloned().collect();
+        let taken = |id: LayerId| kept.iter().any(|l| l.id == id);
+        // Each copied layer keeps its id unless a kept group layer or an earlier copy has it; then
+        // it takes one nobody has, and masks that name it follow.
+        let copied_ids: std::collections::BTreeSet<LayerId> = flat.iter().map(|(l, _, _)| l.id).collect();
+        let mut fresh = (0u32..).map(LayerId).filter(|id| !taken(*id) && !copied_ids.contains(id));
+        let mut used: std::collections::BTreeSet<LayerId> = kept.iter().map(|l| l.id).collect();
+        let mut ids: Vec<LayerId> = Vec::with_capacity(flat.len());
+        for (l, _, _) in &flat {
+            let id = if used.contains(&l.id) { fresh.next().expect("ids never run out") } else { l.id };
+            used.insert(id);
+            ids.push(id);
+        }
+        let new_of = |old: i64| flat.iter().position(|(l, _, _)| i64::from(l.id.0) == old).map(|i| ids[i].0 as i64);
+        let goes = |key: &str| split_layered(key).is_some_and(|(id, _)| !taken(id));
+        let on = |a: &Address| a.thing == thing && a.slot == Some(slot) && goes(&a.key);
         self.tracks.retain(|a, _| !on(a));
         self.pulses.retain(|a, _| !on(a));
         let card = self.layer_card_mut(thing, slot);
-        card.params.0.retain(|k, _| split_layered(k).is_none());
+        card.params.0.retain(|k, _| !goes(k));
+        // The layers the kept group layers chose are gone.
+        for l in &kept {
+            card.params.0.remove(&crate::layered_key(l.id, "chosen"));
+        }
         card.layers.clear();
         for (i, &(l, kind, parent)) in flat.iter().enumerate() {
             let id = ids[i];
             let name = if l.name.trim().is_empty() { kind.name().to_owned() } else { l.name.clone() };
             let parent = parent.map(|p| ids[p]);
-            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled: l.enabled || kind.base(), parent });
+            let only = if kind.base() || kind.section() != LayerSection::Drawn || !kind.per_ball() {
+                Vec::new()
+            } else {
+                l.only.clone()
+            };
+            let enabled = l.enabled || kind.base();
+            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled, parent, only });
             for (k, v) in l.params.iter() {
-                if let Some(v) = fitted_in(kind, &l.params, k, v) {
+                if let Some(mut v) = fitted_in(kind, &l.params, k, v) {
+                    // A mask names a layer of the copy by the id it had there.
+                    if kind.section() == LayerSection::Mask
+                        && k == "target"
+                        && let crate::Value::Int(t) = v
+                    {
+                        v = crate::Value::Int(new_of(t).unwrap_or(-1));
+                    }
                     card.params.set(&crate::layered_key(id, k), v);
                 }
             }
         }
+        card.layers.extend(kept);
         Ok(())
     }
 }
@@ -685,7 +785,7 @@ mod tests {
         let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
         s.set_at(&r, &Address::on(b, LOOK, &layered_key(ring, "width")), Value::Number(12.0)).unwrap();
         s.add_layer(&r, b, LOOK, "react.pop").unwrap();
-        let look = s.copy_look(b, LOOK).unwrap();
+        let look = s.copy_look(&r, b, LOOK).unwrap();
         let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.add_slot(&r, other, LOOK, "look.stack").unwrap();
         s.add_layer(&r, other, LOOK, "layer.base").unwrap();
@@ -708,7 +808,7 @@ mod tests {
         let (r, mut s, b) = stacked();
         let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
         s.set_layer_enabled(&r, b, LOOK, ring, false).unwrap();
-        let look = s.copy_look(b, LOOK).unwrap();
+        let look = s.copy_look(&r, b, LOOK).unwrap();
         let layer = s.copy_layer(b, LOOK, ring).unwrap();
         let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.add_slot(&r, other, LOOK, "look.stack").unwrap();
@@ -839,7 +939,7 @@ mod tests {
         let layer = s.copy_layer(b, LOOK, ring).unwrap();
         assert_eq!(layer.masks.len(), 1);
         assert_eq!(layer.masks[0].params.get("target"), Some(&Value::Int(1)));
-        let look = s.copy_look(b, LOOK).unwrap();
+        let look = s.copy_look(&r, b, LOOK).unwrap();
         assert_eq!(look.layers.len(), 3, "masks ride inside their layer");
 
         let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
@@ -886,6 +986,100 @@ mod tests {
         let card = &back.things[&b].slots[&LOOK];
         assert_eq!(card.layers.len(), 2);
         assert!(card.params.get(&layered_key(m, "size")).is_none());
+    }
+
+    #[test]
+    fn group_layers_sit_after_the_reactions_and_move_only_among_themselves() {
+        let (r, mut s, b) = stacked();
+        let wash = s.add_layer(&r, b, LOOK, "group.wash").unwrap();
+        let swirl = s.add_layer(&r, b, LOOK, "group.swirl").unwrap();
+        let pop = s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Pop", "Wash", "Swirl"]);
+        assert_eq!(s.add_layer(&r, b, LOOK, "group.wash"), Err(EditError::OnlyOne("Wash".into())));
+        s.move_layer(&r, b, LOOK, swirl, 3).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Pop", "Swirl", "Wash"], "group layers reorder");
+        assert_eq!(s.move_layer(&r, b, LOOK, wash, 2), Err(EditError::NotAccepted), "not among the reactions");
+        assert_eq!(s.move_layer(&r, b, LOOK, ring, 3), Err(EditError::NotAccepted), "drawn ones stay below");
+        assert_eq!(s.move_layer(&r, b, LOOK, pop, 4), Err(EditError::NotAccepted));
+        let swirl2 = s.duplicate_layer(&r, b, LOOK, swirl).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Pop", "Swirl", "Swirl copy", "Wash"]);
+        s.remove_layer(&r, b, LOOK, swirl2).unwrap();
+        s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Ring 2", "Pop", "Swirl", "Wash"]);
+    }
+
+    #[test]
+    fn a_whole_look_copies_and_pastes_without_touching_group_layers() {
+        let (r, mut s, b) = stacked();
+        s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let mine = s.add_layer(&r, b, LOOK, "group.wash").unwrap();
+        s.set_at(&r, &Address::on(b, LOOK, &layered_key(mine, "width")), Value::Number(3.0)).unwrap();
+        let look = s.copy_look(&r, b, LOOK).unwrap();
+        assert_eq!(look.layers.iter().map(|l| l.kind.as_str()).collect::<Vec<_>>(), ["layer.base", "layer.ring"]);
+        // The target has its own group layer, keyed, with an id the pasted ones would take.
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        let theirs = s.add_layer(&r, other, LOOK, "group.swirl").unwrap();
+        assert_eq!(theirs, LayerId(1));
+        let width = Address::on(other, LOOK, &layered_key(theirs, "width"));
+        s.set_at(&r, &width, Value::Number(8.0)).unwrap();
+        s.set_key(&r, &width, 1.0, Value::Number(2.0)).unwrap();
+        s.paste_look(&r, other, LOOK, &look).unwrap();
+        let card = s.card(other, LOOK).unwrap();
+        assert_eq!(kinds(&s, other), ["Base", "Ring", "Swirl"], "the group layer stays, on top");
+        let ids: Vec<u32> = card.layers.iter().map(|l| l.id.0).collect();
+        assert_eq!(ids, [0, 2, 1], "pasted ids skip the kept group layer's");
+        assert_eq!(card.params.get("1/width"), Some(&Value::Number(8.0)));
+        assert!(s.tracks.contains_key(&width), "its keys stay too");
+    }
+
+    #[test]
+    fn a_pasted_look_renumbered_round_a_kept_group_layer_keeps_its_masks_targets() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let code = s.add_layer(&r, b, LOOK, "layer.code").unwrap();
+        let mask = s.add_mask(&r, b, LOOK, code).unwrap();
+        s.set_at(&r, &Address::on(b, LOOK, &layered_key(mask, "target")), Value::Int(ring.0 as i64)).unwrap();
+        let look = s.copy_look(&r, b, LOOK).unwrap();
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        let wash = s.add_layer(&r, other, LOOK, "group.wash").unwrap();
+        assert_eq!(wash, ring, "the kept group layer has the ring's id");
+        s.paste_look(&r, other, LOOK, &look).unwrap();
+        let card = s.card(other, LOOK).unwrap();
+        let ring2 = card.layers.iter().find(|l| l.kind == "layer.ring").unwrap().id;
+        assert_ne!(ring2, wash);
+        let mask2 = card.layers.iter().find(|l| l.parent.is_some()).unwrap().id;
+        assert_eq!(mask2, mask, "ids that don't clash stay");
+        assert_eq!(card.params.get(&layered_key(mask2, "target")), Some(&Value::Int(ring2.0 as i64)));
+    }
+
+    #[test]
+    fn a_layer_can_be_given_to_some_balls_but_the_base_is_everyones() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let pop = s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        let wash = s.add_layer(&r, b, LOOK, "group.wash").unwrap();
+        s.set_layer_only(&r, b, LOOK, ring, vec![5, 3, 5]).unwrap();
+        assert_eq!(s.card(b, LOOK).unwrap().layer(ring).unwrap().only, [3, 5], "sorted, once each");
+        assert_eq!(s.set_layer_only(&r, b, LOOK, LayerId(0), vec![1]), Err(EditError::BaseLayer));
+        assert_eq!(s.set_layer_only(&r, b, LOOK, pop, vec![1]), Err(EditError::NotAccepted));
+        assert_eq!(s.set_layer_only(&r, b, LOOK, wash, vec![1]), Err(EditError::NotAccepted));
+        // Duplicates, copies and saves keep it; resolving lists it.
+        let copy = s.duplicate_layer(&r, b, LOOK, ring).unwrap();
+        assert_eq!(s.card(b, LOOK).unwrap().layer(copy).unwrap().only, [3, 5]);
+        assert_eq!(s.copy_layer(b, LOOK, ring).unwrap().only, [3, 5]);
+        let card = s.card(b, LOOK).unwrap();
+        assert_eq!(ron::from_str::<Slot>(&ron::to_string(card).unwrap()).unwrap(), *card);
+        let resolved = crate::resolve(&s, &r);
+        let layer = resolved.things[&b].slots[&LOOK].layers.iter().find(|l| l.id == ring).unwrap();
+        assert_eq!(layer.only, [3, 5]);
+        s.set_layer_only(&r, b, LOOK, ring, Vec::new()).unwrap();
+        let layer = s.card(b, LOOK).unwrap().layer(ring).unwrap();
+        assert!(!ron::to_string(layer).unwrap().contains("only"), "every ball's writes none");
     }
 
     #[test]

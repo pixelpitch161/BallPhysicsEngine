@@ -556,6 +556,8 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Text(t) => format!("\"{t}\""),
         Value::Target(t) => target_words(t, choices),
         Value::Strokes(s) => strokes_words(s),
+        Value::Points(ps) if ps.len() == 1 => "1 point".to_owned(),
+        Value::Points(ps) => format!("{} points", ps.len()),
     }
 }
 
@@ -778,6 +780,11 @@ fn widget(
                 clear
             })
             .inner
+        }
+        // Points are placed by dragging them in a view; the row only says how many there are.
+        (ValueType::Points, Value::Points(ps)) => {
+            let words = if ps.len() == 1 { "1 point".to_owned() } else { format!("{} points", ps.len()) };
+            ui.label(RichText::new(words).color(style::MUTED)).labelled_by(name)
         }
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(style::TEXT)),
     }
@@ -1080,7 +1087,7 @@ mod tests {
         let defs = bpe_kit::BallsSettings::defs();
         let values = defs.iter().map(|d| (d.key, d.default.clone())).collect();
         let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(420.0, 900.0))
+            .with_size(egui::vec2(420.0, 1600.0))
             .allow_missing_glyphs()
             .with_context_setup(crate::style::apply)
             .build_ui_state(
@@ -1155,7 +1162,7 @@ mod tests {
         use eframe::egui::accesskit::Role;
         use egui_kittest::kittest::{NodeT, Queryable};
         let mut h = balls_grid(false);
-        h.state_mut().values.insert("spacing", Value::Number(42.0));
+        h.state_mut().values.insert("space", Value::Number(42.0));
         h.run();
         // Nothing copied yet: Paste is there but greyed out.
         let size = h.get_by_role_and_label(Role::Label, "Size").rect().center();
@@ -1163,7 +1170,7 @@ mod tests {
         assert!(h.get_by_label("Paste Value").accesskit_node().is_disabled());
         h.key_press(egui::Key::Escape);
         h.run();
-        let spacing = h.get_by_role_and_label(Role::Label, "Spacing").rect().center();
+        let spacing = h.get_by_role_and_label(Role::Label, "Space between").rect().center();
         right_click(&mut h, spacing);
         h.get_by_label("Copy Value").click();
         h.run();
@@ -1173,7 +1180,7 @@ mod tests {
         h.run();
         assert_eq!(h.state().values["radius"], Value::Number(42.0));
         // A number doesn't fit a choice.
-        let arrangement = h.get_by_role_and_label(Role::Label, "Arrangement").rect().center();
+        let arrangement = h.get_by_role_and_label(Role::Label, "Shape").rect().center();
         right_click(&mut h, arrangement);
         assert!(h.get_by_label("Paste Value (42 px)").accesskit_node().is_disabled());
     }
@@ -1204,7 +1211,7 @@ mod tests {
         assert_eq!(pasted(def("radius"), &Value::Number(9999.0)), Some(Value::Number(200.0)), "kept in range");
         assert_eq!(pasted(def("columns"), &Value::Number(3.6)), Some(Value::Int(4)));
         assert_eq!(pasted(def("radius"), &Value::Bool(true)), None);
-        assert_eq!(pasted(def("arrangement"), &Value::Choice("nowhere".into())), None);
+        assert_eq!(pasted(def("shape"), &Value::Choice("nowhere".into())), None);
     }
 
     #[test]

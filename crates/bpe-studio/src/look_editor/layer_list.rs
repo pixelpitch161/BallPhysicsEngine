@@ -59,7 +59,9 @@ pub fn row(
     let base = kind.is_some_and(|k| k.base());
     let reaction = kind.is_some_and(|k| k.section() == LayerSection::Reaction);
     let mask = layer.parent.is_some();
-    let draggable = !base && !reaction && !mask;
+    let group = kind.is_some_and(|k| k.section() == LayerSection::Group);
+    // Only the drawn layers above the Body are dragged into another order.
+    let draggable = !base && !reaction && !mask && !group;
     let selected = layer.id == picked;
     let ink = if layer.enabled { style::MUTED } else { style::FAINT };
     let background = ui.painter().add(egui::Shape::Noop);
@@ -113,6 +115,8 @@ pub fn row(
             if response.double_clicked() {
                 inspector.renaming_layer = Some((cx.id, layer.id, layer.name.clone()));
                 inspector.focus_layer_rename = true;
+            } else if response.clicked() && group {
+                inspector.selected_group_layer.insert(cx.id, layer.id);
             } else if response.clicked() {
                 inspector.selected_layer.insert(cx.id, layer.id);
             }
@@ -227,12 +231,19 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     let base = kind.is_some_and(|k| k.base());
     let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
     let maskable = drawn && kind.is_some_and(|k| k.maskable());
+    let group = kind.is_some_and(|k| k.section() == LayerSection::Group);
     let repeats = kind.is_some_and(|k| k.repeats());
     let index = place_of(card, layer.id).unwrap_or(0);
-    let top_drawn = top_level(card)
-        .filter(|l| reg.layer(&l.kind).is_some_and(|k| k.section() == LayerSection::Drawn))
-        .count()
-        .saturating_sub(1);
+    let section = |l: &Layer| reg.layer(&l.kind).map(|k| k.section());
+    let tops: Vec<&Layer> = top_level(card).collect();
+    let top_drawn = tops.iter().filter(|l| section(l) == Some(LayerSection::Drawn)).count().saturating_sub(1);
+    // A group layer moves among the group layers, at the end of the card.
+    let group_start = tops.iter().position(|l| section(l) == Some(LayerSection::Group)).unwrap_or(tops.len());
+    let (can_up, can_down) = if group {
+        (index + 1 < tops.len(), index > group_start)
+    } else {
+        (drawn && index < top_drawn, drawn && index > 1)
+    };
     let (slot, id) = (cx.slot, layer.id);
     ui.set_min_width(170.0);
     if ui.add_enabled(!base && repeats, egui::Button::new("Duplicate")).clicked() {
@@ -253,7 +264,7 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
         ui.close();
     }
     if ui.button("Copy whole look").clicked() {
-        inspector.clipboard.look = cx.scene.copy_look(cx.id, slot);
+        inspector.clipboard.look = cx.scene.copy_look(cx.reg(), cx.id, slot);
         ui.close();
     }
     let look = inspector.clipboard.look.clone().filter(|_| card.kind == kinds::CARD);
@@ -265,13 +276,22 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
         ui.close();
     }
     ui.separator();
-    if ui.add_enabled(drawn && index < top_drawn, egui::Button::new("Move up")).clicked() {
+    if ui.add_enabled(can_up, egui::Button::new("Move up")).clicked() {
         edits.push(Edit::MoveLayer(slot, id, index + 1));
         ui.close();
     }
-    if ui.add_enabled(drawn && index > 1, egui::Button::new("Move down")).clicked() {
+    if ui.add_enabled(can_down, egui::Button::new("Move down")).clicked() {
         edits.push(Edit::MoveLayer(slot, id, index - 1));
         ui.close();
+    }
+    if !layer.only.is_empty() {
+        let every = ui
+            .button("Apply to every ball")
+            .on_hover_text("Every ball of the group wears it, not just the picked ones");
+        if every.clicked() {
+            edits.push(Edit::LayerOnly(slot, id, Vec::new()));
+            ui.close();
+        }
     }
     ui.separator();
     let add = ui.add_enabled(maskable, egui::Button::new("Add mask"));
@@ -334,8 +354,20 @@ pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect
     egui::DragAndDrop::clear_payload(&ctx);
 }
 
-/// A few words on the right of a row about its main settings: "4 px · Inside", "Add 100 %".
+/// A few words on the right of a row about its main settings: "4 px · Inside", "Add 100 %", and
+/// "only 3 balls" for a layer only some balls of the group wear.
 fn summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
+    let words = settings_summary(cx, card, layer);
+    match layer.only.len() {
+        0 => words,
+        n => {
+            let only = if n == 1 { "only 1 ball".to_owned() } else { format!("only {n} balls") };
+            if words.is_empty() { only } else { format!("{only} · {words}") }
+        }
+    }
+}
+
+fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     let Some(kind) = cx.reg().layer(&layer.kind) else { return String::new() };
     let p = cx.params_of(layer.id, kind.settings());
     if let Some(parent) = layer.parent {
@@ -386,6 +418,19 @@ fn summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
         kinds::TURNING => {
             let t = kinds::Turning::from_params(&p);
             if t.face_motion { "Faces its way".into() } else { format!("{:.0}°/s", t.spin) }
+        }
+        kinds::GROUP_SHADER => {
+            let g = kinds::GroupShader::from_params(&p);
+            let broken = g.shader.effect == kinds::shader::OWN && super::code_box::problem(&g.shader.source).is_some();
+            let name = if broken { "Own code that doesn't run".to_owned() } else { g.shader.effect_name() };
+            format!("{name} · {} {}", choice_label(g.mix), percent(g.amount))
+        }
+        kinds::GROUP_GRADIENT => {
+            let g = kinds::GroupGradient::from_params(&p);
+            match g.mix {
+                kinds::GroupMix::Off => format!("{} · off", choice_label(g.spread)),
+                mix => format!("{} · {} {}", choice_label(g.spread), choice_label(mix), percent(g.amount)),
+            }
         }
         _ => String::new(),
     }
@@ -492,6 +537,35 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
                 })
                 .collect();
             painter.add(egui::Shape::line(points, Stroke::new(1.3, fade(body))));
+        }
+        kinds::GROUP_SHADER => {
+            // A wave across three balls.
+            for dx in [-0.62, 0.0, 0.62] {
+                painter.circle_filled(c + Vec2::new(dx * r, 0.0), r * 0.36, fade(style::RAISED));
+            }
+            let points: Vec<Pos2> = (0..=10)
+                .map(|i| {
+                    let t = i as f32 / 10.0;
+                    c + Vec2::new((t - 0.5) * 2.0 * r, (t * std::f32::consts::TAU).sin() * r * 0.3)
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(1.3, fade(body))));
+        }
+        kinds::GROUP_GRADIENT => {
+            // The gradient's colours, as a bar.
+            let g = kinds::GroupGradient::from_params(&p);
+            let bar = Rect::from_center_size(c, Vec2::new(r * 2.0, r * 1.2));
+            let steps = 8;
+            for k in 0..steps {
+                let t = (k as f32 + 0.5) / steps as f32;
+                let colour = shown(Color::from_linear(g.colours.sample(t)));
+                let x0 = bar.left() + bar.width() * k as f32 / steps as f32;
+                let piece = Rect::from_min_max(
+                    Pos2::new(x0, bar.top()),
+                    Pos2::new(x0 + bar.width() / steps as f32 + 0.5, bar.bottom()),
+                );
+                painter.rect_filled(piece, 0.0, fade(colour));
+            }
         }
         kinds::BLEND => {
             let stroke = Stroke::new(1.3, fade(style::TEXT));

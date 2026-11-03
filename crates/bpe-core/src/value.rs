@@ -20,6 +20,8 @@ pub enum Value {
     Target(Target),
     /// Brush strokes painted on a ball (a Brush mask or Brush shading). Never keyframed.
     Strokes(Strokes),
+    /// A list of points, in pixels (a custom group's ball places).
+    Points(Vec<[f32; 2]>),
 }
 
 /// What kind of value a setting holds.
@@ -36,6 +38,8 @@ pub enum ValueType {
     Text,
     Target,
     Strokes,
+    /// A list of points; never keyframed.
+    Points,
 }
 
 impl ValueType {
@@ -53,6 +57,7 @@ impl ValueType {
             | (ValueType::Target, Value::Target(_)) => true,
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),
             (ValueType::Strokes, Value::Strokes(s)) => s.is_finite(),
+            (ValueType::Points, Value::Points(ps)) => ps.iter().flatten().all(|x| x.is_finite()),
             _ => false,
         }
     }
@@ -196,6 +201,17 @@ mod tests {
         assert!(!ValueType::Number.accepts(&Value::Number(f64::NAN)));
         assert!(!ValueType::Number.accepts(&Value::Number(f64::INFINITY)));
         assert!(!ValueType::Vec2.accepts(&Value::Vec2([0.0, f32::NAN])));
+        assert!(ValueType::Points.accepts(&Value::Points(vec![[1.0, 2.0], [-3.0, 0.5]])));
+        assert!(!ValueType::Points.accepts(&Value::Points(vec![[1.0, f32::INFINITY]])));
+    }
+
+    #[test]
+    fn points_round_trip_through_ron() {
+        let mut p = Params::default();
+        p.set("custom", Value::Points(vec![[0.0, 0.0], [12.5, -40.0]]));
+        p.set("none", Value::Points(Vec::new()));
+        let text = ron::to_string(&p).unwrap();
+        assert_eq!(ron::from_str::<Params>(&text).unwrap(), p);
     }
 
     #[test]

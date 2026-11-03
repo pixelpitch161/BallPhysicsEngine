@@ -22,6 +22,8 @@ fn ball(center: Vec2, radius: f32, body: [f32; 4], first: u32, count: u32, reach
         misc: [1.0, 3.0, 0.0, 0.0],
         vary: crate::NO_VARY,
         range: [first, count, 0, 0],
+        group: [0.0; 4],
+        place: [0.0; 4],
     }
 }
 
@@ -298,6 +300,19 @@ fn a_layer_below_mask_clips_a_pattern_to_an_outline() {
 }
 
 #[test]
+fn a_layer_the_ball_doesn_t_wear_is_passed_over_by_a_layer_below_mask() {
+    let unworn = |r: LayerGpu| LayerGpu { head: [r.head[0], r.head[1], r.head[2] | LayerGpu::UNWORN, r.head[3]], ..r };
+    let frame = white(|f| {
+        vec![body(), outline(40.0, 0.0), unworn(outline(120.0, 0.0)), red_pattern(f, 1), mask(0.0, 0.0, 0.0, 0.0)]
+    });
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    let ring = at(&px, 180.0, 0.0);
+    assert!(ring[0] > 240 && ring[2] < 20, "red on the worn outline's ring: {ring:?}");
+    assert!(at(&px, 0.0, 0.0)[1] > 240, "white inside it, the unworn outline drawing nothing");
+    assert!(at(&px, 120.0, 0.0)[1] > 240, "nor its wider band");
+}
+
+#[test]
 fn a_light_mask_over_a_shine_layer_shows_only_in_the_highlight() {
     let frame = {
         let mut frame = one(vec![], [0.2, 0.2, 0.2, 1.0], 200.0, 1.45);
@@ -355,4 +370,81 @@ fn a_solo_layer_shows_its_masks_alone_in_white_and_black() {
     let (top, bottom) = (at(&px, 0.0, -100.0), at(&px, 0.0, 100.0));
     assert!(top.iter().take(3).all(|&c| c > 240), "white where the mask lets it show: {top:?}");
     assert!(bottom.iter().take(3).all(|&c| c < 15), "black where it hides: {bottom:?}");
+}
+
+/// A white ball with dark stripes (a striped pattern of black and white) and a blue outline,
+/// its group colour blue, mixed in by `mode` (0 none) at full amount.
+fn grouped_ball(frame: &mut Frame, mode: u32, group_record: bool, grouped_outline: bool) {
+    let row = frame.gradients.row(&Gradient {
+        stops: vec![
+            bpe_core::Stop { at: 0.0, color: Color::rgb(0, 0, 0) },
+            bpe_core::Stop { at: 0.5, color: Color::rgb(255, 255, 255) },
+        ],
+        transition: bpe_core::Transition::Steps,
+    });
+    let stripes = LayerGpu {
+        paint: PaintGpu { row: row as f32, pattern: 1.0, scale: 4.0, repeat: 1.0, steps: 1.0, ..PaintGpu::default() },
+        ..record(LayerGpu::PATTERN, Blend::Normal)
+    };
+    let mut ring = outline(20.0, 0.0);
+    ring.colour = [1.0, 0.0, 0.0, 1.0];
+    if grouped_outline {
+        ring.head[2] |= LayerGpu::GROUPED;
+    }
+    let mut records = vec![body(), stripes, ring];
+    if group_record {
+        records.push(record(LayerGpu::GROUP, Blend::Normal));
+    }
+    frame.layered.push(ball(Vec2::ZERO, 200.0, WHITE, 0, records.len() as u32, 1.45));
+    frame.layered[0].range[3] = mode;
+    frame.layered[0].group = [0.0, 0.0, 1.0, 1.0];
+    frame.look_layers = records;
+}
+
+/// The brightest and darkest red, green and blue sums inside the ring.
+fn inside_extremes(px: &[u8]) -> ([u8; 4], [u8; 4]) {
+    let mut samples: Vec<[u8; 4]> = Vec::new();
+    for x in (-150..=150).step_by(6) {
+        samples.push(at(px, x as f32, 0.0));
+    }
+    let sum = |p: &[u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let lightest = *samples.iter().max_by_key(|p| sum(p)).unwrap();
+    let darkest = *samples.iter().min_by_key(|p| sum(p)).unwrap();
+    (lightest, darkest)
+}
+
+#[test]
+fn every_layer_multiply_turns_white_parts_blue_and_keeps_dark_ones_dark() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    grouped_ball(&mut frame, Blend::Multiply.shader_code() + 1, true, false);
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    save("layers-group-multiply", &px, W, H);
+    let (light, dark) = inside_extremes(&px);
+    assert!(light[2] > 200 && light[0] < 20 && light[1] < 20, "white went blue: {light:?}");
+    assert!(dark[..3].iter().all(|&c| c < 20), "stripes stay dark: {dark:?}");
+    let ring = at(&px, 192.0, 0.0);
+    assert!(ring[..3].iter().all(|&c| c < 20), "a red ring times blue is dark: {ring:?}");
+}
+
+#[test]
+fn choosing_the_outline_colours_only_the_outline() {
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    grouped_ball(&mut frame, 1, false, true);
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    let ring = at(&px, 192.0, 0.0);
+    assert!(ring[2] > 200 && ring[0] < 20, "the ring takes the group's blue: {ring:?}");
+    let (light, _) = inside_extremes(&px);
+    assert!(light[..3].iter().all(|&c| c > 230), "the body stays white: {light:?}");
+}
+
+#[test]
+fn group_mode_none_changes_nothing() {
+    let mut with = Frame { bloom: 0.0, ..Frame::default() };
+    grouped_ball(&mut with, 0, true, true);
+    let mut without = Frame { bloom: 0.0, ..Frame::default() };
+    grouped_ball(&mut without, 0, false, false);
+    without.layered[0].group = [0.0; 4];
+    let Some(a) = render_sized(&with, W, H) else { return };
+    let b = render_sized(&without, W, H).unwrap();
+    assert!(a == b, "no group mode, no change");
 }

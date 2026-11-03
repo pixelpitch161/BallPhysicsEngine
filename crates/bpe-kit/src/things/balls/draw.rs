@@ -1,12 +1,15 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
-use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
+use bpe_core::{Blend, ResolvedThing, Settings, SlotId, ThingId};
 use bpe_gfx::{DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::{Bodies, EventKind};
 
 use crate::modules::look::draw::{BallInputs, for_balls};
 use crate::modules::look::layers::gpu::Stack;
+use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::paint::{colour_at, vary_gpu};
+use crate::things::balls::BallsSettings;
+use crate::things::balls::sim::{BallsState, colour_turn, look_turn};
 
 pub struct BallsDraw;
 
@@ -33,22 +36,83 @@ fn stack_of(cx: &DrawCx) -> Option<Stack> {
 }
 
 /// The linear-light colour of each ball of the thing being drawn: its Body's colours (painted by
-/// place, start, order, speed, hits, steps or time), then turned by its colour reactions (Colour
-/// on hit and Colour over time), when it has a layered look and bodies. Trails and particles take
-/// their colours from here too.
+/// place, start, order, speed, hits, steps or time), turned by its colour Variety, mixed with the
+/// group gradient's colour, then turned by its colour reactions (Colour on hit and Colour over
+/// time), when it has a layered look and bodies. Trails and particles take their colours from
+/// here too, with the group's colour in even where the GPU mixes it into the ball.
 pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + 'a> {
     let stack = stack_of(cx)?;
     let bodies = cx.world.bodies.get(&cx.thing.id)?;
-    Some(colours(&stack, cx, bodies))
+    Some(colours(&stack, cx, bodies, true))
 }
 
-/// [`ball_colors`] for `stack` and `bodies`.
-fn colours<'a>(stack: &Stack, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + use<'a> {
+/// The group the thing's balls belong to, and what the gradient reads about it.
+struct GroupCx<'a> {
+    state: Option<&'a BallsState>,
+    info: GroupShapeInfo,
+    /// The thing's settings as they are now, for the look-only variety (which doesn't rebuild
+    /// the world, so the state's copy can be old).
+    look: BallsSettings,
+}
+
+impl GroupCx<'_> {
+    /// Body row `row`'s ball number.
+    fn number(&self, row: usize) -> u32 {
+        self.state.map_or(row as u32, |s| s.number(row))
+    }
+
+    /// How many balls the group has in all, let go or not.
+    fn count(&self, bodies: &Bodies) -> usize {
+        self.state.map_or(bodies.len(), |s| s.offsets.len())
+    }
+
+    /// What the group gradient reads about body row `row`.
+    fn ball(&self, bodies: &Bodies, row: usize, time: f32) -> BallInGroup {
+        let number = self.number(row);
+        let offset = self.state.and_then(|s| s.offsets.get(number as usize).copied()).unwrap_or_default();
+        BallInGroup {
+            number,
+            count: self.count(bodies) as u32,
+            offset,
+            speed: bodies.velocity.get(row).map_or(0.0, |v| v.length()),
+            hits: bodies.hits.get(row).copied().unwrap_or(0),
+            time,
+        }
+    }
+}
+
+fn group_cx<'a>(stack: &Stack, cx: &DrawCx<'a>) -> GroupCx<'a> {
+    let state = cx.world.states.get(&cx.thing.id).and_then(|s| s.as_any().downcast_ref::<BallsState>());
+    let (offsets, seed) = state.map_or((&[][..], 1), |s| (s.offsets.as_slice(), s.settings.seed));
+    let angle = stack.group.as_ref().map_or(0.0, |g| g.angle);
+    let look = BallsSettings::from_params(&cx.resolved.params);
+    GroupCx { state, info: GroupShapeInfo::of(offsets, angle, seed), look }
+}
+
+/// [`ball_colors`] for `stack` and `bodies`; with `seen` false, the body colour the instance
+/// carries (a group colour the GPU mixes in stays out).
+fn colours<'a>(stack: &Stack, cx: &DrawCx<'a>, bodies: &'a Bodies, seen: bool) -> impl Fn(usize) -> [f32; 4] + use<'a> {
     let fill = for_balls(stack.body.fill.clone());
     let inputs = BallInputs::new(cx, bodies, &[&fill]);
     let (hue_per_hit, turn) = (stack.hue_per_hit(), stack.rainbow() * cx.time as f32);
+    let group = group_cx(stack, cx);
+    let gradient = if seen { stack.group.clone() } else { stack.group_on_body().cloned() };
+    let time = cx.time as f32;
     move |i| {
-        let base = colour_at(&fill, &inputs.get(&fill, i));
+        let mut at = inputs.get(&fill, i);
+        // Order counts the balls by their place in the group, let go yet or not.
+        at.index = group.number(i) as usize;
+        at.count = group.count(bodies);
+        let mut base = colour_at(&fill, &at);
+        if group.state.is_some() {
+            let spin = colour_turn(&group.look, group.number(i));
+            if spin != 0.0 {
+                base = crate::modules::look::basic::shift_linear_hue(base, spin);
+            }
+        }
+        if let Some(g) = &gradient {
+            base = mixed(base, group_colour(g, &group.info, &group.ball(bodies, i, time)), g.mix, g.amount);
+        }
         let hits = bodies.hits.get(i).copied().unwrap_or(0);
         crate::modules::look::layers::gpu::recoloured(base, hue_per_hit, turn, hits)
     }
@@ -67,15 +131,38 @@ impl ThingDraw for BallsDraw {
         let id = cx.thing.id;
         let Some(bodies) = cx.world.bodies.get(&id) else { return };
         let Some(stack) = stack_of(cx) else { return };
-        let color = colours(&stack, cx, bodies);
+        let color = colours(&stack, cx, bodies, false);
+        let seen = colours(&stack, cx, bodies, true);
         let time = cx.time as f32;
-        let first = frame.look_layers.len() as u32;
+        let group = group_cx(&stack, cx);
+        let on_gpu = stack.group_on_gpu();
         let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
-        let count = records.len() as u32;
-        frame.look_layers.extend(records);
+        // Balls given layers of their own wear their own range of records: one range for each
+        // set of layers worn, most scenes one range for every ball.
+        let mut ranges: std::collections::HashMap<Vec<bool>, (u32, u32)> = std::collections::HashMap::new();
+        let mut range_for = |frame: &mut Frame, number: u32| -> (u32, u32) {
+            let wears: Vec<bool> = if stack.has_only() {
+                (0..stack.drawn.len()).map(|k| stack.applies(k, number)).collect()
+            } else {
+                Vec::new()
+            };
+            *ranges.entry(wears).or_insert_with_key(|wears| {
+                let first = frame.look_layers.len() as u32;
+                let picked = if wears.is_empty() { records.clone() } else { stack.records_for(&records, |k| wears[k]) };
+                let count = picked.len() as u32;
+                frame.look_layers.extend(picked);
+                (first, count)
+            })
+        };
         // Each ball's own variation, only read when a pattern paints from its own gradient.
         let fill = for_balls(stack.body.fill.clone());
         let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
+        // Group shaders spread across the square round the group's places, a ball wide past them.
+        let shaded = stack.group_shaders().next().is_some();
+        // The biggest a ball of the group can be, whether let go yet or not.
+        let widest =
+            group.look.radius * if group.look.group { 1.0 + 0.5 * group.look.vary_size.clamp(0.0, 1.0) } else { 1.0 };
+        let side = 2.0 * (group.info.furthest + widest).max(1.0);
         let start = frame.layered.len() as u32;
         for i in 0..bodies.len() {
             if !bodies.alive[i] {
@@ -89,7 +176,22 @@ impl ThingDraw for BallsDraw {
             });
             let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
             let body = blend_alpha(color(i));
-            frame.layered.push(stack.instance(body, center, velocity, radius, time, code, seed, own, first, count));
+            let number = group.number(i);
+            let (first, count) = range_for(frame, number);
+            let mut ball = stack.instance(body, center, velocity, radius, time, code, seed, own, first, count);
+            if let Some(g) = on_gpu {
+                let c = group_colour(g, &group.info, &group.ball(bodies, i, time));
+                ball.group = [c[0], c[1], c[2], g.amount.clamp(0.0, 1.0)];
+                ball.range[3] = g.mix.code();
+            }
+            if shaded {
+                let at = group.ball(bodies, i, time).offset - group.info.middle;
+                ball.place = [at.x, at.y, side, 0.0];
+            }
+            if group.state.is_some() {
+                ball.form[2] += look_turn(&group.look, number).to_radians();
+            }
+            frame.layered.push(ball);
         }
         // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
         let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
@@ -133,7 +235,7 @@ impl ThingDraw for BallsDraw {
                 normal: e.normal.into(),
                 time: time as f32,
                 speed: e.speed,
-                color: color(e.a.item as usize),
+                color: seen(e.a.item as usize),
             });
             let Some(f) = flash else { continue };
             let age = (cx.time - time) as f32 / f.flash_seconds;
@@ -144,7 +246,7 @@ impl ThingDraw for BallsDraw {
             if intensity < 0.002 {
                 continue;
             }
-            let c = color(e.a.item as usize);
+            let c = seen(e.a.item as usize);
             frame.flashes.push(FlashInstance {
                 center: e.point.into(),
                 size: f.flash_size,
@@ -632,5 +734,159 @@ mod tests {
         let turns: Vec<f32> = frame.layered.iter().map(|b| b.vary[0]).collect();
         assert!(turns.iter().all(|t| t.abs() <= 0.25), "{turns:?}");
         assert!(turns[0] != turns[1] && turns[1] != turns[2], "{turns:?}");
+    }
+
+    /// The frame at time 0 for a still group of `count` balls in a line after `f`'s changes.
+    fn group_frame(count: i64, f: impl FnOnce(&mut Scene)) -> Frame {
+        frame_after(0.0, |s| {
+            let p = &mut s.things.get_mut(&BALL).unwrap().params;
+            p.set("group", Value::Bool(true));
+            p.set("shape", Value::Choice("line".into()));
+            p.set("count", Value::Int(count));
+            p.set("velocity", Value::Vec2([0.0, 0.0]));
+            f(s);
+        })
+    }
+
+    #[test]
+    fn a_group_shader_gives_each_ball_its_place_in_the_group_and_draws_with_a_program() {
+        use crate::modules::look::layers::GROUP_SHADER;
+        let plain = group_frame(5, |_| {});
+        assert!(plain.layered.iter().all(|b| b.place == [0.0; 4]), "no group shader, no place");
+        let frame = group_frame(5, |s| {
+            set_layer(s, BALL, GROUP_SHADER, "amount", Value::Number(1.0));
+        });
+        let xs: Vec<f32> = frame.layered.iter().map(|b| b.place[0]).collect();
+        assert!(xs.windows(2).all(|w| w[1] > w[0]), "along the line: {xs:?}");
+        assert!(xs.iter().sum::<f32>().abs() < 1e-3, "from the group's middle: {xs:?}");
+        let side = frame.layered[0].place[2];
+        assert!(side > xs[4] - xs[0], "the square holds every ball: {side}");
+        assert_eq!(frame.programs.len(), 1);
+        assert_eq!(frame.layered_runs.last().unwrap().program, Some(0));
+    }
+
+    #[test]
+    fn a_group_gradient_by_order_gives_each_ball_its_own_body_colour_in_order() {
+        use crate::modules::look::layers::GROUP_GRADIENT;
+        let frame = group_frame(10, |s| {
+            set_layer(s, BALL, GROUP_GRADIENT, "spread", Value::Choice("order".into()));
+            set_layer(s, BALL, GROUP_GRADIENT, "amount", Value::Number(1.0));
+        });
+        assert_eq!(frame.layered.len(), 10);
+        let blue = bpe_core::Color::rgb(0x3e, 0x9b, 0xff).to_linear();
+        let pink = bpe_core::Color::rgb(0xff, 0x3e, 0xc8).to_linear();
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).take(3).all(|(x, y)| (x - y).abs() < 1e-3);
+        assert!(close(frame.layered[0].body, blue) && close(frame.layered[9].body, pink));
+        let reds: Vec<f32> = frame.layered.iter().map(|b| b.body[0]).collect();
+        assert!(reds.windows(2).all(|w| w[1] > w[0]), "blue to pink in order: {reds:?}");
+        assert!(frame.layered.iter().all(|b| b.range[3] == 0), "the body is mixed here, not on the GPU");
+    }
+
+    #[test]
+    fn every_layer_puts_the_group_colour_on_the_instance_and_a_group_record_last() {
+        use crate::modules::look::layers::GROUP_GRADIENT;
+        let frame = group_frame(3, |s| {
+            set_layer(s, BALL, GROUP_GRADIENT, "changes", Value::Choice("every_layer".into()));
+            set_layer(s, BALL, GROUP_GRADIENT, "mix", Value::Choice("multiply".into()));
+        });
+        let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
+        assert_eq!(frame.layered[0].body, pink, "the body keeps its own colour");
+        let ball = frame.layered[2];
+        assert_eq!(ball.range[3], bpe_core::Blend::Multiply.shader_code() + 1);
+        assert!((ball.group[3] - 0.8).abs() < 1e-6, "the amount");
+        let records = &frame.look_layers[ball.range[0] as usize..(ball.range[0] + ball.range[1]) as usize];
+        assert_eq!(records.last().unwrap().head[0], LayerGpu::GROUP);
+        assert_ne!(frame.layered[0].group, frame.layered[2].group, "each ball its own colour");
+    }
+
+    #[test]
+    fn choose_flags_only_the_chosen_layers() {
+        use crate::modules::look::layers::{GROUP_GRADIENT, OUTLINE};
+        let frame = group_frame(2, |s| {
+            let outline = set_layer(s, BALL, OUTLINE, "width", Value::Number(6.0));
+            set_layer(s, BALL, GROUP_GRADIENT, "changes", Value::Choice("choose".into()));
+            set_layer(s, BALL, GROUP_GRADIENT, "chosen", Value::Text(outline.0.to_string()));
+        });
+        let flagged: Vec<(u32, bool)> = frame.look_layers[..frame.layered[0].range[1] as usize]
+            .iter()
+            .map(|r| (r.head[0], r.head[2] & LayerGpu::GROUPED != 0))
+            .collect();
+        assert!(flagged.contains(&(LayerGpu::OUTLINE, true)), "{flagged:?}");
+        assert!(flagged.iter().filter(|(_, g)| *g).count() == 1, "{flagged:?}");
+        assert!(!flagged.iter().any(|(c, _)| *c == LayerGpu::GROUP), "no whole-ball record for Choose");
+    }
+
+    #[test]
+    fn a_layer_given_to_one_ball_shows_only_in_its_range() {
+        use crate::modules::look::layers::OUTLINE;
+        let frame = group_frame(5, |s| {
+            let reg = registry();
+            let outline = set_layer(s, BALL, OUTLINE, "width", Value::Number(6.0));
+            s.set_layer_only(&reg, BALL, SlotId::Look, outline, vec![3]).unwrap();
+        });
+        // Every range keeps every record, so masks and the group colour find theirs; the balls
+        // that don't wear the outline have it at no opacity.
+        let counts: Vec<u32> = frame.layered.iter().map(|b| b.range[1]).collect();
+        assert!(counts.iter().all(|c| *c == counts[0]), "{counts:?}");
+        let outline_of = |i: usize| {
+            let r = frame.layered[i].range;
+            *frame.look_layers[r[0] as usize..(r[0] + r[1]) as usize]
+                .iter()
+                .find(|l| l.head[0] == LayerGpu::OUTLINE)
+                .unwrap()
+        };
+        assert_eq!(outline_of(3).amount[0], 1.0);
+        assert!((0..5).filter(|i| *i != 3).all(|i| outline_of(i).amount[0] == 0.0));
+        assert_eq!(outline_of(3).head[2] & LayerGpu::UNWORN, 0);
+        assert!((0..5).filter(|i| *i != 3).all(|i| outline_of(i).head[2] & LayerGpu::UNWORN != 0));
+        let firsts: std::collections::BTreeSet<u32> = frame.layered.iter().map(|b| b.range[0]).collect();
+        assert_eq!(firsts.len(), 2, "two ranges in all: one with the outline, one without");
+    }
+
+    #[test]
+    fn look_spreads_show_without_building_the_world_again() {
+        // The editor keeps its world when only the look changes, so the spreads come from the
+        // scene as it is now, not the world's copy of the settings.
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let p = &mut scene.things.get_mut(&BALL).unwrap().params;
+        p.set("group", Value::Bool(true));
+        p.set("count", Value::Int(6));
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        let p = &mut scene.things.get_mut(&BALL).unwrap().params;
+        p.set("vary_turn", Value::Number(90.0));
+        p.set("vary_colour", Value::Number(1.0));
+        let spread = bpe_core::resolve(&scene, &kit.registry);
+        let draw = |resolved: &bpe_core::Resolved| {
+            let mut frame = Frame::default();
+            build_frame(&scene, resolved, playback.world(), playback.log(), 0.0, &kit.draws, &mut frame);
+            frame
+        };
+        let (before, after) = (draw(&resolved), draw(&spread));
+        assert!(before.layered.iter().all(|b| b.form[2] == 0.0));
+        assert!(after.layered.iter().any(|b| b.form[2] != 0.0), "turned");
+        assert!(before.layered.iter().zip(&after.layered).any(|(a, b)| a.body != b.body), "coloured");
+    }
+
+    #[test]
+    fn turn_spread_turns_each_ball_the_same_way_every_time() {
+        let turned = |seed: i64| {
+            group_frame(6, |s| {
+                let p = &mut s.things.get_mut(&BALL).unwrap().params;
+                p.set("vary_turn", Value::Number(90.0));
+                p.set("seed", Value::Int(seed));
+            })
+            .layered
+            .iter()
+            .map(|b| b.form[2])
+            .collect::<Vec<f32>>()
+        };
+        let a = turned(1);
+        assert_eq!(a, turned(1));
+        assert_ne!(a, turned(2));
+        assert!(a.iter().any(|t| t.abs() > 0.1) && a.iter().all(|t| t.abs() <= 90f32.to_radians() + 1e-5));
+        let plain = group_frame(6, |_| {});
+        assert!(plain.layered.iter().all(|b| b.form[2] == 0.0));
     }
 }

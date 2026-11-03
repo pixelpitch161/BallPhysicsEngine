@@ -175,13 +175,15 @@ mod tests {
     }
 
     #[test]
-    fn format_four_files_are_old() {
-        assert_eq!(load("(format: 4)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
+    fn format_three_to_five_files_are_old() {
+        for v in 3..=5 {
+            assert_eq!(load(&format!("(format: {v})"), &testkit::registry()).unwrap_err(), LoadError::OldEditor);
+        }
     }
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 6)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 7)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -189,7 +191,7 @@ mod tests {
     fn lower_format_numbers_count_as_old() {
         assert_eq!(load("(format: 1)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
         assert_eq!(load("(format: 2)", &testkit::registry()).unwrap_err(), LoadError::OldEditor);
-        assert!(matches!(load("(format: 4", &testkit::registry()).unwrap_err(), LoadError::Broken(_)));
+        assert!(matches!(load("(format: 6", &testkit::registry()).unwrap_err(), LoadError::Broken(_)));
     }
 
     #[test]
@@ -234,7 +236,7 @@ mod tests {
         assert_eq!(back.things[&a].parent, Some(ThingId::ROOT));
         assert_eq!(back.things[&b].id, b);
         assert_eq!(back.next_thing, b.0 + 1);
-        let e = load("(format: 5)", &r).unwrap_err();
+        let e = load("(format: 6)", &r).unwrap_err();
         assert_eq!(e.to_string(), "This scene file is damaged: it has no scene settings");
     }
 

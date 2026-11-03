@@ -664,6 +664,14 @@ impl Hasher {
                 self.bytes(&[8]);
                 self.bytes(&s.hash64().to_le_bytes());
             }
+            Value::Points(ps) => {
+                self.bytes(&[9]);
+                self.bytes(&(ps.len() as u64).to_le_bytes());
+                for [x, y] in ps {
+                    self.f32(*x);
+                    self.f32(*y);
+                }
+            }
         }
     }
 }

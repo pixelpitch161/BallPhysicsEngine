@@ -43,15 +43,18 @@ Dependencies go bottom to top:
   (`save.rs`), edits (`edit.rs`: `add_slot`, `remove_slot`, `set_slot_kind`) and **resolve** (`resolve.rs`: each
   card's defaults under the thing's own values). A setting's `Address` is `{ thing, slot, key }`.
   `registry.rs` holds the plugin registry. `ModuleKind` is the trait for a card kind (the name is historical).
-  A card can hold **layers** (`layers.rs`, `Slot.layers`): each `Layer { id, kind, name, enabled }` is of a
-  `LayerKind` (drawn or reaction; index 0 is the base layer, which can't move, hide or go). A layer's settings
+  A card can hold **layers** (`layers.rs`, `Slot.layers`): each `Layer { id, kind, name, enabled, only }` is of a
+  `LayerKind` whose `LayerSection` is Drawn, Reaction or Group, kept in that order in the Vec (index 0 is the base
+  layer, which can't move, hide or go; group layers sit at the end and move only among themselves). `only` lists
+  the ball numbers of a group that wear a drawn layer (empty = every ball; `set_layer_only`). `copy_look` leaves
+  group layers out and `paste_look` keeps the target's own. `Value::Points` holds a list of points. A layer's settings
   live in the card's params under layered keys `"<layer id>/<key>"` (`layered_key`, `split_layered`); edits are
   `add_layer`, `remove_layer`, `move_layer`, `duplicate_layer`, `rename_layer`, `set_layer_enabled`,
   `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. A **mask** is a layer too (kind `layer.mask`, section
   `LayerSection::Mask`) whose `Layer.parent` is the drawn layer it limits; it sits right after its parent in
   `Slot.layers`, and moving, duplicating, copying or deleting a layer carries its masks (`add_mask`). A layer kind can
   add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
-  Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). Scene files are format 5.
+  Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). Scene files are format 6.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them.
@@ -66,13 +69,25 @@ Dependencies go bottom to top:
   `Frame.layered_runs`) made of `layers.wgsl` plus each effect once, renamed by `effects::prefixed` and given the
   `effects/in_ball.wgsl` prelude, whose `sample()` walks the layers under the shader layer. `in_ball_problem(code)`
   checks own code without a GPU. The `SOLO` record bit makes a layer show its masks alone (the editor's view).
+  Group records sit after a ball's own: 8 the group gradient's colour, 9 a group shader, which runs in the same
+  program with uv in the group's square (`LayeredInstance.place`: the ball's start offset and the group's side);
+  `layers_group_shaded.wgsl` mixes a group shader into the layers that name it (`amount.z/w` of their records).
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Shading, Shader, Blend, the reactions
-  Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, and Mask; `gpu.rs` turns a stack into
-  records and has `topmost_at` for clicks on the ball; `paint/brush.rs` rasterises strokes to tiles); the
+  Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, Mask, and the group layers Gradient
+  (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
+  layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
+  group, record code 9, over the whole ball and optionally a ring around it, or into the Body/chosen layers);
+  `gpu.rs` turns a stack into records (a ball wearing only some layers gets them at opacity 0, `records_for`) and has `topmost_at` for clicks on the ball; `paint/brush.rs`
+  rasterises strokes to tiles); the
   arena keeps `look.basic`. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
-  into layers (`layers_from_basic`). A folder usually has
+  into layers (`layers_from_basic`). Balls (`things/balls/`) are one ball or, with `group` on, a group in a
+  `shape` (`shapes.rs`: Grid, Line, Ring, Filled circle, Triangle, Honeycomb, Spiral, Heart, Scatter, Word from
+  the IBM Plex font, Custom points), with Variety (size, speed, colour, turn spread by `seed`), Release (all at
+  once, one by one, waves, via `ThingSim::spawn`) and Launch (same, fan, outward, random). A ball's number in the
+  group (`sim::numbers`) is its place in the shape, not its row. Test scenes use `BallsSettings::block`/`ring`,
+  which keep the old Block/Ring positions exactly. A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
   colour and gradient system (not the removed canvas). `starters.rs` gives a new thing its starting cards (`add_thing`, `fill_slot`) and
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
@@ -90,7 +105,11 @@ Dependencies go bottom to top:
   their menus, drag to reorder and rename, masks indented under their layer, then the picked layer's settings; the
   copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a mask's From/Layer and a Shader's
   Effect, `code_box.rs` the own-code box, `handles.rs` the handles on the ball view and `brush.rs` painting strokes
-  there. The
+  there. A Balls thing's header has a Ball / Group switch (`Inspector.look_mode`): Group mode
+  (`look_editor/group.rs`, `group_view.rs`) shows the whole group where it starts (custom balls, the launch arrow
+  and the gradient's line drag there; balls can be picked for layers of their own), the shape chips and group
+  settings, Across the group (the group layers: gradient and shaders) and folds for Variety, Release, Launch and
+  Odd ones out. Those settings are left off the Balls card itself (`GROUP_HEADINGS`). The
   timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open.
 
 ## Working rules

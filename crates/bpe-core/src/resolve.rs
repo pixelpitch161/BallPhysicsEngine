@@ -13,6 +13,8 @@ pub struct ResolvedLayer {
     pub name: String,
     /// For a mask, the layer it limits.
     pub parent: Option<LayerId>,
+    /// The ball numbers it applies to (see [`crate::Layer::only`]); empty for every ball.
+    pub only: Vec<u32>,
 }
 
 /// One of a thing's cards, with every setting's value.
@@ -142,6 +144,7 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
                             kind: layer.kind.clone(),
                             name: layer.name.clone(),
                             parent: layer.parent,
+                            only: layer.only.clone(),
                         });
                     }
                     for (k, v) in card.params.iter().filter(|(k, _)| crate::split_layered(k).is_none()) {
