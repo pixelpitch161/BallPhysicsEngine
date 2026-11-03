@@ -680,6 +680,10 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        if self.panels.inspector.render.is_none() {
+            // The Look editor's ball view draws with the window's GPU.
+            self.panels.inspector.render = frame.wgpu_render_state().cloned();
+        }
         let before = self.scene.clone();
         let revision = self.revision;
         self.recorded = false;

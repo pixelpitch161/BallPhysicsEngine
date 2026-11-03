@@ -43,6 +43,10 @@ pub struct Inspector {
     pub renaming_layer: Option<(ThingId, LayerId, String)>,
     /// The rename field takes the keyboard on its next frame.
     pub focus_layer_rename: bool,
+    /// The Look editor's view of the ball.
+    pub ball_view: crate::look_editor::BallView,
+    /// The window's GPU, for the ball view; none in tests.
+    pub render: Option<eframe::egui_wgpu::RenderState>,
 }
 
 /// One of the inspector's cards, as the jump bar names it.

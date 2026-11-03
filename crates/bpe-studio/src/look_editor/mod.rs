@@ -2,9 +2,11 @@
 //! drawn layers (the top one first, the Body at the bottom), a list of the reactions, and under
 //! them the settings of the one picked.
 
+pub mod ball_view;
 mod clipboard;
 mod layer_list;
 
+pub use ball_view::BallView;
 pub use clipboard::Clipboard;
 
 use bpe_core::{Address, LayerId, LayerSection, Params, Scene, SettingDef, SlotId, ThingId, Value, layered_key};
@@ -70,6 +72,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         ui.label(RichText::new("This look has no layers.").color(style::MUTED));
         return;
     };
+    // ---------- the ball view ----------
+    {
+        let Inspector { ball_view, render, .. } = inspector;
+        ball_view::show(ui, ball_view, render.as_ref(), cx.scene, cx.kit, cx.id, cx.time);
+    }
+    ui.add_space(6.0);
     let section = |kind: &str| reg.layer(kind).map(|k| k.section());
     let drawn: Vec<&bpe_core::Layer> =
         card.layers.iter().filter(|l| section(&l.kind) != Some(LayerSection::Reaction)).collect();
@@ -497,6 +505,22 @@ mod tests {
         h.run();
         assert!(h.query_by_label("+ Add layer").is_none());
         assert!(h.query_by_role_and_label(Role::Label, "Glow").is_some(), "the old grid");
+    }
+
+    #[test]
+    fn the_ball_view_buttons_pick_the_motion_and_the_ground() {
+        let mut h = harness();
+        assert_eq!(h.state().inspector.ball_view.mode, ball_view::ViewMode::Still);
+        h.get_by_label("Moving").click();
+        h.run();
+        assert_eq!(h.state().inspector.ball_view.mode, ball_view::ViewMode::Moving);
+        h.get_by_label("Hit").click();
+        h.run();
+        assert_eq!(h.state().inspector.ball_view.mode, ball_view::ViewMode::Hit);
+        assert_eq!(h.state().inspector.ball_view.ground, ball_view::Ground::Dark);
+        h.get_by_label("Scene").click();
+        h.run();
+        assert_eq!(h.state().inspector.ball_view.ground, ball_view::Ground::Scene);
     }
 
     #[test]
