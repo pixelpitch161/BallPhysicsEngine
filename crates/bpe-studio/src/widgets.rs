@@ -458,7 +458,17 @@ fn row_menu(
     choices: &TargetChoices,
 ) -> MenuPick {
     let mut pick = MenuPick::Nothing;
-    response.container_context_menu(|ui| {
+    let open = if response.container_secondary_clicked() {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.container_clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    // An id of its own: a menu button's own popup (a target or a choice) already uses the
+    // response's usual popup id.
+    let popup = egui::Popup::menu(response).id(response.id.with("setting menu")).open_memory(open).at_pointer_fixed();
+    popup.show(|ui| {
         ui.set_min_width(160.0);
         if ui.button("Copy Value").on_hover_text("Copy this setting's value").clicked() {
             copy_value(ui.ctx(), value.clone(), value_words(value, unit, choices));
@@ -1051,7 +1061,7 @@ mod tests {
         h
     }
 
-    fn right_click(h: &mut egui_kittest::Harness<'_, State>, at: Pos2) {
+    fn right_click(h: &mut egui_kittest::Harness<'_, State>, at: egui::Pos2) {
         h.hover_at(at);
         h.event(egui::Event::PointerButton {
             pos: at,
@@ -1089,14 +1099,14 @@ mod tests {
     #[test]
     fn copy_then_paste_moves_a_value_between_settings() {
         use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
+        use egui_kittest::kittest::{NodeT, Queryable};
         let mut h = balls_grid(false);
         h.state_mut().values.insert("spacing", Value::Number(42.0));
         h.run();
         // Nothing copied yet: Paste is there but greyed out.
         let size = h.get_by_role_and_label(Role::Label, "Size").rect().center();
         right_click(&mut h, size);
-        assert!(h.get_by_label("Paste Value").is_disabled());
+        assert!(h.get_by_label("Paste Value").accesskit_node().is_disabled());
         h.key_press(egui::Key::Escape);
         h.run();
         let spacing = h.get_by_role_and_label(Role::Label, "Spacing").rect().center();
@@ -1111,17 +1121,17 @@ mod tests {
         // A number doesn't fit a choice.
         let arrangement = h.get_by_role_and_label(Role::Label, "Arrangement").rect().center();
         right_click(&mut h, arrangement);
-        assert!(h.get_by_label("Paste Value (42 px)").is_disabled());
+        assert!(h.get_by_label("Paste Value (42 px)").accesskit_node().is_disabled());
     }
 
     #[test]
     fn create_keyframe_is_offered_only_where_keys_are_allowed() {
         use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
+        use egui_kittest::kittest::{NodeT, Queryable};
         let mut h = balls_grid(true);
         let speed = h.get_by_role_and_label(Role::Label, "Launch speed").rect().center();
         right_click(&mut h, speed);
-        assert!(h.get_by_label("Create Keyframe").is_disabled(), "launch speed can't have keys");
+        assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled(), "launch speed can't have keys");
         h.key_press(egui::Key::Escape);
         h.run();
         let size = h.get_by_role_and_label(Role::Label, "Size").rect().center();
@@ -1340,6 +1350,6 @@ mod tests {
         assert_eq!(number_feel(126.0, true).step, 1.0);
         assert!((feel(2000.0).drag_speed - 5.0).abs() < 1e-9, "a drag crosses the span in 400 pixels");
         let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
-        assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its dice range");
+        assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its usual span");
     }
 }

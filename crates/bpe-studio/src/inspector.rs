@@ -759,7 +759,7 @@ fn card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Resolved, Settings, SlotId, SlotLink, Value, resolve};
+    use bpe_core::{Color, Resolved, Settings, SlotId, Value, resolve};
     use bpe_kit::resolve_scene;
     use eframe::egui::{self, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
@@ -839,42 +839,43 @@ mod tests {
         h.run();
     }
 
-    fn ball_look(s: &State) -> (ModuleId, bpe_core::Params) {
-        match &s.scene.things[&ThingId(2)].slots[&SlotId::Look] {
-            SlotLink::Linked { module, overrides } => (*module, overrides.clone()),
-            other => panic!("the ball's look is linked: {other:?}"),
-        }
+    /// The ball's look card's own settings.
+    fn ball_look(s: &State) -> &bpe_core::Params {
+        &s.scene.things[&ThingId(2)].slots[&SlotId::Look].params
+    }
+
+    /// Right-clicks a setting's name, opening its menu.
+    fn menu_of(h: &mut Harness<'_, State>, label: &str) {
+        h.get_by_role_and_label(Role::Label, label).click_secondary();
+        h.run();
     }
 
     #[test]
     fn a_balls_colours_are_one_list() {
         let mut h = harness(Some(ThingId(2)));
-        let (module, _) = ball_look(h.state());
         assert!(h.query_by_label("Colour").is_none(), "no separate Colour row");
         h.get_by_label("Add a colour").click();
         h.run();
-        let m = &h.state().scene.card(module.0, module.1).unwrap();
-        assert!(matches!(m.params.get("colours"), Some(Value::Gradient(g)) if g.stops.len() == 2), "{:?}", m.params);
+        let p = ball_look(h.state());
+        assert!(matches!(p.get("colours"), Some(Value::Gradient(g)) if g.stops.len() == 2), "{p:?}");
     }
 
     #[test]
     fn a_palette_from_the_menu_sets_the_colours() {
         let mut h = harness(Some(ThingId(2)));
-        let (module, _) = ball_look(h.state());
         h.get_by_label("Colours palette").click();
         h.run();
         h.get_by_label("Ocean").click();
         h.run();
         let ocean = bpe_kit::paint::palettes::built_in().into_iter().find(|p| p.name == "Ocean").unwrap().colours;
-        let m = &h.state().scene.card(module.0, module.1).unwrap();
-        assert_eq!(m.params.get("colours"), Some(&Value::Gradient(ocean)), "{:?}", m.params);
+        let p = ball_look(h.state());
+        assert_eq!(p.get("colours"), Some(&Value::Gradient(ocean)), "{p:?}");
     }
 
     #[test]
     fn keyed_gradient_edit_writes_a_key() {
         let mut h = harness(Some(ThingId(2)));
-        let (module, _) = ball_look(h.state());
-        let colours = Address { owner: Owner::Module(module), slot: None, key: "colours".into() };
+        let colours = Address::on(ThingId(2), SlotId::Look, "colours");
         let red_blue = bpe_core::Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
         h.state_mut()
             .scene
@@ -909,49 +910,18 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_can_be_locked_from_its_menu_and_shows_a_padlock() {
+    fn no_dice_padlocks_diamonds_or_module_buttons_are_left() {
         let mut h = harness(Some(ThingId(2)));
-        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
-        assert!(h.query_by_label("Locked when randomizing").is_none());
-        h.get_by_role_and_label(Role::Label, "Size").click_secondary();
-        h.run();
-        h.get_by_label("Lock when randomizing").click();
-        h.run();
-        assert!(h.state().scene.is_locked(&size));
-        assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
-        h.get_by_role_and_label(Role::Label, "Size").click_secondary();
-        h.run();
-        assert!(h.query_by_label("Lock when randomizing").is_none());
-        h.get_by_label("Unlock").click();
-        h.run();
-        assert!(!h.state().scene.is_locked(&size));
-        assert!(h.query_by_label("Locked when randomizing").is_none());
-        // A module card's row locks the module's setting, since the ball is its only user.
-        h.get_by_role_and_label(Role::Label, "Glow").click_secondary();
-        h.run();
-        h.get_by_label("Lock when randomizing").click();
-        h.run();
-        let (module, _) = ball_look(h.state());
-        let glow = Address { owner: Owner::Module(module), slot: None, key: "glow".into() };
-        assert!(h.state().scene.is_locked(&glow));
-    }
-
-    #[test]
-    fn the_card_die_rolls_only_that_card() {
-        let mut h = harness(Some(ThingId(2)));
-        let (module, _) = ball_look(h.state());
-        let look_before = h.state().scene.card(module.0, module.1).unwrap().params.clone();
-        assert_eq!(h.state().scene.things[&ThingId(2)].params.get("radius"), None, "the size starts at its default");
-        // The ball has a die on its own settings and on each of its own cards.
-        assert_eq!(h.get_all_by_label("Randomize these settings").count(), 4);
-        h.get_all_by_label("Randomize these settings").next().expect("the kind's own die").click();
-        h.run();
-        let s = h.state();
-        assert!(s.scene.things[&ThingId(2)].params.get("radius").is_some(), "the size rolled");
-        assert_eq!(s.scene.card(module.0, module.1).unwrap().params, look_before, "the look card was not rolled");
-        h.get_all_by_label("Randomize these settings").nth(1).expect("the look card's die").click();
-        h.run();
-        assert_ne!(h.state().scene.card(module.0, module.1).unwrap().params, look_before, "the look module rolled");
+        for gone in ["Randomize these settings", "Keyframe Size", "Keyframe Glow", "Make own", "Change here"] {
+            assert!(h.query_by_label(gone).is_none(), "{gone}");
+        }
+        menu_of(&mut h, "Size");
+        let items: Vec<String> = h
+            .get_all_by_role(Role::Button)
+            .filter_map(|n| n.accesskit_node().label())
+            .filter(|l| ["Copy Value", "Paste Value", "Create Keyframe", "Lock when randomizing"].contains(&l.as_str()))
+            .collect();
+        assert_eq!(items, ["Copy Value", "Paste Value", "Create Keyframe"]);
     }
 
     #[test]
@@ -996,45 +966,92 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_diamond_adds_a_key_at_the_playhead_and_again_removes_it() {
+    fn right_clicking_a_slider_opens_the_menu_and_changes_nothing() {
+        let mut h = harness(Some(ThingId(2)));
+        let before = h.state().scene.clone();
+        let rect = slider_rect(&h, "Size");
+        let at = egui::pos2(rect.right() - 4.0, rect.center().y);
+        h.hover_at(at);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            h.step();
+        }
+        h.run();
+        assert_eq!(h.state().scene, before, "a right-click never changes a value");
+        assert!(h.query_by_label("Create Keyframe").is_some(), "the menu is open");
+    }
+
+    #[test]
+    fn create_keyframe_puts_a_key_at_the_playhead() {
         let mut h = harness(Some(ThingId(2)));
         h.state_mut().time = 2.0;
         h.run();
-        h.get_by_label("Keyframe Size").click();
+        menu_of(&mut h, "Size");
+        h.get_by_label("Create Keyframe").click();
         h.run();
-        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
+        let size = Address::own(ThingId(2), "radius");
         let keys = &h.state().scene.tracks[&size].keys;
         assert_eq!(keys.len(), 1);
         assert_eq!((keys[0].time, &keys[0].value), (2.0, &Value::Number(24.0)));
-        h.get_by_label("Keyframe Size").click();
+        // Again at the same moment, the key there is replaced, not doubled.
+        menu_of(&mut h, "Size");
+        h.get_by_label("Create Keyframe").click();
         h.run();
-        assert!(!h.state().scene.tracks.contains_key(&size));
-        // Size can't pulse, so its diamond has no menu; the scene's bloom can.
-        h.get_by_label("Keyframe Size").click_secondary();
+        assert_eq!(h.state().scene.tracks[&size].keys.len(), 1);
+        // A card's setting keys the same way.
+        menu_of(&mut h, "Glow");
+        h.get_by_label("Create Keyframe").click();
         h.run();
-        assert!(h.query_by_label("Pulse with hits").is_none());
-        h.state_mut().selection.set(ThingId::ROOT);
+        assert!(h.state().scene.tracks.contains_key(&Address::on(ThingId(2), SlotId::Look, "glow")));
+        // Launch speed can't have keys, so its Create Keyframe is greyed out.
+        menu_of(&mut h, "Launch speed");
+        assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn a_copied_value_pastes_into_another_things_setting() {
+        let mut h = harness(Some(ThingId(2)));
+        {
+            let s = h.state_mut();
+            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.75)).unwrap();
+        }
         h.run();
-        h.get_by_label("Keyframe Bloom").click_secondary();
+        menu_of(&mut h, "Glow");
+        h.get_by_label("Copy Value").click();
         h.run();
-        h.get_by_label("Pulse with hits").click();
+        // The arena's look has a Glow too.
+        h.state_mut().selection.set(ThingId(1));
         h.run();
-        let bloom = Address { thing: ThingId::ROOT, slot: None, key: "bloom".into() };
-        let pulse = &h.state().scene.pulses[&bloom];
-        assert_eq!((pulse.source, &pulse.amount), (PulseSource::Hits, &Value::Number(0.25)));
-        let gravity = bpe_kit::SceneSettings::defs().iter().find(|d| d.key == "gravity").unwrap();
-        assert_eq!(pulse_amount(gravity), Value::Vec2([0.0, 125.0]), "gravity");
-        h.get_by_label("Keyframe Bloom").click_secondary();
+        menu_of(&mut h, "Glow");
+        h.get_by_label("Paste Value (0.75)").click();
         h.run();
-        h.get_by_label("No pulse").click();
-        h.run();
-        assert!(h.state().scene.pulses.is_empty());
+        let glow = Address::on(ThingId(1), SlotId::Look, "glow");
+        assert_eq!(h.state().scene.value_at(&h.state().kit.registry, &glow), Some(Value::Number(0.75)));
+    }
+
+    #[test]
+    fn a_keyed_or_pulsing_setting_is_marked_for_its_label() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let size = Address::own(ThingId(2), "radius");
+        let def = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "radius").unwrap();
+        assert_eq!(mark_for(&scene, def, &size), KeyMark { can_key: true, keyed: false, pulsed: false });
+        scene.set_key(&reg, &size, 0.0, Value::Number(40.0)).unwrap();
+        assert!(mark_for(&scene, def, &size).keyed);
+        let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
+        assert!(!mark_for(&scene, speed, &Address::own(ThingId(2), "velocity")).can_key);
     }
 
     #[test]
     fn editing_a_keyed_slider_writes_a_key_not_the_base_value() {
         let mut h = harness(Some(ThingId(2)));
-        let size = Address { owner: Owner::Thing(ThingId(2)), slot: None, key: "radius".into() };
+        let size = Address::own(ThingId(2), "radius");
         h.state_mut().scene.set_key(&bpe_kit::kit().registry, &size, 0.0, Value::Number(40.0)).unwrap();
         h.state_mut().time = 3.0;
         h.run();
@@ -1050,64 +1067,27 @@ mod tests {
     }
 
     #[test]
-    fn the_module_picker_can_remove_a_slot_and_pick_a_module_again() {
+    fn a_card_can_be_removed_and_added_back() {
         let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
+        let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+        h.state_mut().scene.set_key(&bpe_kit::kit().registry, &glow, 1.0, Value::Number(0.5)).unwrap();
         h.run();
-        h.get_by_label("Remove").click();
+        h.get_by_label("Remove Look").click();
         h.run();
-        assert_eq!(h.state().scene.things[&ThingId(2)].slots[&SlotId::Look], SlotLink::Off);
-        h.get_by_label("Removed").click();
-        h.run();
-        h.get_by_label("Ball look").click();
-        h.run();
-        let look = linked(&h.state().scene, ThingId(2), SlotId::Look);
-        assert_eq!(h.state().scene.card(look.0, look.1).unwrap().name, "Ball look");
-    }
-
-    #[test]
-    fn a_new_module_copies_the_current_one() {
-        let mut h = harness(Some(ThingId(1)));
-        let starter = linked(&h.state().scene, ThingId(1), SlotId::Look);
-        h.get_by_label("Arena look").click();
-        h.run();
-        // One Look kind fits an arena, so the menu makes the module straight away.
-        h.get_by_label("New Look module…").click();
-        h.run();
-        let s = h.state();
-        let module = linked(&s.scene, ThingId(1), SlotId::Look);
-        assert_ne!(module, starter);
-        assert_eq!(s.scene.card(module.0, module.1).unwrap().name, "Arena Look");
-        assert_eq!(s.scene.card(module.0, module.1).unwrap().kind, "look.basic");
-        assert_eq!(
-            s.scene.card(module.0, module.1).unwrap().params,
-            s.scene.card(starter.0, starter.1).unwrap().params
-        );
-    }
-
-    #[test]
-    fn a_new_module_for_an_added_slot_is_made_from_its_picker() {
-        let mut h = harness(Some(ThingId(2)));
+        assert!(!h.state().scene.things[&ThingId(2)].slots.contains_key(&SlotId::Look));
+        assert!(!h.state().scene.tracks.contains_key(&glow), "the card's keys go with it");
         h.get_by_label("+ Add slot").click();
         h.run();
-        h.get_by_label("Particles").click();
+        h.get_by_label("Look").click();
         h.run();
-        // Added, the slot gets the ball's own starter; Particles has one kind, so its picker has
-        // a plain button that makes another straight away.
-        h.get_by_label("Ball particles").click();
-        h.run();
-        h.get_by_label("New Particles module…").click();
-        h.run();
-        let s = h.state();
-        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Particles] else { panic!() };
-        assert_eq!(s.scene.library.modules[module].kind, "particles.burst");
-        assert_eq!(s.scene.library.modules[module].name, "Ball Particles");
+        let card = &h.state().scene.things[&ThingId(2)].slots[&SlotId::Look];
+        assert_eq!((card.kind.as_str(), card.params.is_empty()), ("look.basic", true), "a fresh look");
     }
 
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_a_starter() {
         let mut h = harness(Some(ThingId(2)));
-        // Trail, Particles and Shader have module kinds and aren't shown on a new ball, so there
+        // Trail, Particles and Shader have card kinds and aren't shown on a new ball, so there
         // is something to add.
         assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.get_by_label("+ Add slot").click();
@@ -1122,165 +1102,21 @@ mod tests {
         // The menu's Motion, not the look's Motion heading.
         h.get_all_by_label("Motion").last().expect("the Motion slot").click();
         h.run();
-        let s = h.state();
-        let motion = linked(&s.scene, ThingId(2), SlotId::Motion);
-        assert_eq!(s.scene.card(motion.0, motion.1).unwrap().owner, Some(ThingId(2)));
-        assert_eq!(s.scene.card(motion.0, motion.1).unwrap().kind, "motion.basic");
-    }
-
-    #[test]
-    fn the_new_module_menu_of_a_one_kind_slot_makes_the_module_at_once() {
-        let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
-        h.run();
-        assert!(h.query_by_label("New Look module…").is_some());
-        h.key_press(egui::Key::Escape);
-        h.run();
-        // Bounce has one kind, so its menu keeps the plain button that makes the module at once.
-        h.get_by_label("Ball bounce").click();
-        h.run();
-        h.get_by_label("New Bounce module…").click();
-        h.run();
-        let s = h.state();
-        let SlotLink::Linked { module, .. } = &s.scene.things[&ThingId(2)].slots[&SlotId::Bounce] else { panic!() };
-        assert_eq!(s.scene.library.modules[module].kind, "bounce.basic");
-        assert_eq!(s.scene.library.modules[module].name, "Ball Bounce");
-    }
-
-    #[test]
-    fn the_write_policy_picks_module_override_or_inherited() {
-        let kit = bpe_kit::kit();
-        let mut scene = bpe_kit::new_scene(&kit.registry);
-        let resolved = resolve(&scene, &kit.registry);
-        let look = match &scene.things[&ThingId(2)].slots[&SlotId::Look] {
-            SlotLink::Linked { module, .. } => *module,
-            _ => unreachable!(),
-        };
-        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Look), Some(Write::Module(look)));
-        let motion = linked(&scene, ThingId(2), SlotId::Motion);
-        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Motion), Some(Write::Module(motion)));
-        let (followed, folder, folder_look) = ball_in_a_folder();
-        let followed_resolved = resolve(&followed, &kit.registry);
-        assert_eq!(
-            write_target(&followed, &followed_resolved, ThingId(2), SlotId::Look),
-            Some(Write::Inherited { from: folder, module: folder_look })
-        );
-        scene.link(&kit.registry, ThingId(1), SlotId::Look, look).unwrap();
-        assert_eq!(
-            write_target(&scene, &resolved, ThingId(2), SlotId::Look),
-            Some(Write::Override(ThingId(2), SlotId::Look))
-        );
-        // Alone again but with a change of its own, the thing keeps editing its overrides.
-        scene.set_slot_inherit(ThingId(1), SlotId::Look);
-        scene.set_override(&kit.registry, ThingId(2), SlotId::Look, "glow", Value::Number(1.5)).unwrap();
-        assert_eq!(
-            write_target(&scene, &resolved, ThingId(2), SlotId::Look),
-            Some(Write::Override(ThingId(2), SlotId::Look))
-        );
-        scene.set_slot_off(ThingId(2), SlotId::Look);
-        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Look), None);
-        assert_eq!(write_target(&scene, &resolved, ThingId(2), SlotId::Trail), None);
-    }
-
-    #[test]
-    fn a_sole_user_edits_its_module_and_a_shared_module_gets_an_override() {
-        let mut h = harness(Some(ThingId(2)));
-        // "Ball look" is the ball's alone: the Glow slider writes into the module.
-        let rect = slider_rect(&h, "Glow");
-        drag_slider(&mut h, rect, 0.9);
-        {
-            let s = h.state();
-            let (module, overrides) = ball_look(s);
-            assert!(overrides.is_empty());
-            let glow = s.scene.card(module.0, module.1).unwrap().params.get("glow").cloned();
-            assert!(matches!(glow, Some(Value::Number(g)) if g > 1.0), "{glow:?}");
-        }
-        assert!(h.query_by_label("Changed here").is_none());
-        // Share it with the arena: now the ball's edits are its own, with a dot.
-        {
-            let s = h.state_mut();
-            let (module, _) = ball_look(s);
-            s.scene.link(&s.kit.registry, ThingId(1), SlotId::Look, module).unwrap();
-            s.resolved = resolve(&s.scene, &s.kit.registry);
-        }
-        h.run();
-        assert!(h.query_by_label_contains("shared ×2").is_some());
-        let rect = slider_rect(&h, "Glow");
-        drag_slider(&mut h, rect, 0.1);
-        {
-            let s = h.state();
-            let (_, overrides) = ball_look(s);
-            assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g < 0.5), "{overrides:?}");
-        }
-        assert!(h.query_by_label("Changed here").is_some());
-        // Reset all in the picker drops the change again.
-        h.get_by_label_contains("shared ×2").click();
-        h.run();
-        h.get_by_label("Reset all").click();
-        h.run();
-        assert!(ball_look(h.state()).1.is_empty());
-        assert!(h.query_by_label("Changed here").is_none());
-    }
-
-    #[test]
-    fn push_all_writes_the_overrides_into_the_module() {
-        let mut h = harness(Some(ThingId(2)));
-        {
-            let s = h.state_mut();
-            let (module, _) = ball_look(s);
-            s.scene.link(&s.kit.registry, ThingId(1), SlotId::Look, module).unwrap();
-            s.scene.set_override(&s.kit.registry, ThingId(2), SlotId::Look, "glow", Value::Number(1.7)).unwrap();
-            s.resolved = resolve(&s.scene, &s.kit.registry);
-        }
-        h.run();
-        h.get_by_label_contains("shared ×2").click();
-        h.run();
-        h.get_by_label("Push all to module").click();
-        h.run();
-        let s = h.state();
-        let (module, overrides) = ball_look(s);
-        assert!(overrides.is_empty());
-        assert_eq!(s.scene.card(module.0, module.1).unwrap().params.get("glow"), Some(&Value::Number(1.7)));
-    }
-
-    /// The module `id` links in `slot`.
-    fn linked(scene: &Scene, id: ThingId, slot: SlotId) -> ModuleId {
-        match &scene.things[&id].slots[&slot] {
-            SlotLink::Linked { module, .. } => *module,
-            other => panic!("{slot:?} is linked: {other:?}"),
-        }
-    }
-
-    /// A new scene with the ball in a folder whose own look the ball follows.
-    fn ball_in_a_folder() -> (Scene, ThingId, ModuleId) {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let folder = bpe_kit::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
-        let look = scene.add_module(&reg, "look.basic", "Folder look").unwrap();
-        scene.card_mut(look.0, look.1).unwrap().params.set("glow", Value::Number(1.25));
-        scene.link(&reg, folder, SlotId::Look, look).unwrap();
-        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
-        scene.set_slot_inherit(ThingId(2), SlotId::Look);
-        (scene, folder, look)
+        assert_eq!(h.state().scene.things[&ThingId(2)].slots[&SlotId::Motion].kind, "motion.basic");
     }
 
     #[test]
     fn a_new_balls_card_edits_straight_away() {
         let mut h = harness(Some(ThingId(2)));
-        assert!(h.query_by_label("Change here").is_none());
-        assert!(h.query_by_label("Make own").is_none());
-        let motion = linked(&h.state().scene, ThingId(2), SlotId::Motion);
-        assert_eq!(h.state().scene.card(motion.0, motion.1).unwrap().name, "Ball motion");
-        let before = h.state().scene.card(motion.0, motion.1).unwrap().params.clone();
+        let before = h.state().scene.things[&ThingId(2)].slots[&SlotId::Motion].params.clone();
         let rect = slider_rect(&h, "Air drag");
         drag_slider(&mut h, rect, 0.9);
         let s = h.state();
-        assert_ne!(s.scene.card(motion.0, motion.1).unwrap().params, before, "the ball's own motion changed");
-        assert_eq!(linked(&s.scene, ThingId(2), SlotId::Motion), motion);
+        assert_ne!(s.scene.things[&ThingId(2)].slots[&SlotId::Motion].params, before, "the ball's own motion changed");
     }
 
     #[test]
-    fn typing_a_new_name_renames_the_things_starters() {
+    fn typing_a_new_name_renames_the_thing() {
         let mut h = harness(Some(ThingId(2)));
         let field = h.get_by_label("Name");
         field.click();
@@ -1288,92 +1124,7 @@ mod tests {
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.event(egui::Event::Text("Hero".into()));
         h.run();
-        let s = h.state();
-        assert_eq!(s.scene.things[&ThingId(2)].name, "Hero");
-        let look = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_eq!(s.scene.card(look.0, look.1).unwrap().name, "Hero look");
-    }
-
-    #[test]
-    fn follow_folder_is_offered_only_inside_a_filled_folder() {
-        let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
-        h.run();
-        assert!(h.query_by_label("Follow folder").is_none(), "no folder above the ball");
-        assert!(h.query_by_label("Inherit").is_none());
-        assert!(h.query_by_label("Remove").is_some());
-        let (mut scene, folder, _) = ball_in_a_folder();
-        let reg = bpe_kit::registry();
-        let own = scene.make_own(&reg, ThingId(2), SlotId::Look).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
-        h.run();
-        h.get_by_label("Follow folder").click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.things[&ThingId(2)].slots[&SlotId::Look], SlotLink::Inherit);
-        assert!(s.scene.library.modules.contains_key(&own));
-        let name = &s.scene.things[&folder].name;
-        assert!(h.query_by_label(&format!("Follow folder: {name}")).is_some());
-    }
-
-    #[test]
-    fn make_own_gives_a_followed_card_its_own_module() {
-        let (scene, _, folder_look) = ball_in_a_folder();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.get_by_role_and_label(Role::Slider, "Glow").accesskit_node().is_disabled(), "followed is read-only");
-        h.get_by_label("Make own").hover();
-        h.run();
-        h.get_by_label("Make own").click();
-        h.run();
-        let s = h.state();
-        let own = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_ne!(own, folder_look);
-        let m = &s.scene.card(own.0, own.1).unwrap();
-        assert_eq!((m.name.as_str(), m.owner), ("Ball look", Some(ThingId(2))));
-        assert_eq!(m.params, s.scene.card(folder_look.0, folder_look.1).unwrap().params);
-        assert!(!h.get_by_role_and_label(Role::Slider, "Glow").accesskit_node().is_disabled());
-    }
-
-    #[test]
-    fn removing_a_folders_look_leaves_its_followers_looking_the_same() {
-        let (scene, folder, folder_look) = ball_in_a_folder();
-        let mut h = harness_of(scene, Some(folder));
-        h.get_by_label("Folder look").click();
-        h.run();
-        h.get_by_label("Remove").click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.things[&folder].slots[&SlotId::Look], SlotLink::Off);
-        let own = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_ne!(own, folder_look);
-        assert_eq!(
-            s.scene.card(own.0, own.1).unwrap().params,
-            s.scene.card(folder_look.0, folder_look.1).unwrap().params
-        );
-    }
-
-    #[test]
-    fn make_unique_is_in_the_picker() {
-        let mut h = harness(Some(ThingId(2)));
-        let before = h.state().scene.library.modules.len();
-        h.get_by_label("Ball look").click();
-        h.run();
-        h.get_by_label("Make unique").click();
-        h.run();
-        let s = h.state();
-        assert_eq!(s.scene.library.modules.len(), before + 1);
-        assert!(s.scene.library.modules.values().any(|m| m.name == "Ball look (Ball)"));
-    }
-
-    #[test]
-    fn open_in_library_asks_the_app_to_open_the_module() {
-        let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
-        h.run();
-        h.get_by_label("Open in Library").click();
-        h.run();
-        assert_eq!(h.state().inspector.open_library, Some(ball_look(h.state()).0));
+        assert_eq!(h.state().scene.things[&ThingId(2)].name, "Hero");
     }
 
     #[test]
@@ -1396,39 +1147,23 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_edit_reaches_every_selected_thing_through_its_own_policy() {
+    fn a_card_edit_reaches_every_selected_thing_with_that_card() {
         let mut h = harness(Some(ThingId(2)));
-        {
+        let other = {
             let s = h.state_mut();
-            // The arena shares its look with a second arena; the ball has its own module.
-            let arena_look = linked(&s.scene, ThingId(1), SlotId::Look);
             let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "arena", ThingId::ROOT).unwrap();
-            s.scene.link(&s.kit.registry, other, SlotId::Look, arena_look).unwrap();
             s.selection.extra.insert(ThingId(1));
             s.resolved = resolve(&s.scene, &s.kit.registry);
-        }
-        let arena_look = linked(&h.state().scene, ThingId(1), SlotId::Look);
-        let shared_glow = h.state().scene.card(arena_look.0, arena_look.1).unwrap().params.get("glow").cloned();
+            other
+        };
         h.run();
         let rect = slider_rect(&h, "Glow");
         drag_slider(&mut h, rect, 0.9);
         let s = h.state();
-        let (module, overrides) = ball_look(s);
-        assert!(overrides.is_empty(), "the ball is its module's only user");
-        assert!(
-            matches!(s.scene.card(module.0, module.1).unwrap().params.get("glow"), Some(Value::Number(g)) if *g > 1.0)
-        );
-        // The arena shares its look, so it changed glow on top of it.
-        let SlotLink::Linked { module: arena_module, overrides } = &s.scene.things[&ThingId(1)].slots[&SlotId::Look]
-        else {
-            panic!("the arena links its look")
-        };
-        assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g > 1.0), "{overrides:?}");
-        assert_eq!(
-            s.scene.library.modules[arena_module].params.get("glow").cloned(),
-            shared_glow,
-            "the shared look is untouched"
-        );
+        let glow = |t| s.scene.value_at(&s.kit.registry, &Address::on(t, SlotId::Look, "glow"));
+        assert!(matches!(glow(ThingId(2)), Some(Value::Number(g)) if g > 1.0));
+        assert_eq!(glow(ThingId(1)), glow(ThingId(2)), "the selected arena's look changed too");
+        assert_eq!(glow(other), Some(Value::Number(0.0)), "an arena that isn't selected is left alone");
     }
 
     #[test]
@@ -1461,10 +1196,7 @@ mod tests {
         // The bounce card's "Which balls" target shows once the balls hit each other.
         {
             let s = h.state_mut();
-            // Give the ball its own bounce so the card is editable.
-            let m = s.scene.add_module(&s.kit.registry, "bounce.basic", "Own bounce").unwrap();
-            s.scene.link(&s.kit.registry, ThingId(2), SlotId::Bounce, m).unwrap();
-            let hits = Address { owner: Owner::Module(m), slot: None, key: "hit_balls".into() };
+            let hits = Address::on(ThingId(2), SlotId::Bounce, "hit_balls");
             s.scene.set_at(&s.kit.registry, &hits, Value::Bool(true)).unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
@@ -1480,8 +1212,8 @@ mod tests {
         h.get_by_label("Arena").click();
         h.run();
         let s = h.state();
-        let m = s.scene.library.modules.values().find(|m| m.name == "Own bounce").unwrap();
-        assert_eq!(m.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
+        let bounce = &s.scene.things[&ThingId(2)].slots[&SlotId::Bounce];
+        assert_eq!(bounce.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
     }
 
     #[test]
@@ -1498,8 +1230,7 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         scene.things.get_mut(&ThingId(2)).unwrap().tags.insert("bouncers".into());
-        let bounce = linked(&scene, ThingId(2), SlotId::Bounce);
-        let special = Address { owner: Owner::Module(bounce), slot: None, key: "special".into() };
+        let special = Address::on(ThingId(2), SlotId::Bounce, "special");
         scene.set_at(&reg, &special, Value::Bool(true)).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
         h.get_by_label("Show Against some things").click();
@@ -1514,55 +1245,13 @@ mod tests {
         h.run();
         h.get_by_label("bouncers").click();
         h.run();
-        let target = h.state().scene.card(bounce.0, bounce.1).unwrap().params.get("special_target").cloned();
+        let target = h.state().scene.things[&ThingId(2)].slots[&SlotId::Bounce].params.get("special_target").cloned();
         assert_eq!(target, Some(Value::Target(bpe_core::Target::Tag("bouncers".into()))));
-    }
-
-    /// The Colours row's name, after the Colours heading over it.
-    fn colours_row<'h>(h: &'h Harness<'_, State>) -> egui_kittest::Node<'h> {
-        h.get_all_by_role_and_label(Role::Label, "Colours").last().expect("a Colours row")
-    }
-
-    #[test]
-    fn a_padlock_on_a_shared_card_holds_when_the_dice_roll() {
-        use bpe_kit::random::{Roll, Scope, roll};
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let SlotLink::Linked { module, .. } = scene.things[&ThingId(2)].slots[&SlotId::Look].clone() else {
-            panic!("the ball's look is linked");
-        };
-        // A second ball shares the look, so the first ball's look card edits its own changes.
-        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.link(&reg, other, SlotId::Look, module).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        colours_row(&h).click_secondary();
-        h.run();
-        h.get_by_label("Lock when randomizing").click();
-        h.run();
-        assert!(h.query_by_label("Locked when randomizing").is_some(), "a padlock shows on the row");
-        let colour = Address { owner: Owner::Module(module), slot: None, key: "colours".into() };
-        let before = h.state().scene.value_at(&reg, &colour);
-        // Neither a whole-scene roll nor this card's die moves the colour this ball shows.
-        for (seed, scope) in [(7, Scope::Scene), (8, Scope::Card { thing: ThingId(2), slot: Some(SlotId::Look) })] {
-            let mut scene = h.state().scene.clone();
-            roll(&mut scene, &reg, &scope, Roll { seed, amount: 1.0 });
-            let shown = Address { owner: Owner::Thing(ThingId(2)), slot: Some(SlotId::Look), key: "colours".into() };
-            assert_eq!(scene.value_at(&reg, &shown), before, "{scope:?}");
-        }
-        // Unlocking from the same row lets it roll again.
-        colours_row(&h).click_secondary();
-        h.run();
-        h.get_by_label("Unlock").click();
-        h.run();
-        assert!(h.query_by_label("Locked when randomizing").is_none());
-        assert!(h.state().scene.locks.is_empty(), "{:?}", h.state().scene.locks);
     }
 
     #[test]
     fn look_card_shows_blending_and_variation() {
         let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("Ball look").click();
-        h.run();
         assert!(h.query_all_by_label("Blending").next().is_some(), "a Blending group");
         h.get_all_by_label("Blending").next().unwrap().click();
         h.get_all_by_label("Variation").next().unwrap().click();
@@ -1602,8 +1291,7 @@ mod tests {
         assert!(h.query_all_by_label("Variation").next().is_some());
         assert!(h.query_by_label("Variation (changed)").is_none(), "nothing changed yet");
         assert!(h.query_by_label("Changes inside").is_none(), "no dot with defaults");
-        let (module, _) = ball_look(h.state());
-        h.state_mut().scene.card_mut(module.0, module.1).unwrap().params.set("vary_hue", Value::Number(20.0));
+        h.state_mut().scene.card_mut(ThingId(2), SlotId::Look).unwrap().params.set("vary_hue", Value::Number(20.0));
         h.run();
         assert!(h.query_by_label("Variation (changed)").is_some(), "the heading says it holds changes");
         assert!(h.query_by_label("Changes inside").is_some(), "the dot is drawn");
@@ -1616,8 +1304,7 @@ mod tests {
     #[test]
     fn a_folded_section_with_a_keyframe_shows_the_dot() {
         let mut h = harness(Some(ThingId(2)));
-        let (module, _) = ball_look(h.state());
-        let wobble = Address { owner: Owner::Module(module), slot: None, key: "wobble".into() };
+        let wobble = Address::on(ThingId(2), SlotId::Look, "wobble");
         let reg = bpe_kit::registry();
         let default = h.state().scene.value_at(&reg, &wobble).unwrap();
         h.state_mut().scene.set_key(&reg, &wobble, 0.0, default).unwrap();
@@ -1631,18 +1318,16 @@ mod tests {
     fn a_folded_section_with_only_a_pulse_shows_the_dot() {
         let mut h = harness(Some(ThingId(2)));
         // The test scene's look keeps the old glow; put it back to the default so Light starts clean.
-        let (module, _) = ball_look(h.state());
-        h.state_mut().scene.card_mut(module.0, module.1).unwrap().params.set("glow", Value::Number(0.0));
+        h.state_mut().scene.card_mut(ThingId(2), SlotId::Look).unwrap().params.set("glow", Value::Number(0.0));
         h.state_mut().resolved = resolve(&h.state().scene, &h.state().kit.registry);
         h.get_by_label("Hide Light").click();
         h.run();
         assert!(h.query_by_label("Light (changed)").is_none(), "Light holds no changes yet");
-        let (module, _) = ball_look(h.state());
         let def = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "opacity").unwrap();
         assert!(def.flags.pulse && def.group == "Light");
-        let address = Address { owner: Owner::Module(module), slot: None, key: def.key.into() };
+        let address = Address::on(ThingId(2), SlotId::Look, def.key);
         let reg = bpe_kit::registry();
-        h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, pulse_amount(def), 0.25).unwrap();
+        h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, Value::Number(0.25), 0.25).unwrap();
         h.run();
         assert!(h.query_by_label("Light (changed)").is_some(), "a pulse moves the video");
         assert!(h.query_by_label("Changes inside").is_some());
@@ -1689,33 +1374,32 @@ mod tests {
     }
 
     /// A new scene whose ball has its own effect in its Shader slot, with one of its number
-    /// settings moved off its default, and that setting's key. The other effect kinds named
+    /// settings moved off its default, and that setting's address. The other effect kinds named
     /// come back too: those that lack the setting.
-    fn ball_with_an_effect() -> (Scene, ModuleId, Address, Vec<&'static str>) {
+    fn ball_with_an_effect() -> (Scene, Address, Vec<&'static str>) {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Shader).unwrap();
-        let effect = linked(&scene, ThingId(2), SlotId::Shader);
-        let kind = reg.module(&scene.card(effect.0, effect.1).unwrap().kind).unwrap();
+        let kind = reg.module(&scene.things[&ThingId(2)].slots[&SlotId::Shader].kind).unwrap();
         let def = kind
             .settings()
             .iter()
             .find(|d| d.key != "blend" && matches!(d.default, Value::Number(_)))
             .expect("an effect with a number setting of its own");
         let (Value::Number(n), Some((low, high))) = (&def.default, def.range) else { unreachable!() };
-        let a = Address { owner: Owner::Module(effect), slot: None, key: def.key.into() };
+        let a = Address::on(ThingId(2), SlotId::Shader, def.key);
         scene.set_at(&reg, &a, Value::Number(if *n == low { high } else { low })).unwrap();
         let others = reg
             .modules_for(SlotId::Shader)
             .filter(|m| m.id() != kind.id() && m.settings().iter().all(|d| d.key != def.key))
             .map(|m| m.name())
             .collect();
-        (scene, effect, a, others)
+        (scene, a, others)
     }
 
-    /// The name of `module`'s kind.
-    fn kind_name(s: &State, module: ModuleId) -> &'static str {
-        s.kit.registry.module(&s.scene.card(module.0, module.1).unwrap().kind).unwrap().name()
+    /// The name of the kind of `id`'s card in its Shader slot.
+    fn effect_name(s: &State, id: ThingId) -> &'static str {
+        s.kit.registry.module(&s.scene.things[&id].slots[&SlotId::Shader].kind).unwrap().name()
     }
 
     #[test]
@@ -1725,15 +1409,13 @@ mod tests {
         // Only the ball's Look, Motion and Bounce: each has one kind.
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_by_label("Ball look").is_some(), "the look card shows its module");
         assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "a ball's look has one kind");
         h.state_mut().selection.set(ThingId::ROOT);
         h.run();
         let root = reg.thing("scene").unwrap();
         let effects: Vec<&str> = reg.kinds_fitting(SlotId::Shader, root).map(|k| k.name()).collect();
         assert!(effects.len() > 1, "{effects:?}");
-        let shader = linked(&h.state().scene, ThingId::ROOT, SlotId::Shader);
-        let current = reg.module(&h.state().scene.card(shader.0, shader.1).unwrap().kind).unwrap().name();
+        let current = effect_name(h.state(), ThingId::ROOT);
         open_type_menu(&mut h);
         for name in &effects {
             assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
@@ -1741,83 +1423,63 @@ mod tests {
         let other = effects.iter().find(|n| **n != current).unwrap();
         h.get_all_by_label(other).last().unwrap().click();
         h.run();
-        let s = h.state();
-        assert_eq!(linked(&s.scene, ThingId::ROOT, SlotId::Shader), shader, "the same module, another kind");
-        assert_eq!(reg.module(&s.scene.card(shader.0, shader.1).unwrap().kind).unwrap().name(), *other);
+        assert_eq!(effect_name(h.state(), ThingId::ROOT), *other);
     }
 
     #[test]
-    fn picking_a_type_switches_the_module_and_back_restores_it() {
-        let (scene, effect, moved, others) = ball_with_an_effect();
+    fn picking_a_type_switches_the_card_and_back_restores_it() {
+        let (scene, moved, others) = ball_with_an_effect();
         let reg = bpe_kit::registry();
         let value = scene.value_at(&reg, &moved);
         let mut h = harness_of(scene, Some(ThingId(2)));
-        let first = kind_name(h.state(), effect);
+        let first = effect_name(h.state(), ThingId(2));
         let other = *others.first().expect("an effect without the moved setting");
         open_type_menu(&mut h);
         h.get_all_by_label(other).last().unwrap().click();
         h.run();
         {
             let s = h.state();
-            assert_eq!(linked(&s.scene, ThingId(2), SlotId::Shader), effect, "the slot keeps its module");
-            assert_eq!(kind_name(s, effect), other);
-            assert!(s.scene.card(effect.0, effect.1).unwrap().params.get(&moved.key).is_none());
+            assert_eq!(effect_name(s, ThingId(2)), other);
+            assert!(s.scene.things[&ThingId(2)].slots[&SlotId::Shader].params.get(&moved.key).is_none());
         }
         open_type_menu(&mut h);
         h.get_all_by_label(first).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(kind_name(s, effect), first);
+        assert_eq!(effect_name(s, ThingId(2)), first);
         assert_eq!(s.scene.value_at(&s.kit.registry, &moved), value, "the moved setting is back");
     }
 
     #[test]
-    fn undo_after_a_type_switch_restores_the_module() {
-        let (scene, effect, _, others) = ball_with_an_effect();
+    fn undo_after_a_type_switch_restores_the_card() {
+        let (scene, _, others) = ball_with_an_effect();
         let before = scene.clone();
         let mut h = harness_of(scene, Some(ThingId(2)));
-        let first = kind_name(h.state(), effect);
+        let first = effect_name(h.state(), ThingId(2));
         open_type_menu(&mut h);
         h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
-        assert_eq!(kind_name(h.state(), effect), others[0]);
+        assert_eq!(effect_name(h.state(), ThingId(2)), others[0]);
         // The studio records any frame that changed the scene as an undo step.
         let mut history = crate::history::History::default();
         history.record(before.clone(), false);
         let s = h.state_mut();
         assert!(history.undo(&mut s.scene));
-        assert_eq!(kind_name(s, effect), first);
+        assert_eq!(effect_name(s, ThingId(2)), first);
         assert_eq!(s.scene, before);
         assert!(history.redo(&mut s.scene));
-        assert_eq!(kind_name(s, effect), others[0]);
+        assert_eq!(effect_name(s, ThingId(2)), others[0]);
     }
 
     #[test]
-    fn a_shared_modules_type_menu_says_how_many_change() {
-        let (mut scene, effect, _, others) = ball_with_an_effect();
+    fn a_type_switch_reaches_each_selected_thing_with_the_same_kind() {
+        let (mut scene, _, others) = ball_with_an_effect();
         let reg = bpe_kit::registry();
+        let kind = scene.things[&ThingId(2)].slots[&SlotId::Shader].kind.clone();
         let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.add_slot(&reg, other, SlotId::Shader).unwrap();
-        scene.link(&reg, other, SlotId::Shader, effect).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        open_type_menu(&mut h);
-        let name = h.state().scene.card(effect.0, effect.1).unwrap().name.clone();
-        assert!(h.query_by_label(&format!("Changes all 2 things using {name}")).is_some());
-        h.get_all_by_label(others[0]).last().unwrap().click();
-        h.run();
-        let s = h.state();
-        assert_eq!(kind_name(s, effect), others[0]);
-        assert_eq!(linked(&s.scene, other, SlotId::Shader), effect, "both still share it");
-    }
-
-    #[test]
-    fn a_type_switch_reaches_each_selected_module_once() {
-        let (mut scene, mine, _, others) = ball_with_an_effect();
-        let reg = bpe_kit::registry();
-        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let theirs = scene.add_module(&reg, &scene.card(mine.0, mine.1).unwrap().kind.clone(), "Their effect").unwrap();
-        scene.add_slot(&reg, other, SlotId::Shader).unwrap();
-        scene.link(&reg, other, SlotId::Shader, theirs).unwrap();
+        scene.add_slot(&reg, other, SlotId::Shader, &kind).unwrap();
+        let unselected = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        scene.add_slot(&reg, unselected, SlotId::Shader, &kind).unwrap();
         let mut h = harness_of(scene, Some(ThingId(2)));
         h.state_mut().selection.toggle(other);
         h.run();
@@ -1825,27 +1487,9 @@ mod tests {
         h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(kind_name(s, mine), others[0]);
-        assert_eq!(kind_name(s, theirs), others[0]);
-    }
-
-    #[test]
-    fn the_type_button_is_disabled_on_a_slot_that_follows_a_folder() {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        let folder = bpe_kit::add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
-        let effect = scene.add_module(&reg, "shader.echo", "Folder effect").unwrap();
-        scene.add_slot(&reg, folder, SlotId::Shader).unwrap();
-        scene.link(&reg, folder, SlotId::Shader, effect).unwrap();
-        scene.set_parent(ThingId(2), folder, bpe_core::Attach::Group).unwrap();
-        scene.set_slot_inherit(ThingId(2), SlotId::Shader);
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        let button = h.get_by_role_and_label(Role::Button, "Type");
-        assert!(button.accesskit_node().is_disabled(), "an inherited slot's type is the folder's to change");
-        let before = h.state().scene.clone();
-        button.click();
-        h.run();
-        assert_eq!(h.state().scene, before);
+        assert_eq!(effect_name(s, ThingId(2)), others[0]);
+        assert_eq!(effect_name(s, other), others[0]);
+        assert_eq!(s.scene.things[&unselected].slots[&SlotId::Shader].kind, kind, "each thing's card is its own");
     }
 
     #[test]
@@ -1934,7 +1578,7 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         for slot in [SlotId::Trail, SlotId::Particles, SlotId::Shader] {
-            scene.add_slot(&reg, ThingId(2), slot).unwrap();
+            bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), slot).unwrap();
         }
         scene
     }
@@ -2008,7 +1652,7 @@ mod tests {
     fn a_root_with_every_slot() -> Scene {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
         scene
     }
 
@@ -2096,43 +1740,6 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Gravity").is_none(), "no rows");
         assert!(h.query_by_role_and_label(Role::Label, "Seed").is_none(), "no rows");
         assert!(h.query_all_by_role(Role::Slider).next().is_none(), "no grid row is drawn");
-    }
-
-    #[test]
-    fn background_card_dice_rolls_only_the_background() {
-        let mut h = harness(Some(ThingId::ROOT));
-        let headings: Vec<(&str, f32)> = bpe_kit::ROOT_CARDS.iter().map(|n| (*n, heading_top(&h, n))).collect();
-        // Which card each dice button sits in: the last heading above it.
-        let cards: Vec<&str> = h
-            .get_all_by_role_and_label(Role::Button, "Randomize these settings")
-            .map(|n| {
-                let at = n.rect().center().y;
-                headings.iter().rfind(|(_, top)| *top <= at + 12.0).expect("under a card").0
-            })
-            .collect();
-        // The background's paint rolls its colours, so Background has dice too.
-        assert_eq!(cards, ["Background", "Picture"], "only cards with something random have dice");
-        let reg = bpe_kit::registry();
-        let values = |s: &State| -> Vec<(&str, Value)> {
-            bpe_kit::SceneSettings::defs()
-                .iter()
-                .map(|d| {
-                    let a = Address { thing: ThingId::ROOT, slot: None, key: d.key.into() };
-                    (d.key, s.scene.value_at(&reg, &a).unwrap())
-                })
-                .collect()
-        };
-        let before = values(h.state());
-        let background = cards.iter().position(|c| *c == "Background").unwrap();
-        h.get_all_by_role_and_label(Role::Button, "Randomize these settings").nth(background).unwrap().click();
-        h.run();
-        let after = values(h.state());
-        let changed: Vec<&str> = before.iter().zip(&after).filter(|(b, a)| b != a).map(|(b, _)| b.0).collect();
-        let groups: Vec<&str> = changed
-            .iter()
-            .map(|k| bpe_kit::SceneSettings::defs().iter().find(|d| d.key == *k).unwrap().group)
-            .collect();
-        assert!(!groups.is_empty() && groups.iter().all(|g| *g == "Background"), "{changed:?}");
     }
 
     fn selected_in_bar(h: &Harness<'_, State>) -> Vec<String> {

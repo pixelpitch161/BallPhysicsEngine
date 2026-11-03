@@ -797,7 +797,7 @@ fn file_label(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Address, ModuleId, ThingId, Value};
+    use bpe_core::{Address, SlotId, ThingId, Value};
     use bpe_kit::{Arrangement, BallsSettings};
     use std::path::Path;
     use std::time::Duration;
@@ -984,8 +984,7 @@ mod tests {
         let mut studio = Studio::headless();
         studio.seek(2.0);
         let before = studio.scene.clone();
-        // Module ids start at 0: the arena's look is the first module the new scene adds.
-        let look = Address { owner: Owner::Module(ModuleId(0)), slot: None, key: "glow".into() };
+        let look = Address::on(ThingId(2), SlotId::Look, "glow");
         studio.scene.set_at(&studio.kit.registry, &look, Value::Number(1.0)).unwrap();
         studio.after_edit(before);
         assert!(studio.playback.time() >= 2.0);

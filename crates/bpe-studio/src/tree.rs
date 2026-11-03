@@ -818,7 +818,7 @@ pub fn problem_words(p: &Problem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{ModuleId, Problem, ProblemKind, Resolved, SlotId, Value, resolve};
+    use bpe_core::{Problem, ProblemKind, Resolved, SlotId, Value, resolve};
     use eframe::egui::{self, Key, PointerButton};
     use egui_kittest::{
         Harness,
@@ -1036,17 +1036,10 @@ mod tests {
         assert_eq!(duplicate(&mut scene, &kit.registry, ThingId::ROOT), None);
     }
 
-    /// The module `id` links in `slot`.
-    fn linked(scene: &Scene, id: ThingId, slot: SlotId) -> ModuleId {
-        match &scene.things[&id].slots[&slot] {
-            bpe_core::SlotLink::Linked { module, .. } => *module,
-            other => panic!("{slot:?} is linked: {other:?}"),
-        }
-    }
-
     #[test]
-    fn renaming_a_thing_renames_its_starters() {
+    fn renaming_a_thing_keeps_its_cards() {
         let mut h = harness();
+        let cards = h.state().scene.things[&ThingId(2)].slots.clone();
         h.get_by_label("Ball").click();
         h.step();
         h.get_by_label("Ball").click();
@@ -1055,51 +1048,52 @@ mod tests {
         h.key_press(Key::Enter);
         h.run();
         let s = h.state();
-        let look = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_eq!(s.scene.card(look.0, look.1).unwrap().name, "Hero look");
+        assert_eq!(s.scene.things[&ThingId(2)].name, "Hero");
+        assert_eq!(s.scene.things[&ThingId(2)].slots, cards);
         assert!(h.query_by_label("Hero").is_some());
     }
 
     #[test]
-    fn duplicating_gives_the_copy_its_own_starters() {
+    fn duplicating_gives_the_copy_its_own_cards_and_keys() {
         let kit = bpe_kit::kit();
-        let mut scene = bpe_kit::new_scene(&kit.registry);
-        let copy = duplicate(&mut scene, &kit.registry, ThingId(2)).unwrap();
-        for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce] {
-            let (a, b) = (linked(&scene, ThingId(2), slot), linked(&scene, copy, slot));
-            assert_ne!(a, b, "{slot:?} is the copy's own");
-            assert_eq!(scene.card(b.0, b.1).unwrap().owner, Some(copy));
-            assert_eq!(scene.card(b.0, b.1).unwrap().params, scene.card(a.0, a.1).unwrap().params);
-        }
-        assert_eq!(scene.library.modules[&linked(&scene, copy, SlotId::Look)].name, "Ball copy look");
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let glow = |t| Address::on(t, SlotId::Look, "glow");
+        scene.set_key(reg, &glow(ThingId(2)), 1.0, Value::Number(0.5)).unwrap();
+        let copy = duplicate(&mut scene, reg, ThingId(2)).unwrap();
+        assert_eq!(scene.things[&copy].slots, scene.things[&ThingId(2)].slots);
+        assert_eq!(scene.tracks[&glow(copy)], scene.tracks[&glow(ThingId(2))], "the copy's glow moves the same");
+        scene.set_key(reg, &glow(copy), 1.0, Value::Number(0.9)).unwrap();
+        assert_eq!(
+            scene.value_at_time(reg, &glow(ThingId(2)), 1.0),
+            Some(Value::Number(0.5)),
+            "changing the copy leaves the original alone"
+        );
     }
 
     #[test]
-    fn undo_after_delete_brings_starters_back() {
+    fn undo_after_delete_brings_the_cards_back() {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
-        let look = linked(&scene, ThingId(2), SlotId::Look);
+        let cards = scene.things[&ThingId(2)].slots.clone();
         let mut history = crate::history::History::default();
         history.record(scene.clone(), true);
         scene.remove_thing(ThingId(2)).unwrap();
-        assert!(!scene.library.modules.contains_key(&look), "the ball's own starters go with it");
         assert!(history.undo(&mut scene));
-        assert_eq!(linked(&scene, ThingId(2), SlotId::Look), look);
-        assert_eq!(scene.card(look.0, look.1).unwrap().owner, Some(ThingId(2)));
+        assert_eq!(scene.things[&ThingId(2)].slots, cards);
     }
 
     #[test]
     fn moving_a_thing_out_of_a_folder_keeps_its_look() {
         let mut h = harness();
         let f = add_folder(&mut h);
-        let folder_look = {
+        let look = {
             let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Folder look").unwrap();
-            s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
+            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.7)).unwrap();
             s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
-            s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
             s.resolved = resolve(&s.scene, &s.kit.registry);
-            m
+            s.scene.things[&ThingId(2)].slots[&SlotId::Look].clone()
         };
         h.run();
         let from = h.get_by_label("Ball").rect().center();
@@ -1107,18 +1101,17 @@ mod tests {
         drag(&mut h, from, egui::pos2(arena.center().x, arena.top() + 1.0), Modifiers::NONE);
         let s = h.state();
         assert_eq!(s.scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
-        let own = linked(&s.scene, ThingId(2), SlotId::Look);
-        assert_ne!(own, folder_look);
-        assert_eq!(
-            s.scene.card(own.0, own.1).unwrap().params,
-            s.scene.card(folder_look.0, folder_look.1).unwrap().params
-        );
+        assert_eq!(s.scene.things[&ThingId(2)].slots[&SlotId::Look], look);
     }
 
     #[test]
     fn problems_are_said_in_plain_words() {
-        let p = Problem { thing: ThingId(2), slot: Some(SlotId::Look), kind: ProblemKind::MissingModule(ModuleId(99)) };
-        assert_eq!(problem_words(&p), "Look links a module that is missing (id 99)");
+        let p = Problem {
+            thing: ThingId(2),
+            slot: Some(SlotId::Look),
+            kind: ProblemKind::UnknownCardKind("look.x".into()),
+        };
+        assert_eq!(problem_words(&p), "Look uses \"look.x\", which isn't installed or doesn't fit here");
         let p = Problem { thing: ThingId(2), slot: None, kind: ProblemKind::UnknownKind("blob".into()) };
         assert_eq!(problem_words(&p), "Its kind \"blob\" isn't installed");
     }
@@ -1295,49 +1288,13 @@ mod tests {
     }
 
     #[test]
-    fn dropping_a_module_on_a_thing_without_the_slot_is_refused() {
-        let kit = bpe_kit::kit();
-        let mut scene = bpe_kit::new_scene(&kit.registry);
-        let f = bpe_kit::add_thing(&mut scene, &kit.registry, "arena", ThingId::ROOT).unwrap();
-        let motion = scene.library.modules.values().find(|m| m.name == "Ball motion").unwrap().id;
-        let err = link_dropped(&mut scene, &kit.registry, f, motion).unwrap_err();
-        assert_eq!(err.to_string(), "This kind of thing has no Motion slot");
-        let look = scene.library.modules.values().find(|m| m.name == "Ball look").unwrap().id;
-        link_dropped(&mut scene, &kit.registry, f, look).unwrap();
-        assert!(
-            matches!(scene.things[&f].slots[&SlotId::Look], bpe_core::SlotLink::Linked { module, .. } if module == look)
-        );
-        assert!(matches!(link_dropped(&mut scene, &kit.registry, f, ModuleId(99)), Err(EditError::MissingModule(_))));
-    }
-
-    #[test]
-    fn dropping_a_module_on_a_folder_keeps_its_followers_looks() {
-        let kit = bpe_kit::kit();
-        let reg = &kit.registry;
-        let mut scene = bpe_kit::new_scene(reg);
-        let folder = bpe_kit::add_thing(&mut scene, reg, "folder", ThingId::ROOT).unwrap();
-        bpe_kit::fill_slot(&mut scene, reg, folder, SlotId::Look).unwrap();
-        let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
-        let other = scene.add_module(reg, "look.basic", "Other").unwrap();
-        scene.card_mut(other.0, other.1).unwrap().params.set("glow", bpe_core::Value::Number(1.5));
-        let look = |s: &Scene| bpe_core::resolve_slot(s, reg, balls, SlotId::Look, &mut Vec::new()).map(|r| r.params);
-        let before = look(&scene);
-        link_dropped(&mut scene, reg, folder, other).unwrap();
-        assert_eq!(look(&scene), before);
-    }
-
-    #[test]
     fn making_a_folder_from_the_tree_keeps_looks() {
         let mut h = harness();
-        let f = add_folder(&mut h);
         let before = {
             let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Folder look").unwrap();
-            s.scene.link(&s.kit.registry, f, SlotId::Look, m).unwrap();
-            s.scene.set_parent(ThingId(2), f, Attach::Group).unwrap();
-            s.scene.set_slot_inherit(ThingId(2), SlotId::Look);
+            let glow = Address::on(ThingId(2), SlotId::Look, "glow");
+            s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.7)).unwrap();
             s.resolved = resolve(&s.scene, &s.kit.registry);
-            // The arena comes first, so the new folder goes where it is, outside the folder.
             s.selection.set(ThingId(1));
             s.selection.extra.insert(ThingId(2));
             s.resolved.things[&ThingId(2)].slots[&SlotId::Look].params.clone()
@@ -1348,45 +1305,10 @@ mod tests {
         h.get_by_label("Make folder from selection").click();
         h.run();
         let s = h.state();
-        assert_ne!(s.scene.things[&ThingId(2)].parent, Some(f));
-        let now = bpe_core::resolve_slot(&s.scene, &s.kit.registry, ThingId(2), SlotId::Look, &mut Vec::new());
-        assert_eq!(now.map(|r| r.params), Some(before));
-    }
-
-    #[test]
-    fn a_module_dropped_on_a_row_links_it() {
-        let mut h = harness();
-        let m = {
-            let s = h.state_mut();
-            let m = s.scene.add_module(&s.kit.registry, "look.basic", "Red look").unwrap();
-            s.resolved = resolve(&s.scene, &s.kit.registry);
-            m
-        };
-        h.run();
-        let to = h.get_by_label("Arena").rect().center();
-        // The Library (another panel) sets the payload; here the drag is started by hand.
-        h.hover_at(to);
-        egui::DragAndDrop::set_payload(&h.ctx, m);
-        h.event(egui::Event::PointerButton {
-            pos: to,
-            button: PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        });
-        h.step();
-        egui::DragAndDrop::set_payload(&h.ctx, m);
-        h.event(egui::Event::PointerButton {
-            pos: to,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        });
-        h.step();
-        h.run();
-        let s = h.state();
-        assert!(
-            matches!(s.scene.things[&ThingId(1)].slots.get(&SlotId::Look), Some(bpe_core::SlotLink::Linked { module, .. }) if *module == m)
-        );
+        let folder = s.scene.things[&ThingId(2)].parent.unwrap();
+        assert_eq!(s.scene.things[&folder].kind, "folder");
+        let now = resolve(&s.scene, &s.kit.registry).things[&ThingId(2)].slots[&SlotId::Look].params.clone();
+        assert_eq!(now, before);
     }
 
     #[test]
