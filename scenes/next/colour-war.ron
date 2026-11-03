@@ -78,12 +78,48 @@
             },
             slots: {},
         ),
+        4: (
+            id: 4,
+            name: "Score",
+            kind: "meter",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -820.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "thickness": Number(48.0),
+                "width": Number(900.0),
+            },
+            slots: {},
+        ),
+        5: (
+            id: 5,
+            name: "Leader",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -740.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(56.0),
+                "text": Text("{War.leader} leads"),
+            },
+            slots: {
+                Look: Linked(
+                    module: 16,
+                ),
+            },
+        ),
     },
     order: [
         0,
         1,
         2,
         3,
+        4,
+        5,
     ],
     library: (
         modules: {
@@ -180,6 +216,13 @@
                     "instrument": Int(0),
                 },
                 owner: Some(2),
+            ),
+            16: (
+                id: 16,
+                name: "Text look",
+                slot: Look,
+                kind: "look.basic",
+                owner: Some(5),
             ),
         },
         progressions: {
@@ -360,8 +403,8 @@
             ),
         ],
     ),
-    next_thing: 4,
-    next_module: 16,
+    next_thing: 6,
+    next_module: 17,
     next_progression: 1,
     next_instrument: 1,
 )

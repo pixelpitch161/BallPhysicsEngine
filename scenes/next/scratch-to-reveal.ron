@@ -60,6 +60,9 @@
                 Sound: Linked(
                     module: 15,
                 ),
+                Rules: Linked(
+                    module: 17,
+                ),
                 Marks: Linked(
                     module: 11,
                 ),
@@ -79,12 +82,32 @@
             },
             slots: {},
         ),
+        4: (
+            id: 4,
+            name: "Revealed",
+            kind: "text",
+            parent: Some(0),
+            transform: (
+                position: (0.0, -800.0),
+                rotation: 0.0,
+            ),
+            params: {
+                "size": Number(72.0),
+                "text": Text("{Card.revealed}% revealed"),
+            },
+            slots: {
+                Look: Linked(
+                    module: 16,
+                ),
+            },
+        ),
     },
     order: [
         0,
         1,
         2,
         3,
+        4,
     ],
     library: (
         modules: {
@@ -184,6 +207,68 @@
                     "instrument": Int(0),
                 },
                 owner: Some(2),
+            ),
+            16: (
+                id: 16,
+                name: "Text look",
+                slot: Look,
+                kind: "look.basic",
+                owner: Some(4),
+            ),
+            17: (
+                id: 17,
+                name: "Finish",
+                slot: Rules,
+                kind: "rules.graph",
+                graph: Some((
+                    graph: (
+                        name: "Rules",
+                        nodes: [
+                            (
+                                id: 1,
+                                kind: "when.canvas",
+                                pos: (40.0, 40.0),
+                                params: {
+                                    "canvas": Text("anything"),
+                                    "level": Number(60.0),
+                                    "number": Choice("Revealed"),
+                                    "team": Text(""),
+                                    "way": Choice("Up"),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                            (
+                                id: 2,
+                                kind: "do.end",
+                                pos: (260.0, 40.0),
+                                params: {
+                                    "after": Number(2.0),
+                                },
+                                enabled: true,
+                                exposed: [],
+                            ),
+                        ],
+                        links: [
+                            (
+                                from: (1, 0),
+                                to: (2, 0),
+                            ),
+                        ],
+                        notes: [
+                            (
+                                pos: (40.0, 40.0),
+                                size: (0.0, 0.0),
+                                text: "Add a rule with the Add rule menu, or drop a When block here.",
+                                color: (0.9, 0.8, 0.3, 1.0),
+                            ),
+                        ],
+                        enabled: true,
+                    ),
+                    template: "rules.graph",
+                    custom: true,
+                    simple: [],
+                )),
             ),
         },
         progressions: {
@@ -364,8 +449,8 @@
             ),
         ],
     ),
-    next_thing: 4,
-    next_module: 16,
+    next_thing: 5,
+    next_module: 18,
     next_progression: 1,
     next_instrument: 1,
 )

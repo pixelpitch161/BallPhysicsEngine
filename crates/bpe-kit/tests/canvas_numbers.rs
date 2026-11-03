@@ -266,3 +266,31 @@ fn every_new_demo_seeks_to_the_straight_run() {
         seeks_to_the_straight_run(&scene, &resolved, &kit);
     }
 }
+
+#[test]
+fn scratch_to_reveal_ends_itself() {
+    let (scene, resolved, kit, card) = demo("Scratch to reveal");
+    let (_, log) = run(&scene, &resolved, &kit, 20.0);
+    let card = log.canvas_samples_of(card).find(|s| s.numbers.revealed >= 0.6);
+    match (card, log.end()) {
+        (Some(first), Some(end)) => {
+            println!("60% revealed at step {}, video ends at step {end}", first.step);
+            let gap = end as i64 - first.step as i64;
+            assert!((gap - 480).abs() <= 8, "ends 2 s after 60% is revealed: {gap} steps");
+        }
+        (None, None) => println!("revealed stayed under 60% for 20 s, so nothing ended it"),
+        other => panic!("the end and the 60% mark disagree: {:?}", (other.0.map(|s| s.step), other.1)),
+    }
+}
+
+#[test]
+fn colour_war_meter_draws() {
+    let (scene, resolved, kit, war) = demo("Colour war");
+    let (world, log) = run(&scene, &resolved, &kit, 10.0);
+    let mut frame = bpe_gfx::Frame::default();
+    bpe_gfx::build_frame_at(&scene, &resolved, &world, &log, 10.0, 10.0, &kit.draws, &mut frame);
+    let overlay = frame.overlay.expect("the meter and captions draw into the overlay");
+    let filled = overlay.shapes.iter().filter(|s| s.c[0] == 3.0).count();
+    assert_eq!(filled, 1 + log.teams_of(war).len(), "the background and a piece per team");
+    assert!(log.teams_of(war).len() >= 2);
+}

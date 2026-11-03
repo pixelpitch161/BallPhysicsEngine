@@ -1784,8 +1784,37 @@ fn hexes(values: &[u32]) -> Vec<Color> {
     values.iter().map(|v| Color::rgb((v >> 16) as u8, (v >> 8) as u8, *v as u8)).collect()
 }
 
-/// A foil scratch card: five balls scratch the cover off a "YOU WIN", chipping flakes away.
+/// Adds a caption `text` at `position` to a finished scene.
+fn add_caption(reg: &Registry, scene: &mut Scene, name: &str, position: Vec2, text: &str, size: f32) {
+    let id = crate::add_thing(scene, reg, "text", ThingId::ROOT).expect("text is registered");
+    let thing = scene.things.get_mut(&id).expect("the new text");
+    thing.name = name.into();
+    thing.transform.position = position;
+    let settings = TextSettings { text: text.into(), size, ..TextSettings::from_params(&thing.params) };
+    thing.params = settings.to_params();
+}
+
+/// A foil scratch card: five balls scratch the cover off a "YOU WIN", chipping flakes away. A
+/// caption counts the revealed share, and the video ends two seconds after 60 % is scraped off.
 fn scratch_to_reveal(reg: &Registry) -> Scene {
+    let mut scene = scratch_card_scene(reg);
+    add_caption(reg, &mut scene, "Revealed", Vec2::new(0.0, -800.0), "{Card.revealed}% revealed", 72.0);
+    let m = scene.add_module(reg, "rules.graph", "Finish").expect("rules are registered");
+    let mut graph = RulesKind.template().expect("rules have a template");
+    let c = catalog(Role::Rules);
+    let when = graph.add(c.spec("when.canvas").expect("When a canvas reaches"), [40.0, 40.0]);
+    set(&mut graph, when, "number", Param::Choice("Revealed".into()));
+    set(&mut graph, when, "level", Param::Number(60.0));
+    let end = graph.add(c.spec("do.end").expect("End the video"), [260.0, 40.0]);
+    set(&mut graph, end, "after", Param::Number(2.0));
+    wire(&mut graph, Role::Rules, (when, 0), (end, 0));
+    scene.library.modules.get_mut(&m).expect("module").graph =
+        Some(ModuleGraph { graph, template: "rules.graph".into(), custom: true, simple: Default::default() });
+    scene.link(reg, BALLS, SlotId::Rules, m).expect("the balls have a Rules slot");
+    scene
+}
+
+fn scratch_card_scene(reg: &Registry) -> Scene {
     surface_demo(
         reg,
         "Scratch to reveal",
@@ -1813,8 +1842,22 @@ fn scratch_to_reveal(reg: &Registry) -> Scene {
     )
 }
 
-/// Four colours fight over a dark floor, tile by tile, in no gravity.
+/// Four colours fight over a dark floor, tile by tile, in no gravity. A meter and a caption show
+/// who is winning.
 fn colour_war(reg: &Registry) -> Scene {
+    let mut scene = colour_war_scene(reg);
+    let meter = crate::add_thing(&mut scene, reg, "meter", ThingId::ROOT).expect("meter is registered");
+    let thing = scene.things.get_mut(&meter).expect("the new meter");
+    thing.name = "Score".into();
+    thing.transform.position = Vec2::new(0.0, -820.0);
+    let settings =
+        crate::MeterSettings { width: 900.0, thickness: 48.0, ..crate::MeterSettings::from_params(&thing.params) };
+    thing.params = settings.to_params();
+    add_caption(reg, &mut scene, "Leader", Vec2::new(0.0, -740.0), "{War.leader} leads", 56.0);
+    scene
+}
+
+fn colour_war_scene(reg: &Registry) -> Scene {
     surface_demo(
         reg,
         "Colour war",
