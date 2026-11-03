@@ -1846,6 +1846,8 @@ mod tests {
             s.selection.extra.insert(ThingId(1));
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
+        let arena_look = linked(&h.state().scene, ThingId(1), SlotId::Look);
+        let shared_glow = h.state().scene.library.modules[&arena_look].params.get("glow").cloned();
         h.run();
         let rect = slider_rect(&h, "Glow");
         drag_slider(&mut h, rect, 0.9);
@@ -1859,7 +1861,11 @@ mod tests {
             panic!("the arena links its look")
         };
         assert!(matches!(overrides.get("glow"), Some(Value::Number(g)) if *g > 1.0), "{overrides:?}");
-        assert!(s.scene.library.modules[arena_module].params.get("glow").is_none(), "the shared look is untouched");
+        assert_eq!(
+            s.scene.library.modules[arena_module].params.get("glow").cloned(),
+            shared_glow,
+            "the shared look is untouched"
+        );
     }
 
     #[test]
@@ -2061,6 +2067,10 @@ mod tests {
     #[test]
     fn a_folded_section_with_only_a_pulse_shows_the_dot() {
         let mut h = harness(Some(ThingId(2)));
+        // The test scene's look keeps the old glow; put it back to the default so Light starts clean.
+        let (module, _) = ball_look(h.state());
+        h.state_mut().scene.library.modules.get_mut(&module).unwrap().params.set("glow", Value::Number(0.0));
+        h.state_mut().resolved = resolve(&h.state().scene, &h.state().kit.registry);
         h.get_by_label("Hide Light").click();
         h.run();
         assert!(h.query_by_label("Light (changed)").is_none(), "Light holds no changes yet");

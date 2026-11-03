@@ -1,5 +1,8 @@
-//! The scenes the stages ship with: the new-scene default and the ones that exercise every
-//! setting. They double as the determinism test scenes.
+//! The test scenes: ones that exercise every setting and pin the physics in the golden tests.
+//! They are not in the program (see the `test-scenes` feature); the editor always opens to a
+//! blank project. They keep the values the settings had before the blank project's defaults
+//! (see [`classic_look`], [`classic_motion`] and [`classic_scene_settings`]), so the goldens and
+//! pictures stay put.
 
 #[path = "scenes_stage5.rs"]
 mod stage5;
@@ -7,7 +10,7 @@ pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
     Address, Attach, Blend, Color, Ease, Gradient, ModuleId, Owner, Params, Registry, Scene, Settings, SlotId,
-    SlotLink, Target, ThingId, Value,
+    SlotLink, ThingId, Value,
 };
 use glam::Vec2;
 use std::collections::BTreeMap;
@@ -52,57 +55,43 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes
 }
 
-/// The scenes the Start window offers, in order: a spread of what the editor can do.
-pub const STARTERS: [&str; 6] =
-    ["Reel block", "Lava ball", "Spinning hexagon", "Ball pit", "Long drop", "Colour paints"];
-
-/// The [`STARTERS`], each with its name. Long drop is not in [`all`], so the golden tests keep
-/// the scenes they had.
-pub fn starters(reg: &Registry) -> Vec<(String, Scene)> {
-    let mut all = all(reg);
-    all.push(("Long drop".into(), long_drop(reg)));
-    STARTERS.iter().filter_map(|name| all.iter().position(|(n, _)| n == name).map(|i| all.swap_remove(i))).collect()
+/// A look with the glow every look had before the blank project's defaults.
+pub fn classic_look() -> BasicLook {
+    BasicLook { glow: 0.12, ..BasicLook::default() }
 }
 
-/// The camera scene: a box four screens tall, with the camera following the ball down,
-/// punching in on hits and staying inside the box.
-pub fn long_drop(reg: &Registry) -> Scene {
-    let mut b = Builder::new(reg, "Long drop");
-    b.scene_settings(|s| {
-        s.gravity = Vec2::new(0.0, 900.0);
-    });
-    // The course runs from just above the first screen to the bottom of the fourth.
-    let course = Vec2::new(0.0, 2880.0);
-    b.arena(|a| {
-        a.shape = ArenaShape::Box;
-        a.width = 1000.0;
-        a.height = 7680.0;
-        a.corner = 60.0;
-    });
-    b.scene.things.get_mut(&ARENA).expect("arena").transform.position = course;
-    b.balls("Ball", Vec2::new(30.0, -820.0), |s| {
-        s.radius = 22.0;
-        s.velocity = Vec2::new(60.0, 0.0);
-    });
-    let bumpy = BasicBounce { bounciness: 0.55, ..BasicBounce::default() };
-    b.own_module(BALLS, "bounce.basic", "Bumpy", bumpy.to_params());
-    let camera = crate::CameraSettings {
-        position: Vec2::new(0.0, -480.0),
-        follow: true,
-        follow_target: Target::Thing(BALLS),
-        smoothness: 0.5,
-        look_ahead: 0.2,
-        slack: 0.05,
-        punch: 0.12,
-        punch_recovery: 0.25,
-        hits_from: Target::Thing(BALLS),
-        stay_inside: true,
-        box_size: Vec2::new(1080.0, 7680.0 + 120.0),
-        box_centre: course,
-        ..crate::CameraSettings::default()
+/// Motion with gravity on, the way it was before the blank project's defaults.
+pub fn classic_motion() -> BasicMotion {
+    BasicMotion { gravity_scale: 1.0, ..BasicMotion::default() }
+}
+
+/// Gives the scene settings the dark blue background and the bloom they had before the blank
+/// project's grey and no bloom, keeping anything else already set.
+pub fn classic_scene_settings(scene: &mut Scene) {
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint {
+        colours: Gradient::even(&[Color::rgb(0x02, 0x02, 0x2a), Color::rgb(0x01, 0x00, 0x06)]),
+        ..Paint::default()
     };
-    b.add("camera", ThingId::ROOT, "Camera", Vec2::ZERO, camera.to_params());
-    b.finish()
+    s.bloom = 0.15;
+    root.params = s.to_params();
+}
+
+/// Turns every look and motion module still at the new defaults into the classic ones, so a
+/// fresh starter in a test scene glows and falls the way it used to.
+pub fn classic_modules(scene: &mut Scene) {
+    for m in scene.library.modules.values_mut() {
+        match m.kind.as_str() {
+            "look.basic" if BasicLook::from_params(&m.params) == BasicLook::default() => {
+                m.params = classic_look().to_params();
+            }
+            "motion.basic" if BasicMotion::from_params(&m.params) == BasicMotion::default() => {
+                m.params = classic_motion().to_params();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The colour showcase: a block of balls painted by where they are at an angle with rings of the
@@ -135,7 +124,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
             ..Paint::default()
         },
         glow: 0.7,
-        ..BasicLook::default()
+        ..classic_look()
     };
     b.own_module(ARENA, "look.basic", "Ring look", ring.to_params());
     b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
@@ -214,7 +203,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         a.height = 1400.0;
         a.thickness = 8.0;
     });
-    let rim = BasicLook { fill: Paint::solid(hex(0xffffff)), ..BasicLook::default() };
+    let rim = BasicLook { fill: Paint::solid(hex(0xffffff)), ..classic_look() };
     b.own_module(ARENA, "look.basic", "Rim look", rim.to_params());
     // Screen suits the dark top, Multiply the light bottom.
     let rows = [
@@ -244,7 +233,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         let look = BasicLook {
             fill: Paint { colours: Gradient::even(&colours.map(hex)), follow: Follow::Order, ..Paint::default() },
             blend,
-            ..BasicLook::default()
+            ..classic_look()
         };
         b.own_module(id, "look.basic", &format!("{name} look"), look.to_params());
     }
@@ -264,7 +253,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
         }
         .to_params(),
     );
-    let comet_look = BasicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..BasicLook::default() };
+    let comet_look = BasicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..classic_look() };
     b.own_module(comets, "look.basic", "Comet look", comet_look.to_params());
     let streak = StreakTrail {
         seconds: 0.6,
@@ -292,7 +281,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
     let drift = BasicLook {
         fill: Paint { colours: Gradient::even(&[hex(0xff7a3e)]), vary_hue: 25.0, wobble: 0.5, ..Paint::default() },
         style: Style::Shiny,
-        ..BasicLook::default()
+        ..classic_look()
     };
     b.own_module(BALLS, "look.basic", "Drift look", drift.to_params());
     b.finish()
@@ -342,7 +331,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
             ..Paint::default()
         },
         glow: 0.5,
-        ..BasicLook::default()
+        ..classic_look()
     };
     b.own_module(ARENA, "look.basic", "Wall look", wall.to_params());
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
@@ -379,7 +368,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         glow: 0.0,
         blend: Blend::Screen,
         blend_each: true,
-        ..BasicLook::default()
+        ..classic_look()
     };
     b.own_module(glow, "look.basic", "Screen look", screen.to_params());
     b.track(
@@ -472,6 +461,7 @@ impl<'a> Builder<'a> {
 
     /// The finished scene, with every thing owning the modules it uses.
     fn finish(mut self) -> Scene {
+        classic_modules(&mut self.scene);
         own_everything(&mut self.scene);
         self.scene
     }
@@ -510,7 +500,7 @@ impl<'a> Builder<'a> {
     }
 
     fn root_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
-        let mut s = BasicLook::default();
+        let mut s = classic_look();
         f(&mut s);
         let m = self.shared[&SlotId::Look];
         self.set_params(m, s.to_params());
@@ -539,14 +529,14 @@ impl<'a> Builder<'a> {
     }
 
     fn ball_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
-        let mut s = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..BasicLook::default() };
+        let mut s = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..classic_look() };
         f(&mut s);
         let m = self.module_of(BALLS, SlotId::Look);
         self.set_params(m, s.to_params());
     }
 
     fn motion(&mut self, f: impl FnOnce(&mut BasicMotion)) {
-        let mut s = BasicMotion::default();
+        let mut s = classic_motion();
         f(&mut s);
         let m = self.shared[&SlotId::Motion];
         self.set_params(m, s.to_params());
@@ -658,7 +648,7 @@ fn reel_block(reg: &Registry) -> Scene {
         Color::rgb(0xff, 0x6a, 0x5c),
         Color::rgb(0xff, 0xb8, 0x2e),
     ]);
-    let arena_look = BasicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..BasicLook::default() }.to_params();
+    let arena_look = BasicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..classic_look() }.to_params();
     b.own_module(ARENA, "look.basic", "Arena look", arena_look);
     b.finish()
 }
@@ -798,10 +788,9 @@ mod tests {
     use crate::{registry, scenes};
 
     #[test]
-    fn every_thing_in_a_built_in_scene_has_its_own_modules() {
+    fn every_thing_in_a_test_scene_has_its_own_modules() {
         let reg = registry();
-        let mut all = scenes::all(&reg);
-        all.push(("Long drop".into(), scenes::long_drop(&reg)));
+        let all = scenes::all(&reg);
         for (name, scene) in &all {
             for (id, thing) in &scene.things {
                 for (slot, link) in &thing.slots {
@@ -812,22 +801,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn starters_are_six_named_scenes_from_the_collection() {
-        let reg = registry();
-        let starters = scenes::starters(&reg);
-        assert_eq!(starters.len(), 6);
-        let mut all: std::collections::BTreeMap<String, bpe_core::Scene> = scenes::all(&reg).into_iter().collect();
-        all.insert("Long drop".into(), scenes::long_drop(&reg));
-        let mut names = std::collections::BTreeSet::new();
-        for (name, scene) in &starters {
-            assert_eq!(all.get(name), Some(scene), "{name} is one of the shipped scenes");
-            assert_eq!(&scene.name, name);
-            assert!(names.insert(name.clone()), "{name} twice");
-        }
-        assert_eq!(starters[0].0, "Reel block", "the reel the first video was made from leads");
     }
 
     #[test]
@@ -855,23 +828,16 @@ mod tests {
         assert_eq!(names[5..7], ["Ball pit", "Riders"]);
         assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
         assert_eq!(names[12..], ["Colour paints", "Blend modes", "Graded sunset"]);
-        let mut scenes = scenes;
-        scenes.push(("Long drop".into(), scenes::long_drop(&reg)));
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
             let text = bpe_core::save(scene);
             assert_eq!(&bpe_core::load(&text, &reg).unwrap(), scene, "{name}");
-            if std::env::var_os("BPE_BLESS").is_some() {
-                let dir = format!("{}/../../scenes/next", env!("CARGO_MANIFEST_DIR"));
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(format!("{dir}/{}.ron", name.to_lowercase().replace(' ', "-")), text).unwrap();
-            }
         }
     }
 
     #[test]
-    fn no_built_in_scene_uses_additive_colours() {
+    fn no_test_scene_uses_additive_colours() {
         use bpe_core::Value;
         fn additive(v: &Value) -> bool {
             match v {
@@ -881,8 +847,7 @@ mod tests {
             }
         }
         let reg = registry();
-        let mut all = scenes::all(&reg);
-        all.push(("Long drop".into(), scenes::long_drop(&reg)));
+        let all = scenes::all(&reg);
         for (name, scene) in &all {
             let mut values: Vec<(String, &Value)> = Vec::new();
             for (id, m) in &scene.library.modules {
@@ -898,49 +863,5 @@ mod tests {
                 assert!(!additive(v), "{name}: {at} is an additive colour, use Blend Add instead");
             }
         }
-    }
-
-    #[test]
-    fn the_shipped_scene_files_match_the_code() {
-        let reg = registry();
-        let mut shipped = scenes::all(&reg);
-        shipped.push(("Long drop".into(), scenes::long_drop(&reg)));
-        for (name, scene) in shipped {
-            let file = format!(
-                "{}/../../scenes/next/{}.ron",
-                env!("CARGO_MANIFEST_DIR"),
-                name.to_lowercase().replace(' ', "-")
-            );
-            let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e} (run with BPE_BLESS=1)"));
-            assert_eq!(
-                bpe_core::load(&text, &reg).unwrap(),
-                scene,
-                "{name}: scenes/next is stale, run with BPE_BLESS=1"
-            );
-        }
-    }
-
-    #[test]
-    fn long_drop_keeps_the_ball_in_shot() {
-        let kit = crate::kit();
-        let scene = scenes::long_drop(&kit.registry);
-        let resolved = crate::resolve_scene(&scene, &kit.registry);
-        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
-        let mut log = bpe_runtime::Log::default();
-        let mut lowest = f32::MIN;
-        for i in 1..=200 {
-            world.advance_to(i as f64 * 0.1, &kit.sims, &mut log);
-            let bodies = &world.bodies[&bpe_core::ThingId(2)];
-            let p = bodies.position[0];
-            lowest = lowest.max(p.y);
-            assert!(
-                world.camera.sees(world.video, p, -bodies.radius[0]),
-                "at {:.1} s the ball at {p:?} left {:?}",
-                i as f64 * 0.1,
-                world.camera
-            );
-        }
-        assert!(lowest > 2000.0, "the ball got down the course: {lowest}");
     }
 }

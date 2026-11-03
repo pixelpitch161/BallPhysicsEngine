@@ -183,7 +183,7 @@ impl Default for BasicLook {
             ball_shape: BallShape::Circle,
             style: Style::Shiny,
             outline: 0.0,
-            glow: 0.12,
+            glow: 0.0,
             outline_paint: Paint::default(),
             roundness: 0.15,
             face_motion: false,

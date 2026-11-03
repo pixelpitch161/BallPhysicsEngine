@@ -13,6 +13,12 @@ glam.workspace = true
 serde.workspace = true
 anyhow.workspace = true
 
+[features]
+# The test scenes (and the arena-plus-ball `new_scene`): only tests turn this on, so the program ships
+# with no built-in scenes.
+test-scenes = []
+
 [dev-dependencies]
+bpe-kit = { path = ".", features = ["test-scenes"] }
 png = "0.18"
 ron.workspace = true

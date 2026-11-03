@@ -15,22 +15,10 @@ pub fn settings_dir() -> Option<PathBuf> {
     }
 }
 
-/// How many recently opened scene files the Start window lists.
+/// How many recently opened scene files the Recent menu lists.
 pub const RECENT: usize = 8;
 
-const LAST_SCENE: &str = "last-scene-next.txt";
 const RECENT_SCENES: &str = "recent-scenes-next.txt";
-
-/// The scene file that was open last time, if it still exists.
-pub fn last_scene() -> Option<PathBuf> {
-    last_scene_in(&settings_dir()?)
-}
-
-pub fn last_scene_in(dir: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(dir.join(LAST_SCENE)).ok()?;
-    let path = PathBuf::from(text.trim());
-    path.is_file().then_some(path)
-}
 
 /// The scene files opened or saved lately that still exist, newest first.
 pub fn recent_scenes() -> Vec<PathBuf> {
@@ -46,7 +34,7 @@ fn read_recent(dir: &Path) -> Vec<PathBuf> {
     text.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect()
 }
 
-/// Remembers `path` as the scene to open next time, and at the top of the recent files.
+/// Puts `path` at the top of the recent files.
 pub fn remember_scene(path: &Path) {
     if let Some(dir) = settings_dir() {
         remember_scene_in(&dir, path);
@@ -55,7 +43,6 @@ pub fn remember_scene(path: &Path) {
 
 pub fn remember_scene_in(dir: &Path, path: &Path) {
     let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(dir.join(LAST_SCENE), path.display().to_string());
     let mut recent = read_recent(dir);
     recent.retain(|p| p != path && p.is_file());
     recent.insert(0, path.to_path_buf());
@@ -126,7 +113,6 @@ mod tests {
         assert_eq!(recent.iter().filter(|p| **p == files[5]).count(), 1, "no doubles");
         std::fs::remove_file(&files[9]).unwrap();
         assert!(!recent_scenes_in(&dir).contains(&files[9]), "a file that is gone is left out");
-        assert_eq!(last_scene_in(&dir), Some(files[5].clone()));
         let _ = std::fs::remove_dir_all(dir);
     }
 

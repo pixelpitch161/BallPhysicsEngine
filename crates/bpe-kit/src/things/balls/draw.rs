@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(frame.balls.len(), 1);
         assert_eq!(frame.shapes.len(), 1);
         assert_eq!(frame.balls[0].color, [1.0, 1.0, 1.0, 1.0]); // the folder's plain look
-        assert_eq!(frame.balls[0].glow, 0.12);
+        assert_eq!(frame.balls[0].glow, 0.0, "a new look has no glow");
         assert_eq!((frame.width, frame.height), (1080, 1920));
     }
 
