@@ -70,7 +70,7 @@ impl ThingDraw for BallsDraw {
         let color = colours(&stack, cx, bodies);
         let time = cx.time as f32;
         let first = frame.look_layers.len() as u32;
-        let records = stack.records(&mut frame.gradients, time);
+        let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
         let count = records.len() as u32;
         frame.look_layers.extend(records);
         // Each ball's own variation, only read when a pattern paints from its own gradient.

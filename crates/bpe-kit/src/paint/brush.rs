@@ -1,6 +1,9 @@
 //! Brush strokes as a picture: a Strokes value drawn into a small greyscale tile the renderer
 //! reads, white where painted. The same strokes always give the same bytes.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use bpe_core::{Stroke, Strokes};
 
 /// A tile's width and height, in pixels. It covers the ball's square, -1 to 1 both ways.
@@ -65,6 +68,23 @@ pub fn rasterise(strokes: &Strokes) -> Vec<u8> {
         *o = (l.clamp(0.0, 1.0) * 255.0).round() as u8;
     }
     out
+}
+
+/// The strokes' tile and its hash, drawn once per distinct set of strokes and kept (the most
+/// recent few hundred), so a frame only draws strokes that changed.
+pub fn tile(strokes: &Strokes) -> (u64, Arc<[u8]>) {
+    static MADE: OnceLock<Mutex<HashMap<u64, Arc<[u8]>>>> = OnceLock::new();
+    let hash = strokes.hash64();
+    let mut made = MADE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = made.get(&hash) {
+        return (hash, t.clone());
+    }
+    if made.len() >= 512 {
+        made.clear();
+    }
+    let t: Arc<[u8]> = rasterise(strokes).into();
+    made.insert(hash, t.clone());
+    (hash, t)
 }
 
 #[cfg(test)]

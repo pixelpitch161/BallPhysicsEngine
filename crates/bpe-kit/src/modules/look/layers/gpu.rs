@@ -3,6 +3,7 @@
 //! colour, the ball's own variation and its motion differ from ball to ball.
 
 use std::f32::consts::FRAC_PI_2;
+use std::sync::Arc;
 
 use bpe_core::{Blend, Choice, LayerId, ResolvedSlot, Settings};
 use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance};
@@ -13,6 +14,7 @@ use super::{
     HUE, MASK, MaskLayer, OUTLINE, OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE,
     STRETCH, ShaderLayer, ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
 };
+use super::{MaskFrom, ShadingKind};
 use crate::modules::look::BallShape;
 use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_linear_hue};
 use crate::paint::{InsideFrom, inside_gpu};
@@ -140,11 +142,14 @@ impl Stack {
     }
 
     /// The records the stack draws with at `time` seconds, bottom first, its gradients baked into
-    /// `atlas`. Hidden layers, Blend and the reactions have none.
-    pub fn records(&self, atlas: &mut GradientAtlas, time: f32) -> Vec<LayerGpu> {
+    /// `atlas` and its brush strokes added to `tiles` (a frame's [`bpe_gfx::Frame::mask_tiles`]).
+    /// Hidden layers, Blend and the reactions have none; each drawn layer's masks follow it.
+    pub fn records(&self, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>, time: f32) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |on: bool| if on { LayerGpu::FLAG } else { 0 };
         let mut out = vec![LayerGpu { amount: [1.0, 0.0, 0.0, 0.0], ..LayerGpu::ZERO }];
+        // Where each layer's record is, by id, for masks that name a layer.
+        let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let turn = self.rainbow() * time;
         for d in &self.drawn {
             let r = match &d.layer {
@@ -182,9 +187,41 @@ impl Stack {
                     colour: g.colour.to_linear(),
                     ..LayerGpu::ZERO
                 },
-                Drawn::Shading(_) | Drawn::Shader(_) => continue,
+                Drawn::Shading(s) => {
+                    let p1 = match s.kind {
+                        ShadingKind::Linear => [s.from.x, s.from.y, s.to.x, s.to.y],
+                        ShadingKind::Radial => [s.centre.x, s.centre.y, s.size, 0.0],
+                        ShadingKind::Brush => [0.0, 0.0, 0.0, tile_index(tiles, &s.strokes)],
+                    };
+                    let invert = if s.invert { LayerGpu::INVERT } else { 0 };
+                    LayerGpu {
+                        head: [LayerGpu::SHADING, blend(s.blend), invert, 0],
+                        amount: [s.opacity, 0.0, 0.0, 0.0],
+                        p0: [s.kind.code(), s.softness, s.space.code(), s.amount],
+                        p1,
+                        colour: s.colour.to_linear(),
+                        ..LayerGpu::ZERO
+                    }
+                }
+                Drawn::Shader(_) => continue,
             };
-            out.push(r);
+            let at = out.len();
+            let angle = if let Drawn::Pattern(_) = &d.layer { r.paint.angle.to_radians() } else { 0.0 };
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], d.masks.len() as u32], ..r });
+            for m in &d.masks {
+                // A mask on a layer that is missing, hidden, not under it or not drawn passes nothing.
+                let target =
+                    placed.iter().find(|(id, _)| id.0 as i64 == m.target as i64).map_or(-1.0, |&(_, i)| i as f32);
+                let tile = if m.from == MaskFrom::Brush { tile_index(tiles, &m.strokes) } else { -1.0 };
+                out.push(LayerGpu {
+                    head: [LayerGpu::MASK, 0, 0, 0],
+                    amount: [1.0, target, angle, m.shape.code()],
+                    p0: [m.from.code(), if m.invert { 1.0 } else { 0.0 }, m.softness, m.moves.code()],
+                    p1: [m.angle.to_radians(), m.size, m.threshold, tile],
+                    ..LayerGpu::ZERO
+                });
+            }
+            placed.push((d.id, at));
         }
         out
     }
@@ -259,6 +296,23 @@ impl Stack {
     }
 }
 
+/// Where `strokes`' tile is in `tiles`, adding it if it isn't there yet; -1 for no strokes or
+/// past the most a frame holds.
+fn tile_index(tiles: &mut Vec<(u64, Arc<[u8]>)>, strokes: &bpe_core::Strokes) -> f32 {
+    if strokes.list.is_empty() {
+        return -1.0;
+    }
+    let hash = strokes.hash64();
+    if let Some(i) = tiles.iter().position(|(h, _)| *h == hash) {
+        return i as f32;
+    }
+    if tiles.len() >= bpe_gfx::MAX_MASK_TILES {
+        return -1.0;
+    }
+    tiles.push(crate::paint::brush::tile(strokes));
+    (tiles.len() - 1) as f32
+}
+
 /// `base` (linear light) turned `hue_per_hit` degrees for each of `hits`, then `turn` turns round
 /// the colour wheel.
 pub fn recoloured(base: [f32; 4], hue_per_hit: f32, turn: f32, hits: u32) -> [f32; 4] {
@@ -295,7 +349,7 @@ mod tests {
     fn a_new_ball_draws_one_body_record_and_reaches_just_past_its_shape() {
         let stack = stack_after(|_, _, _| {});
         let mut atlas = GradientAtlas::default();
-        let records = stack.records(&mut atlas, 0.0);
+        let records = stack.records(&mut atlas, &mut Vec::new(), 0.0);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].head[0], LayerGpu::BODY);
         assert_eq!(stack.reach(24.0), SHAPE_REACH);
@@ -320,7 +374,7 @@ mod tests {
             s.set_layer_enabled(reg, b, SlotId::Look, hidden, false).unwrap();
             s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
         });
-        let records = stack.records(&mut GradientAtlas::default(), 0.0);
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
         let codes: Vec<u32> = records.iter().map(|r| r.head[0]).collect();
         assert_eq!(
             codes,
@@ -373,6 +427,60 @@ mod tests {
         assert_eq!(stack.drawn.len(), 2, "the hidden outline is left out");
         assert_eq!(stack.drawn[0].masks.len(), 1, "the hidden mask is left out");
         assert!(matches!(stack.drawn[1].layer, Drawn::Shading(_)) && stack.drawn[1].masks.is_empty());
+    }
+
+    #[test]
+    fn masks_follow_their_layer_and_name_their_target_by_record() {
+        let set = |reg: &bpe_core::Registry, s: &mut Scene, b, id, key: &str, v: Value| {
+            s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(id, key)), v).unwrap();
+        };
+        let mut ids = Vec::new();
+        let stack = stack_after(|reg, s, b| {
+            let hidden = s.add_layer(reg, b, SlotId::Look, SHINE).unwrap();
+            let shown = s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
+            let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            let m1 = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            let m2 = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            let off = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            s.set_layer_enabled(reg, b, SlotId::Look, off, false).unwrap();
+            s.set_layer_enabled(reg, b, SlotId::Look, hidden, false).unwrap();
+            set(reg, s, b, m1, "from", Value::Choice("layer".into()));
+            set(reg, s, b, m1, "target", Value::Int(hidden.0 as i64));
+            set(reg, s, b, m2, "from", Value::Choice("layer".into()));
+            set(reg, s, b, m2, "target", Value::Int(shown.0 as i64));
+            let outline = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            let shading = s.add_layer(reg, b, SlotId::Look, SHADING).unwrap();
+            set(reg, s, b, shading, "kind", Value::Choice("brush".into()));
+            let stroke =
+                bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 0.2, softness: 0.0, strength: 1.0, erase: false };
+            set(reg, s, b, shading, "strokes", Value::Strokes(bpe_core::Strokes { list: vec![stroke] }));
+            ids.extend([pat, outline]);
+        });
+        let mut tiles = Vec::new();
+        let records = stack.records(&mut GradientAtlas::default(), &mut tiles, 0.0);
+        let codes: Vec<u32> = records.iter().map(|r| r.head[0]).collect();
+        assert_eq!(
+            codes,
+            [
+                LayerGpu::BODY,
+                LayerGpu::GLOW,
+                LayerGpu::PATTERN,
+                LayerGpu::MASK,
+                LayerGpu::MASK,
+                LayerGpu::OUTLINE,
+                LayerGpu::SHADING
+            ]
+        );
+        assert_eq!(records[2].head[3], 2, "the hidden mask is left out of the count");
+        assert_eq!(records[3].amount[1], -1.0, "a hidden target passes nothing");
+        assert_eq!(records[4].amount[1], 1.0, "the glow is record 1");
+        assert_eq!(records[5].head[3], 0);
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(records[6].p1[3], 0.0, "the brush names its tile");
+        let middle = (bpe_gfx::MASK_TILE / 2) * bpe_gfx::MASK_TILE + bpe_gfx::MASK_TILE / 2;
+        assert_eq!(tiles[0].1[middle], 255, "the tile holds the stroke");
+        assert_eq!(stack.reach(10.0), stack.reach(10.0));
+        let _ = ids;
     }
 
     #[test]
