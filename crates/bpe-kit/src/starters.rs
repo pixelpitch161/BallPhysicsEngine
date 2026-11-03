@@ -3,10 +3,11 @@
 
 use bpe_core::{EditError, Registry, Scene, SlotId, ThingId};
 
-/// The card kind a new thing starts with in `slot`. `None` means the first card kind for the
-/// slot that fits the thing.
-fn starter_kind(slot: SlotId) -> Option<&'static str> {
+/// The card kind a new thing of `thing` starts with in `slot`. `None` means the first card kind
+/// for the slot that fits the thing.
+fn starter_kind(thing: &str, slot: SlotId) -> Option<&'static str> {
     Some(match slot {
+        SlotId::Look if thing == "balls" => crate::modules::look::layers::CARD,
         SlotId::Look => "look.basic",
         SlotId::Motion => "motion.basic",
         SlotId::Bounce => "bounce.basic",
@@ -20,11 +21,16 @@ pub fn fill_slot(scene: &mut Scene, reg: &Registry, id: ThingId, slot: SlotId) -
     let thing = scene.things.get(&id).ok_or(EditError::Missing(id))?;
     let kind = reg.thing(&thing.kind).ok_or_else(|| EditError::UnknownKind(thing.kind.clone()))?;
     let fits = |k: &str| reg.module(k).is_some_and(|m| m.slot() == slot && m.fits(kind.id()));
-    let card = match starter_kind(slot).filter(|k| fits(k)) {
+    let card = match starter_kind(kind.id(), slot).filter(|k| fits(k)) {
         Some(found) => found,
         None => reg.kinds_fitting(slot, kind).next().ok_or(EditError::NotAccepted)?.id(),
     };
-    scene.add_slot(reg, id, slot, card)
+    scene.add_slot(reg, id, slot, card)?;
+    // A layered card starts with its base layer alone: a ball is one plain white circle.
+    if let Some(base) = reg.layers_for(card).find(|k| k.base()) {
+        scene.add_layer(reg, id, slot, base.id())?;
+    }
+    Ok(())
 }
 
 /// Adds a thing of `kind` under `parent` with its own starting card for each slot its kind shows
@@ -50,7 +56,7 @@ mod tests {
         let table: &[(&str, &[(SlotId, &str)])] = &[
             (
                 "balls",
-                &[(SlotId::Look, "look.basic"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")],
+                &[(SlotId::Look, "look.layers"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")],
             ),
             ("arena", &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic")]),
         ];
@@ -59,11 +65,30 @@ mod tests {
             let a = add_thing(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
             assert_eq!(scene.things[&a].slots.len(), slots.len(), "{kind}");
             for &(slot, card) in slots {
-                assert_eq!(scene.things[&a].slots[&slot], bpe_core::Slot::new(card), "{kind} {slot:?}");
+                let got = &scene.things[&a].slots[&slot];
+                assert_eq!((got.kind.as_str(), got.params.is_empty()), (card, true), "{kind} {slot:?}");
             }
             let r = resolve(&scene, &reg);
             assert!(r.problems.is_empty(), "{kind}: {:?}", r.problems);
         }
+    }
+
+    #[test]
+    fn a_new_ball_is_one_plain_white_circle() {
+        use crate::modules::look::layers::{BODY, BodyLayer};
+        let reg = registry();
+        let mut scene = Scene::empty(&reg);
+        let a = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let card = &scene.things[&a].slots[&SlotId::Look];
+        let kinds: Vec<&str> = card.layers.iter().map(|l| l.kind.as_str()).collect();
+        assert_eq!(kinds, [BODY], "a Body and nothing else: no shine, outline, glow, flash or reaction");
+        assert_eq!(card.layers[0].name, "Body");
+        let look = resolve(&scene, &reg).things[&a].slots[&SlotId::Look].clone();
+        let body = BodyLayer::from_params(&look.layer_params(card.layers[0].id));
+        use bpe_core::Settings;
+        assert_eq!(body, BodyLayer::default());
+        assert_eq!(body.ball_shape, crate::BallShape::Circle);
+        assert_eq!(body.fill.colours, bpe_core::Gradient::solid(bpe_core::Color::WHITE));
     }
 
     #[test]
@@ -83,11 +108,15 @@ mod tests {
         let folder = add_thing(&mut scene, &reg, "folder", ThingId::ROOT).unwrap();
         let a = add_thing(&mut scene, &reg, "balls", folder).unwrap();
         let b = add_thing(&mut scene, &reg, "balls", folder).unwrap();
-        let glow = |t| Address::on(t, SlotId::Look, "glow");
-        scene.set_at(&reg, &glow(a), Value::Number(1.0)).unwrap();
+        let roundness = |t| Address::on(t, SlotId::Look, "0/roundness");
+        scene.set_at(&reg, &roundness(a), Value::Number(1.0)).unwrap();
         scene.set_parent(a, ThingId::ROOT, bpe_core::Attach::Group).unwrap();
-        assert_eq!(scene.value_at(&reg, &glow(a)), Some(Value::Number(1.0)), "moving keeps a thing's settings");
-        assert_eq!(scene.value_at(&reg, &glow(b)), Some(Value::Number(0.0)), "and never touches another's");
+        assert_eq!(scene.value_at(&reg, &roundness(a)), Some(Value::Number(1.0)), "moving keeps a thing's settings");
+        assert_eq!(
+            scene.value_at(&reg, &roundness(b)),
+            Some(Value::Number(0.15f32 as f64)),
+            "and never touches another's"
+        );
     }
 
     #[test]

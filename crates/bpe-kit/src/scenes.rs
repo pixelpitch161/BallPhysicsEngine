@@ -77,20 +77,125 @@ pub fn classic_scene_settings(scene: &mut Scene) {
     root.params = s.to_params();
 }
 
+/// The pink look the test scenes' first ball wears.
+pub fn classic_ball_look() -> BasicLook {
+    BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..classic_look() }
+}
+
 /// Turns every look and motion card still at the new defaults into the classic ones, so a
-/// fresh starter in a test scene glows and falls the way it used to.
+/// fresh starter in a test scene glows and falls the way it used to. The test scenes are written
+/// with the old look on balls too; every such card then becomes the stack of layers that looks
+/// most like it (see [`layers_from_basic`]).
 pub fn classic_cards(scene: &mut Scene) {
-    for card in scene.things.values_mut().flat_map(|t| t.slots.values_mut()) {
-        match card.kind.as_str() {
-            "look.basic" if BasicLook::from_params(&card.params) == BasicLook::default() => {
-                card.params = classic_look().to_params();
+    for thing in scene.things.values_mut() {
+        let balls = thing.kind == "balls";
+        for card in thing.slots.values_mut() {
+            match card.kind.as_str() {
+                "look.basic" if BasicLook::from_params(&card.params) == BasicLook::default() => {
+                    card.params = classic_look().to_params();
+                }
+                "motion.basic" if BasicMotion::from_params(&card.params) == BasicMotion::default() => {
+                    card.params = classic_motion().to_params();
+                }
+                _ => {}
             }
-            "motion.basic" if BasicMotion::from_params(&card.params) == BasicMotion::default() => {
-                card.params = classic_motion().to_params();
+            if balls && card.kind == "look.basic" {
+                *card = layers_from_basic(&BasicLook::from_params(&card.params));
             }
-            _ => {}
         }
     }
+}
+
+/// The stack of layers that draws most like the old look `look` on a ball: its Body (shape and
+/// colours), a Pattern for what was inside, a Shine for the Shiny style, an Outline, a Glow, a
+/// Blend layer for a blend, and a reaction for each of flash, hue shift per hit, stretch, rainbow
+/// and turning that was on. Opacity has no layer yet and is dropped.
+pub fn layers_from_basic(look: &BasicLook) -> Slot {
+    use crate::modules::look::layers::{self as l, *};
+    use bpe_core::{Layer, LayerId, layered_key};
+    let mut card = Slot::new(l::CARD);
+    let mut add = |kind: &str, name: &str, params: Params| {
+        let id = LayerId(card.layers.len() as u32);
+        card.layers.push(Layer { id, kind: kind.into(), name: name.into(), enabled: true });
+        for (k, v) in params.iter() {
+            card.params.set(&layered_key(id, k), v.clone());
+        }
+    };
+    let body = BodyLayer { ball_shape: look.ball_shape, roundness: look.roundness, fill: look.fill.clone() };
+    add(l::BODY, "Body", body.to_params());
+    if look.inside.pattern != Pattern::None {
+        add(l::PATTERN, "Pattern", PatternLayer { inside: look.inside.clone(), ..PatternLayer::default() }.to_params());
+    }
+    if look.style == Style::Shiny {
+        add(l::SHINE, "Shine", ShineLayer::default().to_params());
+    }
+    let outline_colour = look.outline_paint.colours.first();
+    if look.outline > 0.0 {
+        let outline = OutlineLayer {
+            width: look.outline,
+            colour_from: ColourFrom::Own,
+            colour: outline_colour,
+            ..OutlineLayer::default()
+        };
+        add(l::OUTLINE, "Outline", outline.to_params());
+    }
+    if look.glow > 0.0 {
+        let glow = GlowLayer {
+            strength: look.glow,
+            size: look.glow_size,
+            colour_from: if look.outline > 0.0 { ColourFrom::Own } else { ColourFrom::SameAsBody },
+            colour: outline_colour,
+            ..GlowLayer::default()
+        };
+        add(l::GLOW, "Glow", glow.to_params());
+    }
+    if look.blend != Blend::Normal || look.blend_amount < 1.0 {
+        let blend = l::BlendLayer { blend: look.blend, blend_amount: look.blend_amount, blend_each: look.blend_each };
+        add(l::BLEND, "Blend", blend.to_params());
+    }
+    if look.flash > 0.0 {
+        let flash = FlashOnHit { flash: look.flash, flash_size: look.flash_size, flash_seconds: look.flash_seconds };
+        add(l::FLASH, "Flash on hit", flash.to_params());
+    }
+    if look.hue_per_hit != 0.0 {
+        add(l::HUE, "Colour on hit", ColourOnHit { hue_per_hit: look.hue_per_hit }.to_params());
+    }
+    if look.stretch > 0.0 {
+        add(l::STRETCH, "Stretch when fast", StretchWhenFast { stretch: look.stretch }.to_params());
+    }
+    if look.rainbow != 0.0 {
+        add(l::RAINBOW, "Colour over time", ColourOverTime { rainbow: look.rainbow }.to_params());
+    }
+    if look.turn != 0.0 || look.spin != 0.0 || look.face_motion {
+        let turning = Turning { turn: look.turn, spin: look.spin, face_motion: look.face_motion };
+        add(l::TURNING, "Turning", turning.to_params());
+    }
+    card
+}
+
+/// Gives `id` a card of `kind` in `slot`, as `add_slot` does, except that the old look is put on
+/// balls too: test scenes are written with it and [`classic_cards`] turns it into layers.
+pub(crate) fn put_card(scene: &mut Scene, reg: &Registry, id: ThingId, slot: SlotId, kind: &str) {
+    let balls = scene.things.get(&id).is_some_and(|t| t.kind == "balls");
+    if balls && kind == "look.basic" {
+        scene.things.get_mut(&id).expect("checked above").slots.insert(slot, Slot::new(kind));
+        scene.tracks.retain(|a, _| !(a.thing == id && a.slot == Some(slot)));
+        return;
+    }
+    scene.add_slot(reg, id, slot, kind).expect("the kind has the slot");
+}
+
+/// The Body colours of a ball's Look, old or layered.
+pub(crate) fn ball_fill(card: &Slot) -> Paint {
+    if card.kind == "look.basic" {
+        return BasicLook::from_params(&card.params).fill;
+    }
+    let body = card.layers.first().map(|l| l.id).unwrap_or_default();
+    let prefix = format!("{body}/");
+    let params = Params(
+        card.params.iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_owned(), v.clone()))).collect(),
+    );
+    crate::modules::look::layers::BodyLayer::from_params(&params).fill
 }
 
 /// The colour showcase: a block of balls painted by where they are at an angle with rings of the
@@ -404,6 +509,9 @@ impl<'a> Builder<'a> {
     fn new(reg: &'a Registry, name: &str) -> Builder<'a> {
         let mut scene = new_scene(reg);
         scene.name = name.into();
+        // The first ball is written with the old look, turned into layers when it is finished.
+        put_card(&mut scene, reg, BALLS, SlotId::Look, "look.basic");
+        scene.card_mut(BALLS, SlotId::Look).expect("just put").params = classic_ball_look().to_params();
         let shared = [(SlotId::Look, "look.basic"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")]
             .into_iter()
             .map(|(slot, kind)| (slot, Slot::new(kind)))
@@ -525,7 +633,7 @@ impl<'a> Builder<'a> {
     }
 
     fn ball_look(&mut self, f: impl FnOnce(&mut BasicLook)) {
-        let mut s = BasicLook { fill: Paint::solid(Color::rgb(0xff, 0x5c, 0xa8)), ..classic_look() };
+        let mut s = classic_ball_look();
         f(&mut s);
         self.card_mut(BALLS, SlotId::Look).params = s.to_params();
     }
@@ -560,7 +668,7 @@ impl<'a> Builder<'a> {
             }
             return;
         }
-        self.scene.add_slot(self.reg, thing, slot, kind).expect("the kind has the slot");
+        put_card(&mut self.scene, self.reg, thing, slot, kind);
         self.src.remove(&(thing, slot));
         self.card_mut(thing, slot).params = params;
         for user in users {
@@ -574,6 +682,10 @@ impl<'a> Builder<'a> {
     /// modules the kit gives that kind.
     fn add(&mut self, kind: &str, parent: ThingId, name: &str, position: Vec2, params: Params) -> ThingId {
         let id = crate::add_thing(&mut self.scene, self.reg, kind, parent).expect("kit kinds are registered");
+        if kind == "balls" {
+            // Written with the old look, which `finish` turns into layers.
+            put_card(&mut self.scene, self.reg, id, SlotId::Look, "look.basic");
+        }
         self.scene.rename_thing(id, name);
         self.share(id, &SlotId::ALL);
         let thing = self.scene.things.get_mut(&id).expect("just added");

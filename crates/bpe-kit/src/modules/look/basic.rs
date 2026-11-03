@@ -277,6 +277,10 @@ impl ModuleKind for BasicLookKind {
     fn settings(&self) -> &'static [SettingDef] {
         BasicLook::defs()
     }
+    /// Balls wear the layered look (see [`super::layers`]).
+    fn fits(&self, thing_kind: &str) -> bool {
+        thing_kind != "balls"
+    }
 }
 
 /// The speed at which a ball stretches to twice its length at full Stretch.
