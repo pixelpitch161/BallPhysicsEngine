@@ -1,4 +1,4 @@
-//! Remembers the last scene file and the layout between runs, in small files in the
+//! Remembers the recent scene files and the layout between runs, in small files in the
 //! user's settings folder. The old and new editors share the folder and keep separate files.
 
 use std::path::{Path, PathBuf};
