@@ -591,7 +591,6 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
             {
                 h.bytes(&[slot as u8]);
                 h.bytes(s.kind.as_bytes());
-                h.bytes(&s.from.0.to_le_bytes());
                 for (key, value) in s.params.iter() {
                     h.bytes(key.as_bytes());
                     h.value(value);
@@ -673,10 +672,10 @@ mod tests {
         DOTS, DOTS2, TestDots, TestRoot, WALL, dots_in_ring, dots_in_sticky_ring, dots_pair, dots_pair_popping,
         dots_pile, reg, ring_with_rider,
     };
-    use bpe_core::{Address, Attach, Ease, Owner, SlotId, Target, ThingId, Value, resolve};
+    use bpe_core::{Address, Attach, Ease, SlotId, Target, ThingId, Value, resolve};
 
     fn root_setting(key: &str) -> Address {
-        Address { owner: Owner::Thing(ThingId::ROOT), slot: None, key: key.into() }
+        Address::own(ThingId::ROOT, key)
     }
 
     #[test]
@@ -974,13 +973,12 @@ mod tests {
         let plain = World::build(&scene, &resolved, &sims);
         assert!(plain.history.is_empty());
         let before = fingerprint(&scene, &resolved, &sims);
-        let trail = scene.add_module(&reg(), "trail.test", "Trail").unwrap();
-        scene.link(&reg(), DOTS, SlotId::Trail, trail).unwrap();
+        crate::testing::give(&mut scene, DOTS, SlotId::Trail, "trail.test", &[]);
         let resolved = resolve(&scene, &reg());
         // Keeping a history is a rebuild, but how the trail looks is not.
         let with_trail = fingerprint(&scene, &resolved, &sims);
         assert_ne!(with_trail, before);
-        scene.library.modules.get_mut(&trail).unwrap().params.set("width", Value::Number(3.0));
+        scene.things.get_mut(&DOTS).unwrap().slots.get_mut(&SlotId::Trail).unwrap().params.set("width", Value::Number(3.0));
         let resolved = resolve(&scene, &reg());
         assert_eq!(fingerprint(&scene, &resolved, &sims), with_trail);
 
