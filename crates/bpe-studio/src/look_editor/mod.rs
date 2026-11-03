@@ -78,7 +78,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     };
     // ---------- the ball view ----------
     {
-        let Inspector { ball_view, render, .. } = inspector;
+        let Inspector { ball_view, render, own_step, .. } = inspector;
         // Masks shown alone go back to the look when their layer goes.
         if ball_view.solo.is_some_and(|(t, l)| t == cx.id && card.layer(l).is_none()) {
             ball_view.solo = None;
@@ -96,13 +96,15 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         match (out, layer, strokes) {
             (Some(out), Some(_), Some(key)) => {
                 if let Some(map) = out.map {
-                    brush::paint(ui, ball_view, &out.response, map, cx, picked, key, edits);
+                    *own_step |= brush::paint(ui, ball_view, &out.response, map, cx, picked, key, edits);
                 }
                 brush::bar(ui, &mut ball_view.brush);
             }
             (Some(out), layer, None) => {
                 let on_handle = match (out.map, layer) {
-                    (Some(map), Some(layer)) => handles::show(ui, cx, layer, map, out.radius, edits),
+                    (Some(map), Some(layer)) => {
+                        handles::show(ui, cx, layer, map, out.response.rect, out.radius, own_step, edits)
+                    }
                     _ => false,
                 };
                 // A click on the ball, off the handles, picks the layer showing there.
@@ -784,6 +786,9 @@ mod tests {
         h.drag_at(handle);
         h.run();
         h.hover_at(to);
+        h.step();
+        assert!(h.state().inspector.own_step, "the drag starts an undo step of its own");
+        h.state_mut().inspector.own_step = false;
         h.run();
         h.drop_at(to);
         h.run();
@@ -860,6 +865,7 @@ mod tests {
         h.run();
         let list = strokes(&h, shading).list;
         assert_eq!(list.len(), 1, "one stroke, one edit");
+        assert!(h.state().inspector.own_step, "the stroke is an undo step of its own");
         let s = &list[0];
         assert!(s.points.len() >= 2, "{:?}", s.points);
         assert!(s.points.iter().all(|p| p[0] >= -1e-3 && p[0] <= 1.0 && p[1].abs() <= 1.0), "{:?}", s.points);
@@ -878,5 +884,18 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert!(list[0].erase);
         assert_eq!(list[0].points.last(), Some(&[-1.0, -1.0]), "the corner of the view is held to the ball's square");
+    }
+
+    #[test]
+    fn a_handle_past_the_view_waits_at_its_edge_so_it_never_covers_the_lists() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Glow");
+        let glow = layer_named(&h, BALL, "Glow");
+        let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
+        params.set(&layered_key(glow.id, "size"), Value::Number(3.5));
+        h.run();
+        let view = h.state().inspector.ball_view.last_rect().unwrap();
+        let handle = h.get_by_label("Size handle").rect();
+        assert!(view.contains_rect(handle), "{handle:?} in {view:?}");
     }
 }

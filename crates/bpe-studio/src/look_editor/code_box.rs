@@ -1,9 +1,6 @@
 //! The code box of a Shader layer's own code: monospace, several lines, kept on clicking away
 //! or Ctrl+Enter, with why the code can't run under it.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-
 use eframe::egui::{self, Key, Modifiers, RichText, Ui};
 
 use crate::style;
@@ -54,15 +51,5 @@ pub fn show(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, code: &st
 
 /// Why `code` can't run inside a ball, worked out once per distinct code.
 pub fn problem(code: &str) -> Option<String> {
-    static SEEN: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
-    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(p) = seen.get(code) {
-        return p.clone();
-    }
-    if seen.len() > 64 {
-        seen.clear();
-    }
-    let p = bpe_gfx::in_ball_problem(code);
-    seen.insert(code.to_owned(), p.clone());
-    p
+    bpe_kit::modules::look::layers::shader::own_problem(code)
 }

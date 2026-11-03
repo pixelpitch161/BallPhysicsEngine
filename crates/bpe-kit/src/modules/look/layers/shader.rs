@@ -140,6 +140,22 @@ pub fn dynamic_defs(get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef
     }
 }
 
+/// Why own `code` can't run inside a ball (its header, then its WGSL), worked out once per
+/// distinct code and kept for the most recent few.
+pub fn own_problem(code: &str) -> Option<String> {
+    static SEEN: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = seen.get(code) {
+        return p.clone();
+    }
+    if seen.len() >= 64 {
+        seen.clear();
+    }
+    let p = bpe_gfx::in_ball_problem(code);
+    seen.insert(code.to_owned(), p.clone());
+    p
+}
+
 /// A Shader layer read from its settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShaderLayer {
@@ -174,7 +190,12 @@ impl ShaderLayer {
                 Some(Value::Text(t)) => t.clone(),
                 _ => own_start().to_owned(),
             };
-            let header = bpe_gfx::effects::parse(&code);
+            // Code that can't run in a ball draws nothing, leaving the stack's other shader layers
+            // to build and draw.
+            let header = match own_problem(&code) {
+                Some(why) => Err(why),
+                None => bpe_gfx::effects::parse(&code),
+            };
             (std::borrow::Cow::Owned(code), header)
         } else {
             let b = Builtin::find(&effect).expect("listed");

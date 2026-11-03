@@ -230,7 +230,12 @@ impl Stack {
                 }
             };
             let at = out.len();
-            let angle = if let Drawn::Pattern(_) = &d.layer { r.paint.angle.to_radians() } else { 0.0 };
+            // "Moves with the layer": a pattern's mask turns as the pattern spins, from where the
+            // mask's own angle puts it, not by the pattern's own angle.
+            let angle = match &d.layer {
+                Drawn::Pattern(p) => (r.paint.angle - p.inside.angle).to_radians(),
+                _ => 0.0,
+            };
             out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], d.masks.len() as u32], ..r });
             for m in &d.masks {
                 // A mask on a layer that is missing, hidden, not under it or not drawn passes nothing.
@@ -592,6 +597,22 @@ mod tests {
     }
 
     #[test]
+    fn a_mask_moving_with_a_pattern_turns_only_as_the_pattern_spins() {
+        let set = |reg: &bpe_core::Registry, s: &mut Scene, b, id, key: &str, v: Value| {
+            s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(id, key)), v).unwrap();
+        };
+        let stack = stack_after(|reg, s, b| {
+            let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            let m = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            set(reg, s, b, m, "from", Value::Choice("shape".into()));
+            set(reg, s, b, pat, "in_spin", Value::Number(90.0));
+        });
+        let at = |time: f32| stack.records(&mut GradientAtlas::default(), &mut Vec::new(), time)[2].amount[2];
+        assert_eq!(at(0.0), 0.0, "a still pattern's mask sits where its handles and summary say");
+        assert!((at(1.0) - 90f32.to_radians()).abs() < 1e-5, "and turns as the pattern spins: {}", at(1.0));
+    }
+
+    #[test]
     fn a_click_picks_the_topmost_layer_covering_the_point() {
         let mut ids = Vec::new();
         let stack = stack_after(|reg, s, b| {
@@ -651,6 +672,16 @@ mod tests {
         let records = broken.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
         assert_eq!(records.len(), 1, "the body alone");
         assert!(broken.program().is_none());
+    }
+
+    #[test]
+    fn own_code_that_does_not_compile_leaves_the_other_shader_layers_drawing() {
+        let broken = "// name: Mine\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return nope(uv); }\n";
+        let stack = shaders(&["lava", broken]);
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let shader_records = records.iter().filter(|r| r.head[0] == LayerGpu::SHADER).count();
+        assert_eq!(shader_records, 1, "the lava alone");
+        assert_eq!(stack.program().unwrap().sources.len(), 1, "a program of the lava alone, which builds");
     }
 
     #[test]

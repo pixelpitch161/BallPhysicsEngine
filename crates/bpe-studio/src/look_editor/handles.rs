@@ -171,14 +171,19 @@ pub fn dragged(kind: &str, p: &Params, radius: f32, name: &str, q: Vec2) -> Opti
     }
 }
 
-/// Draws layer `layer`'s handles over the view and turns their drags into edits. True when the
-/// pointer is on a handle or dragging one, so the view leaves the pointer alone.
+/// Draws layer `layer`'s handles over the view (the picture `view`) and turns their drags into
+/// edits; a drag's start
+/// sets `own_step`, so the drag is an undo step of its own. True when the pointer is on a
+/// handle or dragging one, so the view leaves the pointer alone.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     cx: &LookCx,
     layer: &bpe_core::Layer,
     map: ViewMap,
+    view: Rect,
     radius: f32,
+    own_step: &mut bool,
     edits: &mut Vec<Edit>,
 ) -> bool {
     let Some(kind) = cx.reg().layer(&layer.kind) else { return false };
@@ -188,7 +193,9 @@ pub fn show(
     let line = Stroke::new(1.2, style::TEXT);
     let mut busy = false;
     for (i, h) in list.iter().enumerate() {
-        let at = map.to_view(h.at);
+        // A handle past the picture would sit over the lists under it, so it waits at the
+        // picture's edge, on the way out to where it is.
+        let at = inside(view.shrink(8.0), map.centre, map.to_view(h.at));
         if let Some(from) = h.from {
             painter.line_segment([map.to_view(from), at], line);
         }
@@ -206,6 +213,9 @@ pub fn show(
         if active {
             tag(&painter, at, &h.tag);
         }
+        if response.drag_started() {
+            *own_step = true;
+        }
         if response.dragged()
             && let Some(pointer) = response.interact_pointer_pos()
             && let Some((key, value)) = dragged(&layer.kind, &p, radius, h.name, map.to_ball(pointer))
@@ -214,6 +224,26 @@ pub fn show(
         }
     }
     busy
+}
+
+/// `at`, or where the line from `centre` to it leaves `rect` when it is outside.
+fn inside(rect: Rect, centre: Pos2, at: Pos2) -> Pos2 {
+    if rect.contains(at) {
+        return at;
+    }
+    let d = at - centre;
+    let mut t: f32 = 1.0;
+    for (reach, room) in [(d.x, rect.right() - centre.x), (-d.x, centre.x - rect.left())] {
+        if reach > 0.0 {
+            t = t.min(room / reach);
+        }
+    }
+    for (reach, room) in [(d.y, rect.bottom() - centre.y), (-d.y, centre.y - rect.top())] {
+        if reach > 0.0 {
+            t = t.min(room / reach);
+        }
+    }
+    centre + d * t.max(0.0)
 }
 
 /// A handle's value in a small dark pill beside it.

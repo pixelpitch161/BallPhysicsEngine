@@ -860,9 +860,30 @@ impl Frame {
         let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
-        self.layered.retain(|l| {
-            let along = l.stretch[2].max(l.stretch[3]).max(1.0);
-            sees(l.center, l.radius * l.form[3].max(1.0) * along)
+        let seen: Vec<bool> = self
+            .layered
+            .iter()
+            .map(|l| {
+                let along = l.stretch[2].max(l.stretch[3]).max(1.0);
+                sees(l.center, l.radius * l.form[3].max(1.0) * along)
+            })
+            .collect();
+        // Each run names its instances by place, so the runs move with the instances kept.
+        let mut kept_before = vec![0u32; seen.len() + 1];
+        for (i, &s) in seen.iter().enumerate() {
+            kept_before[i + 1] = kept_before[i] + u32::from(s);
+        }
+        let place = |i: u32| kept_before[(i as usize).min(seen.len())];
+        self.layered_runs = self
+            .layered_runs
+            .iter()
+            .map(|r| crate::LayeredRun { start: place(r.start), end: place(r.end), ..*r })
+            .filter(|r| r.end > r.start)
+            .collect();
+        let mut i = 0;
+        self.layered.retain(|_| {
+            i += 1;
+            seen[i - 1]
         });
         self.flashes.retain(|f| sees(f.center, f.size));
         for l in &mut self.layers {
@@ -1275,6 +1296,22 @@ mod tests {
         layer.balls.push(BallInstance { center: [5000.0, 0.0], radius: 5.0, ..BallInstance::default() });
         frame.cull();
         assert_eq!(frame.layers[0].frame.balls.len(), 1, "what the camera can't see is dropped in layers too");
+    }
+
+    #[test]
+    fn culling_layered_balls_keeps_each_with_its_own_run() {
+        let mut frame = Frame::default();
+        frame.camera.zoom = 4.0;
+        let at = |x: f32| LayeredInstance { center: [x, 0.0], radius: 5.0, ..LayeredInstance::default() };
+        // A plain thing whose ball leaves the shot, then a thing with a program: one seen, one not.
+        frame.layered = vec![at(5000.0), at(0.0), at(10.0), at(-6000.0)];
+        frame.layered_runs = vec![
+            crate::LayeredRun { program: None, start: 0, end: 1 },
+            crate::LayeredRun { program: Some(3), start: 1, end: 4 },
+        ];
+        frame.cull();
+        assert_eq!(frame.layered.len(), 2);
+        assert_eq!(frame.layered_runs, [crate::LayeredRun { program: Some(3), start: 0, end: 2 }]);
     }
 
     #[test]

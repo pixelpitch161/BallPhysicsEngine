@@ -98,7 +98,7 @@ pub fn bar(ui: &mut Ui, brush: &mut Brush) {
 
 /// Paints with the pointer on the view: a press starts a stroke, dragging adds to it, and
 /// letting go keeps it as one edit of `key` on layer `layer`. A circle the size of the brush
-/// follows the pointer over the view.
+/// follows the pointer over the view. True when a stroke was kept this frame.
 #[allow(clippy::too_many_arguments)]
 pub fn paint(
     ui: &Ui,
@@ -109,7 +109,7 @@ pub fn paint(
     layer: LayerId,
     key: &'static str,
     edits: &mut Vec<Edit>,
-) {
+) -> bool {
     let on_ball = |p: egui::Pos2| {
         let q = map.to_ball(p).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
         [q.x, q.y]
@@ -136,6 +136,7 @@ pub fn paint(
             p.points.push(q);
         }
     }
+    let mut kept = false;
     // A click paints a dab.
     if response.clicked()
         && let Some(at) = response.interact_pointer_pos()
@@ -148,9 +149,11 @@ pub fn paint(
         && p.layer == layer
     {
         edits.push(Edit::SetSlot(cx.slot, p.key.clone(), Value::Strokes(p.strokes(view.brush))));
+        kept = true;
     }
     if let Some(at) = response.hover_pos() {
         let ring = if view.brush.erase { Line::new(1.0, style::MUTED) } else { Line::new(1.0, style::TEXT_STRONG) };
         ui.painter().circle_stroke(at, view.brush.size * map.radius, ring);
     }
+    kept
 }
