@@ -10,8 +10,8 @@ use glam::Vec2;
 
 use super::{
     BLEND, BODY, BlendLayer, BodyLayer, ColourFrom, ColourOnHit, ColourOverTime, FLASH, FlashOnHit, GLOW, GlowLayer,
-    HUE, OUTLINE, OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHINE, STRETCH, ShineLayer,
-    StretchWhenFast, TURNING, Turning,
+    HUE, MASK, MaskLayer, OUTLINE, OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE,
+    STRETCH, ShaderLayer, ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
 };
 use crate::modules::look::BallShape;
 use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_linear_hue};
@@ -33,6 +33,17 @@ pub enum Drawn {
     Outline(OutlineLayer),
     Shine(ShineLayer),
     Glow(GlowLayer),
+    Shading(ShadingLayer),
+    Shader(Box<ShaderLayer>),
+}
+
+/// A drawn layer above the body, with its id and its shown masks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnLayer {
+    pub layer: Drawn,
+    pub id: LayerId,
+    /// Its shown masks, in order; they multiply.
+    pub masks: Vec<MaskLayer>,
 }
 
 /// A thing's shown stack, read from its resolved Look card.
@@ -41,7 +52,7 @@ pub struct Stack {
     pub body_id: LayerId,
     pub body: BodyLayer,
     /// The drawn layers above the body, bottom first.
-    pub drawn: Vec<Drawn>,
+    pub drawn: Vec<DrawnLayer>,
     pub blend: Option<BlendLayer>,
     pub flash: Option<FlashOnHit>,
     pub hue: Option<ColourOnHit>,
@@ -70,11 +81,20 @@ impl Stack {
         };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
+            let mut push = |d: Drawn| stack.drawn.push(DrawnLayer { layer: d, id: layer.id, masks: Vec::new() });
             match layer.kind.as_str() {
-                PATTERN => stack.drawn.push(Drawn::Pattern(PatternLayer::from_params(&p))),
-                OUTLINE => stack.drawn.push(Drawn::Outline(OutlineLayer::from_params(&p))),
-                SHINE => stack.drawn.push(Drawn::Shine(ShineLayer::from_params(&p))),
-                GLOW => stack.drawn.push(Drawn::Glow(GlowLayer::from_params(&p))),
+                PATTERN => push(Drawn::Pattern(PatternLayer::from_params(&p))),
+                OUTLINE => push(Drawn::Outline(OutlineLayer::from_params(&p))),
+                SHINE => push(Drawn::Shine(ShineLayer::from_params(&p))),
+                GLOW => push(Drawn::Glow(GlowLayer::from_params(&p))),
+                SHADING => push(Drawn::Shading(ShadingLayer::from_params(&p))),
+                SHADER => push(Drawn::Shader(Box::new(ShaderLayer::from_params(&p)))),
+                // A mask goes with its layer; a hidden layer's masks don't matter.
+                MASK => {
+                    if let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent) {
+                        d.masks.push(MaskLayer::from_params(&p));
+                    }
+                }
                 // Blend and the reactions are there at most once; the first counts.
                 BLEND => stack.blend = stack.blend.take().or(Some(BlendLayer::from_params(&p))),
                 FLASH => stack.flash = stack.flash.take().or(Some(FlashOnHit::from_params(&p))),
@@ -111,7 +131,7 @@ impl Stack {
 
     /// Whether any pattern paints from its own gradient, so balls need their own variation.
     pub fn varies(&self) -> bool {
-        self.drawn.iter().any(|d| matches!(d, Drawn::Pattern(p) if p.inside.from == InsideFrom::OwnGradient))
+        self.drawn.iter().any(|d| matches!(&d.layer, Drawn::Pattern(p) if p.inside.from == InsideFrom::OwnGradient))
     }
 
     /// Whether the shape turns to point the way the ball goes (never a circle, which has no point).
@@ -127,7 +147,7 @@ impl Stack {
         let mut out = vec![LayerGpu { amount: [1.0, 0.0, 0.0, 0.0], ..LayerGpu::ZERO }];
         let turn = self.rainbow() * time;
         for d in &self.drawn {
-            let r = match d {
+            let r = match &d.layer {
                 Drawn::Pattern(p) => {
                     let mut inside = p.inside.clone();
                     if turn != 0.0 && inside.from == InsideFrom::OwnGradient {
@@ -162,6 +182,7 @@ impl Stack {
                     colour: g.colour.to_linear(),
                     ..LayerGpu::ZERO
                 },
+                Drawn::Shading(_) | Drawn::Shader(_) => continue,
             };
             out.push(r);
         }
@@ -172,7 +193,7 @@ impl Stack {
     pub fn reach(&self, radius: f32) -> f32 {
         let mut past_edge: f32 = 0.0;
         for d in &self.drawn {
-            match d {
+            match &d.layer {
                 Drawn::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => past_edge = past_edge.max(HALO_REACH * g.size),
                 Drawn::Outline(o) => {
                     let out = match o.sits {
@@ -335,6 +356,23 @@ mod tests {
         );
         let later = stack.body_colour(red, 0, 2.0);
         assert_eq!(bpe_core::Color::from_linear(later), bpe_core::Color::from_linear(shift_linear_hue(red, 0.5)));
+    }
+
+    #[test]
+    fn masks_stay_with_their_shown_layer() {
+        let stack = stack_after(|reg, s, b| {
+            let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            let off = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            s.set_layer_enabled(reg, b, SlotId::Look, off, false).unwrap();
+            let hidden = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.add_mask(reg, b, SlotId::Look, hidden).unwrap();
+            s.set_layer_enabled(reg, b, SlotId::Look, hidden, false).unwrap();
+            s.add_layer(reg, b, SlotId::Look, SHADING).unwrap();
+        });
+        assert_eq!(stack.drawn.len(), 2, "the hidden outline is left out");
+        assert_eq!(stack.drawn[0].masks.len(), 1, "the hidden mask is left out");
+        assert!(matches!(stack.drawn[1].layer, Drawn::Shading(_)) && stack.drawn[1].masks.is_empty());
     }
 
     #[test]

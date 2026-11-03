@@ -1,0 +1,106 @@
+//! Brush strokes as a picture: a Strokes value drawn into a small greyscale tile the renderer
+//! reads, white where painted. The same strokes always give the same bytes.
+
+use bpe_core::{Stroke, Strokes};
+
+/// A tile's width and height, in pixels. It covers the ball's square, -1 to 1 both ways.
+pub const TILE: usize = 128;
+
+/// How far `p` is from the segment `a`-`b`.
+fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+    let (apx, apy) = (p[0] - a[0], p[1] - a[1]);
+    let len2 = abx * abx + aby * aby;
+    let t = if len2 > 0.0 { ((apx * abx + apy * aby) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let (dx, dy) = (apx - abx * t, apy - aby * t);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// How far `p` is from the stroke's path (a single point is a dot).
+fn stroke_distance(p: [f32; 2], s: &Stroke) -> f32 {
+    match s.points.as_slice() {
+        [] => f32::INFINITY,
+        [one] => segment_distance(p, *one, *one),
+        points => points.windows(2).map(|w| segment_distance(p, w[0], w[1])).fold(f32::INFINITY, f32::min),
+    }
+}
+
+/// How much one stroke paints at distance `d` from its path: full inside the hard middle, fading
+/// to nothing at its size.
+fn coverage(s: &Stroke, d: f32) -> f32 {
+    let size = s.size.max(0.0);
+    let inner = size * (1.0 - s.softness.clamp(0.0, 1.0));
+    let t = if size - inner > 1e-6 { ((size - d) / (size - inner)).clamp(0.0, 1.0) } else { f32::from(d < size) };
+    t * t * (3.0 - 2.0 * t) * s.strength.clamp(0.0, 1.0)
+}
+
+/// The strokes as a `TILE` × `TILE` tile, row by row from the top: how painted each pixel is, 0
+/// to 255. Strokes paint in order; erasing ones take paint away.
+pub fn rasterise(strokes: &Strokes) -> Vec<u8> {
+    let mut out = vec![0u8; TILE * TILE];
+    let mut level = vec![0.0f32; TILE * TILE];
+    for s in &strokes.list {
+        // Only the pixels the stroke can reach.
+        let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        for p in &s.points {
+            for i in 0..2 {
+                lo[i] = lo[i].min(p[i] - s.size);
+                hi[i] = hi[i].max(p[i] + s.size);
+            }
+        }
+        if s.points.is_empty() {
+            continue;
+        }
+        let px = |v: f32| (((v + 1.0) * 0.5 * TILE as f32).floor().max(0.0) as usize).min(TILE - 1);
+        for y in px(lo[1])..=px(hi[1]) {
+            for x in px(lo[0])..=px(hi[0]) {
+                let q = [((x as f32 + 0.5) / TILE as f32) * 2.0 - 1.0, ((y as f32 + 0.5) / TILE as f32) * 2.0 - 1.0];
+                let v = coverage(s, stroke_distance(q, s));
+                let l = &mut level[y * TILE + x];
+                *l = if s.erase { *l * (1.0 - v) } else { *l + v * (1.0 - *l) };
+            }
+        }
+    }
+    for (o, l) in out.iter_mut().zip(&level) {
+        *o = (l.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(erase: bool) -> Stroke {
+        Stroke { points: vec![[-0.5, 0.0], [0.5, 0.0]], size: 0.1, softness: 0.5, strength: 1.0, erase }
+    }
+
+    /// The tile's value at ball point `q`.
+    fn at(tile: &[u8], q: [f32; 2]) -> u8 {
+        let px = |v: f32| ((v + 1.0) * 0.5 * TILE as f32) as usize;
+        tile[px(q[1]) * TILE + px(q[0])]
+    }
+
+    #[test]
+    fn a_stroke_paints_along_its_path_and_nowhere_else() {
+        let tile = rasterise(&Strokes { list: vec![line(false)] });
+        assert_eq!(tile.len(), TILE * TILE);
+        assert!(at(&tile, [0.0, 0.0]) > 240, "{}", at(&tile, [0.0, 0.0]));
+        assert!(at(&tile, [-0.45, 0.0]) > 240);
+        assert_eq!(at(&tile, [0.0, 0.5]), 0);
+        assert_eq!(at(&tile, [0.8, 0.0]), 0);
+        let edge = at(&tile, [0.0, 0.08]);
+        assert!(edge > 0 && edge < 200, "the soft edge fades: {edge}");
+    }
+
+    #[test]
+    fn erasing_takes_the_paint_away_and_the_same_strokes_give_the_same_bytes() {
+        let painted = Strokes { list: vec![line(false)] };
+        let erased = Strokes { list: vec![line(false), line(true)] };
+        assert_eq!(at(&rasterise(&erased), [0.0, 0.0]), 0);
+        assert_eq!(rasterise(&painted), rasterise(&painted.clone()));
+        assert!(rasterise(&Strokes::default()).iter().all(|&b| b == 0));
+        let dot = Strokes { list: vec![Stroke { points: vec![[0.2, -0.2]], ..line(false) }] };
+        assert!(at(&rasterise(&dot), [0.2, -0.2]) > 240);
+    }
+}
