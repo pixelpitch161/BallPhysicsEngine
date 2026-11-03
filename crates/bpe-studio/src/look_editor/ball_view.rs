@@ -153,7 +153,7 @@ pub fn show(
     time: f64,
 ) {
     buttons(ui, view);
-    let side = ui.available_width().min(MAX_SIZE).max(40.0);
+    let side = ui.available_width().clamp(40.0, MAX_SIZE);
     let Some(render) = render else {
         ui.label(RichText::new("The ball view needs the wgpu renderer.").small().color(style::MUTED));
         return;
