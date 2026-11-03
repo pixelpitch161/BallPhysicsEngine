@@ -302,6 +302,153 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     Ok(format!("{head}{wgsl}\n{tail}"))
 }
 
+pub const IN_BALL: &str = include_str!("in_ball.wgsl");
+
+/// Names the in-ball prelude gives effects, which `prefixed` leaves as they are.
+const PRELUDE_NAMES: &[&str] = &[
+    "sample",
+    "prev",
+    "aspect",
+    "to_centered",
+    "from_centered",
+    "fold_uv",
+    "hash21",
+    "noise",
+    "fbm",
+    "luma",
+    "hue_shift",
+    "hsv_to_rgb",
+    "hit_uv",
+    "hit_age",
+    "hit_strength",
+    "hit_color",
+    "bass",
+    "mid",
+    "treble",
+    "object_at",
+    "object_code",
+    "object_seed",
+    "target_weight",
+    "fx",
+    "Fx",
+    "PI",
+    "TAU",
+    "MAX_HITS",
+    "rotate",
+];
+
+/// The names an effect source declares at the top level: its functions, constants, structs,
+/// variables and aliases (declarations that start a line, outside comments).
+fn top_level_names(wgsl: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in wgsl.lines() {
+        if line.starts_with(char::is_whitespace) || line.starts_with("//") {
+            continue;
+        }
+        let mut words = line.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '<' || c == '>' || c == ','));
+        let Some(first) = words.next() else { continue };
+        let keyword = first.split('<').next().unwrap_or(first);
+        if !matches!(keyword, "fn" | "const" | "struct" | "var" | "alias" | "override") {
+            continue;
+        }
+        let rest = &line[first.len()..];
+        let name: String = rest.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// `text` with every whole-word use of `from` (not right after a `.`, which is a field) as `to`.
+fn rename_word(text: &str, from: &str, to: &str) -> String {
+    let bytes = text.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(at) = text[i..].find(from) {
+        let start = i + at;
+        let end = start + from.len();
+        let before = if start > 0 { Some(bytes[start - 1]) } else { None };
+        let after = bytes.get(end).copied();
+        out.push_str(&text[i..start]);
+        if before.is_some_and(|b| word(b) || b == b'.') || after.is_some_and(word) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        i = end;
+    }
+    out.push_str(&text[i..]);
+    out
+}
+
+/// An effect as it runs inside a ball, as copy `n` of the effects in one program: its `Params`
+/// struct, its code, and `unpack(l)` reading its settings from a layer record's `extra`, every
+/// name it declares at the top level starting `fx{n}_` (so `effect` is `fx{n}_effect`), the
+/// prelude's names left as they are.
+pub fn prefixed(wgsl: &str, n: usize) -> Result<String, String> {
+    let header = parse(wgsl)?;
+    let mut text = String::from("struct Params {\n");
+    for p in &header.params {
+        let ty = if matches!(p.kind, ParamKind::Color { .. }) { "vec3<f32>" } else { "f32" };
+        text.push_str(&format!("    {}: {ty},\n", p.key));
+    }
+    if header.params.is_empty() {
+        text.push_str("    _unused: f32,\n");
+    }
+    text.push_str("};\n\n");
+    text.push_str(wgsl);
+    text.push_str("\nfn unpack(l: LayerGpu) -> Params {\n    var p: Params;\n");
+    let mut at = 0;
+    for p in &header.params {
+        let float = |i: usize| format!("l.extra[{}][{}]", i / 4, i % 4);
+        if p.floats() == 3 {
+            text.push_str(&format!(
+                "    p.{} = vec3<f32>({}, {}, {});\n",
+                p.key,
+                float(at),
+                float(at + 1),
+                float(at + 2)
+            ));
+        } else {
+            text.push_str(&format!("    p.{} = {};\n", p.key, float(at)));
+        }
+        at += p.floats();
+    }
+    text.push_str("    return p;\n}\n");
+    for name in top_level_names(&text) {
+        if PRELUDE_NAMES.contains(&name.as_str()) {
+            return Err(format!("`{name}` is a name effects already have; call it something else"));
+        }
+        text = rename_word(&text, &name, &format!("fx{n}_{name}"));
+    }
+    Ok(text)
+}
+
+/// The effect code of one in-ball program: each of `sources` once, prefixed by its place in the
+/// list, then `run_effect(slot, uv, l)`, which runs effect `slot` on layer record `l`.
+pub fn in_ball_effects(sources: &[&str]) -> Result<String, String> {
+    let mut out = String::from(IN_BALL);
+    let mut run =
+        String::from("\nfn run_effect(slot: u32, uv: vec2<f32>, l: LayerGpu) -> vec3<f32> {\n    switch slot {\n");
+    for (n, source) in sources.iter().enumerate() {
+        out.push('\n');
+        out.push_str(&prefixed(source, n).map_err(|e| format!("{}: {e}", name_or(source, n)))?);
+        run.push_str(&format!(
+            "        case {n}u: {{\n            return fx{n}_effect(uv, fx{n}_unpack(l));\n        }}\n"
+        ));
+    }
+    run.push_str("        default: {\n            return sample(uv);\n        }\n    }\n}\n");
+    out.push_str(&run);
+    Ok(out)
+}
+
+/// What to call an effect in an error: its header's name, or its place.
+fn name_or(source: &str, n: usize) -> String {
+    parse(source).ok().map(|h| h.name).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("effect {}", n + 1))
+}
+
 /// An effect that comes with the program.
 #[derive(Debug)]
 pub struct Builtin {
@@ -428,6 +575,47 @@ mod tests {
         assert!(Builtin::find("nope").is_none());
         assert!(needs_history(Builtin::find("echo").unwrap().wgsl));
         assert_eq!(Builtin::find("lava").unwrap().header().floats(), 12);
+    }
+
+    #[test]
+    fn prefixed_renames_declarations_and_their_uses_but_not_prelude_names_or_longer_words() {
+        let src = "// name: Mine\n// simple effect_size = 0.5 [0, 1] Size\nconst spread: f32 = 2.0;\nfn helper(x: f32) -> f32 { return x * spread; }\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { let helper_x = 1.0; return sample(uv) * helper(p.effect_size) * helper_x; }\n";
+        let out = prefixed(src, 3).unwrap();
+        for want in [
+            "fn fx3_effect(",
+            "fn fx3_helper(",
+            "const fx3_spread",
+            "struct fx3_Params",
+            "fn fx3_unpack(l: LayerGpu) -> fx3_Params",
+            "fx3_helper(p.effect_size)",
+            "x * fx3_spread",
+            "sample(uv)",
+            "let helper_x",
+            "p.effect_size = l.extra[0][0];",
+        ] {
+            assert!(out.contains(want), "{want} in\n{out}");
+        }
+        assert!(!out.contains("fx3_sample") && !out.contains("fx3_effect_size"), "{out}");
+        let clash = "fn sample(uv: vec2<f32>) -> vec3<f32> { return vec3<f32>(0.0); }\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv); }\n";
+        assert!(prefixed(clash, 0).unwrap_err().contains("sample"));
+    }
+
+    /// The scene shader with these in-ball effects.
+    fn in_ball_module(effects: &str) -> String {
+        crate::scene_source(Some(effects))
+    }
+
+    #[test]
+    fn every_builtin_validates_inside_a_ball_alone_and_three_at_once() {
+        for b in &BUILTINS {
+            let code = in_ball_effects(&[b.wgsl]).unwrap_or_else(|e| panic!("{}: {e}", b.id));
+            validate(&in_ball_module(&code));
+        }
+        let three: Vec<&str> =
+            ["lava", "kaleidoscope", "glitch"].iter().map(|id| Builtin::find(id).unwrap().wgsl).collect();
+        validate(&in_ball_module(&in_ball_effects(&three).unwrap()));
+        let twice = Builtin::find("lava").unwrap().wgsl;
+        validate(&in_ball_module(&in_ball_effects(&[twice, twice]).unwrap()));
     }
 
     #[test]

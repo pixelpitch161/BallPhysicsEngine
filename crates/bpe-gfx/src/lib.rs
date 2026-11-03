@@ -372,6 +372,23 @@ impl FrameBuffers {
     }
 }
 
+/// The scene shader: everything the scene's pipelines draw with, its layered balls walking their
+/// stacks as [`layers_source`] says for `effects`.
+pub(crate) fn scene_source(effects: Option<&str>) -> String {
+    [
+        gradients::paint_wgsl(1).as_str(),
+        include_str!("shaders/scene.wgsl"),
+        include_str!("shaders/object.wgsl"),
+        include_str!("shaders/ball_look.wgsl"),
+        include_str!("shaders/styled.wgsl"),
+        include_str!("shaders/trail.wgsl"),
+        include_str!("shaders/each.wgsl"),
+        include_str!("shaders/blend_maths.wgsl"),
+        layers_source(effects).as_str(),
+    ]
+    .concat()
+}
+
 /// layers.wgsl with its stack walk: `None` for stacks without shader layers (they are left
 /// out); `Some(effects)` adds the walk shader layers sample (`walk_plain`, leaving them out) and
 /// the walk that runs them, with `effects` (the effect code and `run_effect`) after.
@@ -413,21 +430,7 @@ impl Renderer {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                [
-                    gradients::paint_wgsl(1).as_str(),
-                    include_str!("shaders/scene.wgsl"),
-                    include_str!("shaders/object.wgsl"),
-                    include_str!("shaders/ball_look.wgsl"),
-                    include_str!("shaders/styled.wgsl"),
-                    include_str!("shaders/trail.wgsl"),
-                    include_str!("shaders/each.wgsl"),
-                    include_str!("shaders/blend_maths.wgsl"),
-                    layers_source(None).as_str(),
-                ]
-                .concat()
-                .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(scene_source(None).into()),
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
