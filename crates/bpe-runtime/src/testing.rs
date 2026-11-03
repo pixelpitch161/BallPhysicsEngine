@@ -7,13 +7,11 @@ use bpe_core::{
 };
 use glam::Vec2;
 
-use crate::plugins::{ModuleSim, PairRule, RuleCx, Sims, ThingSim, ThingState};
-use crate::{Action, Bodies, Contact, EventKind, Limits, Outline, Pose, Solid, Solids, Wall, World};
+use crate::plugins::{ModuleSim, PairRule, Sims, ThingSim, ThingState};
+use crate::{Bodies, Contact, Limits, Outline, Pose, Wall, World};
 
 pub const WALL: ThingId = ThingId(1);
 pub const DOTS: ThingId = ThingId(2);
-pub const EMITTER: ThingId = ThingId(3);
-pub const PEG: ThingId = ThingId(3);
 /// The second dots thing in [`dots_pair`].
 pub const DOTS2: ThingId = ThingId(3);
 
@@ -58,17 +56,6 @@ impl Default for DotsSettings {
     }
 }
 
-#[derive(Settings)]
-struct PegSettings {
-    #[setting(label = "Radius", range(1, 1000))]
-    radius: f32,
-}
-impl Default for PegSettings {
-    fn default() -> Self {
-        Self { radius: 10.0 }
-    }
-}
-
 #[derive(Default, Settings)]
 struct NoSettings {}
 
@@ -101,9 +88,7 @@ impl Default for GravitySettings {
 struct RootKind;
 struct WallKind;
 struct DotsKind;
-struct EmitterKind;
 struct CounterKind;
-struct PegKind;
 struct StickyKind;
 struct BouncyKind;
 struct BumpyKind;
@@ -155,9 +140,7 @@ macro_rules! thing_kind {
 thing_kind!(RootKind, "scene", RootSettings);
 thing_kind!(WallKind, "wall", WallSettings);
 thing_kind!(DotsKind, "dots", DotsSettings);
-thing_kind!(EmitterKind, "emitter", NoSettings);
 thing_kind!(CounterKind, "counter", NoSettings);
-thing_kind!(PegKind, "peg", PegSettings);
 
 macro_rules! bounce_kind {
     ($t:ty, $id:literal) => {
@@ -221,7 +204,7 @@ impl ThingSim for TestRoot {
     }
 }
 
-/// Logs one custom event after every step.
+/// Logs one hit by itself after every step.
 pub struct TestCounter;
 impl ThingSim for TestCounter {
     fn kind(&self) -> &'static str {
@@ -231,7 +214,7 @@ impl ThingSim for TestCounter {
     fn after_step(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
         log.push(crate::Event {
             step: world.step,
-            kind: crate::EventKind::Custom("tick".into()),
+            kind: crate::EventKind::Hit,
             a: crate::Party { thing, item: 0 },
             b: None,
             point: Vec2::ZERO,
@@ -301,72 +284,6 @@ impl ThingSim for TestDots {
     }
 }
 
-/// Exercises every hook: adds a dot each step, pushes the dots sideways, checks that settling
-/// runs after the move, and ticks at the end of the step.
-pub struct TestEmitter;
-impl ThingSim for TestEmitter {
-    fn kind(&self) -> &'static str {
-        "emitter"
-    }
-    fn build(&self, thing: &Thing, _resolved: &ResolvedThing, world: &mut World) {
-        world.states.insert(thing.id, Box::new(0u32));
-    }
-    fn spawn(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
-        let step = world.step;
-        let row = world.bodies.get_mut(&DOTS).unwrap().push(Vec2::ZERO, Vec2::ZERO, 5.0);
-        log.push(crate::Event {
-            step,
-            kind: crate::EventKind::Spawn,
-            a: crate::Party { thing: DOTS, item: row },
-            b: Some(crate::Party { thing, item: 0 }),
-            point: Vec2::ZERO,
-            normal: Vec2::ZERO,
-            speed: 0.0,
-        });
-    }
-    fn forces(&self, _thing: ThingId, world: &mut World, dt: f32) {
-        for v in &mut world.bodies.get_mut(&DOTS).unwrap().velocity {
-            *v += Vec2::X * 1000.0 * dt;
-        }
-    }
-    fn settle(&self, thing: ThingId, world: &mut World, _dt: f32) {
-        let moved = world.bodies[&DOTS].position[0] != world.bodies[&DOTS].previous[0];
-        if moved {
-            *crate::state_mut::<u32>(world.states.get_mut(&thing).unwrap().as_mut()) += 1;
-        }
-    }
-    fn after_step(&self, thing: ThingId, world: &mut World, log: &mut crate::Log) {
-        log.push(crate::Event {
-            step: world.step,
-            kind: crate::EventKind::Custom("tick".into()),
-            a: crate::Party { thing, item: 0 },
-            b: None,
-            point: Vec2::ZERO,
-            normal: Vec2::ZERO,
-            speed: 0.0,
-        });
-    }
-}
-
-/// A round peg at the thing's place that rides along with its parent.
-pub struct TestPeg;
-impl ThingSim for TestPeg {
-    fn kind(&self) -> &'static str {
-        "peg"
-    }
-    fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
-        let s = PegSettings::from_params(&resolved.params);
-        world.states.insert(thing.id, Box::new(s.radius));
-        self.scripted(thing.id, world);
-    }
-    fn scripted(&self, thing: ThingId, world: &mut World) {
-        let radius = world.states.get(&thing).map_or(10.0, |s| *crate::state::<f32>(s.as_ref()));
-        let pose = world.anchor(thing);
-        world.poses.insert(thing, pose);
-        world.solids.insert(thing, Solids::new(pose, vec![Solid::Disc { center: pose.position, radius }]));
-    }
-}
-
 /// Gravity for everything, so balls fall. Its state is the scale, an `f32`.
 struct TestGravity;
 impl ModuleSim for TestGravity {
@@ -386,41 +303,6 @@ impl ModuleSim for TestGravity {
     }
 }
 
-/// Grows a ball by one pixel on every hit of a thing in the module's scope.
-pub struct GrowOnHit;
-impl ModuleSim for GrowOnHit {
-    fn kind(&self) -> &'static str {
-        "rules.test"
-    }
-    fn prepare(&self, _params: &Params) -> Box<dyn ThingState> {
-        Box::new(())
-    }
-    fn rules(&self, _state: &mut dyn ThingState, cx: &mut RuleCx) {
-        for e in cx.events {
-            if e.kind == EventKind::Hit && cx.world.in_scope(cx.thing, e.a.thing) {
-                cx.actions.push(Action::Grow { ball: e.a, by: 1.0 });
-            }
-        }
-    }
-}
-struct RulesTestKind;
-impl ModuleKind for RulesTestKind {
-    fn id(&self) -> &'static str {
-        "rules.test"
-    }
-    fn name(&self) -> &'static str {
-        "Grow on hit"
-    }
-    fn help(&self) -> &'static str {
-        ""
-    }
-    fn slot(&self) -> SlotId {
-        SlotId::Rules
-    }
-    fn settings(&self) -> &'static [SettingDef] {
-        NoSettings::defs()
-    }
-}
 struct GravityKind;
 impl ModuleKind for GravityKind {
     fn id(&self) -> &'static str {
@@ -496,15 +378,12 @@ pub fn reg() -> Registry {
     r.add_thing(RootKind);
     r.add_thing(WallKind);
     r.add_thing(DotsKind);
-    r.add_thing(EmitterKind);
     r.add_thing(CounterKind);
-    r.add_thing(PegKind);
     r.add_module(GravityKind);
     r.add_module(StickyKind);
     r.add_module(BouncyKind);
     r.add_module(BumpyKind);
     r.add_module(TrailKind);
-    r.add_module(RulesTestKind);
     r
 }
 
@@ -513,14 +392,11 @@ pub fn sims(sticky_takes_over: bool) -> Sims {
     s.add_thing(TestRoot);
     s.add_thing(TestWall);
     s.add_thing(TestDots);
-    s.add_thing(TestEmitter);
     s.add_thing(TestCounter);
-    s.add_thing(TestPeg);
     s.add_module(TestGravity);
     s.add_module(Sticky { takes_over: sticky_takes_over });
     s.add_module(Bouncy);
     s.add_module(Bumpy);
-    s.add_module(GrowOnHit);
     s
 }
 
@@ -538,39 +414,12 @@ pub fn dots_in_ring(count: u32) -> (Scene, Resolved, Sims) {
     (scene, resolved, sims(true))
 }
 
-/// The dots in a ring with a grow-on-hit Rules module, linked on the root (and inherited by
-/// the wall and the dots) or on the dots alone.
-pub fn dots_with_rules(count: u32, owner_is_root: bool) -> (Scene, Resolved, Sims) {
-    let (mut scene, _, sims) = dots_in_ring(count);
-    let reg = reg();
-    let rules = scene.add_module(&reg, "rules.test", "Grow").unwrap();
-    let owner = if owner_is_root { ThingId::ROOT } else { DOTS };
-    scene.link(&reg, owner, SlotId::Rules, rules).unwrap();
-    let resolved = resolve(&scene, &reg);
-    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-    (scene, resolved, sims)
-}
-
 /// One dot riding on a ring that turns clockwise at 1 rad/s.
 pub fn ring_with_rider(offset: Vec2, turn: bool) -> (Scene, Resolved, Sims) {
     let (mut scene, _, sims) = dots_in_ring(1);
     scene.things.get_mut(&WALL).unwrap().params.set("spin", Value::Number(1.0));
     scene.set_parent(DOTS, WALL, Attach::Ride { offset, turn_with_parent: turn, item: None }).unwrap();
     let resolved = resolve(&scene, &reg());
-    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-    (scene, resolved, sims)
-}
-
-/// One still dot above a peg inside the ring, so it falls onto the peg.
-pub fn dots_and_peg() -> (Scene, Resolved, Sims) {
-    let (mut scene, _, sims) = dots_in_ring(1);
-    let reg = reg();
-    let peg = scene.add_thing(&reg, "peg", ThingId::ROOT).unwrap();
-    assert_eq!(peg, PEG);
-    scene.things.get_mut(&PEG).unwrap().transform.position = Vec2::new(0.0, 40.0);
-    scene.things.get_mut(&DOTS).unwrap().transform.position = Vec2::new(0.0, -50.0);
-    scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
-    let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims)
 }
@@ -635,15 +484,4 @@ pub fn dots_in_sticky_ring(takes_over: bool) -> (Scene, Resolved, Sims) {
     let resolved = resolve(&scene, &reg);
     assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
     (scene, resolved, sims(takes_over))
-}
-
-/// One dot in the ring plus an emitter that exercises every hook.
-pub fn dots_with_emitter() -> (Scene, Resolved, Sims) {
-    let (mut scene, _, sims) = dots_in_ring(1);
-    let reg = reg();
-    let emitter = scene.add_thing(&reg, "emitter", ThingId::ROOT).unwrap();
-    assert_eq!(emitter, EMITTER);
-    let resolved = resolve(&scene, &reg);
-    assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-    (scene, resolved, sims)
 }

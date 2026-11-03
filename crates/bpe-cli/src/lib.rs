@@ -1,16 +1,13 @@
 //! Video export for the modular studio.
 //!
-//! The scene is simulated once for its event log, the soundtrack is mixed from that log and
-//! written to a temporary WAV. Then every frame is drawn offscreen and piped as raw RGBA into
-//! ffmpeg, which encodes H.264 video and AAC audio into one mp4. Export does not run in real
-//! time: a slow machine just takes longer, and the result is identical.
-
-pub mod batch;
+//! Every frame is drawn offscreen and piped as raw RGBA into ffmpeg, which encodes H.264 video
+//! into an mp4 with a silent AAC track (upload apps expect the clip to have sound). Export does
+//! not run in real time: a slow machine just takes longer, and the result is identical.
 
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
-use bpe_gfx::{Frame, Readback, Renderer, build_frame_at, wgpu};
-use bpe_kit::{Kit, SceneSettings, flow_source};
+use bpe_gfx::{Frame, Readback, Renderer, build_frame, wgpu};
+use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Log, World};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -31,24 +28,6 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
-    /// MIDI and stems to save beside the video.
-    pub extras: bpe_kit::Extras,
-    /// What the extras are named after: `<base>.mid` and `<base>-stems/`. `None` names them
-    /// after the video.
-    pub extras_base: Option<PathBuf>,
-    /// The folder relative picture paths are read from: the scene file's folder.
-    pub picture_folder: Option<PathBuf>,
-}
-
-/// What an export made, besides the video.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExportReport {
-    /// The encoder that made the video.
-    pub encoder: Encoder,
-    /// What the master stage measured of the soundtrack.
-    pub master: Option<bpe_mix::MasterReport>,
-    /// The MIDI file and stems written beside it.
-    pub extras: Vec<PathBuf>,
 }
 
 impl ExportOptions {
@@ -61,16 +40,7 @@ impl ExportOptions {
             scale: 1.0,
             max_frames: None,
             encoder: Encoder::Auto,
-            extras: bpe_kit::Extras::default(),
-            extras_base: None,
-            picture_folder: None,
         }
-    }
-
-    /// What the MIDI file and stems are named after: the extras base, else the video without
-    /// its extension.
-    pub fn extras_path(&self) -> PathBuf {
-        self.extras_base.clone().unwrap_or_else(|| self.output.with_extension(""))
     }
 }
 
@@ -249,71 +219,36 @@ pub fn frame_count(settings: &SceneSettings) -> u32 {
 
 /// Renders `scene` to an mp4. `progress` is called after every frame with (done, total);
 /// return `false` from it to cancel, which deletes the partial file. If a graphics card
-/// encoder fails, the export starts again on the CPU.
+/// encoder fails, the export starts again on the CPU. Gives back the encoder that made it.
 pub fn export_video(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     scene: &Scene,
     kit: &Kit,
     options: &ExportOptions,
-    progress: impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<Encoder> {
-    export_video_reporting(device, queue, scene, kit, options, progress).map(|r| r.encoder)
-}
-
-/// [`export_video`], with what the master stage measured of the soundtrack too.
-pub fn export_video_reporting(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    scene: &Scene,
-    kit: &Kit,
-    options: &ExportOptions,
     mut progress: impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<ExportReport> {
+) -> anyhow::Result<Encoder> {
     let encoder = resolve_encoder(options.encoder, &options.ffmpeg);
     match export_with(device, queue, scene, kit, options, encoder, &mut progress) {
         Err(error) if retry_on_cpu(encoder, &error) => {
-            let (master, extras) = export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
+            export_with(device, queue, scene, kit, options, Encoder::Cpu, &mut progress)
                 .with_context(|| format!("the {} failed first ({error:#})", encoder.name()))?;
-            Ok(ExportReport { encoder: Encoder::Cpu, master, extras })
+            Ok(Encoder::Cpu)
         }
-        result => result.map(|(master, extras)| ExportReport { encoder, master, extras }),
+        result => result.map(|()| encoder),
     }
 }
 
 const CANCELLED: &str = "export cancelled";
-/// The error an export gives when the video is made but its MIDI file or stems couldn't be saved.
-const EXTRAS_FAILED: &str = "saving the MIDI file and stems";
 
 /// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
-/// made the video, and not because it was cancelled or the extras couldn't be saved.
+/// made the video, and not because it was cancelled.
 fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    encoder != Encoder::Cpu && !message.contains(CANCELLED) && !message.contains(EXTRAS_FAILED)
+    encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED)
 }
 
-/// Reads a MIDI or stems flag into `extras`; false when `flag` is not one.
-pub fn extras_flag(flag: &str, extras: &mut bpe_kit::Extras) -> bool {
-    match flag {
-        "--midi" => extras.midi = true,
-        "--stems" => extras.stems = true,
-        "--wet-stems" => {
-            extras.stems = true;
-            extras.wet = true;
-        }
-        _ => return false,
-    }
-    true
-}
 /// Frames that can be on their way back from the graphics card at once.
 const FRAMES_IN_FLIGHT: usize = 3;
-/// How many of `total` frames to draw when a rule ends the video at run time `end`: up to and
-/// including the first frame whose moment of the run (`sim_time` of its video time) is at or past
-/// it. Never more than `total`, never fewer than 1.
-fn frames_until_end(total: u32, fps: u32, end: f64, sim_time: impl Fn(f64) -> f64) -> u32 {
-    (0..total).find(|&k| sim_time(k as f64 / fps as f64) >= end).map_or(total, |k| k + 1).clamp(1, total.max(1))
-}
-
 /// Finished frames that can wait for ffmpeg at once.
 const FRAMES_QUEUED: usize = 4;
 
@@ -325,7 +260,7 @@ fn export_with(
     options: &ExportOptions,
     encoder: Encoder,
     progress: &mut impl FnMut(u32, u32) -> bool,
-) -> anyhow::Result<(Option<bpe_mix::MasterReport>, Vec<PathBuf>)> {
+) -> anyhow::Result<()> {
     let (resolved, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
@@ -336,34 +271,12 @@ fn export_with(
     let frames_in_video = frame_count(&video);
     let total = options.max_frames.map_or(frames_in_video, |m| m.min(frames_in_video)).max(1);
 
-    // The whole run first, for the sounds: every hit is known before the first frame is drawn.
-    let mut run = World::build(scene, &resolved, &kit.sims);
-    run.record_tracks = bpe_kit::uses_live_inputs(scene);
-    let mut log = Log::default();
-    run.advance_to(video.duration as f64, &kit.sims, &mut log);
-    let wav = TempFile::new("wav");
-    let export = bpe_kit::mix_scene_export(scene, &resolved, &log, kit, options.extras);
-    let track = &export.soundtrack;
-    for problem in &track.problems {
-        eprintln!("sound: {problem}");
-    }
-    if let Some(report) = &track.report {
-        eprintln!("Loudness {:.1} LUFS, true peak {:.1} dBTP", report.integrated, report.true_peak);
-    }
-    track.write_wav(&wav.0)?;
-    // Beat sync by time warp: each frame shows the moment of the run the warp puts there.
-    let warp = bpe_kit::warp_for(scene, &resolved, &log);
-    // A rule may end the video early: draw up to the first frame at or after the end.
-    let total = match log.end_time(run.steps_per_second) {
-        Some(end) => frames_until_end(total, fps, end, |t| warp.sim_time(t)),
-        None => total,
-    };
-
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
     ffmpeg.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}"), "-r", &fps.to_string()]);
     ffmpeg.args(["-i", "-"]);
-    ffmpeg.arg("-i").arg(&wav.0);
+    // A silent stereo track, so apps that expect sound take the clip.
+    ffmpeg.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
     ffmpeg.args(["-map", "0:v", "-map", "1:a"]);
     ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
     ffmpeg.args(encoder.args(options.crf, &options.preset));
@@ -393,22 +306,17 @@ fn export_with(
 
     let mut renderer = Renderer::new(device, width, height);
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
-    // Drawn from a second run that keeps pace with the frames, exactly as the preview plays.
+    // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
     let mut world = World::build(scene, &resolved, &kit.sims);
     let mut log = Log::default();
     let mut frame = Frame::default();
-    // Liquids and swarms on the graphics card step with the frames; without a time budget
-    // every frame waits for them, so the clip never skips.
-    let mut source = flow_source(scene, &resolved, &kit.sims, None);
-    source.picture_folder = options.picture_folder.clone();
     let mut failed = None;
     for index in 0..total {
-        let video_time = index as f64 / fps as f64;
-        let time = warp.sim_time(video_time);
+        let time = index as f64 / fps as f64;
         world.advance_to(time, &kit.sims, &mut log);
-        build_frame_at(scene, &resolved, &world, &log, time, video_time, &kit.draws, &mut frame);
+        build_frame(scene, &resolved, &world, &log, time, &kit.draws, &mut frame);
         frame.cull();
-        while !renderer.render_with_flow(device, queue, &frame, &source).caught_up {}
+        renderer.render(device, queue, &frame);
         let ready = match readback.push(device, queue, &renderer) {
             Ok(ready) => ready,
             Err(error) => {
@@ -456,9 +364,7 @@ fn export_with(
         let _ = std::fs::remove_file(&output);
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
-    // Only once the video is made, so a cancelled or failed export leaves no extras behind.
-    let extras = bpe_kit::write_extras(&export, &options.extras_path()).context(EXTRAS_FAILED)?;
-    Ok((track.report.clone(), extras))
+    Ok(())
 }
 
 /// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put
@@ -535,63 +441,14 @@ fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
     })
 }
 
-/// A file in the temp folder that is deleted when dropped.
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn new(extension: &str) -> Self {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        Self(std::env::temp_dir().join(format!("bpe-next-{}-{nanos}.{extension}", std::process::id())))
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn extras_that_fail_to_save_are_not_rendered_again() {
-        let extras = anyhow::anyhow!("disk full").context(EXTRAS_FAILED);
-        assert!(!retry_on_cpu(Encoder::Nvidia, &extras));
+    fn only_a_graphics_card_failure_is_tried_again_on_the_cpu() {
         assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!(CANCELLED)));
         assert!(retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("ffmpeg failed")));
         assert!(!retry_on_cpu(Encoder::Cpu, &anyhow::anyhow!("ffmpeg failed")));
-    }
-
-    #[test]
-    fn frames_until_end_counts_to_the_first_frame_at_or_past_it() {
-        let identity = |t: f64| t;
-        // 60 fps, ending at 3 s: frames 0 to 180 are drawn.
-        assert_eq!(frames_until_end(360, 60, 3.0, identity), 181);
-        assert_eq!(frames_until_end(360, 60, 3.001, identity), 182);
-        // Never more than the video, never fewer than one frame.
-        assert_eq!(frames_until_end(120, 60, 9.0, identity), 120);
-        assert_eq!(frames_until_end(120, 60, 0.0, identity), 1);
-        // The beat sync's warp is asked, not the plain clock.
-        assert_eq!(frames_until_end(360, 60, 3.0, |t| t * 2.0), 91);
-    }
-
-    #[test]
-    fn extras_flags() {
-        let mut extras = bpe_kit::Extras::default();
-        assert!(extras_flag("--midi", &mut extras) && extras_flag("--wet-stems", &mut extras));
-        assert!(!extras_flag("--scale", &mut extras));
-        assert_eq!(extras, bpe_kit::Extras { midi: true, stems: true, wet: true });
-    }
-}
-
-#[cfg(test)]
-mod picture_folder_tests {
-    use super::*;
-
-    #[test]
-    fn export_options_have_no_picture_folder_by_default() {
-        assert!(ExportOptions::new("x.mp4").picture_folder.is_none());
     }
 }

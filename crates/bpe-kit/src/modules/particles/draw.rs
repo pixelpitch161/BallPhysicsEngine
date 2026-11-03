@@ -5,7 +5,7 @@ use bpe_gfx::{Burst, DrawCx, Frame, GradientAtlas, HitMark, ModuleDraw, PaintGpu
 
 use super::{BurstSource, HitBurst};
 use crate::paint::gpu::repeat_code;
-use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, vary_gpu};
+use crate::paint::{Follow, Inputs, Paint, colour_at, vary_gpu};
 
 pub struct BurstDraw;
 
@@ -32,7 +32,7 @@ impl ModuleDraw for BurstDraw {
             return;
         }
         let time = cx.time as f32;
-        let own = OwnColours::new(cx, &burst.colour);
+        let own = OwnColours::new(cx);
         let mut bursts = Vec::new();
         for mark in frame.hits.iter().filter(|m| m.thing == cx.thing.id) {
             if mark.time > time || time - mark.time >= burst.life || mark.speed < burst.least_speed {
@@ -54,25 +54,22 @@ impl ModuleDraw for BurstDraw {
     }
 }
 
-/// What a burst's own Colours read this frame: the frame's time and beats, and the camera for
+/// What a burst's own Colours read this frame: the frame's time, and the camera for
 /// the screen place of each hit.
 pub struct OwnColours {
     camera: bpe_runtime::CameraView,
     /// Stuck to the screen: hit points are screen places already.
     screen: bool,
     time: f32,
-    beats: f32,
 }
 
 impl OwnColours {
-    pub fn new(cx: &DrawCx, p: &Paint) -> Self {
-        let beats =
-            if p.follow == Follow::Beat { beats_at(cx.log, cx.video_time, cx.world.steps_per_second) } else { 0.0 };
-        Self { camera: cx.world.camera, screen: cx.resolved.screen, time: cx.time as f32, beats }
+    pub fn new(cx: &DrawCx) -> Self {
+        Self { camera: cx.world.camera, screen: cx.resolved.screen, time: cx.time as f32 }
     }
 
     /// The one colour a burst's particles all take from `p`, for the follows worked out once
-    /// per burst: where the hit was, how hard, and the time and beats now, varied by the burst's
+    /// per burst: where the hit was, how hard, and the time now, varied by the burst's
     /// `seed`. Life and Order are worked out per particle on the GPU and start from the first
     /// stop here.
     pub fn colour(&self, p: &Paint, mark: &HitMark, seed: u32) -> [f32; 4] {
@@ -83,7 +80,6 @@ impl OwnColours {
             place_screen: if self.screen { place } else { self.camera.to_screen(place) },
             start: place,
             speed: mark.speed,
-            beats: self.beats,
             time: self.time,
             seed,
             ..Inputs::default()

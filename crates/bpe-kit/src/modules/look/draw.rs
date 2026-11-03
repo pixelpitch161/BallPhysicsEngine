@@ -9,7 +9,7 @@ use bpe_runtime::{Bodies, CameraView};
 use glam::Vec2;
 
 use super::BasicLook;
-use crate::paint::{Follow, Inputs, Paint, beats_at, colour_at, hits_on, paint_gpu, seed_of};
+use crate::paint::{Follow, Inputs, Paint, colour_at, hits_on, paint_gpu, seed_of};
 
 /// The thing's look, when its Look slot is filled.
 pub fn look_of(cx: &DrawCx) -> Option<BasicLook> {
@@ -25,8 +25,7 @@ pub fn for_balls(mut p: Paint) -> Paint {
 }
 
 /// What the paints of one thing's balls read this frame: the balls, their latest hits (found in
-/// one pass over the log, only when a paint steps on them), the camera for screen places, and
-/// the beats so far (counted once, only when a paint follows them).
+/// one pass over the log, only when a paint steps on them), the and the camera for screen places.
 pub struct BallInputs<'a> {
     /// The thing the balls belong to, for each ball's own variation.
     thing: ThingId,
@@ -35,7 +34,6 @@ pub struct BallInputs<'a> {
     /// Stuck to the screen: the balls' own places are screen places.
     screen: bool,
     time: f64,
-    beats: f32,
     /// Per ball: its latest hit (when, what it hit, where); empty when no paint steps on hits.
     #[allow(clippy::type_complexity)]
     last: Vec<Option<(f64, Option<ThingId>, Vec2)>>,
@@ -46,11 +44,6 @@ impl<'a> BallInputs<'a> {
     /// The inputs for `bodies`, the balls of the thing `cx` draws, ready for `paints`.
     pub fn new(cx: &DrawCx<'a>, bodies: &'a Bodies, paints: &[&Paint]) -> Self {
         let steps_per_second = cx.world.steps_per_second;
-        let beats = if paints.iter().any(|p| p.follow == Follow::Beat) {
-            beats_at(cx.log, cx.video_time, steps_per_second)
-        } else {
-            0.0
-        };
         let last = if paints.iter().any(|p| p.follow == Follow::Step) {
             hits_on(cx.log, cx.thing.id, bodies.len(), cx.time, steps_per_second).into_iter().map(|h| h.1).collect()
         } else {
@@ -62,7 +55,6 @@ impl<'a> BallInputs<'a> {
             camera: cx.world.camera,
             screen: cx.resolved.screen,
             time: cx.time,
-            beats,
             last,
             still: StillColours::new(cx),
         }
@@ -79,7 +71,7 @@ impl<'a> BallInputs<'a> {
         let b = self.bodies;
         let place = b.position.get(i).copied().unwrap_or_default();
         let hits = b.hits.get(i).copied().unwrap_or(0);
-        let mut inputs = ball_inputs(self.thing, b, i, self.on_screen(place), self.time, self.beats);
+        let mut inputs = ball_inputs(self.thing, b, i, self.on_screen(place), self.time);
         if p.follow == Follow::Step
             && hits > 0
             && let Some(&Some((at, other, point))) = self.last.get(i)
@@ -94,9 +86,9 @@ impl<'a> BallInputs<'a> {
 }
 
 /// What a paint reads about ball `i` of `bodies` before any hit is looked at: its index, place
-/// (and `place_screen`, where that is on the screen), start, speed, hits, the beats so far, the
-/// time and its own variation seed. Drawing and the marks layer both build their inputs here.
-pub fn ball_inputs(thing: ThingId, bodies: &Bodies, i: usize, place_screen: Vec2, time: f64, beats: f32) -> Inputs {
+/// (and `place_screen`, where that is on the screen), start, speed, hits, the time and its
+/// own variation seed. Drawing and the ball colours the simulation reads both build their inputs here.
+pub fn ball_inputs(thing: ThingId, bodies: &Bodies, i: usize, place_screen: Vec2, time: f64) -> Inputs {
     let place = bodies.position.get(i).copied().unwrap_or_default();
     Inputs {
         index: i,
@@ -106,7 +98,6 @@ pub fn ball_inputs(thing: ThingId, bodies: &Bodies, i: usize, place_screen: Vec2
         start: bodies.spawn.get(i).copied().unwrap_or(place),
         speed: bodies.velocity.get(i).map_or(0.0, |v| v.length()),
         hits: bodies.hits.get(i).copied().unwrap_or(0),
-        beats,
         time: time as f32,
         seed: seed_of(thing, i),
         ..Inputs::default()
@@ -171,8 +162,7 @@ pub fn for_walls(mut p: Paint) -> Paint {
 
 /// What the paint of one wall or obstacle reads this frame, for each of its `count` pieces (the
 /// pegs of a grid, the bars of a set; a wall is one piece): the hits on each piece (counted in one
-/// pass over the log, only when the paint follows hits or steps), the beats so far (only when it
-/// follows them), the camera for screen places, and how fast the thing moves. A wall has no life
+/// pass over the log, only when the paint follows hits or steps), the camera for screen places, and how fast the thing moves. A wall has no life
 /// and its place along its own line is worked out on the GPU, so both read 0.
 pub struct WallInputs<'a> {
     /// The thing the pieces belong to, for each piece's own variation.
@@ -184,7 +174,6 @@ pub struct WallInputs<'a> {
     time: f64,
     count: usize,
     speed: f32,
-    beats: f32,
     /// Per piece: its hits so far, and the latest one (when, what hit it, where).
     #[allow(clippy::type_complexity)]
     hits: Vec<(u32, Option<(f64, Option<ThingId>, Vec2)>)>,
@@ -195,7 +184,6 @@ impl<'a> WallInputs<'a> {
     /// second, ready for `p` (already [`for_walls`]).
     pub fn new(cx: &DrawCx<'a>, p: &Paint, count: usize, speed: f32) -> Self {
         let steps_per_second = cx.world.steps_per_second;
-        let beats = if p.follow == Follow::Beat { beats_at(cx.log, cx.video_time, steps_per_second) } else { 0.0 };
         let hits = if matches!(p.follow, Follow::Hits | Follow::Step) {
             hits_on(cx.log, cx.thing.id, count, cx.time, steps_per_second)
         } else {
@@ -209,7 +197,6 @@ impl<'a> WallInputs<'a> {
             time: cx.time,
             count,
             speed: if speed.is_finite() { speed } else { 0.0 },
-            beats,
             hits,
         }
     }
@@ -225,7 +212,6 @@ impl<'a> WallInputs<'a> {
             start: place,
             speed: self.speed,
             hits,
-            beats: self.beats,
             time: self.time as f32,
             seed: seed_of(self.thing, i),
             ..Inputs::default()
@@ -250,7 +236,7 @@ impl<'a> WallInputs<'a> {
 }
 
 /// The linear-light colour of each ball in `bodies`: the look's Colours painted the way it
-/// follows (place, start, order, speed, hits, steps, beats or time), then turned round the colour
+/// follows (place, start, order, speed, hits, steps or time), then turned round the colour
 /// wheel by "Hue shift per hit" for every hit the ball has taken. The closure owns the look and
 /// borrows the bodies and what `cx` borrows.
 pub fn colors<'a>(look: BasicLook, cx: &DrawCx<'a>, bodies: &'a Bodies) -> impl Fn(usize) -> [f32; 4] + 'a {

@@ -28,26 +28,14 @@ pub enum SlotId {
     Trail,
     Motion,
     Bounce,
-    Sound,
     Particles,
-    Rules,
     Shader,
-    Marks,
 }
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 9] = [
-        SlotId::Look,
-        SlotId::Trail,
-        SlotId::Motion,
-        SlotId::Bounce,
-        SlotId::Sound,
-        SlotId::Particles,
-        SlotId::Rules,
-        SlotId::Shader,
-        SlotId::Marks,
-    ];
+    pub const ALL: [SlotId; 6] =
+        [SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles, SlotId::Shader];
 
     /// The name shown in the inspector.
     pub fn name(self) -> &'static str {
@@ -56,11 +44,8 @@ impl SlotId {
             SlotId::Trail => "Trail",
             SlotId::Motion => "Motion",
             SlotId::Bounce => "Bounce",
-            SlotId::Sound => "Sound",
             SlotId::Particles => "Particles",
-            SlotId::Rules => "Rules",
             SlotId::Shader => "Shader",
-            SlotId::Marks => "Marks",
         }
     }
 }

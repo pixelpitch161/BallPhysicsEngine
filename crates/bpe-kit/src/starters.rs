@@ -1,55 +1,19 @@
 //! What a new thing starts with: its own modules, made for its kind, unless a folder above it
 //! already fills the slot, in which case it follows the folder. Moving things, or changing a
-//! folder's modules, never changes what a following thing looks or sounds like: it gets its
+//! folder's modules, never changes what a following thing looks like: it gets its
 //! own copy of what it used before.
 
-use bpe_core::{
-    Attach, EditError, InstrumentRef, InstrumentSource, Progression, ProgressionRef, Registry, Resolved, Scene,
-    SettingValue, SlotId, SlotLink, ThingId, Value, resolve, resolve_slot,
-};
+use bpe_core::{Attach, EditError, Registry, Resolved, Scene, SlotId, SlotLink, ThingId, resolve, resolve_slot};
 
-/// Settings a starter changes from its module kind's defaults.
-type Tweaks = &'static [(&'static str, Value)];
-
-/// The module kind a new thing of `thing_kind` starts with in `slot`, and what it changes from
-/// that kind's defaults. `None` means the first module kind for the slot that the thing takes.
-fn starter_kind(thing_kind: &str, slot: SlotId) -> Option<(&'static str, Tweaks)> {
-    const SOFT_LANDING: Tweaks = &[("bounciness", Value::Number(0.0))];
-    Some(match (thing_kind, slot) {
-        ("liquid", SlotId::Look) => ("look.liquid", &[]),
-        ("liquid", SlotId::Motion) => ("motion.liquid", &[]),
-        ("liquid", SlotId::Bounce) => ("bounce.basic", SOFT_LANDING),
-        ("swarm", SlotId::Look) => ("look.swarm", &[]),
-        ("swarm", SlotId::Motion) => ("motion.flock", &[]),
-        (_, SlotId::Look) => ("look.basic", &[]),
-        (_, SlotId::Motion) => ("motion.basic", &[]),
-        (_, SlotId::Bounce) => ("bounce.basic", &[]),
-        (_, SlotId::Sound) => ("sound.notes", &[]),
+/// The module kind a new thing starts with in `slot`. `None` means the first module kind for
+/// the slot that the thing takes.
+fn starter_kind(slot: SlotId) -> Option<&'static str> {
+    Some(match slot {
+        SlotId::Look => "look.basic",
+        SlotId::Motion => "motion.basic",
+        SlotId::Bounce => "bounce.basic",
         _ => return None,
     })
-}
-
-/// The scene's library Pluck, added the first time something needs it.
-pub(crate) fn shared_pluck(scene: &mut Scene) -> InstrumentRef {
-    let pluck = bpe_core::Choice::name(bpe_mix::Instrument::Pluck);
-    let found = scene
-        .library
-        .instruments
-        .iter()
-        .find(|(_, i)| matches!(&i.source, InstrumentSource::BuiltIn { which, .. } if which == pluck));
-    if let Some((&id, _)) = found {
-        return InstrumentRef(Some(id));
-    }
-    InstrumentRef(Some(scene.add_instrument(crate::built_in_instrument(bpe_mix::Instrument::Pluck))))
-}
-
-/// The scene's library starter progression, added the first time something needs it.
-pub(crate) fn shared_progression(scene: &mut Scene) -> ProgressionRef {
-    let name = Progression::starter().name;
-    if let Some((&id, _)) = scene.library.progressions.iter().find(|(_, p)| p.name == name) {
-        return ProgressionRef(Some(id));
-    }
-    ProgressionRef(Some(scene.add_progression(Progression::starter())))
 }
 
 /// Fills `slot` on `id`: follows a folder above that fills it, or else makes the thing its own
@@ -65,10 +29,10 @@ pub fn fill_slot(scene: &mut Scene, reg: &Registry, id: ThingId, slot: SlotId) -
     if resolve_slot(scene, reg, id, slot, &mut Vec::new()).is_some() {
         return Ok(());
     }
-    let (module_kind, tweaks) = match starter_kind(kind.id(), slot).filter(|(k, _)| kind.accepts(slot, k)) {
+    let module_kind = match starter_kind(slot).filter(|k| kind.accepts(slot, k)) {
         Some(found) => found,
         None => match reg.modules_for(slot).find(|m| kind.accepts(slot, m.id())) {
-            Some(m) => (m.id(), &[][..]),
+            Some(m) => m.id(),
             None => {
                 match previous {
                     Some(link) => scene.things.get_mut(&id).expect("checked").slots.insert(slot, link),
@@ -78,16 +42,7 @@ pub fn fill_slot(scene: &mut Scene, reg: &Registry, id: ThingId, slot: SlotId) -
             }
         },
     };
-    let m = scene.add_starter(reg, id, module_kind)?;
-    let mut params = tweaks.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Vec<_>>();
-    if module_kind == "sound.notes" {
-        params.push(("instrument".into(), shared_pluck(scene).to_value()));
-        params.push(("chords".into(), shared_progression(scene).to_value()));
-    }
-    let module = scene.library.modules.get_mut(&m).expect("just added");
-    for (key, value) in params {
-        module.params.set(&key, value);
-    }
+    scene.add_starter(reg, id, module_kind)?;
     Ok(())
 }
 
@@ -99,171 +54,7 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
     for &slot in slots {
         fill_slot(scene, reg, id, slot)?;
     }
-    if kind == "canvas" {
-        give_balls_brushes(scene, reg)?;
-    }
     Ok(id)
-}
-
-/// What a new canvas can start as, in the Add menu's Canvas submenu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CanvasStart {
-    Paint,
-    ScratchCard,
-    Sand,
-    Snow,
-    FogGlass,
-    ColourWar,
-}
-
-impl CanvasStart {
-    pub const ALL: [CanvasStart; 6] =
-        [Self::Paint, Self::ScratchCard, Self::Sand, Self::Snow, Self::FogGlass, Self::ColourWar];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Paint => "Paint canvas",
-            Self::ScratchCard => "Scratch card",
-            Self::Sand => "Sand",
-            Self::Snow => "Snow",
-            Self::FogGlass => "Fog glass",
-            Self::ColourWar => "Colour war",
-        }
-    }
-
-    pub fn help(self) -> &'static str {
-        match self {
-            Self::Paint => "A blank canvas the balls paint on.",
-            Self::ScratchCard => "A foil cover the balls scratch off to show a prize word.",
-            Self::Sand => "A bed of sand the balls plough through.",
-            Self::Snow => "A drift of snow the balls plough through.",
-            Self::FogGlass => "Misted glass the balls wipe clear; it fogs up again.",
-            Self::ColourWar => "Ground the balls claim by colour, tile by tile.",
-        }
-    }
-
-    /// The canvas settings this start changes from the defaults.
-    pub fn settings(self) -> crate::CanvasSettings {
-        use crate::{CanvasKind, CoverLook, FogLook, PowderLook, StartsAs, Underneath};
-        use bpe_core::Color;
-        let mut s = crate::CanvasSettings::default();
-        match self {
-            Self::Paint => {}
-            Self::ScratchCard => {
-                s.kind = CanvasKind::Cover;
-                s.cover_look = CoverLook::Foil;
-                s.start_colour = Color::rgb(0xb8, 0xbc, 0xc6);
-                s.under = Underneath::Text;
-                s.under_text = "YOU WIN".to_string();
-                s.under_text_size = 200.0;
-                s.under_colour = Color::rgb(0x1b, 0x10, 0x30);
-                s.under_text_colour = Color::rgb(0xff, 0xd2, 0x3e);
-            }
-            Self::Sand => {
-                s.kind = CanvasKind::Powder;
-                s.powder_look = PowderLook::Sand;
-                s.start_colour = Color::rgb(0xd9, 0xb7, 0x7e);
-                s.ridges = 0.6;
-                s.grows_back = 4.0;
-            }
-            Self::Snow => {
-                s.kind = CanvasKind::Powder;
-                s.powder_look = PowderLook::Snow;
-                s.start_colour = Color::rgb(0xf4, 0xf7, 0xfb);
-                s.ridges = 0.8;
-                s.grows_back = 4.0;
-            }
-            Self::FogGlass => {
-                s.kind = CanvasKind::Fog;
-                s.fog_look = FogLook::Steam;
-                s.start_colour = Color::rgb(0xe8, 0xee, 0xf5);
-                s.density = 0.7;
-                s.blur = 14.0;
-                s.grows_back = 4.0;
-                s.drops = 0.5;
-            }
-            Self::ColourWar => {
-                s.kind = CanvasKind::Paint;
-                s.starts_as = StartsAs::Colour;
-                s.start_colour = Color::rgb(0x14, 0x14, 0x1c);
-                s.tile_size = 40.0;
-                s.take_over = true;
-                s.border = 0.4;
-            }
-        }
-        s
-    }
-}
-
-/// Adds a canvas of the given start under `parent`, and sets the balls' brushes up for it:
-/// scraping for covers, powder and fog, claiming for a colour war. Balls that already had a
-/// Marks module keep their paint trail; fresh ones get only what the start needs.
-pub fn add_canvas(
-    scene: &mut Scene,
-    reg: &Registry,
-    start: CanvasStart,
-    parent: ThingId,
-) -> Result<ThingId, EditError> {
-    use crate::modules::marks::{ClaimTeam, MarksBrushes, WidthBy};
-    use bpe_core::Settings;
-    let had_marks: std::collections::BTreeSet<ThingId> = scene
-        .order
-        .iter()
-        .copied()
-        .filter(|id| scene.things[id].kind == "balls")
-        .filter(|&id| resolve_slot(scene, reg, id, SlotId::Marks, &mut Vec::new()).is_some())
-        .collect();
-    let id = add_thing(scene, reg, "canvas", parent)?;
-    // Only what differs from the defaults, so later default changes still reach the canvas.
-    let defaults = crate::CanvasSettings::default().to_params();
-    for (key, value) in start.settings().to_params().0 {
-        if defaults.get(&key) != Some(&value) {
-            scene.things.get_mut(&id).expect("just added").params.set(&key, value);
-        }
-    }
-    let balls: Vec<ThingId> = scene.order.iter().copied().filter(|b| scene.things[b].kind == "balls").collect();
-    for ball in balls {
-        let Some(resolved) = resolve_slot(scene, reg, ball, SlotId::Marks, &mut Vec::new()) else { continue };
-        let Some(module) = scene.library.modules.get_mut(&resolved.module) else { continue };
-        let fresh = !had_marks.contains(&ball);
-        let mut b = MarksBrushes::from_params(&module.params);
-        match start {
-            CanvasStart::Paint => continue,
-            CanvasStart::ScratchCard | CanvasStart::Sand | CanvasStart::Snow | CanvasStart::FogGlass => {
-                b.scrape_on = true;
-                b.scrape_width_by = WidthBy::Size;
-                b.scrape_width = if start == CanvasStart::FogGlass { 1.4 } else { 1.0 };
-            }
-            CanvasStart::ColourWar => {
-                b.claim_on = true;
-                b.claim_hits = true;
-                b.claim_team = ClaimTeam::ByColour;
-            }
-        }
-        if fresh {
-            b.paint_on = false;
-        }
-        for (key, value) in b.to_params().0 {
-            module.params.set(&key, value);
-        }
-    }
-    Ok(id)
-}
-
-/// Links a fresh Brushes starter (Paint trail on) to every balls thing that has no Marks
-/// module, so a new canvas has something painting on it straight away.
-fn give_balls_brushes(scene: &mut Scene, reg: &Registry) -> Result<(), EditError> {
-    let bare: Vec<ThingId> = scene
-        .order
-        .iter()
-        .copied()
-        .filter(|id| scene.things[id].kind == "balls")
-        .filter(|&id| resolve_slot(scene, reg, id, SlotId::Marks, &mut Vec::new()).is_none())
-        .collect();
-    for id in bare {
-        fill_slot(scene, reg, id, SlotId::Marks)?;
-    }
-    Ok(())
 }
 
 /// After an edit, gives every thing that follows a folder its own copy of the module it used
@@ -326,7 +117,7 @@ pub fn move_thing(
 mod tests {
     use super::*;
     use crate::{new_scene, registry};
-    use bpe_core::{Color, Gradient, ModuleId, Settings, Value, resolve};
+    use bpe_core::{Color, Gradient, ModuleId, Value, resolve};
 
     fn linked(scene: &Scene, id: ThingId, slot: SlotId) -> ModuleId {
         match scene.things[&id].slots.get(&slot) {
@@ -345,36 +136,9 @@ mod tests {
         let table: &[(&str, &[(SlotId, &str)])] = &[
             (
                 "balls",
-                &[
-                    (SlotId::Look, "look.basic"),
-                    (SlotId::Motion, "motion.basic"),
-                    (SlotId::Bounce, "bounce.basic"),
-                    (SlotId::Sound, "sound.notes"),
-                ],
+                &[(SlotId::Look, "look.basic"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")],
             ),
-            (
-                "soft",
-                &[
-                    (SlotId::Look, "look.basic"),
-                    (SlotId::Motion, "motion.basic"),
-                    (SlotId::Bounce, "bounce.basic"),
-                    (SlotId::Sound, "sound.notes"),
-                ],
-            ),
-            (
-                "arena",
-                &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
-            ),
-            (
-                "obstacle",
-                &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic"), (SlotId::Sound, "sound.notes")],
-            ),
-            (
-                "liquid",
-                &[(SlotId::Look, "look.liquid"), (SlotId::Motion, "motion.liquid"), (SlotId::Bounce, "bounce.basic")],
-            ),
-            ("swarm", &[(SlotId::Look, "look.swarm"), (SlotId::Motion, "motion.flock")]),
-            ("text", &[(SlotId::Look, "look.basic")]),
+            ("arena", &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic")]),
         ];
         for &(kind, slots) in table {
             let mut scene = Scene::empty(&reg);
@@ -395,61 +159,14 @@ mod tests {
     }
 
     #[test]
-    fn a_liquid_gets_its_own_surface_flow_and_soft_landing() {
+    fn cameras_and_folders_start_empty() {
         let reg = registry();
         let mut scene = Scene::empty(&reg);
-        let a = add_thing(&mut scene, &reg, "liquid", ThingId::ROOT).unwrap();
-        let bounce = linked(&scene, a, SlotId::Bounce);
-        assert_eq!(scene.library.modules[&bounce].params.get("bounciness"), Some(&Value::Number(0.0)));
-    }
-
-    #[test]
-    fn adding_a_canvas_gives_balls_brushes() {
-        let reg = registry();
-        let mut scene = Scene::empty(&reg);
-        let bare = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let painted = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        fill_slot(&mut scene, &reg, painted, SlotId::Marks).unwrap();
-        let before = linked(&scene, painted, SlotId::Marks);
-        let wall = add_thing(&mut scene, &reg, "obstacle", ThingId::ROOT).unwrap();
-        add_thing(&mut scene, &reg, "canvas", ThingId::ROOT).unwrap();
-        let m = &scene.library.modules[&linked(&scene, bare, SlotId::Marks)];
-        assert_eq!((m.kind.as_str(), m.owner), ("marks.brushes", Some(bare)));
-        assert!(crate::modules::marks::MarksBrushes::from_params(&m.params).paint_on, "Paint trail is on");
-        assert_eq!(linked(&scene, painted, SlotId::Marks), before, "brushes already there stay");
-        assert!(!scene.things[&wall].slots.contains_key(&SlotId::Marks), "only balls get them");
-        let r = resolve(&scene, &reg);
-        assert!(r.problems.is_empty(), "{:?}", r.problems);
-    }
-
-    #[test]
-    fn emitters_fields_cameras_and_folders_start_empty() {
-        let reg = registry();
-        let mut scene = Scene::empty(&reg);
-        for kind in ["emitter", "field", "camera", "folder"] {
+        for kind in ["camera", "folder"] {
             let id = add_thing(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
             assert!(scene.things[&id].slots.is_empty(), "{kind}");
         }
         assert!(scene.library.modules.is_empty());
-    }
-
-    #[test]
-    fn sounds_share_one_pluck_and_one_starter_progression() {
-        let reg = registry();
-        let mut scene = Scene::empty(&reg);
-        let a = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        let b = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        assert_eq!(scene.library.instruments.len(), 1);
-        assert_eq!(scene.library.progressions.len(), 1);
-        let (&pluck, i) = scene.library.instruments.iter().next().unwrap();
-        assert_eq!(i.name, "Pluck");
-        let (&chords, p) = scene.library.progressions.iter().next().unwrap();
-        assert_eq!(p.name, "Starter");
-        for id in [a, b] {
-            let params = &scene.library.modules[&linked(&scene, id, SlotId::Sound)].params;
-            assert_eq!(params.get("instrument"), Some(&Value::Int(pluck.0 as i64)));
-            assert_eq!(params.get("chords"), Some(&Value::Int(chords.0 as i64)));
-        }
     }
 
     #[test]
@@ -581,91 +298,12 @@ mod tests {
         let names = |id: ThingId| -> Vec<String> {
             s.things[&id].slots.keys().map(|slot| s.library.modules[&linked(&s, id, *slot)].name.clone()).collect()
         };
-        assert_eq!(names(arena), ["Arena look", "Arena bounce", "Arena sound"]);
-        assert_eq!(names(ball), ["Ball look", "Ball motion", "Ball bounce", "Ball sound"]);
-        assert_eq!(s.library.modules.len(), 7);
+        assert_eq!(names(arena), ["Arena look", "Arena bounce"]);
+        assert_eq!(names(ball), ["Ball look", "Ball motion", "Ball bounce"]);
+        assert_eq!(s.library.modules.len(), 5);
         let res = resolve(&s, &reg);
         assert!(res.problems.is_empty(), "{:?}", res.problems);
         let pink = Gradient::solid(Color::rgb(0xff, 0x5c, 0xa8));
         assert_eq!(res.things[&ball].slots[&SlotId::Look].params.get("colours"), Some(&Value::Gradient(pink)));
-    }
-
-    // ---- canvas starting points ----
-
-    fn marks_of(scene: &Scene, reg: &Registry, ball: ThingId) -> crate::modules::marks::MarksBrushes {
-        use bpe_core::Settings;
-        let r = resolve_slot(scene, reg, ball, SlotId::Marks, &mut Vec::new()).expect("a Marks module");
-        crate::modules::marks::MarksBrushes::from_params(&scene.library.modules[&r.module].params)
-    }
-
-    #[test]
-    fn each_start_adds_a_canvas_of_its_kind() {
-        use crate::CanvasKind;
-        use bpe_core::Settings;
-        let kinds = [
-            (CanvasStart::Paint, CanvasKind::Paint),
-            (CanvasStart::ScratchCard, CanvasKind::Cover),
-            (CanvasStart::Sand, CanvasKind::Powder),
-            (CanvasStart::Snow, CanvasKind::Powder),
-            (CanvasStart::FogGlass, CanvasKind::Fog),
-            (CanvasStart::ColourWar, CanvasKind::Paint),
-        ];
-        for (start, kind) in kinds {
-            let reg = registry();
-            let mut scene = new_scene(&reg);
-            let id = add_canvas(&mut scene, &reg, start, ThingId::ROOT).unwrap();
-            assert_eq!(scene.things[&id].kind, "canvas");
-            let settings = crate::CanvasSettings::from_params(&scene.things[&id].params);
-            assert_eq!(settings.kind, kind, "{start:?}");
-            assert!(!start.label().is_empty() && !start.help().is_empty());
-        }
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let id = add_canvas(&mut scene, &reg, CanvasStart::ScratchCard, ThingId::ROOT).unwrap();
-        let s = crate::CanvasSettings::from_params(&scene.things[&id].params);
-        assert_eq!((s.under_text.as_str(), s.under_text_size), ("YOU WIN", 200.0));
-        assert!(resolve(&scene, &reg).problems.is_empty());
-    }
-
-    #[test]
-    fn scratch_card_turns_scrape_on_and_paint_off_for_fresh_brushes() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
-        add_canvas(&mut scene, &reg, CanvasStart::ScratchCard, ThingId::ROOT).unwrap();
-        let b = marks_of(&scene, &reg, ball);
-        assert!(b.scrape_on && !b.paint_on, "scrape on, paint off");
-        assert_eq!(b.scrape_width, 1.0);
-        let mut scene = new_scene(&reg);
-        add_canvas(&mut scene, &reg, CanvasStart::FogGlass, ThingId::ROOT).unwrap();
-        assert_eq!(marks_of(&scene, &reg, ball).scrape_width, 1.4);
-    }
-
-    #[test]
-    fn existing_brushes_keep_their_paint() {
-        use bpe_core::Settings;
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
-        fill_slot(&mut scene, &reg, ball, SlotId::Marks).unwrap();
-        let r = resolve_slot(&scene, &reg, ball, SlotId::Marks, &mut Vec::new()).unwrap();
-        let mut b = crate::modules::marks::MarksBrushes::from_params(&scene.library.modules[&r.module].params);
-        b.paint_on = true;
-        scene.library.modules.get_mut(&r.module).unwrap().params = b.to_params();
-        add_canvas(&mut scene, &reg, CanvasStart::Sand, ThingId::ROOT).unwrap();
-        let b = marks_of(&scene, &reg, ball);
-        assert!(b.paint_on && b.scrape_on);
-    }
-
-    #[test]
-    fn colour_war_turns_claims_on() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
-        let id = add_canvas(&mut scene, &reg, CanvasStart::ColourWar, ThingId::ROOT).unwrap();
-        let b = marks_of(&scene, &reg, ball);
-        assert!(b.claim_on && b.claim_hits && !b.paint_on);
-        let s = crate::CanvasSettings::from_params(&scene.things[&id].params);
-        assert_eq!((s.tile_size, s.take_over, s.starts_as), (40.0, true, crate::StartsAs::Colour));
     }
 }

@@ -33,12 +33,6 @@ pub enum ValueType {
     Choice(&'static [&'static str]),
     Text,
     Target,
-    /// A chord progression in the library, stored as `Value::Int`: its id, or -1 for Scene
-    /// defaults' one.
-    Progression,
-    /// An instrument in the library, stored as `Value::Int`: its id, or -1 for the built-in
-    /// one.
-    Instrument,
 }
 
 impl ValueType {
@@ -55,7 +49,6 @@ impl ValueType {
             | (ValueType::Text, Value::Text(_))
             | (ValueType::Target, Value::Target(_)) => true,
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),
-            (ValueType::Progression | ValueType::Instrument, Value::Int(x)) => *x >= -1 && *x <= u32::MAX as i64,
             _ => false,
         }
     }

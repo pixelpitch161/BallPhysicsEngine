@@ -38,7 +38,7 @@ pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Op
     for id in world.matching(&settings.follow_target, me) {
         if let Some(bodies) = world.bodies.get(&id) {
             for i in 0..bodies.len() {
-                if !bodies.alive[i] || bodies.silent {
+                if !bodies.alive[i] {
                     continue;
                 }
                 let (p, r) = (bodies.position[i], bodies.radius[i]);
@@ -180,8 +180,8 @@ impl ThingSim for CameraSim {
                 if e.kind != EventKind::Hit {
                     continue;
                 }
-                let ours = world.matches(me, e.a.thing, &s.hits_from)
-                    || e.b.is_some_and(|b| world.matches(me, b.thing, &s.hits_from));
+                let ours = world.names(&s.hits_from, me, e.a.thing)
+                    || e.b.is_some_and(|b| world.names(&s.hits_from, me, b.thing));
                 if !ours {
                     continue;
                 }
@@ -318,7 +318,7 @@ mod tests {
         p.set("fit_all", Value::Bool(true));
         let resolved = resolve(&scene, &kit.registry);
         let (world, _) = run(&scene, &resolved, &kit, 3.0);
-        for bodies in world.bodies.values().filter(|b| !b.silent) {
+        for bodies in world.bodies.values() {
             for i in 0..bodies.len() {
                 assert!(world.camera.sees(video(), bodies.position[i], -bodies.radius[i]), "{:?}", world.camera);
             }

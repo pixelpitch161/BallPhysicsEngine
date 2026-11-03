@@ -25,9 +25,9 @@ struct Fx {
     dt: f32,
     // Picture pixels per video pixel (below 1 in the editor preview).
     scale: f32,
-    // How strong the hits are right now, 0 to 1 (the music's loudness in a later stage).
+    // How strong the hits are right now, 0 to 1.
     level: f32,
-    // Which block a node effect shows in the Shaders workspace; 0 for the finished effect.
+    // Unused; always 0.
     view: u32,
     // What the effect changes: 0 the whole picture, else one thing's code (its id plus one).
     // Outside that thing the picture is left as it was.
@@ -35,8 +35,7 @@ struct Fx {
     // 1 when the picture is a blend layer (premultiplied, its alpha how much the layer covers),
     // else 0.
     in_layer: f32,
-    // The hit pulse three times over and 0 (bass, mid, treble and beat phase once there is
-    // music).
+    // The hit pulse three times over (read by bass, mid and treble), and 0.
     audio: vec4<f32>,
     params: array<vec4<f32>, 4>,
     // Newest hits first: position (uv), seconds since the hit, strength 0 to 1.
@@ -174,15 +173,6 @@ fn mid() -> f32 {
 
 fn treble() -> f32 {
     return fx.audio.z;
-}
-
-fn beat_phase() -> f32 {
-    return fx.audio.w;
-}
-
-// 1 on each beat, fading quickly to 0 before the next.
-fn beat_hit() -> f32 {
-    return pow(1.0 - fx.audio.w, 4.0);
 }
 
 // What is at `uv`: x and y are a position of its own (-1 to 1 across a ball, turning with its

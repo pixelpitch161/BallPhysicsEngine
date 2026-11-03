@@ -94,27 +94,6 @@ fn zoom_two_doubles_size() {
 }
 
 #[test]
-fn stuck_text_stays() {
-    let Ok((device, queue)) = headless_device() else {
-        eprintln!("no GPU adapter available, skipping");
-        return;
-    };
-    let kit = kit();
-    let make = |camera: [f32; 2]| {
-        let mut scene = still_ball(&kit, [5000.0, 5000.0], 10.0, &[("position", Value::Vec2(camera))]);
-        let text = bpe_kit::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
-        scene.things.get_mut(&text).unwrap().params.set("text", Value::Text("HELLO".into()));
-        scene
-    };
-    let still = draw(&device, &queue, &kit, &make([0.0, 0.0]), 0.5).1;
-    let moved = draw(&device, &queue, &kit, &make([5000.0, 5000.0]), 0.5).1;
-    let (a, b) = (lit(&still), lit(&moved));
-    assert!(!a.is_empty());
-    // The ball comes into the moved shot; the caption's pixels are where they were.
-    assert!(a.iter().all(|p| b.contains(p)), "the caption moved with the camera");
-}
-
-#[test]
 fn culled_ball_is_not_in_frame() {
     let kit = kit();
     let scene = still_ball(&kit, [0.0, 0.0], 20.0, &[("position", Value::Vec2([10000.0, 0.0]))]);
@@ -125,35 +104,4 @@ fn culled_ball_is_not_in_frame() {
     assert!(!frame.balls.is_empty(), "everything is built; culling is the caller's choice");
     frame.cull();
     assert!(frame.balls.is_empty() && frame.looks.is_empty(), "{:?}", frame.balls);
-}
-
-#[test]
-fn zero_fade_mix_is_unchanged() {
-    let kit = kit();
-    for (name, scene) in scenes::all(&kit.registry) {
-        let mut with = scene.clone();
-        ensure_camera(&mut with, &kit.registry);
-        let mix = |s: &Scene| {
-            let resolved = bpe_kit::resolve_scene(s, &kit.registry);
-            let mut playback = Playback::new(s, &resolved, kit.sims.clone());
-            playback.seek(6.0);
-            bpe_kit::mix_scene(s, &resolved, playback.log(), &kit).samples
-        };
-        assert!(mix(&scene) == mix(&with), "{name}: a camera at rest changed the sound");
-    }
-}
-
-#[test]
-fn a_shader_on_a_caption_still_runs() {
-    let kit = kit();
-    let mut scene = new_scene(&kit.registry);
-    let text = bpe_kit::add_thing(&mut scene, &kit.registry, "text", ThingId::ROOT).unwrap();
-    let m = scene.add_module(&kit.registry, "shader.kaleidoscope", "Kaleidoscope").unwrap();
-    scene.link(&kit.registry, text, bpe_core::SlotId::Shader, m).unwrap();
-    let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
-    let playback = Playback::new(&scene, &resolved, kit.sims.clone());
-    let mut frame = Frame::default();
-    build_frame(&scene, &resolved, playback.world(), playback.log(), 1.0, &kit.draws, &mut frame);
-    assert!(!frame.effects.is_empty(), "the caption's shader went into the overlay, which runs no effects");
-    assert!(frame.overlay.as_ref().is_none_or(|o| o.effects.is_empty() && o.bursts.is_empty() && o.hits.is_empty()));
 }

@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn old_editor_files_are_refused_with_a_clear_message() {
         let old =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenes/reference-reel.ron")).unwrap();
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/old-editor-scene.ron")).unwrap();
         let e = load(&old, &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with the old Ball Studio");
     }
@@ -164,7 +164,7 @@ mod tests {
         let module = s.library.modules.get_mut(&m).unwrap();
         module.params.set("glow", Value::Text("bright".into()));
         module.params.set("color", Value::Color(Color::rgb(1, 2, 3)));
-        module.slot = SlotId::Sound; // a hand edit the registry corrects
+        module.slot = SlotId::Trail; // a hand edit the registry corrects
         if let Some(SlotLink::Linked { overrides, .. }) = s.things.get_mut(&b).unwrap().slots.get_mut(&SlotId::Look) {
             overrides.set("glow", Value::Number(99.0));
             overrides.set("color", Value::Bool(true));

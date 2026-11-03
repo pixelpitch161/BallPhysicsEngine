@@ -2,10 +2,10 @@
 //! [`Animation`] that writes their values into a resolved scene at any moment.
 //!
 //! A track holds keys for one setting; between keys the value eases from one to the next. A
-//! pulse adds to a setting with the beat, a band of the song, or the hits. Both are stored on
+//! pulse adds to a setting with the hits. Both are stored on
 //! the scene by [`Address`], so they keep pointing at the right setting when things are renamed
 //! or reordered. Nothing here needs the registry once the keys are in: the editor checks them
-//! when they are made, and the runtime, the renderer and the mixer only read them.
+//! when they are made, and the runtime and the renderer only read them.
 
 use crate::{
     Address, Color, EditError, Gradient, Owner, Registry, Resolved, Scene, SettingDef, SlotId, SlotLink, Stop, ThingId,
@@ -259,42 +259,25 @@ impl Value {
     }
 }
 
-/// What a pulse follows.
+/// What a pulse follows. Only the hits for now; more sources can be added later.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PulseSource {
-    #[default]
-    Beat,
-    Bass,
-    Mid,
-    Treble,
-    Level,
     /// The bounces. Never allowed on a setting that moves the physics.
+    #[default]
     Hits,
 }
 
 impl PulseSource {
-    pub const NAMED: [PulseSource; 6] = [
-        PulseSource::Beat,
-        PulseSource::Bass,
-        PulseSource::Mid,
-        PulseSource::Treble,
-        PulseSource::Level,
-        PulseSource::Hits,
-    ];
+    pub const NAMED: [PulseSource; 1] = [PulseSource::Hits];
 
     pub fn name(self) -> &'static str {
         match self {
-            PulseSource::Beat => "Beat",
-            PulseSource::Bass => "Bass",
-            PulseSource::Mid => "Mid",
-            PulseSource::Treble => "Treble",
-            PulseSource::Level => "Level",
             PulseSource::Hits => "Hits",
         }
     }
 }
 
-/// A setting that moves with the music or the hits.
+/// A setting that moves with the hits.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Pulse {
@@ -309,85 +292,25 @@ pub struct Pulse {
 
 impl Default for Pulse {
     fn default() -> Self {
-        Self { source: PulseSource::Beat, amount: Value::Number(0.0), decay: 0.25, range: None }
+        Self { source: PulseSource::Hits, amount: Value::Number(0.0), decay: 0.25, range: None }
     }
-}
-
-/// A song's loudness in bands over time, `rate` frames a second, each 0 to 1.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Bands {
-    pub rate: f32,
-    pub bass: Vec<f32>,
-    pub mid: Vec<f32>,
-    pub treble: Vec<f32>,
-    pub level: Vec<f32>,
-}
-
-impl Bands {
-    /// Bass, mid, treble and level at `time`, blended between frames; all 0 outside the song.
-    pub fn at(&self, time: f64) -> [f32; 4] {
-        let n = self.level.len();
-        if n == 0 || !time.is_finite() || time < 0.0 || self.rate <= 0.0 {
-            return [0.0; 4];
-        }
-        let x = time * self.rate as f64;
-        let i = x.floor() as usize;
-        if i >= n {
-            return [0.0; 4];
-        }
-        let j = (i + 1).min(n - 1);
-        let t = (x - i as f64) as f32;
-        let lerp = |v: &[f32]| if v.len() == n { v[i] + (v[j] - v[i]) * t } else { 0.0 };
-        [lerp(&self.bass), lerp(&self.mid), lerp(&self.treble), lerp(&self.level)]
-    }
-}
-
-/// What pulses follow: the beat times, and the song's bands when there is a song.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PulseInputs {
-    pub beats: Vec<f64>,
-    pub bands: Option<Bands>,
 }
 
 /// Everything a pulse can read at one moment.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Inputs<'a> {
-    pub pulse: Option<&'a PulseInputs>,
+pub struct Inputs {
     /// How hard things are hitting right now, 0 to 1. The runtime always passes 0.
     pub hits: f32,
-    /// The video's clock at this moment, when it differs from the run's (beat sync warps the run
-    /// onto the video). Beats and the song's bands are on the video's clock, so Beat and band
-    /// pulses follow this when it is given; keys always follow the run's time.
-    pub video_time: Option<f64>,
 }
 
-impl Inputs<'_> {
-    pub const NONE: Inputs<'static> = Inputs { pulse: None, hits: 0.0, video_time: None };
+impl Inputs {
+    pub const NONE: Inputs = Inputs { hits: 0.0 };
 }
 
 /// How strongly `pulse` pushes at `time`, 0 to 1.
-pub fn pulse_strength(pulse: &Pulse, time: f64, inputs: &Inputs) -> f32 {
-    // Beats and bands are on the video's clock.
-    let clock = inputs.video_time.unwrap_or(time);
+pub fn pulse_strength(pulse: &Pulse, _time: f64, inputs: &Inputs) -> f32 {
     let s = match pulse.source {
         PulseSource::Hits => inputs.hits,
-        PulseSource::Beat => {
-            let beats = inputs.pulse.map(|p| p.beats.as_slice()).unwrap_or(&[]);
-            match beats.partition_point(|&b| b <= clock).checked_sub(1) {
-                Some(i) => (-((clock - beats[i]) / pulse.decay.max(0.01) as f64)).exp() as f32,
-                None => 0.0,
-            }
-        }
-        band => {
-            let bands = inputs.pulse.and_then(|p| p.bands.as_ref());
-            let at = bands.map(|b| b.at(clock)).unwrap_or([0.0; 4]);
-            match band {
-                PulseSource::Bass => at[0],
-                PulseSource::Mid => at[1],
-                PulseSource::Treble => at[2],
-                _ => at[3],
-            }
-        }
     };
     if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 }
 }
@@ -780,7 +703,7 @@ mod tests {
         let track = &scene.tracks[&glow_of(shared)];
         assert_eq!(track.range, Some((0.0, 2.0)));
         assert_eq!(track.keys[0].value, key(2.0), "pulled into range");
-        let inherited = Address { owner: Owner::Thing(a), slot: Some(SlotId::Sound), key: "volume".into() };
+        let inherited = Address { owner: Owner::Thing(a), slot: Some(SlotId::Trail), key: "width".into() };
         assert_eq!(scene.set_key(&reg, &inherited, 1.0, key(0.0)), Err(EditError::NotLinked));
         let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
         assert_eq!(scene.set_key(&reg, &size, 2.0, key(10.0)), Ok(0));
@@ -848,64 +771,32 @@ mod tests {
         let (reg, mut scene, shared, a, _) = scene();
         let glow = glow_of(shared);
         scene.set_key(&reg, &glow, 0.0, key(1.8)).unwrap();
-        scene.set_pulse(&reg, &glow, PulseSource::Beat, key(0.5), 0.25).unwrap();
+        // A hits pulse adds nothing until something hits.
+        scene.set_pulse(&reg, &glow, PulseSource::Hits, key(0.1), 0.25).unwrap();
         let resolved = resolve(&scene, &reg);
         let anim = Animation::new(&scene, &resolved);
-        let inputs = PulseInputs { beats: vec![1.0, 2.0], bands: None };
-        let at = |time: f64| {
-            let mut r = resolved.clone();
-            anim.apply(&mut r, time, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None });
-            match r.things[&a].slots[&SlotId::Look].params.get("glow") {
-                Some(Value::Number(x)) => *x,
-                other => panic!("{other:?}"),
-            }
-        };
-        assert_eq!(at(0.5), 1.8, "before the first beat the pulse is silent");
-        assert_eq!(at(1.0), 2.0, "on the beat it is clamped to the range");
-        // Applying to the same copy twice does not add the pulse twice.
-        let mut twice = resolved.clone();
-        let on_beat = Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None };
-        anim.apply(&mut twice, 1.5, &on_beat);
-        anim.apply(&mut twice, 1.5, &on_beat);
-        assert_eq!(twice.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(at(1.5))));
-        let later = at(1.5);
-        assert!(later > 1.8 && later < 2.0, "{later}");
-        assert!((later - (1.8 + 0.5 * (-2.0f64).exp())).abs() < 1e-5, "{later}");
-        // A pulse with nothing to follow adds nothing; hits pulse only through the inputs.
-        scene.set_pulse(&reg, &glow, PulseSource::Hits, key(0.1), 0.25).unwrap();
-        let anim = Animation::new(&scene, &resolve(&scene, &reg));
         let mut r = resolved.clone();
         anim.apply(&mut r, 1.0, &Inputs::NONE);
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(1.8)));
-        anim.apply(&mut r, 1.0, &Inputs { pulse: None, hits: 1.0, video_time: None });
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
         match r.things[&a].slots[&SlotId::Look].params.get("glow") {
             Some(Value::Number(x)) => assert!((x - 1.9).abs() < 1e-9, "{x}"),
             other => panic!("{other:?}"),
         }
+        // Applying to the same copy twice does not add the pulse twice.
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
+        match r.things[&a].slots[&SlotId::Look].params.get("glow") {
+            Some(Value::Number(x)) => assert!((x - 1.9).abs() < 1e-9, "{x}"),
+            other => panic!("{other:?}"),
+        }
+        // It is clamped to the setting's range.
+        scene.set_pulse(&reg, &glow, PulseSource::Hits, key(0.5), 0.25).unwrap();
+        let anim = Animation::new(&scene, &resolve(&scene, &reg));
+        let mut r = resolved.clone();
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(2.0)));
         assert!(scene.remove_pulse(&glow));
         assert!(!scene.remove_pulse(&glow));
-        let pulse = Pulse { source: PulseSource::Bass, amount: key(1.0), decay: 0.25, range: None };
-        let bands =
-            Bands { rate: 2.0, bass: vec![0.0, 1.0], mid: vec![0.0; 2], treble: vec![0.0; 2], level: vec![0.0; 2] };
-        let inputs = PulseInputs { beats: vec![], bands: Some(bands) };
-        assert!(
-            (pulse_strength(&pulse, 0.25, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None }) - 0.5).abs()
-                < 1e-6
-        );
-        assert_eq!(pulse_strength(&pulse, 5.0, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time: None }), 0.0);
-    }
-
-    #[test]
-    fn beat_pulses_follow_the_video_clock_when_given() {
-        let pulse = Pulse { source: PulseSource::Beat, amount: key(1.0), decay: 0.5, range: None };
-        let inputs = PulseInputs { beats: vec![2.0], bands: None };
-        let at = |time: f64, video_time: Option<f64>| {
-            pulse_strength(&pulse, time, &Inputs { pulse: Some(&inputs), hits: 0.0, video_time })
-        };
-        assert_eq!(at(1.0, None), 0.0, "on the run's clock the beat is still to come");
-        assert!((at(1.0, Some(2.0)) - 1.0).abs() < 1e-6, "but the video is on it");
-        assert_eq!(at(3.0, Some(1.0)), 0.0);
-        assert!((at(3.0, None) - (-2.0f32).exp()).abs() < 1e-5);
     }
 
     #[test]
@@ -914,9 +805,9 @@ mod tests {
         let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
         scene.set_key(&reg, &size, 0.5, key(3.0)).unwrap();
         scene.set_key(&reg, &glow_of(shared), 1.0, key(1.0)).unwrap();
-        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Level, key(0.3), 0.5).unwrap();
+        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Hits, key(0.3), 0.5).unwrap();
         let own_glow = Address { owner: Owner::Thing(a), slot: Some(SlotId::Look), key: "glow".into() };
-        scene.set_pulse(&reg, &own_glow, PulseSource::Beat, key(0.3), 0.5).unwrap();
+        scene.set_pulse(&reg, &own_glow, PulseSource::Hits, key(0.3), 0.5).unwrap();
         scene.remove_thing(a).unwrap();
         assert!(!scene.tracks.contains_key(&size), "the thing's own key went with it");
         assert!(!scene.pulses.contains_key(&own_glow), "and its override's pulse");
@@ -935,7 +826,7 @@ mod tests {
         scene.set_ease(&glow_of(shared), 0, Ease::Curve { x1: 0.2, y1: 0.0, x2: 0.8, y2: 1.0 });
         let size = Address { owner: Owner::Thing(a), slot: None, key: "radius".into() };
         scene.set_key(&reg, &size, 0.5, key(3.0)).unwrap();
-        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Level, key(0.3), 0.5).unwrap();
+        scene.set_pulse(&reg, &glow_of(shared), PulseSource::Hits, key(0.3), 0.5).unwrap();
         let text = crate::save(&scene);
         let back = crate::load(&text, &reg).unwrap();
         assert_eq!(back.tracks, scene.tracks);

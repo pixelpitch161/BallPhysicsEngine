@@ -1,25 +1,20 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
-use crate::audio_out::AudioOut;
-use crate::batch_window::{self, BatchWindow};
 use crate::dice::RandomizeWindow;
-use crate::explorer::{self, Explorer};
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::library::LibraryWindow;
-use crate::nodes::NodePanel;
 use crate::preview::Preview;
 use crate::selection::Selection;
-use crate::sound_job::SoundJob;
 use crate::starters::{self, Choice, StartWindow};
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{dice, inspector, library, preview, settings, theme, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_kit::random::{Roll, Scope, fresh_seed, roll};
-use bpe_kit::{Kit, SceneSettings, SongState, TimeWarp, resolve_scene};
+use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
@@ -50,15 +45,10 @@ pub struct Panels {
     /// The preview's renderer, made on the first frame with a window.
     pub preview: Option<Preview>,
     pub export: ExportWindow,
-    pub sound: SoundJob,
     pub timeline: Timeline,
     pub library: LibraryWindow,
     pub randomize: RandomizeWindow,
-    pub explorer: Explorer,
-    pub batch: BatchWindow,
     pub start: StartWindow,
-    /// The node panel under the preview.
-    pub nodes: NodePanel,
 }
 
 enum ToolbarClick {
@@ -71,8 +61,6 @@ enum ToolbarClick {
     Export,
     Randomize,
     Dice,
-    Explore,
-    Batch,
 }
 
 pub struct Studio {
@@ -91,20 +79,13 @@ pub struct Studio {
     pub revision: u64,
     /// The playhead, in video seconds.
     pub time: f64,
-    /// The beat sync's time warp from the last mix: which moment of the run each video time
-    /// shows. The identity without beat sync.
-    pub warp: TimeWarp,
     pub playing: bool,
     pub looping: bool,
-    pub muted: bool,
     pub selection: Selection,
     pub history: History,
     pub status: String,
     /// What is wrong with a shader module the preview skipped, shown in the status line.
     pub shader_problem: Option<String>,
-    /// What the status line says about the scene's picture files, kept so it is worked out once
-    /// per edit and not every frame.
-    picture_note: Option<String>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
@@ -123,19 +104,8 @@ pub struct Studio {
     inspector_seen: f32,
     /// The inspector's edge is being dragged: its width changed while a button was down.
     inspector_resizing: bool,
-    /// The soundtrack no longer matches the scene.
-    pub sound_dirty: bool,
-    /// The speakers, when there are any.
-    pub audio: Option<AudioOut>,
-    /// Why there is no sound, when there isn't.
-    pub audio_error: Option<String>,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
-    /// The scene's song is decoding on a thread of its own; the run and the mix are rebuilt
-    /// when it lands.
-    pub song_loading: bool,
-    /// The song setting as last seen, so a re-picked file that failed before is tried again.
-    last_song: String,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     pub recorded: bool,
     closing: bool,
@@ -148,12 +118,6 @@ impl Studio {
         theme::apply(&cc.egui_ctx);
         crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
         let mut studio = Self::headless();
-        match AudioOut::new() {
-            Ok(audio) => studio.audio = Some(audio),
-            Err(error) => studio.audio_error = Some(format!("No sound: {error:#}")),
-        }
-        studio.panels.explorer.weights = settings::load_weights();
-        studio.panels.explorer.persist = true;
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
         studio.persist_settings = true;
@@ -170,7 +134,7 @@ impl Studio {
         studio
     }
 
-    /// The state without a window: no audio, no renderer. A brand-new scene is open.
+    /// The state without a window: no renderer. A brand-new scene is open.
     pub fn headless() -> Self {
         let kit = Arc::new(bpe_kit::kit());
         let scene = bpe_kit::new_scene(&kit.registry);
@@ -187,15 +151,12 @@ impl Studio {
             revision: 0,
             kit,
             time: 0.0,
-            warp: TimeWarp::identity(),
             playing: false,
             looping: true,
-            muted: false,
             selection: Selection::default(),
             history: History::default(),
             status: "Ready.".into(),
             shader_problem: None,
-            picture_note: None,
             confirm: None,
             panels: Panels::default(),
             grid: Grid::default(),
@@ -206,12 +167,7 @@ impl Studio {
             inspector_width: settings::INSPECTOR_DEFAULT,
             inspector_seen: settings::INSPECTOR_DEFAULT,
             inspector_resizing: false,
-            sound_dirty: true,
-            audio: None,
-            audio_error: None,
             resume_after_scrub: false,
-            song_loading: false,
-            last_song: String::new(),
             recorded: false,
             closing: false,
             last_tick: None,
@@ -230,46 +186,17 @@ impl Studio {
         self.settings().duration.max(0.0) as f64
     }
 
-    /// The video time a rule ended the video at ("End the video"), once the preview has run far
-    /// enough to know: the first frame at or after the end, as export draws it. `None` while no
-    /// rule has asked, or when the end is past the clip's own length.
-    pub fn end_time(&self) -> Option<f64> {
-        let end = self.playback.log().end_time(self.playback.world().steps_per_second)?;
-        let fps = self.settings().fps.max(1) as f64;
-        let frames = (self.duration() * fps).ceil() as u64;
-        // The warp only moves forward, so the first frame at or past the end can be bisected.
-        let (mut low, mut high) = (0u64, frames);
-        while low < high {
-            let mid = (low + high) / 2;
-            if self.warp.sim_time(mid as f64 / fps) >= end {
-                high = mid;
-            } else {
-                low = mid + 1;
-            }
-        }
-        (low < frames).then(|| low as f64 / fps)
-    }
-
-    /// Where playing stops: the end a rule asked for, else the clip's length.
-    fn stop_time(&self) -> f64 {
-        self.end_time().map_or(self.duration(), |e| e.min(self.duration()))
-    }
-
-    /// The moment of the run the playhead shows, through the beat sync's time warp.
+    /// The moment of the run the playhead shows: the video clock is the simulation's.
     pub fn sim_time(&self) -> f64 {
-        self.warp.sim_time(self.time)
+        self.time
     }
 
     pub fn unsaved(&self) -> bool {
         self.scene != self.saved
     }
 
-    /// Records the edit that turned `before` into the scene as it is now, unless nothing
-    /// changed, and brings the simulation and sound along.
     /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
-    /// the screen goes in the middle of the picture, which is where the camera isn't. A canvas
-    /// stays at 0,0: its place is an offset from the arena or view it fits, and with none it
-    /// covers that exactly.
+    /// the screen goes in the middle of the picture, which is where the camera isn't.
     pub fn place_added(&mut self, id: ThingId) {
         let stuck = self
             .scene
@@ -279,11 +206,12 @@ impl Studio {
         if let Some(thing) = self.scene.things.get_mut(&id)
             && !thing.rides()
         {
-            let fitted = thing.kind == "canvas";
-            thing.transform.position = if stuck || fitted { glam::Vec2::ZERO } else { self.view_centre.round() };
+            thing.transform.position = if stuck { glam::Vec2::ZERO } else { self.view_centre.round() };
         }
     }
 
+    /// Records the edit that turned `before` into the scene as it is now, unless nothing
+    /// changed, and brings the simulation along.
     pub fn after_edit(&mut self, before: Scene) {
         self.edited(before, false);
     }
@@ -298,13 +226,6 @@ impl Studio {
             return;
         }
         self.history.record(before, separate);
-        // A picture picked now is copied beside the scene file at once, so it travels with it.
-        let from = self.base_dir();
-        if let Some(path) = self.path.clone()
-            && let Err(message) = bpe_kit::pictures::adopt(&mut self.scene, from.as_deref(), &path)
-        {
-            self.status = message;
-        }
         self.scene_changed();
     }
 
@@ -312,21 +233,18 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        self.start_song();
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         if fingerprint != self.fingerprint {
             self.fingerprint = fingerprint;
             self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         }
-        self.sound_dirty = true;
         self.time = self.time.min(self.duration());
-        self.picture_note = bpe_kit::pictures::picture_note(&self.scene, self.base_dir().as_deref());
         self.revision += 1;
     }
 
     pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
         // Every scene the editor holds has a camera; an older file gets one at the identity, so
-        // it looks and sounds as it always did.
+        // it looks as it always did.
         bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
         self.saved = scene.clone();
         self.scene = scene;
@@ -337,53 +255,9 @@ impl Studio {
         self.set_playing(false);
         self.recorded = true;
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        self.start_song();
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
-        self.sound_dirty = true;
-        self.picture_note = bpe_kit::pictures::picture_note(&self.scene, self.base_dir().as_deref());
         self.revision += 1;
-    }
-
-    /// `scene` with its picture paths made full, so a window that works on a copy (the batch)
-    /// finds them wherever it writes.
-    fn with_full_picture_paths(&self, scene: &Scene) -> Scene {
-        let mut scene = scene.clone();
-        if let Some(dir) = self.base_dir() {
-            bpe_kit::pictures::absolutize(&mut scene, &dir);
-        }
-        scene
-    }
-
-    /// Starts decoding the scene's song on a thread of its own before the run is built, so the
-    /// window never waits for it. Until it lands the run and the mix have no song; `poll_song`
-    /// rebuilds them when it does. A file that failed before is tried again when re-picked.
-    fn start_song(&mut self) {
-        let song = self.settings().song;
-        if song != self.last_song {
-            if matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Unreadable)) {
-                bpe_kit::forget_song(&song);
-            }
-            self.last_song = song.clone();
-        }
-        self.song_loading = matches!(bpe_kit::load_song_in_background(&song), Some(SongState::Loading));
-    }
-
-    /// Call every frame: when a song has finished loading, the run and the mix are built again
-    /// with it.
-    fn poll_song(&mut self, ctx: &egui::Context) {
-        if !self.song_loading {
-            return;
-        }
-        match bpe_kit::load_song_in_background(&self.settings().song) {
-            Some(SongState::Loading) => ctx.request_repaint_after(Duration::from_millis(100)),
-            _ => {
-                self.song_loading = false;
-                self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
-                self.revision += 1;
-                self.panels.sound.remix();
-            }
-        }
     }
 
     pub fn new_scene(&mut self) {
@@ -434,82 +308,32 @@ impl Studio {
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
         self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
-        if self.playing
-            && let Some(audio) = &self.audio
-        {
-            audio.play_from(self.time);
-        }
     }
 
     pub fn set_playing(&mut self, playing: bool) {
-        if playing && self.time >= self.stop_time() {
+        if playing && self.time >= self.duration() {
             self.time = 0.0;
         }
         self.playing = playing;
         self.last_tick = None;
-        if let Some(audio) = &self.audio {
-            if playing {
-                audio.play_from(self.time);
-            } else {
-                audio.pause();
-            }
-        }
     }
 
-    /// Tells the speakers whether they are muted.
-    pub fn sync_mute(&self) {
-        if let Some(audio) = &self.audio {
-            audio.set_muted(self.muted);
-        }
-    }
-
-    /// Moves the playhead while playing: with the speakers' clock when there are any, so the
-    /// picture and the sound stay together, else with the wall clock.
+    /// Moves the playhead while playing, with the wall clock.
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
         if !self.playing {
             return;
         }
-        let duration = self.stop_time();
-        let mut next = self.time + dt;
-        if let Some(audio) = &self.audio {
-            // The speakers move in buffer-sized steps; follow them only when the frame clock has
-            // drifted away from them.
-            let heard = audio.position();
-            if (next - heard).abs() > 0.05 {
-                next = heard;
-            }
-        }
+        let duration = self.duration();
+        let next = self.time + dt;
         if next < duration {
             self.time = next;
         } else if self.looping {
             self.time = 0.0;
-            if let Some(audio) = &self.audio {
-                audio.play_from(0.0);
-            }
         } else {
             self.time = duration;
             self.set_playing(false);
-        }
-    }
-
-    /// Hands a sound-changing edit to the mixer, and plays a finished mix.
-    fn update_sound(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.sound_dirty) {
-            self.panels.sound.mark(&self.scene, &self.resolved, &self.kit.sims);
-        }
-        if let Some(mixed) = self.panels.sound.poll(ctx, &self.scene, &self.resolved, &self.kit) {
-            self.warp = mixed.warp;
-            if !mixed.problems.is_empty() {
-                self.status = format!("Sound: {}", mixed.problems.join(" · "));
-            }
-            if let Some(audio) = &self.audio {
-                audio.set_track(mixed.track);
-                if self.playing {
-                    audio.play_from(self.time);
-                }
-            }
         }
     }
 
@@ -611,30 +435,11 @@ impl Studio {
             }
         };
         let Some(path) = path else { return false };
-        // A first save, or Save As somewhere else, brings the pictures along. The copy of the
-        // scene with its new picture paths is only kept once the file is written.
-        let mut scene = self.scene.clone();
-        let mut adopted = false;
-        let mut picture_problem = None;
-        if self.path.as_ref() != Some(&path) {
-            let from = self.base_dir();
-            match bpe_kit::pictures::adopt(&mut scene, from.as_deref(), &path) {
-                Ok(count) => adopted = count > 0,
-                Err(message) => picture_problem = Some(message),
-            }
-        }
-        match std::fs::write(&path, bpe_core::save(&scene)) {
+        match std::fs::write(&path, bpe_core::save(&self.scene)) {
             Ok(()) => {
                 self.status = format!("Saved {}.", file_label(&path));
-                if let Some(message) = picture_problem {
-                    self.status = format!("{} {message}", self.status);
-                }
                 settings::remember_scene(&path);
                 self.path = Some(path);
-                if adopted {
-                    self.scene = scene;
-                    self.scene_changed();
-                }
                 self.saved = self.scene.clone();
                 true
             }
@@ -649,8 +454,6 @@ impl Studio {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.text_edit_focused();
-        // A node canvas under the pointer uses Delete and the arrows itself, but never Space.
-        let canvas_keys = crate::nodes::take_wants_keyboard(ctx);
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::S) {
             self.save(true);
@@ -676,9 +479,6 @@ impl Studio {
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.set_playing(!self.playing);
         }
-        if canvas_keys {
-            return;
-        }
         // Other keys belong to a slider or button that has the keyboard focus.
         if ctx.memory(|m| m.focused().is_some()) {
             return;
@@ -703,7 +503,7 @@ impl Studio {
             let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 let export = egui::Button::new(RichText::new("Export video…").strong().color(Color32::WHITE))
                     .fill(theme::ACCENT);
-                if ui.add(export).on_hover_text("Render the scene to an mp4 with sound").clicked() {
+                if ui.add(export).on_hover_text("Render the scene to an mp4").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
                 let library = egui::Button::selectable(self.panels.library.open, "Library");
@@ -754,13 +554,6 @@ impl Studio {
         if ui.button("Randomize…").on_hover_text("Roll the dice with a seed, an amount and locks").clicked() {
             self.clicked = Some(ToolbarClick::Randomize);
         }
-        if ui.button("Explore…").on_hover_text("See nine variations of this scene side by side and pick one").clicked()
-        {
-            self.clicked = Some(ToolbarClick::Explore);
-        }
-        if ui.button("Batch…").on_hover_text("Render many seeds of this scene and keep the best").clicked() {
-            self.clicked = Some(ToolbarClick::Batch);
-        }
         ui.separator();
         self.grid_controls(ui);
         ui.separator();
@@ -807,7 +600,6 @@ impl Studio {
                 let rect = ui.available_rect_before_wrap();
                 let mut contents = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
                 contents.shrink_clip_rect(rect);
-                self.panels.inspector.nodes_open = self.panels.nodes.slot_open();
                 let time = self.sim_time();
                 inspector::show(
                     &mut contents,
@@ -869,28 +661,8 @@ impl Studio {
             if let Some(problem) = &self.shader_problem {
                 ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(theme::ERROR));
             }
-            if self.sound_dirty || self.panels.sound.busy() {
-                ui.label(RichText::new("· Updating sound…").small().color(theme::MUTED));
-            }
             if self.panels.export.busy() {
                 ui.label(RichText::new("· Exporting…").small().color(theme::MUTED));
-            }
-            if let Some(note) = &self.picture_note {
-                ui.label(RichText::new(format!("· {note}")).small().color(theme::WARNING));
-            }
-            if let Some(error) = &self.audio_error {
-                ui.label(RichText::new(error.as_str()).small().color(theme::WARNING));
-            }
-            let song = self.settings().song;
-            match bpe_kit::load_song_in_background(&song) {
-                Some(SongState::Loading) => {
-                    ui.label(RichText::new("· Loading the song…").small().color(theme::MUTED));
-                }
-                Some(SongState::Unreadable) => {
-                    let text = format!("The song {song} couldn't be opened; the video has no song.");
-                    ui.label(RichText::new(text).small().color(theme::WARNING));
-                }
-                _ => {}
             }
         });
     }
@@ -932,7 +704,6 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
-        self.panels.batch.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -942,8 +713,6 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
-        self.poll_song(&ctx);
-        self.update_sound(&ctx);
         let before = self.scene.clone();
         let revision = self.revision;
         self.recorded = false;
@@ -962,8 +731,6 @@ impl eframe::App for Studio {
             .min_size(110.0)
             .max_size(520.0)
             .show(ui, |ui| timeline::show(ui, self));
-        // Declared after the timeline so it sits above it, right under the preview.
-        self.panels.nodes.show(ui, &mut self.scene, &self.kit, &self.resolved, Some(self.playback.world()));
         let tree = egui::Panel::left("tree")
             .default_size(260.0)
             .min_size(180.0)
@@ -987,28 +754,6 @@ impl eframe::App for Studio {
             self.after_separate_edit(before.clone());
         }
         self.inspector_panel(ui);
-        if let Some(clip) = self.panels.inspector.clip.take()
-            && let Some(audio) = &self.audio
-        {
-            audio.play_clip_with(move || clip.render());
-        }
-        if let Some((thing, slot)) = self.panels.inspector.nodes_request.take() {
-            self.panels.nodes.open_at(thing, slot);
-        }
-        if let Some(clip) = self.panels.nodes.clip.take()
-            && let Some(audio) = &self.audio
-        {
-            audio.play_clip_with(move || clip.render());
-        }
-        if let Some(place) = self.panels.inspector.fx_request.take() {
-            self.panels.nodes.open_effects(place);
-        }
-        if let Some((p, module)) = self.panels.inspector.chords_request.take() {
-            self.panels.nodes.open_chords(p, module);
-        }
-        if let Some(id) = self.panels.inspector.patch_request.take() {
-            self.panels.nodes.open_patch(id);
-        }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);
@@ -1054,13 +799,6 @@ impl eframe::App for Studio {
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
         dice::show(&ctx, self);
-        if let explorer::Outcome::Batch { base, amount } = explorer::show(&ctx, self, frame.wgpu_render_state()) {
-            self.panels.explorer.close();
-            let base = self.with_full_picture_paths(&base);
-            self.panels.batch.open_with(&base, amount);
-        }
-        let weights = self.panels.explorer.weights;
-        batch_window::show(&ctx, &mut self.panels.batch, &self.kit, weights);
         let kit = self.kit.clone();
         let choice = starters::show(&ctx, &mut self.panels.start, &kit, frame.wgpu_render_state());
         self.choose_start(choice, &ctx);
@@ -1077,12 +815,6 @@ impl eframe::App for Studio {
             Some(ToolbarClick::Dice) => {
                 let amount = self.panels.randomize.amount;
                 dice::roll_from_base(self, Scope::Scene, fresh_seed(), amount);
-            }
-            Some(ToolbarClick::Explore) => self.panels.explorer.open_from(&self.scene, &self.kit),
-            Some(ToolbarClick::Batch) => {
-                let amount = self.panels.batch.spec.amount;
-                let scene = self.with_full_picture_paths(&self.scene);
-                self.panels.batch.open_with(&scene, amount);
             }
             None => {}
         }
@@ -1306,45 +1038,9 @@ mod tests {
     }
 
     #[test]
-    fn a_new_caption_lands_in_the_middle_of_the_picture() {
-        let mut studio = Studio::headless();
-        studio.view_centre = glam::Vec2::new(5000.0, -300.0);
-        let text = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "text", ThingId::ROOT).unwrap();
-        let balls = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "balls", ThingId::ROOT).unwrap();
-        studio.place_added(text);
-        studio.place_added(balls);
-        assert_eq!(studio.scene.things[&text].transform.position, glam::Vec2::ZERO);
-        assert_eq!(studio.scene.things[&balls].transform.position, glam::Vec2::new(5000.0, -300.0));
-    }
-
-    /// A canvas that fits the arena covers it wherever the preview is looking and wherever the
-    /// arena is: its own place is only an offset, and a new one has none.
-    #[test]
-    fn a_new_canvas_covers_the_arena_wherever_the_view_is() {
-        let mut studio = Studio::headless();
-        let before = studio.scene.clone();
-        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = glam::Vec2::new(300.0, -200.0);
-        studio.view_centre = glam::Vec2::new(5000.0, -300.0);
-        let canvas = bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "canvas", ThingId::ROOT).unwrap();
-        studio.place_added(canvas);
-        studio.after_edit(before);
-        assert_eq!(studio.scene.things[&canvas].transform.position, glam::Vec2::ZERO);
-        let world = studio.playback.world();
-        let (center, size) = match world.walls[&ThingId(1)].outline {
-            bpe_runtime::Outline::Ring { center, radius, .. } => (center, glam::Vec2::splat(radius * 2.0)),
-            bpe_runtime::Outline::Box { center, half, .. } | bpe_runtime::Outline::Rounded { center, half, .. } => {
-                (center, half * 2.0)
-            }
-        };
-        assert_eq!(center, glam::Vec2::new(300.0, -200.0), "the arena moved");
-        let (pose, area) = bpe_kit::canvas_area(world, canvas).unwrap();
-        assert_eq!((pose.position, area), (center, size));
-    }
-
-    #[test]
     fn opening_an_old_scene_reports_it_and_keeps_the_current_one() {
         let mut studio = Studio::headless();
-        let old = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenes/reference-reel.ron");
+        let old = concat!(env!("CARGO_MANIFEST_DIR"), "/../bpe-core/tests/data/old-editor-scene.ron");
         studio.open_path(Path::new(old));
         assert_eq!(studio.status, "This scene was made with the old Ball Studio");
         assert_eq!(studio.scene.things.len(), 3);
@@ -1387,62 +1083,6 @@ mod tests {
         assert_eq!(studio.scene.name, "New scene");
         assert!(!studio.unsaved());
         assert!(studio.history.undo.is_empty());
-    }
-
-    #[test]
-    fn seeking_goes_through_the_warp() {
-        let mut studio = Studio::headless();
-        let beats: Vec<f64> = (0..40).map(|k| k as f64 * 0.5).collect();
-        studio.warp = TimeWarp::fit(&[1.1], &beats, 0.5, 20.0);
-        studio.seek(1.0);
-        assert_eq!(studio.time, 1.0, "the playhead stays in video time");
-        assert!((studio.sim_time() - 1.1).abs() < 1e-6);
-        assert!((studio.playback.time() - 1.1).abs() < 1.0 / 240.0 + 1e-9, "{}", studio.playback.time());
-    }
-
-    /// A studio on a scene whose rules end the video at about 3 s, with the preview run past the ask.
-    fn ending_studio() -> Studio {
-        let mut studio = Studio::headless();
-        let scene = bpe_kit::ending::scene_that_ends(&studio.kit.registry, 1.0, 2.0);
-        studio.replace_scene(scene, None);
-        studio.seek(2.0);
-        studio
-    }
-
-    #[test]
-    fn the_preview_stops_where_a_rule_ended_the_video() {
-        let mut studio = ending_studio();
-        let end = studio.end_time().expect("the preview has run past the rule");
-        assert!((end - 3.0).abs() < 0.05, "{end}");
-        studio.time = end - 0.01;
-        studio.looping = false;
-        studio.playing = true;
-        studio.last_tick = Some(Instant::now() - std::time::Duration::from_millis(100));
-        studio.tick();
-        assert!(!studio.playing, "play stops at the end");
-        assert!(studio.time <= end + 1.0 / 60.0, "{}", studio.time);
-        // Playing again from the end starts over.
-        studio.set_playing(true);
-        assert_eq!(studio.time, 0.0);
-    }
-
-    #[test]
-    fn the_timeline_marks_where_the_video_ends() {
-        use egui_kittest::{Harness, kittest::Queryable};
-        let studio = ending_studio();
-        let mut h = Harness::builder()
-            .with_size(egui::vec2(1100.0, 300.0))
-            .with_step_dt(1.0 / 60.0)
-            .with_max_steps(5)
-            .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
-            .build_ui_state(|ui, s: &mut Studio| crate::timeline::show(ui, s), studio);
-        h.run();
-        assert!(h.query_all_by_label("Video ends here").next().is_some());
-        // Before the rule has asked there is no mark.
-        h.state_mut().seek(0.5);
-        h.run();
-        assert!(h.query_all_by_label("Video ends here").next().is_none());
     }
 
     #[test]

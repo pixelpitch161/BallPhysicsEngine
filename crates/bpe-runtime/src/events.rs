@@ -1,11 +1,10 @@
 //! The event log: everything that happens in a scene, in step order.
 //!
-//! Sound, flashes, rules and the timeline all read this one log. It is append-only while the
+//! Particles, trails and the timeline all read this one log. It is append-only while the
 //! simulation runs and identical every time the same scene is simulated (see [`Log::hash`]).
 
 use bpe_core::ThingId;
 use glam::Vec2;
-use std::collections::BTreeMap;
 
 use crate::camera::CameraView;
 
@@ -21,20 +20,8 @@ pub struct Party {
 pub enum EventKind {
     /// Two things touched. `a` is the mover, `b` what it hit.
     Hit,
-    /// An item appeared after the start.
-    Spawn,
     /// An item was removed.
     Remove,
-    /// An item entered a region.
-    Enter,
-    /// An item left a region.
-    Leave,
-    /// A beat of the music.
-    Beat,
-    /// A note was played.
-    Note,
-    /// Anything a rule or plugin names itself.
-    Custom(String),
 }
 
 impl EventKind {
@@ -42,13 +29,8 @@ impl EventKind {
     pub fn tag(&self) -> u8 {
         match self {
             EventKind::Hit => 0,
-            EventKind::Spawn => 1,
+            // 1 and 3 to 7 were kinds that are gone; the numbers stay so hashes stay the same.
             EventKind::Remove => 2,
-            EventKind::Enter => 3,
-            EventKind::Leave => 4,
-            EventKind::Beat => 5,
-            EventKind::Note => 6,
-            EventKind::Custom(_) => 7,
         }
     }
 }
@@ -89,116 +71,6 @@ pub struct Log {
     /// Where the camera looked, from each step it moved: `(step, view)` in step order. Kept
     /// apart from the events so it never changes the log's hash.
     camera: Vec<(u64, CameraView)>,
-    /// Where each ball went after its hits, for sounds that follow it. Not in the hash.
-    tracks: BTreeMap<Party, Vec<TrackSample>>,
-    /// The whole scene's motion, 60 times a second. Not in the hash.
-    scene: Vec<SceneSample>,
-    /// The marks things leave on canvases, in step order. Not in the hash.
-    marks: Vec<Mark>,
-    /// Every canvas's numbers, 60 times a second, in step order. Not in the hash.
-    pub(crate) canvas: Vec<crate::canvas_numbers::CanvasSample>,
-    /// Each canvas's colour-war teams, as last noted. Not in the hash.
-    pub(crate) teams: BTreeMap<ThingId, Vec<crate::canvas_numbers::Team>>,
-    /// When a rule ended the video: `(step it was asked at, step the video ends at)`. Forgotten
-    /// when a rewind goes before the step it was asked at. Not in the hash.
-    pub(crate) end: Option<(u64, u64)>,
-}
-
-/// The shape a mark stamps onto a canvas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MarkShape {
-    Stroke,
-    Splat,
-    Ring,
-    Star,
-    Crack,
-    Burst,
-    Dots,
-    /// A capsule whose radius runs from `radius` to `radius_to`.
-    Smear,
-    /// One piece of a paint drip: a capsule from `from` to `to`, radius `radius` to `radius_to`.
-    /// Variant 8 leaves out the start disc and the half-plane behind the start (the piece joins
-    /// the previous one); `angle` is then the previous piece's direction. A drop has `from == to`.
-    Drip,
-    /// A picture stamped at `from` (== `to`): `radius` is half the square's side, `angle` the turn.
-    /// Variant bits 0-4 are the slot in `World.pictures` (31 = not in the table), bit 5 (32) = Tinted.
-    Picture,
-    /// Wet paint lifted off by a ball: a disc at `from` of `radius`, taking `radius_to` (0..1) of
-    /// the colour away. Not paint: it leaves no ink.
-    Lift,
-    /// One bleed pass over a rectangle (`from` min corner, `to` max corner, in canvas pixels from
-    /// the canvas middle): `radius` is the dry time in seconds, `radius_to` the Bleed setting.
-    Bleed,
-    /// A ball scraping along its track: a capsule like a Stroke's (from → to, radius → radius_to,
-    /// the joints in variant bits 1 and 2, angle the previous piece's direction) that takes paint
-    /// away. colour[3] is the strength, 0 to 1. Not paint: it leaves no ink.
-    Scrape,
-    /// A piece knocked out by a hit: a splat shape at `from` of `radius`, turned by `angle`.
-    /// variant bits 0-4 are the splat's layout and squash, bits 5-7 the shape (0 splat, 1 ring,
-    /// 2 star, 3 crack, 4 burst, 5 dots). colour[3] is the strength. Not paint.
-    Chip,
-}
-
-/// What a mark is painted onto: a canvas thing, or the skin of an arena or obstacle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MarkTarget {
-    Canvas(ThingId),
-    Skin(ThingId),
-}
-
-/// One mark a thing leaves on a canvas.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mark {
-    pub step: u64,
-    /// What it lands on.
-    pub target: MarkTarget,
-    pub shape: MarkShape,
-    /// Where it starts, in canvas pixels from the canvas centre, before the canvas turns.
-    pub from: Vec2,
-    /// Where it ends; a stamp has `to == from`.
-    pub to: Vec2,
-    pub radius: f32,
-    /// The radius at `to`; strokes and smears run from `radius` to it, other shapes equal `radius`.
-    pub radius_to: f32,
-    /// How a stamp is turned. For a stroke that continues a piece (variant bit 1), the direction
-    /// of that piece, which sets where the two are cut apart.
-    pub angle: f32,
-    /// For a stroke, the part of its step (0 its start, 1 its end) over which the ball travelled
-    /// along it; a piece of a longer move covers a part. The graphics card orders overlapping
-    /// paint by it. Other marks: `[1.0, 1.0]`.
-    pub within: [f32; 2],
-    /// Which of a stamp shape's variants; for a stroke, bit 0 is its tip (0 round, 1 square),
-    /// bit 1 says it continues the previous piece (no start cap) and bit 2 that the next piece
-    /// continues it (no end cap).
-    pub variant: u8,
-    /// Linear light, not sRGB.
-    pub colour: [f32; 4],
-    /// The colour at `to`; equal to `colour` for marks of one colour.
-    pub colour_to: [f32; 4],
-}
-
-/// How often motion is sampled for sound, per second.
-pub const MOTION_RATE: u32 = 60;
-/// How long a ball's track runs on after each of its hits, in seconds.
-pub const TRACK_SECONDS: f64 = 12.0;
-
-/// One moment of a ball's track.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TrackSample {
-    pub step: u64,
-    pub position: Vec2,
-    pub velocity: Vec2,
-    pub radius: f32,
-}
-
-/// One moment of the whole scene's motion.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SceneSample {
-    pub step: u64,
-    /// Balls alive, not counting silent ones (liquid).
-    pub balls: u32,
-    /// Σ ½·(r/20)²·|v|² / 10⁶ over those balls.
-    pub energy: f32,
 }
 
 impl Log {
@@ -219,87 +91,6 @@ impl Log {
         if self.camera.last().is_none_or(|(_, last)| *last != view) {
             self.camera.push((step, view));
         }
-    }
-
-    /// Adds a moment of a ball's track. Samples arrive in step order.
-    pub fn push_track(&mut self, ball: Party, s: TrackSample) {
-        self.tracks.entry(ball).or_default().push(s);
-    }
-
-    /// A ball's track, in step order; empty when nothing was recorded.
-    pub fn track(&self, ball: Party) -> &[TrackSample] {
-        self.tracks.get(&ball).map_or(&[], |t| t.as_slice())
-    }
-
-    /// Adds a moment of the scene's motion.
-    pub fn push_scene(&mut self, s: SceneSample) {
-        self.scene.push(s);
-    }
-
-    pub fn scene_samples(&self) -> &[SceneSample] {
-        &self.scene
-    }
-
-    /// Forgets the motion after `step`, when playback rewinds.
-    pub fn truncate_motion(&mut self, step: u64) {
-        for t in self.tracks.values_mut() {
-            t.truncate(t.partition_point(|s| s.step <= step));
-        }
-        self.tracks.retain(|_, t| !t.is_empty());
-        self.scene.truncate(self.scene.partition_point(|s| s.step <= step));
-        self.canvas.truncate(self.canvas.partition_point(|s| s.step <= step));
-        if self.end.is_some_and(|(asked, _)| asked > step) {
-            self.end = None;
-        }
-    }
-
-    /// Notes that a rule asked at `asked` for the video to end at step `at`.
-    pub fn set_end(&mut self, asked: u64, at: u64) {
-        self.end = Some((asked, at));
-    }
-
-    /// The step a rule ended the video at, if one has.
-    pub fn end(&self) -> Option<u64> {
-        self.end.map(|(_, at)| at)
-    }
-
-    /// The time (run seconds) a rule ended the video at, if one has.
-    pub fn end_time(&self, steps_per_second: u32) -> Option<f64> {
-        self.end().map(|at| at as f64 / steps_per_second.max(1) as f64)
-    }
-
-    /// Adds a mark. Marks must arrive in step order.
-    pub fn push_mark(&mut self, m: Mark) {
-        if let Some(last) = self.marks.last() {
-            debug_assert!(m.step >= last.step, "mark log step order: {} after {}", m.step, last.step);
-        }
-        self.marks.push(m);
-    }
-
-    pub fn marks(&self) -> &[Mark] {
-        &self.marks
-    }
-
-    /// The marks aimed at `target`, in the order they were made.
-    pub fn marks_for(&self, target: MarkTarget) -> impl Iterator<Item = &Mark> {
-        self.marks.iter().filter(move |m| m.target == target)
-    }
-
-    /// The marks made in steps `(after, upto]`.
-    pub fn marks_between(&self, after: u64, upto: u64) -> &[Mark] {
-        let start = self.marks.partition_point(|m| m.step <= after);
-        let end = self.marks.partition_point(|m| m.step <= upto);
-        &self.marks[start..end.max(start)]
-    }
-
-    /// Forgets the marks made after `step`, when playback rewinds.
-    pub fn trim_marks_upto(&mut self, step: u64) {
-        self.marks.truncate(self.marks.partition_point(|m| m.step <= step));
-    }
-
-    /// Forgets the marks made at or before `step`, once they are drawn and nothing reads them.
-    pub fn drop_marks_upto(&mut self, step: u64) {
-        self.marks.drain(..self.marks.partition_point(|m| m.step <= step));
     }
 
     /// Where the camera looked at `step`: the identity before it was first noted.
@@ -343,11 +134,6 @@ impl Log {
     /// Bytes the log's memory takes, for playback budgets.
     pub fn memory(&self) -> usize {
         self.events.capacity() * std::mem::size_of::<Event>()
-            + self.tracks.values().map(|t| t.capacity() * std::mem::size_of::<TrackSample>()).sum::<usize>()
-            + self.scene.capacity() * std::mem::size_of::<SceneSample>()
-            + self.marks.capacity() * std::mem::size_of::<Mark>()
-            + self.canvas.capacity() * std::mem::size_of::<crate::canvas_numbers::CanvasSample>()
-            + self.canvas.iter().map(|c| c.numbers.shares.len() * 4).sum::<usize>()
     }
 
     /// An FNV-1a hash of every field of every event. Equal logs hash equal on every platform.
@@ -362,9 +148,6 @@ impl Log {
         for e in &self.events {
             feed(&e.step.to_le_bytes());
             feed(&[e.kind.tag()]);
-            if let EventKind::Custom(name) = &e.kind {
-                feed(name.as_bytes());
-            }
             feed(&e.a.thing.0.to_le_bytes());
             feed(&e.a.item.to_le_bytes());
             match e.b {
@@ -429,19 +212,8 @@ mod tests {
 
     #[test]
     fn tags_follow_the_spec_order() {
-        let kinds = [
-            EventKind::Hit,
-            EventKind::Spawn,
-            EventKind::Remove,
-            EventKind::Enter,
-            EventKind::Leave,
-            EventKind::Beat,
-            EventKind::Note,
-            EventKind::Custom("x".into()),
-        ];
-        for (i, kind) in kinds.iter().enumerate() {
-            assert_eq!(kind.tag() as usize, i);
-        }
+        assert_eq!(EventKind::Hit.tag(), 0);
+        assert_eq!(EventKind::Remove.tag(), 2);
     }
 
     #[test]
@@ -467,83 +239,6 @@ mod tests {
         let mut log = Log::default();
         log.push(Event { step: 5, ..hit() });
         log.push(Event { step: 4, ..hit() });
-    }
-
-    fn mark(step: u64) -> Mark {
-        Mark {
-            step,
-            target: MarkTarget::Canvas(ThingId(3)),
-            shape: MarkShape::Splat,
-            from: Vec2::ZERO,
-            to: Vec2::ZERO,
-            radius: 4.0,
-            radius_to: 4.0,
-            angle: 0.0,
-            within: [1.0, 1.0],
-            variant: 0,
-            colour: [1.0, 0.5, 0.25, 1.0],
-            colour_to: [1.0, 0.5, 0.25, 1.0],
-        }
-    }
-
-    #[test]
-    fn mark_target_filters_marks() {
-        let mut log = Log::default();
-        let (canvas, skin) = (MarkTarget::Canvas(ThingId(3)), MarkTarget::Skin(ThingId(3)));
-        for (step, target) in [(1, canvas), (1, skin), (2, skin), (3, canvas)] {
-            log.push_mark(Mark { target, ..mark(step) });
-        }
-        let steps = |t| log.marks_for(t).map(|m| m.step).collect::<Vec<_>>();
-        assert_eq!(steps(canvas), [1, 3]);
-        assert_eq!(steps(skin), [1, 2]);
-        assert_eq!(log.marks_for(MarkTarget::Canvas(ThingId(4))).count(), 0);
-        assert!(canvas < skin, "canvases sort before skins");
-    }
-
-    #[test]
-    fn marks_between_picks_the_step_range() {
-        let mut log = Log::default();
-        for step in [1, 2, 2, 5] {
-            log.push_mark(mark(step));
-        }
-        assert_eq!(log.marks_between(1, 2).len(), 2);
-        assert_eq!(log.marks_between(2, 5).len(), 1);
-        assert!(log.marks_between(5, 9).is_empty());
-        assert!(log.marks_between(9, 3).is_empty());
-    }
-
-    #[test]
-    fn marks_do_not_change_the_hash() {
-        let mut plain = Log::default();
-        plain.push(hit());
-        let mut marked = plain.clone();
-        marked.push_mark(mark(1));
-        assert_eq!(plain.hash(), marked.hash());
-        assert_eq!(marked.marks().len(), 1);
-    }
-
-    #[test]
-    fn trim_drops_old_marks() {
-        let mut log = Log::default();
-        for step in [1, 2, 2, 5] {
-            log.push_mark(mark(step));
-        }
-        log.trim_marks_upto(2);
-        assert_eq!(log.marks().len(), 3);
-        log.trim_marks_upto(0);
-        assert!(log.marks().is_empty());
-    }
-
-    #[test]
-    fn drop_forgets_drawn_marks() {
-        let mut log = Log::default();
-        for step in [1, 2, 2, 5] {
-            log.push_mark(mark(step));
-        }
-        log.drop_marks_upto(2);
-        assert_eq!(log.marks().iter().map(|m| m.step).collect::<Vec<_>>(), [5]);
-        log.drop_marks_upto(9);
-        assert!(log.marks().is_empty());
     }
 
     #[test]

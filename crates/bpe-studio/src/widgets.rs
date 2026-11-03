@@ -1,9 +1,6 @@
 //! Setting widgets driven by the kit's setting descriptions: one grid row per setting.
 
-use bpe_core::{
-    Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ProgressionId, ProgressionRef, PulseSource, Registry,
-    Scene, SettingDef, SettingValue, Target, ThingId, Value, ValueType, section_rank,
-};
+use bpe_core::{Color, PulseSource, Registry, Scene, SettingDef, Target, ThingId, Value, ValueType, section_rank};
 use eframe::egui::{
     self, Color32, DragValue, Pos2, Response, RichText, Sense, Slider, Stroke, Ui, Vec2, color_picker::Alpha,
 };
@@ -20,25 +17,7 @@ pub struct TargetChoices {
     pub tags: Vec<String>,
     /// Thing kinds as (id, name), in registry order, without the scene itself.
     pub kinds: Vec<(String, String)>,
-    /// Chord progressions as (id, name, how many settings use it), in library order.
-    pub progressions: Vec<(ProgressionId, String, usize)>,
-    /// Instruments as (id, name, how many settings use it), in library order.
-    pub instruments: Vec<(InstrumentId, String, usize)>,
 }
-
-/// A Chords row's pick of "New progression": the inspector adds one and points the setting at it.
-pub const NEW_PROGRESSION: i64 = -2;
-/// A Chords row's pick of "Make unique": the inspector copies the progression the row shows.
-pub const MAKE_UNIQUE: i64 = -3;
-/// An Instrument row's pick of "New patch": the inspector adds a blank patch.
-pub const NEW_PATCH: i64 = -4;
-/// An Instrument row's pick of "Make unique": the inspector copies the instrument it shows.
-pub const MAKE_UNIQUE_INSTRUMENT: i64 = -5;
-/// An Instrument row's pick of built-in number `i` is `BUILT_IN_BASE - i`: the inspector finds
-/// or adds a library instrument playing it.
-pub const BUILT_IN_BASE: i64 = -100;
-/// An Instrument row's pick of starter patch number `i` is `STARTER_BASE - i`.
-pub const STARTER_BASE: i64 = -200;
 
 impl TargetChoices {
     pub fn from_scene(scene: &Scene, reg: &Registry) -> TargetChoices {
@@ -47,19 +26,7 @@ impl TargetChoices {
             scene.things.values().flat_map(|t| t.tags.iter().cloned()).collect();
         let kinds =
             reg.things().filter(|k| k.id() != "scene").map(|k| (k.id().to_owned(), k.name().to_owned())).collect();
-        let progressions = scene
-            .library
-            .progressions
-            .iter()
-            .map(|(id, p)| (*id, p.name.clone(), scene.progression_users(reg, *id).len()))
-            .collect();
-        let instruments = scene
-            .library
-            .instruments
-            .iter()
-            .map(|(id, i)| (*id, i.name.clone(), scene.instrument_users(reg, *id).len()))
-            .collect();
-        TargetChoices { things, tags: tags.into_iter().collect(), kinds, progressions, instruments }
+        TargetChoices { things, tags: tags.into_iter().collect(), kinds }
     }
 }
 
@@ -240,15 +207,8 @@ fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, 
 
 /// A group's heading: its name, which folds and opens the group when `fold` is given (as does
 /// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
-/// `hover`, when given, says what the group is. True when the heading or its arrow was clicked.
-fn group_heading(
-    ui: &mut Ui,
-    group: &'static str,
-    fold: bool,
-    shut: bool,
-    changed: bool,
-    hover: Option<&'static str>,
-) -> bool {
+/// True when the heading or its arrow was clicked.
+fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         if fold && fold_toggle(ui, !shut, group) {
@@ -256,10 +216,7 @@ fn group_heading(
         }
         let heading = RichText::new(group).strong().color(theme::MUTED);
         let label = egui::Label::new(heading).wrap().selectable(false);
-        let mut response = ui.add(if fold { label.sense(Sense::click()) } else { label });
-        if let Some(hover) = hover {
-            response = response.on_hover_text(hover);
-        }
+        let response = ui.add(if fold { label.sense(Sense::click()) } else { label });
         let dot = shut && changed;
         if dot {
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{group} (changed)")));
@@ -277,21 +234,6 @@ fn group_heading(
     clicked
 }
 
-/// A heading inside a section's own widgets (as "Try it" in the Instrument section), folding
-/// what follows it: it looks like a group's heading, with the same air above. True when it was
-/// clicked, so the caller flips `open`.
-pub fn sub_heading(ui: &mut Ui, title: &'static str, open: bool, hover: &'static str) -> bool {
-    ui.add_space(10.0);
-    group_heading(ui, title, true, !open, false, Some(hover))
-}
-
-/// A grid for the rows in a section's own widgets (see [`settings_grid_sections`]), which are
-/// drawn [`EXTRA_INDENT`] in: the label column ([`label_cell`] at the grid's label width), then
-/// the widgets ([`widget_cell`]), so its labels and widgets line up with the settings' own.
-pub fn extra_grid(id: impl egui::AsIdSalt) -> egui::Grid {
-    egui::Grid::new(id).num_columns(2).spacing([8.0, 6.0])
-}
-
 /// What a setting's keyframe diamond shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyMark {
@@ -303,7 +245,7 @@ pub struct KeyMark {
     pub keyed: bool,
     /// A key sits at the playhead.
     pub on_key: bool,
-    /// The setting pulses with the music or the hits.
+    /// The setting pulses with the hits.
     pub pulsed: bool,
     /// The setting moves the physics, so it can't pulse with hits.
     pub physics: bool,
@@ -311,10 +253,6 @@ pub struct KeyMark {
 
 /// The width of the diamond cell at the left of every row.
 pub const DIAMOND_CELL: f32 = 16.0;
-
-/// How far in a section's own widgets are drawn: past the diamond column and the grid's
-/// spacing, so they start where the rows' labels do.
-pub const EXTRA_INDENT: f32 = DIAMOND_CELL + 8.0;
 
 /// A settings grid of the settings that `applies`, with no marks and nothing for targets to
 /// point at. `get` supplies each setting's value as it stands; the rows the user changed come
@@ -352,22 +290,39 @@ pub fn settings_grid_marked(
     get: impl Fn(&str) -> Value,
     cx: &GridCx,
 ) -> GridOutcome {
-    // `settings_grid_sections` wants a Clone id, so this one is hashed into a salt first. The
-    // salt is hashed again there, so the grid's id differs from `id`'s own; that is harmless,
-    // as nothing outside looks the grid up by id.
-    settings_grid_sections(ui, egui::IdSalt::new(id), defs, get, cx, &[], &mut |_, _| {})
-}
-
-/// A section of a settings grid that ends with widgets the caller draws, below its rows. A
-/// section named only here (no setting has its group) gets its own heading, ranked by
-/// `section_rank`, and folds like any other.
-#[derive(Clone, Copy, Debug)]
-pub struct SectionExtra {
-    pub group: &'static str,
-    /// Whether the section holds changes, for the folded-with-changes dot.
-    pub changed: bool,
-    /// The heading's hover, saying what the section is.
-    pub hover: Option<&'static str>,
+    let mut out = GridOutcome::default();
+    // Where the widgets must end. A grid widens its last column to its widest row, so a row
+    // that can't shrink would otherwise push every slider under it past the panel's edge.
+    let right = ui.available_rect_before_wrap().right();
+    let sections = sections_for(defs, cx);
+    let shut = |group: &str| !group.is_empty() && cx.folded.is_some_and(|folded| folded(group));
+    settings_like_grid(id).show(ui, |ui| {
+        for section in &sections {
+            let shut = shut(section.group);
+            if !section.group.is_empty() {
+                let group = section.group;
+                let changed = shut && group_changed(defs, group, &get, cx);
+                empty_cell(ui);
+                // A grid can't take spacing, so the heading carries its own air above.
+                label_cell(ui, cx.label_width, |ui| {
+                    let room = ui.available_size();
+                    ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.add_space(10.0);
+                        if group_heading(ui, group, cx.folded.is_some(), shut, changed) {
+                            out.folds.push((group, !shut));
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            if !shut {
+                for def in &section.defs {
+                    grid_row(ui, def, &get, cx, right, &mut out);
+                }
+            }
+        }
+    });
+    out
 }
 
 /// One section of a settings grid: its group ("" for the ungrouped rows before the headings)
@@ -377,9 +332,8 @@ struct Section<'a> {
     defs: Vec<&'a SettingDef>,
 }
 
-/// The sections of [`rows_for`], with a heading-only section for each extra whose group has no
-/// row shown, placed by [`section_rank`]. Extras on the ungrouped rows ("") are ignored.
-fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx, extras: &[SectionExtra]) -> Vec<Section<'a>> {
+/// The sections of [`rows_for`], placed by [`section_rank`].
+fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx) -> Vec<Section<'a>> {
     let mut sections: Vec<Section<'a>> = Vec::new();
     for row in rows_for(defs, cx.applies) {
         match row {
@@ -390,86 +344,9 @@ fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx, extras: &[SectionExtra]
             },
         }
     }
-    for extra in extras {
-        if !extra.group.is_empty() && !sections.iter().any(|s| s.group == extra.group) {
-            sections.push(Section { group: extra.group, defs: Vec::new() });
-        }
-    }
     // A stable sort: the ungrouped rows first, then by rank, keeping `rows_for`'s order otherwise.
     sections.sort_by_key(|s| (!s.group.is_empty(), section_rank(s.group).unwrap_or(usize::MAX)));
     sections
-}
-
-/// [`settings_grid_marked`], with the caller's own widgets drawn at the end of the sections
-/// `extras` name: `draw_extra` is called with the section's group, below its rows, unless the
-/// section is folded shut. The grid is split after each such section, and the widgets are drawn
-/// [`EXTRA_INDENT`] in, so they start where the labels do; rows of their own in an
-/// [`extra_grid`] line up with the settings' rows. Every grid has the same label column and right
-/// edge, so the rows still line up from section to section. An
-/// extra on the ungrouped rows ("") is ignored, as is any extra after the first on one group.
-pub fn settings_grid_sections(
-    ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug + Clone,
-    defs: &[SettingDef],
-    get: impl Fn(&str) -> Value,
-    cx: &GridCx,
-    extras: &[SectionExtra],
-    draw_extra: &mut dyn FnMut(&mut Ui, &'static str),
-) -> GridOutcome {
-    let mut out = GridOutcome::default();
-    // Where the widgets must end. A grid widens its last column to its widest row, so a row
-    // that can't shrink would otherwise push every slider under it past the panel's edge.
-    let right = ui.available_rect_before_wrap().right();
-    let sections = sections_for(defs, cx, extras);
-    let shut = |group: &str| !group.is_empty() && cx.folded.is_some_and(|folded| folded(group));
-    let extra_at = |group: &str| extras.iter().find(|e| !group.is_empty() && e.group == group);
-    let mut grid_id = egui::IdSalt::new(id.clone());
-    let mut rest = &sections[..];
-    while !rest.is_empty() {
-        // The sections up to and including the next one with an extra share a grid.
-        let end = rest.iter().position(|s| extra_at(s.group).is_some()).map_or(rest.len(), |i| i + 1);
-        let (run, after) = rest.split_at(end);
-        rest = after;
-        settings_like_grid(grid_id).show(ui, |ui| {
-            for section in run {
-                let shut = shut(section.group);
-                if !section.group.is_empty() {
-                    let group = section.group;
-                    let extra_changed = extra_at(group).is_some_and(|e| e.changed);
-                    let hover = extra_at(group).and_then(|e| e.hover);
-                    let changed = shut && (extra_changed || group_changed(defs, group, &get, cx));
-                    empty_cell(ui);
-                    // A grid can't take spacing, so the heading carries its own air above.
-                    label_cell(ui, cx.label_width, |ui| {
-                        let room = ui.available_size();
-                        ui.allocate_ui_with_layout(room, egui::Layout::top_down(egui::Align::Min), |ui| {
-                            ui.add_space(10.0);
-                            if group_heading(ui, group, cx.folded.is_some(), shut, changed, hover) {
-                                out.folds.push((group, !shut));
-                            }
-                        });
-                    });
-                    ui.end_row();
-                }
-                if !shut {
-                    for def in &section.defs {
-                        grid_row(ui, def, &get, cx, right, &mut out);
-                    }
-                }
-            }
-        });
-        let last = run.last().expect("a run holds a section").group;
-        if extra_at(last).is_some() {
-            if !shut(last) {
-                let mut rect = ui.available_rect_before_wrap();
-                rect.min.x += EXTRA_INDENT;
-                let layout = egui::Layout::top_down(egui::Align::Min);
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| draw_extra(ui, last));
-            }
-            grid_id = egui::IdSalt::new((id.clone(), last));
-        }
-    }
-    out
 }
 
 /// One setting's row of a settings grid, with what the user did to it added to `out`.
@@ -562,9 +439,9 @@ fn diamond(ui: &mut Ui, label: &str, mark: KeyMark) -> DiamondClick {
         painter.add(egui::Shape::line(points, Stroke::new(1.0, theme::WARNING)));
     }
     let hint = match (mark.can_key, mark.on_key, mark.can_pulse) {
-        (false, _, _) => "Right-click to pulse with the music. This setting can't have keyframes.",
+        (false, _, _) => "Right-click to pulse with the hits. This setting can't have keyframes.",
         (true, true, true) => "Remove the key here. Right-click for pulses.",
-        (true, false, true) => "Add a keyframe at the playhead. Right-click to pulse with the music.",
+        (true, false, true) => "Add a keyframe at the playhead. Right-click to pulse with the hits.",
         (true, true, false) => "Remove the key here.",
         (true, false, false) => "Add a keyframe at the playhead.",
     };
@@ -899,97 +776,8 @@ fn widget(
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
-        (ValueType::Progression, Value::Int(x)) => progression_picker(ui, name, x, choices).labelled_by(name),
-        (ValueType::Instrument, Value::Int(x)) => instrument_picker(ui, name, x, choices).labelled_by(name),
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(theme::WARNING)),
     }
-}
-
-/// A menu naming the chord progression a setting uses: any in the library (none picked plays
-/// the starter chords), a new one, or a copy of the one shown. Marked changed when something is picked; a new one or
-/// a copy comes back as [`NEW_PROGRESSION`] or [`MAKE_UNIQUE`] for the inspector to make.
-fn progression_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetChoices) -> Response {
-    let name_of = |id: ProgressionId| {
-        choices.progressions.iter().find(|(p, ..)| *p == id).map_or("missing".to_owned(), |(_, n, _)| n.clone())
-    };
-    let shown = match ProgressionRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
-        Some(id) if choices.progressions.iter().any(|(p, ..)| *p == id) => name_of(id),
-        _ => "Starter (built in)".to_owned(),
-    };
-    let before = *x;
-    let mut response = egui::ComboBox::from_id_salt(("progression", row)).selected_text(shown).show_ui(ui, |ui| {
-        for (id, name, users) in &choices.progressions {
-            let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
-            ui.selectable_value(x, id.0 as i64, label);
-        }
-        ui.separator();
-        if ui.button("New progression").clicked() {
-            *x = NEW_PROGRESSION;
-        }
-        if ui.button("Make unique").on_hover_text("A copy of these chords that only this uses").clicked() {
-            *x = MAKE_UNIQUE;
-        }
-    });
-    if *x != before {
-        response.response.mark_changed();
-    }
-    response.response
-}
-
-/// A menu naming the instrument a sound plays: the built-in sounds (none picked plays the
-/// built-in Pluck), the library's instruments, a new patch, a starter patch, or a copy of the one shown. Marked
-/// changed when something is picked; the picks the inspector has to make come back as
-/// [`NEW_PATCH`], [`MAKE_UNIQUE_INSTRUMENT`], or offsets from [`BUILT_IN_BASE`] and
-/// [`STARTER_BASE`].
-fn instrument_picker(ui: &mut Ui, row: egui::Id, x: &mut i64, choices: &TargetChoices) -> Response {
-    let name_of = |id: InstrumentId| {
-        choices.instruments.iter().find(|(i, ..)| *i == id).map_or("missing".to_owned(), |(_, n, _)| n.clone())
-    };
-    let shown = match InstrumentRef::from_value(&Value::Int(*x)).and_then(|r| r.0) {
-        Some(id) if choices.instruments.iter().any(|(i, ..)| *i == id) => name_of(id),
-        _ => "Pluck (built in)".to_owned(),
-    };
-    let before = *x;
-    let mut response =
-        egui::ComboBox::from_id_salt(("instrument", row)).selected_text(shown).height(480.0).show_ui(ui, |ui| {
-            ui.label(RichText::new("Built-in").small().color(theme::MUTED));
-            for (i, which) in bpe_mix::Instrument::ALL.iter().enumerate() {
-                if ui.selectable_label(false, which.label()).clicked() {
-                    *x = BUILT_IN_BASE - i as i64;
-                }
-            }
-            if !choices.instruments.is_empty() {
-                ui.separator();
-                ui.label(RichText::new("In this scene").small().color(theme::MUTED));
-            }
-            for (id, name, users) in &choices.instruments {
-                let label = if *users > 1 { format!("{name} · used by {users}") } else { name.clone() };
-                ui.selectable_value(x, id.0 as i64, label);
-            }
-            ui.separator();
-            if ui.button("New patch").on_hover_text("A blank synth patch to build in the node panel").clicked() {
-                *x = NEW_PATCH;
-            }
-            ui.label(RichText::new("Starter patches").small().color(theme::MUTED));
-            for (i, (name, ..)) in bpe_synth::starters().iter().enumerate() {
-                if ui.selectable_label(false, *name).clicked() {
-                    *x = STARTER_BASE - i as i64;
-                }
-            }
-            ui.separator();
-            if ui.button("Make unique").on_hover_text("A copy of this instrument that only this sound uses").clicked() {
-                *x = MAKE_UNIQUE_INSTRUMENT;
-            }
-        });
-    if *x != before {
-        response.response.mark_changed();
-    }
-    response.response
-}
-
-/// Whether library instrument `i` plays the built-in `which`.
-pub fn plays_built_in(i: &bpe_core::Instrument, which: bpe_mix::Instrument) -> bool {
-    matches!(&i.source, InstrumentSource::BuiltIn { which: w, .. } if w == Choice::name(which))
 }
 
 /// A menu naming the target, with Anything, Itself and the scene's things, tags and kinds to
@@ -1075,7 +863,7 @@ pub(crate) fn color_button(ui: &mut Ui, value: &mut Color) -> Response {
 mod tests {
     use super::*;
 
-    use bpe_core::{FOLDED_SECTIONS, Settings};
+    use bpe_core::Settings;
 
     #[test]
     fn the_label_column_is_a_share_of_the_panel_but_never_narrow() {
@@ -1285,7 +1073,7 @@ mod tests {
                         keyed: true,
                         on_key: false,
                         pulsed: true,
-                        physics: true,
+                        physics: false,
                     })
                 };
                 let choices = TargetChoices::default();
@@ -1323,10 +1111,9 @@ mod tests {
         assert_eq!(h.state().toggled_key, ["radius"]);
         h.get_by_label("Keyframe Size").click_secondary();
         h.run();
-        assert!(h.query_by_label("Pulse with hits").is_none(), "a physics setting can't follow the hits");
-        h.get_by_label("Pulse with bass").click();
+        h.get_by_label("Pulse with hits").click();
         h.run();
-        assert_eq!(h.state().pulse, [("radius", Some(PulseSource::Bass))]);
+        assert_eq!(h.state().pulse, [("radius", Some(PulseSource::Hits))]);
         h.get_by_label("Keyframe Size").click_secondary();
         h.run();
         h.get_by_label("No pulse").click();
@@ -1348,8 +1135,8 @@ mod tests {
         cards.sort_unstable();
         assert_eq!(sorted, cards);
         // A group whose settings all drop out loses its heading too.
-        let no_music = rows_for(defs, &|d| d.group != "Music");
-        assert!(!no_music.iter().any(|r| matches!(r, Row::Group("Music"))));
+        let no_world = rows_for(defs, &|d| d.group != "World");
+        assert!(!no_world.iter().any(|r| matches!(r, Row::Group("World"))));
     }
 
     #[test]
@@ -1466,13 +1253,13 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
         let defs = bpe_kit::modules::look::BasicLook::defs();
         let value = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
-        // On a liquid, every Shape row is hidden by its condition.
-        let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+        // On an arena, every Shape row is hidden by its condition.
+        let applies = |d: &SettingDef| d.applies(Some("arena"), &value);
         let rows = rows_for(defs, &applies);
         assert!(!headings(&rows).contains(&"Shape"), "{:?}", headings(&rows));
         let mut h = Harness::builder().with_size(egui::vec2(420.0, 1600.0)).allow_missing_glyphs().build_ui(|ui| {
             let choices = TargetChoices::default();
-            let applies = |d: &SettingDef| d.applies(Some("liquid"), &value);
+            let applies = |d: &SettingDef| d.applies(Some("arena"), &value);
             let cx = GridCx {
                 choices: &choices,
                 overridden: &|_| false,
@@ -1489,128 +1276,6 @@ mod tests {
         assert!(h.query_by_label("Hide Shape").is_none(), "no fold arrow for an empty section");
         assert!(h.query_by_label("Shape").is_none(), "no heading for an empty section");
         assert!(h.query_by_label("Hide Blending").is_some(), "other sections keep theirs");
-    }
-
-    /// Two rows in "Notes", one in "Level", and an extra button "Extra" at the end of `group`'s
-    /// section, holding `changed`. The state is the shut groups, starting as `FOLDED_SECTIONS` and
-    /// following the heading clicks, and every change the grid reported.
-    fn sections_grid(group: &'static str, changed: bool) -> egui_kittest::Harness<'static, SectionsState> {
-        // A number, so each row has a slider.
-        let base = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "glow_size").unwrap();
-        let def = |key: &'static str, group: &'static str, label: &'static str| SettingDef {
-            key,
-            group,
-            label,
-            ..base.clone()
-        };
-        let defs: &'static [SettingDef] =
-            Vec::leak(vec![def("a", "Notes", "Alpha"), def("b", "Notes", "Beta"), def("c", "Level", "Gamma")]);
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(420.0, 800.0))
-            .allow_missing_glyphs()
-            .with_context_setup(crate::theme::apply)
-            .build_ui_state(
-                move |ui, (shut, changes): &mut SectionsState| {
-                    let choices = TargetChoices::default();
-                    let folded = |g: &str| shut.contains(&g);
-                    let cx = GridCx {
-                        choices: &choices,
-                        overridden: &|_| false,
-                        inherited: &|_| None,
-                        marks: &|_| None,
-                        locked: &|_| false,
-                        applies: &|_| true,
-                        folded: Some(&folded),
-                        label_width: label_width(420.0),
-                    };
-                    let mut draw = |ui: &mut Ui, g: &'static str| {
-                        assert_eq!(g, group);
-                        let _ = ui.button("Extra");
-                    };
-                    let extras = [SectionExtra { group, changed, hover: None }];
-                    let get = |k: &str| defs.iter().find(|d| d.key == k).unwrap().default.clone();
-                    let out = settings_grid_sections(ui, "g", defs, get, &cx, &extras, &mut draw);
-                    changes.extend(out.changes);
-                    for (g, now_shut) in out.folds {
-                        shut.retain(|s| *s != g);
-                        if now_shut {
-                            shut.push(g);
-                        }
-                    }
-                },
-                (FOLDED_SECTIONS.to_vec(), Vec::new()),
-            );
-        h.run();
-        h
-    }
-
-    type SectionsState = (Vec<&'static str>, Vec<(&'static str, Value)>);
-
-    #[test]
-    fn a_row_after_the_split_still_reports_its_edit() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
-        let mut h = sections_grid("Notes", false);
-        // Gamma, in Level, is in the grid after the Notes extra.
-        let slider = h.get_by_role_and_label(Role::Slider, "Gamma");
-        slider.focus();
-        h.run();
-        h.key_press(egui::Key::ArrowRight);
-        h.run();
-        let keys: Vec<&str> = h.state().1.iter().map(|(k, _)| *k).collect();
-        assert!(keys.contains(&"c"), "the edit came back: {keys:?}");
-    }
-
-    #[test]
-    fn an_extra_draws_under_its_sections_rows() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
-        let h = sections_grid("Notes", false);
-        let extra = h.get_by_role_and_label(Role::Button, "Extra").rect();
-        let last = h.get_by_role_and_label(Role::Label, "Beta").rect();
-        let level = h.get_by_role_and_label(Role::Label, "Level").rect();
-        assert!(last.bottom() <= extra.top(), "the extra {extra:?} is below the last Notes row {last:?}");
-        assert!(extra.bottom() <= level.top(), "the extra {extra:?} is above the Level heading {level:?}");
-    }
-
-    #[test]
-    fn an_extra_only_section_gets_a_heading_in_rank() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
-        let mut h = sections_grid("Channel", false);
-        let level = h.get_by_role_and_label(Role::Label, "Level").rect();
-        let channel = h.get_by_role_and_label(Role::Label, "Channel").rect();
-        assert!(level.bottom() <= channel.top(), "Channel {channel:?} comes after Level {level:?}");
-        assert!(h.query_by_label("Extra").is_none(), "Channel starts folded");
-        h.get_by_label("Show Channel").click();
-        h.run();
-        assert!(!h.state().0.contains(&"Channel"), "the fold came back through `folds`");
-        let extra = h.get_by_role_and_label(Role::Button, "Extra").rect();
-        let channel = h.get_by_role_and_label(Role::Label, "Channel").rect();
-        assert!(channel.bottom() <= extra.top(), "the extra {extra:?} is under its heading {channel:?}");
-    }
-
-    #[test]
-    fn a_shut_extra_section_with_changes_shows_the_dot() {
-        use egui_kittest::kittest::Queryable;
-        let h = sections_grid("Channel", true);
-        assert!(h.query_by_label("Channel (changed)").is_some());
-        assert!(h.query_by_label("Extra").is_none());
-        let h = sections_grid("Channel", false);
-        assert!(h.query_by_label("Channel (changed)").is_none());
-    }
-
-    #[test]
-    fn labels_line_up_across_the_split() {
-        use eframe::egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
-        let h = sections_grid("Notes", false);
-        let notes = h.get_by_role_and_label(Role::Label, "Alpha").rect();
-        let level = h.get_by_role_and_label(Role::Label, "Gamma").rect();
-        assert_eq!(notes.left(), level.left());
-        let a = h.get_all_by_role(Role::Slider).map(|n| n.rect().left()).collect::<Vec<_>>();
-        assert_eq!(a.len(), 3);
-        assert!(a.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "widgets line up too: {a:?}");
     }
 
     #[test]

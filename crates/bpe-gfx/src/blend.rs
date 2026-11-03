@@ -3,7 +3,7 @@
 
 use bpe_core::Blend;
 
-use crate::flow::util;
+use crate::util;
 use crate::{HDR_FORMAT, begin_pass};
 
 pub(crate) struct Composite {

@@ -7,8 +7,6 @@ pub use sim::{ArenaSim, ArenaState};
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 
-use crate::things::canvas::SkinSettings;
-
 pub struct ArenaKind;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -61,9 +59,6 @@ pub struct ArenaSettings {
     /// The arena stops shrinking at this size.
     #[setting(label = "Smallest size", when = "shrink", range(10, 20000), unit = "px")]
     pub min_size: f32,
-    /// How the wall takes the paint of splats that hit it.
-    #[setting(paint, label = "Paint skin", group = "Paint skin")]
-    pub skin: SkinSettings,
 }
 
 impl Default for ArenaSettings {
@@ -79,14 +74,12 @@ impl Default for ArenaSettings {
             sides: 6,
             shrink: 0.0,
             min_size: 100.0,
-            skin: SkinSettings::default(),
         }
     }
 }
 
-const SLOTS: &[SlotId] =
-    &[SlotId::Look, SlotId::Bounce, SlotId::Sound, SlotId::Particles, SlotId::Rules, SlotId::Shader, SlotId::Marks];
-const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Sound];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Particles, SlotId::Shader];
+const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce];
 
 impl ThingKind for ArenaKind {
     fn id(&self) -> &'static str {

@@ -54,8 +54,6 @@ enum Action {
     /// Delete this row: with everything else selected when the row is part of the selection.
     DeleteRow(ThingId),
     Add(&'static str),
-    /// A canvas with a starting point from the Canvas submenu.
-    AddCanvas(bpe_kit::CanvasStart),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -72,7 +70,7 @@ enum Action {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 5] = ["Bouncers", "Walls", "Flowing", "Forces", "On screen"];
+const FAMILIES: [&str; 2] = ["Bouncers", "Walls"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -99,19 +97,7 @@ pub fn show(
             let kinds: Vec<_> =
                 reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
             let mut button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
-                if kind.id() == "canvas" {
-                    // A canvas starts as paint, a scratch card, sand, snow, fog glass or a war.
-                    ui.menu_button(kind.name(), |ui| {
-                        for start in bpe_kit::CanvasStart::ALL {
-                            if ui.button(start.label()).on_hover_text(start.help()).clicked() {
-                                action = Some(Action::AddCanvas(start));
-                                ui.close();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(kind.help());
-                } else if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
+                if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
                     action = Some(Action::Add(kind.id()));
                     ui.close();
                 }
@@ -178,7 +164,6 @@ pub fn show(
     // Delete removes everything selected, unless the keyboard is in a text field.
     if action.is_none()
         && !ui.ctx().text_edit_focused()
-        && !crate::chords::lane_focused(ui.ctx())
         && ui.input(|i| i.key_pressed(Key::Delete))
         && selection.primary.is_some()
     {
@@ -253,19 +238,15 @@ pub fn show(
                 }
             }
         }
-        Some(action @ (Action::Add(_) | Action::AddCanvas(_))) => {
+        Some(Action::Add(kind)) => {
             // Into a selected folder, beside any other selected thing, or under Scene settings.
             let parent = selection
                 .primary
                 .and_then(|s| scene.things.get(&s))
                 .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
                 .unwrap_or(ThingId::ROOT);
-            // The kit links the starter modules a kind needs, such as a liquid's surface look.
-            let added = match action {
-                Action::AddCanvas(start) => bpe_kit::add_canvas(scene, reg, start, parent),
-                Action::Add(kind) => bpe_kit::add_thing(scene, reg, kind, parent),
-                _ => unreachable!("matched above"),
-            };
+            // The kit links the starter modules a kind needs, such as a ball's look.
+            let added = bpe_kit::add_thing(scene, reg, kind, parent);
             if let Ok(id) = added {
                 selection.set(id);
                 out.edited = true;
@@ -371,7 +352,7 @@ pub fn apply_drop(
         Drop::Into(attach) => (onto, attach),
     };
     let attach = keeping_place(scene, dragged, parent, attach, world);
-    // Whatever the thing (and what hangs under it) followed, it still looks and sounds the same.
+    // Whatever the thing (and what hangs under it) followed, it still looks and moves the same.
     bpe_kit::move_thing(scene, reg, dragged, parent, attach)?;
     if attach == Attach::Group {
         // Grouped, the thing's own position is where it shows: the spot it had while riding.
@@ -795,28 +776,10 @@ enum Icon {
     Disc,
     /// The scene's defaults.
     Square,
-    /// An emitter: a nozzle with drops leaving it.
-    Spout,
-    /// A liquid.
-    Drop,
-    /// A swarm: a scatter of dots.
-    Dots,
-    /// A field: lines of wind.
-    Wind,
     /// A folder: a tabbed box.
     Folder,
-    /// An obstacle: a bar with a peg.
-    Bar,
-    /// A soft body: a squashed blob.
-    Blob,
-    /// Text: a letter.
-    Letter,
     /// The camera: a 9:16 frame.
     Frame,
-    /// A meter: a bar part filled.
-    Meter,
-    /// A canvas: a square with a brush stroke across it.
-    Canvas,
     /// Anything else.
     Diamond,
 }
@@ -826,17 +789,8 @@ fn icon_shape(kind: &str) -> Icon {
         "arena" => Icon::Ring,
         "balls" => Icon::Disc,
         "scene" => Icon::Square,
-        "emitter" => Icon::Spout,
-        "liquid" => Icon::Drop,
-        "swarm" => Icon::Dots,
-        "field" => Icon::Wind,
         "camera" => Icon::Frame,
         "folder" => Icon::Folder,
-        "obstacle" => Icon::Bar,
-        "soft" => Icon::Blob,
-        "text" => Icon::Letter,
-        "canvas" => Icon::Canvas,
-        "meter" => Icon::Meter,
         _ => Icon::Diamond,
     }
 }
@@ -855,87 +809,16 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
         Icon::Square => {
             painter.rect_filled(Rect::from_center_size(c, Vec2::splat(r * 1.6)), 2.0, ink);
         }
-        Icon::Spout => {
-            // A nozzle at the bottom and three drops rising from it.
-            let base = c + Vec2::new(0.0, r);
-            painter.add(egui::Shape::convex_polygon(
-                vec![base + Vec2::new(-r * 0.8, 0.0), base + Vec2::new(r * 0.8, 0.0), base + Vec2::new(0.0, -r * 0.9)],
-                ink,
-                Stroke::NONE,
-            ));
-            for (dx, dy) in [(-0.55, -0.5), (0.0, -0.95), (0.55, -0.5)] {
-                painter.circle_filled(c + Vec2::new(dx * r, dy * r), r * 0.22, ink);
-            }
-        }
-        Icon::Drop => {
-            // A droplet: a round bottom with a point at the top.
-            let bottom = c + Vec2::new(0.0, r * 0.25);
-            painter.circle_filled(bottom, r * 0.72, ink);
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    bottom + Vec2::new(-r * 0.7, -r * 0.15),
-                    c + Vec2::new(0.0, -r * 1.05),
-                    bottom + Vec2::new(r * 0.7, -r * 0.15),
-                ],
-                ink,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Dots => {
-            for (dx, dy) in [(-0.7, -0.5), (0.5, -0.8), (0.8, 0.4), (-0.3, 0.7), (0.0, -0.1)] {
-                painter.circle_filled(c + Vec2::new(dx * r, dy * r), r * 0.26, ink);
-            }
-        }
-        Icon::Wind => {
-            // Three lines of wind, the middle one longest, each ending in a curl.
-            for (dy, len) in [(-0.6, 0.7), (0.0, 1.0), (0.6, 0.55)] {
-                let y = c.y + dy * r;
-                let from = egui::pos2(c.x - r, y);
-                let to = egui::pos2(c.x - r + 2.0 * r * len, y);
-                painter.line_segment([from, to], stroke);
-                painter.circle_stroke(to + Vec2::new(0.0, -r * 0.22), r * 0.22, stroke);
-            }
-        }
         Icon::Folder => {
             let body = Rect::from_center_size(c + Vec2::new(0.0, r * 0.2), Vec2::new(r * 2.0, r * 1.4));
             painter.rect_stroke(body, 1.5, Stroke::new(1.3, ink), egui::StrokeKind::Inside);
             let tab = Rect::from_min_size(body.left_top() - Vec2::new(0.0, r * 0.5), Vec2::new(r * 0.9, r * 0.5));
             painter.rect_filled(tab, 1.0, ink);
         }
-        Icon::Bar => {
-            let bar = Rect::from_center_size(c + Vec2::new(0.0, r * 0.4), Vec2::new(r * 2.0, r * 0.6));
-            painter.rect_filled(bar, 1.5, ink);
-            painter.circle_filled(c + Vec2::new(r * 0.3, -r * 0.5), r * 0.4, ink);
-        }
-        Icon::Blob => {
-            // A circle flattened on the ground it rests on.
-            let body = Rect::from_center_size(c + Vec2::new(0.0, r * 0.25), Vec2::new(r * 2.1, r * 1.5));
-            painter.rect_stroke(body, r * 0.7, stroke, egui::StrokeKind::Inside);
-            painter.circle_filled(c + Vec2::new(-r * 0.3, -r * 0.1), r * 0.18, ink);
-        }
-        Icon::Letter => {
-            let top = c + Vec2::new(0.0, -r * 0.9);
-            painter.line_segment([top - Vec2::new(r * 0.9, 0.0), top + Vec2::new(r * 0.9, 0.0)], Stroke::new(2.0, ink));
-            painter.line_segment([top, c + Vec2::new(0.0, r * 0.95)], Stroke::new(2.0, ink));
-        }
         Icon::Frame => {
             let rect = Rect::from_center_size(c, Vec2::new(r * 1.15, r * 2.0));
             painter.rect_stroke(rect, 1.5, Stroke::new(1.6, ink), egui::StrokeKind::Inside);
             painter.circle_filled(c, r * 0.28, ink);
-        }
-        Icon::Meter => {
-            let bar = Rect::from_center_size(c, Vec2::new(r * 2.0, r * 0.9));
-            painter.rect_stroke(bar, r * 0.45, stroke, egui::StrokeKind::Inside);
-            let filled = Rect::from_min_max(bar.min, egui::pos2(bar.left() + bar.width() * 0.6, bar.bottom()));
-            painter.rect_filled(filled.shrink(1.5), r * 0.3, ink);
-        }
-        Icon::Canvas => {
-            let rect = Rect::from_center_size(c, Vec2::splat(r * 1.9));
-            painter.rect_stroke(rect, 1.5, stroke, egui::StrokeKind::Inside);
-            painter.line_segment(
-                [c + Vec2::new(-r * 0.6, r * 0.5), c + Vec2::new(r * 0.6, -r * 0.5)],
-                Stroke::new(2.5, ink),
-            );
         }
         Icon::Diamond => {
             let points =
@@ -991,9 +874,6 @@ pub fn problem_words(p: &Problem) -> String {
         ProblemKind::WrongSlot(m) => format!("{slot} links a module made for another slot (id {})", m.0),
         ProblemKind::UnknownModuleKind(k) => format!("{slot} links a module whose kind \"{k}\" isn't installed"),
         ProblemKind::MissingTarget(t) => format!("A setting points at a thing that isn't in the scene (id {})", t.0),
-        ProblemKind::BrokenGraph(msg) => {
-            format!("The {slot} graph doesn't compile, so the folder's module is used, if there is one: {msg}")
-        }
     }
 }
 
@@ -1106,22 +986,6 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_sand_canvas_from_the_submenu() {
-        let mut h = harness();
-        h.get_by_label("+ Add thing").click();
-        h.run();
-        h.get_by_label("Canvas").click();
-        h.run();
-        h.get_by_label("Sand").click();
-        h.run();
-        let s = h.state();
-        let id = s.selection.primary.expect("the new canvas is selected");
-        assert_eq!(s.scene.things[&id].kind, "canvas");
-        let settings = <bpe_kit::CanvasSettings as bpe_core::Settings>::from_params(&s.scene.things[&id].params);
-        assert_eq!(settings.kind, bpe_kit::CanvasKind::Powder);
-    }
-
-    #[test]
     fn add_thing_groups_kinds_under_headings() {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
@@ -1132,7 +996,7 @@ mod tests {
         let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
         assert!(y(&h, "Bouncers") < y(&h, "Balls"));
         assert!(y(&h, "Balls") < y(&h, "Walls"));
-        assert!(y(&h, "On screen") < y(&h, "Folder"), "Folder comes after the families");
+        assert!(y(&h, "Walls") < y(&h, "Folder"), "Folder comes after the families");
     }
 
     #[test]
@@ -1142,7 +1006,7 @@ mod tests {
         h.state_mut().selection.set(f);
         h.get_by_label("+ Add thing").click();
         h.run();
-        h.get_by_label("Obstacle").click();
+        h.get_by_label("Balls").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(4)].parent, Some(f));
     }
@@ -1263,7 +1127,7 @@ mod tests {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_scene(&kit.registry);
         let copy = duplicate(&mut scene, &kit.registry, ThingId(2)).unwrap();
-        for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound] {
+        for slot in [SlotId::Look, SlotId::Motion, SlotId::Bounce] {
             let (a, b) = (linked(&scene, ThingId(2), slot), linked(&scene, copy, slot));
             assert_ne!(a, b, "{slot:?} is the copy's own");
             assert_eq!(scene.library.modules[&b].owner, Some(copy));
@@ -1328,24 +1192,6 @@ mod tests {
         h.get_by_label("Show Ball").click();
         h.run();
         assert!(h.state().scene.things[&ThingId(2)].enabled);
-    }
-
-    #[test]
-    fn adding_a_liquid_from_the_tree_gives_it_a_liquid_look() {
-        let mut h = harness();
-        h.get_by_label("+ Add thing").click();
-        h.run();
-        h.get_by_label("Liquid").click();
-        h.run();
-        let s = h.state();
-        let id = s.selection.primary.expect("the new liquid is selected");
-        assert_eq!(s.scene.things[&id].kind, "liquid");
-        let bpe_core::SlotLink::Linked { module, .. } = s.scene.things[&id].slots[&SlotId::Look] else {
-            panic!("the liquid starts with its own look")
-        };
-        assert_eq!(s.scene.library.modules[&module].name, "Liquid look");
-        assert_eq!(s.scene.library.modules[&module].kind, "look.liquid");
-        assert!(h.query_by_label("Liquid").is_some());
     }
 
     #[test]
@@ -1625,7 +1471,7 @@ mod tests {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
         h.run();
-        h.get_by_label("Obstacle").click();
+        h.get_by_label("Balls").click();
         h.run();
         assert_eq!(h.state().added, [ThingId(3)]);
     }

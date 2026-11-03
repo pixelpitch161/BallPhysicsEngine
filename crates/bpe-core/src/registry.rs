@@ -63,10 +63,6 @@ pub trait ModuleKind: Send + Sync + 'static {
     fn slot(&self) -> SlotId;
     /// Every setting one of these has, in the order the inspector shows them.
     fn settings(&self) -> &'static [SettingDef];
-    /// The node graph this module opens as at Nodes depth, if it has one.
-    fn template(&self) -> Option<bpe_graph::Graph> {
-        None
-    }
     /// Whether this kind makes sense on things of `thing_kind`, so the editor lists only the
     /// kinds that fit. Most fit every thing.
     fn fits(&self, _thing_kind: &str) -> bool {
@@ -169,7 +165,7 @@ mod tests {
         let r = testkit::registry();
         assert_eq!(
             r.thing("balls").unwrap().default_slots(),
-            &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound]
+            &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce]
         );
         assert_eq!(r.modules_for(SlotId::Look).map(|m| m.id()).collect::<Vec<_>>(), ["look.plain"]);
         assert!(r.thing("magnet").is_none());

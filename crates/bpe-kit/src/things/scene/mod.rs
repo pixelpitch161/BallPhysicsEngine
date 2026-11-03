@@ -1,42 +1,19 @@
-//! Scene settings: the root of every scene. Its settings are the video, the world and the song,
-//! and its slots (music, effects and rules) act on the whole scene; nothing under it inherits
-//! them.
+//! Scene settings: the root of every scene. Its settings are the video, the world and the
+//! picture, and its effects slot acts on the whole scene; nothing under it inherits it.
 
 pub mod draw;
 pub mod sim;
 
-pub use sim::{SceneSim, SceneState};
+pub use sim::SceneSim;
 
 use crate::paint::Paint;
-use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
 
 /// The root's inspector cards, in order. Every scene setting's `group` is one of these.
-pub const ROOT_CARDS: [&str; 6] = ["Video", "World", "Background", "Picture", "Music", "Mix"];
-
-/// How hits and the beat are brought together.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum BeatSync {
-    /// The video runs at its own pace.
-    #[default]
-    Off,
-    /// The video's clock is gently stretched between hits so they land on beats; the physics
-    /// is left alone.
-    Warp,
-}
-
-/// The master stage's clipper.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum Clip {
-    #[default]
-    Off,
-    /// Rounds the peaks off.
-    Soft,
-    /// Cuts the peaks flat.
-    Hard,
-}
+pub const ROOT_CARDS: [&str; 4] = ["Video", "World", "Background", "Picture"];
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SceneSettings {
@@ -58,12 +35,15 @@ pub struct SceneSettings {
     /// How many times a second the physics moves everything.
     #[setting(label = "Physics rate", range(60, 2000), unit = "per s", group = "World")]
     pub steps_per_second: u32,
+    /// Where the scene's random numbers start. For now only the camera's shake reads it.
+    #[setting(label = "Seed", range(0, 1000000), group = "World")]
+    pub seed: u32,
     /// The colours behind everything, at any angle or spreading from a centre.
     #[setting(
         paint,
         label = "Colours",
         prefix = "background_",
-        follows = "place|time|beat",
+        follows = "place|time",
         screen_only,
         simple,
         no_vary,
@@ -108,55 +88,6 @@ pub struct SceneSettings {
     /// How much of the gradient map's colour replaces the picture's own.
     #[setting(label = "Gradient map amount", range(0, 1), group = "Picture", keyframe, pulse)]
     pub grade_map_amount: f32,
-    /// How loud the finished soundtrack is, measured as real loudness (LUFS). -14 is the usual
-    /// level for TikTok, Reels and Shorts.
-    #[setting(label = "Loudness", range(-30, -6), unit = "LUFS", group = "Mix")]
-    pub loudness: f32,
-    /// Shaves the peaks off before the limiter, for a louder, harder sound.
-    #[setting(label = "Clipper", group = "Mix")]
-    pub clipper: Clip,
-    /// How hard the clipper is pushed.
-    #[setting(label = "Clipper drive", range(0, 24), unit = "dB", when = "clipper=soft|hard", group = "Mix")]
-    pub clip_drive: f32,
-    /// The loudest the soundtrack ever gets, between samples too.
-    #[setting(label = "Ceiling", range(-6, 0), unit = "dBTP", group = "Mix")]
-    pub ceiling: f32,
-    /// Lets the limiter recover slower on dense music and faster on sparse hits.
-    #[setting(label = "Auto release", group = "Mix")]
-    pub auto_release: bool,
-    /// How fast the limiter recovers.
-    #[setting(label = "Release", range(10, 1000), unit = "ms", when = "!auto_release", group = "Mix")]
-    pub release: f32,
-    /// A steady beat; 0 follows the song's beats, or 120 without a song.
-    #[setting(label = "Tempo", range(0, 300), unit = "bpm", group = "Music")]
-    pub bpm: f32,
-    #[setting(label = "Beat sync", group = "Music")]
-    pub beat_sync: BeatSync,
-    /// Hits may land on halves or quarters of a beat too.
-    #[setting(label = "Beats split into", range(1, 4), group = "Music")]
-    pub subdivisions: u32,
-    /// How much faster or slower than real time the video may run between hits.
-    #[setting(label = "Stretch", range(0, 0.9), group = "Music")]
-    pub warp_strength: f32,
-    /// A song file (mp3, wav, ogg or flac) played under the sounds, whose beats the scene can
-    /// follow.
-    #[setting(label = "Song", unit = "file", group = "Music")]
-    pub song: String,
-    /// How far into the song the video starts. Negative starts the song late.
-    #[setting(label = "Song starts at", when = "song", range(-60, 60), unit = "s", group = "Music")]
-    pub song_offset: f32,
-    #[setting(label = "Song volume", when = "song", range(-40, 6), unit = "dB", group = "Music")]
-    pub song_volume: f32,
-    /// How much the song dips while the hit sounds play.
-    #[setting(label = "Ducks under hits", when = "song", range(0, 1), group = "Music")]
-    pub ducking: f32,
-    /// Which of the chord's notes each hit picks. Change it for a different tune.
-    #[setting(label = "Seed", range(0, 1000000), group = "Music", random)]
-    pub seed: u32,
-    /// How far past the edge of the shot a hit fades to silence, in shot widths; 0 plays every
-    /// hit at full volume wherever it is.
-    #[setting(label = "Off-shot fade", range(0, 5), unit = "shot widths", group = "Mix")]
-    pub off_shot_fade: f32,
 }
 
 impl Default for SceneSettings {
@@ -183,23 +114,8 @@ impl Default for SceneSettings {
             grade_vignette_size: 0.5,
             grade_map: Gradient::even(&[Color::rgb(0, 0, 0), Color::WHITE]),
             grade_map_amount: 0.0,
-            loudness: -14.0,
-            clipper: Clip::Off,
-            clip_drive: 0.0,
-            ceiling: -1.0,
-            auto_release: true,
-            release: 100.0,
             seed: 1,
-            song: String::new(),
-            song_offset: 0.0,
-            song_volume: -6.0,
-            ducking: 0.35,
-            bpm: 0.0,
-            beat_sync: BeatSync::Off,
-            subdivisions: 1,
-            warp_strength: 0.5,
             background_on_screen: true,
-            off_shot_fade: 0.0,
         }
     }
 }
@@ -232,13 +148,13 @@ impl ThingKind for SceneKind {
         "scene"
     }
     fn help(&self) -> &'static str {
-        "The video, the world and the song, plus effects, music and rules for the whole scene."
+        "The video, the world and the picture, plus effects for the whole scene."
     }
     fn settings(&self) -> &'static [SettingDef] {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Sound, SlotId::Shader, SlotId::Rules]
+        &[SlotId::Shader]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
@@ -248,14 +164,9 @@ impl ThingKind for SceneKind {
     }
     fn slot_label(&self, slot: SlotId) -> &'static str {
         match slot {
-            SlotId::Sound => "Sound",
             SlotId::Shader => "Effects",
             other => other.name(),
         }
-    }
-    /// Music plays on the beat, so only drums and melodies; hit sounds have no hits here.
-    fn accepts(&self, slot: SlotId, module_kind: &str) -> bool {
-        slot != SlotId::Sound || matches!(module_kind, "sound.drums" | "sound.melody")
     }
 }
 
@@ -277,7 +188,7 @@ mod tests {
     #[test]
     fn root_cards_hold_the_spec_rows() {
         assert_eq!(labels_in("Video"), ["Width", "Height", "Frame rate", "Length"]);
-        assert_eq!(labels_in("World"), ["Gravity", "Physics rate"]);
+        assert_eq!(labels_in("World"), ["Gravity", "Physics rate", "Seed"]);
         assert_eq!(
             labels_in("Background"),
             [
@@ -310,49 +221,20 @@ mod tests {
                 "Gradient map amount"
             ]
         );
-        assert_eq!(
-            labels_in("Music"),
-            [
-                "Tempo",
-                "Beat sync",
-                "Beats split into",
-                "Stretch",
-                "Song",
-                "Song starts at",
-                "Song volume",
-                "Ducks under hits",
-                "Seed"
-            ]
-        );
-        assert_eq!(
-            labels_in("Mix"),
-            ["Loudness", "Clipper", "Clipper drive", "Ceiling", "Auto release", "Release", "Off-shot fade"]
-        );
     }
 
     #[test]
-    fn the_root_sound_slot_reads_sound() {
-        assert_eq!(SceneKind.slot_label(SlotId::Sound), "Sound");
-    }
-
-    #[test]
-    fn scene_settings_holds_no_chords_and_keeps_its_slots_to_itself() {
+    fn scene_settings_keep_their_effects_slot_to_themselves() {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
-        assert!(!SceneSettings::defs().iter().any(|d| d.key == "chords"));
-        assert_eq!(k.slots(), &[SlotId::Sound, SlotId::Shader, SlotId::Rules]);
+        assert_eq!(k.slots(), &[SlotId::Shader]);
         assert!(k.default_slots().is_empty() && !k.passes_down());
-        assert_eq!(
-            (k.slot_label(SlotId::Sound), k.slot_label(SlotId::Shader), k.slot_label(SlotId::Rules)),
-            ("Sound", "Effects", "Rules")
-        );
-        assert!(k.accepts(SlotId::Sound, "sound.drums") && k.accepts(SlotId::Sound, "sound.melody"));
-        assert!(!k.accepts(SlotId::Sound, "sound.notes"));
+        assert_eq!(k.slot_label(SlotId::Shader), "Effects");
         assert!(k.accepts(SlotId::Shader, "shader.echo"));
     }
 
     #[test]
-    fn the_background_is_one_paint_that_follows_place_time_or_beat_on_the_screen() {
+    fn the_background_is_one_paint_that_follows_place_or_time_on_the_screen() {
         let defs = SceneSettings::defs();
         let keys: Vec<_> = defs.iter().map(|d| d.key).collect();
         for gone in ["background_top", "background_bottom", "background_space"] {
@@ -363,7 +245,7 @@ mod tests {
             assert!(keys.contains(&key), "{key}");
         }
         let follow = defs.iter().find(|d| d.key == "background_follow").unwrap();
-        assert_eq!(follow.ty, bpe_core::ValueType::Choice(&["place", "time", "beat"]));
+        assert_eq!(follow.ty, bpe_core::ValueType::Choice(&["place", "time"]));
         let d = SceneSettings::default().background;
         assert_eq!((d.angle, d.span, d.centre), (90.0, 1920.0, Vec2::ZERO));
         assert_eq!(d.colours.stops.len(), 2);

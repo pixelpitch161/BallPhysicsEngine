@@ -2,11 +2,7 @@
 //! and never-random settings alone.
 
 use crate::rng::Rng;
-use bpe_core::{
-    Address, Choice, Color, InstrumentId, InstrumentRef, InstrumentSource, ModuleId, Owner, ProgressionId,
-    ProgressionRef, Registry, Scene, SettingDef, SettingValue, SlotId, SlotLink, ThingId, Value, ValueType,
-};
-use bpe_mix::{Instrument, PRESETS, Preset};
+use bpe_core::{Address, Color, ModuleId, Owner, Registry, Scene, SettingDef, SlotId, SlotLink, ThingId, Value};
 
 /// What one throw of the dice covers.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,8 +39,6 @@ pub struct Rolled {
 pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rolled {
     let mut rolled = Rolled::default();
     let addresses = addresses(scene, reg, scope);
-    roll_progressions(scene, reg, &addresses, roll, &mut rolled);
-    roll_instruments(scene, reg, &addresses, roll, &mut rolled);
     for a in addresses {
         if held(scene, &a) || scene.tracks.contains_key(&a) {
             continue;
@@ -60,103 +54,6 @@ pub fn roll(scene: &mut Scene, reg: &Registry, scope: &Scope, roll: Roll) -> Rol
     }
     fit_to_camera(scene, reg, &rolled);
     rolled
-}
-
-/// Rolls the chord progressions the scope's Chords settings point at: with a chance of
-/// `amount`, a preset in the progression's mode replaces its chords, and close to "All new" its
-/// key moves too. Each progression rolls once however many settings point at it, with the dice
-/// of the first one. A locked Chords setting holds its progression, even for the other settings
-/// that share it.
-fn roll_progressions(scene: &mut Scene, reg: &Registry, addresses: &[Address], roll: Roll, rolled: &mut Rolled) {
-    let amount = roll.amount.clamp(0.0, 1.0);
-    if amount <= 0.0 {
-        return;
-    }
-    // Progressions a locked setting points at, anywhere in the scene.
-    let mut done: Vec<ProgressionId> = scene
-        .locks
-        .iter()
-        .filter(|a| scene.def_at(reg, a).is_some_and(|d| d.ty == ValueType::Progression))
-        .filter_map(|a| scene.value_at(reg, a).and_then(|v| ProgressionRef::from_value(&v)).and_then(|r| r.0))
-        .collect();
-    for a in addresses {
-        if held(scene, a) || scene.def_at(reg, a).is_none_or(|d| d.ty != ValueType::Progression) {
-            continue;
-        }
-        let Some(r) = scene.value_at(reg, a).and_then(|v| ProgressionRef::from_value(&v)) else { continue };
-        let Some(id) = r.0 else { continue };
-        if done.contains(&id) {
-            continue;
-        }
-        done.push(id);
-        let Some(mut p) = scene.library.progressions.get(&id).cloned() else { continue };
-        let mut dice = Rng::new(roll.seed, salt(a));
-        if dice.unit() >= amount {
-            continue;
-        }
-        if dice.unit() < structural_chance(amount) {
-            p.transpose_to((dice.next_u32() % 12) as u8);
-        }
-        let fits: Vec<&Preset> = PRESETS.iter().filter(|preset| preset.mode == p.key.mode).collect();
-        let preset = if fits.is_empty() {
-            &PRESETS[dice.next_u32() as usize % PRESETS.len()]
-        } else {
-            fits[dice.next_u32() as usize % fits.len()]
-        };
-        p.key.mode = preset.mode;
-        p.chords = preset.chords(p.key.root);
-        if scene.set_progression(id, p).is_ok() {
-            rolled.changed.push(a.clone());
-        }
-    }
-}
-
-/// Rolls the Instrument settings in the scope: with a chance of `amount`, each one picks a
-/// built-in sound or one of the scene's library instruments. A built-in it picks joins the
-/// library the first time. A setting on "Scene's" and a locked one stay as they are.
-fn roll_instruments(scene: &mut Scene, reg: &Registry, addresses: &[Address], roll: Roll, rolled: &mut Rolled) {
-    let amount = roll.amount.clamp(0.0, 1.0);
-    if amount <= 0.0 {
-        return;
-    }
-    for a in addresses {
-        if held(scene, a) || scene.def_at(reg, a).is_none_or(|d| d.ty != ValueType::Instrument || !d.flags.random) {
-            continue;
-        }
-        let Some(InstrumentRef(Some(current))) = scene.value_at(reg, a).and_then(|v| InstrumentRef::from_value(&v))
-        else {
-            continue;
-        };
-        let mut dice = Rng::new(roll.seed, salt(a));
-        if dice.unit() >= amount {
-            continue;
-        }
-        // The built-ins (not the drum kit) and the scene's patches.
-        let built_ins: Vec<Instrument> = Instrument::ALL.iter().copied().filter(|i| *i != Instrument::Drums).collect();
-        let patches: Vec<InstrumentId> = scene
-            .library
-            .instruments
-            .iter()
-            .filter(|(_, i)| matches!(i.source, InstrumentSource::Patch { .. }))
-            .map(|(id, _)| *id)
-            .collect();
-        let pick = dice.next_u32() as usize % (built_ins.len() + patches.len());
-        let id = match built_ins.get(pick) {
-            Some(&which) => {
-                let found = scene.library.instruments.iter().find(
-                    |(_, i)| matches!(&i.source, InstrumentSource::BuiltIn { which: w, .. } if w == which.name()),
-                );
-                match found {
-                    Some((&id, _)) => id,
-                    None => scene.add_instrument(crate::built_in_instrument(which)),
-                }
-            }
-            None => patches[pick - built_ins.len()],
-        };
-        if id != current && scene.set_at(reg, a, InstrumentRef(Some(id)).to_value()).is_ok() {
-            rolled.changed.push(a.clone());
-        }
-    }
 }
 
 /// Arena sizes the dice picked, made to fit the camera's shot: the dice ranges suit a shot at
@@ -525,65 +422,6 @@ mod tests {
         (0..n).filter_map(|i| roll_value(def, current, &mut Rng::new(i, 1), amount)).collect()
     }
 
-    fn starter_chords(scene: &Scene) -> bpe_core::Progression {
-        scene.library.progressions.values().next().unwrap().clone()
-    }
-
-    #[test]
-    fn rolling_the_scene_picks_a_preset_in_key() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let r = roll(&mut scene, &reg, &Scope::Scene, Roll { seed: 7, amount: 1.0 });
-        let p = starter_chords(&scene);
-        assert!(PRESETS.iter().any(|preset| preset.chords(p.key.root) == p.chords), "{:?}", p.chords);
-        assert!(r.changed.iter().any(|a| a.key == "chords"));
-    }
-
-    #[test]
-    fn rolling_picks_an_instrument_and_respects_locks() {
-        let reg = registry();
-        let sound = |scene: &Scene| *scene.library.modules.iter().find(|(_, m)| m.kind == "sound.notes").unwrap().0;
-        let mut scene = new_scene(&reg);
-        let a = Address { owner: Owner::Module(sound(&scene)), slot: None, key: "instrument".into() };
-        let before = scene.value_at(&reg, &a);
-        let changed = (0..20).any(|seed| {
-            let mut s = scene.clone();
-            roll(&mut s, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
-            let after = s.value_at(&reg, &a);
-            let id = after.as_ref().and_then(InstrumentRef::from_value).and_then(|r| r.0);
-            assert!(id.is_some_and(|id| s.library.instruments.contains_key(&id)), "points into the library");
-            after != before
-        });
-        assert!(changed, "some roll picks another instrument");
-        scene.set_locked(a.clone(), true);
-        for seed in 0..20 {
-            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
-        }
-        assert_eq!(scene.value_at(&reg, &a), before);
-    }
-
-    #[test]
-    fn a_locked_chords_setting_keeps_its_progression() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let before = starter_chords(&scene);
-        let sound = bpe_core::resolve_slot(&scene, &reg, ThingId(2), SlotId::Sound, &mut Vec::new()).unwrap().module;
-        scene.set_locked(Address { owner: Owner::Module(sound), slot: None, key: "chords".into() }, true);
-        for seed in 0..20 {
-            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: 1.0 });
-        }
-        assert_eq!(starter_chords(&scene), before);
-    }
-
-    #[test]
-    fn the_same_seed_rolls_the_same_chords() {
-        let reg = registry();
-        let (mut a, mut b) = (new_scene(&reg), new_scene(&reg));
-        roll(&mut a, &reg, &Scope::Scene, Roll { seed: 3, amount: 0.9 });
-        roll(&mut b, &reg, &Scope::Scene, Roll { seed: 3, amount: 0.9 });
-        assert_eq!(starter_chords(&a), starter_chords(&b));
-    }
-
     #[test]
     fn numbers_roll_inside_the_dice_range_and_log_scale_when_wide() {
         let reg = registry();
@@ -738,9 +576,7 @@ mod tests {
     #[test]
     fn shapes_and_arrangements_stay_put_until_close_to_all_new() {
         let reg = registry();
-        for (kind, key) in
-            [("balls", "arrangement"), ("obstacle", "shape"), ("arena", "shape"), ("soft", "shape"), ("field", "kind")]
-        {
+        for (kind, key) in [("balls", "arrangement"), ("arena", "shape")] {
             let d = def(&reg, kind, key);
             assert!(d.flags.structural, "{kind}.{key} decides what the thing is");
             let ValueType::Choice(names) = d.ty else { panic!("{kind}.{key} is a choice") };
@@ -748,31 +584,11 @@ mod tests {
             assert!(rolls(&d, &first, 0.75, 200).is_empty(), "{kind}.{key} stays put at three quarters");
             assert!(rolls(&d, &first, 1.0, 50).iter().any(|v| *v != first), "{kind}.{key} changes at All new");
         }
-        let order = def(&reg, "sound.notes", "order");
+        let order = def(&reg, "look.basic", "style");
         assert!(!order.flags.structural);
-        let ValueType::Choice(names) = order.ty else { panic!("order is a choice") };
+        let ValueType::Choice(names) = order.ty else { panic!("style is a choice") };
         let first = Value::Choice(names[0].into());
         assert!(rolls(&order, &first, 0.5, 50).iter().any(|v| *v != first), "other choices change half way");
-    }
-
-    #[test]
-    fn a_peg_board_rolled_half_way_keeps_room_for_its_balls() {
-        let reg = registry();
-        let (_, board) = crate::scenes::all(&reg).into_iter().find(|(n, _)| n == "Peg board").expect("the peg board");
-        let number = |scene: &Scene, kind: &str, key: &str| -> f64 {
-            let thing = scene.things.values().find(|t| t.kind == kind).expect(kind);
-            match thing.params.get(key) {
-                Some(Value::Number(x)) => *x,
-                other => panic!("{kind}.{key} is {other:?}"),
-            }
-        };
-        for seed in 0..60 {
-            let mut scene = board.clone();
-            roll(&mut scene, &reg, &Scope::Scene, Roll { seed, amount: START_AMOUNT });
-            let gap = number(&scene, "obstacle", "spacing") - 2.0 * number(&scene, "obstacle", "radius");
-            let ball = 2.0 * number(&scene, "balls", "radius");
-            assert!(gap > ball, "seed {seed}: pegs {gap:.0} px apart jam balls {ball:.0} px wide");
-        }
     }
 
     #[test]
@@ -886,12 +702,10 @@ mod tests {
     }
 
     #[test]
-    fn targets_text_and_unflagged_settings_never_roll() {
+    fn targets_and_unflagged_settings_never_roll() {
         let reg = registry();
-        let target = def(&reg, "emitter", "target");
+        let target = def(&reg, "bounce.basic", "balls_to_hit");
         assert!(rolls(&target, &Value::Target(bpe_core::Target::Anything), 1.0, 5).is_empty());
-        let text = def(&reg, "text", "text");
-        assert!(rolls(&text, &Value::Text("Hi".into()), 1.0, 5).is_empty());
         let duration = def(&reg, "scene", "duration");
         assert!(rolls(&duration, &Value::Number(10.0), 1.0, 5).is_empty());
     }
@@ -1056,11 +870,13 @@ mod tests {
         let rolled = roll(
             &mut scene,
             &reg,
-            &Scope::Group { thing: ThingId::ROOT, group: "Music" },
+            &Scope::Group { thing: ThingId::ROOT, group: "Background" },
             Roll { seed: 3, amount: 1.0 },
         );
-        assert!(rolled.changed.contains(&own("seed")));
+        assert!(!rolled.changed.is_empty());
         assert!(!rolled.changed.contains(&own("bloom")));
-        assert!(rolled.changed.iter().all(|a| a.key == "seed"), "{:?}", rolled.changed);
+        let defs = <crate::things::scene::SceneSettings as bpe_core::Settings>::defs();
+        let group = |key: &str| defs.iter().find(|d| key.starts_with(d.key)).map(|d| d.group);
+        assert!(rolled.changed.iter().all(|a| group(&a.key) == Some("Background")), "{:?}", rolled.changed);
     }
 }

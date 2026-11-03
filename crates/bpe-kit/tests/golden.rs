@@ -70,12 +70,8 @@ fn the_scenes_are_lively() {
         playback.seek(SECONDS);
         let (least, kind) = match name.as_str() {
             "Reel block" => (1000, EventKind::Hit),
-            "Peg board" | "Ball pit" => (100, EventKind::Hit),
+            "Ball pit" => (100, EventKind::Hit),
             "One ball" => (10, EventKind::Hit),
-            "Fountain" => (400, EventKind::Spawn),
-            "Wind tunnel" => (4, EventKind::Enter),
-            "Small pool" | "Deep pool" => (3, EventKind::Hit),
-            "Fireflies" => (10, EventKind::Hit),
             _ => (1, EventKind::Hit),
         };
         let events = playback.log().events().iter().filter(|e| e.kind == kind).count();
@@ -83,31 +79,6 @@ fn the_scenes_are_lively() {
         for bodies in playback.world().bodies.values() {
             assert!(bodies.position.iter().all(|p| p.is_finite()), "{name}: a ball went non-finite");
         }
-    }
-}
-
-/// A liquid is pushed by the balls and never pushes back; a swarm lives on the graphics card.
-/// Neither may change a single hit of the balls.
-#[test]
-fn liquids_and_swarms_never_move_the_balls_log() {
-    let kit = kit();
-    for (scene_name, thing_name) in [("Small pool", "Pool"), ("Fireflies", "Fireflies")] {
-        let (_, scene) = scenes::all(&kit.registry).into_iter().find(|(n, _)| n == scene_name).unwrap();
-        let mut without = scene.clone();
-        let id = *without.things.iter().find(|(_, t)| t.name == thing_name).map(|(id, _)| id).unwrap();
-        without.remove_thing(id).unwrap();
-        let logs: Vec<(usize, u64)> = [&scene, &without]
-            .into_iter()
-            .map(|scene| {
-                let resolved = bpe_core::resolve(scene, &kit.registry);
-                assert!(resolved.problems.is_empty(), "{scene_name}: {:?}", resolved.problems);
-                let mut playback = Playback::new(scene, &resolved, kit.sims.clone());
-                playback.seek(SECONDS);
-                (playback.log().len(), playback.log().hash())
-            })
-            .collect();
-        assert!(logs[0].0 > 0, "{scene_name}: the ball hit nothing");
-        assert_eq!(logs[0], logs[1], "{scene_name}: removing {thing_name} changed the balls' log");
     }
 }
 

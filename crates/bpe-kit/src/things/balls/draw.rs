@@ -28,23 +28,12 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
 }
 
 /// The linear-light colour of each ball of the thing being drawn, from its look's Colours
-/// (painted by place, start, order, speed, hits, steps, beats or time) and its hue shift per hit,
-/// when it has a look and bodies, with any tint a rule gave the ball laid over it as strongly as
-/// the tint's alpha says. Trails and particles take their colours from here too.
+/// (painted by place, start, order, speed, hits, steps or time) and its hue shift per hit, when
+/// it has a look and bodies. Trails and particles take their colours from here too.
 pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + 'a> {
     let look = look_of(cx)?;
     let bodies = cx.world.bodies.get(&cx.thing.id)?;
-    let look_color = colors(look, cx, bodies);
-    let (world, thing) = (cx.world, cx.thing.id);
-    Some(move |i: usize| {
-        let c = look_color(i);
-        let tinted = match bodies.tint.get(i) {
-            Some(t) => [c[0] + (t[0] - c[0]) * t[3], c[1] + (t[1] - c[1]) * t[3], c[2] + (t[2] - c[2]) * t[3], c[3]],
-            None => c,
-        };
-        // Paint picked up from wet paint goes over the rule's tint.
-        bpe_runtime::with_picked(world, thing, i, tinted)
-    })
+    Some(colors(look, cx, bodies))
 }
 
 impl ThingDraw for BallsDraw {
@@ -281,31 +270,6 @@ mod tests {
         assert_eq!(frame.balls.len(), 1);
         assert_eq!(frame.balls[0].paint.pattern, 1.0);
         assert_eq!(frame.balls[0].paint.row, -2.0, "a shade of the ball's own colour by default");
-    }
-
-    #[test]
-    fn a_tinted_ball_is_drawn_in_its_tint() {
-        let (scene, resolved, kit) = crate::testing::scene_with_balls("single", |_| {});
-        let mut world = World::build(&scene, &resolved, &kit.sims);
-        let plain = {
-            let mut frame = Frame::default();
-            build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-            frame.balls[0].color
-        };
-        world.bodies.get_mut(&ThingId(2)).unwrap().tint[0] = [1.0, 0.0, 0.0, 1.0];
-        let mut frame = Frame::default();
-        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert_eq!(frame.balls[0].color, [1.0, 0.0, 0.0, 1.0]);
-        world.bodies.get_mut(&ThingId(2)).unwrap().tint[0] = [1.0, 0.0, 0.0, 0.5];
-        let mut frame = Frame::default();
-        build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        let half = frame.balls[0].color;
-        for i in 0..3 {
-            assert!(
-                (half[i] - (plain[i] + ([1.0, 0.0, 0.0][i] - plain[i]) * 0.5)).abs() < 1e-5,
-                "{half:?} vs {plain:?}"
-            );
-        }
     }
 
     #[test]

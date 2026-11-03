@@ -5,7 +5,7 @@ use bpe_gfx::{DrawCx, Frame, ModuleDraw, push_streak, push_streak_colours};
 use glam::Vec2;
 
 use super::{StreakTrail, TrailSource};
-use crate::paint::{Follow, Inputs, beats_at, colour_at, seed_of};
+use crate::paint::{Follow, Inputs, colour_at, seed_of};
 use crate::things::balls::draw::ball_colors;
 
 pub struct StreakDraw;
@@ -88,23 +88,17 @@ struct Along<'a> {
     time: f64,
     /// Seconds between the history's samples.
     interval: f32,
-    beats: f32,
 }
 
 impl<'a> Along<'a> {
     fn new(cx: &DrawCx, trail: &'a StreakTrail, interval: f32) -> Self {
-        let beats = if trail.source == TrailSource::Own && trail.colour.follow == Follow::Beat {
-            beats_at(cx.log, cx.video_time, cx.world.steps_per_second)
-        } else {
-            0.0
-        };
-        Self { trail, camera: cx.world.camera, screen: cx.resolved.screen, time: cx.time, interval, beats }
+        Self { trail, camera: cx.world.camera, screen: cx.resolved.screen, time: cx.time, interval }
     }
 
     /// The colour at point `k` of `points` (newest first, the ball moving at `speed` at the
     /// first): Life runs from 0 at the ball to 1 at the tail end; Place reads where the point
     /// is, Speed how fast the ball went there, and Time when it was there, so each part of the
-    /// streak keeps the colour it was drawn in. Beat is the same all along. `seed` is the ball's
+    /// streak keeps the colour it was drawn in. `seed` is the ball's
     /// own, so the streak varies the way its ball does.
     fn colour(&self, points: &[Vec2], k: usize, speed: f32, seed: u32) -> [f32; 4] {
         let n = points.len();
@@ -126,7 +120,6 @@ impl<'a> Along<'a> {
             start: place,
             speed,
             life: if n > 1 { k as f32 / (n - 1) as f32 } else { 0.0 },
-            beats: self.beats,
             time: self.time as f32 - if self.trail.colour.follow == Follow::Time { age } else { 0.0 },
             seed,
             ..Inputs::default()

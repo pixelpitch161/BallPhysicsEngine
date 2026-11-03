@@ -1,28 +1,32 @@
 # Ball Physics Engine: guide for Claude
 
-Ball Studio is a Rust + wgpu editor and renderer for vertical 9:16 bouncing-ball videos (mp4 with sound) for
+Ball Studio is a Rust + wgpu editor and renderer for vertical 9:16 bouncing-ball videos (mp4) for
 TikTok, Reels and Shorts. The owner is a music producer on Windows 11 who is not a programmer. They run a ready-built
 `ball-studio.exe` and never run commands themselves.
 
-## Two engines live side by side
+## One engine, stripped to its core
 
-The repo holds **two complete engines**. Almost all current work happens in the **new modular one**.
+On 2026-11-03 the owner had everything except the core removed, to rework the program from a smaller base. The
+version before that is **Version 1**, kept on the `version-1` branch (with its exes in the owner's
+`bin\version-1\` folder). Removed in that pass: the old engine (`bpe-app`, `bpe-scene`, `bpe-sim`, `bpe-audio`,
+`bpe-render`, `bpe-export`, `bpe-music`), node graphs and rules (`bpe-graph`, `bpe-vm`), the Explore and Batch
+windows, the canvas and paint marks, the whole sound and chords system (`bpe-synth`, `bpe-mix`), and the Obstacle,
+Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. Exports carry a silent audio track.
 
-| | New modular engine (current) | Old engine (frozen) |
-| --- | --- | --- |
-| Editor crate / binary | `bpe-studio` / `ball-studio-next` | `bpe-app` / `ball-studio` |
-| Command-line renderer | `bpe-cli` / `bpe-render-next` | `bpe-export` / `bpe-render` |
-| Scenes | `scenes/next/` | `scenes/*.ron`, `scenes/showcase/` |
-| Design spec | `docs/superpowers/specs/2026-10-29-modular-studio-design.md` | none |
+| | |
+| --- | --- |
+| Editor crate / binary | `bpe-studio` / `ball-studio-next` |
+| Command-line renderer | `bpe-cli` / `bpe-render-next` |
+| Scenes | `scenes/next/` |
+| Design spec | `docs/superpowers/specs/2026-10-29-modular-studio-design.md` (written before the strip-down) |
 
 The shipped `bin\ball-studio.exe` on the owner's PC is built from **`bpe-studio`** (`-p bpe-studio`), even though
-its binary is named `ball-studio-next`. `README.md` still documents the **old** editor's tabs and features, so don't
-take it as a description of the current UI.
+its binary is named `ball-studio-next`. Older specs and plans in `docs/superpowers/` describe removed features.
 
 Old scene files don't need to keep loading or looking the same. The owner has said there's no backward
 compatibility until they are happy with the software.
 
-## Crate map (new engine)
+## Crate map
 
 Dependencies go bottom to top:
 
@@ -30,30 +34,23 @@ Dependencies go bottom to top:
   `#[setting(...)]` attribute (label, range, unit, `simple`, `random`, `keyframe`, `structural`, `when`) drives the
   inspector UI, dice, locks, keyframes and pulses all at once.
 - `bpe-core`: the data model. Things sit in a tree (`scene.rs`), modules sit in a shared library (`library.rs`),
-  values, colours/gradients, blend modes, progressions, animation (keyframes), save/load (`save.rs`) and
+  values, colours/gradients, blend modes, animation (keyframes and pulses on hits), save/load (`save.rs`) and
   **resolve** (`resolve.rs`, which follows the order override > linked module > parent's module > Scene settings).
   `registry.rs` holds the plugin registry.
-- `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`,
-  `solids.rs`), the camera, the event log (`events.rs`) and playback/snapshots.
-- `bpe-graph`: node-graph wiring, types and validation. Rules and shader graphs share it.
-- `bpe-vm`: compiles module and rule graphs and runs them on the CPU.
+- `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
+  the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
+  settle, after_step) stay for new thing kinds even where no current kind uses them.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
-  effects, flow layers (GPU swarms/liquids), particles, text.
-- `bpe-synth`: the modular node synth (DSP blocks, patch catalog/compiler, voices).
-- `bpe-mix`: instruments, chords, buses, master chain, stems and export of the soundtrack.
-- `bpe-music`: song decoding, beats/tempo, band levels, MIDI. The old engine uses it too.
-- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, canvas, emitter,
-  field, folder, liquid, meter, obstacle, scene, soft, swarm, text) and one per module kind in `src/modules/` (look, trail,
-  motion, bounce, sound, particles, rules, shader, drums, melody, and more). A folder usually has `mod.rs`
-  (settings + kind), `sim.rs` (physics) and `draw.rs` or `graph.rs`. `lib.rs::kit()` registers them all.
-  `starters.rs` holds per-thing starter modules and `scenes.rs` holds the built-in scenes.
-- `bpe-cli`: headless export and batch rendering.
-- `bpe-studio`: the egui 0.37 editor. Its layout has the tree on the left, the inspector on the right, the node
-  panel under the preview and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`,
-  `nodes/`, `timeline/`, `library.rs`, `palettes.rs`, `export_window.rs` and `sound_job.rs`.
-
-Old engine crates you should rarely need: `bpe-scene`, `bpe-sim`, `bpe-audio`, `bpe-render`, `bpe-export`,
-`bpe-app`.
+  shader effects, particles and trails.
+- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
+  and one per module kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A folder usually has
+  `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
+  colour and gradient system (not the removed canvas). `starters.rs` holds per-thing starter modules and
+  `scenes.rs` holds the built-in scenes.
+- `bpe-cli`: headless export.
+- `bpe-studio`: the egui 0.37 editor. Its layout has the tree on the left, the inspector on the right, the preview
+  in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
+  `library.rs`, `palettes.rs` and `export_window.rs`.
 
 ## Working rules
 
@@ -72,25 +69,21 @@ apt-get update && apt-get install -y libasound2-dev pkg-config libudev-dev mesa-
 rustup target add x86_64-pc-windows-gnu
 ```
 
-- Tests: `cargo test --workspace` takes about 8-10 minutes cold, so run it in the background. Without
+- Tests: `cargo test --workspace` takes several minutes cold, so run it in the background. Without
   `mesa-vulkan-drivers`, GPU picture tests fail with "no graphics adapter". That's an environment problem, not a
   bug. In `--release`, `bpe-runtime`'s `pushing_an_earlier_step_panics_in_debug` always fails (it is debug-only).
 - Lint: `cargo clippy --workspace` and `cargo fmt` (max width 120). `cargo fmt` rewraps lines, so scripted text
   replacements can silently miss. Check that the old text is present first.
 - Windows exe: `cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio` (and `-p bpe-cli` for the
   renderer). Rename `ball-studio-next.exe` to `ball-studio.exe` when delivering it.
-- Disk is a fixed allowance and `target/` passes 18 GB. Use `CARGO_INCREMENTAL=0` and delete `target/debug` when the
+- Disk is a fixed allowance and `target/` grows large. Use `CARGO_INCREMENTAL=0` and delete `target/debug` when the
   disk fills.
 - Screenshots: run the release editor under Xvfb at 1440x960 and capture with `import -window root`. When killing
   it, use `pkill -f "[b]all-studio-next"` (a plain pattern also kills your own shell).
 
 ## Golden tests (determinism)
 
-The physics is deterministic, and goldens pin it:
-
-- New engine: `crates/bpe-kit/tests/golden*.txt` (plus `-debug` variants).
-- Old engine: `crates/bpe-sim/tests/golden*.txt`, and `crates/bpe-audio/tests/old_scenes.rs` pins the soundtrack
-  hashes.
+The physics is deterministic, and goldens pin it: `crates/bpe-kit/tests/golden*.txt` (plus `-debug` variants).
 
 Any change that moves balls changes golden lines. Re-bless with `BLESS_GOLDEN=1`, **once in debug and once with
 `--release`**. Then diff against main: only the lines you meant to change may differ. Goldens differ slightly on
@@ -110,13 +103,9 @@ native Windows (libm trig), which is a known gap.
 
 ## Engine pitfalls
 
-- A canvas's grid is the truth for Cover, Powder and Fog (drawn from `grid.image()`); only Paint canvases log marks.
-  Numbers go through `World::report_canvas` and are read from the log (`Log::canvas_at`) by captions and the Meter.
-- Module states are `MotionState { settings, program }` and `BounceState { settings, program }` (in
+- Module states are `MotionState { settings }` and `BounceState { settings }` (in
   `bpe-kit/src/modules/{motion,bounce}/sim.rs`). `downcast_ref::<BasicBounce>()` compiles but silently returns
   `None`.
-- A custom module's setting blocks ARE its params. `nodes::panel::sync_params` keeps them equal, so never write one
-  side alone.
-- There are two matchers on purpose. `World::matching(target, me)` is the physics view (Me = the thing itself).
-  `World::matches(me, thing, target)` / `things_of` is the rules view (Me = the Rules scope).
+- `World::matching(target, me)` lists the things a target points at (Me = the thing itself); `World::names(target,
+  me, other)` asks whether it points at one thing (the camera's hit trigger uses it).
 - An inherited (linked-from-parent) module card is read-only until "Change here".

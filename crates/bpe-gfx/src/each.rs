@@ -12,30 +12,26 @@ use wgpu::{BlendComponent, BlendFactor as F, BlendOperation as Op};
 use crate::{Frame, HDR_FORMAT};
 
 /// The kinds of instance a layer that blends with each other draws with their own pipelines.
-/// Liquids and particles keep their usual ones: no look that blends with each other draws them.
+/// Particles keep their usual ones: no look that blends with each other draws them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Trail,
     Shape,
-    Soft,
     Ball,
     Look,
     Flash,
-    Glyph,
 }
 
 impl Kind {
-    const ALL: [Kind; 7] = [Kind::Trail, Kind::Shape, Kind::Soft, Kind::Ball, Kind::Look, Kind::Flash, Kind::Glyph];
+    const ALL: [Kind; 5] = [Kind::Trail, Kind::Shape, Kind::Ball, Kind::Look, Kind::Flash];
 
     fn used_by(self, f: &Frame) -> bool {
         match self {
             Kind::Trail => !f.trails.is_empty(),
             Kind::Shape => !f.shapes.is_empty(),
-            Kind::Soft => !f.soft.is_empty(),
             Kind::Ball => !f.balls.is_empty(),
             Kind::Look => !f.looks.is_empty(),
             Kind::Flash => !f.flashes.is_empty(),
-            Kind::Glyph => !f.glyphs.is_empty(),
         }
     }
 }

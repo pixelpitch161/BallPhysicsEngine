@@ -1,148 +1,51 @@
 # Ball Physics Engine
 
 Design, preview and render satisfying bouncing-ball videos for TikTok, Instagram Reels and YouTube Shorts.
-Written in Rust with wgpu. The output is a vertical 1080x1920 mp4 with sound. Developed for Windows 11, and also builds on macOS and Linux.
+Written in Rust with wgpu. The output is a vertical 1080x1920 mp4. Developed for Windows 11, and also builds on
+Linux and macOS.
 
-The default scene recreates a reference reel: a 28 x 28 grid of glowing balls falls into a ring, and every wall hit plays a note from a chord progression.
+This is the stripped-down core after Version 1 (kept on the `version-1` branch). It has balls, arenas, a camera,
+folders, colours and looks, trails, particles, shader effects, keyframes and pulses on hits, the scene settings, and
+mp4 export. The video's sound track is silent for now.
 
-## Scene types
+## Programs
 
-Mix and match these in the editor, or start from a preset of each:
-
-| Scene type | How to make it | Preset |
-| --- | --- | --- |
-| Escape rings | Arena tab, shape **Escape rings**. Nested spinning rings each have a gap; a ball that gets out through a gap shatters that ring and plays a strum. Rings can be round or polygons. | Escape rings, Escape and multiply |
-| Spinning shapes | Arena tab, shape **Polygon** (or any shape) and **Arena spin** under Movement. | Spinning hexagon |
-| Multiplying balls | Bounces tab, **New balls per hit** or **per escape**, up to a ball limit. | Multiplying balls |
-| Shrinking arena | Arena tab, **Shrink** (per second) or **Shrink per hit** under Movement. Negative shrink grows the arena. | Shrinking ring |
-| String art | Look tab, **Lines per ball**: a line from each ball to its latest hit points. | String art |
-| Pegs (Plinko) | Arena tab, **Pegs and walls**, plus Balls tab **Add a stream** to drop balls one by one. | Plinko |
-| Everything at once | The **Everything at once** and **Everything in 3D** presets combine rules, jelly, rope, liquid, a swarm, particles, node shaders that pulse with the music, a MIDI melody locked to the beat and captions. They are saved in `scenes/showcase/` and tested together by `crates/bpe-export/tests/showcase.rs`. | Everything at once, Everything in 3D |
-
-## Requirements
-
-### Windows 11
-
-1. Install Rust from [rustup.rs](https://rustup.rs). When it asks, let it install the Visual Studio C++ Build Tools.
-2. Install ffmpeg, then open a new terminal so it is on your `PATH`:
-   ```powershell
-   winget install --id Gyan.FFmpeg
-   ffmpeg -version
-   ```
-3. Clone and run the editor:
-   ```powershell
-   git clone https://github.com/pixelpitch161/BallPhysicsEngine
-   cd BallPhysicsEngine
-   cargo run --release -p bpe-app
-   ```
-   The first build downloads and compiles dependencies and takes a few minutes. The editor uses DirectX 12 or Vulkan.
-
-### macOS and Linux
-
-- Rust 1.88 or newer from [rustup.rs](https://rustup.rs), and ffmpeg (`brew install ffmpeg` or `sudo apt install ffmpeg`).
-- Linux also needs `pkg-config`, `libasound2-dev` and `libxkbcommon-x11-0` to build.
-
-## Editor
+- **Ball Studio** (`bpe-studio`, binary `ball-studio-next`): the editor. The tree of things is on the left, the
+  selected thing's settings and one card per slot (Look, Trail, Motion, Bounce, Particles, Shader) on the right, the
+  preview in the middle and the timeline of keyframes at the bottom.
+- **bpe-render-next** (`bpe-cli`): renders a scene file to an mp4 from the command line.
 
 ```sh
-cargo run --release -p bpe-app
-# or open a scene file directly
-cargo run --release -p bpe-app -- scenes/growing-ball.ron
-```
-
-- **Start:** the editor reopens the last scene you saved or opened. The first time, it shows the preset gallery.
-- **Toolbar:** New and Presets open the preset gallery, each with a moving preview. Open, Save and Save as work with `.ron` scene files, which are plain text you can also edit by hand. Undo and Redo (Ctrl+Z, Ctrl+Y) cover every change. The editor asks before closing or opening another scene with unsaved changes.
-- **Settings tabs:** Balls, Arena, Bounces, Look, Effects and Sound. Every setting has a plain name and a **?** that explains it, and right-clicking a setting resets it to its default. Rarely used settings are under **More settings** in each tab.
-- **Dice:** each group of settings (Shape, Movement, World, Trails, Glow, Chords, each ball group and each effect, and so on) has a dice button that rolls new values for that group, within ranges that still make a good video. Balls are kept inside the arena and colours come from one palette. Each roll is its own undo step.
-- **Randomize:** the toolbar's Randomize panel lists every part that has a dice in one place, each with a padlock (the same padlocks sit beside the dice in the tabs). Lock the parts you like and **Roll** rolls new settings for all the others at once, as far from the current ones as **How different** says. Single settings lock too: right-click one (a ball group's size, a colour list, a trail width) and pick **Lock when randomizing**, and every dice leaves it as it was while the rest of its group rolls. A small padlock marks it. Each roll is one undo step.
-- **My presets:** the Look, Effects, Bounces, Sound, Rules and Text tabs and each ball group's Look have a **My presets…** menu that saves those settings under a name and puts them into any other scene. Whole scenes are saved from the bottom of the preset gallery and show at its top under My scenes (right-click one to delete it). Presets are `.ron` files in the settings folder (`%APPDATA%\Ball Studio\presets` on Windows), one folder per kind, with song, sample and font paths made absolute so they work from any scene.
-- **Explore:** shows the current scene beside nine moving variations of it, each made from a numbered seed. Tick what may change (Balls, Arena, Bounces, Look, Effects, Sound), set how different they should be, and click one to use it. **More like this** makes a new batch close to a variation, and **New batch** rolls nine more. The same starting scene, settings and seed always give the same variations.
-- **Preview:** while paused, drag a ball group to move it, drag the tip of its arrow to set launch speed and direction, and drag the arena's edge to resize it. Clicking the preview while it plays pauses it.
-- **Bottom bar:** play and pause (Space), back to the start, scrub through time, the video's length, loop and mute.
-- **Export video:** pick Best, Good or Quick draft, and the editor saves an mp4 with sound to your Videos folder, named after the scene. It finds ffmpeg by itself, including a winget install that is not on `PATH` yet. Video size, frame rate and the ffmpeg location are under Advanced. When it finishes, Play video and Show in folder open the result.
-
-## Speed
-
-- **Speed meter:** tick **Speed meter** in the bottom bar (or press F3) to see the frame rate and how long the physics, shape building, drawing and last sound rebuild took.
-- **Preview quality:** Full, Half or Quarter in the bottom bar. Lower keeps big swarms and effect stacks smooth on a slower computer. Exports are always full quality.
-- **Long scenes:** after an edit with the playhead far in, the simulation catches up over a few frames instead of freezing the editor. Snapshots every half second make scrubbing backwards instant.
-- **Graphics card encoding:** export uses the NVIDIA, AMD or Intel video encoder when ffmpeg can (much faster than the CPU) and falls back to the CPU otherwise. It is under Export video, Advanced, and on the command line as `--encoder auto|cpu|nvidia|amd|intel`.
-- **Profiling:** `bpe-render all --profile` times the physics, sound, frame building and drawing for every preset plus some extra-heavy scenes, and prints a fingerprint of everything each one produces. Two builds that print the same fingerprints make exactly the same videos.
-
-## Shader effects
-
-The Effects tab stacks full-screen shader effects over the finished picture, applied top to bottom: Echo, Kaleidoscope, Shockwaves, Colour split, Colour cycle, Liquid, Mirror, Pixels, Film and Glitch, plus ready-made looks that combine them. Each has an Amount and its own sliders, and they are saved in the scene and rendered into exports.
-
-An effect is one WGSL file that defines `fn effect(uv: vec2<f32>, p: Params) -> vec3<f32>`, with its sliders declared in comments at the top:
-
-```wgsl
-// name: Wobble
-// about: Bends the picture in waves.
-// param strength = 0.5 [0, 1] How far the picture bends
-// param bands = 8 [1, 40] int Number of waves
-// param vertical = 0 toggle Wave up and down instead of sideways
-fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
-    let along = select(uv.y, uv.x, p.vertical > 0.5);
-    let wave = sin(along * p.bands * TAU + fx.time * 3.0) * 0.02 * p.strength;
-    let direction = select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), p.vertical > 0.5);
-    return sample(uv + direction * wave);
-}
-```
-
-Put custom effects in an `effects` folder next to the scene file or next to `ball-studio`. They appear in Add effect, and the preview reloads them whenever the file is saved; a mistake shows its message and line in the tab. The helpers available to effects (`sample`, `prev` for feedback, `noise`, `hue_shift`, the list of recent bounces and more) are described in `crates/bpe-render/src/effects/prelude.wgsl`, and the built-in effects in `crates/bpe-render/src/effects/builtin/` are good starting points.
-
-## Command line
-
-```sh
-cargo run --release -p bpe-export -- scenes/reference-reel.ron out.mp4
-cargo run --release -p bpe-export -- scenes/reference-reel.ron out.mp4 --scale 0.5 --preset veryfast   # quick draft
-cargo run --release -p bpe-export -- scenes/reference-reel.ron --still 3.5 frame.png                  # one frame
-cargo run --release -p bpe-export -- scenes/reference-reel.ron --wav sound.wav                        # just the audio
-cargo run --release -p bpe-export -- escape-rings out.mp4                                              # a built-in preset
-cargo run --release -p bpe-export -- --presets                                                         # list the presets
-```
-
-## Ball Studio Next (work in progress)
-
-A rewrite of the editor around a modular engine is being built beside the old one, stage by stage, following `docs/superpowers/specs/2026-10-29-modular-studio-design.md`. It ships as a second program, `ball-studio-next`, and leaves the old editor and its crates untouched. Scenes are a tree of **things** (Scene settings, Arena, Balls, Obstacle, Folder, Emitter, Field, Liquid and Swarm so far), and each thing has **slots** (Look, Motion, Bounce, Sound) that link a **module** from the scene's library. A new thing gets its own starter modules (named after it, like "Ball look"), unless a folder above it fills the slot, in which case it follows the folder until you pick **Make own**. Modules can still be shared by picking the same one on several things. Scene settings holds only what is about the whole scene: the video, the world, the song, and its own Music, Effects and Rules, which nothing under it inherits. Every setting shows at two depths, Simple and More; Nodes comes in a later stage.
-
-```sh
-cargo run --release -p bpe-studio                                     # the new editor
+cargo run --release -p bpe-studio                                     # the editor
 cargo run --release -p bpe-studio -- scenes/next/reel-block.ron        # open a scene
 cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4   # export from the command line
 cargo run --release -p bpe-cli -- scenes/next/reel-block.ron out.mp4 --scale 0.5 --frames 300 --encoder cpu
 ```
 
-- **A new scene** opens with a circle arena and one ball. The tree on the left adds, renames, duplicates, filters and deletes things, and hides them with the eye. The inspector on the right shows the selected thing's settings and one card per slot, where a menu switches the module, makes a new one, inherits or turns the slot off.
-- **The preview** draws the scene while paused or playing. Drag a ball group to move it, drag the tip of its arrow to aim it, drag the arena's edge to resize it. The bar below plays and pauses (Space), restarts (Home), shows every hit as a tick, and scrubs.
-- **Sound** is remixed on a thread a moment after an edit that changes it, and plays in time with the picture. **Export video…** saves an mp4 with sound next to the scene file, at full, half or quarter size, using the graphics card's encoder when ffmpeg can.
-- **Emitters** are things that release balls (or anything else with bodies) into a target thing, using the target's own Look, Motion, Bounce and Sound: a rate per second or bursts, a speed, a direction with a spread, a width, start and stop times and a limit, aimed at one thing, a tag or anything. They can also fire on a hit of the thing they listen to, and every release is a Spawn event in the log.
-- **Fields** push what passes through them: wind, a gravity well, a repeller or a vortex, round, boxed or everywhere, with a falloff, targeted by thing, tag or anything. Entering and leaving a field are Enter and Leave events, so later stages' rules can react to them.
-- **Liquid** is one thing with a particle count. Up to its **Processor limit** (4000 by default) the particles are bodies in the physics, pushed around by the balls and settled by a position-based solver; above it the graphics card runs the same liquid, tens of thousands of particles strong, with checkpoints so scrubbing back stays quick. Either way the **Liquid surface** look draws it as one body that tints and bends what is behind it, and a plain look draws dots. A pool fills the bottom of the arena or a block falls from the thing; a pour lets it in over time from the thing's position.
-- **Swarms** are thousands of points of light on the graphics card that swirl with the air, flock, follow the balls and keep off the walls (**Flocking** motion), coloured by speed, by the nearest ball or along a gradient (**Glowing dots** look). They never touch the physics, so changing a swarm never moves a ball.
-- **What the graphics-card layers do and don't do:** liquids over the limit and swarms are stepped from a private copy of the physics at 120 steps a second, told the first 64 balls and the first wall each step, and drawn into the same picture as everything else. They cannot yet be fed by emitters or pushed by fields, see only one wall and no obstacles, and never produce sounds or events. The video export waits for every frame to catch up, so the clip never skips.
-- **Gizmos:** emitters, fields, liquids and swarms draw dashed outlines in the paused preview, and can be dragged by their middle like any other thing.
-- **Scenes** in `scenes/next/` are the new format: `one-ball`, `reel-block`, `box-drop`, `spinning-hexagon`, `shrinking-ring`, `fountain`, `wind-tunnel`, `small-pool`, `deep-pool` and `fireflies`. Old `.ron` files do not open in the new editor yet.
-- **Crates:** `bpe-core` (the scene model, library, slots and resolve), `bpe-runtime` (the stepper and event log), `bpe-gfx` (the renderer), `bpe-mix` (the mixer), `bpe-kit` (every thing and module kind, one folder each), `bpe-cli` (`bpe-render-next`) and `bpe-studio` (the editor). `cargo test --release -p bpe-kit --test speed -- --ignored --nocapture` compares the new engine with the old one on ten thousand balls.
-- **Stage 3, building blocks:** an **Obstacle** thing (peg, bar, peg grid, polygon, ring) that can spin and move on a path; box, capsule and rounded arenas; **Folders** to group things, collapse them and reorder or re-parent them by dragging in the tree; **riding**, where a thing follows its parent's movement and turn (Alt-drop, the Attach row, or the context menu); **tags** that targets such as "Which balls" and "Sounds for" can point at through a picker of things, tags and kinds; balls that hit each other, grow, speed up and pop, with piles that come to rest; more Look (gradients by speed, hits or position), Motion (wind), Bounce (friction, a different bounce against chosen things) and Sound (pitch by hits or speed, shortest gap) options; a **Library** window that lists, renames, duplicates, deletes and drags shared modules onto things; and **overrides**, where a thing using a shared module keeps its own changes (orange dots, Reset and Push, Make unique). Ctrl/Shift-click selects several things and edits apply to all of them. Scenes: `peg-board`, `spinning-bars`, `ball-pit`, `riders`, `pitch-climb`.
-- **Stage 5, visuals:** styled looks (shapes, fills, outlines, halos), streak trails, hit particles and shader effects, with the scenes `lava-ball`, `confetti-drop`, `spark-block`, `kaleido-hexagon` and `neon-ring`.
-- **Stage 6, flowing things:** emitters, fields, liquid and swarms, described above, with the scenes `fountain`, `wind-tunnel`, `small-pool`, `deep-pool` and `fireflies`.
-- **Not yet:** nodes and rules, soft bodies, text, keyframes and music. They come in the later stages.
+Export needs ffmpeg. The editor and the renderer find it by themselves, including a winget install that is not on
+`PATH` yet.
+
+## Scenes
+
+The built-in scenes are saved in `scenes/next/`: one ball, reel block, box drop, spinning hexagon, shrinking ring,
+ball pit, riders, lava ball, confetti drop, spark block, kaleido hexagon, neon ring, colour paints, blend modes,
+graded sunset and long drop.
 
 ## How it fits together
 
 | Crate | Job |
 | --- | --- |
-| `bpe-scene` | The scene description: video size, container, balls, physics, rules, look and sound. Saved as RON. Also the random rolls behind the dice and the explorer. |
-| `bpe-sim` | Deterministic physics at a fixed 240 steps per second: closed arenas that spin and shrink, rings with gaps, pegs and walls, balls that appear or split mid-clip. It records every hit and escape with its exact time. |
-| `bpe-audio` | Turns wall hits into a soundtrack. Each hit plays a note from the current chord at the exact sample, then the mix is loudness-normalised and peak-limited. |
-| `bpe-render` | wgpu renderer: background, walls and pegs (instanced shapes with distance functions), string art, ring shards, motion streaks, shaded balls, wall flashes, then the shader effect chain, HDR bloom and tone mapping. |
-| `bpe-export` | Pipes rendered frames and the soundtrack into ffmpeg (H.264 and AAC in an mp4). Also the `bpe-render` command-line tool. |
-| `bpe-app` | The egui editor (`ball-studio`). |
+| `bpe-settings-derive` | `#[derive(Settings, Choice)]`: a plain struct becomes the settings the inspector, dice and keyframes use. |
+| `bpe-core` | The scene model: the tree of things, the module library, values, colours, keyframes and pulses, save and load, and resolve. |
+| `bpe-runtime` | The deterministic world at a fixed 240 steps per second: collisions, the camera and the event log. |
+| `bpe-gfx` | The wgpu renderer: gradients, blend modes, the grade, shader effects, particles and trails. |
+| `bpe-kit` | Every thing kind (arena, balls, camera, folder, scene) and module kind (look, trail, motion, bounce, particles, shader), and the built-in scenes. |
+| `bpe-cli` | Headless export. |
+| `bpe-studio` | The egui editor. |
 
-The physics never uses the screen's frame time, so the preview, the export and the sound always agree. Running a scene twice gives identical frames.
-
-World coordinates are pixels of the output video, with the origin at the centre of the frame and y pointing down.
+The physics never uses the screen's frame time, so the preview and the export always agree, and running a scene
+twice gives identical frames. World coordinates are pixels of the output video, with the origin at the centre of
+the frame and y pointing down.
 
 ## Tests
 
@@ -150,4 +53,4 @@ World coordinates are pixels of the output video, with the origin at the centre 
 cargo test --workspace
 ```
 
-The renderer test needs a GPU or a software Vulkan driver (`mesa-vulkan-drivers` on Linux). It skips itself if none is found.
+The picture tests need a GPU or a software Vulkan driver (`mesa-vulkan-drivers` on Linux).
