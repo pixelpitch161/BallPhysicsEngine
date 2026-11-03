@@ -243,11 +243,9 @@ mod tests {
     #[test]
     fn motion_gravity_is_a_multiple() {
         let reg = registry();
-        for kind in ["motion.basic"] {
-            let d = defs_of(&reg, kind).iter().find(|d| d.key == "gravity_scale").unwrap();
-            assert_eq!(d.label, "Gravity ×", "{kind}");
-            assert_eq!(d.help, "How strongly the scene's gravity pulls these, as a multiple.", "{kind}");
-        }
+        let d = defs_of(&reg, "motion.basic").iter().find(|d| d.key == "gravity_scale").unwrap();
+        assert_eq!(d.label, "Gravity ×");
+        assert_eq!(d.help, "How strongly the scene's gravity pulls these, as a multiple.");
     }
 
     #[test]
