@@ -25,11 +25,6 @@ pub fn mix_over_panel(color: Color32) -> Color32 {
     Color32::from_rgb(mix(PANEL.r(), color.r()), mix(PANEL.g(), color.g()), mix(PANEL.b(), color.b()))
 }
 
-/// A clip's fill for `c`.
-pub fn clip_fill(c: TrackColour) -> Color32 {
-    mix_over_panel(track_color(c))
-}
-
 /// The colour that marks `id` in the editor: its track colour, or `TEXT` for a thing without one
 /// (the scene settings) or one that is gone.
 pub fn colour_of(scene: &Scene, id: ThingId) -> Color32 {

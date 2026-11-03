@@ -9,7 +9,7 @@ mod track;
 pub use controls::*;
 pub use fonts::{medium, mono, semibold};
 pub use tokens::*;
-pub use track::{clip_fill, colour_of, mix_over_panel, track_color};
+pub use track::{colour_of, track_color};
 
 use eframe::egui::{self, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle};
 
@@ -116,11 +116,11 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     #[test]
-    fn clip_fill_mixes_22_percent_over_the_panel() {
+    fn a_clip_mixes_22_percent_over_the_panel() {
         let mix = |p: u8, c: u8| (p as f32 + (c as f32 - p as f32) * 0.22).round() as u8;
         let pink = track_color(TrackColour::Pink);
         let want = Color32::from_rgb(mix(0x28, pink.r()), mix(0x28, pink.g()), mix(0x28, pink.b()));
-        assert_eq!(clip_fill(TrackColour::Pink), want);
+        assert_eq!(track::mix_over_panel(pink), want);
         assert_eq!(want, Color32::from_rgb(0x57, 0x38, 0x44));
     }
 

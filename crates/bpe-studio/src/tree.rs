@@ -94,6 +94,7 @@ pub fn show(
                 .color(style::MUTED),
         );
         ui.menu_button("+ Add thing", |ui| {
+            ui.set_min_width(160.0);
             let present = |k: &str| scene.things.values().any(|t| t.kind == k);
             let kinds: Vec<_> =
                 reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
@@ -488,6 +489,8 @@ fn row(ui: &mut Ui, tree: &mut Tree, scene: &Scene, thing: &Thing, cx: &RowCx, a
     let background = ui.painter().add(egui::Shape::Noop);
     let response = ui.horizontal(|ui| {
         ui.set_min_height(style::TREE_ROW_H);
+        // The whole width, so the selection fills the row whatever is on it.
+        ui.set_min_width(ui.available_width());
         ui.spacing_mut().item_spacing.x = 6.0;
         ui.add_space(4.0 + cx.depth as f32 * 14.0);
         // The fold toggle, or its empty place so icons line up.
@@ -702,18 +705,6 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
             .on_disabled_hover_text("Make a folder first");
         });
     }
-}
-
-/// A right-pointing triangle when folded, a down-pointing one when open.
-fn paint_fold(painter: &egui::Painter, rect: Rect, collapsed: bool, ink: Color32) {
-    let c = rect.center();
-    let r = 3.5;
-    let points = if collapsed {
-        vec![c + Vec2::new(-r * 0.6, -r), c + Vec2::new(r * 0.9, 0.0), c + Vec2::new(-r * 0.6, r)]
-    } else {
-        vec![c + Vec2::new(-r, -r * 0.6), c + Vec2::new(r, -r * 0.6), c + Vec2::new(0.0, r * 0.9)]
-    };
-    painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
 }
 
 /// A hook from above into the icon: this thing rides on the one over it.

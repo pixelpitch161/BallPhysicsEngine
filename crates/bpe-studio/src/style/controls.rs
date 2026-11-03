@@ -55,30 +55,6 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     response
 }
 
-/// An inspector section's header: a chevron, the title in semibold and, when folded, a short grey
-/// summary. The chevron is named "Hide {title}" or "Show {title}". True when it or the title was
-/// clicked, which flips the section.
-pub fn section_header(ui: &mut Ui, open: bool, title: &str, summary: &str) -> (bool, Response) {
-    let row = ui.horizontal(|ui| {
-        ui.set_min_height(32.0);
-        let (rect, chevron) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
-        let name = if open { format!("Hide {title}") } else { format!("Show {title}") };
-        chevron.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-        let chevron = chevron.on_hover_text(if open { "Hide these settings" } else { "Show these settings" });
-        paint_chevron(ui.painter(), rect, open, if chevron.hovered() { TEXT } else { MUTED });
-        let label = ui.add(
-            egui::Label::new(RichText::new(title).font(semibold(13.0)).color(TEXT))
-                .selectable(false)
-                .sense(Sense::click()),
-        );
-        if !open && !summary.is_empty() {
-            ui.label(RichText::new(summary).small().color(MUTED));
-        }
-        chevron.clicked() || label.clicked()
-    });
-    (row.inner, row.response)
-}
-
 /// A chevron pointing right when folded and down when open.
 pub fn paint_chevron(painter: &Painter, rect: Rect, open: bool, ink: Color32) {
     let c = rect.center();

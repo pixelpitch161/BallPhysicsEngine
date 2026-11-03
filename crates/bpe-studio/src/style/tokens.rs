@@ -47,8 +47,6 @@ pub const UNTINTED: Color32 = Color32::WHITE;
 
 /// Buttons, fields and setting rows.
 pub const CONTROL_H: f32 = 26.0;
-/// Value fields and dropdowns inside a setting row.
-pub const VALUE_H: f32 = 22.0;
 pub const TREE_ROW_H: f32 = 30.0;
 pub const LANE_H: f32 = 23.0;
 /// A timeline group's header.
@@ -59,7 +57,6 @@ pub const TREE_W: f32 = 230.0;
 pub const INSPECTOR_W: f32 = 370.0;
 /// The inspector's label column.
 pub const LABEL_W: f32 = 108.0;
-pub const VALUE_W: f32 = 62.0;
 /// The timeline's lane name column.
 pub const LANE_NAME_W: f32 = 120.0;
 /// The default corner.

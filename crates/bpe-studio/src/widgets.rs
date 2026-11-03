@@ -657,7 +657,12 @@ pub fn number_slider<N: egui::emath::Numeric>(
     if min > 0.0 && max / min > 1000.0 {
         slider = slider.logarithmic(true);
     }
-    ui.add(slider)
+    // The rail left of the knob is a lighter grey; nothing else here uses the selection colour.
+    ui.scope(|ui| {
+        ui.visuals_mut().selection.bg_fill = style::SLIDER_FILL;
+        ui.add(slider.trailing_fill(true))
+    })
+    .inner
 }
 
 fn widget(

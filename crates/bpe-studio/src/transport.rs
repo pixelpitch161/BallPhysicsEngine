@@ -1,9 +1,8 @@
-//! Play, pause, the clock, and the scrub bar with its lane of hits.
+//! Play, pause, the clock, loop, and the ruler to scrub with.
 
 use crate::app::{Studio, clock};
 use crate::style;
-use bpe_runtime::EventKind;
-use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui};
+use eframe::egui::{self, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
 enum Icon {
     Play,
@@ -14,73 +13,50 @@ enum Icon {
 /// The first row: play, pause, the clock and loop.
 pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
     ui.horizontal(|ui| {
+        ui.set_min_height(40.0);
         let icon = if studio.playing { Icon::Pause } else { Icon::Play };
-        if round_button(ui, 34.0, icon).on_hover_text("Play or pause (Space)").clicked() {
+        if square_button(ui, icon).on_hover_text("Play or pause (Space)").clicked() {
             studio.set_playing(!studio.playing);
         }
-        if round_button(ui, 28.0, Icon::Restart).on_hover_text("Back to the start (Home)").clicked() {
+        if square_button(ui, Icon::Restart).on_hover_text("Back to the start (Home)").clicked() {
             studio.seek(0.0);
         }
-        ui.monospace(format!("{} / {}", clock(studio.time), clock(studio.duration())));
+        ui.label(
+            RichText::new(format!("{} / {}", clock(studio.time), clock(studio.duration()))).font(style::mono(14.0)),
+        );
         ui.add_space(8.0);
         let looped = style::switch(ui, &mut studio.looping);
         let label = ui.label("Loop");
         looped.labelled_by(label.id).on_hover_text("Start again from the beginning at the end");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("Drag the bar to scrub · ticks are hits").small().color(style::MUTED));
+            let hint = "Drag the ruler to scrub";
+            ui.label(RichText::new(hint).small().color(style::MUTED));
         });
     });
 }
 
-/// The whole video as a bar: hits as ticks, the playhead,
-/// and dragging to scrub. The bar starts `inset` points in from the left, so the lanes below
-/// it can line up; the rect of the bar itself comes back.
+/// The ruler: the whole video as a thin bar with a mark per second and the playhead; click or
+/// drag it to scrub. The bar starts `inset` points in from the left, so the lanes below it can
+/// line up; the rect of the bar itself comes back.
 pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     let duration = studio.duration().max(0.001);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::click_and_drag());
-    let track = Rect::from_min_max(Pos2::new(rect.left() + inset, rect.top() + 6.0), rect.max - egui::vec2(0.0, 6.0));
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::click_and_drag());
+    let track = Rect::from_min_max(Pos2::new(rect.left() + inset, rect.top() + 2.0), rect.max - egui::vec2(0.0, 2.0));
     let painter = ui.painter_at(rect);
-    painter.rect_filled(track, 6.0, style::RAISED);
-
-    // Hits per pixel column, as far as the playback has got.
-    let columns = track.width().max(1.0) as usize;
-    let mut counts = vec![0u32; columns];
-    let mut count = |t: f32| {
-        let column = ((t / duration as f32) * columns as f32) as usize;
-        if let Some(c) = counts.get_mut(column.min(columns - 1)) {
-            *c += 1;
-        }
-    };
-    let rate = studio.playback.world().steps_per_second;
-    for e in studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit) {
-        count(e.time(rate) as f32);
-    }
-    for (column, &c) in counts.iter().enumerate() {
-        if c == 0 {
-            continue;
-        }
-        let x = track.left() + column as f32 + 0.5;
-        let alpha = (0.35 + c as f32 * 0.2).min(1.0);
-        let color = style::TEXT.gamma_multiply(alpha);
-        painter.line_segment(
-            [Pos2::new(x, track.top() + 5.0), Pos2::new(x, track.bottom() - 5.0)],
-            Stroke::new(1.0, color),
-        );
-    }
-
-    // Second marks.
+    painter.rect_filled(track, 0.0, style::GROUND);
     for second in 1..duration.ceil() as u32 {
         let x = track.left() + (second as f64 / duration) as f32 * track.width();
-        painter.line_segment(
-            [Pos2::new(x, track.bottom() - 3.0), Pos2::new(x, track.bottom())],
-            Stroke::new(1.0, style::LINE),
-        );
+        let tall = if second % 5 == 0 { 7.0 } else { 4.0 };
+        painter.vline(x, (track.bottom() - tall)..=track.bottom(), Stroke::new(1.0, style::LINE));
     }
-    // The playhead.
+    // The playhead, with a small handle to grab.
     let x = track.left() + (studio.time / duration) as f32 * track.width();
-    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(x, track.max.y)), 6.0, style::TEXT.gamma_multiply(0.2));
-    painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(2.0, style::TEXT));
-    painter.circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, style::TEXT);
+    painter.vline(x, rect.y_range(), Stroke::new(1.0, style::TEXT_STRONG));
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(x - 4.0, track.top()), Pos2::new(x + 4.0, track.top()), Pos2::new(x, track.top() + 5.0)],
+        style::TEXT_STRONG,
+        Stroke::NONE,
+    ));
 
     if response.drag_started() {
         studio.resume_after_scrub = studio.playing;
@@ -102,46 +78,41 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     track
 }
 
-fn round_button(ui: &mut Ui, size: f32, icon: Icon) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), Sense::click());
-    let fill = match icon {
+/// Play and pause: a light square with a dark icon. Restart: a frameless icon button.
+fn square_button(ui: &mut Ui, icon: Icon) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
+    let painter = ui.painter();
+    let ink = match icon {
         Icon::Play | Icon::Pause => {
-            if response.hovered() {
-                style::TEXT
-            } else {
-                style::TEXT
-            }
+            let fill = if response.hovered() { style::TEXT_STRONG } else { style::TEXT };
+            painter.rect_filled(rect, style::RADIUS, fill);
+            style::ON_LIGHT
         }
         Icon::Restart => {
             if response.hovered() {
-                style::HOVER
-            } else {
-                style::RAISED
+                painter.rect_filled(rect, style::RADIUS, style::HOVER);
             }
+            style::MUTED
         }
     };
-    let painter = ui.painter();
-    painter.circle_filled(rect.center(), size / 2.0, fill);
     let c = rect.center();
-    let s = size * 0.2;
-    let white = style::ON_LIGHT;
+    let s = 5.0;
     match icon {
         Icon::Play => {
-            let points = vec![c + egui::vec2(-s * 0.7, -s), c + egui::vec2(s * 1.1, 0.0), c + egui::vec2(-s * 0.7, s)];
-            painter.add(egui::Shape::convex_polygon(points, white, Stroke::NONE));
+            let points = vec![c + egui::vec2(-s * 0.7, -s), c + egui::vec2(s * 1.0, 0.0), c + egui::vec2(-s * 0.7, s)];
+            painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
         }
         Icon::Pause => {
-            for dx in [-s * 0.55, s * 0.55] {
+            for dx in [-s * 0.5, s * 0.5] {
                 let bar = Rect::from_center_size(c + egui::vec2(dx, 0.0), egui::vec2(s * 0.5, s * 2.0));
-                painter.rect_filled(bar, 1.0, white);
+                painter.rect_filled(bar, 0.0, ink);
             }
         }
         Icon::Restart => {
-            let s = size * 0.22;
-            let bar = Rect::from_center_size(c + egui::vec2(-s * 0.9, 0.0), egui::vec2(s * 0.35, s * 1.8));
-            painter.rect_filled(bar, 0.5, white);
-            let points = vec![c + egui::vec2(s, -s * 0.9), c + egui::vec2(s, s * 0.9), c + egui::vec2(-s * 0.6, 0.0)];
-            painter.add(egui::Shape::convex_polygon(points, white, Stroke::NONE));
+            let bar = Rect::from_center_size(c + egui::vec2(-s * 0.8, 0.0), egui::vec2(2.0, s * 1.8));
+            painter.rect_filled(bar, 0.0, ink);
+            let points = vec![c + egui::vec2(s, -s * 0.9), c + egui::vec2(s, s * 0.9), c + egui::vec2(-s * 0.5, 0.0)];
+            painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
         }
     }
     let name = match icon {

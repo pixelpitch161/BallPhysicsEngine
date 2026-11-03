@@ -156,12 +156,28 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.label("The preview needs the wgpu renderer.");
         return Outcome::default();
     };
+    // A two-part switch in the corner: the on part is inverted.
     ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.selectable_value(&mut studio.preview_mode, PreviewMode::Camera, "Camera")
-            .on_hover_text("Exactly what the video shows");
-        ui.selectable_value(&mut studio.preview_mode, PreviewMode::World, "World")
-            .on_hover_text("The whole world: scroll to zoom, drag with the middle button to pan, F to frame");
+        ui.add_space(8.0);
+        let frame = egui::Frame::new().stroke(Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
+        frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let modes = [
+                (PreviewMode::Camera, "Camera", "Exactly what the video shows"),
+                (
+                    PreviewMode::World,
+                    "World",
+                    "The whole world: scroll to zoom, drag with the middle button to pan, F to frame",
+                ),
+            ];
+            for (mode, name, help) in modes {
+                let on = studio.preview_mode == mode;
+                let button = style::toggle_button(name, on).frame_when_inactive(on).min_size(egui::vec2(0.0, 24.0));
+                if ui.add(button).on_hover_text(help).clicked() {
+                    studio.preview_mode = mode;
+                }
+            }
+        });
     });
     let settings = studio.settings();
     let (video_width, video_height) = (settings.width.max(1), settings.height.max(1));
