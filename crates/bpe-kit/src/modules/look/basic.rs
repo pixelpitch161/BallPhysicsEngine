@@ -84,7 +84,7 @@ pub struct BasicLook {
         prefix = "outline_",
         group = "Shape",
         when = "thing=balls and outline",
-        follows = "place|start|order|speed|hits|step|beat|time|path"
+        follows = "place|start|order|speed|hits|step|time|path"
     )]
     pub outline_paint: Paint,
     /// How rounded the shape's corners are; circles ignore it.
@@ -110,7 +110,7 @@ pub struct BasicLook {
         label = "Colours",
         prefix = "",
         group = "Across the group",
-        follows = "place|start|order|speed|hits|step|beat|time|path",
+        follows = "place|start|order|speed|hits|step|time|path",
         simple
     )]
     pub fill: Paint,

@@ -2,7 +2,7 @@
 
 use bpe_core::{Color, Gradient, SlotId, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
-use bpe_kit::{flow_source, kit, scenes};
+use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
 const W: u32 = 270;
@@ -34,8 +34,7 @@ fn solid_paint_matches_plain_colour() {
     let mut frame = Frame::default();
     build_frame(&scene, &resolved, playback.world(), playback.log(), 2.0, &kit.draws, &mut frame);
     let mut renderer = Renderer::new(&device, W, H);
-    let source = flow_source(&scene, &resolved, &kit.sims, None);
-    assert!(renderer.render_with_flow(&device, &queue, &frame, &source).caught_up);
+    renderer.render(&device, &queue, &frame);
     let pixels = renderer.read_output(&device, &queue).unwrap();
     // Drawn by the commit before the ball's colour became a paint (one-stop Colours).
     let before = saved("one-ball.png");

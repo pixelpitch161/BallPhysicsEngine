@@ -14,7 +14,7 @@ pub mod harmony;
 pub mod inside;
 pub mod palettes;
 pub mod vary;
-pub use eval::{Inputs, beats_at, colour_at, hits_on, last_hit, last_hit_at, offset};
+pub use eval::{Inputs, colour_at, hits_on, last_hit, last_hit_at, offset};
 pub use gpu::{background_gpu, inside_gpu, paint_gpu};
 pub use inside::{InsideFrom, InsidePaint, Pattern};
 pub use vary::{apply_vary, seed_of, vary_gpu, vary_offsets};
@@ -30,7 +30,6 @@ pub enum Follow {
     Hits,
     Life,
     Step,
-    Beat,
     Time,
     NearestBall,
     Path,
@@ -533,10 +532,9 @@ mod tests {
         let mut p = Params::default();
         p.set("bg_wobble", Value::Number(2.0));
         assert_eq!(Still::from_params(&p).bg.wobble, 0.0);
-        // One fluid and one picture: the liquid look and the background don't vary.
-        let liquid = crate::modules::look_liquid::LiquidLook::defs();
+        // The background doesn't vary.
         let scene = crate::things::scene::SceneSettings::defs();
-        assert!(liquid.iter().chain(scene).all(|d| !d.key.ends_with("vary_hue") && !d.key.ends_with("wobble")));
+        assert!(scene.iter().all(|d| !d.key.ends_with("vary_hue") && !d.key.ends_with("wobble")));
         // Every other look's paint does.
         assert!(crate::modules::look::BasicLook::defs().iter().any(|d| d.key == "vary_hue"));
     }

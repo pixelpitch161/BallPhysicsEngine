@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, Log, MarkTarget, Outline, World};
+use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -221,401 +221,6 @@ pub struct FlashInstance {
     pub center: [f32; 2],
     pub size: f32,
     pub color: [f32; 4],
-}
-
-/// Where a canvas is drawn among the scene's things.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CanvasPlace {
-    /// Right after the background, under everything else.
-    BehindEverything,
-    /// After the walls and soft bodies, under the liquids and the balls.
-    #[default]
-    BehindBalls,
-    /// A skin: right after the walls, obstacles and soft bodies, before the canvases behind the
-    /// balls, so a thing's paint sits on its own line.
-    OnThing,
-    /// Over everything in the scene, under the text.
-    OnTop,
-}
-
-/// A canvas thing's picture: a rectangle of the world its marks are painted on, drawn at its
-/// place with its style. The marks themselves live in the renderer's canvas textures.
-///
-/// It belongs in the top frame's [`Frame::canvases`]: the renderer steps and draws only the top
-/// frame's canvases, and mixes each in by its own `blend`. [`build_frame`] moves any a thing drew
-/// into a blend layer or the overlay (an arena's skin under a blended Look) up there.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CanvasLayer {
-    /// Whose marks it shows: a canvas thing's, or an arena's or obstacle's skin.
-    pub key: MarkTarget,
-    /// The rectangle's centre in world pixels.
-    pub center: [f32; 2],
-    /// The rectangle's turn in radians.
-    pub angle: f32,
-    /// The rectangle's width and height in world pixels.
-    pub size: [f32; 2],
-    /// The textures' size: `size` times the detail, the long side at most 4096.
-    pub texels: [u32; 2],
-    pub place: CanvasPlace,
-    /// Linear light: the colour the canvas starts as, shown under the marks. None: clear.
-    pub start: Option<[f32; 4]>,
-    /// Seconds a mark takes to fade away; 0 keeps marks for good.
-    pub fade: f32,
-    pub blend: Blend,
-    /// 0 to 1.
-    pub opacity: f32,
-    /// How the paint looks: flat, or wet, watercolour or neon.
-    pub look: PaintLook,
-    /// The scene time in seconds, which the fade counts from the time each mark was painted.
-    pub time: f32,
-    /// A skin's thing as it is this frame, in the skin's own pixels: the paint shows only
-    /// inside these shapes (at most [`MAX_MASK_SHAPES`]; none shows nothing). A canvas has none
-    /// and shows its whole rectangle.
-    pub mask: Vec<MaskShape>,
-    /// What kind of surface this is: paint, or a cover, powder or fog drawn from `grid`.
-    pub surface: Surface,
-    /// Covers, powder and fog: the amounts. Paint: claimed ground. None: nothing.
-    pub grid: Option<GridImage>,
-    /// How dark the lines between teams are, 0 to 1.
-    pub border: f32,
-    /// The text under a cover, laid out in world pixels.
-    pub under_glyphs: Vec<GlyphInstance>,
-}
-
-/// What a canvas is made of.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[allow(clippy::large_enum_variant)]
-pub enum Surface {
-    /// Marks of paint, drawn from the marks' textures.
-    #[default]
-    Paint,
-    /// A cover that balls scrape off to show what is underneath.
-    Cover { foil: bool, under: Under },
-    /// Sand or snow that balls plough through.
-    Powder { snow: bool, ridges: f32, light_angle: f32 },
-    /// Mist on glass that balls wipe clear; blurs what is behind it.
-    Fog { steam: bool, blur: f32, density: f32 },
-}
-
-/// What shows where a cover is scraped away.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[allow(clippy::large_enum_variant)]
-pub enum Under {
-    /// Whatever is behind the canvas.
-    #[default]
-    Scene,
-    /// Linear light.
-    Colour([f32; 4]),
-    /// 16 stops, top to bottom, linear light.
-    Gradient([[f32; 4]; 16]),
-    /// A slot of the scene's picture table (`World::pictures`); 31 = missing.
-    Picture(u32),
-    /// The colour behind the text; the glyphs are the layer's `under_glyphs`.
-    Text([f32; 4]),
-}
-
-/// A canvas grid copied for drawing: RGBA8, one texel per cell.
-#[derive(Clone, Debug, PartialEq)]
-pub struct GridImage {
-    pub size: [u32; 2],
-    pub pixels: std::sync::Arc<Vec<u8>>,
-    /// The texels are sRGB colours (claimed ground), not amounts.
-    pub srgb: bool,
-    /// Sampled nearest (tiles), not filtered.
-    pub nearest: bool,
-    /// World pixels per texel.
-    pub cell: f32,
-}
-
-/// How a canvas's paint is drawn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PaintStyle {
-    /// The marks' own colours, as they were put down.
-    #[default]
-    Flat,
-    /// A glossy skin lit from a side, shiny while it is wet.
-    WetPaint,
-    /// Soft, grainy washes that shrink as they dry.
-    Watercolour,
-    /// A bright line with a glow that goes as it dries.
-    NeonInk,
-}
-
-/// How a canvas's or skin's paint looks.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PaintLook {
-    pub style: PaintStyle,
-    /// Seconds paint stays wet; 0 is always dry.
-    pub dry_time: f32,
-    /// Degrees clockwise from straight up, in the world.
-    pub light_angle: f32,
-    pub gloss: f32,
-    pub grain: f32,
-    pub edge_dark: f32,
-    /// World pixels.
-    pub glow_size: f32,
-    pub glow_strength: f32,
-}
-
-impl Default for PaintLook {
-    fn default() -> Self {
-        Self {
-            style: PaintStyle::Flat,
-            dry_time: 1.0,
-            light_angle: 315.0,
-            gloss: 0.6,
-            grain: 0.5,
-            edge_dark: 0.5,
-            glow_size: 18.0,
-            glow_strength: 1.0,
-        }
-    }
-}
-
-/// Most shapes a skin's mask may hold.
-pub const MAX_MASK_SHAPES: usize = 256;
-
-/// One piece of the shape a skin shows through, in the skin's own pixels (from its middle,
-/// before it turns), laid out as canvas.wgsl reads it: nine 32-bit words. Solid pieces cover
-/// up to their edge; lines cover their reach either side of their middle. Edges are smoothed
-/// over one pixel of the picture.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct MaskShape {
-    /// 0 disc, 1 capsule, 2 ring or polygon line, 3 box line (or a filled box).
-    pub kind: u32,
-    /// Disc: centre, radius. Capsule: both ends. Ring or polygon: centre, turn, radius. Box:
-    /// centre, turn, corner radius.
-    pub a: [f32; 4],
-    /// Capsule: radius. Ring or polygon: sides (below 3 a circle), reach. Box: half width, half
-    /// height, reach, and 1 when the box is filled instead.
-    pub b: [f32; 4],
-}
-
-impl MaskShape {
-    pub const DISC: u32 = 0;
-    pub const CAPSULE: u32 = 1;
-    pub const RING: u32 = 2;
-    pub const BOX: u32 = 3;
-
-    /// A filled disc.
-    pub fn disc(center: Vec2, radius: f32) -> Self {
-        Self { kind: Self::DISC, a: [center.x, center.y, radius, 0.0], b: [0.0; 4] }
-    }
-
-    /// A filled bar with round ends.
-    pub fn capsule(from: Vec2, to: Vec2, radius: f32) -> Self {
-        Self { kind: Self::CAPSULE, a: [from.x, from.y, to.x, to.y], b: [radius, 0.0, 0.0, 0.0] }
-    }
-
-    /// The line of a wall `outline`, `reach` either side of its middle.
-    pub fn line(outline: &Outline, reach: f32) -> Self {
-        match *outline {
-            Outline::Ring { center, radius, sides, angle, .. } => {
-                Self { kind: Self::RING, a: [center.x, center.y, angle, radius], b: [sides as f32, reach, 0.0, 0.0] }
-            }
-            Outline::Box { center, half, angle, .. } => Self::rect(center, half, 0.0, angle, reach, false),
-            Outline::Rounded { center, half, corner, angle, .. } => {
-                Self::rect(center, half, corner, angle, reach, false)
-            }
-        }
-    }
-
-    /// A filled box, `half` its half size, turned by `angle`.
-    pub fn filled_box(center: Vec2, half: Vec2, angle: f32) -> Self {
-        Self::rect(center, half, 0.0, angle, 0.0, true)
-    }
-
-    fn rect(center: Vec2, half: Vec2, corner: f32, angle: f32, reach: f32, filled: bool) -> Self {
-        Self {
-            kind: Self::BOX,
-            a: [center.x, center.y, angle, corner],
-            b: [half.x, half.y, reach, if filled { 1.0 } else { 0.0 }],
-        }
-    }
-}
-
-/// A liquid thing's particles, drawn as one surface. A CPU liquid sends its points every frame;
-/// a GPU liquid describes itself and the renderer steps it (see [`crate::flow`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct LiquidLayer {
-    pub thing: ThingId,
-    pub points: Points,
-    /// Particle radius in world pixels.
-    pub radius: f32,
-    /// Linear light: the whole liquid's colour when `follow` is 0.
-    pub color: [f32; 4],
-    /// 0: the liquid is `color`. 1: each pixel takes `paint` at its place along a direction,
-    /// 2: at its distance from a centre (see `paint_place`). 3: at the mean speed of the
-    /// particles under it, over `paint_place`'s span.
-    pub follow: u32,
-    /// The gradient the liquid is painted from when `follow` is not 0; only its row, start,
-    /// steps and repeat are read.
-    pub paint: PaintGpu,
-    /// Where a place runs in world pixels: the direction in degrees, the span, the centre.
-    pub paint_place: [f32; 4],
-    /// How much of what is behind shows through, 0 to 1.
-    pub clarity: f32,
-    /// How much the surface bends what is behind it.
-    pub refraction: f32,
-    /// Strength of the shine along the surface.
-    pub highlight: f32,
-    /// How smooth the surface is, in particle radii.
-    pub smoothing: f32,
-    /// Light the liquid gives off.
-    pub glow: f32,
-}
-
-/// Where a liquid's particles come from.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Points {
-    /// Positions and velocities simulated on the CPU, one per particle.
-    Cpu(Vec<[f32; 4]>),
-    /// A liquid the renderer simulates itself.
-    Gpu(GpuLiquid),
-}
-
-/// What a GPU liquid needs to start and step itself.
-#[derive(Clone, Debug, PartialEq)]
-pub struct GpuLiquid {
-    pub count: u32,
-    /// The block the particles start in: min x, min y, max x, max y.
-    pub region: [f32; 4],
-    /// Seconds the pour takes; 0 starts with every particle in place.
-    pub pour_seconds: f32,
-    pub pour_from: [f32; 2],
-    pub seed: u32,
-    pub viscosity: f32,
-    pub stiffness: f32,
-    /// How hard balls push the liquid aside.
-    pub ball_push: f32,
-    pub gravity_scale: f32,
-    pub bounciness: f32,
-}
-
-/// A swarm thing: thousands of glowing points that flock, stepped and drawn by the GPU.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SwarmLayer {
-    pub thing: ThingId,
-    pub count: u32,
-    pub start: SwarmStart,
-    pub center: [f32; 2],
-    pub seed: u32,
-    /// Seconds over which the points are released; 0 releases them all at once.
-    pub release_seconds: f32,
-    pub look: SwarmLook,
-    pub motion: Flock,
-}
-
-/// Where a swarm's points begin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwarmStart {
-    /// Spread over the whole arena.
-    Fill,
-    /// Packed around the swarm's centre.
-    Centre,
-    /// On a ring around the centre.
-    Ring,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct SwarmLook {
-    /// Point size in world pixels.
-    pub size: f32,
-    pub brightness: f32,
-    /// What picks a point's place along `paint`: 0 its speed over `place`'s span, 1 the nearest
-    /// ball (the ball's colour, not the paint), 2 a place at random for each point, 3 its place
-    /// along a direction, 4 its distance from a centre (both from `place`). 5 paints every point
-    /// `color`.
-    pub follow: u32,
-    /// The gradient the points take their colour from; only its row, start, steps and repeat
-    /// are read.
-    pub paint: PaintGpu,
-    /// Where a place runs in world pixels: the direction in degrees, the span, the centre. The
-    /// span is also the speed that reaches the end of the colours.
-    pub place: [f32; 4],
-    /// Linear light: every point's colour for follow 5, and a point's colour before it has a
-    /// nearest ball.
-    pub color: [f32; 4],
-    /// Each point's own colour variation, worked out per point on the GPU: hue turned by up to
-    /// this many degrees, saturation added and brightness scaled by up to these, and how many
-    /// times a second the variation wobbles (0 holds each point's still).
-    pub vary: [f32; 4],
-}
-
-/// How a swarm moves. Each field matches a setting of the Flocking module.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Flock {
-    pub top_speed: f32,
-    pub drag: f32,
-    pub flow: f32,
-    pub swirl_size: f32,
-    pub swirl_speed: f32,
-    pub flock: f32,
-    pub separation: f32,
-    pub attraction: f32,
-    pub reach: f32,
-    pub avoid_walls: f32,
-    pub gravity_scale: f32,
-}
-
-impl Default for Flock {
-    fn default() -> Self {
-        Self {
-            top_speed: 260.0,
-            drag: 0.6,
-            flow: 1.0,
-            swirl_size: 180.0,
-            swirl_speed: 0.05,
-            flock: 0.4,
-            separation: 0.3,
-            attraction: 0.6,
-            reach: 220.0,
-            avoid_walls: 1.0,
-            gravity_scale: 0.0,
-        }
-    }
-}
-
-/// One corner of a soft body's triangles: jelly, rope and cloth are drawn as triangle lists
-/// whose edges fade over the last pixel.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct SoftVertex {
-    pub position: [f32; 2],
-    /// How far inside the shape's edge this corner is, in world units; the fragment fades to
-    /// nothing at 0.
-    pub inside: f32,
-    pub _pad: f32,
-    /// Linear light. A negative alpha is additive (see [`blend_alpha`]).
-    pub color: [f32; 4],
-    /// A gradient painted across the body in place of its colour, when its row is not -1. Every
-    /// corner of one body carries the same paint.
-    pub paint: PaintGpu,
-    /// Where the corner is in the body's bounding box, -1 to 1 each way from its centre: the
-    /// space the paint's inside pattern is drawn in.
-    pub local: [f32; 2],
-}
-
-/// One glyph of text, drawn from the signed-distance atlas.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct GlyphInstance {
-    /// World rectangle: left, top, right, bottom.
-    pub rect: [f32; 4],
-    /// Atlas rectangle in texture coordinates: left, top, right, bottom.
-    pub uv: [f32; 4],
-    /// Linear light fill. A negative alpha is additive.
-    pub color: [f32; 4],
-    pub outline_color: [f32; 4],
-    /// Outline width in world units, glow strength, world units per distance unit (how far one
-    /// full step of the atlas value is in the world), unused.
-    pub params: [f32; 4],
-    /// A gradient painted inside the fill in place of its colour, when its row is not -1.
-    pub paint: PaintGpu,
-    /// The world rectangle the paint's inside pattern spans, -1 to 1 across it: the glyph's own
-    /// `rect` when each letter is painted on its own, or the whole text's.
-    pub local: [f32; 4],
 }
 
 /// One corner of a trail strip.
@@ -853,15 +458,6 @@ pub struct Frame {
     pub shapes: Vec<ShapeInstance>,
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
-    pub liquids: Vec<LiquidLayer>,
-    pub swarms: Vec<SwarmLayer>,
-    /// Canvases, each drawn at its own place. Only the top frame's are stepped and drawn: a
-    /// canvas in a blend layer's frame is ignored.
-    pub canvases: Vec<CanvasLayer>,
-    /// Triangles, three vertices each, drawn between the walls and the balls.
-    pub soft: Vec<SoftVertex>,
-    /// Text, drawn last.
-    pub glyphs: Vec<GlyphInstance>,
     pub looks: Vec<LookInstance>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
@@ -975,11 +571,6 @@ impl Default for Frame {
             shapes: Vec::new(),
             balls: Vec::new(),
             flashes: Vec::new(),
-            liquids: Vec::new(),
-            swarms: Vec::new(),
-            canvases: Vec::new(),
-            soft: Vec::new(),
-            glyphs: Vec::new(),
             looks: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
@@ -1002,11 +593,6 @@ impl Frame {
         self.shapes.clear();
         self.balls.clear();
         self.flashes.clear();
-        self.liquids.clear();
-        self.swarms.clear();
-        self.canvases.clear();
-        self.soft.clear();
-        self.glyphs.clear();
         self.looks.clear();
         self.trails.clear();
         self.bursts.clear();
@@ -1064,10 +650,6 @@ impl Frame {
         self.shapes.is_empty()
             && self.balls.is_empty()
             && self.flashes.is_empty()
-            && self.liquids.is_empty()
-            && self.swarms.is_empty()
-            && self.soft.is_empty()
-            && self.glyphs.is_empty()
             && self.looks.is_empty()
             && self.trails.is_empty()
             && self.bursts.is_empty()
@@ -1083,7 +665,7 @@ impl Frame {
         overlay
     }
 
-    /// Moves the overlay's canvases (skins), shader effects, hit particles and hit marks into this frame: those of
+    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
     /// stuck things work on the whole picture like everyone else's, and the overlay only holds
     /// what is drawn as shapes. Particles in one of the overlay's layers go into this frame's
     /// layer of the same blend and amount, and a layer left with nothing to draw is dropped.
@@ -1091,8 +673,6 @@ impl Frame {
         let Some(o) = self.overlay.as_deref_mut() else { return };
         let (effects, mut bursts, hits) =
             (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        // Only the top frame's canvases are drawn: a stuck thing's skin goes there too.
-        self.canvases.append(&mut o.canvases);
         let mut layered: Vec<(Blend, f32, bool, Vec<Burst>)> = o
             .layers
             .iter_mut()
@@ -1122,8 +702,6 @@ impl Frame {
             !(o.shapes.is_empty()
                 && o.balls.is_empty()
                 && o.flashes.is_empty()
-                && o.soft.is_empty()
-                && o.glyphs.is_empty()
                 && o.looks.is_empty()
                 && o.trails.is_empty()
                 && o.layers.is_empty())
@@ -1175,8 +753,8 @@ fn layered(blend: Blend, amount: f32) -> bool {
 /// Runs `draw` on what things with `blend` at `amount` (blending with each other when `each`)
 /// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows
 /// `target`'s gradient atlas, hits and effects while it is drawn into, so its paint rows are the
-/// rows the renderer uploads and every module reads every hit. Canvases drawn into a layer move
-/// up to `target`, which mixes each by its own blend. A layer nothing was drawn into is not kept.
+/// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
+/// not kept.
 fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
     if !layered(blend, amount) {
         draw(target);
@@ -1190,10 +768,7 @@ fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: 
     (layer.gradients, layer.hits, layer.effects) = shared;
     draw(layer);
     let shared = take(layer);
-    // Canvases (a thing's skin) are drawn only from the top frame, mixed in by their own blend.
-    let canvases = std::mem::take(&mut layer.canvases);
     (target.gradients, target.hits, target.effects) = shared;
-    target.canvases.extend(canvases);
     if target.layers.len() > before && target.layers.last().is_some_and(|l| l.frame.draws_nothing()) {
         target.layers.pop();
     }
@@ -1210,12 +785,8 @@ pub struct DrawCx<'a> {
     pub scene: &'a Resolved,
     pub world: &'a World,
     pub log: &'a Log,
-    /// The moment of the run being drawn, in seconds: the clock of the world, the log and the
-    /// keyframes.
+    /// The moment being drawn, in seconds: the clock of the world, the log and the keyframes.
     pub time: f64,
-    /// Seconds into the video for this frame. The same as `time` unless the clip is beat-synced,
-    /// when the run is warped onto the video; clocks, show windows and beats follow this one.
-    pub video_time: f64,
 }
 
 /// How a thing kind draws itself.
@@ -1285,22 +856,6 @@ pub fn build_frame(
     draws: &Draws,
     frame: &mut Frame,
 ) {
-    build_frame_at(scene, resolved, world, log, time, time, draws, frame);
-}
-
-/// [`build_frame`] for a beat-synced clip, where the moment of the run shown (`time`) and the
-/// moment of the video (`video_time`) differ: keys follow the run, beats and clocks the video.
-#[allow(clippy::too_many_arguments)]
-pub fn build_frame_at(
-    scene: &Scene,
-    resolved: &Resolved,
-    world: &World,
-    log: &Log,
-    time: f64,
-    video_time: f64,
-    draws: &Draws,
-    frame: &mut Frame,
-) {
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
@@ -1308,11 +863,7 @@ pub fn build_frame_at(
         resolved
     } else {
         let mut copy = resolved.clone();
-        let inputs = Inputs {
-            pulse: world.pulse_inputs.as_deref(),
-            hits: hit_strength(log, time, world.steps_per_second),
-            video_time: (video_time != time).then_some(video_time),
-        };
+        let inputs = Inputs { hits: hit_strength(log, time, world.steps_per_second) };
         animation.apply(&mut copy, time, &inputs);
         animated = copy;
         &animated
@@ -1327,7 +878,7 @@ pub fn build_frame_at(
             _ => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
+        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
         draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
     }
     for (id, r) in &resolved.things {
@@ -1341,7 +892,7 @@ pub fn build_frame_at(
             }
             let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, video_time };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
             draw_routed(target, blend, amount, each, |into| d.draw(&cx, slot, into));
         }
     }
@@ -1435,45 +986,6 @@ mod tests {
         assert_eq!(resolved.things[&balls].params.get("radius"), Some(&Value::Number(6.0)), "the input is untouched");
     }
 
-    #[test]
-    fn a_beat_synced_frame_hands_draws_both_clocks_and_pulses_on_the_video_beat() {
-        struct Clock;
-        impl ThingDraw for Clock {
-            fn kind(&self) -> &'static str {
-                "scene"
-            }
-            fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-                frame.time = cx.time as f32;
-                frame.exposure = cx.video_time as f32;
-                frame.bloom = match cx.resolved.slots[&SlotId::Look].params.get("glow") {
-                    Some(Value::Number(g)) => *g as f32,
-                    _ => -1.0,
-                };
-            }
-        }
-        let reg = testkit::registry();
-        let mut scene = bpe_core::Scene::empty(&reg);
-        let look = scene.add_module(&reg, "look.plain", "Plain").unwrap();
-        scene.link(&reg, ThingId::ROOT, SlotId::Look, look).unwrap();
-        let glow = Address { owner: Owner::Module(look), slot: None, key: "glow".into() };
-        scene.set_pulse(&reg, &glow, bpe_core::PulseSource::Beat, Value::Number(1.0), 0.5).unwrap();
-        let resolved = resolve(&scene, &reg);
-        let mut world = World::build(&scene, &resolved, &Sims::default());
-        world.pulse_inputs = Some(std::sync::Arc::new(bpe_core::PulseInputs { beats: vec![2.0], bands: None }));
-        let mut draws = Draws::default();
-        draws.add(Clock);
-        let mut frame = Frame::default();
-        let base = match resolved.things[&ThingId::ROOT].slots[&SlotId::Look].params.get("glow") {
-            Some(Value::Number(g)) => *g as f32,
-            _ => panic!("no glow"),
-        };
-        build_frame_at(&scene, &resolved, &world, &Log::default(), 1.0, 2.0, &draws, &mut frame);
-        assert_eq!((frame.time, frame.exposure), (1.0, 2.0));
-        assert!((frame.bloom - (base + 1.0)).abs() < 1e-5, "the beat is now on the video's clock: {}", frame.bloom);
-        build_frame(&scene, &resolved, &world, &Log::default(), 1.0, &draws, &mut frame);
-        assert_eq!((frame.time, frame.exposure), (1.0, 1.0));
-        assert!((frame.bloom - base).abs() < 1e-5, "on the run's clock the beat is still to come");
-    }
 
     #[test]
     fn hit_strength_decays_and_saturates() {
@@ -1500,16 +1012,6 @@ mod tests {
         assert!(hit_strength(&Log::default(), 1.0, 240) == 0.0);
     }
 
-    #[test]
-    fn soft_and_glyph_lists_are_cleared() {
-        let mut frame = Frame::default();
-        frame.soft.push(SoftVertex::default());
-        frame.glyphs.push(GlyphInstance::default());
-        frame.clear();
-        assert!(frame.soft.is_empty() && frame.glyphs.is_empty());
-        assert_eq!(std::mem::size_of::<SoftVertex>(), 88);
-        assert_eq!(std::mem::size_of::<GlyphInstance>(), 144);
-    }
 
     #[test]
     fn module_draws_run_after_thing_draws_for_every_slot_they_fill() {
@@ -1911,53 +1413,5 @@ mod tests {
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);
-    }
-}
-
-#[cfg(test)]
-mod flow_tests {
-    use super::*;
-    use bpe_core::ThingId;
-
-    #[test]
-    fn clearing_a_frame_empties_its_flow_layers_too() {
-        let mut frame = Frame::default();
-        frame.liquids.push(LiquidLayer {
-            thing: ThingId(1),
-            points: Points::Cpu(vec![[0.0; 4]]),
-            radius: 3.0,
-            color: [0.0, 0.5, 1.0, 1.0],
-            follow: 0,
-            paint: PaintGpu::default(),
-            paint_place: [0.0; 4],
-            clarity: 0.45,
-            refraction: 0.5,
-            highlight: 0.8,
-            smoothing: 6.0,
-            glow: 0.1,
-        });
-        frame.swarms.push(SwarmLayer {
-            thing: ThingId(2),
-            count: 10,
-            start: SwarmStart::Ring,
-            center: [0.0; 2],
-            seed: 1,
-            release_seconds: 0.0,
-            look: SwarmLook {
-                size: 1.0,
-                brightness: 0.2,
-                follow: 0,
-                paint: PaintGpu::default(),
-                place: [0.0; 4],
-                color: [1.0; 4],
-                vary: [0.0; 4],
-            },
-            motion: Flock::default(),
-        });
-        let copy = frame.clone();
-        assert_eq!(copy, frame);
-        frame.clear();
-        assert!(frame.liquids.is_empty() && frame.swarms.is_empty());
-        assert_eq!(frame, Frame::default());
     }
 }

@@ -21,7 +21,6 @@ pub struct Inputs {
     pub path: f32,
     pub nearest: Option<[f32; 4]>,
     pub hit_colour: Option<[f32; 4]>,
-    pub beats: f32,
     pub time: f32,
     /// Which instance this is, for colour variation: see [`super::seed_of`].
     pub seed: u32,
@@ -60,7 +59,7 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
     let s = finite(p.span).max(1e-3);
     let stops = &p.colours.stops;
     let n = stops.len().max(1);
-    let mut repeat = p.repeat;
+    let repeat = p.repeat;
     let mut scrolls = true;
     let raw = match p.follow {
         Follow::Place | Follow::Start => {
@@ -87,11 +86,6 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
         Follow::Path => i.path,
         Follow::Step => {
             return stops.get(i.hits as usize % n).map_or(0.0, |st| finite(st.at).clamp(0.0, 1.0));
-        }
-        Follow::Beat => {
-            repeat = Repeat::Repeat;
-            scrolls = false;
-            i.beats / n as f32
         }
         Follow::Time => {
             scrolls = false;
@@ -155,11 +149,6 @@ fn followed_colour(p: &Paint, i: &Inputs) -> [f32; 4] {
             Some(c) if p.take_hit_colour => c,
             _ => step_colour(p, i.hits, i.since_hit),
         },
-        // Hard bands step one stop per beat, whatever the stops' places.
-        Follow::Beat if p.colours.transition == Transition::Steps => {
-            let n = p.colours.stops.len().max(1);
-            stop_colour(p, finite(i.beats).max(0.0).floor() as usize % n)
-        }
         _ => p.colours.sample(offset(p, i)),
     }
 }
@@ -172,32 +161,6 @@ fn seconds(step: u64, sps: u32) -> f64 {
 /// The last step at or before `time` seconds.
 fn step_at(time: f64, sps: u32) -> u64 {
     (time * sps.max(1) as f64).floor().max(0.0) as u64
-}
-
-/// Whole beats so far at `video_time` (seconds) plus how far it is to the next beat, 0 to 1;
-/// no fraction after the last beat. Beat events sit on the video clock, `steps_per_second` to
-/// the second. Costs one pass over the events up to `video_time`, so call it once a frame, not
-/// once a ball.
-pub fn beats_at(log: &Log, video_time: f64, steps_per_second: u32) -> f32 {
-    let now = step_at(if video_time.is_finite() { video_time } else { 0.0 }, steps_per_second);
-    let upto = log.events().partition_point(|e| e.step <= now);
-    let mut whole = 0u32;
-    let mut last = 0.0f64;
-    for e in &log.events()[..upto] {
-        if e.kind == EventKind::Beat {
-            whole += 1;
-            last = seconds(e.step, steps_per_second);
-        }
-    }
-    let next = log.events()[upto..].iter().find(|e| e.kind == EventKind::Beat);
-    let fraction = match next {
-        Some(e) => {
-            let (a, b) = (last, seconds(e.step, steps_per_second));
-            if b > a { ((video_time - a) / (b - a)).clamp(0.0, 1.0) as f32 } else { 0.0 }
-        }
-        None => 0.0,
-    };
-    whole as f32 + if fraction.is_finite() { fraction } else { 0.0 }
 }
 
 /// The latest hit on ball `index` of `thing` at or before `time` seconds on the simulation
@@ -431,22 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn beat_steps_one_stop_per_beat() {
-        let mut p = Paint { follow: Follow::Beat, colours: Gradient::even(&[RED, GREEN, BLUE]), ..Paint::default() };
-        p.colours.transition = Transition::Steps;
-        let at = |beats| colour_at(&p, &Inputs { beats, ..Inputs::default() });
-        assert!(
-            near4(at(0.0), RED.to_linear()) && near4(at(1.0), GREEN.to_linear()) && near4(at(2.0), BLUE.to_linear())
-        );
-        assert!(near4(at(3.0), RED.to_linear()), "wraps after the last stop");
-        assert!(near4(at(1.9), GREEN.to_linear()));
-        // Smooth: a whole cycle takes n beats and repeats, whatever the repeat setting.
-        let s = Paint { follow: Follow::Beat, repeat: Repeat::Clamp, ..paint(Follow::Beat) };
-        assert!(near(offset(&s, &Inputs { beats: 1.0, ..Inputs::default() }), 0.5));
-        assert!(near(offset(&s, &Inputs { beats: 2.5, ..Inputs::default() }), 0.25));
-    }
-
-    #[test]
     fn nearest_ball_returns_it_or_the_first_stop() {
         let p = paint(Follow::NearestBall);
         let c = [0.5, 0.5, 0.5, 1.0];
@@ -460,28 +407,13 @@ mod tests {
     }
 
     #[test]
-    fn beats_at_counts_beat_events_on_the_video_clock() {
-        let mut log = Log::default();
-        log.push(ev(120, EventKind::Beat, (0, 0), None));
-        log.push(ev(120, EventKind::Hit, (1, 0), Some((2, 0))));
-        log.push(ev(240, EventKind::Beat, (0, 0), None));
-        assert_eq!(beats_at(&log, 0.75, 240), 1.5);
-        assert_eq!(beats_at(&log, 0.25, 240), 0.5);
-        assert_eq!(beats_at(&log, 0.5, 240), 1.0);
-        assert_eq!(beats_at(&log, 1.0, 240), 2.0);
-        assert_eq!(beats_at(&log, 5.0, 240), 2.0, "no fraction after the last beat");
-        assert_eq!(beats_at(&Log::default(), 3.0, 240), 0.0);
-        assert!(beats_at(&log, f64::NAN, 240).is_finite());
-    }
-
-    #[test]
     fn last_hit_finds_the_latest_hit_on_a_ball() {
         let mut log = Log::default();
         log.push(ev(10, EventKind::Hit, (1, 3), Some((9, 0))));
         log.push(ev(20, EventKind::Hit, (1, 4), Some((9, 0))));
         // Ball 3 was the one hit, here.
         log.push(Event { point: Vec2::new(7.0, 8.0), ..ev(30, EventKind::Hit, (2, 0), Some((1, 3))) });
-        log.push(ev(40, EventKind::Spawn, (1, 3), None));
+        log.push(ev(40, EventKind::Remove, (1, 3), None));
         log.push(ev(50, EventKind::Hit, (1, 3), None));
         let sps = 10;
         assert_eq!(last_hit(&log, ThingId(1), 3, 10.0, sps), Some((5.0, None)));
@@ -502,7 +434,7 @@ mod tests {
         log.push(ev(25, EventKind::Hit, (9, 2), Some((1, 4))));
         log.push(ev(30, EventKind::Hit, (1, 3), Some((8, 0))));
         log.push(ev(35, EventKind::Hit, (1, 3), Some((9, 7))));
-        log.push(ev(40, EventKind::Spawn, (9, 0), None));
+        log.push(ev(40, EventKind::Remove, (9, 0), None));
         log.push(ev(50, EventKind::Hit, (1, 3), Some((9, 0))));
         let sps = 10;
         let hits = hits_on(&log, ThingId(9), 3, 4.0, sps);

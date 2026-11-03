@@ -96,7 +96,7 @@ pub struct HitBurst {
         group = "Colours",
         prefix = "",
         when = "source=own",
-        follows = "life|order|place|speed|time|beat"
+        follows = "life|order|place|speed|time"
     )]
     pub colour: Paint,
     /// How the particles mix with what is under them: Add glows and adds their light, Normal

@@ -180,8 +180,8 @@ impl ThingSim for CameraSim {
                 if e.kind != EventKind::Hit {
                     continue;
                 }
-                let ours = world.matches(me, e.a.thing, &s.hits_from)
-                    || e.b.is_some_and(|b| world.matches(me, b.thing, &s.hits_from));
+                let ours = world.names(&s.hits_from, me, e.a.thing)
+                    || e.b.is_some_and(|b| world.names(&s.hits_from, me, b.thing));
                 if !ours {
                     continue;
                 }

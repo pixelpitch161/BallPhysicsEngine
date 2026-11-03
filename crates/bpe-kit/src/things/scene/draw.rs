@@ -5,7 +5,7 @@ use bpe_gfx::{DrawCx, Frame, ThingDraw};
 use glam::Vec2;
 
 use super::SceneSettings;
-use crate::paint::{Follow, Inputs, Paint, background_gpu, beats_at};
+use crate::paint::{Inputs, Paint, background_gpu};
 use crate::things::camera::CameraSettings;
 
 pub struct SceneDraw;
@@ -21,13 +21,7 @@ impl ThingDraw for SceneDraw {
         frame.width = s.width.max(2);
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);
-        // Time runs on the simulation clock, beats on the video's.
-        let beats = if s.background.follow == Follow::Beat {
-            beats_at(cx.log, cx.video_time, cx.world.steps_per_second)
-        } else {
-            0.0
-        };
-        let inputs = Inputs { time: cx.time as f32, beats, ..Inputs::default() };
+        let inputs = Inputs { time: cx.time as f32, ..Inputs::default() };
         let background = fit_background(s.background, cx.scene, frame.height as f32, s.background_on_screen);
         frame.background = background_gpu(&background, &inputs, &mut frame.gradients);
         frame.bloom = s.bloom;

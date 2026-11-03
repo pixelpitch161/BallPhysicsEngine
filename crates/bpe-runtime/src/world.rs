@@ -287,6 +287,12 @@ impl World {
         self.tags.get(&thing).unwrap_or(NO_TAGS)
     }
 
+    /// Whether `target`, seen from `me`, names `other`, by the physics' rules: "me" is the
+    /// thing itself.
+    pub fn names(&self, target: &Target, me: ThingId, other: ThingId) -> bool {
+        matches(&self.kinds, &self.tags, target, me, other)
+    }
+
     /// The built things that `target` names, seen from `me`, in id order, by the physics'
     /// rules: "me" is the thing itself. `Anything` is every one of them, `me` included.
     pub fn matching(&self, target: &Target, me: ThingId) -> Vec<ThingId> {

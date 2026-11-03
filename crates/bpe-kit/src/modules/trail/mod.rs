@@ -40,7 +40,7 @@ pub struct StreakTrail {
         group = "Colours",
         prefix = "",
         when = "source=own",
-        follows = "life|place|speed|time|beat",
+        follows = "life|place|speed|time",
         simple
     )]
     pub colour: Paint,

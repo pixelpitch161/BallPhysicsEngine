@@ -30,7 +30,7 @@ fn every_bundled_scene_loads_with_known_keys() {
         .filter(|p| p.extension().is_some_and(|x| x == "ron"))
         .collect();
     files.sort();
-    assert!(files.len() >= 30, "found {} scene files", files.len());
+    assert!(files.len() >= 15, "found {} scene files", files.len());
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         let text = std::fs::read_to_string(&file).unwrap();

@@ -1,19 +1,13 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
-//! its settings, its simulation, its drawing and its sound side by side.
+//! its settings, its simulation and its drawing side by side.
 
-pub mod ending;
-pub mod gizmo;
-pub mod graphs;
 #[cfg(test)]
 mod layer_tests;
 pub mod modules;
-pub mod music;
 pub mod paint;
-pub mod pictures;
 pub mod random;
 pub mod rng;
 pub mod scenes;
-pub mod score;
 pub mod starters;
 #[cfg(test)]
 pub mod testing;
@@ -21,48 +15,24 @@ pub mod things;
 
 use std::sync::Arc;
 
-use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, SlotLink, ThingId, Value};
-use bpe_gfx::{Draws, FlowSource};
-use bpe_mix::{MixSettings, Mixes, Soundtrack};
-use bpe_runtime::{Log, Sims};
+use bpe_core::{Color, Registry, Resolved, Scene, Settings, SlotId, SlotLink, ThingId};
+use bpe_gfx::Draws;
+use bpe_runtime::Sims;
 use glam::Vec2;
 use paint::Paint;
 
-pub use gizmo::{GIZMO_GRAB, Gizmo, gizmos};
-pub use graphs::{graph_problems, resolve_scene, role_of};
 pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind};
-pub use modules::drums::mix::DrumSoundMix;
-pub use modules::drums::{DrumSound, DrumSoundKind, Piece};
-pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style, ball_colour_in_sim};
-pub use modules::look_liquid::{LiquidLook, LiquidLookKind};
-pub use modules::look_swarm::{SwarmLook, SwarmLookKind};
-pub use modules::marks::{
-    ChipShape, ClaimTeam, MarkColour, MarksBrushes, MarksBrushesKind, MarksSim, PictureColours, SplatOnto, SplatShape,
-    SplatSkin, Tip, Turn, WidthBy,
-};
-pub use modules::melody::mix::MelodySoundMix;
-pub use modules::melody::{MelodySound, MelodySoundKind, load_tune};
+pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
-pub use modules::motion_flock::{Flocking, FlockingKind};
-pub use modules::motion_liquid::sim::FlowingSim;
-pub use modules::motion_liquid::{Flowing, FlowingKind};
 pub use modules::particles::draw::BurstDraw;
 pub use modules::particles::{BurstPreset, BurstSource, HitBurst, HitBurstKind};
-pub use modules::rules::{Recipe, RulesKind, RulesSim, RulesState, recipes};
 pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
-pub use modules::sound::mix::NoteSoundMix;
-pub use modules::sound::{NoteSound, NoteSoundKind};
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
-pub use music::{Extras, SceneExport, midi_path, mix_scene_export, stems_folder, write_extras};
-pub use music::{
-    Song, SongState, TimeWarp, beats_for, forget_song, load_song, load_song_in_background, physics_inputs,
-    uses_live_inputs, wants_beats, warp_for,
-};
-pub use starters::{CanvasStart, add_canvas, add_thing, fill_slot, keep_followers, make_folder, move_thing};
+pub use starters::{add_thing, fill_slot, keep_followers, make_folder, move_thing};
 pub use things::arena::draw::ArenaDraw;
 pub use things::arena::sim::{ArenaSim, ArenaState};
 pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
@@ -71,32 +41,11 @@ pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{Arrangement, BallsKind, BallsSettings};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
-pub use things::canvas::{
-    CanvasDraw, CanvasGrid, CanvasKind, CanvasLayerPos, CanvasSettings, CanvasSim, CanvasState, CanvasStyle,
-    CanvasThingKind, Cell, CoverLook, Fit, FogLook, PowderLook, SkinSettings, StartsAs, Underneath, canvas_area,
-    skin_area,
-};
-pub use things::emitter::sim::{EmitterSim, EmitterState, item_radius};
-pub use things::emitter::{EmitterKind, EmitterSettings, Trigger};
-pub use things::field::sim::{FieldSim, FieldState, weight as field_weight};
-pub use things::field::{Falloff, FieldKind, FieldKindChoice, FieldSettings, FieldShape};
 pub use things::folder::{FolderKind, FolderSettings, FolderSim};
-pub use things::liquid::draw::LiquidDraw;
-pub use things::liquid::pbf::Rect;
-pub use things::liquid::sim::{LiquidSim, LiquidState};
-pub use things::liquid::{LiquidKind, LiquidSettings, LiquidStart};
-pub use things::meter::{MeterDraw, MeterKind, MeterLook, MeterReads, MeterSettings};
-pub use things::obstacle::draw::ObstacleDraw;
-pub use things::obstacle::{MovePath, ObstacleKind, ObstacleSettings, ObstacleShape, ObstacleSim, ObstacleState};
 pub use things::scene::ROOT_CARDS;
 pub use things::scene::draw::SceneDraw;
-pub use things::scene::sim::{SceneSim, SceneState};
-pub use things::scene::{BeatSync, Clip, SceneKind, SceneSettings};
-pub use things::soft::{Impact, Pinned, SoftDraw, SoftKind, SoftSettings, SoftShape, SoftSim, SoftState, SoftWorld};
-pub use things::swarm::draw::SwarmDraw;
-pub use things::swarm::sim::{SwarmSim, SwarmState};
-pub use things::swarm::{SwarmKind, SwarmSettings, SwarmStart};
-pub use things::text::{Align, Appear, Font, TextDraw, TextKind, TextSettings};
+pub use things::scene::sim::SceneSim;
+pub use things::scene::{SceneKind, SceneSettings};
 
 /// Every kind's simulation part, for the runtime.
 pub fn sims() -> Sims {
@@ -104,20 +53,10 @@ pub fn sims() -> Sims {
     s.add_thing(SceneSim);
     s.add_thing(ArenaSim);
     s.add_thing(BallsSim);
-    s.add_thing(EmitterSim);
-    s.add_thing(FieldSim);
-    s.add_thing(LiquidSim);
-    s.add_thing(SwarmSim);
-    s.add_thing(SoftSim);
     s.add_thing(FolderSim);
-    s.add_thing(ObstacleSim);
     s.add_thing(CameraSim);
-    s.add_thing(CanvasSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
-    s.add_module(RulesSim);
-    s.add_module(FlowingSim);
-    s.add_module(MarksSim);
     s
 }
 
@@ -127,13 +66,6 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ArenaDraw);
     d.add(BallsDraw);
-    d.add(LiquidDraw);
-    d.add(SwarmDraw);
-    d.add(SoftDraw);
-    d.add(TextDraw);
-    d.add(MeterDraw);
-    d.add(ObstacleDraw);
-    d.add(CanvasDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
@@ -142,190 +74,20 @@ pub fn draws() -> Draws {
     d
 }
 
-/// Every kind's sound part, for the mixer.
-pub fn mixes() -> Mixes {
-    let mut m = Mixes::default();
-    m.add(NoteSoundMix);
-    m.add(DrumSoundMix);
-    m.add(MelodySoundMix);
-    m
-}
-
 /// Everything the kit gives the editor and the exporter, built once.
 pub struct Kit {
     pub registry: Registry,
     pub sims: Arc<Sims>,
     pub draws: Draws,
-    pub mixes: Mixes,
 }
 
 pub fn kit() -> Kit {
-    Kit { registry: registry(), sims: Arc::new(sims()), draws: draws(), mixes: mixes() }
+    Kit { registry: registry(), sims: Arc::new(sims()), draws: draws() }
 }
 
-/// What the renderer's graphics-card layers step along with: the scene, keyed by its physics
-/// fingerprint so a change that moves the balls starts the layers over, and each ball thing's
-/// colour for swarms coloured by the nearest ball. `budget` caps how long one frame may spend
-/// catching up; `None` always catches up, as an export must.
-pub fn flow_source<'a>(
-    scene: &'a Scene,
-    resolved: &'a Resolved,
-    sims: &'a Sims,
-    budget: Option<std::time::Duration>,
-) -> FlowSource<'a> {
-    let ball_colors = resolved
-        .things
-        .iter()
-        .filter(|(_, r)| r.kind == "balls")
-        .filter_map(|(id, r)| {
-            let look = r.slots.get(&SlotId::Look)?;
-            (look.kind == "look.basic").then(|| (*id, BasicLook::from_params(&look.params).first_colour()))
-        })
-        .collect();
-    FlowSource {
-        scene,
-        resolved,
-        sims,
-        key: bpe_runtime::fingerprint(scene, resolved, sims),
-        budget,
-        ball_colors,
-        picture_folder: None,
-    }
-}
-
-/// What the mixer needs from the root's settings, and every thing's tags.
-/// The progression the whole song follows: that of the first thing in the tree whose sound picks
-/// one from the library, else the library's first, else none (the built-in starter).
-fn song_chords(scene: &Scene, resolved: &Resolved) -> bpe_core::ProgressionRef {
-    let picked = scene.order.iter().find_map(|id| {
-        let params = &resolved.things.get(id)?.slots.get(&SlotId::Sound)?.params;
-        let p = <bpe_core::ProgressionRef as bpe_core::SettingValue>::from_value(params.get("chords")?)?.0?;
-        scene.library.progressions.contains_key(&p).then_some(p)
-    });
-    bpe_core::ProgressionRef(picked.or_else(|| scene.library.progressions.keys().next().copied()))
-}
-
-pub fn mix_settings(scene: &Scene, resolved: &Resolved) -> MixSettings {
-    let root = resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
-    MixSettings {
-        duration: root.duration,
-        steps_per_second: root.steps_per_second,
-        progressions: scene.library.progressions.clone(),
-        chords: song_chords(scene, resolved),
-        beats: music::chord_beats(&root),
-        master: bpe_mix::MasterSettings {
-            loudness: root.loudness,
-            clipper: match root.clipper {
-                Clip::Off => bpe_mix::ClipMode::Off,
-                Clip::Soft => bpe_mix::ClipMode::Soft,
-                Clip::Hard => bpe_mix::ClipMode::Hard,
-            },
-            drive_db: root.clip_drive,
-            ceiling_db: root.ceiling,
-            release_ms: (!root.auto_release).then_some(root.release),
-        },
-        seed: root.seed as u64,
-        half_width: root.width as f32 * 0.5,
-        tags: scene.things.iter().filter(|(_, t)| !t.tags.is_empty()).map(|(id, t)| (*id, t.tags.clone())).collect(),
-        off_shot_fade: root.off_shot_fade.max(0.0),
-        half_height: root.height as f32 * 0.5,
-        instruments: scene.library.instruments.clone(),
-        macros: scene
-            .library
-            .modules
-            .iter()
-            .filter(|(_, m)| !m.macros.is_empty())
-            .map(|(id, m)| (id.0, m.macros.clone()))
-            .collect(),
-        strips: scene
-            .library
-            .modules
-            .iter()
-            .filter(|(_, m)| !m.channel.is_default())
-            .map(|(id, m)| (id.0, m.channel.clone()))
-            .collect(),
-        buses: scene.library.buses.clone(),
-        master_fx: scene.library.master_fx.clone(),
-        channel_names: scene
-            .library
-            .modules
-            .iter()
-            .filter(|(_, m)| m.slot == SlotId::Sound)
-            .map(|(id, m)| (id.0, m.name.clone()))
-            .collect(),
-    }
-}
-
-/// The two return buses a new scene starts with: "Reverb" and a quarter-note ping-pong "Delay",
-/// each fully wet.
-pub fn add_starter_buses(library: &mut bpe_core::Library) {
-    use bpe_graph::Param;
-    let wet = |kind: &str, extra: &[(&str, Param)]| {
-        let mut knobs: std::collections::BTreeMap<String, Param> = [("mix".to_string(), Param::Number(1.0))].into();
-        knobs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.clone())));
-        bpe_synth::chain_graph(&[(kind.to_string(), knobs, true)])
-    };
-    library.add_bus("Reverb", wet("reverb", &[]));
-    library.add_bus(
-        "Delay",
-        wet("delay", &[("time_mode", Param::Choice("1/4".into())), ("ping_pong", Param::Bool(true))]),
-    );
-}
-
-/// A library instrument that plays the built-in `which`, named after it. The pluck gets the
-/// decay and brightness it always had.
-pub fn built_in_instrument(which: bpe_mix::Instrument) -> bpe_core::Instrument {
-    let knobs = match which {
-        bpe_mix::Instrument::Pluck => [("decay".to_string(), 0.9), ("brightness".to_string(), 0.5)].into(),
-        _ => Default::default(),
-    };
-    bpe_core::Instrument {
-        name: which.label().into(),
-        source: bpe_core::InstrumentSource::BuiltIn { which: bpe_core::Choice::name(which).into(), knobs },
-        ..Default::default()
-    }
-}
-
-/// The soundtrack of a finished run of `scene`: its keyframed sound settings followed, its
-/// notes placed through the beat sync's time warp, and its song mixed in underneath.
-pub fn mix_scene(scene: &Scene, resolved: &Resolved, log: &Log, kit: &Kit) -> Soundtrack {
-    mix_scene_cached(scene, resolved, log, kit, &mut bpe_mix::ChannelCache::default())
-}
-
-/// [`mix_scene`], rendering only the channels that changed since the mix that filled `cache`.
-pub fn mix_scene_cached(
-    scene: &Scene,
-    resolved: &Resolved,
-    log: &Log,
-    kit: &Kit,
-    cache: &mut bpe_mix::ChannelCache,
-) -> Soundtrack {
-    let animation = bpe_core::Animation::new(scene, resolved);
-    let animation = (!animation.is_empty()).then_some(&animation);
-    let warp = warp_for(scene, resolved, log);
-    let settings = mix_settings(scene, resolved);
-    let video_time = |t| warp.video_time(t);
-    let physics = music::physics_inputs(scene, resolved, log, &settings, &video_time);
-    let mut track = bpe_mix::mix_premaster(
-        &settings,
-        resolved,
-        &scene.library,
-        log,
-        &kit.mixes,
-        animation,
-        &video_time,
-        &physics,
-        cache,
-    );
-    let root = music::root_settings(resolved);
-    if let Some(song) = load_song(&root.song) {
-        music::mix_in(&mut track.samples, &song, root.song_offset, root.song_volume, root.ducking, root.loudness);
-    }
-    // The master effects and the master run once, over the notes and the song together.
-    let problems = bpe_mix::run_master_fx(&mut track.samples, &settings, &physics.with_levels(&track.levels));
-    track.problems.extend(problems);
-    track.report = Some(bpe_mix::master(&mut track.samples, &settings.master));
-    track
+/// Resolves a scene with the kit's registry: what every thing uses, and what couldn't be used.
+pub fn resolve_scene(scene: &Scene, reg: &Registry) -> Resolved {
+    bpe_core::resolve(scene, reg)
 }
 
 /// Every kind the kit has, for the core's resolve and the editor's lists.
@@ -334,43 +96,24 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ArenaKind);
     r.add_thing(BallsKind);
-    r.add_thing(SoftKind);
-    r.add_thing(TextKind);
-    r.add_thing(MeterKind);
     r.add_thing(FolderKind);
-    r.add_thing(ObstacleKind);
-    r.add_thing(EmitterKind);
-    r.add_thing(FieldKind);
     r.add_thing(CameraKind);
-    r.add_thing(LiquidKind);
-    r.add_thing(SwarmKind);
-    r.add_thing(CanvasThingKind);
     r.add_module(BasicLookKind);
-    r.add_module(LiquidLookKind);
-    r.add_module(SwarmLookKind);
     r.add_module(StreakTrailKind);
-    r.add_module(MarksBrushesKind);
     r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
-    r.add_module(FlowingKind);
-    r.add_module(FlockingKind);
     r.add_module(BasicBounceKind);
-    r.add_module(NoteSoundKind);
-    r.add_module(DrumSoundKind);
-    r.add_module(MelodySoundKind);
     for k in modules::shader::kinds() {
         r.add_module(k);
     }
-    r.add_module(RulesKind);
     r
 }
 
 /// What a brand-new scene holds: a circle arena and one pink ball, sharing the root's plain
-/// look, motion, bounce and sound.
+/// look, motion and bounce.
 pub fn new_scene(reg: &Registry) -> Scene {
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
-    add_starter_buses(&mut scene.library);
     let root = ThingId::ROOT;
     add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
     let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
@@ -398,178 +141,28 @@ pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
 }
 
-/// A new scene as the editor starts it: [`new_scene`] with a camera, and hits off the shot
-/// fading away.
+/// A new scene as the editor starts it: [`new_scene`] with a camera.
 pub fn new_studio_scene(reg: &Registry) -> Scene {
     let mut scene = new_scene(reg);
     ensure_camera(&mut scene, reg);
-    scene.things.get_mut(&ThingId::ROOT).expect("root").params.set("off_shot_fade", Value::Number(1.5));
     scene
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Color, SlotId, ThingId, Value, resolve, resolve_slot};
+    use bpe_core::{SlotId, ThingId, Value, resolve};
     use bpe_runtime::{Log, World};
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Walls", "Flowing", "Forces", "On screen"];
+        let families = ["Bouncers", "Walls"];
         let reg = registry();
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
         }
     }
 
-    #[test]
-    fn marks_kind_registered_on_marks_slot() {
-        let reg = registry();
-        let kind = reg.module("marks.brushes").expect("registered");
-        assert_eq!((kind.slot(), kind.name()), (SlotId::Marks, "Brushes"));
-        assert!(sims().module("marks.brushes").is_some());
-        assert!(reg.modules_for(SlotId::Marks).any(|m| m.id() == "marks.brushes"));
-        let defs = kind.settings();
-        for key in ["paint_on", "paint_width_by", "paint_width", "paint_tip", "paint_when", "paint_min_speed"] {
-            assert!(defs.iter().any(|d| d.key == key), "no {key}");
-        }
-        for key in [
-            "paint_load",
-            "paint_taper",
-            "paint_smooth",
-            "splat_on",
-            "splat_shape",
-            "splat_size",
-            "splat_by_speed",
-            "splat_turn",
-        ] {
-            assert!(defs.iter().any(|d| d.key == key), "no {key}");
-        }
-        for key in ["splat_variants", "splat_min_speed", "colour_from", "colour_colours", "colour_follow"] {
-            assert!(defs.iter().any(|d| d.key == key), "no {key}");
-        }
-        let d = MarksBrushes::default();
-        assert!(d.paint_on && !d.splat_on);
-        assert_eq!(MarksBrushes::from_params(&d.to_params()), d);
-    }
-
-    /// The new scene with a Brushes module on its ball.
-    fn scene_with_brushes() -> (Scene, Registry) {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let m = scene.add_module(&reg, "marks.brushes", "Brushes").unwrap();
-        scene.link(&reg, ThingId(2), SlotId::Marks, m).unwrap();
-        (scene, reg)
-    }
-
-    #[test]
-    fn fingerprint_changes_with_marks_settings() {
-        let (mut scene, reg) = scene_with_brushes();
-        let sims = sims();
-        let before = bpe_runtime::fingerprint(&scene, &resolve(&scene, &reg), &sims);
-        let m = scene.things[&ThingId(2)].slots[&SlotId::Marks].clone();
-        let SlotLink::Linked { module, .. } = m else { panic!("linked") };
-        scene.library.modules.get_mut(&module).unwrap().params.set("splat_size", Value::Number(60.0));
-        let after = bpe_runtime::fingerprint(&scene, &resolve(&scene, &reg), &sims);
-        assert_ne!(before, after);
-    }
-
-    #[test]
-    fn looks_count_only_in_scenes_with_marks() {
-        let reg = registry();
-        let sims = sims();
-        let recolour = |scene: &mut Scene| {
-            let look = resolve_slot(scene, &reg, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
-            let p = &mut scene.library.modules.get_mut(&look).unwrap().params;
-            p.set("colours", Value::Gradient(bpe_core::Gradient::solid(Color::rgb(0, 255, 0))));
-        };
-        let mut plain = new_scene(&reg);
-        let before = bpe_runtime::fingerprint(&plain, &resolve(&plain, &reg), &sims);
-        recolour(&mut plain);
-        assert_eq!(bpe_runtime::fingerprint(&plain, &resolve(&plain, &reg), &sims), before);
-
-        let (mut marked, _) = scene_with_brushes();
-        let before = bpe_runtime::fingerprint(&marked, &resolve(&marked, &reg), &sims);
-        recolour(&mut marked);
-        let resolved = resolve(&marked, &reg);
-        assert_ne!(bpe_runtime::fingerprint(&marked, &resolved, &sims), before);
-        let world = World::build(&marked, &resolved, &sims);
-        // Every thing with a Look is kept, so a brush can take the colour of a ball that has no
-        // brushes of its own.
-        assert!(world.looks.contains_key(&ThingId(2)) && world.looks.contains_key(&ThingId(1)));
-        // A recolour of a ball without brushes counts too, once some other thing has them.
-        let mut other = marked.clone();
-        other.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Marks);
-        let obstacle = add_thing(&mut other, &reg, "obstacle", ThingId::ROOT).unwrap();
-        fill_slot(&mut other, &reg, obstacle, SlotId::Marks).unwrap();
-        let before = bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims);
-        let look = resolve_slot(&other, &reg, ThingId(2), SlotId::Look, &mut Vec::new()).unwrap().module;
-        let p = &mut other.library.modules.get_mut(&look).unwrap().params;
-        p.set("colours", Value::Gradient(bpe_core::Gradient::solid(Color::rgb(255, 0, 0))));
-        assert_ne!(bpe_runtime::fingerprint(&other, &resolve(&other, &reg), &sims), before);
-        let plain_world = World::build(&plain, &resolve(&plain, &reg), &sims);
-        assert!(plain_world.looks.is_empty());
-    }
-
-    #[test]
-    fn new_scenes_have_reverb_and_delay_buses() {
-        let scene = new_scene(&registry());
-        let names: Vec<&str> = scene.library.buses.iter().map(|b| b.name.as_str()).collect();
-        assert_eq!(names, ["Reverb", "Delay"]);
-        let kinds = |g: &bpe_graph::Graph| -> Vec<String> {
-            bpe_synth::straight_chain(g).unwrap().iter().map(|id| g.node(*id).unwrap().kind.clone()).collect()
-        };
-        assert_eq!(kinds(&scene.library.buses[0].fx), ["reverb"]);
-        assert_eq!(kinds(&scene.library.buses[1].fx), ["delay"]);
-    }
-
-    #[test]
-    fn a_new_scene_owns_a_starter_progression() {
-        let reg = registry();
-        let scene = new_scene(&reg);
-        assert_eq!(scene.library.progressions.len(), 1);
-        let (&id, p) = scene.library.progressions.iter().next().unwrap();
-        assert_eq!(p.name, "Starter");
-        let sound = resolve(&scene, &reg).things[&ThingId(2)].slots[&SlotId::Sound].params.clone();
-        assert_eq!(sound.get("chords"), Some(&Value::Int(id.0 as i64)));
-    }
-
-    #[test]
-    fn a_new_scene_plays_its_library_pluck() {
-        let reg = registry();
-        let scene = new_scene(&reg);
-        let settings = mix_settings(&scene, &resolve(&scene, &reg));
-        let (&id, pluck) = scene.library.instruments.iter().next().unwrap();
-        assert_eq!(pluck.name, "Pluck");
-        let sound = resolve(&scene, &reg).things[&ThingId(2)].slots[&SlotId::Sound].params.clone();
-        assert_eq!(sound.get("instrument"), Some(&Value::Int(id.0 as i64)));
-        assert_eq!(
-            bpe_mix::instrument_for(&settings, None, 0),
-            bpe_mix::InstrumentChoice::BuiltIn { which: bpe_mix::Instrument::Pluck, decay: 0.9, brightness: 0.5 }
-        );
-    }
-
-    #[test]
-    fn the_songs_chords_are_the_first_sounding_things() {
-        let reg = registry();
-        let (_, scene) = crate::scenes::all(&reg).into_iter().find(|(n, _)| n == "Drum beat").unwrap();
-        let settings = mix_settings(&scene, &resolve(&scene, &reg));
-        assert_eq!(settings.progression(settings.chords).name, "Epic minor", "the MIDI and the patches' chords");
-        let new = new_scene(&reg);
-        let settings = mix_settings(&new, &resolve(&new, &reg));
-        assert_eq!(settings.progression(settings.chords).name, "Starter");
-    }
-
-    #[test]
-    fn mix_settings_carry_progressions_and_beats() {
-        let reg = registry();
-        let scene = new_scene(&reg);
-        let settings = mix_settings(&scene, &resolve(&scene, &reg));
-        assert_eq!(settings.progression(bpe_core::ProgressionRef(None)).name, "Starter");
-        assert!(settings.beats.len() >= 40, "120 bpm over 20 s: {}", settings.beats.len());
-        let missing = bpe_core::ProgressionRef(Some(bpe_core::ProgressionId(99)));
-        assert_eq!(settings.progression(missing).name, "Starter", "a missing one falls back to the scene's");
-    }
 
     fn defs_of(reg: &Registry, kind: &str) -> &'static [bpe_core::SettingDef] {
         reg.module(kind).unwrap_or_else(|| panic!("no module {kind}")).settings()
@@ -595,46 +188,8 @@ mod tests {
         }
     }
 
-    fn sound_sections(reg: &Registry, kind: &str) -> Vec<&'static str> {
-        let mut seen: Vec<&str> = Vec::new();
-        for d in defs_of(reg, kind) {
-            assert!(!d.group.is_empty(), "{kind} {} has no group", d.key);
-            if !seen.contains(&d.group) {
-                seen.push(d.group);
-            }
-        }
-        seen.sort_by_key(|g| bpe_core::section_rank(g).unwrap_or(usize::MAX));
-        seen
-    }
 
-    fn labels_in(reg: &Registry, kind: &str, group: &str) -> Vec<&'static str> {
-        defs_of(reg, kind).iter().filter(|d| d.group == group).map(|d| d.label).collect()
-    }
 
-    #[test]
-    fn sound_cards_use_the_spec_sections() {
-        let reg = registry();
-        assert_eq!(sound_sections(&reg, "sound.notes"), ["Instrument", "Notes", "Which hits", "Level", "Chords"]);
-        assert_eq!(sound_sections(&reg, "sound.melody"), ["Instrument", "Notes", "Which hits", "Level"]);
-        assert_eq!(sound_sections(&reg, "sound.drums"), ["Instrument", "Which hits", "On the beat", "Level"]);
-    }
-
-    #[test]
-    fn sound_notes_rows_follow_the_spec() {
-        let reg = registry();
-        assert_eq!(
-            labels_in(&reg, "sound.notes", "Notes"),
-            ["Lowest note", "Highest note", "Picks from", "Order", "Plays", "Full chord above", "Chord spread"]
-        );
-        let when: Vec<_> = defs_of(&reg, "sound.notes").iter().filter(|d| d.when == "plays=full_chord").collect();
-        assert_eq!(when.len(), 2);
-        assert!(when.iter().all(|d| d.group == "Notes"));
-        assert_eq!(
-            labels_in(&reg, "sound.notes", "Which hits"),
-            ["Plays when", "Only hits against", "Shortest gap", "Quietest hit", "Loudest hit"]
-        );
-        assert_eq!(labels_in(&reg, "sound.notes", "Level"), ["Volume", "Pan", "Stereo width"]);
-    }
 
     #[test]
     fn the_look_card_reads_in_section_order() {
@@ -692,7 +247,7 @@ mod tests {
     #[test]
     fn motion_gravity_is_a_multiple() {
         let reg = registry();
-        for kind in ["motion.basic", "motion.flock", "motion.liquid"] {
+        for kind in ["motion.basic"] {
             let d = defs_of(&reg, kind).iter().find(|d| d.key == "gravity_scale").unwrap();
             assert_eq!(d.label, "Gravity ×", "{kind}");
             assert_eq!(d.help, "How strongly the scene's gravity pulls these, as a multiple.", "{kind}");
@@ -714,11 +269,7 @@ mod tests {
         assert_eq!(def("balls", "ring_radius").dice_range(), Some((60.0, 400.0)));
         assert_eq!(def("balls", "velocity").dice_range(), Some((100.0, 900.0)));
         assert_eq!(def("arena", "radius").dice_range(), Some((150.0, 500.0)));
-        assert_eq!(def("obstacle", "radius").dice_range(), Some((6.0, 60.0)));
-        assert_eq!(def("liquid", "count").dice_range(), Some((500.0, 20000.0)));
-        assert_eq!(def("swarm", "count").dice_range(), Some((500.0, 50000.0)));
-        assert_eq!(def("soft", "size").dice_range(), Some((60.0, 400.0)));
-        for key in ["duration", "fps", "width", "height", "steps_per_second", "song", "bpm", "gravity"] {
+        for key in ["duration", "fps", "width", "height", "steps_per_second", "gravity"] {
             assert!(!def("scene", key).flags.random, "{key} must not roll");
         }
         assert!(!def("bounce.basic", "pops_after").flags.random, "popping changes what the scene is");
@@ -750,37 +301,18 @@ mod tests {
             reg.kinds_fitting(slot, t).map(|m| m.id()).collect()
         };
         assert_eq!(ids("balls", SlotId::Look), ["look.basic"]);
-        assert_eq!(ids("liquid", SlotId::Look), ["look.liquid"]);
-        assert_eq!(ids("swarm", SlotId::Look), ["look.swarm"]);
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
-        assert_eq!(ids("liquid", SlotId::Motion), ["motion.liquid"]);
-        assert_eq!(ids("swarm", SlotId::Motion), ["motion.flock"]);
         assert_eq!(ids("balls", SlotId::Shader).len(), 13);
-        assert_eq!(ids("scene", SlotId::Sound), ["sound.drums", "sound.melody"]);
     }
 
     #[test]
     fn the_look_registry_has_one_ball_look() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.basic", "look.liquid", "look.swarm"]);
+        assert_eq!(looks, ["look.basic"]);
         assert_eq!(reg.module("look.basic").unwrap().name(), "Look");
     }
 
-    #[test]
-    fn the_new_module_kinds_are_registered_on_their_slots() {
-        let reg = registry();
-        let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.basic", "look.liquid", "look.swarm"]);
-        let motions: Vec<&str> = reg.modules_for(SlotId::Motion).map(|m| m.id()).collect();
-        assert_eq!(motions, ["motion.basic", "motion.flock", "motion.liquid"]);
-        assert_eq!(reg.module("look.liquid").unwrap().name(), "Liquid surface");
-        assert_eq!(reg.module("motion.liquid").unwrap().name(), "Flowing");
-        assert_eq!(reg.module("look.swarm").unwrap().name(), "Glowing dots");
-        assert_eq!(reg.module("motion.flock").unwrap().name(), "Flocking");
-        assert!(sims().module("motion.liquid").is_some());
-        assert!(sims().module("motion.flock").is_none(), "flocking runs on the GPU only");
-    }
 
     #[test]
     fn a_ball_bigger_than_its_arena_is_pinned_and_logs_no_hits() {
@@ -797,27 +329,6 @@ mod tests {
         assert!(p.is_finite() && p.length() < 1e-3, "{p:?}");
     }
 
-    #[test]
-    fn adding_a_swarm_links_dots_and_flocking() {
-        let reg = registry();
-        let mut scene = new_scene(&reg);
-        let s = add_thing(&mut scene, &reg, "swarm", ThingId::ROOT).unwrap();
-        let kinds: Vec<(SlotId, String, String)> = scene.things[&s]
-            .slots
-            .iter()
-            .map(|(slot, link)| {
-                let bpe_core::SlotLink::Linked { module: m, .. } = link else { panic!("linked") };
-                (*slot, scene.library.modules[m].kind.clone(), scene.library.modules[m].name.clone())
-            })
-            .collect();
-        assert_eq!(
-            kinds,
-            vec![
-                (SlotId::Look, "look.swarm".to_string(), "Swarm look".to_string()),
-                (SlotId::Motion, "motion.flock".to_string(), "Swarm motion".to_string())
-            ]
-        );
-    }
 
     #[test]
     fn ensure_camera_appends_once() {
@@ -837,24 +348,19 @@ mod tests {
     #[test]
     fn old_file_loads_without_screen_or_camera() {
         let reg = registry();
-        let mut scene = new_scene(&reg);
-        let text = scene.add_thing(&reg, "text", ThingId::ROOT).unwrap();
+        let scene = new_scene(&reg);
         let saved = bpe_core::save(&scene);
         assert!(!saved.contains("screen"), "{saved}");
         let loaded = bpe_core::load(&saved, &reg).unwrap();
         assert_eq!(camera_of(&loaded), None);
-        let t = &loaded.things[&text];
-        assert!(t.sticks_to_screen(reg.thing("text").unwrap()));
         let b = &loaded.things[&ThingId(2)];
         assert!(!b.sticks_to_screen(reg.thing("balls").unwrap()));
     }
 
     #[test]
-    fn new_studio_scene_has_a_camera_and_fades_off_shot_hits() {
+    fn new_studio_scene_has_a_camera() {
         let reg = registry();
         let scene = new_studio_scene(&reg);
         assert!(camera_of(&scene).is_some());
-        let root = SceneSettings::from_params(&bpe_core::resolve(&scene, &reg).things[&ThingId::ROOT].params);
-        assert_eq!(root.off_shot_fade, 1.5);
     }
 }

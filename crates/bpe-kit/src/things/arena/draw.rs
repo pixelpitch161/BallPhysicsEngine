@@ -14,8 +14,6 @@ impl ThingDraw for ArenaDraw {
     /// The wall in its look's Colours: one colour where the paint puts the wall, or a gradient
     /// along the line (Path) or across it (an inside pattern). The glow keeps the one colour.
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        // The paint the thing carries, drawn over its shapes (even with no look of its own).
-        crate::things::canvas::draw::draw_skin(cx, frame);
         let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
         let Some(look) = look_of(cx) else { return };
         let fill = for_walls(look.fill.clone());

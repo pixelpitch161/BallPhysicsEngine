@@ -1,8 +1,8 @@
 //! Picture tests for blend layers and their composite, on the software GPU.
 
 use crate::paint_tests::gpu;
-use crate::{BackgroundPaint, BallInstance, BlendLayer, Frame, LiquidLayer, PaintGpu, Points, Renderer, TrailVertex};
-use bpe_core::{Blend, ThingId};
+use crate::{BackgroundPaint, BallInstance, BlendLayer, Frame, Renderer, TrailVertex};
+use bpe_core::Blend;
 
 const N: u32 = 64;
 const D: [f32; 3] = [0.6, 0.3, 0.2];
@@ -235,90 +235,6 @@ fn a_stuck_layer_blends_over_the_overlay() {
     assert!(close(got, want), "{got:?}: the stuck layer multiplies the stuck square, {want:?}");
 }
 
-#[test]
-fn a_liquid_in_a_layer_draws_into_it() {
-    let Some((device, queue)) = gpu() else { return };
-    let mut renderer = Renderer::new(&device, N, N);
-    let mut points = Vec::new();
-    for row in 0..16 {
-        for col in 0..16 {
-            points.push([-15.0 + col as f32 * 2.0, -15.0 + row as f32 * 2.0, 0.0, 0.0]);
-        }
-    }
-    let liquid = LiquidLayer {
-        thing: ThingId(1),
-        points: Points::Cpu(points),
-        radius: 1.0,
-        color: [0.1, 0.3, 1.0, 1.0],
-        follow: 0,
-        paint: PaintGpu::default(),
-        paint_place: [0.0; 4],
-        clarity: 0.0,
-        refraction: 0.0,
-        highlight: 0.0,
-        smoothing: 1.0,
-        glow: 0.0,
-    };
-    let black = flat([0.0; 3]);
-    let mut frame = with_layer(black.clone(), Blend::Screen, 1.0, Vec::new());
-    frame.layers[0].frame.liquids.push(liquid);
-    let plain = render(&mut renderer, &device, &queue, &black);
-    let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
-    assert!(got[2] > 100 && got[2] > got[0] + 40, "{got:?}: the layered liquid shows blue");
-    assert_eq!(at(&plain, N / 2, N / 2)[2], 0);
-}
-
-/// A square block of liquid points 30 world pixels across, centred on `at`.
-fn liquid_block(at: [f32; 2], clarity: f32) -> LiquidLayer {
-    let mut points = Vec::new();
-    for row in 0..16 {
-        for col in 0..16 {
-            points.push([at[0] - 15.0 + col as f32 * 2.0, at[1] - 15.0 + row as f32 * 2.0, 0.0, 0.0]);
-        }
-    }
-    LiquidLayer {
-        thing: ThingId(1),
-        points: Points::Cpu(points),
-        radius: 1.0,
-        color: [0.1, 0.3, 1.0, 1.0],
-        follow: 0,
-        paint: PaintGpu::default(),
-        paint_place: [0.0; 4],
-        clarity,
-        refraction: 0.0,
-        highlight: 0.0,
-        smoothing: 1.0,
-        glow: 0.0,
-    }
-}
-
-#[test]
-fn a_layered_liquid_is_placed_through_the_frames_camera() {
-    let Some((device, queue)) = gpu() else { return };
-    let mut renderer = Renderer::new(&device, N, N);
-    // The layer was made through the camera the video had when the frame was built...
-    let mut frame = with_layer(flat([0.0; 3]), Blend::Screen, 1.0, Vec::new());
-    frame.layers[0].frame.liquids.push(liquid_block([200.0, 0.0], 0.0));
-    // ...and the editor's World view then looks at the liquid through its own camera.
-    frame.camera = bpe_runtime::CameraView { center: glam::Vec2::new(200.0, 0.0), zoom: 1.0, turn: 0.0 };
-    let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
-    assert!(got[2] > 100 && got[2] > got[0] + 40, "{got:?}: the liquid shows where the frame's camera looks");
-}
-
-#[test]
-fn a_clear_liquid_added_in_a_layer_does_not_add_the_picture_to_itself() {
-    let Some((device, queue)) = gpu() else { return };
-    let mut renderer = Renderer::new(&device, N, N);
-    let grey = flat([0.2; 3]);
-    let plain = at(&render(&mut renderer, &device, &queue, &grey), N / 2, N / 2);
-    for blend in [Blend::Add, Blend::Difference, Blend::Screen] {
-        let mut frame = with_layer(grey.clone(), blend, 1.0, Vec::new());
-        frame.layers[0].frame.liquids.push(liquid_block([0.0, 0.0], 1.0));
-        let got = at(&render(&mut renderer, &device, &queue, &frame), N / 2, N / 2);
-        assert!(close(got, plain), "{blend:?}: {got:?} vs {plain:?}: a fully clear liquid adds nothing of its own");
-    }
-}
-
 // ---- Blend with each other ----
 
 /// `frame` with one layer holding `layer`'s lists, its things blending with each other when
@@ -448,7 +364,7 @@ fn the_switch_on_a_mode_that_cannot_combine_changes_nothing() {
 
 #[test]
 fn every_kind_of_thing_can_blend_with_each_other() {
-    use crate::{FlashInstance, GlyphInstance, LookInstance, ShapeInstance, SoftVertex};
+    use crate::{FlashInstance, LookInstance, ShapeInstance};
     let Some((device, queue)) = gpu() else { return };
     let mut renderer = Renderer::new(&device, N, N);
     let plain = render(&mut renderer, &device, &queue, &flat(D));
@@ -458,8 +374,6 @@ fn every_kind_of_thing_can_blend_with_each_other() {
         layer.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 5.0, [S[0], S[1], S[2], 1.0], 0.0));
         layer.looks.push(LookInstance { radius: 5.0, color: [S[0], S[1], S[2], 1.0], ..LookInstance::default() });
         layer.flashes.push(FlashInstance { center: [0.0; 2], size: 4.0, color: [0.1, 0.1, 0.1, 1.0] });
-        layer.glyphs.push(GlyphInstance::default());
-        layer.soft.extend([SoftVertex::default(); 3]);
         let frame = with_each(flat(D), blend, 1.0, true, layer);
         let pixels = render(&mut renderer, &device, &queue, &frame);
         assert_eq!(at(&pixels, 2, 2), at(&plain, 2, 2), "{blend:?}: the corner nothing reaches");

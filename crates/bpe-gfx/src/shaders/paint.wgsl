@@ -1,6 +1,6 @@
 // Gradient paint inside a shape: the frame's gradients baked one per row of an atlas texture
 // (see gradients.rs), and a pattern that turns a point inside the shape into a place along one.
-// Prepended to the scene, glyph, particle and flow shaders; `paint_wgsl` in gradients.rs fills in the
+// Prepended to the scene and particle shaders; `paint_wgsl` in gradients.rs fills in the
 // bind group each of them reads the atlas from.
 
 // Matches `PaintGpu` in gradients.rs.

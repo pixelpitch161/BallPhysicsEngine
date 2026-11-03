@@ -64,13 +64,10 @@ const SLOTS: &[SlotId] = &[
     SlotId::Trail,
     SlotId::Motion,
     SlotId::Bounce,
-    SlotId::Sound,
     SlotId::Particles,
-    SlotId::Rules,
     SlotId::Shader,
-    SlotId::Marks,
 ];
-const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound];
+const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
 
 impl ThingKind for BallsKind {
     fn id(&self) -> &'static str {
