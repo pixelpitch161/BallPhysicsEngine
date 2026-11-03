@@ -1800,6 +1800,7 @@ fn scratch_to_reveal(reg: &Registry) -> Scene {
     let mut scene = scratch_card_scene(reg);
     add_caption(reg, &mut scene, "Revealed", Vec2::new(0.0, -800.0), "{Card.revealed}% revealed", 72.0);
     let m = scene.add_module(reg, "rules.graph", "Finish").expect("rules are registered");
+    scene.library.modules.get_mut(&m).expect("module").owner = Some(BALLS);
     let mut graph = RulesKind.template().expect("rules have a template");
     let c = catalog(Role::Rules);
     let when = graph.add(c.spec("when.canvas").expect("When a canvas reaches"), [40.0, 40.0]);

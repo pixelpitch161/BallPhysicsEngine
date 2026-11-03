@@ -813,6 +813,8 @@ enum Icon {
     Letter,
     /// The camera: a 9:16 frame.
     Frame,
+    /// A meter: a bar part filled.
+    Meter,
     /// A canvas: a square with a brush stroke across it.
     Canvas,
     /// Anything else.
@@ -834,6 +836,7 @@ fn icon_shape(kind: &str) -> Icon {
         "soft" => Icon::Blob,
         "text" => Icon::Letter,
         "canvas" => Icon::Canvas,
+        "meter" => Icon::Meter,
         _ => Icon::Diamond,
     }
 }
@@ -919,6 +922,12 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             let rect = Rect::from_center_size(c, Vec2::new(r * 1.15, r * 2.0));
             painter.rect_stroke(rect, 1.5, Stroke::new(1.6, ink), egui::StrokeKind::Inside);
             painter.circle_filled(c, r * 0.28, ink);
+        }
+        Icon::Meter => {
+            let bar = Rect::from_center_size(c, Vec2::new(r * 2.0, r * 0.9));
+            painter.rect_stroke(bar, r * 0.45, stroke, egui::StrokeKind::Inside);
+            let filled = Rect::from_min_max(bar.min, egui::pos2(bar.left() + bar.width() * 0.6, bar.bottom()));
+            painter.rect_filled(filled.shrink(1.5), r * 0.3, ink);
         }
         Icon::Canvas => {
             let rect = Rect::from_center_size(c, Vec2::splat(r * 1.9));

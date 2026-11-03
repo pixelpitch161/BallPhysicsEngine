@@ -100,7 +100,7 @@ impl ThingKind for MeterKind {
         "Meter"
     }
     fn icon(&self) -> &'static str {
-        "text"
+        "meter"
     }
     fn help(&self) -> &'static str {
         "A bar, ring or ranking of a canvas's numbers: each team's share in a colour war, or how much is revealed."
