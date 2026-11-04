@@ -2,6 +2,7 @@
 
 use bpe_core::{Color, Layer, LayerId, LayerSection, Settings, Slot};
 use bpe_kit::modules::look::layers::{self as kinds, MaskFrom, MaskLayer, MaskShape, gpu::choice_label};
+use bpe_kit::modules::look::shape as shape_look;
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::LookCx;
@@ -122,13 +123,17 @@ pub fn row(
             }
             let help = kind.map_or("A layer of a kind that isn't installed", |k| k.help());
             let response = response.on_hover_text(help);
-            response.context_menu(|ui| {
-                if mask {
-                    mask_menu(ui, cx, layer, edits);
-                } else {
-                    menu(ui, inspector, cx, card, layer, edits);
-                }
-            });
+            // A shape's Body is the shape itself: nothing to copy, move or delete.
+            let shape_body = layer.kind == shape_look::BODY;
+            if !shape_body {
+                response.context_menu(|ui| {
+                    if mask {
+                        mask_menu(ui, cx, layer, edits);
+                    } else {
+                        menu(ui, inspector, cx, card, layer, edits);
+                    }
+                });
+            }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(6.0);
@@ -375,6 +380,7 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     }
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     match layer.kind.as_str() {
+        shape_look::BODY => shape_words(cx),
         kinds::BODY => {
             let b = kinds::BodyLayer::from_params(&p);
             let stops = &b.fill.colours.stops;
@@ -434,6 +440,19 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// A shape's outline in a few words: "Circle", "6 sides", "7 points, 1 curve", then "filled" when
+/// it is solid.
+fn shape_words(cx: &LookCx) -> String {
+    let Some(thing) = cx.scene.things.get(&cx.id) else { return String::new() };
+    let s = bpe_kit::ShapeSettings::from_params(&thing.params);
+    let outline = match (s.start, s.moulded()) {
+        (_, Some(path)) => path.words(),
+        (bpe_kit::ShapeStart::Polygon, None) => format!("{} sides", s.sides),
+        (bpe_kit::ShapeStart::Circle, None) => "Circle".to_owned(),
+    };
+    if s.fill == bpe_kit::ShapeFill::Filled { format!("{outline} · filled") } else { outline }
 }
 
 /// What a mask on `parent` shows by: "Layer below", "Top half", "Brush · 3 strokes", or a
@@ -496,6 +515,12 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
     match layer.kind.as_str() {
         kinds::BODY => {
             painter.circle_filled(c, r, fade(body));
+        }
+        shape_look::BODY => {
+            // A hexagon outline: the shape, plain white.
+            let corners: Vec<Pos2> =
+                (0..6).map(|k| c + Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_3) * r).collect();
+            painter.add(egui::Shape::closed_line(corners, Stroke::new(1.5, fade(style::TEXT_STRONG))));
         }
         kinds::OUTLINE => {
             let l = kinds::OutlineLayer::from_params(&p);

@@ -5,7 +5,6 @@ use bpe_gfx::{Frame, build_frame};
 
 use crate::{Kit, kit, new_scene};
 
-const SHAPE: ThingId = ThingId(1);
 const BALL: ThingId = ThingId(2);
 
 /// The module filling `slot` on `thing`.

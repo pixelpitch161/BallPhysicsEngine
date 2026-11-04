@@ -90,7 +90,7 @@ impl ShapePath {
     /// corner is the top-most one (the left of two), and they go clockwise.
     pub fn even(sides: u32) -> ShapePath {
         let n = sides.max(3);
-        let offset = if n % 2 == 0 { PI / n as f32 } else { 0.0 };
+        let offset = if n.is_multiple_of(2) { PI / n as f32 } else { 0.0 };
         let points = (0..n)
             .map(|k| {
                 let angle = -FRAC_PI_2 - offset + k as f32 * TAU / n as f32;

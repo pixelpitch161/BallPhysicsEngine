@@ -257,8 +257,9 @@ pub fn show(
             }
         } else {
             card(ui, |ui| {
-                // The kind's name alone: "Balls", "Arena".
-                let title = kind.name().to_owned();
+                // The kind's name alone: "Balls", "Folder". A shape's outline is under its Look's
+                // Body, so its own card holds the rest.
+                let title = if kind.id() == SHAPE { "Shape settings".to_owned() } else { kind.name().to_owned() };
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
                     ui.label(RichText::new(&title).font(style::semibold(13.0)));
@@ -298,6 +299,15 @@ pub fn show(
                             ui.add_space(6.0);
                             crate::look_editor::group::show(ui, inspector, &look, &mut edits);
                         }
+                    } else if kind.id() == SHAPE {
+                        // The outline's settings show under the Look's Body.
+                        let defs: Vec<SettingDef> = kind
+                            .settings()
+                            .iter()
+                            .filter(|d| !bpe_kit::BODY_HEADINGS.contains(&d.group))
+                            .cloned()
+                            .collect();
+                        own_grid(ui, inspector, &cx, ("kind", id), &defs, &mut edits);
                     } else {
                         own_grid(ui, inspector, &cx, ("kind", id), kind.settings(), &mut edits);
                     }
@@ -384,6 +394,13 @@ pub fn show(
                     ui.label(RichText::new(problems.join("\n")).small().color(style::TEXT));
                 }
                 if !header.inner {
+                    return;
+                }
+                if card_now.kind == bpe_kit::modules::look::shape::CARD {
+                    ui.add_space(4.0);
+                    let look =
+                        crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
+                    crate::look_editor::show(ui, inspector, &look, &mut edits);
                     return;
                 }
                 if card_now.kind == bpe_kit::modules::look::layers::CARD {
@@ -481,7 +498,11 @@ pub fn show(
                 let mut any = false;
                 for t in reached(scene, &selected, id, None) {
                     let a = Address::own(t, &key);
-                    any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
+                    let set = set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
+                    any |= set;
+                    if set {
+                        any |= shape_afresh(scene, t, &key);
+                    }
                 }
                 any
             }
@@ -535,6 +556,22 @@ pub fn show(
 
 /// The kind whose things have a Ball / Group switch.
 const BALLS: &str = "balls";
+
+/// The kind whose outline settings show under its Look's Body.
+const SHAPE: &str = bpe_kit::things::shape::KIND;
+
+/// After a shape's own setting `key` was set: a new Sides or Start from starts the outline afresh,
+/// and an emptied outline is taken away rather than kept. In the same edit, so one undo brings
+/// the moulded outline back. True when it took one away.
+fn shape_afresh(scene: &mut Scene, id: ThingId, key: &str) -> bool {
+    let Some(thing) = scene.things.get_mut(&id).filter(|t| t.kind == SHAPE) else { return false };
+    let emptied = matches!(thing.params.get("path"), Some(Value::Path(p)) if p.is_empty());
+    if matches!(key, "sides" | "start") || (key == "path" && emptied) {
+        thing.params.remove("path").is_some()
+    } else {
+        false
+    }
+}
 
 /// The Ball / Group switch of a Balls thing: its look on one ball, or across the whole group.
 /// It heads the Look card (or, with no layered Look card, sits in the Balls card).
@@ -1209,16 +1246,17 @@ mod tests {
     }
 
     #[test]
-    fn an_arena_shows_only_what_does_something_for_it() {
+    fn a_shape_shows_only_what_does_something_for_it() {
         let h = harness(Some(ThingId(1)));
-        // The arena's bounce only matters when it takes over; ball-only settings never show.
+        // The shape's bounce only matters when it takes over; ball-only settings never show.
         assert!(h.query_by_role_and_label(Role::Label, "Takes over").is_some());
         for ball_only in ["Bounciness", "Grow per hit", "Hits other balls", "Pops after", "Flash"] {
-            assert!(h.query_by_role_and_label(Role::Label, ball_only).is_none(), "{ball_only} shows on the arena");
+            assert!(h.query_by_role_and_label(Role::Label, ball_only).is_none(), "{ball_only} shows on the shape");
         }
-        // A circle has a radius but no width or corners.
-        assert!(h.query_by_role_and_label(Role::Label, "Radius").is_some());
-        assert!(h.query_by_role_and_label(Role::Label, "Corner radius").is_none());
+        // A circle has a size but no sides or corners; its outline shows once, under the Body.
+        assert_eq!(h.query_all_by_role_and_label(Role::Label, "Size").count(), 1);
+        assert!(h.query_by_role_and_label(Role::Label, "Sides").is_none());
+        assert!(h.query_by_role_and_label(Role::Label, "Shape settings").is_some());
     }
 
     #[test]
@@ -1285,22 +1323,21 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         {
             let s = h.state_mut();
-            let glow = Address::on(ThingId(2), SlotId::Look, BALL_GLOW);
-            s.scene.set_at(&s.kit.registry, &glow, Value::Number(0.75)).unwrap();
+            let radius = Address::own(ThingId(2), "radius");
+            s.scene.set_at(&s.kit.registry, &radius, Value::Number(75.0)).unwrap();
         }
         h.run();
-        pick_layer(&mut h, "Glow");
-        menu_of(&mut h, "Strength");
+        menu_of(&mut h, "Size");
         h.get_by_label("Copy Value").click();
         h.run();
-        // The arena's look has a Glow setting too.
+        // The shape's Size sits under its Look's Body.
         h.state_mut().selection.set(ThingId(1));
         h.run();
-        menu_of(&mut h, "Glow");
-        h.get_by_label("Paste Value (0.75)").click();
+        menu_of(&mut h, "Size");
+        h.get_by_label("Paste Value (75 px)").click();
         h.run();
-        let glow = Address::on(ThingId(1), SlotId::Look, "glow");
-        assert_eq!(h.state().scene.value_at(&h.state().kit.registry, &glow), Some(Value::Number(0.75)));
+        let size = Address::own(ThingId(1), "size");
+        assert_eq!(h.state().scene.value_at(&h.state().kit.registry, &size), Some(Value::Number(75.0)));
     }
 
     #[test]
@@ -1460,28 +1497,32 @@ mod tests {
         let s = h.state();
         let big = |id| matches!(s.scene.things[&id].params.get("radius"), Some(Value::Number(r)) if *r > 100.0);
         assert!(big(ThingId(2)) && big(ThingId(3)));
-        assert!(s.scene.things[&ThingId(1)].params.get("radius").is_none(), "the arena's Radius is another setting");
+        assert!(s.scene.things[&ThingId(1)].params.get("radius").is_none(), "the shape's Size is another setting");
     }
 
     #[test]
     fn a_card_edit_reaches_every_selected_thing_with_that_card() {
         let mut h = harness(Some(ThingId(1)));
+        let takes_over = |t| Address::on(t, SlotId::Bounce, "takes_over");
         let (picked, other) = {
             let s = h.state_mut();
-            let picked = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "arena", ThingId::ROOT).unwrap();
-            let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "arena", ThingId::ROOT).unwrap();
+            let picked = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "shape", ThingId::ROOT).unwrap();
+            let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "shape", ThingId::ROOT).unwrap();
+            for t in [ThingId(1), picked, other] {
+                s.scene.set_at(&s.kit.registry, &takes_over(t), Value::Bool(true)).unwrap();
+            }
             s.selection.extra.insert(picked);
             s.resolved = resolve(&s.scene, &s.kit.registry);
             (picked, other)
         };
         h.run();
-        let rect = slider_rect(&h, "Glow");
+        let rect = slider_rect(&h, "Friction");
         drag_slider(&mut h, rect, 0.9);
         let s = h.state();
-        let glow = |t| s.scene.value_at(&s.kit.registry, &Address::on(t, SlotId::Look, "glow"));
-        assert!(matches!(glow(ThingId(1)), Some(Value::Number(g)) if g > 1.0));
-        assert_eq!(glow(picked), glow(ThingId(1)), "the other selected arena's look changed too");
-        assert_eq!(glow(other), Some(Value::Number(0.0)), "an arena that isn't selected is left alone");
+        let friction = |t| s.scene.value_at(&s.kit.registry, &Address::on(t, SlotId::Bounce, "friction"));
+        assert!(matches!(friction(ThingId(1)), Some(Value::Number(f)) if f > 0.8), "{:?}", friction(ThingId(1)));
+        assert_eq!(friction(picked), friction(ThingId(1)), "the other selected shape's bounce changed too");
+        assert_ne!(friction(other), friction(ThingId(1)), "a shape that isn't selected is left alone");
     }
 
     #[test]
@@ -1524,7 +1565,7 @@ mod tests {
             s.scene.things[&ThingId(2)].attach
         );
         assert!(h.query_all_by_label("Offset").next().is_some() && h.query_all_by_label("Position").next().is_none());
-        assert!(h.query_all_by_label("Item").next().is_none(), "an arena has no balls to ride");
+        assert!(h.query_all_by_label("Item").next().is_none(), "a shape has no balls to ride");
         h.get_by_label("Grouped").click();
         h.run();
         let s = h.state();
@@ -1551,11 +1592,12 @@ mod tests {
         h.run();
         h.get_by_role_and_label(Role::Button, "Kind").click();
         h.run();
-        h.get_by_label("Arena").click();
+        // The kind, not the ball's own Shape setting.
+        h.get_all_by_role_and_label(Role::Button, "Shape").last().unwrap().click();
         h.run();
         let s = h.state();
         let bounce = &s.scene.things[&ThingId(2)].slots[&SlotId::Bounce];
-        assert_eq!(bounce.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("arena".into()))));
+        assert_eq!(bounce.params.get("balls_to_hit"), Some(&Value::Target(bpe_core::Target::Kind("shape".into()))));
     }
 
     #[test]
@@ -1590,25 +1632,6 @@ mod tests {
         h.run();
         let target = h.state().scene.things[&ThingId(2)].slots[&SlotId::Bounce].params.get("special_target").cloned();
         assert_eq!(target, Some(Value::Target(bpe_core::Target::Tag("bouncers".into()))));
-    }
-
-    #[test]
-    fn look_card_shows_blending_and_variation() {
-        // The arena's look is the plain card, with its own Blending.
-        let mut h = harness(Some(ThingId(1)));
-        assert!(h.query_all_by_label("Blending").next().is_some(), "a Blending group");
-        h.get_all_by_label("Blending").next().unwrap().click();
-        h.run();
-        assert!(h.query_all_by_label("Blend").next().is_some(), "the Blend setting");
-        assert!(h.query_all_by_label("Blend amount").next().is_some(), "the Blend amount setting");
-        // A ball's Body has the variation; its blend is a layer of its own.
-        h.state_mut().selection.set(ThingId(2));
-        h.run();
-        assert!(h.query_all_by_label("Blending").next().is_none(), "no Blending group on the Body");
-        h.get_all_by_label("Variation").next().unwrap().click();
-        h.run();
-        assert!(h.query_all_by_label("Variation").next().is_some(), "a Variation group");
-        assert!(h.query_all_by_label("Vary hue").next().is_some(), "the Vary hue setting");
     }
 
     #[test]
@@ -1661,21 +1684,26 @@ mod tests {
 
     #[test]
     fn a_folded_section_with_only_a_pulse_shows_the_dot() {
-        // The arena's look is the plain card, with a Light section. The test scene keeps the old
-        // glow; put it back to the default so Light starts clean.
-        let mut h = harness(Some(ThingId(1)));
-        h.state_mut().scene.card_mut(ThingId(1), SlotId::Look).unwrap().params.set("glow", Value::Number(0.0));
-        h.state_mut().resolved = resolve(&h.state().scene, &h.state().kit.registry);
-        h.get_by_label("Hide Light").click();
+        // The ball's Bounce card has a Basics section; start it at its defaults so it starts clean.
+        // The other cards with a Basics section go.
+        let mut h = harness(Some(ThingId(2)));
+        let s = h.state_mut();
+        s.scene.card_mut(ThingId(2), SlotId::Bounce).unwrap().params = bpe_core::Params::default();
+        for slot in [SlotId::Motion, SlotId::Trail, SlotId::Particles] {
+            s.scene.remove_slot(ThingId(2), slot);
+        }
+        s.resolved = resolve(&s.scene, &s.kit.registry);
         h.run();
-        assert!(h.query_by_label("Light (changed)").is_none(), "Light holds no changes yet");
-        let def = bpe_kit::modules::look::BasicLook::defs().iter().find(|d| d.key == "glow").unwrap();
-        assert!(def.flags.pulse && def.group == "Light");
-        let address = Address::on(ThingId(1), SlotId::Look, def.key);
+        h.get_by_label("Hide Basics").click();
+        h.run();
+        assert!(h.query_by_label("Basics (changed)").is_none(), "Basics holds no changes yet");
+        let def = bpe_kit::modules::bounce::BasicBounce::defs().iter().find(|d| d.key == "bounciness").unwrap();
+        assert!(def.flags.pulse && def.group == "Basics");
+        let address = Address::on(ThingId(2), SlotId::Bounce, def.key);
         let reg = bpe_kit::registry();
         h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, Value::Number(0.25), 0.25).unwrap();
         h.run();
-        assert!(h.query_by_label("Light (changed)").is_some(), "a pulse moves the video");
+        assert!(h.query_by_label("Basics (changed)").is_some(), "a pulse moves the video");
         assert!(h.query_by_label("Changes inside").is_some());
     }
 

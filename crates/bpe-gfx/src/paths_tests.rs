@@ -1,7 +1,7 @@
 //! Picture tests for shapes (the paths pipeline), on the software GPU.
 
-use crate::pictures::{pixel_sized, render_sized, save};
 use crate::Frame;
+use crate::pictures::{pixel_sized, render_sized, save};
 use bpe_runtime::CameraView;
 use glam::Vec2;
 

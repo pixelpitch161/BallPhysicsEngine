@@ -558,7 +558,13 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Strokes(s) => strokes_words(s),
         Value::Points(ps) if ps.len() == 1 => "1 point".to_owned(),
         Value::Points(ps) => format!("{} points", ps.len()),
+        Value::Path(p) => path_words(p),
     }
+}
+
+/// "Even" for a shape that isn't moulded, else its corners and curves: "7 points, 1 curve".
+pub fn path_words(p: &bpe_core::ShapePath) -> String {
+    if p.is_empty() { "Even".to_owned() } else { p.words() }
 }
 
 /// "No strokes", "1 stroke", "3 strokes".
@@ -782,6 +788,26 @@ fn widget(
             })
             .inner
         }
+        // A shape's outline is moulded in the video; the row says what it is and can start it afresh.
+        (ValueType::Path, Value::Path(path)) => {
+            let words = path_words(path);
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(RichText::new(words).color(style::TEXT))).labelled_by(name);
+                let moulded = !path.is_empty();
+                let reset = ui.add_enabled(moulded, egui::Button::new("Reset").small());
+                let label = format!("Reset {}", def.label);
+                reset.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, moulded, &label));
+                let mut reset = reset
+                    .on_hover_text("Puts the even polygon back")
+                    .on_disabled_hover_text("Drag corners and sides in the video to mould it");
+                if reset.clicked() {
+                    *path = bpe_core::ShapePath::default();
+                    reset.mark_changed();
+                }
+                reset
+            })
+            .inner
+        }
         // Points are placed by dragging them in a view; the row only says how many there are.
         (ValueType::Points, Value::Points(ps)) => {
             let words = if ps.len() == 1 { "1 point".to_owned() } else { format!("{} points", ps.len()) };
@@ -906,7 +932,7 @@ mod tests {
         assert_eq!(target_words(&Target::Thing(ThingId(2)), &c), "Thing: Ball");
         assert_eq!(target_words(&Target::Thing(ThingId(9)), &c), "Thing: missing (id 9)");
         assert_eq!(target_words(&Target::Tag("walls".into()), &c), "Tag: walls");
-        assert_eq!(target_words(&Target::Kind("arena".into()), &c), "Kind: Arena");
+        assert_eq!(target_words(&Target::Kind("shape".into()), &c), "Kind: Shape");
         assert_eq!(target_words(&Target::Kind("blob".into()), &c), "Kind: blob");
         assert_eq!(c.tags, vec!["walls".to_owned()]);
         assert!(c.kinds.iter().all(|(id, _)| id != "scene"));

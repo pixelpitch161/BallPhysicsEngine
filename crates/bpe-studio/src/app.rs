@@ -604,7 +604,7 @@ impl Studio {
         }
         if ui
             .add(style::toggle_button("Snap", self.grid.snap))
-            .on_hover_text("Drags land on the grid: moving, resizing the arena and aiming. Hold Alt to place freely.")
+            .on_hover_text("Drags land on the grid: moving, moulding shapes and aiming. Hold Alt to place freely.")
             .clicked()
         {
             self.grid.snap = !self.grid.snap;

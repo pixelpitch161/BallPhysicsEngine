@@ -80,6 +80,97 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         ui.label(RichText::new("This look has no layers.").color(style::MUTED));
         return;
     };
+    // A shape's look has no ball view and no reactions: its Body is the shape itself.
+    let shape = card.kind == bpe_kit::modules::look::shape::CARD;
+    if !shape {
+        ball_view_part(ui, inspector, cx, card, picked, edits);
+        ui.add_space(6.0);
+    }
+    let section = |kind: &str| reg.layer(kind).map(|k| k.section());
+    // The group's layers show in Group mode, not here.
+    let drawn: Vec<&bpe_core::Layer> = layer_list::top_level(card)
+        .filter(|l| !matches!(section(&l.kind), Some(LayerSection::Reaction | LayerSection::Group)))
+        .collect();
+    let reactions: Vec<&bpe_core::Layer> =
+        layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
+
+    // ---------- Layers ----------
+    list_header(ui, cx, card, "Layers", "+ Add layer", LayerSection::Drawn, edits);
+    let mut rows = Vec::new();
+    // Records the shader draws: each shown layer's, and its shown masks'.
+    let mut records = 0;
+    for layer in drawn.iter().rev() {
+        let rect = layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        rows.push((layer.id, rect));
+        for mask in layer_list::masks_of(card, layer.id) {
+            layer_list::row(ui, inspector, cx, card, mask, picked, edits);
+            records += usize::from(layer.enabled && mask.enabled);
+        }
+        records += usize::from(layer.enabled);
+    }
+    layer_list::drop_target(ui, cx, card, &rows, edits);
+    if records > DRAWN_LIMIT {
+        ui.label(RichText::new(format!("Only the first {DRAWN_LIMIT} layers are drawn")).small().color(style::MUTED));
+    }
+
+    // ---------- Reactions ----------
+    if !shape {
+        ui.add_space(6.0);
+        list_header(ui, cx, card, "Reactions", "+ Add reaction", LayerSection::Reaction, edits);
+        if reactions.is_empty() {
+            ui.label(
+                RichText::new("None yet: add one to change the ball as it moves or hits.").small().color(style::FAINT),
+            );
+        }
+        for layer in &reactions {
+            layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        }
+    }
+
+    // ---------- the picked one's settings ----------
+    let Some(layer) = card.layer(picked) else { return };
+    let Some(kind) = reg.layer(&layer.kind) else {
+        ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", layer.kind)).color(style::TEXT));
+        return;
+    };
+    ui.add_space(8.0);
+    style::divider(ui);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&layer.name).font(style::semibold(13.0)));
+        if layer.name != kind.name() {
+            ui.label(RichText::new(kind.name()).small().color(style::MUTED));
+        }
+    })
+    .response
+    .on_hover_text(kind.help());
+    ui.add_space(2.0);
+    if kind.base() && shape {
+        shape_body(ui, cx, edits);
+        return;
+    }
+    if kind.base() {
+        size_row(ui, cx, edits);
+    }
+    // Some settings have rows of their own above the grid: a mask's From and Layer, a Shader's
+    // Effect and Code.
+    let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
+    let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
+    let defs: Vec<SettingDef> =
+        kind.settings().iter().chain(kind.dynamic_defs(&get)).filter(|d| !own_rows.contains(&d.key)).cloned().collect();
+    layer_settings(ui, inspector, cx, picked, &defs, edits);
+}
+
+/// The ball view over the lists: the ball wearing the look, with the picked layer's handles or
+/// its brush. A click on the ball picks the layer showing there.
+fn ball_view_part(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &LookCx,
+    card: &bpe_core::Slot,
+    picked: LayerId,
+    edits: &mut Vec<Edit>,
+) {
     // ---------- the ball view ----------
     // A layer some balls wear alone shows on the first of them.
     let count = cx.scene.things.get(&cx.id).map_or(1, |t| {
@@ -127,74 +218,6 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
             _ => {}
         }
     }
-    ui.add_space(6.0);
-    let section = |kind: &str| reg.layer(kind).map(|k| k.section());
-    // The group's layers show in Group mode, not here.
-    let drawn: Vec<&bpe_core::Layer> = layer_list::top_level(card)
-        .filter(|l| !matches!(section(&l.kind), Some(LayerSection::Reaction | LayerSection::Group)))
-        .collect();
-    let reactions: Vec<&bpe_core::Layer> =
-        layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
-
-    // ---------- Layers ----------
-    list_header(ui, cx, card, "Layers", "+ Add layer", LayerSection::Drawn, edits);
-    let mut rows = Vec::new();
-    // Records the shader draws: each shown layer's, and its shown masks'.
-    let mut records = 0;
-    for layer in drawn.iter().rev() {
-        let rect = layer_list::row(ui, inspector, cx, card, layer, picked, edits);
-        rows.push((layer.id, rect));
-        for mask in layer_list::masks_of(card, layer.id) {
-            layer_list::row(ui, inspector, cx, card, mask, picked, edits);
-            records += usize::from(layer.enabled && mask.enabled);
-        }
-        records += usize::from(layer.enabled);
-    }
-    layer_list::drop_target(ui, cx, card, &rows, edits);
-    if records > DRAWN_LIMIT {
-        ui.label(RichText::new(format!("Only the first {DRAWN_LIMIT} layers are drawn")).small().color(style::MUTED));
-    }
-
-    // ---------- Reactions ----------
-    ui.add_space(6.0);
-    list_header(ui, cx, card, "Reactions", "+ Add reaction", LayerSection::Reaction, edits);
-    if reactions.is_empty() {
-        ui.label(
-            RichText::new("None yet: add one to change the ball as it moves or hits.").small().color(style::FAINT),
-        );
-    }
-    for layer in &reactions {
-        layer_list::row(ui, inspector, cx, card, layer, picked, edits);
-    }
-
-    // ---------- the picked one's settings ----------
-    let Some(layer) = card.layer(picked) else { return };
-    let Some(kind) = reg.layer(&layer.kind) else {
-        ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", layer.kind)).color(style::TEXT));
-        return;
-    };
-    ui.add_space(8.0);
-    style::divider(ui);
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(&layer.name).font(style::semibold(13.0)));
-        if layer.name != kind.name() {
-            ui.label(RichText::new(kind.name()).small().color(style::MUTED));
-        }
-    })
-    .response
-    .on_hover_text(kind.help());
-    ui.add_space(2.0);
-    if kind.base() {
-        size_row(ui, cx, edits);
-    }
-    // Some settings have rows of their own above the grid: a mask's From and Layer, a Shader's
-    // Effect and Code.
-    let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
-    let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
-    let defs: Vec<SettingDef> =
-        kind.settings().iter().chain(kind.dynamic_defs(&get)).filter(|d| !own_rows.contains(&d.key)).cloned().collect();
-    layer_settings(ui, inspector, cx, picked, &defs, edits);
 }
 
 /// A list's title and its add menu: the kinds of `section` that fit the card, greyed when one
@@ -208,12 +231,19 @@ fn list_header(
     section: LayerSection,
     edits: &mut Vec<Edit>,
 ) {
+    let addable: Vec<&dyn bpe_core::LayerKind> =
+        cx.reg().layers_for(&card.kind).filter(|k| k.section() == section && !k.base()).collect();
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(style::medium(12.0)).color(style::MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if addable.is_empty() {
+                ui.add_enabled(false, egui::Button::new(RichText::new(add).small()))
+                    .on_disabled_hover_text("More layers are coming");
+                return;
+            }
             ui.menu_button(RichText::new(add).small(), |ui| {
                 ui.set_min_width(170.0);
-                for kind in cx.reg().layers_for(&card.kind).filter(|k| k.section() == section && !k.base()) {
+                for kind in &addable {
                     let there = card.layers.iter().any(|l| l.kind == kind.id());
                     let free = kind.repeats() || !there;
                     let item = ui.add_enabled(free, egui::Button::new(kind.name()));
@@ -226,6 +256,41 @@ fn list_header(
             });
         });
     });
+}
+
+/// A shape's Body: its outline settings, which are the thing's own (`BODY_HEADINGS`), with their
+/// right-click menus, then a hint.
+fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
+    let Some(thing) = cx.scene.things.get(&cx.id) else { return };
+    let Some(kind) = cx.reg().thing(&thing.kind) else { return };
+    // Under the Body's title, so no heading repeats it.
+    let defs: Vec<SettingDef> = kind
+        .settings()
+        .iter()
+        .filter(|d| bpe_kit::BODY_HEADINGS.contains(&d.group))
+        .map(|d| SettingDef { group: "", ..d.clone() })
+        .collect();
+    let (scene, reg, time) = (cx.scene, cx.reg(), cx.time);
+    let own = |key: &str| Address::own(cx.id, key);
+    let get = |key: &str| scene.value_at_time(reg, &own(key), time).expect("a shape's own settings all resolve");
+    let marks = |key: &str| {
+        let def = defs.iter().find(|d| d.key == key)?;
+        Some(mark_for(scene, def, &own(key)))
+    };
+    let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
+    let grid = GridCx {
+        choices: cx.choices,
+        marks: &marks,
+        applies: &applies,
+        folded: None,
+        label_width: cx.label_width,
+        track: style::colour_of(scene, cx.id),
+    };
+    let out = settings_grid(ui, ("shape body", cx.id), &defs, get, &grid);
+    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
+    edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    ui.add_space(4.0);
+    ui.label(RichText::new("Drag corners and sides in the video to mould it.").small().color(style::MUTED));
 }
 
 /// The Body's Size row: the thing's own Radius, which the physics uses.
@@ -309,11 +374,11 @@ mod tests {
         selection: Selection,
     }
 
-    /// The blank project with an arena and two new balls, the first selected.
+    /// The blank project with a shape and two new balls, the first selected.
     fn harness() -> Harness<'static, State> {
         let kit = bpe_kit::kit();
         let mut scene = bpe_kit::new_studio_scene(&kit.registry);
-        bpe_kit::add_thing(&mut scene, &kit.registry, "arena", ThingId::ROOT).unwrap();
+        bpe_kit::add_thing(&mut scene, &kit.registry, "shape", ThingId::ROOT).unwrap();
         let ball = bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
         let resolved = resolve(&scene, &kit.registry);
@@ -347,7 +412,7 @@ mod tests {
         h
     }
 
-    const ARENA: ThingId = ThingId(2);
+    const SHAPE: ThingId = ThingId(2);
     const BALL: ThingId = ThingId(3);
     const OTHER: ThingId = ThingId(4);
 
@@ -561,13 +626,89 @@ mod tests {
         assert_eq!(scene, start, "and the add");
     }
 
-    #[test]
-    fn the_arena_keeps_its_plain_look_card() {
+    /// The harness with the shape selected, its params changed by `edit` first.
+    fn shape_harness(edit: impl FnOnce(&mut bpe_core::Params)) -> Harness<'static, State> {
         let mut h = harness();
-        h.state_mut().selection.set(ARENA);
+        let s = h.state_mut();
+        edit(&mut s.scene.things.get_mut(&SHAPE).unwrap().params);
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        s.selection.set(SHAPE);
         h.run();
-        assert!(h.query_by_label("+ Add layer").is_none());
-        assert!(h.query_by_role_and_label(Role::Label, "Glow").is_some(), "the old grid");
+        h
+    }
+
+    fn label_shown(h: &Harness<'_, State>, text: &str) -> bool {
+        h.query_all_by_label(text).next().is_some()
+    }
+
+    #[test]
+    fn a_new_shape_shows_its_body_alone_with_no_ball_view_or_reactions() {
+        let h = shape_harness(|_| {});
+        let card = card(&h, SHAPE);
+        assert_eq!(card.kind, bpe_kit::modules::look::shape::CARD);
+        assert_eq!(kinds_of(&h, SHAPE), [bpe_kit::modules::look::shape::BODY]);
+        assert!(h.query_by_role_and_label(Role::Button, "Body").is_some(), "the Body row");
+        assert!(h.query_by_label("Hide Body").is_none(), "the Body can't be hidden");
+        assert!(h.query_by_label("Moving").is_none(), "no ball view");
+        assert!(h.query_by_label("+ Add reaction").is_none(), "no reactions");
+        let add = h.get_by_label("+ Add layer");
+        assert!(add.accesskit_node().is_disabled(), "nothing to add yet");
+        for shown in ["Start from", "Size", "Fill", "Thickness", "Shape settings", "Spin"] {
+            assert!(label_shown(&h, shown), "{shown} is missing");
+        }
+        assert!(!label_shown(&h, "Sides") && !label_shown(&h, "Corners"), "a circle has no corners");
+        assert!(label_shown(&h, "Drag corners and sides in the video to mould it."));
+    }
+
+    #[test]
+    fn sides_show_for_a_polygon_and_thickness_hides_when_filled() {
+        let h = shape_harness(|p| {
+            p.set("start", Value::Choice("polygon".into()));
+            p.set("fill", Value::Choice("filled".into()));
+        });
+        assert!(label_shown(&h, "Sides") && label_shown(&h, "Corners"));
+        assert!(label_shown(&h, "Even"), "an even polygon's corners");
+        assert!(!label_shown(&h, "Thickness"), "a filled shape has no band");
+        assert!(h.get_by_label("Reset Corners").accesskit_node().is_disabled(), "nothing to reset");
+    }
+
+    #[test]
+    fn reset_takes_the_moulded_outline_away() {
+        let mut h = shape_harness(|p| {
+            p.set("start", Value::Choice("polygon".into()));
+            p.set("path", Value::Path(bpe_core::ShapePath::even(7)));
+        });
+        assert!(label_shown(&h, "7 points"));
+        h.get_by_label("Reset Corners").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&SHAPE].params.get("path"), None);
+        assert!(label_shown(&h, "Even"));
+    }
+
+    #[test]
+    fn changing_sides_starts_afresh_and_one_undo_brings_the_outline_back() {
+        let mut h = shape_harness(|p| {
+            p.set("start", Value::Choice("polygon".into()));
+            p.set("path", Value::Path(bpe_core::ShapePath::even(7)));
+        });
+        let before = h.state().scene.clone();
+        h.get_by_role_and_label(Role::SpinButton, "Sides").set_value_accesskit(5.0);
+        h.run();
+        let params = &h.state().scene.things[&SHAPE].params;
+        assert_eq!((params.get("sides"), params.get("path")), (Some(&Value::Int(5)), None));
+        let mut history = crate::history::History::default();
+        history.record(before.clone(), false);
+        let mut scene = h.state().scene.clone();
+        assert!(history.undo(&mut scene));
+        assert_eq!(scene, before, "the moulded outline and the old Sides together");
+    }
+
+    #[test]
+    fn the_shape_s_body_has_no_row_menu() {
+        let mut h = shape_harness(|_| {});
+        h.get_by_role_and_label(Role::Button, "Body").click_secondary();
+        h.run();
+        assert!(h.query_by_label("Copy layer").is_none());
     }
 
     #[test]

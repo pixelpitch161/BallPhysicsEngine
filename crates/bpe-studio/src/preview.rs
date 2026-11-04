@@ -1,13 +1,14 @@
 //! The video preview, plus the handles that set a scene up by dragging in it: move a thing (a
-//! rider by its offset), aim balls by their arrow tip, and resize the arena by its edge.
+//! rider by its offset), aim balls by their arrow tip, and mould a shape (see `shape_handles`).
 
 use crate::app::{CATCH_UP_BUDGET, Studio};
-use crate::grid::{snap_length, snap_point};
+use crate::grid::snap_point;
+use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
-use bpe_kit::{ArenaSettings, ArenaShape, BallsSettings};
-use bpe_runtime::{CameraView, Outline, Pose, World};
+use bpe_kit::BallsSettings;
+use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
@@ -17,9 +18,6 @@ pub use world_view::{PreviewMode, WorldNav};
 
 /// The launch arrow's tip sits this many seconds of launch speed from the balls.
 pub const ARROW_SECONDS: f32 = 0.25;
-
-/// How close to an arena's outline, in screen points, counts as grabbing its edge.
-const EDGE_GRAB: f32 = 12.0;
 
 /// How close to an arrow tip, in screen points, counts as grabbing it.
 const TIP_GRAB: f32 = 10.0;
@@ -33,6 +31,8 @@ pub struct Preview {
     texture: egui::TextureId,
     frame: Frame,
     drag: Option<Drag>,
+    /// What the open right-click menu on a shape is for.
+    menu: Option<MenuTarget>,
     /// What the picture on screen was drawn from, so it is only drawn again when that changes.
     drawn: Option<Drawn>,
 }
@@ -54,8 +54,14 @@ pub enum Handle {
     Body(ThingId),
     /// Aim balls by their launch arrow.
     Aim(ThingId),
-    /// Resize an arena by its edge.
-    Edge(ThingId),
+    /// Mould a shape by one of its corners.
+    Corner(ThingId, usize),
+    /// Mould a shape by one of its sides: both its corners move.
+    Side(ThingId, usize),
+    /// Bend a shape's curved side by one of its two handles.
+    Bend(ThingId, usize, u8),
+    /// Size a circle by its edge.
+    Radius(ThingId),
     /// Move the camera by its frame's middle or edge, in the World view.
     CameraMove(ThingId),
     /// Zoom the camera by a corner of its frame.
@@ -65,11 +71,14 @@ pub enum Handle {
 }
 
 impl Handle {
-    fn thing(self) -> ThingId {
+    pub fn thing(self) -> ThingId {
         match self {
             Handle::Body(id)
             | Handle::Aim(id)
-            | Handle::Edge(id)
+            | Handle::Corner(id, _)
+            | Handle::Side(id, _)
+            | Handle::Bend(id, _, _)
+            | Handle::Radius(id)
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
             | Handle::CameraTurn(id) => id,
@@ -81,11 +90,21 @@ impl Handle {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Drag {
     pub handle: Handle,
     /// Pointer position minus the dragged thing's position, in world pixels.
     pub offset: Vec2,
+    /// A shape's outline when a corner, side or bend drag began.
+    pub mould: Option<Mould>,
+    /// Shift is held: a moulding drag mirrors across the shape's middle line.
+    pub shift: bool,
+}
+
+impl Drag {
+    pub fn new(handle: Handle, offset: Vec2) -> Drag {
+        Drag { handle, offset, mould: None, shift: false }
+    }
 }
 
 /// What happened in the preview this frame, for the app to act on.
@@ -210,7 +229,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             renderer.output_view(),
             wgpu::FilterMode::Linear,
         );
-        Preview { renderer, texture, frame: Frame::default(), drag: None, drawn: None }
+        Preview { renderer, texture, frame: Frame::default(), drag: None, menu: None, drawn: None }
     });
     if preview.renderer.size() != (width, height) {
         preview.renderer.resize(device, width, height);
@@ -257,7 +276,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if world_mode {
         let painter = ui.painter_at(rect);
         let world = studio.playback.world();
-        let active = preview.drag.map(|d| d.handle);
+        let active = preview.drag.as_ref().map(|d| d.handle);
         world_view::draw_camera(&painter, &studio.scene, &studio.resolved, world, studio.playback.log(), &view, active);
     }
 
@@ -287,14 +306,21 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             Handle::CameraMove(_) => studio.playback.world().camera.center,
             _ => view.pointer_for(studio, handle, press),
         };
-        preview.drag = Some(Drag { handle, offset: view.pointer_for(studio, handle, press) - anchor });
+        let at = view.pointer_for(studio, handle, press);
+        let mould = shape_handles::start(studio.playback.world(), handle, at);
+        preview.drag = Some(Drag { mould, ..Drag::new(handle, at - anchor) });
+        // Each drag is its own undo step.
+        studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
         outcome.drag_camera = handle.is_camera();
     }
     if response.drag_stopped() {
         preview.drag = None;
     }
-    if let (Some(drag), Some(pos)) = (preview.drag, response.interact_pointer_pos()) {
+    if let Some(drag) = preview.drag.as_mut() {
+        drag.shift = ui.input(|i| i.modifiers.shift);
+    }
+    if let (Some(drag), Some(pos)) = (preview.drag.clone(), response.interact_pointer_pos()) {
         let step = studio.grid.step(ui.input(|i| i.modifiers.alt));
         if drag.handle.is_camera() {
             let time = studio.sim_time();
@@ -303,7 +329,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
                 &mut studio.scene,
                 reg,
                 studio.playback.world(),
-                drag,
+                drag.clone(),
                 view.to_world(pos),
                 step,
                 time,
@@ -311,7 +337,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             studio.panels.inspector.keyed_edit |= keyed;
         } else {
             let pointer = view.pointer_for(studio, drag.handle, pos);
-            apply_drag(&mut studio.scene, studio.playback.world(), drag, pointer, step);
+            apply_drag(&mut studio.scene, studio.playback.world(), &drag, pointer, step);
         }
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
@@ -320,7 +346,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         outcome.selected = Some(handle.thing());
     }
 
-    let active = preview.drag.map(|d| d.handle).or(hovered);
+    shape_menu(&response, studio, &view, &mut preview.menu);
+
+    let active = preview.drag.as_ref().map(|d| d.handle).or(hovered);
     if active.is_some() {
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
@@ -330,11 +358,35 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     } else if studio.grid.snap {
         "Drags snap to the grid · hold Alt to place freely"
     } else {
-        "Drag things to move them · drag the arrow tip to aim · drag the arena's edge to resize"
+        "Drag things to move them · drag the arrow tip to aim · drag a shape's corners and sides to mould it, \
+         Shift mirrors · right-click a side for more"
     };
     draw_hint(ui, rect, hint);
     studio.panels.preview = Some(preview);
     outcome
+}
+
+/// The right-click menu on the selected shape: a side's, a corner's or a circle's edge's. What it
+/// was opened on is kept in `menu` while it is open; the item picked is its own undo step.
+fn shape_menu(response: &egui::Response, studio: &mut Studio, view: &View, menu: &mut Option<MenuTarget>) {
+    if response.secondary_clicked() {
+        *menu = studio.selection.primary.and_then(|id| {
+            let v = view.of(studio, id)?;
+            let pos = response.interact_pointer_pos()?;
+            shape_handles::menu_target(studio.playback.world(), &v, id, pos)
+        });
+    }
+    let Some(target) = *menu else { return };
+    let mut picked = None;
+    let open = response.context_menu(|ui| picked = shape_handles::menu(ui, &studio.scene, target));
+    if let Some(action) = picked
+        && shape_handles::act(&mut studio.scene, target, action)
+    {
+        studio.panels.inspector.own_step = true;
+    }
+    if open.is_none() || picked.is_some() {
+        *menu = None;
+    }
 }
 
 /// Pans and zooms the World view: scroll zooms about the pointer, the middle button pans (Space
@@ -438,14 +490,6 @@ fn arrow_tip(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<Vec2> {
         .then(|| thing.transform.position + BallsSettings::from_params(&r.params).velocity * ARROW_SECONDS)
 }
 
-/// The point on `outline` in the direction of `world` from its centre.
-fn outline_point_towards(outline: &Outline, world: Vec2) -> Vec2 {
-    let offset = world - outline.center();
-    let angle = outline.angle();
-    let u = if offset.length_squared() > 1e-6 { offset.to_angle() - angle } else { 0.0 };
-    outline.point(u)
-}
-
 /// Where a thing is on screen right now: its pose in the world, or its own position.
 fn place_of(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
     world.poses.get(&id).map(|p| p.position).or_else(|| scene.things.get(&id).map(|t| t.transform.position))
@@ -467,7 +511,8 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
         .unwrap_or_default()
 }
 
-/// What is under `pos`: an arrow tip first, then a ball, then a selected thing with nothing of its own to show, then an arena's edge.
+/// What is under `pos`: an arrow tip first, then a ball, then a selected thing with nothing of its
+/// own to show, then the selected shape's handles, then any shape itself.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     // Each thing through its own view: stuck things aren't seen through the camera.
@@ -507,15 +552,17 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     {
         return Some(Handle::Body(id));
     }
-    for (id, wall) in world.walls.iter() {
-        let Some(v) = seen(id) else { continue };
-        let p = v.to_world(pos);
-        let edge = outline_point_towards(&wall.outline, p);
-        if (edge - p).length() * v.world_scale() <= EDGE_GRAB {
-            return Some(Handle::Edge(*id));
-        }
+    if let Some(id) = studio.selection.primary
+        && let Some(v) = seen(&id)
+        && let Some(handle) = shape_handles::hit_handle(world, &v, id, pos)
+    {
+        return Some(handle);
     }
-    None
+    world
+        .walls
+        .keys()
+        .find(|id| seen(id).is_some_and(|v| shape_handles::on_body(world, &v, **id, pos)))
+        .map(|id| Handle::Body(*id))
 }
 
 /// A thing with no balls or wall of its own, such as a folder. The camera
@@ -526,11 +573,10 @@ fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
         && studio.scene.things.get(&id).is_some_and(|t| t.kind != "camera")
 }
 
-/// Moves what `drag` holds to the pointer at `pointer`, in world pixels. A rider moves by its
-/// offset from the parent it rides, so it stays a rider; its own position is left alone.
-/// Moves, aims or resizes by a drag to `pointer`. With a grid `step`, the thing's middle, the
-/// arrow tip and the arena's size land on the grid.
-pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2, step: Option<f32>) {
+/// Moves, aims or moulds by a drag to `pointer`, in world pixels. A rider moves by its offset
+/// from the parent it rides, so it stays a rider; its own position is left alone. With a grid
+/// `step`, the thing's middle, the arrow tip and a shape's corners and size land on the grid.
+pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, step: Option<f32>) {
     let id = drag.handle.thing();
     let place = snap_point(pointer - drag.offset, step);
     if let Handle::Body(_) = drag.handle
@@ -556,22 +602,8 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: Drag, pointer: Vec2, s
             let velocity = ((tip - thing.transform.position) / ARROW_SECONDS).round();
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
-        Handle::Edge(_) => {
-            let settings = ArenaSettings::from_params(&thing.params);
-            let offset = pointer - thing.transform.position;
-            match settings.shape {
-                ArenaShape::Box | ArenaShape::Capsule => {
-                    let local = Vec2::from_angle(-thing.transform.rotation).rotate(offset);
-                    let (half_width, half_height) =
-                        (snap_length(local.x.abs(), step), snap_length(local.y.abs(), step));
-                    thing.params.set("width", Value::Number((half_width * 2.0).round().max(20.0) as f64));
-                    thing.params.set("height", Value::Number((half_height * 2.0).round().max(20.0) as f64));
-                }
-                ArenaShape::Circle | ArenaShape::Polygon => {
-                    let radius = snap_length(offset.length(), step);
-                    thing.params.set("radius", Value::Number(radius.round().max(20.0) as f64));
-                }
-            }
+        Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
+            shape_handles::apply(scene, world, drag, pointer, step);
         }
     }
 }
@@ -582,36 +614,9 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     let world = studio.playback.world();
     let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
 
-    for (id, wall) in world.walls.iter().filter(|(id, _)| shown(id)) {
+    for id in world.walls.keys().filter(|id| shown(id)) {
         let Some(view) = view.of(studio, *id) else { continue };
-        let edge_active = active == Some(Handle::Edge(*id));
-        let highlighted = edge_active || selected == Some(*id);
-        let mark = style::colour_of(&studio.scene, *id);
-        if highlighted {
-            let stroke =
-                Stroke::new(if edge_active { 2.5 } else { 1.5 }, if edge_active { style::TEXT_STRONG } else { mark });
-            let center = wall.outline.center();
-            let points: Vec<Pos2> = (0..=96)
-                .map(|i| {
-                    let towards = center + Vec2::from_angle(i as f32 / 96.0 * std::f32::consts::TAU);
-                    view.to_screen(outline_point_towards(&wall.outline, towards))
-                })
-                .collect();
-            painter.add(egui::Shape::line(points, stroke));
-        }
-        let dot = view.to_screen(outline_point_towards(&wall.outline, wall.outline.center() + Vec2::X));
-        painter.circle(
-            dot,
-            5.0,
-            if edge_active {
-                style::TEXT_STRONG
-            } else if highlighted {
-                mark
-            } else {
-                style::TEXT
-            },
-            Stroke::new(1.5, style::OUTLINE),
-        );
+        shape_handles::draw(&painter, &studio.scene, world, &view, *id, selected == Some(*id), active);
     }
 
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
@@ -743,13 +748,13 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_arena_in_the_inspector_redraws_it_where_it_went() {
+    fn changing_the_shape_in_the_inspector_redraws_it() {
         let Some((after, expected)) = edit_then_draw(|scene| {
-            scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
+            scene.things.get_mut(&ThingId(1)).unwrap().params.set("start", Value::Choice("polygon".into()));
         }) else {
             return eprintln!("no GPU; skipped");
         };
-        assert!(after == expected, "the preview still shows the arena from before the edit");
+        assert!(after == expected, "the preview still shows the shape from before the edit");
     }
 
     #[test]
@@ -763,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn hit_testing_finds_balls_before_arenas() {
+    fn hit_testing_finds_balls_before_shapes() {
         let studio = Studio::headless();
         let view = View {
             rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
@@ -772,7 +777,7 @@ mod tests {
             world: false,
         };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(508.0, 0.0))), Some(Handle::Edge(ThingId(1))));
+        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(508.0, 0.0))), Some(Handle::Body(ThingId(1))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None);
         // The arrow tip sits a quarter second of launch speed from the ball.
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(75.0, -250.0))), Some(Handle::Aim(ThingId(2))));
@@ -785,7 +790,7 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(50.0, 60.0),
             None,
         );
@@ -793,7 +798,7 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Aim(ThingId(2)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Aim(ThingId(2)), Vec2::ZERO),
             Vec2::new(150.0, 60.0),
             None,
         );
@@ -801,11 +806,11 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Radius(ThingId(1)), Vec2::ZERO),
             Vec2::new(300.0, 400.0),
             None,
         );
-        assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(500.0)));
+        assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(500.0)));
     }
 
     #[test]
@@ -825,7 +830,7 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(30.0, -100.0),
             None,
         );
@@ -847,23 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn a_box_arena_resizes_by_width_and_height() {
-        let mut studio = Studio::headless();
-        let world = studio.playback.world().clone();
-        studio.scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
-        apply_drag(
-            &mut studio.scene,
-            &world,
-            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
-            Vec2::new(-300.0, 400.0),
-            None,
-        );
-        let params = &studio.scene.things[&ThingId(1)].params;
-        assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
-        assert_eq!(params.get("height"), Some(&Value::Number(800.0)));
-    }
-
-    #[test]
     fn with_a_grid_drags_land_on_it() {
         let mut studio = Studio::headless();
         let world = studio.playback.world().clone();
@@ -872,7 +860,7 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::new(7.0, -3.0) },
+            &Drag::new(Handle::Body(ThingId(2)), Vec2::new(7.0, -3.0)),
             Vec2::new(85.0, 50.0),
             step,
         );
@@ -881,7 +869,7 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Aim(ThingId(2)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Aim(ThingId(2)), Vec2::ZERO),
             Vec2::new(131.0, 52.0),
             step,
         );
@@ -890,23 +878,11 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Radius(ThingId(1)), Vec2::ZERO),
             Vec2::new(0.0, 455.0),
             step,
         );
-        assert_eq!(studio.scene.things[&ThingId(1)].params.get("radius"), Some(&Value::Number(480.0)));
-        // A centred box's edges land on grid lines.
-        studio.scene.things.get_mut(&ThingId(1)).unwrap().params.set("shape", Value::Choice("box".into()));
-        apply_drag(
-            &mut studio.scene,
-            &world,
-            Drag { handle: Handle::Edge(ThingId(1)), offset: Vec2::ZERO },
-            Vec2::new(-310.0, 395.0),
-            step,
-        );
-        let params = &studio.scene.things[&ThingId(1)].params;
-        assert_eq!(params.get("width"), Some(&Value::Number(600.0)));
-        assert_eq!(params.get("height"), Some(&Value::Number(840.0)));
+        assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(480.0)));
     }
 
     #[test]
@@ -921,14 +897,14 @@ mod tests {
         apply_drag(
             &mut studio.scene,
             &world,
-            Drag { handle: Handle::Body(ThingId(2)), offset: Vec2::ZERO },
+            &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(70.0, -110.0),
             Some(60.0),
         );
         let thing = &studio.scene.things[&ThingId(2)];
         assert!(
             matches!(thing.attach, Attach::Ride { offset, .. } if offset == Vec2::new(45.0, -120.0)),
-            "the world spot (60, -120) less the arena at (15, 0): {:?}",
+            "the world spot (60, -120) less the shape at (15, 0): {:?}",
             thing.attach
         );
     }

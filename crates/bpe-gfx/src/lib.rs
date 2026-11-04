@@ -18,9 +18,9 @@ mod layers_tests;
 mod masks;
 #[cfg(test)]
 mod paint_tests;
+pub mod particles;
 #[cfg(test)]
 mod paths_tests;
-pub mod particles;
 #[cfg(test)]
 mod pictures;
 mod programs;
