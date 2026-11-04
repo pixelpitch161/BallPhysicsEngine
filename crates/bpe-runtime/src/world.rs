@@ -161,6 +161,9 @@ impl World {
                 if let Some(sim) = sim {
                     sim.build(thing, r, &mut world);
                     world.order.push(*id);
+                    if let Some(want) = sim.history(r) {
+                        world.keep_history(*id, want);
+                    }
                 }
                 world.kinds.insert(*id, r.kind.clone());
                 world.names.insert(*id, thing.name.clone());
@@ -332,10 +335,17 @@ impl World {
             + std::mem::size_of::<World>()
     }
 
-    /// Starts keeping `thing`'s ball positions, so a trail can draw where they have been.
-    pub fn keep_history(&mut self, thing: ThingId) {
+    /// Starts keeping `thing`'s ball positions as `want` asks, so a trail can draw where they
+    /// have been. Asked again, it keeps the longer of the two.
+    pub fn keep_history(&mut self, thing: ThingId, want: crate::HistoryWant) {
         let rate = self.steps_per_second;
-        self.history.entry(thing).or_insert_with(|| History::new(rate));
+        let new = History::new(rate, want);
+        match self.history.get(&thing) {
+            Some(h) if h.cap() >= new.cap() => {}
+            _ => {
+                self.history.insert(thing, new);
+            }
+        }
     }
 
     /// Steps until `time` seconds have passed.
@@ -636,10 +646,11 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 }
             }
         }
-        if let Some(s) = r.slots.get(&SlotId::Trail) {
-            // Whether a history is kept depends on the trail, not on how it looks.
-            h.bytes(&[SlotId::Trail as u8]);
-            h.bytes(s.kind.as_bytes());
+        if let Some(want) = sims.thing(&r.kind).and_then(|s| s.history(r)) {
+            // Whether a history is kept and how long, not how its trails look.
+            h.bytes(b"history");
+            h.f32(want.rounded());
+            h.bytes(&[want.forever as u8]);
         }
         for tag in &thing.tags {
             h.bytes(tag.as_bytes());
@@ -1163,6 +1174,16 @@ mod tests {
             .set("width", Value::Number(3.0));
         let resolved = resolve(&scene, &reg());
         assert_eq!(fingerprint(&scene, &resolved, &sims), with_trail);
+        // A longer trail keeps a longer history, and that is a rebuild.
+        fn trail(scene: &mut Scene) -> &mut bpe_core::Slot {
+            scene.things.get_mut(&DOTS).unwrap().slots.get_mut(&SlotId::Trail).unwrap()
+        }
+        trail(&mut scene).params.set("seconds", Value::Number(5.0));
+        let long = resolve(&scene, &reg());
+        assert_ne!(fingerprint(&scene, &long, &sims), with_trail);
+        assert_eq!(World::build(&scene, &long, &sims).history[&DOTS].cap(), 5 * 60 + 1);
+        trail(&mut scene).params.set("seconds", Value::Number(0.5));
+        let resolved = resolve(&scene, &reg());
 
         let mut world = World::build(&scene, &resolved, &sims);
         assert!(world.history.contains_key(&DOTS));
@@ -1173,7 +1194,7 @@ mod tests {
         assert_eq!(history.len(), 60);
         assert_eq!(history.points(1).next(), Some(world.bodies[&DOTS].position[1]));
         assert!(history.points(0).nth(30).unwrap() != world.bodies[&DOTS].position[0]);
-        assert!(world.memory() >= plain.memory() + 2 * 120 * 8);
+        assert!(world.memory() >= plain.memory() + 2 * 60 * 8);
         // The same scene without the history steps the same.
         let mut bare = World::build(&scene, &resolved, &sims);
         bare.history.clear();

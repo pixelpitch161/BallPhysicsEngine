@@ -1,6 +1,6 @@
 //! Placing the balls, letting them go and keeping their settings.
 
-use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{Bodies, Log, Pose, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
@@ -200,10 +200,11 @@ impl ThingSim for BallsSim {
         st.pending.reverse();
         world.bodies.insert(thing.id, bodies);
         world.states.insert(thing.id, Box::new(st));
-        // A trail needs to know where the balls have been.
-        if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
-            world.keep_history(thing.id);
-        }
+    }
+
+    /// What its trail and particle layers need of where the balls have been.
+    fn history(&self, resolved: &ResolvedThing) -> Option<bpe_runtime::HistoryWant> {
+        crate::modules::look::layers::around_history(resolved)
     }
 
     /// Lets go the balls whose time has come, where the thing is now.

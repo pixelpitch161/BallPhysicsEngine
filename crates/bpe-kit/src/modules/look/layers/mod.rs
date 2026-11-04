@@ -398,6 +398,37 @@ pub fn sub_kinds() -> Vec<Kind> {
     ]
 }
 
+/// How much of its balls' past a thing's shown trail and particle layers need kept (see
+/// [`trail::TrailLayer::reach`], [`particles::ParticlesLayer::reach`]); `None` when they need
+/// none. The old Trail card, while it is still drawn, keeps today's two seconds.
+pub fn around_history(resolved: &bpe_core::ResolvedThing) -> Option<bpe_runtime::HistoryWant> {
+    use bpe_core::Settings;
+    use bpe_runtime::HistoryWant;
+    let mut want: Option<HistoryWant> = None;
+    let mut add = |w: HistoryWant| want = Some(want.map_or(w, |o| o.and(w)));
+    if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
+        add(HistoryWant { seconds: 2.0, forever: false });
+    }
+    let Some(look) = resolved.slots.get(&SlotId::Look).filter(|l| l.kind == CARD) else { return want };
+    for layer in &look.layers {
+        match layer.kind.as_str() {
+            TRAIL => {
+                let t = trail::TrailLayer::from_params(&look.layer_params(layer.id));
+                add(HistoryWant { seconds: t.reach(), forever: t.stays() });
+            }
+            PARTICLES => {
+                let p = particles::ParticlesLayer::from_params(&look.layer_params(layer.id));
+                let reach = p.reach();
+                if reach > 0.0 {
+                    add(HistoryWant { seconds: reach, forever: false });
+                }
+            }
+            _ => {}
+        }
+    }
+    want
+}
+
 /// Opens format 8 scenes: every mask becomes a Cut sub-layer with the same settings.
 pub fn masks_to_cuts(scene: &mut bpe_core::Scene) {
     for thing in scene.things.values_mut() {
@@ -575,5 +606,46 @@ mod tests {
         assert!(ghosts.contains(&"ghosts") && !ghosts.contains(&"seconds") && !ghosts.contains(&"blend"));
         assert!(shown("smoke").contains(&"puffs") && !streak.contains(&"puffs"));
         assert!(shown("ribbon").contains(&"twist") && !streak.contains(&"twist"));
+    }
+
+    #[test]
+    fn the_history_follows_the_longest_trail_and_a_line_that_stays_keeps_it_all() {
+        use bpe_core::{Address, Scene, ThingId, layered_key};
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        let mut s = Scene::empty(reg);
+        let b = crate::add_thing(&mut s, reg, "balls", ThingId::ROOT).unwrap();
+        let world = |s: &Scene| bpe_runtime::World::build(s, &bpe_core::resolve(s, reg), &kit.sims);
+        let fp = |s: &Scene| bpe_runtime::fingerprint(s, &bpe_core::resolve(s, reg), &kit.sims);
+        assert!(world(&s).history.is_empty(), "no trail, no history");
+        let bare = fp(&s);
+        let short = s.add_layer(reg, b, SlotId::Look, TRAIL).unwrap();
+        assert_eq!(world(&s).history[&b].cap(), 2 * 60 + 1, "at least two seconds");
+        let with_trail = fp(&s);
+        assert_ne!(with_trail, bare);
+        let long = s.add_layer(reg, b, SlotId::Look, TRAIL).unwrap();
+        let set = |s: &mut Scene, id, k: &str, v| {
+            s.set_at(reg, &Address::on(b, SlotId::Look, &layered_key(id, k)), v).unwrap()
+        };
+        set(&mut s, long, "seconds", Value::Number(1.5));
+        set(&mut s, long, "faster", Value::Number(1.0));
+        assert_eq!(world(&s).history[&b].cap(), 6 * 60 + 1, "1.5 s, four times longer when fast");
+        // How a trail looks is not a rebuild.
+        set(&mut s, short, "brightness", Value::Number(1.5));
+        let fp_long = fp(&s);
+        set(&mut s, short, "width", Value::Number(1.5));
+        assert_eq!(fp(&s), fp_long);
+        set(&mut s, short, "kind", Value::Choice("line".into()));
+        set(&mut s, short, "forever", Value::Bool(true));
+        assert_eq!(world(&s).history[&b].cap(), usize::MAX);
+        assert_ne!(fp(&s), fp_long);
+        // Particles let off while moving read the past too.
+        let mut s2 = Scene::empty(reg);
+        let b2 = crate::add_thing(&mut s2, reg, "balls", ThingId::ROOT).unwrap();
+        let p = s2.add_layer(reg, b2, SlotId::Look, PARTICLES).unwrap();
+        assert!(world(&s2).history.is_empty(), "on hit needs no past");
+        s2.set_at(reg, &Address::on(b2, SlotId::Look, &layered_key(p, "emit")), Value::Choice("while_moving".into()))
+            .unwrap();
+        assert!(world(&s2).history.contains_key(&b2));
     }
 }
