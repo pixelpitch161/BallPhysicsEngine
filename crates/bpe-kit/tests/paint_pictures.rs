@@ -38,8 +38,22 @@ fn solid_paint_matches_plain_colour() {
     let pixels = renderer.read_output(&device, &queue).unwrap();
     // Drawn by the commit before the ball's colour became a paint (one-stop Colours), with the
     // classic ball's own shader. Its layers (Body, Shine, Glow) draw it again to within 2/255.
+    // The wall around it was the old arena's and is a plain white shape now, so the ring it
+    // draws on (radius 508 world px, 4 to an output pixel, glow and all) is left out.
     let before = saved("one-ball.png");
-    let worst = pixels.iter().zip(&before).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+    let off_the_wall = |i: usize| {
+        let (x, y) = ((i / 4) as u32 % W, (i / 4) as u32 / W);
+        let d = ((x as f32 + 0.5 - W as f32 / 2.0).hypot(y as f32 + 0.5 - H as f32 / 2.0) - 127.0).abs();
+        d > 12.0
+    };
+    let worst = pixels
+        .iter()
+        .zip(&before)
+        .enumerate()
+        .filter(|(i, _)| off_the_wall(*i))
+        .map(|(_, (a, b))| a.abs_diff(*b))
+        .max()
+        .unwrap();
     assert!(worst <= 2, "a pixel is {worst}/255 off the picture before Colours");
 }
 

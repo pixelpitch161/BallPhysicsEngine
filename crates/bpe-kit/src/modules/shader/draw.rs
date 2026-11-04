@@ -77,7 +77,7 @@ pub fn pack_params(header: &Header, params: &Params) -> [f32; MAX_PARAM_FLOATS] 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{ARENA, BALLS, scene_with_balls};
+    use crate::testing::{BALLS, SHAPE, scene_with_balls};
     use bpe_core::{Color, SlotId, resolve};
     use bpe_gfx::effects::BUILTINS;
     use bpe_gfx::{Stage, build_frame};
@@ -114,7 +114,7 @@ mod tests {
 
         let resolved = resolve(&scene, reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
-        assert!(!resolved.things[&ARENA].slots.contains_key(&SlotId::Shader), "Scene settings' effect isn't inherited");
+        assert!(!resolved.things[&SHAPE].slots.contains_key(&SlotId::Shader), "Scene settings' effect isn't inherited");
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.5, &kit.draws, &mut frame);

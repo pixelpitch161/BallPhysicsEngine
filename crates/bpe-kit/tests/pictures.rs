@@ -60,17 +60,16 @@ fn brightest_around(pixels: &[u8], x: u32, y: u32) -> u8 {
 }
 
 #[test]
-fn a_rounded_box_arena_draws_round_corners() {
+fn a_rectangle_shape_draws_its_sharp_corners_in_plain_white() {
+    use bpe_core::Settings;
     let Ok((device, queue)) = headless_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
     let kit = kit();
     let mut scene = bpe_kit::new_scene(&kit.registry);
-    let arena = scene.things.get_mut(&bpe_core::ThingId(1)).unwrap();
-    arena.params.set("shape", bpe_core::Value::Choice("box".into()));
-    arena.params.set("corner", bpe_core::Value::Number(300.0));
-    arena.params.set("thickness", bpe_core::Value::Number(16.0));
+    scene.things.get_mut(&bpe_core::ThingId(1)).unwrap().params =
+        bpe_kit::ShapeSettings::rectangle(900.0, 1500.0, 16.0).to_params();
     let resolved = bpe_core::resolve(&scene, &kit.registry);
     let playback = Playback::new(&scene, &resolved, kit.sims.clone());
     let mut frame = Frame::default();
@@ -78,12 +77,13 @@ fn a_rounded_box_arena_draws_round_corners() {
     let mut renderer = Renderer::new(&device, W, H);
     renderer.render(&device, &queue, &frame);
     let pixels = renderer.read_output(&device, &queue).unwrap();
-    // World (450, 0) is on the straight right wall; world (450, 750) is where the sharp corner
-    // would be, well outside the rounded one. Four world pixels per output pixel.
-    let (wall_x, wall_y) = (135 + 450 / 4, 240);
-    let (corner_x, corner_y) = (135 + 450 / 4, 240 + 750 / 4 - 2);
-    assert!(brightest_around(&pixels, wall_x, wall_y) > 100, "the straight wall is drawn");
-    assert!(brightest_around(&pixels, corner_x, corner_y) < 40, "the sharp corner is empty");
-    // The rounded corner passes through the arc's 45° point: (150 + 212, 450 + 212).
-    assert!(brightest_around(&pixels, 135 + 362 / 4, 240 + 662 / 4) > 100, "the round corner is drawn");
+    // World (450, 0) is on the right wall and (450, 750) its corner; (300, 300) is inside, clear
+    // of the ball. Four world pixels per output pixel.
+    let at = |x: i32, y: i32| ((135 + x / 4) as u32, (240 + y / 4) as u32);
+    let (wx, wy) = at(450, 0);
+    let (cx, cy) = at(450, 750);
+    let (ix, iy) = at(300, 300);
+    assert!(brightest_around(&pixels, wx, wy) > 200, "the wall is drawn white");
+    assert!(brightest_around(&pixels, cx, cy) > 200, "the sharp corner is drawn");
+    assert!(brightest_around(&pixels, ix, iy) < 60, "the middle is empty");
 }

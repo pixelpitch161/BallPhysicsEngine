@@ -122,7 +122,7 @@ impl ModuleSim for BasicBounceSim {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{ARENA, BALLS, one_ball_with_bounce};
+    use crate::testing::{BALLS, SHAPE, one_ball_with_bounce};
     use bpe_core::{SlotId, Target, Value, resolve};
     use bpe_runtime::{EventKind, Log, Party, Playback, World};
     use glam::Vec2;
@@ -164,17 +164,15 @@ mod tests {
     }
 
     #[test]
-    fn friction_rubs_speed_off_against_the_arena() {
+    fn friction_rubs_speed_off_against_a_shape() {
         // A ball sliding along the floor of a box, with no bounce to lift it off.
         let speed_after = |friction: f64| {
             let (mut scene, _, kit) = one_ball_with_bounce(|p| {
                 p.set("bounciness", Value::Number(0.0));
                 p.set("friction", Value::Number(friction));
             });
-            let arena = scene.things.get_mut(&ARENA).unwrap();
-            arena.params.set("shape", Value::Choice("box".into()));
-            arena.params.set("width", Value::Number(900.0));
-            arena.params.set("height", Value::Number(900.0));
+            scene.things.get_mut(&SHAPE).unwrap().params =
+                bpe_core::Settings::to_params(&crate::ShapeSettings::rectangle(900.0, 900.0, 3.0));
             let balls = scene.things.get_mut(&BALLS).unwrap();
             balls.transform.position = Vec2::new(-300.0, 420.0);
             balls.params.set("velocity", Value::Vec2([100.0, 0.0]));
@@ -192,13 +190,13 @@ mod tests {
     fn a_special_target_changes_the_bounce_against_it_only() {
         let (scene, resolved, kit) = one_ball_with_bounce(|p| {
             p.set("special", Value::Bool(true));
-            p.set("special_target", Value::Target(Target::Kind("arena".into())));
+            p.set("special_target", Value::Target(Target::Kind("shape".into())));
             p.set("special_bounciness", Value::Number(0.0));
         });
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(20.0);
         let body = &playback.world().bodies[&BALLS];
-        assert!((body.position[0].length() - 482.5).abs() < 1.0, "dead against the arena: {:?}", body.position[0]);
+        assert!((body.position[0].length() - 482.5).abs() < 1.0, "dead against the shape: {:?}", body.position[0]);
         let (scene, resolved, kit) = one_ball_with_bounce(|p| {
             p.set("special", Value::Bool(true));
             p.set("special_target", Value::Target(Target::Tag("pegs".into())));

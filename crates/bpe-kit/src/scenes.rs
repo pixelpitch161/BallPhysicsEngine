@@ -16,11 +16,11 @@ use std::collections::BTreeMap;
 
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{
-    ArenaSettings, ArenaShape, BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst,
-    SceneSettings, StreakTrail, Style, TrailSource, new_scene,
+    BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst, SceneSettings, ShapeSettings,
+    StreakTrail, Style, TrailSource, new_scene,
 };
 
-const ARENA: ThingId = ThingId(1);
+const SHAPE: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
 
 fn build_all(reg: &Registry, builders: &[fn(&Registry) -> Scene]) -> Vec<(String, Scene)> {
@@ -38,7 +38,7 @@ pub fn stage2(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[one_ball, reel_block, box_drop, spinning_hexagon, shrinking_ring])
 }
 
-/// The stage 3 scenes: balls hitting balls in a rounded arena, and balls riding a wall.
+/// The stage 3 scenes: balls hitting balls in a tall box, and balls riding a wall.
 pub fn stage3(reg: &Registry) -> Vec<(String, Scene)> {
     build_all(reg, &[ball_pit, riders])
 }
@@ -215,23 +215,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
             ..Paint::default()
         };
     });
-    b.arena(|a| {
-        a.radius = 470.0;
-        a.thickness = 12.0;
-    });
-    let neon = [hex(0xff3ec8), hex(0xffb82e), hex(0x3ee6ff), hex(0x8a4dff), hex(0xff3ec8)];
-    let ring = BasicLook {
-        fill: Paint {
-            colours: Gradient::even(&neon),
-            follow: Follow::Path,
-            repeat: Repeat::Repeat,
-            scroll: 0.12,
-            ..Paint::default()
-        },
-        glow: 0.7,
-        ..classic_look()
-    };
-    b.own_module(ARENA, "look.basic", ring.to_params());
+    b.shape(ShapeSettings::circle(470.0, 12.0));
     b.balls("Block", Vec2::new(-20.0, -170.0), |s| {
         s.radius = 19.0;
         s.block(8, 8, 46.0);
@@ -299,14 +283,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             ..Paint::default()
         };
     });
-    b.arena(|a| {
-        a.shape = ArenaShape::Box;
-        a.width = 1000.0;
-        a.height = 1400.0;
-        a.thickness = 8.0;
-    });
-    let rim = BasicLook { fill: Paint::solid(hex(0xffffff)), ..classic_look() };
-    b.own_module(ARENA, "look.basic", rim.to_params());
+    b.shape(ShapeSettings::rectangle(1000.0, 1400.0, 8.0));
     // Screen suits the dark top, Multiply the light bottom.
     let rows = [
         ("Screen", Blend::Screen, [0x3ee6ff, 0x4d7bff, 0xff3ec8], -170.0),
@@ -383,7 +360,6 @@ pub fn blend_demo(reg: &Registry) -> Scene {
 /// wears the Triad colours that match it, a cluster of glowing balls that Screen onto each other,
 /// and a warm, contrasty grade with a vignette whose Sunset gradient map comes in over the video.
 pub fn graded_sunset(reg: &Registry) -> Scene {
-    use crate::paint::harmony::{Harmony, add_matching};
     let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
     let sunset = crate::paint::palettes::built_in()
         .into_iter()
@@ -408,24 +384,7 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         s.grade_map = sunset.clone();
         s.grade_map_amount = 0.0;
     });
-    b.arena(|a| {
-        a.radius = 470.0;
-        a.thickness = 14.0;
-    });
-    // The wall: the Sunset coral and the two colours a third of the way round the wheel from it.
-    let coral = Gradient::even(&[sunset.stops[3].color]);
-    let wall = BasicLook {
-        fill: Paint {
-            colours: add_matching(&coral, Harmony::Triad),
-            follow: Follow::Path,
-            repeat: Repeat::Mirror,
-            scroll: 0.08,
-            ..Paint::default()
-        },
-        glow: 0.5,
-        ..classic_look()
-    };
-    b.own_module(ARENA, "look.basic", wall.to_params());
+    b.shape(ShapeSettings::circle(470.0, 14.0));
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
         s.radius = 22.0;
         s.block(7, 5, 52.0);
@@ -499,7 +458,7 @@ impl<'a> Builder<'a> {
             .map(|(slot, kind)| (slot, Slot::new(kind)))
             .collect();
         let mut b = Builder { reg, scene, shared, src: BTreeMap::new() };
-        b.share(ARENA, &SlotId::ALL);
+        b.share(SHAPE, &SlotId::ALL);
         b.share(BALLS, &[SlotId::Motion, SlotId::Bounce]);
         b
     }
@@ -571,10 +530,9 @@ impl<'a> Builder<'a> {
         root.params = s.to_params();
     }
 
-    fn arena(&mut self, f: impl FnOnce(&mut ArenaSettings)) {
-        let mut s = ArenaSettings::default();
-        f(&mut s);
-        self.scene.things.get_mut(&ARENA).expect("arena").params = s.to_params();
+    /// The scene's shape (thing 1, where the arena was) takes these settings.
+    fn shape(&mut self, s: ShapeSettings) {
+        self.scene.things.get_mut(&SHAPE).expect("the shape").params = s.to_params();
     }
 
     fn balls(&mut self, name: &str, position: Vec2, f: impl FnOnce(&mut BallsSettings)) {
@@ -695,7 +653,7 @@ fn own(thing: ThingId, key: &str) -> Address {
     Address::own(thing, key)
 }
 
-/// The new-scene default: a circle arena and one ball.
+/// The new-scene default: a circle shape and one ball.
 fn one_ball(reg: &Registry) -> Scene {
     Builder::new(reg, "One ball").finish()
 }
@@ -707,10 +665,7 @@ fn reel_block(reg: &Registry) -> Scene {
         s.gravity = Vec2::new(0.0, 160.0);
         s.duration = 23.0;
     });
-    b.arena(|a| {
-        a.radius = 508.0;
-        a.thickness = 3.0;
-    });
+    b.shape(ShapeSettings::circle(508.0, 3.0));
     b.balls("Block", Vec2::new(37.0, -127.0), |s| {
         s.radius = 4.5;
         s.block(28, 28, 19.0);
@@ -723,8 +678,6 @@ fn reel_block(reg: &Registry) -> Scene {
         Color::rgb(0xff, 0x6a, 0x5c),
         Color::rgb(0xff, 0xb8, 0x2e),
     ]);
-    let arena_look = BasicLook { fill: Paint::solid(Color::rgb(0xd8, 0xdc, 0xd0)), ..classic_look() }.to_params();
-    b.own_module(ARENA, "look.basic", arena_look);
     b.finish()
 }
 
@@ -732,11 +685,7 @@ fn reel_block(reg: &Registry) -> Scene {
 fn box_drop(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Box drop");
     b.scene_settings(|s| s.gravity = Vec2::new(0.0, 900.0));
-    b.arena(|a| {
-        a.shape = ArenaShape::Box;
-        a.width = 900.0;
-        a.height = 1500.0;
-    });
+    b.shape(ShapeSettings::rectangle(900.0, 1500.0, 3.0));
     b.balls("Block", Vec2::new(0.0, -500.0), |s| {
         s.radius = 12.0;
         s.block(10, 10, 40.0);
@@ -750,12 +699,7 @@ fn box_drop(reg: &Registry) -> Scene {
 /// A turning hexagon with a ring of balls that gain a little speed on every hit.
 fn spinning_hexagon(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Spinning hexagon");
-    b.arena(|a| {
-        a.shape = ArenaShape::Polygon;
-        a.sides = 6;
-        a.radius = 450.0;
-        a.spin = 25.0;
-    });
+    b.shape(ShapeSettings { spin: 25.0, ..ShapeSettings::polygon(6, 450.0, 3.0) });
     b.balls("Ring", Vec2::ZERO, |s| {
         s.radius = 10.0;
         s.ring(24, 200.0);
@@ -772,11 +716,7 @@ fn spinning_hexagon(reg: &Registry) -> Scene {
 /// A ring that closes in while one ball grows with every hit against a lively wall.
 fn shrinking_ring(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Shrinking ring");
-    b.arena(|a| {
-        a.radius = 500.0;
-        a.shrink = 0.03;
-        a.min_size = 200.0;
-    });
+    b.shape(ShapeSettings { shrink: 0.03, min_size: 200.0, ..ShapeSettings::circle(500.0, 3.0) });
     b.balls("Ball", Vec2::new(0.0, -200.0), |s| {
         s.radius = 30.0;
         s.velocity = Vec2::new(600.0, -300.0);
@@ -786,22 +726,18 @@ fn shrinking_ring(reg: &Registry) -> Scene {
         s.max_size = 90.0;
     });
     let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
-    b.own_module(ARENA, "bounce.basic", lively);
+    b.own_module(SHAPE, "bounce.basic", lively);
     b.finish()
 }
 
-/// A capsule full of balls that pile up on each other, coloured by how often they have hit.
+/// A tall box full of balls that pile up on each other, coloured by how often they have hit.
 fn ball_pit(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Ball pit");
     b.scene_settings(|s| {
         s.gravity = Vec2::new(0.0, 1200.0);
         s.duration = 15.0;
     });
-    b.arena(|a| {
-        a.shape = ArenaShape::Capsule;
-        a.width = 700.0;
-        a.height = 1400.0;
-    });
+    b.shape(ShapeSettings::rectangle(700.0, 1400.0, 3.0));
     b.balls("Pit", Vec2::new(0.0, -300.0), |s| {
         s.radius = 20.0;
         s.block(10, 14, 48.0);
@@ -831,18 +767,15 @@ fn ball_pit(reg: &Registry) -> Scene {
 /// forty.
 fn riders(reg: &Registry) -> Scene {
     let mut b = Builder::new(reg, "Riders");
-    b.arena(|a| {
-        a.shape = ArenaShape::Polygon;
-        a.sides = 6;
-        a.radius = 450.0;
-        a.spin = 30.0;
-    });
+    b.shape(ShapeSettings { spin: 30.0, ..ShapeSettings::polygon(6, 450.0, 3.0) });
     b.balls("Rim riders", Vec2::ZERO, |s| {
         s.radius = 14.0;
         s.ring(6, 60.0);
         s.velocity = Vec2::ZERO;
     });
-    b.ride(BALLS, ARENA, Vec2::new(0.0, -330.0), true);
+    // The top rider starts at 380 px out, inside the 390 px flat top: a ball that starts on or
+    // beyond a hollow wall's line stays outside it.
+    b.ride(BALLS, SHAPE, Vec2::new(0.0, -320.0), true);
     b.bounce(|s| s.pops_after = 40);
     b.ball_look(|l| l.hue_per_hit = 12.0);
     b.finish()

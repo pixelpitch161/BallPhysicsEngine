@@ -1,33 +1,19 @@
-//! The look a ball or an arena wears: see [`basic`].
+//! The looks things wear: a ball's stack of layers ([`layers`]), a shape's ([`shape`]), and the
+//! old single-card look ([`basic`]) that test scenes still write on balls.
 
 pub mod basic;
 pub mod draw;
 pub mod layers;
+pub mod shape;
 
 pub use basic::{BallColours, BallShape, BasicLook, BasicLookKind, Style};
 pub use layers::LayersLookKind;
+pub use shape::ShapeLookKind;
 
 #[cfg(test)]
 mod tests {
     use crate::registry;
     use bpe_core::Value;
-
-    #[test]
-    fn an_arena_card_hides_the_ball_only_look_rows() {
-        let reg = registry();
-        let defs = reg.module("look.basic").expect("look.basic is registered").settings();
-        let get = |k: &str| defs.iter().find(|d| d.key == k).map(|d| d.default.clone());
-        let shown = |key: &str| {
-            let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("no {key}"));
-            d.applies(Some("arena"), &get)
-        };
-        for key in ["style", "ball_shape", "in_pattern", "outline"] {
-            assert!(!shown(key), "{key} is for balls");
-        }
-        for key in ["colours", "glow"] {
-            assert!(shown(key), "{key} shows on an arena");
-        }
-    }
 
     #[test]
     fn every_look_has_a_blend_that_round_trips() {

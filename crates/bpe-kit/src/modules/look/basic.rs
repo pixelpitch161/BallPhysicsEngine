@@ -277,9 +277,10 @@ impl ModuleKind for BasicLookKind {
     fn settings(&self) -> &'static [SettingDef] {
         BasicLook::defs()
     }
-    /// Balls wear the layered look (see [`super::layers`]).
-    fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind != "balls"
+    /// No thing kind takes it from the editor any more: balls wear `look.layers` and shapes
+    /// `look.shape`. Test scenes still write it on balls, which `classic_cards` turns into layers.
+    fn fits(&self, _thing_kind: &str) -> bool {
+        false
     }
 }
 
@@ -387,12 +388,10 @@ mod tests {
     fn a_saved_style_that_is_gone_loads_as_the_default() {
         let reg = crate::registry();
         let mut scene = crate::scenes::all(&reg).swap_remove(0).1;
-        let looks: Vec<_> = scene
-            .things
-            .iter()
-            .filter(|(_, t)| t.slots.get(&SlotId::Look).is_some_and(|c| c.kind == "look.basic"))
-            .map(|(id, _)| *id)
-            .collect();
+        // Nothing wears the old look any more; put one on the shape by hand, as an old file would.
+        let shape = crate::testing::SHAPE;
+        scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Look, bpe_core::Slot::new("look.basic"));
+        let looks = vec![shape];
         assert!(!looks.is_empty());
         for id in &looks {
             scene.card_mut(*id, SlotId::Look).unwrap().params.set("style", Value::Choice("glow".into()));
