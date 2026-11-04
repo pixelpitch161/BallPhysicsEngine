@@ -3,6 +3,7 @@
 
 pub mod db;
 pub mod denormal;
+pub mod envelope;
 pub mod limiter;
 pub mod loudness;
 pub mod noise;
@@ -14,6 +15,7 @@ pub mod warp;
 
 pub use db::{db_to_gain, gain_to_db};
 pub use denormal::FlushGuard;
+pub use envelope::{EnvParams, Envelope, Stage};
 pub use limiter::TruePeakLimiter;
 pub use loudness::LoudnessMeter;
 pub use noise::Noise;
