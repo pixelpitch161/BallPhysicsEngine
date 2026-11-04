@@ -241,6 +241,9 @@ pub fn export_video(
 
 const CANCELLED: &str = "export cancelled";
 
+/// How the sound is encoded: AAC at 320 kbps, 48 kHz.
+pub const AUDIO_ARGS: [&str; 6] = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"];
+
 /// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
 /// made the video, and not because it was cancelled.
 fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
@@ -271,17 +274,36 @@ fn export_with(
     let frames_in_video = frame_count(&video);
     let total = options.max_frames.map_or(frames_in_video, |m| m.min(frames_in_video)).max(1);
 
+    // The sound first, all of it, into a float WAV: the first tenth of the progress bar.
+    let sound_share = if bpe_sound::has_sound(scene) { total / 10 } else { 0 };
+    let sound_dir = tempfile::tempdir().context("a folder for the sound")?;
+    let sound = sound_dir.path().join("sound.wav");
+    if sound_share > 0 {
+        let seconds = total as f64 / fps as f64;
+        bpe_sound::render_to_wav(scene, kit, &sound, seconds, |done| {
+            progress(((done * sound_share as f64) as u32).min(sound_share), total)
+        })
+        .map_err(|e| if e.to_string().contains("cancelled") { anyhow::anyhow!(CANCELLED) } else { e })?;
+    }
+    // Frame `index` (from 0) done, as the progress bar counts it.
+    let shown = |index: u32| sound_share + ((index + 1) as u64 * (total - sound_share) as u64 / total as u64) as u32;
+
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
     ffmpeg.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}"), "-r", &fps.to_string()]);
     ffmpeg.args(["-i", "-"]);
-    // A silent stereo track, so apps that expect sound take the clip.
-    ffmpeg.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
+    if sound_share > 0 {
+        ffmpeg.arg("-i").arg(&sound);
+    } else {
+        // A silent stereo track, so apps that expect sound take the clip.
+        ffmpeg.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
+    }
     ffmpeg.args(["-map", "0:v", "-map", "1:a"]);
     ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
     ffmpeg.args(encoder.args(options.crf, &options.preset));
     ffmpeg.args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
-    ffmpeg.args(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest", "-f", "mp4"]);
+    ffmpeg.args(AUDIO_ARGS);
+    ffmpeg.args(["-movflags", "+faststart", "-shortest", "-f", "mp4"]);
     ffmpeg.arg(&output);
     let mut child = spawn(ffmpeg, &options.ffmpeg)?;
     let mut stdin = child.stdin.take().context("ffmpeg stdin")?;
@@ -329,7 +351,7 @@ fn export_with(
         {
             break;
         }
-        if !progress(index + 1, total) {
+        if !progress(shown(index), total) {
             drop(frames);
             let _ = stop(&mut child, writer, true);
             let _ = std::fs::remove_file(&output);
