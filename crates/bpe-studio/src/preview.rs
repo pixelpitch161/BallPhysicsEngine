@@ -614,15 +614,31 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
     }
 }
 
+/// Whether shape `id` has sound going into bus `n` (1..=3): its main bus, or a send that is up.
+pub fn plays_into(scene: &Scene, id: ThingId, n: u8) -> bool {
+    let Some(card) = scene.card(id, bpe_core::SlotId::Sound).filter(|c| c.kind == bpe_kit::sound::VOICE) else {
+        return false;
+    };
+    let number = |key: &str| match card.params.get(key) {
+        Some(Value::Int(i)) => Some(*i as f64),
+        Some(Value::Number(x)) => Some(*x),
+        _ => None,
+    };
+    let main = number("out_bus").map_or(1, |b| b.round() as i64);
+    main == n as i64 || number(&format!("out_send{n}")).is_some_and(|db| bpe_sound::sends(db as f32))
+}
+
 fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, selected: Option<ThingId>) {
     let painter = ui.painter_at(view.rect);
     let faint = style::FAINT_MARK;
     let world = studio.playback.world();
     let shown = |id: &ThingId| studio.scene.things.get(id).is_some_and(|t| t.enabled);
 
+    let bus = studio.panels.mixer.hover_bus;
     for id in world.walls.keys().filter(|id| shown(id)) {
         let Some(view) = view.of(studio, *id) else { continue };
-        shape_handles::draw(&painter, &studio.scene, world, &view, *id, selected == Some(*id), active);
+        let lit = bus.is_some_and(|n| plays_into(&studio.scene, *id, n));
+        shape_handles::draw(&painter, &studio.scene, world, &view, *id, selected == Some(*id), active, lit);
     }
 
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its

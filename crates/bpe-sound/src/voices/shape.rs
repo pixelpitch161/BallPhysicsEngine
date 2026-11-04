@@ -274,6 +274,8 @@ pub struct ShapeVoice {
     audition_count: u64,
     /// The loudest sample of the last block.
     peak: f32,
+    /// The notes started since they were last taken, while noting (the export's MIDI).
+    noted: Option<Vec<crate::NoteOn>>,
 }
 
 /// The smoothed knobs' places: per oscillator Gain, Level, Sub level, then Volume.
@@ -340,6 +342,7 @@ impl ShapeVoice {
             n_auditions: 0,
             audition_count: 0,
             peak: 0.0,
+            noted: None,
             spec,
         };
         v.read_keys(0.0);
@@ -460,6 +463,12 @@ impl ShapeVoice {
     #[allow(clippy::too_many_arguments)]
     fn start_note(&mut self, cx: &BlockCx, at: u32, note: u8, strength: f32, ball: Party, point: Vec2, seed: u64) {
         let sample = cx.start_sample + at as u64;
+        if self.noted.is_some() {
+            let gate = if self.envs() > 0 { self.gate_samples(0, cx.tempo) } else { u64::MAX };
+            if let Some(noted) = self.noted.as_mut() {
+                noted.push(crate::NoteOn { sample, note, strength, gate });
+            }
+        }
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
         let mono = self.spec.play_mode == PlayMode::Mono;
         if mono && self.notes.meta[0].active && !self.notes.meta[0].fading {
@@ -1115,6 +1124,16 @@ impl VoiceSource for ShapeVoice {
 
     fn level(&self) -> f32 {
         self.peak
+    }
+
+    fn record_notes(&mut self, on: bool) {
+        self.noted = on.then(Vec::new);
+    }
+
+    fn take_notes(&mut self, out: &mut Vec<crate::NoteOn>) {
+        if let Some(noted) = self.noted.as_mut() {
+            out.append(noted);
+        }
     }
 
     fn playing_slot(&self) -> Option<usize> {

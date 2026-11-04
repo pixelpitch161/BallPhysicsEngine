@@ -24,6 +24,9 @@ pub struct ExportWindow {
     /// Output size as a fraction of the video size.
     scale: f32,
     encoder: Encoder,
+    /// Also save each bus and the master as WAVs beside the video.
+    stems: bool,
+    midi: bool,
     ffmpeg: Option<PathBuf>,
     gpu: Arc<Mutex<Option<CheckedEncoders>>>,
     /// The ffmpeg a check was started for.
@@ -55,6 +58,8 @@ impl Default for ExportWindow {
             crf: 18,
             scale: 1.0,
             encoder: Encoder::Auto,
+            stems: false,
+            midi: false,
             ffmpeg: find_ffmpeg(),
             gpu: Arc::default(),
             checking: None,
@@ -239,6 +244,24 @@ impl ExportWindow {
             ui.end_row();
         });
         ui.add_space(8.0);
+        ui.label(RichText::new("SOUND").size(12.0).color(style::MUTED));
+        egui::Grid::new("export-sound").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Mixed sound");
+            ui.label(RichText::new("In the video, AAC 320 kbps").color(style::MUTED));
+            ui.end_row();
+            let label = ui.label("Also save stems").on_hover_text(
+                "One WAV per bus and one of the master (48 kHz, 24-bit), saved next to the video. The buses \
+                 add up to the mix before the master's limiter.",
+            );
+            style::switch(ui, &mut self.stems).labelled_by(label.id);
+            ui.end_row();
+            let label = ui.label("Also save MIDI").on_hover_text(
+                "The notes the shapes played, one track per shape, with the tempo, saved next to the video.",
+            );
+            style::switch(ui, &mut self.midi).labelled_by(label.id);
+            ui.end_row();
+        });
+        ui.add_space(8.0);
         if self.ffmpeg.is_none() {
             ui.add_space(6.0);
             ui.label(
@@ -353,6 +376,8 @@ impl ExportWindow {
         options.preset = if self.scale < 1.0 { "veryfast".into() } else { "medium".into() };
         options.ffmpeg = ffmpeg;
         options.encoder = self.encoder;
+        options.stems = self.stems;
+        options.midi = self.midi;
         options
     }
 }
@@ -413,6 +438,22 @@ mod tests {
         assert_eq!(safe_file_name("Reel block"), "Reel block");
         assert_eq!(safe_file_name("a/b: c?"), "a-b- c-");
         assert_eq!(safe_file_name("  "), "ball-video");
+    }
+
+    #[test]
+    fn the_stems_switch_reaches_the_export() {
+        let mut window = ExportWindow::default();
+        assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).stems, "off by default");
+        window.stems = true;
+        assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).stems);
+    }
+
+    #[test]
+    fn export_window_has_stem_and_midi_switches() {
+        let mut window = ExportWindow::default();
+        assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).midi, "off by default");
+        window.midi = true;
+        assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).midi);
     }
 
     #[test]

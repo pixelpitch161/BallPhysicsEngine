@@ -591,4 +591,24 @@ pub(crate) mod tests {
             other => panic!("no routes: {other:?}"),
         }
     }
+
+    #[test]
+    fn shape_output_warns_when_its_bus_is_off() {
+        let mut h = sounding();
+        assert!(h.query_by_label_contains("is off").is_none(), "Bus 1 is on");
+        // The Output panel sits below the chains and the notes.
+        h.get_by_label("Bus 2").scroll_to_me();
+        h.run();
+        h.get_by_label("Bus 2").click();
+        h.run();
+        let card = card(&h, SHAPE).unwrap();
+        assert_eq!(card.params.get("out_bus"), Some(&Value::Int(2)));
+        assert!(h.query_by_label_contains("Bus 2 is off").is_some(), "it warns");
+        // Its sends go to the other two buses.
+        assert!(h.query_by_label("Send 1").is_some() && h.query_by_label("Send 3").is_some());
+        assert!(h.query_by_label("Send 2").is_none());
+        h.state_mut().0.scene.card_mut(ThingId::ROOT, SlotId::Mixer).unwrap().params.set("bus2_on", Value::Bool(true));
+        h.run();
+        assert!(h.query_by_label_contains("is off").is_none(), "on, no warning");
+    }
 }

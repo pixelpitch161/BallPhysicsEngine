@@ -53,6 +53,11 @@ pub trait VoiceSource: Send {
     fn level(&self) -> f32 {
         0.0
     }
+    /// Starts or stops noting each note it starts (for the export's MIDI file; never in the
+    /// editor, as noting allocates).
+    fn record_notes(&mut self, _on: bool) {}
+    /// Hands over the notes noted since the last call.
+    fn take_notes(&mut self, _out: &mut Vec<crate::NoteOn>) {}
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 

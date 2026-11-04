@@ -3,12 +3,16 @@
 //! and renders blocks of [`BLOCK`] stereo samples at [`SAMPLE_RATE`]. The editor and the export
 //! call the same [`Engine::render`]; nothing else makes sound.
 
+pub mod buses;
 pub mod chain;
 pub mod chain_graph;
 pub mod engine;
+pub mod fx_chain;
 pub mod hits;
+pub mod lag;
 pub mod master;
 pub mod meters;
+pub mod midi;
 pub mod modmatrix;
 pub mod music;
 pub mod offline;
@@ -19,11 +23,13 @@ pub mod voices;
 mod wav;
 
 pub use bpe_dsp::{BLOCK, SAMPLE_RATE};
+pub use buses::{BusesSpec, ShapeRoute, sends, would_loop};
 pub use engine::{Engine, PRE_ROLL, SAMPLES_PER_BLOCK_TIME};
 pub use hits::{BlockHit, HitCursor};
 pub use master::{Master, MasterKeys};
-pub use meters::{MeterReading, Meters};
-pub use offline::{has_sound, render_samples, render_to_wav};
+pub use meters::{BusReading, FX_BINS, FX_METERS, FxReading, MeterReading, Meters};
+pub use midi::{NoteLog, NoteOn, write_midi};
+pub use offline::{Extras, has_sound, midi_path, render_samples, render_sound, render_to_wav, stem_paths};
 pub use patch::{SoundPatch, Tables};
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};

@@ -277,6 +277,9 @@ pub enum SoundSource {
     Modulator(LayerId),
     /// How loud the shape is.
     Level,
+    /// How loud bus `n` (1..=3) is, worked out from its shapes' levels and its fader (the
+    /// pulse's `shape` is ignored).
+    Bus(u8),
 }
 
 impl PulseSource {

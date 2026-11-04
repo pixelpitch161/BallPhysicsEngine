@@ -278,7 +278,7 @@ fn prefixed_when(when: &str, prefix: &str, outer: &str) -> &'static str {
 }
 
 /// Every value of `s`, defaults included, by plain key.
-fn full_params<T: Settings>(s: &T) -> Params {
+pub(crate) fn full_params<T: Settings>(s: &T) -> Params {
     let mut p = Params(T::defs().iter().map(|d| (d.key.to_owned(), d.default.clone())).collect());
     for (k, v) in s.to_params().iter() {
         p.set(k, v.clone());
@@ -288,7 +288,7 @@ fn full_params<T: Settings>(s: &T) -> Params {
 
 /// A plain struct of settings embedded with a key prefix, its defaults the outer struct's own.
 /// The leaked defs are made once per (struct, prefix) for the program's life.
-fn prefixed_defs<T: Settings>(o: &GroupOpts, default: &T) -> Vec<SettingDef> {
+pub(crate) fn prefixed_defs<T: Settings>(o: &GroupOpts, default: &T) -> Vec<SettingDef> {
     type Made = Mutex<BTreeMap<(&'static str, &'static str), Vec<SettingDef>>>;
     static MADE: OnceLock<Made> = OnceLock::new();
     let made = MADE.get_or_init(Default::default);

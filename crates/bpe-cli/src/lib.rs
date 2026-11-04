@@ -28,6 +28,10 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
+    /// Also save each bus and the master as 24-bit WAVs beside the video.
+    pub stems: bool,
+    /// Also save the notes the shapes played as a MIDI file beside the video.
+    pub midi: bool,
 }
 
 impl ExportOptions {
@@ -40,6 +44,8 @@ impl ExportOptions {
             scale: 1.0,
             max_frames: None,
             encoder: Encoder::Auto,
+            stems: false,
+            midi: false,
         }
     }
 }
@@ -278,9 +284,23 @@ fn export_with(
     let sound_share = if bpe_sound::has_sound(scene) { total / 10 } else { 0 };
     let sound_dir = tempfile::tempdir().context("a folder for the sound")?;
     let sound = sound_dir.path().join("sound.wav");
+    let extras = bpe_sound::Extras {
+        stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)),
+        midi: options.midi.then(|| bpe_sound::midi_path(&output)),
+    };
+    // The video and the stems and MIDI file beside it, all gone if the export stops.
+    let written: Vec<PathBuf> = std::iter::once(output.clone())
+        .chain(extras.stems.iter().flat_map(|(buses, master)| buses.iter().cloned().chain([master.clone()])))
+        .chain(extras.midi.clone())
+        .collect();
+    let remove_outputs = || {
+        for f in &written {
+            let _ = std::fs::remove_file(f);
+        }
+    };
     if sound_share > 0 {
         let seconds = total as f64 / fps as f64;
-        bpe_sound::render_to_wav(scene, kit, &sound, seconds, |done| {
+        bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
             progress(((done * sound_share as f64) as u32).min(sound_share), total)
         })
         .map_err(|e| if e.to_string().contains("cancelled") { anyhow::anyhow!(CANCELLED) } else { e })?;
@@ -354,7 +374,7 @@ fn export_with(
         if !progress(shown(index), total) {
             drop(frames);
             let _ = stop(&mut child, writer, true);
-            let _ = std::fs::remove_file(&output);
+            remove_outputs();
             bail!(CANCELLED);
         }
     }
@@ -373,17 +393,17 @@ fn export_with(
     drop(frames);
     if let Some(error) = failed {
         let _ = stop(&mut child, writer, true);
-        let _ = std::fs::remove_file(&output);
+        remove_outputs();
         return Err(error);
     }
     if let Err(error) = writer.join().unwrap_or(Ok(())) {
         let _ = child.wait();
-        let _ = std::fs::remove_file(&output);
+        remove_outputs();
         bail!("ffmpeg stopped accepting frames ({error}): {}", stderr.join().unwrap_or_default());
     }
     let status = child.wait()?;
     if !status.success() {
-        let _ = std::fs::remove_file(&output);
+        remove_outputs();
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
     Ok(())
