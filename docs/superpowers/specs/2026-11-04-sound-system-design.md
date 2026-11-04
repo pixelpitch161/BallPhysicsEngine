@@ -88,12 +88,16 @@ Keep `CLAUDE.md`'s crate map updated when each part lands.
 Everything uses the existing card and layer machinery, so copy, paste, keyframes, undo and save work the way they
 already do. Scene files go from format 7 to **format 8**; older files still load (sound simply absent).
 
-- **A shape's sound** is one card of kind **`sound.voice`** in `Thing.slots`. It is not shown in the card list;
-  the inspector's **Sound** tab shows it. "Enable sound" adds the card with the starter patch; unticking sets its
-  `enabled` param false and keeps everything. Copy sound / Paste sound copy the whole card.
+- Cards are keyed by `SlotId` (one card per slot), so two slots are added: **`SlotId::Sound`** and
+  **`SlotId::Mixer`**, both left out of the inspector's card list (shown by the Sound tab and the Mixer panel).
+- **A shape's sound** is one card of kind **`sound.voice`** in `SlotId::Sound`. "Enable sound" adds the card
+  with the starter patch; unticking sets its `enabled` param false and keeps everything. Copy sound / Paste sound
+  copy the whole card.
 - The card's own params hold the oscillator, Playing, Notes and Output settings under fixed key prefixes:
-  `a/…` and `b/…` for the oscillators (`a/wave`, `a/gain`, `a/level`, …), `play/…`, `notes/…`, `out/…`.
-- **Chain layers and modulators** are `Slot.layers` entries, using two new `LayerSection`s:
+  `a_…` and `b_…` for the oscillators (`a_wave`, `a_gain`, `a_level`, …; one `OscSettings` struct expanded twice
+  with the derive's `prefix`), `play_…`, `notes_…`, `out_…` (`out_bus` 1..3, `out_send1`..`out_send3`). Plain
+  keys never contain `/`, which marks a layered key.
+- **Chain layers and modulators** are `Slot.layers` entries, using new `LayerSection`s:
   - `LayerSection::Chain` with a new `Layer.lane: Option<u8>` (0 = Osc A, 1 = Osc B; kept in chain order within
     each lane). Kinds: `chain.modulation`, `chain.filter`, `chain.distortion`.
   - `LayerSection::Modulator`. Kinds: `mod.adsr`, `mod.distance`, `mod.lfo`, `mod.hit`. Their order is the tile
@@ -104,7 +108,7 @@ already do. Scene files go from format 7 to **format 8**; older files still load
   ```rust
   pub struct ModRoute {
       pub source: LayerId,        // a modulator layer in this card
-      pub target: String,         // a card key, layered or not: "a/gain", "<layer id>/cutoff"
+      pub target: String,         // a card key, layered or not: "a_gain", "<layer id>/cutoff"
       pub amount: f32,            // -1..=1, fraction of the target's range (or dB-to-silence on scaling knobs)
       pub bipolar: bool,          // Alt-drag: centred on the knob value
       pub invert: bool,
@@ -112,21 +116,23 @@ already do. Scene files go from format 7 to **format 8**; older files still load
   ```
 
   Deleting a modulator or a layer deletes its routes in the same edit (in `edit.rs`).
-- **Note slots** are a new `Value::Slots(Vec<NoteSlot>)` at `notes/slots` (never keyframed), where
+- **Note slots** are a new `Value::Slots(Vec<NoteSlot>)` at `notes_slots` (never keyframed), where
   `NoteSlot { notes: Vec<u8> /* MIDI numbers, FL naming C5 = 60 */, order_clicked: Vec<u8> }`. A **Slot**
-  keyframe is an Int setting `notes/jump` (1..=16, keys always `Ease::Hold`).
+  keyframe is an Int setting `notes_jump` (1..=16, keys always `Ease::Hold`).
 - **Follow sound** (idea 32) extends the existing pulses: `PulseSource` gains
   `Sound { shape: ThingId, source: SoundSource }` with `SoundSource::Modulator(LayerId)` or `SoundSource::Level`.
   The pulse's `amount` is the range. Modulators are worked out from the physics alone, so following sound never
   needs the sound engine to run (a picture-only export moves the same). A setting that changes physics may follow
   sound too: it reads its source as it was at the end of the **previous** physics step, so there is never a loop.
-- **Tempo and master** are settings on the scene settings thing (`SceneSettings`, group "Sound"): `tempo`
-  (20..300 BPM, decimals, default 120), `time_top` (1..16, default 4), `time_bottom` (Choice 2/4/8/16, default 4).
-  The master is a card **`sound.master`** on the scene settings thing (Input, Output, Ceiling, Release).
-- **Buses** are three cards **`sound.bus`** on the scene settings thing (Bus 1 on, Buses 2 and 3 off by
-  default), each with `Slot.layers` of section `LayerSection::Effect` (kinds `fx.filter`, `fx.distortion`,
+- **Tempo** is on the scene settings thing (`SceneSettings`, group "Sound"): `tempo` (20..300 BPM, decimals,
+  default 120), `time_top` (1..16, default 4), `time_bottom` (Choice 2/4/8/16, default 4).
+- **The mixer** is one card of kind **`sound.mixer`** in `SlotId::Mixer` on the scene settings thing, added by
+  `new_studio_scene` and by `ensure_camera`'s sibling `ensure_mixer` for older files. Its params: the master under
+  `master_…` (Input, Output, Ceiling, Release) and each bus under `bus1_…`, `bus2_…`, `bus3_…` (name, on, fader,
+  pan, mute, solo, `send1`..`send3`). Bus 1 is on, Buses 2 and 3 off. Bus effect layers are its `Slot.layers`
+  with section `LayerSection::Effect` and `Layer.lane` = bus index 0..2, kinds `fx.filter`, `fx.distortion`,
   `fx.eq`, `fx.compressor`, `fx.delay`, `fx.reverb`, `fx.limiter`, `fx.chorus`, `fx.phaser`, `fx.flanger`,
-  `fx.width`). The bus's own params: name, on, fader, pan, mute, solo, sends (`send/<bus slot id>`).
+  `fx.width`.
 - `Thing.colour` (the track colour) is what draws modulation rings; no new colours are made up (the design-system
   test still applies).
 
