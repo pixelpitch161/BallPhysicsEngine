@@ -170,6 +170,8 @@ fn voice_with(
         ],
         envs,
         play_mode: v.play_mode,
+        play_when: v.play_when,
+        zone: zone_of(&v, &mods),
         heard_from: v.play_heard_from.clone(),
         slots: v.notes_slots.clone(),
         notes: NotesSpec::from_settings(
@@ -217,6 +219,16 @@ pub fn routable(card: &bpe_core::Slot, key: &str) -> bool {
         hits: ids(HIT, knobs::MAX_EACH),
     };
     knobs::layout_all(&envs, &chain, &mods).iter().any(|(k, _, _)| k == key)
+}
+
+/// The Distance whose range holds the notes for In range: the one named by its layer id, or
+/// the first that is on.
+fn zone_of(v: &VoiceSettings, mods: &ModsSpec) -> Option<usize> {
+    if v.play_when != bpe_kit::sound::PlayWhen::InRange || mods.dists.is_empty() {
+        return None;
+    }
+    let named = v.play_zone.trim().parse::<u32>().ok();
+    named.and_then(|id| mods.dists.iter().position(|d| d.id.0 == id)).or(Some(0))
 }
 
 /// The card's LFO, Distance and Hit layers that are on (up to eight of each, in card order),

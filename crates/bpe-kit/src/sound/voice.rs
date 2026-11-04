@@ -138,6 +138,18 @@ pub enum PlayMode {
     Mono,
 }
 
+/// When a shape's notes sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum PlayWhen {
+    /// Each accepted hit plays its notes.
+    #[default]
+    OnHit,
+    /// The slot's notes are held from the start, a drone; hits retrigger its envelopes.
+    Always,
+    /// The slot's notes are held while a ball is in range of a Distance.
+    InRange,
+}
+
 /// How long an envelope's note is held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum GateMode {
@@ -364,6 +376,12 @@ pub struct VoiceSettings {
     /// Which balls' hits play notes.
     #[setting(label = "Heard from", group = "Playing")]
     pub play_heard_from: Target,
+    /// When the notes sound: on each hit, always (held), or while a ball is in range.
+    #[setting(label = "Plays", group = "Playing")]
+    pub play_when: PlayWhen,
+    /// The Distance whose range holds the notes, by its layer id ("" for the first).
+    #[setting(label = "In range of", group = "Playing", when = "play_when=in_range")]
+    pub play_zone: String,
     /// The notes, slot by slot (part 2 plays slot 1).
     #[setting(label = "Notes", group = "Notes")]
     pub notes_slots: Vec<NoteSlot>,
@@ -458,6 +476,8 @@ impl Default for VoiceSettings {
             play_min_strength: 0.0,
             play_retrigger: 30.0,
             play_heard_from: Target::Anything,
+            play_when: PlayWhen::OnHit,
+            play_zone: String::new(),
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
             notes_low_octave: 4,
             notes_octaves: 3,

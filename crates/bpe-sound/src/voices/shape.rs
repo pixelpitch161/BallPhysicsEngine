@@ -23,7 +23,7 @@ use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
 use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
 use bpe_kit::sound::{
     DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, NoiseColour, PhaseMode, PlayMode,
-    SILENT_DB, SubOctave, SubWave, Wave,
+    PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
 };
 use bpe_runtime::Party;
 use glam::Vec2;
@@ -57,6 +57,8 @@ struct Strum {
     /// The numbers the hit gave the Hit modulators.
     hv: HitValues,
 }
+/// The most notes a drone holds at once.
+const MAX_HELD: usize = 16;
 /// The most modulators of one kind besides the envelopes.
 const MAX_EACH: usize = k::MAX_EACH;
 /// The most modulators routes can come from: every envelope and every other modulator.
@@ -192,6 +194,10 @@ pub struct ShapeSpec {
     pub osc: [OscSpec; 2],
     pub envs: Vec<EnvSpec>,
     pub play_mode: PlayMode,
+    /// When its notes sound: on hits, always (held), or while a ball is in range.
+    pub play_when: PlayWhen,
+    /// The Distance (its place in `mods.dists`) whose range holds the notes, for In range.
+    pub zone: Option<usize>,
     pub heard_from: bpe_core::Target,
     pub slots: Vec<NoteSlot>,
     /// How hits pick notes and how the slots take turns.
@@ -377,6 +383,10 @@ pub struct ShapeVoice {
     slot_turn: u64,
     strums: [Strum; MAX_STRUMS],
     n_strums: usize,
+    /// The notes held (Always, In range): their voice slots and notes.
+    held: [usize; MAX_HELD],
+    held_notes: [u8; MAX_HELD],
+    n_held: usize,
     /// The last accepted hits' numbers, a ring written at `heard % RECENT_HITS`.
     recent: [HitValues; crate::meters::RECENT_HITS],
     heard: u32,
@@ -528,6 +538,9 @@ impl ShapeVoice {
             auditions: [0; MAX_AUDITIONS],
             n_auditions: 0,
             audition_count: 0,
+            held: [0; MAX_HELD],
+            held_notes: [0; MAX_HELD],
+            n_held: 0,
             recent: [HitValues::default(); crate::meters::RECENT_HITS],
             heard: 0,
             peak: 0.0,
@@ -751,7 +764,7 @@ impl ShapeVoice {
         point: Vec2,
         seed: u64,
         hv: &HitValues,
-    ) {
+    ) -> Option<usize> {
         let sample = cx.start_sample + at as u64;
         if self.noted.is_some() {
             let gate = if self.envs() > 0 { self.gate_samples(0, cx.tempo) } else { u64::MAX };
@@ -802,7 +815,7 @@ impl ShapeVoice {
                 n.dist[i].note_on(&ncx);
             }
             self.notes.meta[0].started = sample;
-            return;
+            return Some(0);
         }
         let (slot, steal) = if mono {
             if self.notes.meta[0].active {
@@ -812,7 +825,7 @@ impl ShapeVoice {
             (0, None)
         } else {
             let limit = (self.now[k::VOICES].round() as usize).clamp(1, MAX_VOICES);
-            let Some(s) = self.notes.start(limit, sample, cx.start_sample) else { return };
+            let s = self.notes.start(limit, sample, cx.start_sample)?;
             (s.slot, s.steal)
         };
         if let Some(s) = steal {
@@ -899,6 +912,7 @@ impl ShapeVoice {
                 n.src_prev[s] = n.hit[i].value();
             }
         }
+        Some(slot)
     }
 
     /// Both oscillators' unison settings for a note at `pitch`.
@@ -978,11 +992,17 @@ impl ShapeVoice {
             let seed = mix(sample
                 ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
                 ^ ((self.spec.thing.0 as u64) << 48));
-            self.hit_arrives(at, sample);
             let hv = self.hit_values_of(cx, hit, seed, strength);
             self.recent[self.heard as usize % crate::meters::RECENT_HITS] = hv;
             self.heard = self.heard.wrapping_add(1);
             self.restart_shared(&NoteCx { sample, hit: &hv, ball: Some(ball) });
+            if self.spec.play_when != PlayWhen::OnHit {
+                // Held notes: the hit retriggers them and counts towards the slots.
+                self.clock.hit(&self.spec.notes);
+                self.retrigger_held(at, strength, &NoteCx { sample, hit: &hv, ball: Some(ball) });
+                continue;
+            }
+            self.hit_arrives(at, sample);
             let pick = self.pick_for(cx, hit, cx.time);
             self.clock.hit(&self.spec.notes);
             let gap = (pick.strum as f64 * crate::SAMPLE_RATE as f64).max(0.0);
@@ -1006,6 +1026,7 @@ impl ShapeVoice {
             }
         }
         self.clock.end_block(&self.spec.notes);
+        self.hold(cx);
         for i in 0..std::mem::take(&mut self.n_auditions) {
             let note = self.auditions[i];
             self.audition_count += 1;
@@ -1017,6 +1038,102 @@ impl ShapeVoice {
             };
             self.restart_shared(&NoteCx { sample: cx.start_sample, hit: &hv, ball: None });
             self.start_note(cx, 0, note, AUDITION_STRENGTH, AUDITION_BALL, Vec2::ZERO, seed, &hv);
+        }
+    }
+
+    /// Always and In range: holds the playing slot's notes (while a ball is in range), moving
+    /// to the slot's notes when they change (Mono glides) and letting go when nothing is held.
+    fn hold(&mut self, cx: &BlockCx) {
+        let want = match self.spec.play_when {
+            PlayWhen::OnHit => return,
+            PlayWhen::Always => true,
+            PlayWhen::InRange => self.in_range(cx),
+        };
+        let mono = self.spec.play_mode == PlayMode::Mono;
+        let limit = if mono { 1 } else { (self.now[k::VOICES].round() as usize).clamp(1, MAX_VOICES).min(MAX_HELD) };
+        let mut wanted = [0u8; MAX_HELD];
+        let mut n = 0;
+        if want && let Some(slot) = self.spec.slots.get(self.clock.current()) {
+            for &note in slot.notes.iter().take(limit) {
+                wanted[n] = note;
+                n += 1;
+            }
+        }
+        let alive = (0..self.n_held).all(|i| {
+            let s = self.held[i];
+            self.notes.meta[s].active && !self.notes.meta[s].fading && self.notes.slots[s].note == self.held_notes[i]
+        });
+        if alive && n == self.n_held && wanted[..n] == self.held_notes[..n] {
+            return;
+        }
+        let hv = HitValues { strength: 1.0, ..HitValues::default() };
+        let thing = self.spec.thing.0 as u64;
+        let seed = |note: u8| mix((thing << 40) ^ 0xD20E ^ note as u64);
+        if mono && alive && n == 1 && self.n_held == 1 {
+            // The one voice glides to the new note.
+            let s = seed(wanted[0]);
+            self.start_note(cx, 0, wanted[0], 1.0, AUDITION_BALL, Vec2::ZERO, s, &hv);
+            self.notes.slots[0].gate = [u64::MAX; MAX_ENVS];
+            self.held_notes[0] = wanted[0];
+            return;
+        }
+        self.release_held();
+        for &note in &wanted[..n] {
+            let s = seed(note);
+            if let Some(slot) = self.start_note(cx, 0, note, 1.0, AUDITION_BALL, Vec2::ZERO, s, &hv) {
+                self.notes.slots[slot].gate = [u64::MAX; MAX_ENVS];
+                self.held[self.n_held] = slot;
+                self.held_notes[self.n_held] = note;
+                self.n_held += 1;
+            }
+        }
+    }
+
+    /// Whether a ball is in range of the In range Distance (its value above 0, read from the
+    /// nearest ball when it follows each note's own).
+    fn in_range(&self, cx: &BlockCx) -> bool {
+        let Some(i) = self.spec.zone else { return false };
+        let Some(d) = self.spec.mods.dists.get(i) else { return false };
+        let mut p = dist_params(d, i, &self.now);
+        if p.follows == Follows::EachNotesBall {
+            p.follows = Follows::Nearest;
+        }
+        crate::mods::distance::distance_value(&p, &d.heard, cx.world, self.spec.thing, None).is_some_and(|v| v > 0.0)
+    }
+
+    /// The held notes close their gates and ring out.
+    fn release_held(&mut self) {
+        for i in 0..std::mem::take(&mut self.n_held) {
+            let s = self.held[i];
+            if self.notes.meta[s].active && self.notes.slots[s].note == self.held_notes[i] {
+                for e in 0..self.envs() {
+                    if self.notes.slots[s].gate[e] == u64::MAX {
+                        self.notes.slots[s].gate[e] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A hit on a shape holding its notes: their envelopes start again from where they are, and
+    /// their Hit modulators take the hit's numbers.
+    fn retrigger_held(&mut self, at: u32, strength: f32, ncx: &NoteCx) {
+        let envs = self.envs();
+        for i in 0..self.n_held {
+            let s = self.held[i];
+            if !self.notes.meta[s].active {
+                continue;
+            }
+            let n = &mut self.notes.slots[s];
+            n.strength = strength;
+            for e in 0..envs {
+                n.push(at, e, Ev::Trigger(strength));
+            }
+            let m = &self.spec.mods;
+            for h in 0..m.hits.len().min(MAX_EACH) {
+                set_hit(&mut n.hit[h], &m.hits[h], h, &self.now);
+                n.hit[h].note_on(ncx);
+            }
         }
     }
 
@@ -1483,6 +1600,7 @@ impl VoiceSource for ShapeVoice {
         self.slot_hits = 0;
         self.slot_turn = 0;
         self.n_strums = 0;
+        self.n_held = 0;
         for m in &mut self.lfo {
             m.reset();
         }
@@ -1512,6 +1630,7 @@ impl VoiceSource for ShapeVoice {
         self.n_strums = old.n_strums;
         self.recent = old.recent;
         self.heard = old.heard;
+        let keep_held = self.spec.play_when != PlayWhen::OnHit && self.spec.play_when == old.spec.play_when;
         // The smoothers glide on from where the old ones were.
         for (new, prev) in self.smooth.iter_mut().zip(&old.smooth) {
             let target = new.target();
@@ -1611,6 +1730,18 @@ impl VoiceSource for ShapeVoice {
             }
             n.src_prev = src_prev;
             *new = n;
+        }
+        // Held notes stay held while the shape still holds notes, and let go when it plays on
+        // hits again (the slots came across one for one).
+        if keep_held {
+            self.held = old.held;
+            self.held_notes = old.held_notes;
+            self.n_held = old.n_held;
+        } else if old.n_held > 0 {
+            self.held = old.held;
+            self.held_notes = old.held_notes;
+            self.n_held = old.n_held;
+            self.release_held();
         }
         self.auditions = old.auditions;
         self.n_auditions = old.n_auditions;
