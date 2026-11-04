@@ -45,7 +45,13 @@ pub struct AdsrSettings {
     /// A set length in milliseconds or in beats.
     #[setting(label = "Gate unit", when = "gate_mode=fixed")]
     pub gate_unit: GateUnit,
-    #[setting(label = "Gate length", range(1, 10000), unit = "ms", keyframe, when = "gate_mode=fixed and gate_unit=ms")]
+    #[setting(
+        label = "Gate length",
+        range(1, 10000),
+        unit = "ms",
+        keyframe,
+        when = "gate_mode=fixed and gate_unit=ms"
+    )]
     pub gate_ms: f32,
     #[setting(
         label = "Gate beats",

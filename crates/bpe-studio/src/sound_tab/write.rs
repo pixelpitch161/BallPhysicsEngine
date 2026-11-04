@@ -89,8 +89,7 @@ pub fn paste(scene: &mut Scene, reg: &Registry, id: ThingId, copied: &Slot) -> b
 
 /// `card` with its layers numbered from 0 and everything that names a layer following.
 fn renumbered(card: &Slot) -> Slot {
-    let map: Vec<(LayerId, LayerId)> =
-        card.layers.iter().enumerate().map(|(i, l)| (l.id, LayerId(i as u32))).collect();
+    let map: Vec<(LayerId, LayerId)> = card.layers.iter().enumerate().map(|(i, l)| (l.id, LayerId(i as u32))).collect();
     let new_id = |old: LayerId| map.iter().find(|(o, _)| *o == old).map(|(_, n)| *n);
     let mut out = card.clone();
     for layer in &mut out.layers {

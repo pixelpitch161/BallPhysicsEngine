@@ -85,7 +85,10 @@ pub fn keyboard(ui: &mut Ui, low: u8, octaves: u8, lit: &[u8], colour: Color32) 
     // The C labels, for screen readers and tests too.
     for o in 0..octaves {
         let note = first + 12 * o;
-        let at = Rect::from_min_size(Pos2::new(rect.left() + 7.0 * o as f32 * kw, rect.bottom() - 16.0), Vec2::new(kw, 14.0));
+        let at = Rect::from_min_size(
+            Pos2::new(rect.left() + 7.0 * o as f32 * kw, rect.bottom() - 16.0),
+            Vec2::new(kw, 14.0),
+        );
         let label = ui.interact(at, ui.scope_id().with(("c label", note)), Sense::hover());
         let name = note_name(note);
         label.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &name));
@@ -111,7 +114,8 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Notes").font(style::semibold(13.0)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let more = ui.add_enabled(octaves < 8 && top < 10, egui::Button::new("+")).on_hover_text("One octave more");
+                let more =
+                    ui.add_enabled(octaves < 8 && top < 10, egui::Button::new("+")).on_hover_text("One octave more");
                 super::name_it(ui, &more, "One octave more");
                 if more.clicked() {
                     cx.set(OCTAVES, Value::Int(octaves as i64 + 1));

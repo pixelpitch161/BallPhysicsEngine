@@ -488,7 +488,10 @@ mod tests {
         assert_eq!((v.out_bus, v.play_mode, v.play_voices, v.play_retrigger), (1, PlayMode::Poly, 16, 30.0));
         assert_eq!(v.routes.len(), 1);
         let r = &v.routes[0];
-        assert_eq!((r.source, r.target.as_str(), r.amount, r.bipolar, r.invert), (LayerId(0), "a_gain", 1.0, false, false));
+        assert_eq!(
+            (r.source, r.target.as_str(), r.amount, r.bipolar, r.invert),
+            (LayerId(0), "a_gain", 1.0, false, false)
+        );
         let names: Vec<(&str, bool)> = card.layers.iter().map(|l| (l.name.as_str(), l.enabled)).collect();
         assert_eq!(names, [("ADSR 1", true), ("ADSR 2", false)]);
         assert!(card.layers.iter().all(|l| l.kind == ADSR));
@@ -509,9 +512,7 @@ mod tests {
         let reg = reg();
         let kind = reg.module(VOICE).unwrap();
         assert_eq!(kind.slot(), SlotId::Sound);
-        for t in ["shape"] {
-            assert!(kind.fits(t));
-        }
+        assert!(kind.fits("shape"));
         for t in ["balls", "camera", "folder", "scene"] {
             assert!(!kind.fits(t), "{t}");
         }

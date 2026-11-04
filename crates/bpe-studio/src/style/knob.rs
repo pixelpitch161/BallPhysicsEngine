@@ -50,7 +50,18 @@ const SWEEP: f32 = 270.0;
 
 impl<'a> Knob<'a> {
     pub fn new(value: &'a mut f64, range: RangeInclusive<f64>, default: f64, label: &'a str) -> Self {
-        Knob { value, range, default, label, format: None, bipolar: false, rings: &[], colour: TEXT, log: false, width: WIDTH }
+        Knob {
+            value,
+            range,
+            default,
+            label,
+            format: None,
+            bipolar: false,
+            rings: &[],
+            colour: TEXT,
+            log: false,
+            width: WIDTH,
+        }
     }
 
     /// How the value reads under the dial (a plain number when not given).

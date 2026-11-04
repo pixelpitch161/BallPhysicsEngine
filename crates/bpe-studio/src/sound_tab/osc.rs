@@ -3,7 +3,7 @@
 
 use super::{TabCx, db, panel, wave_view};
 use crate::style;
-use bpe_kit::sound::{NoiseColour, PhaseMode, SubOctave, SubWave, Wave, WarpMode};
+use bpe_kit::sound::{NoiseColour, PhaseMode, SubOctave, SubWave, WarpMode, Wave};
 use eframe::egui::{self, RichText, Ui};
 
 /// One of the two oscillators.
@@ -56,10 +56,13 @@ fn degrees(v: f64) -> String {
 
 /// Pan, -100..100: L, C or R.
 pub fn pan(v: f64) -> String {
-    match v.round() {
-        x if x == 0.0 => "C".into(),
-        x if x < 0.0 => format!("L{:.0}", -x),
-        x => format!("R{x:.0}"),
+    let x = v.round();
+    if x == 0.0 {
+        "C".into()
+    } else if x < 0.0 {
+        format!("L{:.0}", -x)
+    } else {
+        format!("R{x:.0}")
     }
 }
 
@@ -88,7 +91,13 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc) {
         cx.chips(
             ui,
             &key("wave"),
-            &[(Wave::Sine, "Sine"), (Wave::Triangle, "Tri"), (Wave::Saw, "Saw"), (Wave::Square, "Square"), (Wave::Noise, "Noise")],
+            &[
+                (Wave::Sine, "Sine"),
+                (Wave::Triangle, "Tri"),
+                (Wave::Saw, "Saw"),
+                (Wave::Square, "Square"),
+                (Wave::Noise, "Noise"),
+            ],
         );
         if wave == Wave::Noise {
             cx.chips(ui, &key("noise"), &[(NoiseColour::White, "White"), (NoiseColour::Pink, "Pink")]);
@@ -163,7 +172,11 @@ fn sub(ui: &mut Ui, cx: &mut TabCx, which: Osc) {
     let p = which.prefix();
     ui.vertical(|ui| {
         ui.label(RichText::new("Sub").small().color(style::MUTED));
-        cx.chips(ui, &format!("{p}sub"), &[(SubWave::Off, "Off"), (SubWave::Sine, "Sine"), (SubWave::Square, "Square")]);
+        cx.chips(
+            ui,
+            &format!("{p}sub"),
+            &[(SubWave::Off, "Off"), (SubWave::Sine, "Sine"), (SubWave::Square, "Square")],
+        );
         let off = cx.choice::<SubWave>(&format!("{p}sub")) == SubWave::Off;
         if !off {
             cx.chips(ui, &format!("{p}sub_octave"), &[(SubOctave::One, "-1 oct"), (SubOctave::Two, "-2 oct")]);
@@ -197,14 +210,24 @@ mod tests {
 
     fn drag_up(h: &mut egui_kittest::Harness<'_, (crate::app::Studio, f32)>, at: egui::Pos2, dy: f32) {
         h.hover_at(at);
-        h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
         h.step();
         for i in 1..=5 {
             h.event(egui::Event::PointerMoved(at - egui::vec2(0.0, dy * i as f32 / 5.0)));
             h.step();
         }
         let end = at - egui::vec2(0.0, dy);
-        h.event(egui::Event::PointerButton { pos: end, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.event(egui::Event::PointerButton {
+            pos: end,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
         h.run();
     }
 
@@ -240,7 +263,10 @@ mod tests {
     #[test]
     fn every_osc_knob_is_named() {
         let h = sounding();
-        for name in ["Gain", "Level", "Warp", "Octave", "Semi", "Cents", "Unison", "Detune", "Spread", "Blend", "Rand ph.", "Pan", "Phase"] {
+        for name in [
+            "Gain", "Level", "Warp", "Octave", "Semi", "Cents", "Unison", "Detune", "Spread", "Blend", "Rand ph.",
+            "Pan", "Phase",
+        ] {
             let n = h.get_all_by_role_and_label(Role::Slider, name).count();
             assert!(n >= 2, "{name}: {n} knobs (one on each oscillator)");
         }

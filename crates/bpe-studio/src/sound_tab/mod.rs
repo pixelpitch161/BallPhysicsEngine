@@ -340,10 +340,7 @@ pub(crate) mod tests {
     use crate::app::Studio;
     use crate::inspector::InspectorTab;
     use eframe::egui::accesskit::Role;
-    use egui_kittest::{
-        Harness,
-        kittest::Queryable,
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
 
     /// The test scene's shape and ball.
     pub const SHAPE: ThingId = ThingId(1);

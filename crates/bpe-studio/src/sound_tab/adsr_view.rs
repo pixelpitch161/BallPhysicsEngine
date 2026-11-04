@@ -57,7 +57,8 @@ impl Env {
 /// One beat at the scene's tempo, in ms.
 fn beat_ms(cx: &TabCx) -> f32 {
     let root = cx.scene.things.get(&bpe_core::ThingId::ROOT);
-    let settings = root.map(|r| <bpe_kit::SceneSettings as bpe_core::Settings>::from_params(&r.params)).unwrap_or_default();
+    let settings =
+        root.map(|r| <bpe_kit::SceneSettings as bpe_core::Settings>::from_params(&r.params)).unwrap_or_default();
     (bpe_sound::TempoMap::from_settings(&settings).beat_seconds() * 1000.0) as f32
 }
 
@@ -144,7 +145,9 @@ enum Grab {
 
 fn grab_at(l: &Layout, p: Pos2) -> Option<Grab> {
     let corners = [(Grab::Peak, l.peak), (Grab::Decayed, l.decayed), (Grab::End, l.end)];
-    if let Some((g, _)) = corners.iter().filter(|(_, c)| c.distance(p) <= GRAB).min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p))) {
+    if let Some((g, _)) =
+        corners.iter().filter(|(_, c)| c.distance(p) <= GRAB).min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)))
+    {
         return Some(*g);
     }
     if p.x >= l.start.x && p.x < l.peak.x {
@@ -176,13 +179,18 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
                     ("release", "Release"),
                     ("velocity", "Velocity"),
                 ] {
-                    let format: &dyn Fn(f64) -> String = if matches!(k, "sustain" | "velocity") { &percent } else { &ms };
+                    let format: &dyn Fn(f64) -> String =
+                        if matches!(k, "sustain" | "velocity") { &percent } else { &ms };
                     cx.knob(ui, &key(k), label, format);
                 }
             });
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Gate").small().color(style::MUTED));
-                cx.chips(ui, &key("gate_mode"), &[(GateMode::Fixed, "Fixed"), (GateMode::UntilNextHit, "Until next hit")]);
+                cx.chips(
+                    ui,
+                    &key("gate_mode"),
+                    &[(GateMode::Fixed, "Fixed"), (GateMode::UntilNextHit, "Until next hit")],
+                );
                 if cx.choice::<GateMode>(&key("gate_mode")) == GateMode::Fixed {
                     ui.add_space(6.0);
                     cx.chips(ui, &key("gate_unit"), &[(GateUnit::Ms, "ms"), (GateUnit::Beats, "Beats")]);
@@ -350,13 +358,23 @@ mod tests {
 
     fn drag(h: &mut Harness<'_, (Studio, f32)>, from: Pos2, by: Vec2) {
         h.hover_at(from);
-        h.event(egui::Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.event(egui::Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
         h.step();
         for i in 1..=6 {
             h.event(egui::Event::PointerMoved(from + by * (i as f32 / 6.0)));
             h.step();
         }
-        h.event(egui::Event::PointerButton { pos: from + by, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.event(egui::Event::PointerButton {
+            pos: from + by,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
         h.run();
     }
 

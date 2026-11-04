@@ -52,7 +52,10 @@ impl Engine {
         let physics = Playback::new(scene, resolved, kit.sims.clone());
         let cursor = HitCursor::new(physics.world().steps_per_second);
         let patch = SoundPatch::build(scene, resolved, kit);
-        let master = Master::new(&patch.master);
+        let mut master = Master::new(&patch.master);
+        master.set_keys(patch.master_keys);
+        master.at(0.0);
+        master.reset();
         let discard = master.latency();
         Engine {
             physics,
@@ -113,6 +116,9 @@ impl Engine {
             v.reset();
         }
         self.leaving.clear();
+        // The master's keyed gains start where they are at the first block rendered.
+        let first = if self.voices.is_empty() { target } else { start };
+        self.master.at(first as f64 / rate);
         self.master.reset();
         self.paused_pos = 0;
         if self.voices.is_empty() {
@@ -147,6 +153,7 @@ impl Engine {
     /// was still playing.
     pub fn swap_patch(&mut self, patch: SoundPatch) {
         self.master.set(&patch.master);
+        self.master.set_keys(patch.master_keys);
         self.tempo = patch.tempo;
         let mut old = std::mem::take(&mut self.voices);
         let mut voices = patch.voices;
@@ -216,6 +223,7 @@ impl Engine {
         for v in &mut self.leaving {
             v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
         }
+        self.master.at(cx.time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.paused_pos += BLOCK as u64;
         for i in 0..BLOCK {
@@ -312,6 +320,7 @@ impl Engine {
         for v in &mut self.leaving {
             v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
         }
+        self.master.at(cx.time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;
         for i in 0..BLOCK {

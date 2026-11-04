@@ -8,8 +8,8 @@ pub mod voice;
 pub use adsr::{ADSR, AdsrKind, AdsrSettings};
 pub use mixer::{MixerKind, MixerSettings};
 pub use voice::{
-    GateMode, GateUnit, NoiseColour, OscSettings, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, VOICE,
-    VoiceKind, VoiceSettings, Wave, WarpMode, starter_voice,
+    GateMode, GateUnit, NoiseColour, OscSettings, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, VOICE, VoiceKind,
+    VoiceSettings, WarpMode, Wave, starter_voice,
 };
 
 use bpe_core::Registry;

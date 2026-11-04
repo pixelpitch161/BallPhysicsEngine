@@ -87,14 +87,14 @@ fn tile(ui: &mut Ui, w: f32, name: &str, state: &str, selected: bool, live: bool
         painter.rect_stroke(rect, style::RADIUS, Stroke::new(1.0, line), egui::StrokeKind::Inside);
         let inner = Rect::from_min_max(rect.min + Vec2::new(6.0, 4.0), rect.max - Vec2::new(6.0, 4.0));
         let ink = if live { style::TEXT } else { style::FAINT };
+        painter.text(inner.left_top(), egui::Align2::LEFT_TOP, name, style::semibold(12.0), ink);
         painter.text(
-            inner.left_top(),
-            egui::Align2::LEFT_TOP,
-            name,
-            style::semibold(12.0),
-            ink,
+            inner.left_bottom(),
+            egui::Align2::LEFT_BOTTOM,
+            state,
+            egui::FontId::proportional(11.0),
+            style::MUTED,
         );
-        painter.text(inner.left_bottom(), egui::Align2::LEFT_BOTTOM, state, egui::FontId::proportional(11.0), style::MUTED);
     }
     response
 }

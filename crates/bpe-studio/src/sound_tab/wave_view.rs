@@ -2,7 +2,7 @@
 
 use crate::style;
 use bpe_dsp::{WarpModeId, WaveShape};
-use bpe_kit::sound::{Wave, WarpMode};
+use bpe_kit::sound::{WarpMode, Wave};
 use eframe::egui::{self, Id, Pos2, Sense, Shape, Stroke, Ui, Vec2};
 
 /// The view's height.
@@ -51,7 +51,10 @@ pub fn show(ui: &mut Ui, id: Id, name: &str, wave: Wave, mode: WarpMode, warp: f
         painter.rect_filled(rect, style::RADIUS, style::GROUND);
         painter.rect_stroke(rect, style::RADIUS, Stroke::new(1.0, style::LINE_SOFT), egui::StrokeKind::Inside);
         let mid = rect.center().y;
-        painter.line_segment([Pos2::new(rect.left(), mid), Pos2::new(rect.right(), mid)], Stroke::new(1.0, style::LINE_SOFT));
+        painter.line_segment(
+            [Pos2::new(rect.left(), mid), Pos2::new(rect.right(), mid)],
+            Stroke::new(1.0, style::LINE_SOFT),
+        );
         let half = rect.height() * 0.5 - 6.0;
         let n = levels.len().max(2);
         let points: Vec<Pos2> = levels

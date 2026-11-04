@@ -118,13 +118,7 @@ impl UnisonOsc {
         // Copies tuned symmetrically, the inner ones closer (a curve like the classic unisons).
         let half = p.detune_cents.max(0.0) * 0.5;
         // The middle copy, or the two middle ones, against the rest.
-        let centre = if n == 1 {
-            1
-        } else if n % 2 == 1 {
-            1
-        } else {
-            2
-        };
+        let centre = if n % 2 == 1 { 1 } else { 2 };
         let sides = n - centre;
         let blend = p.blend.clamp(0.0, 1.0);
         let (centre_g, side_g) = if sides == 0 {
@@ -405,13 +399,7 @@ impl SubOsc {
 
     /// Adds one block into `l` and `r`, `gain[i]` on each sample. `square` is the band-limited
     /// square table.
-    pub fn render(
-        &mut self,
-        square: &TableSet,
-        gain: &[f32; BLOCK],
-        l: &mut [f32; BLOCK],
-        r: &mut [f32; BLOCK],
-    ) {
+    pub fn render(&mut self, square: &TableSet, gain: &[f32; BLOCK], l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
         if self.is_off() {
             return;
         }
@@ -606,4 +594,3 @@ mod tests {
         assert!(off.is_off());
     }
 }
-

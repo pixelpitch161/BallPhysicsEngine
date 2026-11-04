@@ -1164,18 +1164,28 @@ mod tests {
     }
 
     #[test]
-    fn master_knobs_offer_no_keyframes_yet() {
+    fn master_output_takes_keyframes_but_ceiling_doesnt() {
         let mut h = left_harness();
         h.get_by_label("Mixer").click();
         h.run();
-        h.query_all_by_label("Output")
-            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
-            .unwrap()
-            .click_secondary();
+        let knob = |h: &Harness<'_, (Studio, f32)>, label: &str| {
+            h.query_all_by_label(label)
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+                .unwrap()
+                .click_secondary()
+        };
+        knob(&h, "Output");
         h.run();
-        let key = h.get_by_label("Create Keyframe");
-        assert!(key.accesskit_node().is_disabled(), "the Master's keys come with part 2's keyed sound settings");
         assert!(h.query_by_label("Copy Value").is_some(), "the rest of the value menu is there");
+        h.get_by_label("Create Keyframe").click();
+        h.run();
+        let a = Address::on(ThingId::ROOT, SlotId::Mixer, "master_output");
+        assert!(h.state().0.scene.keyed(&a), "Output is keyed");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        knob(&h, "Ceiling");
+        h.run();
+        assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled(), "Ceiling takes no keys");
     }
 
     #[test]

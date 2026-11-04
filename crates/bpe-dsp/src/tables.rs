@@ -396,7 +396,8 @@ mod tests {
                         let p = power(&x);
                         // Against the loudest harmonic: a full Sync moves the energy up off the
                         // fundamental.
-                        let loudest = (1..=p.len() / bin).filter(|h| h * bin < p.len()).map(|h| p[h * bin]).fold(0.0, f64::max);
+                        let loudest =
+                            (1..=p.len() / bin).filter(|h| h * bin < p.len()).map(|h| p[h * bin]).fold(0.0, f64::max);
                         // A warp that leaves (almost) nothing, such as a square mirrored onto
                         // itself, has nothing to fold.
                         let full_scale = (n as f64 * 0.35875 / 2.0).powi(2);

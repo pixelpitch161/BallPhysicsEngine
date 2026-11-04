@@ -6,6 +6,9 @@
 //! hit). Every knob can be keyed on the timeline (read each block) and every gain is smoothed,
 //! so nothing clicks.
 
+// The sample loops walk several buffers in step by index, which reads clearest as it is.
+#![allow(clippy::needless_range_loop)]
+
 use super::alloc::{CAPACITY, STEAL_MS, Voices};
 use super::hit_filter::HitFilter;
 use super::knobs::{self as k, KNOBS, MAX_ENVS, Values};
@@ -14,9 +17,7 @@ use crate::chain::Chain;
 use crate::modmatrix::{Combine, ModMatrix};
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ThingId, Track};
-use bpe_dsp::{
-    EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain,
-};
+use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
 use bpe_kit::sound::{GateMode, GateUnit, NoiseColour, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, Wave};
 use bpe_runtime::Party;
 use glam::Vec2;
@@ -385,7 +386,9 @@ impl ShapeVoice {
         let spec = &self.spec.envs[e];
         match (spec.gate_mode, spec.gate_unit) {
             (GateMode::UntilNextHit, _) => u64::MAX,
-            (GateMode::Fixed, GateUnit::Ms) => (self.now[k::env(e, k::GATE_MS)].max(0.0) / 1000.0 * crate::SAMPLE_RATE) as u64,
+            (GateMode::Fixed, GateUnit::Ms) => {
+                (self.now[k::env(e, k::GATE_MS)].max(0.0) / 1000.0 * crate::SAMPLE_RATE) as u64
+            }
             (GateMode::Fixed, GateUnit::Beats) => {
                 let s = tempo.seconds_of_beats(self.now[k::env(e, k::GATE_BEATS)].max(0.0) as f64);
                 (s * crate::SAMPLE_RATE as f64) as u64
@@ -398,6 +401,7 @@ impl ShapeVoice {
     }
 
     /// A note starts at `at` in this block: on a fresh slot (Poly) or the one voice (Mono).
+    #[allow(clippy::too_many_arguments)]
     fn start_note(&mut self, cx: &BlockCx, at: u32, note: u8, strength: f32, ball: Party, point: Vec2, seed: u64) {
         let sample = cx.start_sample + at as u64;
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
@@ -407,7 +411,8 @@ impl ShapeVoice {
             // and the pitch glides there.
             let glide = (self.now[k::GLIDE].max(0.0) / 1000.0 * crate::SAMPLE_RATE) as u32;
             let envs = self.envs();
-            let gates: [u64; MAX_ENVS] = std::array::from_fn(|e| if e < envs { self.gate_samples(e, cx.tempo) } else { u64::MAX });
+            let gates: [u64; MAX_ENVS] =
+                std::array::from_fn(|e| if e < envs { self.gate_samples(e, cx.tempo) } else { u64::MAX });
             let n = &mut self.notes.slots[0];
             n.note = note;
             n.strength = strength;
@@ -444,8 +449,10 @@ impl ShapeVoice {
             self.notes.slots[s].fade_out(STEAL_MS);
         }
         let envs = self.envs();
-        let gates: [u64; MAX_ENVS] = std::array::from_fn(|e| if e < envs { self.gate_samples(e, cx.tempo) } else { u64::MAX });
-        let params: [EnvParams; MAX_ENVS] = std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
+        let gates: [u64; MAX_ENVS] =
+            std::array::from_fn(|e| if e < envs { self.gate_samples(e, cx.tempo) } else { u64::MAX });
+        let params: [EnvParams; MAX_ENVS] =
+            std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
         let unison = self.unison_params(note as f32);
         let osc_on: [bool; 2] = [self.spec.osc[0].on, self.spec.osc[1].on];
         let subs: [(SubWaveId, u8); 2] = std::array::from_fn(|o| {
@@ -457,7 +464,8 @@ impl ShapeVoice {
             };
             (wave, if spec.sub_octave == SubOctave::Two { 2 } else { 1 })
         });
-        let restart = [self.spec.osc[0].phase_mode == PhaseMode::Restart, self.spec.osc[1].phase_mode == PhaseMode::Restart];
+        let restart =
+            [self.spec.osc[0].phase_mode == PhaseMode::Restart, self.spec.osc[1].phase_mode == PhaseMode::Restart];
         let ids: [LayerId; MAX_ENVS] =
             std::array::from_fn(|e| self.spec.envs.get(e).map(|s| s.id).unwrap_or(LayerId(u32::MAX)));
         let n = &mut self.notes.slots[slot];
@@ -528,7 +536,9 @@ impl ShapeVoice {
             let sample = cx.start_sample + at as u64;
             let Some(strength) = self.filter.accept(hit, sample, cx.world) else { continue };
             let ball = hit.event.a;
-            let seed = mix(sample ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64) ^ ((self.spec.thing.0 as u64) << 48));
+            let seed = mix(sample
+                ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
+                ^ ((self.spec.thing.0 as u64) << 48));
             self.hit_arrives(at);
             let pick = self.picker.pick(&PickCx { slots: &self.spec.slots, seed });
             for &note in pick.notes() {
@@ -562,7 +572,8 @@ impl ShapeVoice {
     /// Renders note `i` into the shape's buffers. Returns false once it is over.
     fn render_note(&mut self, i: usize) -> bool {
         let envs = self.envs();
-        let params: [EnvParams; MAX_ENVS] = std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
+        let params: [EnvParams; MAX_ENVS] =
+            std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
         let n = &mut self.notes.slots[i];
         let sc = &mut *self.scratch;
         // The envelopes, sample by sample, with this block's hits and gates.

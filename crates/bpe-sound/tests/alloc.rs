@@ -72,6 +72,16 @@ fn render_does_not_allocate() {
     v.a.sub = SubWave::Square;
     card.params = v.to_params();
     scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
+    // Keys on a knob and on the Master, read every block.
+    bpe_kit::ensure_mixer(&mut scene, &kit.registry);
+    for (a, t, v) in [
+        (bpe_core::Address::on(shape, SlotId::Sound, "a_gain"), 0.0, -6.0),
+        (bpe_core::Address::on(shape, SlotId::Sound, "a_gain"), 5.0, 0.0),
+        (bpe_core::Address::on(bpe_core::ThingId::ROOT, SlotId::Mixer, "master_output"), 0.0, -3.0),
+        (bpe_core::Address::on(bpe_core::ThingId::ROOT, SlotId::Mixer, "master_output"), 5.0, 0.0),
+    ] {
+        scene.set_key(&kit.registry, &a, t, bpe_core::Value::Number(v)).unwrap();
+    }
     let resolved = resolve_scene(&scene, &kit.registry);
     let mut e = Engine::new(&scene, &resolved, &kit);
     for _ in 0..200 {

@@ -73,7 +73,12 @@ fn run(v: &mut ShapeVoice, w: &World, from: u64, blocks: u64, hits: &[(u64, Bloc
     for b in from..from + blocks {
         theirs.clear();
         theirs.extend(hits.iter().filter(|(at, _)| *at == b).map(|(_, h)| h.clone()));
-        let cx = BlockCx { start_sample: b * BLOCK as u64, time: (b * BLOCK as u64) as f64 / 48_000.0, tempo: &tempo, world: w };
+        let cx = BlockCx {
+            start_sample: b * BLOCK as u64,
+            time: (b * BLOCK as u64) as f64 / 48_000.0,
+            tempo: &tempo,
+            world: w,
+        };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
         v.on_block(&cx, &theirs, &mut l, &mut r);
         out.extend(l);
@@ -165,7 +170,7 @@ fn a_burst_of_hits_stays_within_the_voice_limit() {
     let (shape, ball) = (shape_of(&scene), ball_of(&scene));
     let p = world(&scene, &kit);
     let mut v = voice(&scene, &kit);
-    let hits: Vec<(u64, BlockHit)> = (0..200).map(|i| (0, hit(ball, i, shape, (i % 64) as u32, 1500.0))).collect();
+    let hits: Vec<(u64, BlockHit)> = (0..200).map(|i| (0, hit(ball, i, shape, i % 64, 1500.0))).collect();
     run(&mut v, p.world(), 0, 1, &hits);
     assert!(v.sounding() <= 16, "{} notes sound", v.sounding());
     assert_eq!(v.sounding(), 16);
@@ -372,7 +377,11 @@ fn removing_a_ringing_shape_fades_it_out() {
     }
     // The master's lookahead holds back a few ms; within 10 ms (plus that) it has faded.
     let tail = &after[48 * 20..];
-    assert!(tail.iter().all(|v| v.abs() < 1e-4), "still sounding {:?}", tail.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+    assert!(
+        tail.iter().all(|v| v.abs() < 1e-4),
+        "still sounding {:?}",
+        tail.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    );
     let worst = after.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
     assert!(worst < 0.1, "no click: {worst}");
     assert!(!e.has_leaving(), "dropped once silent");
@@ -403,4 +412,17 @@ fn heavy_patch_renders_8x_real_time() {
     assert!(factor >= 8.0, "only {factor:.1}x real time");
 }
 
-
+#[test]
+fn a_key_on_the_master_output_is_heard() {
+    let kit = kit();
+    let plain = voiced(&kit, |_, _| {});
+    let mut keyed = plain.clone();
+    bpe_kit::ensure_mixer(&mut keyed, &kit.registry);
+    let out = bpe_core::Address::on(ThingId::ROOT, SlotId::Mixer, "master_output");
+    keyed.set_key(&kit.registry, &out, 0.0, bpe_core::Value::Number(-20.0)).unwrap();
+    let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let (a, b) = (peak(&render(&plain, &kit, 3.0)), peak(&render(&keyed, &kit, 3.0)));
+    assert!(a > 0.01, "the starter patch plays: {a}");
+    let db = 20.0 * (b / a).log10();
+    assert!((db + 20.0).abs() < 1.5, "the keyed Output takes 20 dB off: {db:.1} dB");
+}

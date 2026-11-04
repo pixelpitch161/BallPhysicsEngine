@@ -1,6 +1,7 @@
 //! Everything the engine reads from the scene, built off the audio path so building may
 //! allocate, and swapped in between blocks.
 
+use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
 use crate::voices::shape::{EnvSpec, OscSpec, ShapeSpec};
@@ -14,6 +15,7 @@ use std::sync::Arc;
 /// A scene's sound settings, ready for the engine.
 pub struct SoundPatch {
     pub master: MixerSettings,
+    pub master_keys: MasterKeys,
     pub tempo: TempoMap,
     pub voices: Vec<Box<dyn VoiceSource>>,
 }
@@ -46,13 +48,7 @@ fn osc_spec(o: &OscSettings) -> OscSpec {
 }
 
 /// The voice of the shape `id` from its resolved Sound card, or `None` when its sound is off.
-pub fn shape_voice(
-    scene: &Scene,
-    id: ThingId,
-    card: &ResolvedSlot,
-    index: usize,
-    width: f32,
-) -> Option<ShapeVoice> {
+pub fn shape_voice(scene: &Scene, id: ThingId, card: &ResolvedSlot, index: usize, width: f32) -> Option<ShapeVoice> {
     if card.kind != VOICE {
         return None;
     }
@@ -105,6 +101,11 @@ impl SoundPatch {
             .and_then(|r| r.slots.get(&SlotId::Mixer))
             .map(|s| MixerSettings::from_params(&s.params))
             .unwrap_or_default();
+        let track = |key: &str| {
+            let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Mixer), key: key.into() };
+            scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
+        };
+        let master_keys = MasterKeys { input: track("master_input"), output: track("master_output") };
         let settings = root.map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
         let tempo = TempoMap::from_settings(&settings);
         let mut voices: Vec<Box<dyn VoiceSource>> = Vec::new();
@@ -126,7 +127,7 @@ impl SoundPatch {
                 voices.push(Box::new(tone));
             }
         }
-        SoundPatch { master, tempo, voices }
+        SoundPatch { master, master_keys, tempo, voices }
     }
 
     /// Whether anything in it makes sound.
