@@ -12,13 +12,19 @@ use bpe_core::Settings;
 use bpe_core::{Address, LayerId, Params, Scene, SettingDef, SlotId, Target, ThingId, Track, Value, layered_key};
 use bpe_dsp::fx::analyser::Analyser;
 use bpe_dsp::fx::compressor::{CompParams, Compressor, Key};
+use bpe_dsp::fx::delay::{self as dly, Delay, DelayParams, Tap};
 use bpe_dsp::fx::eq::{BandParams, BandShape, Eq8, Place};
 use bpe_dsp::fx::modfx::{Chorus, Flanger, ModParams, Phaser};
+use bpe_dsp::fx::reverb_common::ReverbParams;
+use bpe_dsp::fx::reverb_hall::Hall;
+use bpe_dsp::fx::reverb_plate::Plate;
+use bpe_dsp::fx::reverb_spring::Spring;
 use bpe_dsp::fx::width::{Correlation, Width};
 use bpe_dsp::{Smoother, TruePeakLimiter};
 use bpe_kit::sound::fx::{
-    self, AnalyserMode, BandKind, CompressorSettings, EqBand, EqSettings, Feel, LimiterSettings, ModFxSettings,
-    NoteLength, Sidechain, StereoPlace, WidthSettings,
+    self, AnalyserMode, BandKind, CompressorSettings, DelayCharacter, DelayMode, DelaySettings, EqBand, EqSettings,
+    Feel, HallLines, LimiterSettings, ModFxSettings, NoteLength, ReverbKind, ReverbSettings, Sidechain, StereoPlace,
+    WidthSettings,
 };
 use bpe_kit::sound::{BUSES, MIXER};
 use bpe_kit::things::shape::KIND as SHAPE;
@@ -183,6 +189,133 @@ impl ModDsp {
     }
 }
 
+/// A Plate, Hall or Spring.
+enum Room {
+    Plate(Box<Plate>),
+    Hall(Box<Hall>, usize),
+    Spring(Box<Spring>),
+}
+
+impl Room {
+    fn of(set: &ReverbSettings) -> Room {
+        match set.kind {
+            ReverbKind::Plate => Room::Plate(Box::default()),
+            ReverbKind::Hall => {
+                let lines = match set.lines {
+                    HallLines::Eight => 8,
+                    HallLines::Sixteen => 16,
+                };
+                Room::Hall(Box::new(Hall::new(lines)), lines)
+            }
+            ReverbKind::Spring => Room::Spring(Box::default()),
+        }
+    }
+    fn set(&mut self, p: &ReverbParams) {
+        match self {
+            Room::Plate(d) => d.set(p),
+            Room::Hall(d, _) => d.set(p),
+            Room::Spring(d) => d.set(p),
+        }
+    }
+    fn reset(&mut self) {
+        match self {
+            Room::Plate(d) => d.reset(),
+            Room::Hall(d, _) => d.reset(),
+            Room::Spring(d) => d.reset(),
+        }
+    }
+    fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        match self {
+            Room::Plate(d) => d.process(l, r),
+            Room::Hall(d, _) => d.process(l, r),
+            Room::Spring(d) => d.process(l, r),
+        }
+    }
+    /// Takes over `old`'s tail when it is the same room (another kind, or a hall of other
+    /// lines, starts empty).
+    fn adopt(&mut self, old: &mut Room) {
+        match (self, old) {
+            (Room::Plate(d), Room::Plate(o)) => std::mem::swap(d, o),
+            (Room::Hall(d, a), Room::Hall(o, b)) if a == b => std::mem::swap(d, o),
+            (Room::Spring(d), Room::Spring(o)) => std::mem::swap(d, o),
+            _ => {}
+        }
+    }
+}
+
+/// The tap keys of the multi-tap delay.
+const TAP_KEYS: [[&str; 3]; 4] = [
+    ["tap1_time", "tap1_level", "tap1_pan"],
+    ["tap2_time", "tap2_level", "tap2_pan"],
+    ["tap3_time", "tap3_level", "tap3_pan"],
+    ["tap4_time", "tap4_level", "tap4_pan"],
+];
+
+/// The delay's settings, keyed where they have keys, for the sound-making part.
+fn delay_params(set: &DelaySettings, k: &Keyed, tempo: &TempoMap) -> DelayParams {
+    let seconds = if set.sync {
+        note_seconds(set.time_note, set.time_feel, tempo)
+    } else {
+        k.get("time_ms", set.time_ms) as f64 / 1000.0
+    };
+    let base = [
+        (set.tap1_time, set.tap1_level, set.tap1_pan),
+        (set.tap2_time, set.tap2_level, set.tap2_pan),
+        (set.tap3_time, set.tap3_level, set.tap3_pan),
+        (set.tap4_time, set.tap4_level, set.tap4_pan),
+    ];
+    let taps = std::array::from_fn(|i| {
+        let [t, g, p] = TAP_KEYS[i];
+        let (bt, bg, bp) = base[i];
+        Tap {
+            time: (k.get(t, bt) / 100.0).clamp(0.01, 1.0),
+            gain: bpe_dsp::db_to_gain(k.get(g, bg)),
+            pan: (k.get(p, bp) / 100.0).clamp(-1.0, 1.0),
+        }
+    });
+    DelayParams {
+        mode: match set.mode {
+            DelayMode::Standard => dly::DelayMode::Standard,
+            DelayMode::PingPong => dly::DelayMode::PingPong,
+            DelayMode::MultiTap => dly::DelayMode::MultiTap,
+        },
+        character: match set.character {
+            DelayCharacter::Digital => dly::Character::Digital,
+            DelayCharacter::Analog => dly::Character::Analog,
+            DelayCharacter::Tape => dly::Character::Tape,
+        },
+        time_samples: (seconds * crate::SAMPLE_RATE as f64).clamp(48.0, dly::MAX_TIME_SAMPLES as f64) as f32,
+        feedback: (k.get("feedback", set.feedback) / 100.0).clamp(0.0, 1.0),
+        low_cut_hz: k.get("low_cut", set.low_cut),
+        high_cut_hz: k.get("high_cut", set.high_cut),
+        reso: (k.get("reso", set.reso) / 100.0).clamp(0.0, 1.0),
+        width: (k.get("width", set.width) / 100.0).clamp(0.0, 1.0),
+        taps,
+    }
+}
+
+/// The reverb's settings, keyed where they have keys, for the sound-making part.
+fn reverb_params(set: &ReverbSettings, k: &Keyed) -> ReverbParams {
+    let pc = |key: &str, base: f32| (k.get(key, base) / 100.0).clamp(0.0, 1.0);
+    ReverbParams {
+        pre_delay_samples: (k.get("pre_delay", set.pre_delay) * crate::SAMPLE_RATE / 1000.0)
+            .clamp(0.0, bpe_dsp::fx::reverb_common::MAX_PRE_DELAY as f32),
+        decay_s: k.get("decay", set.decay).clamp(0.1, 20.0),
+        size: pc("size", set.size),
+        damping: pc("damping", set.damping),
+        low_cut_hz: k.get("low_cut", set.low_cut),
+        high_cut_hz: k.get("high_cut", set.high_cut),
+        width: pc("width", set.width),
+        diffusion: pc("diffusion", set.diffusion),
+        modulation: pc("modulation", set.modulation),
+        early: pc("early", set.early),
+        springs: set.springs.clamp(1, 3) as u8,
+        tension: pc("tension", set.tension),
+        drip: pc("drip", set.drip),
+        freeze: set.freeze,
+    }
+}
+
 /// One effect's sound-making part, with its settings as set (keys read on top).
 enum Fx {
     Limiter {
@@ -212,6 +345,14 @@ enum Fx {
         /// to itself.
         shape: Option<ThingId>,
         hits: Box<[(u32, f32); MAX_KEY_HITS]>,
+    },
+    Delay {
+        dsp: Box<Delay>,
+        set: Box<DelaySettings>,
+    },
+    Reverb {
+        room: Room,
+        set: Box<ReverbSettings>,
     },
 }
 
@@ -244,6 +385,14 @@ impl Fx {
                     _ => ModDsp::Flanger(Box::default()),
                 };
                 (Fx::Mod { dsp, set: fx::mod_fx_settings(kind, p), rate_hz: 1.0 }, MixLaw::Power)
+            }
+            fx::DELAY => {
+                let set = Box::new(DelaySettings::from_params(p));
+                (Fx::Delay { dsp: Box::default(), set }, MixLaw::Power)
+            }
+            fx::REVERB => {
+                let set = Box::new(ReverbSettings::from_params(p));
+                (Fx::Reverb { room: Room::of(&set), set }, MixLaw::Power)
             }
             fx::WIDTH => {
                 let set = WidthSettings::from_params(p);
@@ -278,6 +427,8 @@ impl Fx {
                 analyser.reset();
             }
             Fx::Comp { dsp, .. } => dsp.reset(),
+            Fx::Delay { dsp, .. } => dsp.reset(),
+            Fx::Reverb { room, .. } => room.reset(),
         }
     }
 
@@ -298,6 +449,8 @@ impl Fx {
                 std::mem::swap(analyser, oa);
             }
             (Fx::Comp { dsp, .. }, Fx::Comp { dsp: o, .. }) => std::mem::swap(dsp, o),
+            (Fx::Delay { dsp, .. }, Fx::Delay { dsp: o, .. }) => std::mem::swap(dsp, o),
+            (Fx::Reverb { room, .. }, Fx::Reverb { room: o, .. }) => room.adopt(o),
             _ => {}
         }
     }
@@ -347,6 +500,8 @@ impl Fx {
                     sc_high_cut_hz: k.get("sc_high_cut", set.sc_high_cut),
                 });
             }
+            Fx::Delay { dsp, set } => dsp.set(&delay_params(set, k, tempo)),
+            Fx::Reverb { room, set } => room.set(&reverb_params(set, k)),
         }
     }
 
@@ -410,6 +565,14 @@ impl Fx {
                 let reading = FxReading { reduction: gr, input: dsp.input_db(), output: dsp.output_db(), value: 0.0 };
                 cx.meters.write_fx(id.0, &reading);
                 gr
+            }
+            Fx::Delay { dsp, .. } => {
+                dsp.process(l, r);
+                0.0
+            }
+            Fx::Reverb { room, .. } => {
+                room.process(l, r);
+                0.0
             }
         }
     }
@@ -694,6 +857,57 @@ mod tests {
         let dry = run(&mut plain, 40);
         let level = |x: &[(f32, f32)]| x[BLOCK * 20..].iter().fold(0.0f32, |m, v| m.max(v.0.abs()));
         assert!(level(&a) < level(&dry) * 0.5, "and it does compress");
+    }
+
+    /// A click at the start, through `chain`, for `blocks` blocks (left channel).
+    fn click(chain: &mut FxChain, blocks: usize, tempo: &TempoMap) -> Vec<f32> {
+        let meters = Meters::default();
+        let buses = [[[0.0; BLOCK]; 2]; BUSES];
+        let mut out = Vec::new();
+        for b in 0..blocks {
+            let mut l = [0.0; BLOCK];
+            let mut r = [0.0; BLOCK];
+            if b == 0 {
+                l[0] = 1.0;
+                r[0] = 1.0;
+            }
+            let time = b as f64 * BLOCK as f64 / 48_000.0;
+            let cx = FxCx { time, tempo, hits: &[], buses: &buses, bus: 0, meters: &meters };
+            chain.process(&mut l, &mut r, &cx);
+            out.extend_from_slice(&l);
+        }
+        out
+    }
+
+    #[test]
+    fn a_synced_delay_echoes_on_the_beat() {
+        let set = [
+            ("sync", Value::Bool(true)),
+            ("time_note", Value::Choice("n4".into())),
+            ("time_feel", Value::Choice("straight".into())),
+            ("feedback", Value::Number(0.0)),
+            ("mix", Value::Number(100.0)),
+        ];
+        let mut c = chain_with(fx::DELAY, &set, true);
+        // Built at 120 bpm (the default tempo map): a quarter note is half a second.
+        let out = click(&mut c, 48_000 / BLOCK, &TempoMap::default());
+        let loudest =
+            out.iter().enumerate().fold((0, 0.0f32), |m, (i, v)| if v.abs() > m.1 { (i, v.abs()) } else { m });
+        assert!(loudest.0.abs_diff(24_000) <= 2, "the echo lands at {}", loudest.0);
+    }
+
+    #[test]
+    fn a_reverb_rings_after_the_click() {
+        for kind in ["plate", "hall", "spring"] {
+            let set =
+                [("kind", Value::Choice(kind.into())), ("decay", Value::Number(1.0)), ("mix", Value::Number(100.0))];
+            let mut c = chain_with(fx::REVERB, &set, true);
+            let out = click(&mut c, 48_000 / BLOCK, &TempoMap::default());
+            let tail = out[4_800..9_600].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let late = out[out.len() - 4_800..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(tail > 1e-3, "{kind} rings: {tail}");
+            assert!(late < tail * 0.1, "{kind} dies away: {late} after {tail}");
+        }
     }
 
     #[test]

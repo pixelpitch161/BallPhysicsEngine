@@ -405,6 +405,7 @@ impl Engine {
                 lag.process(l, r);
             }
         }
+        #[allow(clippy::needless_range_loop)]
         for i in 0..BLOCK {
             if self.discard > 0 {
                 self.discard -= 1;
@@ -413,8 +414,8 @@ impl Engine {
             let at = (self.queue_head + self.queue_len) % QUEUE;
             self.queue[at] = [self.bus_l[i], self.bus_r[i]];
             if self.record_stems {
-                for b in 0..BUSES {
-                    self.stem_queue[at][b] = [stems[b][0][i], stems[b][1][i]];
+                for (slot, stem) in self.stem_queue[at].iter_mut().zip(&stems) {
+                    *slot = [stem[0][i], stem[1][i]];
                 }
             }
             self.queue_len += 1;
