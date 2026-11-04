@@ -1,0 +1,456 @@
+//! A shape's Sound tab (layout B, "Wide plugin"): Enable sound, then Osc A and Osc B side by
+//! side, the modulators and the picked one's editor, the notes, and Playing beside Output. The
+//! inspector widens while it is open (see `Studio::inspector_panel`).
+//!
+//! Drawing reads the scene; every change is gathered as a [`TabEdit`] and applied once the tab
+//! is drawn, through [`write::write`] (a key at the playhead when the setting has keys).
+
+pub mod write;
+
+use crate::inspector::Inspector;
+use crate::style::{self, Knob};
+use crate::widgets::{self, KeyMark, TargetChoices, ValueMenu};
+use bpe_core::{Address, Choice, Scene, SettingDef, SlotId, ThingId, Value, ValueType};
+use bpe_kit::Kit;
+use bpe_kit::sound::VOICE;
+use eframe::egui::{self, Color32, RichText, Ui};
+
+/// The Sound tab's own state, kept in the inspector.
+#[derive(Clone, Debug, Default)]
+pub struct SoundTab {}
+
+/// A change the tab asks for, applied once it is drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TabEdit {
+    /// A setting of the sound card (a key at the playhead when it has keys).
+    Set(Address, Value),
+    /// A key at the playhead holding the setting's value as it stands.
+    NewKey(Address),
+    Enable,
+    Disable,
+    CopySound,
+    PasteSound,
+    /// Play a note on the shape now (a key clicked).
+    Audition(u8),
+}
+
+/// What drawing the tab reads, and the edits it gathers.
+pub struct TabCx<'a> {
+    pub scene: &'a Scene,
+    pub kit: &'a Kit,
+    pub choices: &'a TargetChoices,
+    pub id: ThingId,
+    /// The playhead: values show as they are there, and a keyed knob keys there.
+    pub time: f64,
+    /// The shape's track colour (modulation rings, the keyboard's lit keys).
+    pub colour: Color32,
+    pub edits: Vec<TabEdit>,
+}
+
+impl TabCx<'_> {
+    /// The sound card's setting `key`.
+    pub fn at(&self, key: &str) -> Address {
+        Address::on(self.id, SlotId::Sound, key)
+    }
+
+    pub fn def(&self, key: &str) -> Option<&'static SettingDef> {
+        self.scene.def_at(&self.kit.registry, &self.at(key))
+    }
+
+    /// The setting's value at the playhead (its default when it isn't set).
+    pub fn get(&self, key: &str) -> Value {
+        let a = self.at(key);
+        self.scene
+            .value_at_time(&self.kit.registry, &a, self.time)
+            .or_else(|| self.def(key).map(|d| d.default.clone()))
+            .unwrap_or(Value::Bool(false))
+    }
+
+    pub fn number(&self, key: &str) -> f64 {
+        number(&self.get(key)).unwrap_or(0.0)
+    }
+
+    pub fn flag(&self, key: &str) -> bool {
+        matches!(self.get(key), Value::Bool(true))
+    }
+
+    /// The setting as a choice of `T` (its default when it holds another name).
+    pub fn choice<T: Choice + Default>(&self, key: &str) -> T {
+        match self.get(key) {
+            Value::Choice(name) => T::from_name(&name).unwrap_or_default(),
+            _ => T::default(),
+        }
+    }
+
+    pub fn set(&mut self, key: &str, v: Value) {
+        let a = self.at(key);
+        self.edits.push(TabEdit::Set(a, v));
+    }
+
+    /// A knob on the number setting `key`, labelled `label`, its value read by `format`, with
+    /// the usual right-click menu (Copy Value, Paste Value, Create Keyframe).
+    pub fn knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
+        let Some(def) = self.def(key) else {
+            return ui.label(RichText::new(format!("{label}?")).color(style::MUTED));
+        };
+        let (lo, hi) = def.range.unwrap_or((0.0, 1.0));
+        let default = number(&def.default).unwrap_or(lo);
+        let now = self.get(key);
+        let mut v = number(&now).unwrap_or(default);
+        let bipolar = lo < 0.0 && hi > 0.0 && !is_db(def);
+        let r = Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).width(KNOB_W).show(ui);
+        if r.changed {
+            let value = match def.ty {
+                ValueType::Int => Value::Int(v.round() as i64),
+                _ => Value::Number(v),
+            };
+            self.set(key, value);
+        }
+        self.menu(&r.response, key, def, &now);
+        r.response
+    }
+
+    /// The value menu on any control for the setting `key`.
+    pub fn menu(&mut self, response: &egui::Response, key: &str, def: &SettingDef, now: &Value) {
+        let a = self.at(key);
+        let mark = Some(KeyMark { can_key: def.flags.keyframe, keyed: self.scene.keyed(&a), pulsed: false });
+        match widgets::value_menu(response, def, def.unit, now, mark, self.choices) {
+            ValueMenu::Nothing => {}
+            ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
+            ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+        }
+    }
+
+    /// One chip per choice of the setting `key`; the one it holds is lit.
+    pub fn chips<T: Choice + Default + PartialEq>(&mut self, ui: &mut Ui, key: &str, choices: &[(T, &str)]) {
+        let now: T = self.choice(key);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (choice, name) in choices {
+                let on = now == *choice;
+                let chip = ui.add(style::toggle_button(name, on).min_size(egui::vec2(0.0, 22.0)));
+                if chip.clicked() && !on {
+                    self.set(key, Value::Choice(choice.name().into()));
+                }
+            }
+        });
+    }
+
+    /// A switch for the true/false setting `key`, named `name`.
+    pub fn switch(&mut self, ui: &mut Ui, key: &str, name: &str) -> egui::Response {
+        let mut on = self.flag(key);
+        let r = style::switch(ui, &mut on);
+        name_it(ui, &r, name);
+        if r.changed() {
+            self.set(key, Value::Bool(on));
+        }
+        r
+    }
+}
+
+/// Gives a control with no label of its own its name for screen readers and tests.
+pub fn name_it(ui: &Ui, r: &egui::Response, name: &str) {
+    let name = name.to_owned();
+    ui.ctx().accesskit_node_builder(r.id, |node| node.set_label(name));
+}
+
+/// Knobs on the Sound tab are narrower than the Mixer's, so six fit in an oscillator's row.
+pub const KNOB_W: f32 = 54.0;
+
+pub fn number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(x) => Some(*x),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+fn is_db(def: &SettingDef) -> bool {
+    def.unit == "dB"
+}
+
+/// A level in dB, the bottom of the knob reading as silence.
+pub fn db(v: f64) -> String {
+    if v <= bpe_kit::sound::SILENT_DB as f64 + 1e-6 { "-inf dB".into() } else { format!("{v:+.1} dB") }
+}
+
+/// A panel of the tab: the panel grey with a soft line round it.
+pub fn panel<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(style::PANEL)
+        .stroke(egui::Stroke::new(1.0, style::LINE_SOFT))
+        .corner_radius(style::RADIUS)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            add(ui)
+        })
+        .inner
+}
+
+/// Draws the Sound tab of shape `id` and applies its edits. True when the scene changed.
+pub fn show(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    scene: &mut Scene,
+    kit: &Kit,
+    choices: &TargetChoices,
+    id: ThingId,
+    time: f64,
+) -> bool {
+    let colour = style::colour_of(scene, id);
+    let edits = {
+        let scene: &Scene = scene;
+        let mut cx = TabCx { scene, kit, choices, id, time, colour, edits: Vec::new() };
+        let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
+        let on = card.is_some() && cx.flag("enabled");
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                let mut ticked = on;
+                let r = style::switch(ui, &mut ticked);
+                let label = ui.label(RichText::new("Enable sound").font(style::semibold(13.0)));
+                let r = r.labelled_by(label.id);
+                let r = r.union(label);
+                if ticked != on {
+                    cx.edits.push(if ticked { TabEdit::Enable } else { TabEdit::Disable });
+                }
+                r.context_menu(|ui| {
+                    if ui.add_enabled(card.is_some(), egui::Button::new("Copy sound")).clicked() {
+                        cx.edits.push(TabEdit::CopySound);
+                        ui.close();
+                    }
+                    let paste = ui
+                        .add_enabled(inspector.clipboard.sound.is_some(), egui::Button::new("Paste sound"))
+                        .on_disabled_hover_text("Copy a shape's sound first");
+                    if paste.clicked() {
+                        cx.edits.push(TabEdit::PasteSound);
+                        ui.close();
+                    }
+                });
+            });
+            if card.is_none() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("Turn it on and the shape plays a note each time a ball hits it.")
+                            .small()
+                            .color(style::MUTED),
+                    );
+                });
+                return;
+            }
+            ui.add_space(6.0);
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 0)).show(ui, |ui| {
+                if !on {
+                    ui.multiply_opacity(0.45);
+                }
+                body(ui, inspector, &mut cx);
+            });
+            ui.add_space(10.0);
+        });
+        cx.edits
+    };
+    apply(inspector, scene, kit, id, time, edits)
+}
+
+/// Everything under Enable sound.
+fn body(_ui: &mut Ui, _inspector: &mut Inspector, _cx: &mut TabCx) {}
+
+/// Applies the tab's edits. True when the scene changed.
+fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, time: f64, edits: Vec<TabEdit>) -> bool {
+    let reg = &kit.registry;
+    let mut changed = false;
+    for edit in edits {
+        changed |= match edit {
+            TabEdit::Set(a, v) => match write::write(scene, reg, &a, v, time) {
+                write::WriteOutcome::Set => true,
+                write::WriteOutcome::Keyed => {
+                    inspector.keyed_edit = true;
+                    true
+                }
+                write::WriteOutcome::Failed => false,
+            },
+            TabEdit::NewKey(a) => match scene.value_at_time(reg, &a, time) {
+                Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
+                None => false,
+            },
+            TabEdit::Enable => write::enable(scene, reg, id),
+            TabEdit::Disable => write::disable(scene, reg, id),
+            TabEdit::CopySound => {
+                inspector.clipboard.sound = write::copy(scene, id);
+                false
+            }
+            TabEdit::PasteSound => match inspector.clipboard.sound.clone() {
+                Some(card) => write::paste(scene, reg, id, &card),
+                None => false,
+            },
+            TabEdit::Audition(note) => {
+                inspector.auditions.push((id, note));
+                false
+            }
+        };
+    }
+    changed
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::app::Studio;
+    use crate::inspector::InspectorTab;
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::Queryable,
+    };
+
+    /// The test scene's shape and ball.
+    pub const SHAPE: ThingId = ThingId(1);
+    pub const BALL: ThingId = ThingId(2);
+
+    /// The studio's inspector beside an empty middle, in a wide window, each frame's edit
+    /// recorded as the studio records it. The state keeps the inspector's width as drawn.
+    pub fn studio_harness(selected: ThingId, sound: bool) -> Harness<'static, (Studio, f32)> {
+        let mut studio = Studio::headless();
+        studio.selection.set(selected);
+        if sound {
+            studio.panels.inspector.tab.insert(selected, InspectorTab::Sound);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1500.0, 1400.0))
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, (studio, width): &mut (Studio, f32)| {
+                    let before = studio.scene.clone();
+                    *width = studio.inspector_panel(ui);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    if std::mem::take(&mut studio.panels.inspector.keyed_edit) {
+                        studio.set_playing(false);
+                    }
+                    studio.after_edit(before);
+                },
+                (studio, 0.0),
+            );
+        h.run();
+        h
+    }
+
+    /// A studio harness on the shape's Sound tab with its sound turned on.
+    pub fn sounding() -> Harness<'static, (Studio, f32)> {
+        let mut h = studio_harness(SHAPE, true);
+        click_switch(&mut h, "Enable sound");
+        h
+    }
+
+    pub fn click_switch(h: &mut Harness<'_, (Studio, f32)>, name: &str) {
+        h.get_by_role_and_label(Role::CheckBox, name).click();
+        h.run();
+    }
+
+    fn card(h: &Harness<'_, (Studio, f32)>, id: ThingId) -> Option<bpe_core::Slot> {
+        h.state().0.scene.card(id, SlotId::Sound).cloned()
+    }
+
+    #[test]
+    fn a_shape_shows_settings_and_sound_buttons() {
+        let mut h = studio_harness(SHAPE, false);
+        assert!(h.query_by_label("Settings").is_some());
+        h.get_by_label("Sound").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::CheckBox, "Enable sound").is_some());
+        assert!(h.query_by_label("Shape settings").is_none(), "the shape's own cards are on the other tab");
+        h.get_by_label("Settings").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::CheckBox, "Enable sound").is_none());
+    }
+
+    #[test]
+    fn a_ball_shows_no_sound_button() {
+        let h = studio_harness(BALL, false);
+        assert!(h.query_by_label("Sound").is_none());
+        assert!(h.query_by_label("Settings").is_none());
+    }
+
+    #[test]
+    fn sound_widens_the_inspector_to_760_and_back() {
+        let mut h = studio_harness(SHAPE, false);
+        let narrow = h.state().1;
+        assert!((narrow - 370.0).abs() <= 1.0, "{narrow}");
+        h.get_by_label("Sound").click();
+        h.run();
+        let wide = h.state().1;
+        assert!((wide - 760.0).abs() <= 1.0, "the Sound tab is {wide} wide");
+        h.get_by_label("Settings").click();
+        h.run();
+        assert!((h.state().1 - narrow).abs() <= 1.0, "back to {narrow}: {}", h.state().1);
+    }
+
+    #[test]
+    fn enable_sound_adds_the_starter_patch_and_undo_removes_it() {
+        let mut h = studio_harness(SHAPE, true);
+        assert!(card(&h, SHAPE).is_none());
+        click_switch(&mut h, "Enable sound");
+        let reg = bpe_kit::registry();
+        assert_eq!(card(&h, SHAPE), Some(bpe_kit::sound::starter_voice(&reg)), "the starter patch");
+        assert!(h.state_mut().0.undo());
+        h.run();
+        assert!(card(&h, SHAPE).is_none(), "one undo takes it away");
+    }
+
+    #[test]
+    fn untick_and_tick_again_keeps_the_settings() {
+        let mut h = sounding();
+        let a = Address::on(SHAPE, SlotId::Sound, "a_gain");
+        let reg = bpe_kit::registry();
+        h.state_mut().0.scene.set_at(&reg, &a, Value::Number(-12.0)).unwrap();
+        h.run();
+        click_switch(&mut h, "Enable sound");
+        let c = card(&h, SHAPE).expect("the card stays");
+        assert_eq!(c.params.get("enabled"), Some(&Value::Bool(false)));
+        click_switch(&mut h, "Enable sound");
+        let c = card(&h, SHAPE).unwrap();
+        assert_eq!(c.params.get("a_gain"), Some(&Value::Number(-12.0)), "the gain was kept");
+        assert_ne!(c.params.get("enabled"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn copy_and_paste_sound_between_shapes() {
+        let mut h = sounding();
+        let reg = bpe_kit::registry();
+        // A second shape to paste on.
+        let other = {
+            let studio = &mut h.state_mut().0;
+            let id = bpe_kit::add_thing(&mut studio.scene, &reg, bpe_kit::things::shape::KIND, ThingId::ROOT).unwrap();
+            studio.scene.set_at(&reg, &Address::on(SHAPE, SlotId::Sound, "a_cents"), Value::Number(7.0)).unwrap();
+            id
+        };
+        h.run();
+        let enable = h.get_by_role_and_label(Role::CheckBox, "Enable sound");
+        enable.click_secondary();
+        h.run();
+        h.get_by_label("Copy sound").click();
+        h.run();
+        h.state_mut().0.selection.set(other);
+        h.state_mut().0.panels.inspector.tab.insert(other, InspectorTab::Sound);
+        h.run();
+        h.get_by_role_and_label(Role::CheckBox, "Enable sound").click_secondary();
+        h.run();
+        h.get_by_label("Paste sound").click();
+        h.run();
+        let pasted = card(&h, other).expect("pasted");
+        assert_eq!(pasted.params.get("a_cents"), Some(&Value::Number(7.0)));
+        let ids: Vec<_> = pasted.layers.iter().map(|l| l.id).collect();
+        match pasted.params.get(bpe_core::ROUTES_KEY) {
+            Some(Value::Routes(routes)) => {
+                assert!(!routes.is_empty());
+                assert!(routes.iter().all(|r| ids.contains(&r.source)), "every route points at a pasted layer");
+            }
+            other => panic!("no routes: {other:?}"),
+        }
+    }
+}

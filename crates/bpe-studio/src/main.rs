@@ -18,6 +18,7 @@ mod selection;
 mod settings;
 mod shape_handles;
 mod sound_job;
+mod sound_tab;
 mod style;
 mod timeline;
 mod transport;

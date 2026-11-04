@@ -124,10 +124,14 @@ pub struct Studio {
     persist_settings: bool,
     /// The inspector's width as last saved.
     inspector_width: f32,
+    /// The inspector's width on a shape's Sound tab as last saved.
+    sound_width: f32,
     /// The inspector's width last frame.
     inspector_seen: f32,
     /// The inspector's edge is being dragged: its width changed while a button was down.
     inspector_resizing: bool,
+    /// The inspector showed a Sound tab last frame.
+    inspector_sound: bool,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
@@ -151,6 +155,7 @@ impl Studio {
         let mut studio = Self::blank();
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
+        studio.sound_width = settings::load_sound_width();
         studio.persist_settings = true;
         studio.listen = settings::load_listen();
         if let Some(path) = scene_path {
@@ -207,8 +212,10 @@ impl Studio {
             view_centre: glam::Vec2::ZERO,
             persist_settings: false,
             inspector_width: settings::INSPECTOR_DEFAULT,
+            sound_width: settings::SOUND_WIDTH_DEFAULT,
             inspector_seen: settings::INSPECTOR_DEFAULT,
             inspector_resizing: false,
+            inspector_sound: false,
             resume_after_scrub: false,
             recorded: false,
             closing: false,
@@ -731,11 +738,25 @@ impl Studio {
         width
     }
 
-    fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
-        let panel = egui::Panel::right("inspector")
-            .default_size(self.inspector_width)
-            .min_size(*settings::INSPECTOR_RANGE.start())
-            .max_size(*settings::INSPECTOR_RANGE.end())
+    pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
+        // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
+        // a panel of its own id keeps each width as it was left.
+        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        let (id, width, range) = if sound {
+            ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
+        } else {
+            ("inspector", self.inspector_width, settings::INSPECTOR_RANGE)
+        };
+        if sound != self.inspector_sound {
+            // The other width shows from this frame: not a drag of the edge.
+            self.inspector_sound = sound;
+            self.inspector_seen = width;
+            self.inspector_resizing = false;
+        }
+        let panel = egui::Panel::right(id)
+            .default_size(width)
+            .min_size(*range.start())
+            .max_size(*range.end())
             .resizable(true)
             .frame(side_frame())
             .show(ui, |ui| {
@@ -748,6 +769,7 @@ impl Studio {
                 let mut contents = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
                 contents.shrink_clip_rect(rect);
                 let time = self.sim_time();
+                self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
                 inspector::show(
                     &mut contents,
                     &mut self.panels.inspector,
@@ -759,21 +781,39 @@ impl Studio {
                 );
                 ui.advance_cursor_after_rect(rect);
             });
-        let width = panel.response.rect.width();
+        let shown = panel.response.rect.width();
         // Only a drag of the edge is remembered, once the mouse lets go; a window squeezing the
         // panel is not.
         let down = ui.input(|i| i.pointer.any_down());
-        if down && (width - self.inspector_seen).abs() >= 0.5 {
+        if down && (shown - self.inspector_seen).abs() >= 0.5 {
             self.inspector_resizing = true;
         }
-        self.inspector_seen = width;
-        if !down && std::mem::take(&mut self.inspector_resizing) && (width - self.inspector_width).abs() >= 0.5 {
-            self.inspector_width = width;
-            if self.persist_settings {
-                settings::save_inspector_width(width);
+        self.inspector_seen = shown;
+        if !down && std::mem::take(&mut self.inspector_resizing) && (shown - width).abs() >= 0.5 {
+            if sound {
+                self.sound_width = shown;
+                if self.persist_settings {
+                    settings::save_sound_width(shown);
+                }
+            } else {
+                self.inspector_width = shown;
+                if self.persist_settings {
+                    settings::save_inspector_width(shown);
+                }
             }
         }
-        width
+        shown
+    }
+
+    /// Plays the notes clicked on a Sound tab's keyboard, after this frame's edit has reached
+    /// the sound (a key that was just turned on plays with its new note list).
+    fn send_auditions(&mut self) {
+        let auditions = std::mem::take(&mut self.panels.inspector.auditions);
+        if let Some(job) = &mut self.sound {
+            for (thing, note) in auditions {
+                job.audition(crate::sound_job::Audition { thing, note, velocity: 0.8, on: true });
+            }
+        }
     }
 
     /// The grid buttons: show the lines, snap drags to them, and the size of one square.
@@ -948,6 +988,7 @@ impl eframe::App for Studio {
         if !std::mem::take(&mut self.recorded) {
             self.after_edit(before);
         }
+        self.send_auditions();
         if self.revision != revision {
             // The preview drew this frame before the edit was resolved; draw it again now.
             ctx.request_repaint();
