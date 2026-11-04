@@ -21,3 +21,13 @@ the morning. Spec: `docs/superpowers/specs/2026-11-04-sound-system-design.md`.
 | 07:20Z | 4 | Following a bus's level uses an estimate from its shapes' levels and the fader (no audio needed). | Keeps Follow sound physics-only, so picture export matches. |
 | 07:20Z | 5 | Changing a shape's key with notes in place offers "Move notes" (shift by the root interval the nearest way, then snap to the scale) or "Keep notes". | Never drops notes. |
 | 07:20Z | 6 | A compressor whose Hits sidechain shape is deleted falls back to Self. | No silent dead compressor. |
+| 08:05Z | 1 | Old (format 7) scene files still open and are saved as format 8. | Nothing is lost; no backward compatibility is promised, but it costs nothing here. |
+| 08:05Z | 1 | The Master's limiter is two lookahead stages (3.4 ms delay, taken back inside the engine so hits stay on their exact sample). | One stage let peaks through by about 0.2 dB on very hot sound; the ceiling must hold. |
+| 08:05Z | 1 | The export's audio asks ffmpeg for AAC 320 kbps at 48 kHz; the test checks the codec, rate and the 320k request rather than the measured bit rate. | AAC spends fewer bits on simple sound (a test tone measures ~69 kbps even at 320k). |
+| 08:05Z | 1 | A scene with no sound still exports a silent track, without rendering silence through the engine. | Faster export, same file. |
+| 08:05Z | 1 | Keyframes on the Master knobs can be set in part 1 but only take effect from part 2 (when every sound knob takes keyframes). | Keeps part 1's engine simple; part 2 evaluates keyed sound settings. |
+| 08:05Z | 1 | The playhead follows the sound the speakers have played; with no sound device (or if it stops working) it follows the wall clock and the editor carries on. | Picture and sound never drift apart, and a PC without speakers still works. |
+| 08:05Z | 1 | Turning the speaker off (or the listening volume) only changes what you hear: the clock keeps running and the export is not changed. | As the spec says: listening is not mixing. |
+| 08:05Z | 1 | The editor never waits on the sound thread: commands queue without a limit and the thread skips work a later command makes pointless (a drag sends one a frame). | No stutter while dragging physics settings. |
+| 08:05Z | 1 | Bars-and-beats lines thin out below 4 px; bar numbers show only where they are 28 px apart; keys snap to beats only while the grid's Snap is on. | Readable at any length and zoom. |
+| 08:05Z | 1 | The left panel's Things and Mixer faces each keep their own width (the Mixer opens 420 wide and can be dragged wider for part 6's buses). | Going back restores the tree exactly. |
