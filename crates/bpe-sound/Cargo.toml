@@ -28,3 +28,7 @@ required-features = ["test-tone"]
 [[test]]
 name = "alloc"
 required-features = ["test-tone"]
+
+[[test]]
+name = "offline"
+required-features = ["test-tone"]

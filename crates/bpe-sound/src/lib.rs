@@ -18,6 +18,7 @@ pub use engine::{Engine, PRE_ROLL, SAMPLES_PER_BLOCK_TIME};
 pub use hits::{BlockHit, HitCursor};
 pub use master::Master;
 pub use meters::{MeterReading, Meters};
+pub use offline::{has_sound, render_samples, render_to_wav};
 pub use patch::SoundPatch;
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
