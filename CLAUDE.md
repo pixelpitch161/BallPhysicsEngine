@@ -13,7 +13,8 @@ version before that is **Version 1**, kept on the `version-1` branch (with its e
 windows, the canvas and paint marks, the whole sound and chords system (`bpe-synth`, `bpe-mix`), and the Obstacle,
 Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. A new sound system is being built in six parts
 (spec `docs/superpowers/specs/2026-11-04-sound-system-design.md`, plans in `docs/superpowers/plans/sound-system/`,
-decisions log `decisions.md` there); part 1 (engine, playback, export audio, Master) is in.
+decisions log `decisions.md` there); parts 1 (engine, playback, export audio, Master), 2 (shape voice, Sound
+tab) and 6 (buses, console-strip Mixer, bus effects, stems and MIDI export) are in.
 
 Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
 Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Trail, Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects); nothing is shared,
@@ -134,7 +135,11 @@ Dependencies go bottom to top:
   first use into the shared `WaveBank`; `octaves`/`mips_at` pick the copies, crossfading only over the top quarter
   of an octave, `XFADE_FROM`), `osc.rs` (the unison oscillator: up to 16 copies, Detune/Spread/Blend, f64 phase
   between blocks and u32 fixed-point inside one, 4-point Lagrange four samples at a time), `noise.rs` (seeded
-  white and pink) and `envelope.rs` (DAHDSR with a curve per segment).
+  white and pink) and `envelope.rs` (DAHDSR with a curve per segment). Bus effects in `fx/`: `eq.rs` (`Eq8`, 8
+  bands, `band_response_db` for the editor's curve), `compressor.rs` (`Key::SelfInput/External/Hits`),
+  `delay.rs` (Standard/Ping-pong/Multi-tap, Digital/Analog/Tape), `reverb_plate.rs`, `reverb_hall.rs`,
+  `reverb_spring.rs` (shared parts in `reverb_common.rs`), `modfx.rs` (Chorus, Phaser, Flanger), `width.rs` and
+  `analyser.rs` (256 log bins).
 - `bpe-sound`: the sound engine. `Engine` runs its own `Playback` of the physics and renders 64-frame blocks with
   every hit on its exact sample (`Event.at` is where in the step a hit happened, never hashed; `hits.rs`
   `HitCursor`), the voices (`VoiceSource`, built per scene by `SoundPatch::build`; `swap_patch` keeps ringing notes
@@ -154,8 +159,19 @@ Dependencies go bottom to top:
   block too (`MasterKeys`). `Engine::audition`, `stop_notes` and `render_paused` (stopped: no hits or physics) play
   keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id).
   Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch), blessed like the physics goldens.
+  **Buses** (part 6): the mixer card holds Bus 1..3 (`bus1_…` keys: name, on, fader, pan, mute, solo, send1..3;
+  Bus 1 on, 2 and 3 off) and their effects as layers (`bpe-kit/src/sound/fx.rs`, `fx.eq` … `fx.width`, section
+  Effect, `Layer.lane` = bus 0..2). `buses.rs`: `Buses` runs them in send order (post-fader sends; a send that
+  would loop is dropped, `would_loop`), solo/mute/on fades, and lines up latency with `Lag` (`lag.rs`); the
+  engine takes `latency()` back so hits stay on their samples. A shape's main bus and sends are its
+  `ShapeRoute` (`out_bus`, `out_send1..3`). `fx_chain.rs`: `FxChain` per bus (Mix crossfade, bypass fade,
+  keyed numbers via `Keyed`, `adopt` on a patch swap). `Meters` has bus, effect and EQ-analyser readings.
+  Export extras (`offline.rs` `render_sound` with `Extras`): `stems` (24-bit WAV per bus + Master,
+  `stem_paths`) and `midi` (`midi.rs`: `NoteLog` from `Engine::record_notes`, `write_midi`, format 1, PPQ
+  960).
 - `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
-  48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track.
+  48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. `--stems` and `--midi` (`ExportOptions`)
+  save the stems and the MIDI file beside the video.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
   fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
@@ -186,7 +202,13 @@ Dependencies go bottom to top:
   sound, anything else patches it; a seek clears the speakers' ring with a 2 ms fade-in. The transport has the
   speaker button and listening volume (`settings::ListenSettings`, never in the scene). The left panel switches
   Things / Mixer (`LeftPanel`; `mixer/`: the tempo row and `master::strip` with `style::Knob` knobs, the level
-  meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`). A selected shape's inspector has
+  meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`). The Mixer is console strips
+  (`mixer/strips.rs`: Bus 1..3 and a compact Master; effect slots with `slot_menu.rs`, drag between buses via
+  `cx::move_effect`; `mixer/cx.rs` `MixCx`/`MixEdit` gathers edits like `TabCx`). A slot or "Master" sets
+  `Mixer.pick` (`MixerPick`); while the left panel is the Mixer, the inspector shows that editor wide
+  (`mixer/editors/`: `eq.rs` curve, `comp.rs`, `delay.rs`, `reverb.rs`, `master.rs`, the rest from settings).
+  Hovering a strip rings the shapes on that bus in the preview (`preview::plays_into`). The shape's Output
+  panel picks Bus 1..3, has sends to the others and warns when a bus is off. A selected shape's inspector has
   Settings | Sound chips (`InspectorTab`, `Inspector.tab`); the Sound tab (`sound_tab/`) widens the inspector to
   its own panel id and saved width (760 px, `settings::load_sound_width`). `sound_tab/mod.rs` has `TabCx` (knobs
   with the value menu) and gathers `TabEdit`s applied after drawing; `write.rs` Enable/Disable/Copy/Paste sound
