@@ -54,12 +54,20 @@ Dependencies go bottom to top:
   `LayerSection::Mask`) whose `Layer.parent` is the drawn layer it limits; it sits right after its parent in
   `Slot.layers`, and moving, duplicating, copying or deleting a layer carries its masks (`add_mask`). A layer kind can
   add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
-  Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). Scene files are format 6.
+  Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
+  `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
+  straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
+  partners). Scene files are format 7.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
-  settle, after_step) stay for new thing kinds even where no current kind uses them.
+  settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
+  `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
+  `Outline::Ring`/`Box` with the ball inside keeps the exact old maths (goldens), `Outline::Path` is a free outline
+  (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
-  shader effects, particles and trails. Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
+  shader effects, particles and trails. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
+  `Frame.push_path`: a filled or banded outline from `Frame.path_points`, bind group 3, or a circle with no points).
+  Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
   its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
   older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
   The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5),
@@ -79,7 +87,7 @@ Dependencies go bottom to top:
   (`Follow::EachBall`, the Body's default). In-ball programs live in a `ProgramStore`; the editor shares one between
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
-- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
+- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Shading, Shader, Blend, the reactions
   Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, Mask, and the group layers Gradient
@@ -87,8 +95,12 @@ Dependencies go bottom to top:
   layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
   group, record code 9, over the whole ball and optionally a ring around it, or into the Body/chosen layers);
   `gpu.rs` turns a stack into records (a ball wearing only some layers gets them at opacity 0, `records_for`) and has `topmost_at` for clicks on the ball; `paint/brush.rs`
-  rasterises strokes to tiles); the
-  arena keeps `look.basic`. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
+  rasterises strokes to tiles). The **Shape** (`things/shape/`, replacing the old Arena) is an outline balls bounce
+  off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from, Sides, Size, Fill, Thickness and
+  the Corners `path`, plus Spin, Shrink, Smallest size); `sim.rs::base_outline` picks the exact Ring or Box form for
+  circles, even polygons and axis rectangles and an `Outline::Path` otherwise. Its Look is `look.shape`
+  (`modules/look/shape.rs`) whose only layer in part 1 is the base `shape.body`, drawn plain white. `look.basic`
+  fits no thing kind now. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
   into layers (`layers_from_basic`). Balls (`things/balls/`) are one ball or, with `group` on, a group in a
   `shape` (`shapes.rs`: Grid, Line, Ring, Filled circle, Triangle, Honeycomb, Spiral, Heart, Scatter, Word from
   the IBM Plex font, Custom points), with Variety (size, speed, colour, turn spread by `seed`), Release (all at
@@ -108,6 +120,10 @@ Dependencies go bottom to top:
   the scene settings has a `Thing.colour` (`TrackColour`, editor only, never read by physics or export). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
+  Shift mirrors across the shape's middle line, right-click Add point / Create curve / Straighten / Delete point /
+  Turn into points); a `look.shape` card shows the Look editor without the ball view or Reactions, and its Body
+  shows the shape's `BODY_HEADINGS` settings (changing Sides or Start from removes the path in the same edit).
   A `look.layers` card shows the Look editor (`look_editor/`: the ball view, the Layers and Reactions lists with
   their menus, drag to reorder and rename, masks indented under their layer, then the picked layer's settings; the
   copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a mask's From/Layer and a Shader's

@@ -3,7 +3,7 @@
 use crate::{SettingDef, SlotId};
 use std::collections::BTreeMap;
 
-/// A kind of thing that can sit in the scene tree, such as balls, a folder or an arena.
+/// A kind of thing that can sit in the scene tree, such as balls, a folder or a shape.
 pub trait ThingKind: Send + Sync + 'static {
     /// Unique among every thing and module kind, and written into saved scenes: `"balls"`.
     fn id(&self) -> &'static str;
@@ -34,7 +34,7 @@ pub trait ThingKind: Send + Sync + 'static {
         false
     }
     /// The editor track colour a new one of these starts with, when the kind has its own (the
-    /// arena is orange); `None` takes the next free colour.
+    /// shape is orange); `None` takes the next free colour.
     fn track_colour(&self) -> Option<crate::TrackColour> {
         None
     }
