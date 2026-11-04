@@ -300,7 +300,9 @@ place (`Frame.trails_front`, `Frame.bursts_front`).
 
 ### Data
 
-- `SlotId::Trail` and `SlotId::Particles` go. New layer section `LayerSection::Around` for the list.
+- `SlotId::Trail` and `SlotId::Particles` leave the inspector's card list and no card kind fits them; the enum
+  variants stay only so files before format 10 still parse (the upgrade empties them). New layer section
+  `LayerSection::Around` for the list.
 - Format **10** upgrade: a thing's Trail card becomes a Streak `layer.trail` at the end of its Look's Around list
   with the same values (`taper` → Width at the tail = 1 - taper, Width curve Even); a Particles card becomes an On
   hit `layer.particles` (`preset` → Made of; other values carried). Keyframes, pulses and Follow sound on those
