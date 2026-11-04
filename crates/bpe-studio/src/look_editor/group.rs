@@ -148,6 +148,9 @@ fn own_rows(ui: &mut Ui, cx: &LookCx, salt: &str, defs: &[SettingDef], edits: &m
     };
     let kind = scene.things.get(&id).map(|t| t.kind.clone());
     let applies = |d: &SettingDef| d.applies(kind.as_deref(), &|k| scene.value_at_time(reg, &own(k), time));
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -155,10 +158,12 @@ fn own_rows(ui: &mut Ui, cx: &LookCx, salt: &str, defs: &[SettingDef], edits: &m
         folded: None,
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
+        follow: Some(&follow),
     };
     let out = settings_grid(ui, ("group mode", salt, id), defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
 }
 
 /// The buttons under the view: + adds a ball to a custom shape.

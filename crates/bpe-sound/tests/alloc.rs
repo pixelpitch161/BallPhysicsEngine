@@ -78,7 +78,36 @@ fn render_does_not_allocate() {
     v.notes_strum = 150.0;
     v.notes_octave_range = 1;
     v.notes_every_unit = bpe_kit::sound::BeatsOrBars::Beats;
+    // Every kind of modulator on, shared and per note, moving knobs and each other.
+    let (lfo1, lfo2, dist) = (bpe_core::LayerId(4), bpe_core::LayerId(5), bpe_core::LayerId(2));
+    let hit = bpe_core::LayerId(6);
+    for l in &mut card.layers {
+        l.enabled = true;
+    }
+    card.layers.push(bpe_core::Layer {
+        id: hit,
+        kind: bpe_kit::sound::HIT.into(),
+        name: "Hit 1".into(),
+        ..Default::default()
+    });
+    let route = |source, target: &str| bpe_core::ModRoute {
+        source,
+        target: target.into(),
+        amount: 0.3,
+        bipolar: false,
+        invert: false,
+    };
+    v.routes.extend([
+        route(lfo1, "a_cents"),
+        route(lfo2, "4/rate_hz"),
+        route(lfo1, "5/rate_hz"),
+        route(dist, "b_gain"),
+        route(hit, "out_pan"),
+        route(bpe_core::LayerId(1), "2/far"),
+    ]);
     card.params = v.to_params();
+    card.params.set("5/start", bpe_core::Value::Choice("per_note".into()));
+    card.params.set("3/follows", bpe_core::Value::Choice("each_notes_ball".into()));
     scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
     // Keys on a knob and on the Master, read every block.
     bpe_kit::ensure_mixer(&mut scene, &kit.registry);

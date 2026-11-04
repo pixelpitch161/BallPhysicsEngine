@@ -7,14 +7,15 @@ use crate::chain_graph::{ChainGraph, chain_layers};
 use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
-use crate::voices::shape::{EnvSpec, OscSpec, ShapeSpec};
+use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, ModsSpec, OscSpec, ShapeSpec};
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
-    ADSR, AdsrSettings, DistortionSettings, FILTER, FilterSettings, MODULATION, MixerSettings, ModulationSettings,
-    OscSettings, Slope, VOICE, VoiceSettings, Wave,
+    ADSR, AdsrSettings, DISTANCE, DISTORTION, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HIT,
+    HitSettings, LFO, LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings, Slope, VOICE,
+    VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -43,6 +44,8 @@ pub enum Tables {
     /// Only those already baked; the rest start baking in the background (the editor, which
     /// must never wait).
     Ready,
+    /// None at all: only the settings are wanted (Follow sound reads no waves).
+    Skip,
 }
 
 impl Tables {
@@ -54,6 +57,7 @@ impl Tables {
                 *pending |= set.is_none();
                 set
             }
+            Tables::Skip => None,
         }
     }
 }
@@ -119,6 +123,36 @@ fn voice_with(
     tables: Tables,
     pending: &mut bool,
 ) -> Option<ShapeVoice> {
+    spec_with(scene, id, card, b, tables, pending).map(ShapeVoice::new)
+}
+
+/// Every sounding shape's voice settings, in scene order, without wavetables: what Follow sound
+/// reads.
+pub fn shape_specs(scene: &Scene, resolved: &Resolved) -> Vec<ShapeSpec> {
+    let settings =
+        resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    let mut out = Vec::new();
+    for id in &scene.order {
+        let Some(thing) = resolved.things.get(id) else { continue };
+        let Some(card) = thing.slots.get(&SlotId::Sound) else { continue };
+        let shape = ShapeSettings::from_params(&thing.params);
+        let top = TempoMap::from_settings(&settings).top();
+        let b = Build { index: out.len(), width: settings.width as f32, shape: &shape, tempo_top: top };
+        if let Some(spec) = spec_with(scene, *id, card, &b, Tables::Skip, &mut false) {
+            out.push(spec);
+        }
+    }
+    out
+}
+
+fn spec_with(
+    scene: &Scene,
+    id: ThingId,
+    card: &ResolvedSlot,
+    b: &Build,
+    tables: Tables,
+    pending: &mut bool,
+) -> Option<ShapeSpec> {
     let Build { index, width, shape, tempo_top } = *b;
     if card.kind != VOICE {
         return None;
@@ -144,7 +178,13 @@ fn voice_with(
     let ids: Vec<_> = envs.iter().map(|e| e.id).collect();
     let (graph, chain) = chain_of(scene, id, card, [v.a.on, v.b.on]);
     let chain_ids: Vec<(LayerId, &str)> = graph.layers.iter().map(|l| (l.id, l.kind.as_str())).collect();
-    let layout = knobs::layout_with(&ids, &chain_ids);
+    let mods = mods_of(id, card, &v.routes);
+    let mod_ids = knobs::ModIds {
+        lfos: mods.lfos.iter().map(|m| m.id).collect(),
+        dists: mods.dists.iter().map(|m| m.id).collect(),
+        hits: mods.hits.iter().map(|m| m.id).collect(),
+    };
+    let layout = knobs::layout_all(&ids, &chain_ids, &mod_ids);
     let base = knobs::values(&layout, &|key| card.params.get(key).cloned());
     let keyed = layout
         .iter()
@@ -154,7 +194,7 @@ fn voice_with(
         })
         .collect();
     let matrix = ModMatrix::build(&v.routes, &knobs::targets(&layout));
-    Some(ShapeVoice::new(ShapeSpec {
+    Some(ShapeSpec {
         thing: id,
         index,
         osc: [
@@ -163,6 +203,8 @@ fn voice_with(
         ],
         envs,
         play_mode: v.play_mode,
+        play_when: v.play_when,
+        zone: zone_of(&v, &mods),
         heard_from: v.play_heard_from.clone(),
         slots: v.notes_slots.clone(),
         notes: NotesSpec::from_settings(
@@ -186,7 +228,71 @@ fn voice_with(
         },
         width,
         chain: Arc::new(chain),
-    }))
+        mods,
+    })
+}
+
+/// Whether a modulator can reach the sound card's knob `key` (switched-off layers' knobs too):
+/// the oscillators', the envelopes', the chain layers', the other modulators' and Output's
+/// number knobs.
+pub fn routable(card: &bpe_core::Slot, key: &str) -> bool {
+    let ids = |kind: &str, most: usize| -> Vec<LayerId> {
+        card.layers.iter().filter(|l| l.kind == kind).take(most).map(|l| l.id).collect()
+    };
+    let envs = ids(ADSR, knobs::MAX_ENVS);
+    let chain: Vec<(LayerId, &str)> = card
+        .layers
+        .iter()
+        .filter(|l| [MODULATION, FILTER, DISTORTION].contains(&l.kind.as_str()))
+        .map(|l| (l.id, l.kind.as_str()))
+        .collect();
+    let mods = knobs::ModIds {
+        lfos: ids(LFO, knobs::MAX_EACH),
+        dists: ids(DISTANCE, knobs::MAX_EACH),
+        hits: ids(HIT, knobs::MAX_EACH),
+    };
+    knobs::layout_all(&envs, &chain, &mods).iter().any(|(k, _, _)| k == key)
+}
+
+/// The Distance whose range holds the notes for In range: the one named by its layer id, or
+/// the first that is on.
+fn zone_of(v: &VoiceSettings, mods: &ModsSpec) -> Option<usize> {
+    if v.play_when != bpe_kit::sound::PlayWhen::InRange || mods.dists.is_empty() {
+        return None;
+    }
+    let named = v.play_zone.trim().parse::<u32>().ok();
+    named.and_then(|id| mods.dists.iter().position(|d| d.id.0 == id)).or(Some(0))
+}
+
+/// The card's LFO, Distance and Hit layers that are on (up to eight of each, in card order),
+/// and the order they run in.
+fn mods_of(id: ThingId, card: &ResolvedSlot, routes: &[bpe_core::ModRoute]) -> ModsSpec {
+    let of = |kind: &'static str| card.layers.iter().filter(move |l| l.kind == kind).take(knobs::MAX_EACH);
+    let lfos: Vec<LfoSpec> = of(LFO)
+        .map(|l| LfoSpec {
+            id: l.id,
+            settings: LfoSettings::from_params(&card.layer_params(l.id)),
+            seed: crate::mods::lfo::seed_of(id, l.id),
+        })
+        .collect();
+    let dists: Vec<DistSpec> = of(DISTANCE)
+        .map(|l| {
+            let settings = DistanceSettings::from_params(&card.layer_params(l.id));
+            DistSpec { id: l.id, heard: Arc::new(settings.heard_from.clone()), settings }
+        })
+        .collect();
+    let hits: Vec<HitSpec> =
+        of(HIT).map(|l| HitSpec { id: l.id, pick: HitSettings::from_params(&card.layer_params(l.id)).pick }).collect();
+    let running: Vec<LayerId> = card
+        .layers
+        .iter()
+        .map(|l| l.id)
+        .filter(|l| {
+            lfos.iter().any(|m| m.id == *l) || dists.iter().any(|m| m.id == *l) || hits.iter().any(|m| m.id == *l)
+        })
+        .collect();
+    let (order, _) = crate::mods::mod_order(routes, &running);
+    ModsSpec { lfos, dists, hits, order }
 }
 
 /// The shape's layer chains: their structure from the scene's card (switched-off layers keep

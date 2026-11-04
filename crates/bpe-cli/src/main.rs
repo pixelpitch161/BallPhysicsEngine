@@ -37,7 +37,7 @@ fn run() -> anyhow::Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
-    let kit = bpe_kit::kit();
+    let kit = bpe_sound::kit();
     let mut scene_path: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut new_scene = false;

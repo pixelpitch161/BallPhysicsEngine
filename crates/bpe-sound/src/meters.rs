@@ -1,6 +1,8 @@
 //! The levels the editor shows, written by the sound thread once a block and read by the
 //! editor without locks.
 
+use crate::mods::HitValues;
+use bpe_core::LayerId;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// One f32 that any thread can read and write.
@@ -47,6 +49,8 @@ pub struct Meters {
     slots: [AtomicU32; SHAPE_METERS],
     buses: [BusMeter; 3],
     fx: Box<[FxMeter; FX_METERS]>,
+    /// Each of those shapes' modulators and recent hits, for the Sound tab.
+    mods: Vec<ShapeMods>,
 }
 
 /// One bus's levels: its output peaks (held until read) and the most any of its compressors or
@@ -127,6 +131,36 @@ impl BusReading {
     pub const SILENT: BusReading = BusReading { peak_l: f32::NEG_INFINITY, peak_r: f32::NEG_INFINITY, reduction: 0.0 };
 }
 
+/// Takes one modulator's layer and value.
+pub type ModSink<'a> = dyn FnMut(LayerId, f32) + 'a;
+
+/// How many modulators of a shape have a meter.
+pub const MOD_METERS: usize = 32;
+/// How many of a shape's last hits the Hit view shows.
+pub const RECENT_HITS: usize = 16;
+
+/// One shape's modulators now and its last hits' numbers.
+#[derive(Debug)]
+struct ShapeMods {
+    /// Each modulator's layer id plus one (0 for none) and its value, 0..1.
+    ids: [AtomicU32; MOD_METERS],
+    values: [AtomicF32; MOD_METERS],
+    /// The numbers of the last hits, by how many it had heard before each, in a ring.
+    hits: [[AtomicF32; 5]; RECENT_HITS],
+    heard: AtomicU32,
+}
+
+impl Default for ShapeMods {
+    fn default() -> Self {
+        Self {
+            ids: std::array::from_fn(|_| AtomicU32::new(0)),
+            values: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            hits: std::array::from_fn(|_| std::array::from_fn(|_| AtomicF32::new(0.0))),
+            heard: AtomicU32::new(0),
+        }
+    }
+}
+
 /// How many shapes have a level meter.
 pub const SHAPE_METERS: usize = 64;
 
@@ -172,6 +206,7 @@ impl Default for Meters {
             buses: Default::default(),
             fx: Box::new(std::array::from_fn(|_| FxMeter::default())),
             slots: std::array::from_fn(|_| AtomicU32::new(0)),
+            mods: (0..SHAPE_METERS).map(|_| ShapeMods::default()).collect(),
         }
     }
 }
@@ -212,6 +247,62 @@ impl Meters {
         (0..SHAPE_METERS)
             .find(|&i| self.shape_ids[i].load(Ordering::Relaxed) == id)
             .and_then(|i| self.slots[i].load(Ordering::Relaxed).checked_sub(1).map(|s| s as usize))
+    }
+
+    /// Voice `place`'s modulators now: `each` hands over every one's layer and value.
+    pub fn write_mods(&self, place: usize, each: &mut dyn FnMut(&mut ModSink)) {
+        let Some(m) = self.mods.get(place) else { return };
+        let mut n = 0;
+        each(&mut |layer, v| {
+            if n < MOD_METERS {
+                m.ids[n].store(layer.0.wrapping_add(1), Ordering::Relaxed);
+                m.values[n].set(v);
+                n += 1;
+            }
+        });
+        for id in &m.ids[n..] {
+            id.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Voice `place`'s last hits (`recent`, a ring written at `heard % RECENT_HITS`) and how
+    /// many it has heard.
+    pub fn write_hits(&self, place: usize, recent: &[HitValues], heard: u32) {
+        let Some(m) = self.mods.get(place) else { return };
+        if m.heard.swap(heard, Ordering::Relaxed) == heard {
+            return;
+        }
+        for (slot, h) in m.hits.iter().zip(recent) {
+            for (a, v) in slot.iter().zip([h.strength, h.place, h.side, h.number, h.random]) {
+                a.set(v);
+            }
+        }
+    }
+
+    fn place_of(&self, thing: u32) -> Option<usize> {
+        let id = thing.wrapping_add(1);
+        (0..SHAPE_METERS).find(|&i| self.shape_ids[i].load(Ordering::Relaxed) == id)
+    }
+
+    /// Modulator `layer` of `thing`'s voice now (0..1), if the voice runs it.
+    pub fn mod_value(&self, thing: u32, layer: LayerId) -> Option<f32> {
+        let m = &self.mods[self.place_of(thing)?];
+        let id = layer.0.wrapping_add(1);
+        (0..MOD_METERS).find(|&i| m.ids[i].load(Ordering::Relaxed) == id).map(|i| m.values[i].get())
+    }
+
+    /// The numbers of `thing`'s last hits, oldest first (at most [`RECENT_HITS`]).
+    pub fn recent_hits(&self, thing: u32) -> Vec<HitValues> {
+        let Some(place) = self.place_of(thing) else { return Vec::new() };
+        let m = &self.mods[place];
+        let heard = m.heard.load(Ordering::Relaxed) as usize;
+        let n = heard.min(RECENT_HITS);
+        (heard - n..heard)
+            .map(|k| {
+                let v: Vec<f32> = m.hits[k % RECENT_HITS].iter().map(AtomicF32::get).collect();
+                HitValues { strength: v[0], place: v[1], side: v[2], number: v[3], random: v[4] }
+            })
+            .collect()
     }
 
     /// No voice at `place` or after it.
@@ -344,6 +435,27 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_shape_s_modulators_and_last_hits_are_found_by_its_thing() {
+        let m = Meters::default();
+        m.write_shape(3, 9, -12.0);
+        m.write_mods(3, &mut |f| {
+            f(LayerId(4), 0.25);
+            f(LayerId(7), 0.5);
+        });
+        assert_eq!(m.mod_value(9, LayerId(7)), Some(0.5));
+        assert_eq!(m.mod_value(9, LayerId(1)), None);
+        assert_eq!(m.mod_value(2, LayerId(7)), None, "another shape");
+        let mut ring = [HitValues::default(); RECENT_HITS];
+        for k in 0..20u32 {
+            ring[k as usize % RECENT_HITS].strength = k as f32;
+            m.write_hits(3, &ring, k + 1);
+        }
+        let hits = m.recent_hits(9);
+        assert_eq!(hits.len(), RECENT_HITS);
+        assert_eq!((hits[0].strength, hits[15].strength), (4.0, 19.0), "oldest first");
+    }
 
     #[test]
     fn a_shape_s_level_is_found_by_its_thing() {

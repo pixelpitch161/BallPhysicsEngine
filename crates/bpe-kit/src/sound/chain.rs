@@ -525,7 +525,7 @@ mod tests {
         let order: Vec<(LayerId, Option<u8>)> = card.layers.iter().map(|l| (l.id, l.lane)).collect();
         // Osc A's chain, then Osc B's, then the modulators.
         assert_eq!(&order[..3], &[(d, Some(0)), (m, Some(0)), (f, Some(1))]);
-        assert!(card.layers[3..].iter().all(|l| l.kind == super::super::ADSR));
+        assert!(card.layers[3..].iter().all(|l| super::super::MOD_KINDS.contains(&l.kind.as_str())));
         assert_eq!(card.layer(f).unwrap().name, "Filter");
     }
 

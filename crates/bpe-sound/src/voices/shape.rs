@@ -17,10 +17,14 @@ use super::pick::AnyPick;
 use super::slots::{NotesSpec, SlotClock};
 use crate::chain::{Buf, ChainSpec, VoiceChain};
 use crate::modmatrix::{Combine, ModMatrix};
+use crate::mods::{DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, LfoParams, ModCx, Modulator, NoteCx};
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
-use bpe_core::{LayerId, NoteSlot, ShapePath, ThingId, Track};
+use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
 use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
-use bpe_kit::sound::{GateMode, GateUnit, NoiseColour, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, Wave};
+use bpe_kit::sound::{
+    DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, NoiseColour, PhaseMode, PlayMode,
+    PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
+};
 use bpe_runtime::Party;
 use glam::Vec2;
 use std::any::Any;
@@ -33,7 +37,7 @@ pub const LEAVE_MS: f32 = 10.0;
 /// The most hits one note takes in one block (more are let go).
 const MAX_EVENTS: usize = 8;
 /// A note with no envelope on its levels lasts this long.
-const PLAIN_NOTE_S: f32 = 0.1;
+pub(crate) const PLAIN_NOTE_S: f32 = 0.1;
 /// The ball an audition counts as.
 const AUDITION_BALL: Party = Party { thing: ThingId::ROOT, item: u32::MAX };
 /// Auditions waiting for the next block.
@@ -50,7 +54,15 @@ struct Strum {
     ball: Party,
     point: Vec2,
     seed: u64,
+    /// The numbers the hit gave the Hit modulators.
+    hv: HitValues,
 }
+/// The most notes a drone holds at once.
+const MAX_HELD: usize = 16;
+/// The most modulators of one kind besides the envelopes.
+const MAX_EACH: usize = k::MAX_EACH;
+/// The most modulators routes can come from: every envelope and every other modulator.
+pub const MAX_SOURCES: usize = MAX_ENVS + 3 * MAX_EACH;
 
 /// One oscillator's settings that are not knobs.
 #[derive(Clone, Debug)]
@@ -73,6 +85,107 @@ pub struct EnvSpec {
     pub gate_unit: GateUnit,
 }
 
+/// One LFO layer that runs.
+#[derive(Clone, Debug)]
+pub struct LfoSpec {
+    pub id: LayerId,
+    pub settings: LfoSettings,
+    pub seed: u64,
+}
+
+/// One Distance layer that runs.
+#[derive(Clone, Debug)]
+pub struct DistSpec {
+    pub id: LayerId,
+    pub settings: DistanceSettings,
+    /// The balls it hears.
+    pub heard: Arc<Target>,
+}
+
+/// One Hit layer that runs.
+#[derive(Clone, Copy, Debug)]
+pub struct HitSpec {
+    pub id: LayerId,
+    pub pick: HitPick,
+}
+
+/// The LFO, Distance and Hit layers that run (up to eight of each), and the order every
+/// modulator but the envelopes runs in each block.
+#[derive(Clone, Debug, Default)]
+pub struct ModsSpec {
+    pub lfos: Vec<LfoSpec>,
+    pub dists: Vec<DistSpec>,
+    pub hits: Vec<HitSpec>,
+    pub order: Vec<LayerId>,
+}
+
+impl ModsSpec {
+    pub(crate) fn lfo_per_note(&self, i: usize) -> bool {
+        self.lfos[i].settings.start == LfoStart::PerNote
+    }
+
+    pub(crate) fn dist_per_note(&self, i: usize) -> bool {
+        self.dists[i].settings.follows == Follows::EachNotesBall
+    }
+}
+
+/// What a route's source is, by its place in the matrix's sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Src {
+    /// A layer this voice doesn't run: reads 0.
+    None,
+    Env(usize),
+    Lfo(usize),
+    Dist(usize),
+    Hit(usize),
+}
+
+/// An LFO's settings for a block from the knobs `kv` (keys and routes applied).
+pub(crate) fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::TempoMap) -> LfoParams {
+    let at = |key: usize| kv[k::lfo(i, key)];
+    let rate = crate::mods::lfo_rate_hz(&spec.settings, at(k::LFO_RATE) as f64, tempo);
+    LfoParams {
+        wave: crate::mods::lfo::wave_of(spec.settings.shape),
+        rate_hz: rate,
+        phase: at(k::LFO_PHASE) as f64 / 360.0,
+        fade_in: at(k::LFO_FADE_IN).max(0.0) as f64,
+        delay: at(k::LFO_DELAY).max(0.0) as f64,
+        smooth: (at(k::LFO_SMOOTH) / 100.0).clamp(0.0, 1.0),
+        start: spec.settings.start,
+    }
+}
+
+/// A Distance's settings for a block from the knobs `kv`.
+pub(crate) fn dist_params(spec: &DistSpec, i: usize, kv: &[f32]) -> DistanceParams {
+    let at = |key: usize| kv[k::dist(i, key)];
+    DistanceParams {
+        near: at(k::NEAR),
+        far: at(k::FAR),
+        curve: at(k::DIST_CURVE) / 100.0,
+        smooth_ms: at(k::DIST_SMOOTH),
+        full_at: at(k::FULL_AT).round().max(1.0),
+        ..DistanceParams::of(&spec.settings)
+    }
+}
+
+/// Sets Hit modulator `m` (layer `i` of the card's hits) from the knobs `kv`.
+fn set_hit(m: &mut HitMod, spec: &HitSpec, i: usize, kv: &[f32]) {
+    let at = |key: usize| kv[k::hit(i, key)];
+    m.set_pick(spec.pick);
+    m.set_knobs(at(k::LOW), at(k::HIGH), at(k::HIT_CURVE), at(k::HIT_SMOOTH));
+}
+
+/// The places of a modulator's knobs.
+fn knob_range(src: Src) -> (usize, usize) {
+    match src {
+        Src::Env(e) => (k::env(e, 0), k::env(e, k::ADSR_LEN)),
+        Src::Lfo(i) => (k::lfo(i, 0), k::lfo(i, k::LFO_LEN)),
+        Src::Dist(i) => (k::dist(i, 0), k::dist(i, k::DIST_LEN)),
+        Src::Hit(i) => (k::hit(i, 0), k::hit(i, k::HIT_LEN)),
+        Src::None => (0, 0),
+    }
+}
+
 /// Everything a shape's voice is built from.
 pub struct ShapeSpec {
     pub thing: ThingId,
@@ -81,6 +194,10 @@ pub struct ShapeSpec {
     pub osc: [OscSpec; 2],
     pub envs: Vec<EnvSpec>,
     pub play_mode: PlayMode,
+    /// When its notes sound: on hits, always (held), or while a ball is in range.
+    pub play_when: PlayWhen,
+    /// The Distance (its place in `mods.dists`) whose range holds the notes, for In range.
+    pub zone: Option<usize>,
     pub heard_from: bpe_core::Target,
     pub slots: Vec<NoteSlot>,
     /// How hits pick notes and how the slots take turns.
@@ -99,6 +216,8 @@ pub struct ShapeSpec {
     pub width: f32,
     /// Both oscillators' layer chains.
     pub chain: Arc<ChainSpec>,
+    /// The modulators besides the envelopes.
+    pub mods: ModsSpec,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,10 +259,16 @@ struct Note {
     warp_prev: [f32; 2],
     /// Samples the note has played.
     age: u64,
+    /// The note's own modulators (those that run per note), by their place in the spec.
+    lfo: [LfoMod; MAX_EACH],
+    dist: [DistanceMod; MAX_EACH],
+    hit: [HitMod; MAX_EACH],
+    /// Every route source's value at the end of the last block, as this note heard it.
+    src_prev: [f32; MAX_SOURCES],
 }
 
 impl Note {
-    fn new(chain: &ChainSpec) -> Self {
+    fn new(chain: &ChainSpec, heard: &Arc<Target>) -> Self {
         Note {
             note: 60,
             strength: 1.0,
@@ -168,6 +293,10 @@ impl Note {
             across: 0.0,
             warp_prev: [0.0; 2],
             age: 0,
+            lfo: std::array::from_fn(|_| LfoMod::new(0)),
+            dist: std::array::from_fn(|_| DistanceMod::new(heard.clone())),
+            hit: std::array::from_fn(|_| HitMod::default()),
+            src_prev: [0.0; MAX_SOURCES],
         }
     }
 
@@ -203,6 +332,8 @@ struct Scratch {
     smooth: [[f32; BLOCK]; 7],
     /// The oscillators' sound reaching their chains, then each chain layer's sound.
     lanes: Vec<Buf>,
+    /// Every route source sample by sample, this note, this block.
+    src: [[f32; BLOCK]; MAX_SOURCES],
 }
 
 impl Scratch {
@@ -219,12 +350,13 @@ impl Scratch {
             shape_r: [0.0; BLOCK],
             smooth: [[0.0; BLOCK]; 7],
             lanes: vec![[[0.0; BLOCK]; 2]; buffers.max(crate::chain::RAW_BUFFERS)],
+            src: [[0.0; BLOCK]; MAX_SOURCES],
         })
     }
 }
 
 /// A dB knob's gain, with the bottom of its range silent.
-fn knob_gain(db: f32) -> f32 {
+pub(crate) fn knob_gain(db: f32) -> f32 {
     if db <= SILENT_DB + 1e-3 { 0.0 } else { db_to_gain(db) }
 }
 
@@ -251,14 +383,19 @@ pub struct ShapeVoice {
     slot_turn: u64,
     strums: [Strum; MAX_STRUMS],
     n_strums: usize,
+    /// The notes held (Always, In range): their voice slots and notes.
+    held: [usize; MAX_HELD],
+    held_notes: [u8; MAX_HELD],
+    n_held: usize,
+    /// The last accepted hits' numbers, a ring written at `heard % RECENT_HITS`.
+    recent: [HitValues; crate::meters::RECENT_HITS],
+    heard: u32,
     notes: Voices<Note>,
     /// The knobs this block (keys read).
     now: Values,
     /// Smoothed: Gain, Level, Sub level of each oscillator, then Volume; and the pans.
     smooth: [Smoother; 7],
     pans: [Smoother; 3],
-    /// Which envelope each of the matrix's sources is (`usize::MAX` for one this voice lacks).
-    source_env: [usize; MAX_ENVS],
     /// The envelopes that scale a level: a note ends when they are done.
     level_envs: [bool; MAX_ENVS],
     /// Whether each of Gain, Level, Sub level (per oscillator) and Volume has routes.
@@ -276,10 +413,33 @@ pub struct ShapeVoice {
     peak: f32,
     /// The notes started since they were last taken, while noting (the export's MIDI).
     noted: Option<Vec<crate::NoteOn>>,
+    /// What each of the matrix's sources is.
+    src: [Src; MAX_SOURCES],
+    n_src: usize,
+    /// Each LFO's, Distance's and Hit's place among the matrix's sources.
+    lfo_src: [Option<usize>; MAX_EACH],
+    dist_src: [Option<usize>; MAX_EACH],
+    hit_src: [Option<usize>; MAX_EACH],
+    /// The modulators besides the envelopes, in the order they run.
+    order: Vec<Src>,
+    /// The shape's shared modulators (a Free or Restart LFO, a Distance not following each
+    /// note's ball).
+    lfo: [LfoMod; MAX_EACH],
+    dist: [DistanceMod; MAX_EACH],
+    /// The shared sources' values at the end of the block before and this one.
+    shared_prev: [f32; MAX_SOURCES],
+    shared_now: [f32; MAX_SOURCES],
+    /// Each per-note source's largest value among the notes, last block (what a shared
+    /// modulator's knobs hear from it) and this block so far.
+    note_max: [f32; MAX_SOURCES],
+    note_max_next: [f32; MAX_SOURCES],
+    /// A knob whose value each note shows, for tests (`watch`).
+    watch: Option<usize>,
+    watched: [f32; CAPACITY],
 }
 
 /// The smoothed knobs' places: per oscillator Gain, Level, Sub level, then Volume.
-const SMOOTHED: [usize; 7] = [
+pub(crate) const SMOOTHED: [usize; 7] = [
     k::osc(0, k::GAIN),
     k::osc(0, k::LEVEL),
     k::osc(0, k::SUB_LEVEL),
@@ -300,11 +460,42 @@ impl ShapeVoice {
             spec.heard_from.clone(),
         );
         let mut source_env = [usize::MAX; MAX_ENVS];
-        for (s, id) in spec.matrix.sources().iter().enumerate().take(MAX_ENVS) {
+        let mut src = [Src::None; MAX_SOURCES];
+        let (mut lfo_src, mut dist_src, mut hit_src) = ([None; MAX_EACH], [None; MAX_EACH], [None; MAX_EACH]);
+        let n_src = spec.matrix.sources().len().min(MAX_SOURCES);
+        for (s, id) in spec.matrix.sources().iter().enumerate().take(MAX_SOURCES) {
+            let m = &spec.mods;
             if let Some(e) = spec.envs.iter().take(MAX_ENVS).position(|x| x.id == *id) {
-                source_env[s] = e;
+                if s < MAX_ENVS {
+                    source_env[s] = e;
+                }
+                src[s] = Src::Env(e);
+            } else if let Some(i) = m.lfos.iter().position(|x| x.id == *id) {
+                src[s] = Src::Lfo(i);
+                lfo_src[i] = Some(s);
+            } else if let Some(i) = m.dists.iter().position(|x| x.id == *id) {
+                src[s] = Src::Dist(i);
+                dist_src[i] = Some(s);
+            } else if let Some(i) = m.hits.iter().position(|x| x.id == *id) {
+                src[s] = Src::Hit(i);
+                hit_src[i] = Some(s);
             }
         }
+        let order: Vec<Src> = spec
+            .mods
+            .order
+            .iter()
+            .filter_map(|id| {
+                let m = &spec.mods;
+                m.lfos
+                    .iter()
+                    .position(|x| x.id == *id)
+                    .map(Src::Lfo)
+                    .or_else(|| m.dists.iter().position(|x| x.id == *id).map(Src::Dist))
+                    .or_else(|| m.hits.iter().position(|x| x.id == *id).map(Src::Hit))
+            })
+            .collect();
+        let anything = Arc::new(Target::Anything);
         let mut level_envs = [false; MAX_ENVS];
         let mut routed = [false; 7];
         for (r, &target) in SMOOTHED.iter().enumerate() {
@@ -324,14 +515,20 @@ impl ShapeVoice {
             clock: SlotClock::new(spec.slots.len(), super::slots::clock_seed(spec.thing)),
             slot_hits: 0,
             slot_turn: 0,
-            strums: [Strum { sample: 0, note: 0, strength: 0.0, ball: AUDITION_BALL, point: Vec2::ZERO, seed: 0 };
-                MAX_STRUMS],
+            strums: [Strum {
+                sample: 0,
+                note: 0,
+                strength: 0.0,
+                ball: AUDITION_BALL,
+                point: Vec2::ZERO,
+                seed: 0,
+                hv: HitValues::default(),
+            }; MAX_STRUMS],
             n_strums: 0,
-            notes: Voices::new(|| Note::new(&spec.chain)),
+            notes: Voices::new(|| Note::new(&spec.chain, &anything)),
             now,
             smooth: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
             pans: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
-            source_env,
             level_envs,
             routed,
             plays: std::array::from_fn(|o| spec.osc[o].on || spec.chain.raw_needed[o]),
@@ -341,8 +538,29 @@ impl ShapeVoice {
             auditions: [0; MAX_AUDITIONS],
             n_auditions: 0,
             audition_count: 0,
+            held: [0; MAX_HELD],
+            held_notes: [0; MAX_HELD],
+            n_held: 0,
+            recent: [HitValues::default(); crate::meters::RECENT_HITS],
+            heard: 0,
             peak: 0.0,
             noted: None,
+            src,
+            n_src,
+            lfo_src,
+            dist_src,
+            hit_src,
+            order,
+            lfo: std::array::from_fn(|i| LfoMod::new(spec.mods.lfos.get(i).map_or(0, |l| l.seed))),
+            dist: std::array::from_fn(|i| {
+                DistanceMod::new(spec.mods.dists.get(i).map_or_else(|| anything.clone(), |d| d.heard.clone()))
+            }),
+            shared_prev: [0.0; MAX_SOURCES],
+            shared_now: [0.0; MAX_SOURCES],
+            note_max: [0.0; MAX_SOURCES],
+            note_max_next: [0.0; MAX_SOURCES],
+            watch: None,
+            watched: [0.0; CAPACITY],
             spec,
         };
         v.read_keys(0.0);
@@ -382,6 +600,91 @@ impl ShapeVoice {
     /// The loudest sample of the last block (for the shape's meter).
     pub fn peak(&self) -> f32 {
         self.peak
+    }
+
+    /// Shows the knob at `place` (see [`super::knobs`]) as each note has it after its routes,
+    /// read with [`ShapeVoice::watched`]. For tests.
+    pub fn watch(&mut self, place: usize) {
+        self.watch = Some(place);
+    }
+
+    /// The watched knob of each sounding note, with its note. Allocates.
+    pub fn watched(&self) -> Vec<(u8, f32)> {
+        (0..CAPACITY)
+            .filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading)
+            .map(|i| (self.notes.slots[i].note, self.watched[i]))
+            .collect()
+    }
+
+    /// Modulator `layer`'s value now, 0..1: a shared one's own, a per-note one's largest among
+    /// the sounding notes (0 with none). `None` for a layer this voice doesn't run.
+    pub fn mod_value(&self, layer: LayerId) -> Option<f32> {
+        let m = &self.spec.mods;
+        let notes = || (0..CAPACITY).filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading);
+        if let Some(i) = m.lfos.iter().position(|x| x.id == layer) {
+            return Some(if m.lfo_per_note(i) {
+                notes().map(|n| self.notes.slots[n].lfo[i].value()).fold(0.0, f32::max)
+            } else {
+                self.lfo[i].value()
+            });
+        }
+        if let Some(i) = m.dists.iter().position(|x| x.id == layer) {
+            return Some(if m.dist_per_note(i) {
+                notes().map(|n| self.notes.slots[n].dist[i].value()).fold(0.0, f32::max)
+            } else {
+                self.dist[i].value()
+            });
+        }
+        if let Some(i) = m.hits.iter().position(|x| x.id == layer) {
+            return Some(notes().map(|n| self.notes.slots[n].hit[i].value()).fold(0.0, f32::max));
+        }
+        let e = self.spec.envs.iter().take(MAX_ENVS).position(|x| x.id == layer)?;
+        Some(notes().map(|n| self.notes.slots[n].env[e].level()).fold(0.0, f32::max))
+    }
+
+    /// The shape's shared modulators move on a block: in their order, each one's knobs moved by
+    /// the modulators run before it this block (and the rest as they were the block before; a
+    /// per-note source counts at its largest among the notes).
+    fn run_shared(&mut self, cx: &BlockCx) {
+        self.shared_prev = self.shared_now;
+        if self.order.is_empty() {
+            return;
+        }
+        let mut vals = [0.0f32; MAX_SOURCES];
+        for s in 0..self.n_src {
+            vals[s] = match self.src[s] {
+                Src::Lfo(i) if !self.spec.mods.lfo_per_note(i) => self.shared_now[s],
+                Src::Dist(i) if !self.spec.mods.dist_per_note(i) => self.shared_now[s],
+                Src::None => 0.0,
+                _ => self.note_max[s],
+            };
+        }
+        let mcx = ModCx { start_sample: cx.start_sample, tempo: cx.tempo, world: cx.world, shape: self.spec.thing };
+        let mut kv = [0.0f32; KNOBS];
+        for &m in &self.order {
+            let (lo, hi) = knob_range(m);
+            match m {
+                Src::Lfo(i) if !self.spec.mods.lfo_per_note(i) => {
+                    self.spec.matrix.apply_range(&vals, &self.now, &mut kv, lo, hi);
+                    self.lfo[i].set_params(lfo_params(&self.spec.mods.lfos[i], i, &kv, cx.tempo));
+                    self.lfo[i].next_block(&mcx);
+                    if let Some(s) = self.lfo_src[i] {
+                        vals[s] = self.lfo[i].value();
+                        self.shared_now[s] = vals[s];
+                    }
+                }
+                Src::Dist(i) if !self.spec.mods.dist_per_note(i) => {
+                    self.spec.matrix.apply_range(&vals, &self.now, &mut kv, lo, hi);
+                    self.dist[i].set_params(dist_params(&self.spec.mods.dists[i], i, &kv));
+                    self.dist[i].next_block(&mcx);
+                    if let Some(s) = self.dist_src[i] {
+                        vals[s] = self.dist[i].value();
+                        self.shared_now[s] = vals[s];
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// The knobs at `time`: as set, with keyed ones read from their tracks.
@@ -427,17 +730,7 @@ impl ShapeVoice {
 
     /// The envelope settings of envelope `e` now.
     fn env_params(&self, e: usize) -> EnvParams {
-        let n = &self.now;
-        let at = |key: usize| n[k::env(e, key)];
-        EnvParams {
-            delay: at(k::DELAY) / 1000.0,
-            attack: at(k::ATTACK) / 1000.0,
-            hold: at(k::HOLD) / 1000.0,
-            decay: at(k::DECAY) / 1000.0,
-            sustain: at(k::SUSTAIN) / 100.0,
-            release: at(k::RELEASE) / 1000.0,
-            curves: [at(k::ATTACK_CURVE) / 100.0, at(k::DECAY_CURVE) / 100.0, at(k::RELEASE_CURVE) / 100.0],
-        }
+        env_params_of(&self.now, e)
     }
 
     /// Samples envelope `e`'s gate stays open for.
@@ -461,7 +754,17 @@ impl ShapeVoice {
 
     /// A note starts at `at` in this block: on a fresh slot (Poly) or the one voice (Mono).
     #[allow(clippy::too_many_arguments)]
-    fn start_note(&mut self, cx: &BlockCx, at: u32, note: u8, strength: f32, ball: Party, point: Vec2, seed: u64) {
+    fn start_note(
+        &mut self,
+        cx: &BlockCx,
+        at: u32,
+        note: u8,
+        strength: f32,
+        ball: Party,
+        point: Vec2,
+        seed: u64,
+        hv: &HitValues,
+    ) -> Option<usize> {
         let sample = cx.start_sample + at as u64;
         if self.noted.is_some() {
             let gate = if self.envs() > 0 { self.gate_samples(0, cx.tempo) } else { u64::MAX };
@@ -469,6 +772,7 @@ impl ShapeVoice {
                 noted.push(crate::NoteOn { sample, note, strength, gate });
             }
         }
+        let ncx = NoteCx { sample, hit: hv, ball: (ball != AUDITION_BALL).then_some(ball) };
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
         let mono = self.spec.play_mode == PlayMode::Mono;
         if mono && self.notes.meta[0].active && !self.notes.meta[0].fading {
@@ -496,8 +800,22 @@ impl ShapeVoice {
                 n.push(at, e, Ev::Trigger(strength));
                 n.gate[e] = gates[e];
             }
+            // Its own modulators take the new hit: a Hit its number, an LFO a fresh start, a
+            // Distance the new ball.
+            let m = &self.spec.mods;
+            for i in 0..m.hits.len().min(MAX_EACH) {
+                set_hit(&mut n.hit[i], &m.hits[i], i, &self.now);
+                n.hit[i].note_on(&ncx);
+            }
+            for i in 0..m.lfos.len().min(MAX_EACH) {
+                n.lfo[i].note_on(&ncx);
+            }
+            for i in 0..m.dists.len().min(MAX_EACH) {
+                n.dist[i].set_params(dist_params(&m.dists[i], i, &self.now));
+                n.dist[i].note_on(&ncx);
+            }
             self.notes.meta[0].started = sample;
-            return;
+            return Some(0);
         }
         let (slot, steal) = if mono {
             if self.notes.meta[0].active {
@@ -507,7 +825,7 @@ impl ShapeVoice {
             (0, None)
         } else {
             let limit = (self.now[k::VOICES].round() as usize).clamp(1, MAX_VOICES);
-            let Some(s) = self.notes.start(limit, sample, cx.start_sample) else { return };
+            let s = self.notes.start(limit, sample, cx.start_sample)?;
             (s.slot, s.steal)
         };
         if let Some(s) = steal {
@@ -572,6 +890,29 @@ impl ShapeVoice {
                 n.push(at, e, Ev::Trigger(strength));
             }
         }
+        // The note's own modulators start with it.
+        let m = &self.spec.mods;
+        n.src_prev = [0.0; MAX_SOURCES];
+        for i in 0..m.lfos.len().min(MAX_EACH) {
+            n.lfo[i].reset();
+            n.lfo[i].reseed(m.lfos[i].seed ^ seed);
+            n.lfo[i].set_params(lfo_params(&m.lfos[i], i, &self.now, cx.tempo));
+            n.lfo[i].note_on(&ncx);
+        }
+        for i in 0..m.dists.len().min(MAX_EACH) {
+            n.dist[i].reset();
+            n.dist[i].set_params(dist_params(&m.dists[i], i, &self.now));
+            n.dist[i].note_on(&ncx);
+        }
+        for i in 0..m.hits.len().min(MAX_EACH) {
+            n.hit[i].reset();
+            set_hit(&mut n.hit[i], &m.hits[i], i, &self.now);
+            n.hit[i].note_on(&ncx);
+            if let Some(s) = self.hit_src[i] {
+                n.src_prev[s] = n.hit[i].value();
+            }
+        }
+        Some(slot)
     }
 
     /// Both oscillators' unison settings for a note at `pitch`.
@@ -651,6 +992,16 @@ impl ShapeVoice {
             let seed = mix(sample
                 ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
                 ^ ((self.spec.thing.0 as u64) << 48));
+            let hv = self.hit_values_of(cx, hit, seed, strength);
+            self.recent[self.heard as usize % crate::meters::RECENT_HITS] = hv;
+            self.heard = self.heard.wrapping_add(1);
+            self.restart_shared(&NoteCx { sample, hit: &hv, ball: Some(ball) });
+            if self.spec.play_when != PlayWhen::OnHit {
+                // Held notes: the hit retriggers them and counts towards the slots.
+                self.clock.hit(&self.spec.notes);
+                self.retrigger_held(at, strength, &NoteCx { sample, hit: &hv, ball: Some(ball) });
+                continue;
+            }
             self.hit_arrives(at, sample);
             let pick = self.pick_for(cx, hit, cx.time);
             self.clock.hit(&self.spec.notes);
@@ -659,20 +1010,148 @@ impl ShapeVoice {
                 let note_seed = mix(seed ^ note as u64);
                 let delay = (i as f64 * gap).round() as u64;
                 if at as u64 + delay < BLOCK as u64 {
-                    self.start_note(cx, at + delay as u32, note, strength, ball, hit.event.point, note_seed);
+                    self.start_note(cx, at + delay as u32, note, strength, ball, hit.event.point, note_seed, &hv);
                 } else if self.n_strums < MAX_STRUMS {
-                    self.strums[self.n_strums] =
-                        Strum { sample: sample + delay, note, strength, ball, point: hit.event.point, seed: note_seed };
+                    self.strums[self.n_strums] = Strum {
+                        sample: sample + delay,
+                        note,
+                        strength,
+                        ball,
+                        point: hit.event.point,
+                        seed: note_seed,
+                        hv,
+                    };
                     self.n_strums += 1;
                 }
             }
         }
         self.clock.end_block(&self.spec.notes);
+        self.hold(cx);
         for i in 0..std::mem::take(&mut self.n_auditions) {
             let note = self.auditions[i];
             self.audition_count += 1;
             let seed = mix(self.audition_count ^ ((self.spec.thing.0 as u64) << 40));
-            self.start_note(cx, 0, note, AUDITION_STRENGTH, AUDITION_BALL, Vec2::ZERO, seed);
+            let hv = HitValues {
+                strength: AUDITION_STRENGTH,
+                random: bpe_dsp::lfo::random_at(seed, 0),
+                ..HitValues::default()
+            };
+            self.restart_shared(&NoteCx { sample: cx.start_sample, hit: &hv, ball: None });
+            self.start_note(cx, 0, note, AUDITION_STRENGTH, AUDITION_BALL, Vec2::ZERO, seed, &hv);
+        }
+    }
+
+    /// Always and In range: holds the playing slot's notes (while a ball is in range), moving
+    /// to the slot's notes when they change (Mono glides) and letting go when nothing is held.
+    fn hold(&mut self, cx: &BlockCx) {
+        let want = match self.spec.play_when {
+            PlayWhen::OnHit => return,
+            PlayWhen::Always => true,
+            PlayWhen::InRange => self.in_range(cx),
+        };
+        let mono = self.spec.play_mode == PlayMode::Mono;
+        let limit = if mono { 1 } else { (self.now[k::VOICES].round() as usize).clamp(1, MAX_VOICES).min(MAX_HELD) };
+        let mut wanted = [0u8; MAX_HELD];
+        let mut n = 0;
+        if want && let Some(slot) = self.spec.slots.get(self.clock.current()) {
+            for &note in slot.notes.iter().take(limit) {
+                wanted[n] = note;
+                n += 1;
+            }
+        }
+        let alive = (0..self.n_held).all(|i| {
+            let s = self.held[i];
+            self.notes.meta[s].active && !self.notes.meta[s].fading && self.notes.slots[s].note == self.held_notes[i]
+        });
+        if alive && n == self.n_held && wanted[..n] == self.held_notes[..n] {
+            return;
+        }
+        let hv = HitValues { strength: 1.0, ..HitValues::default() };
+        let thing = self.spec.thing.0 as u64;
+        let seed = |note: u8| mix((thing << 40) ^ 0xD20E ^ note as u64);
+        if mono && alive && n == 1 && self.n_held == 1 {
+            // The one voice glides to the new note.
+            let s = seed(wanted[0]);
+            self.start_note(cx, 0, wanted[0], 1.0, AUDITION_BALL, Vec2::ZERO, s, &hv);
+            self.notes.slots[0].gate = [u64::MAX; MAX_ENVS];
+            self.held_notes[0] = wanted[0];
+            return;
+        }
+        self.release_held();
+        for &note in &wanted[..n] {
+            let s = seed(note);
+            if let Some(slot) = self.start_note(cx, 0, note, 1.0, AUDITION_BALL, Vec2::ZERO, s, &hv) {
+                self.notes.slots[slot].gate = [u64::MAX; MAX_ENVS];
+                self.held[self.n_held] = slot;
+                self.held_notes[self.n_held] = note;
+                self.n_held += 1;
+            }
+        }
+    }
+
+    /// Whether a ball is in range of the In range Distance (its value above 0, read from the
+    /// nearest ball when it follows each note's own).
+    fn in_range(&self, cx: &BlockCx) -> bool {
+        let Some(i) = self.spec.zone else { return false };
+        let Some(d) = self.spec.mods.dists.get(i) else { return false };
+        let mut p = dist_params(d, i, &self.now);
+        if p.follows == Follows::EachNotesBall {
+            p.follows = Follows::Nearest;
+        }
+        crate::mods::distance::distance_value(&p, &d.heard, cx.world, self.spec.thing, None).is_some_and(|v| v > 0.0)
+    }
+
+    /// The held notes close their gates and ring out.
+    fn release_held(&mut self) {
+        for i in 0..std::mem::take(&mut self.n_held) {
+            let s = self.held[i];
+            if self.notes.meta[s].active && self.notes.slots[s].note == self.held_notes[i] {
+                for e in 0..self.envs() {
+                    if self.notes.slots[s].gate[e] == u64::MAX {
+                        self.notes.slots[s].gate[e] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A hit on a shape holding its notes: their envelopes start again from where they are, and
+    /// their Hit modulators take the hit's numbers.
+    fn retrigger_held(&mut self, at: u32, strength: f32, ncx: &NoteCx) {
+        let envs = self.envs();
+        for i in 0..self.n_held {
+            let s = self.held[i];
+            if !self.notes.meta[s].active {
+                continue;
+            }
+            let n = &mut self.notes.slots[s];
+            n.strength = strength;
+            for e in 0..envs {
+                n.push(at, e, Ev::Trigger(strength));
+            }
+            let m = &self.spec.mods;
+            for h in 0..m.hits.len().min(MAX_EACH) {
+                set_hit(&mut n.hit[h], &m.hits[h], h, &self.now);
+                n.hit[h].note_on(ncx);
+            }
+        }
+    }
+
+    /// The numbers an accepted hit gives the Hit modulators (worked out only when there are
+    /// any).
+    fn hit_values_of(&self, cx: &BlockCx, hit: &BlockHit, seed: u64, strength: f32) -> HitValues {
+        if self.spec.mods.hits.is_empty() {
+            return HitValues { strength, ..HitValues::default() };
+        }
+        crate::mods::hit_values(cx.world, self.spec.thing, &hit.event, seed)
+    }
+
+    /// A hit (or a key clicked) restarts the shape's Restart-on-hit LFOs.
+    fn restart_shared(&mut self, ncx: &NoteCx) {
+        for i in 0..self.spec.mods.lfos.len().min(MAX_EACH) {
+            if !self.spec.mods.lfo_per_note(i) {
+                self.lfo[i].note_on(ncx);
+            }
         }
     }
 
@@ -684,7 +1163,7 @@ impl ShapeVoice {
             let s = self.strums[i];
             if s.sample < end {
                 let at = s.sample.saturating_sub(cx.start_sample) as u32;
-                self.start_note(cx, at, s.note, s.strength, s.ball, s.point, s.seed);
+                self.start_note(cx, at, s.note, s.strength, s.ball, s.point, s.seed, &s.hv);
                 self.n_strums -= 1;
                 self.strums[i] = self.strums[self.n_strums];
             } else {
@@ -753,10 +1232,20 @@ impl ShapeVoice {
     }
 
     /// Renders note `i` into the shape's buffers. Returns false once it is over.
-    fn render_note(&mut self, i: usize) -> bool {
+    fn render_note(&mut self, cx: &BlockCx, i: usize) -> bool {
         let envs = self.envs();
-        let params: [EnvParams; MAX_ENVS] =
+        let mut params: [EnvParams; MAX_ENVS] =
             std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
+        let mut moved = [0.0f32; KNOBS];
+        // Envelope knobs moved by other modulators hear them as they were a block ago.
+        for (e, p) in params.iter_mut().enumerate().take(envs) {
+            let (lo, hi) = knob_range(Src::Env(e));
+            if self.spec.matrix.reaches_range(lo, hi) {
+                let prev = self.notes.slots[i].src_prev;
+                self.spec.matrix.apply_range(&prev, &self.now, &mut moved, lo, hi);
+                *p = env_params_of(&moved, e);
+            }
+        }
         let n = &mut self.notes.slots[i];
         let sc = &mut *self.scratch;
         // The envelopes, sample by sample, with this block's hits and gates.
@@ -799,18 +1288,77 @@ impl ShapeVoice {
         let first = n.start_at as usize;
         n.start_at = 0;
 
-        // The knobs as this note's modulators move them, at the block's end.
-        let mut sources = [0.0f32; MAX_ENVS];
-        for (s, &e) in self.source_env.iter().enumerate() {
-            if e != usize::MAX {
-                sources[s] = sc.env[e][BLOCK - 1];
+        // Every source's value at the block's end: envelopes as they ran, shared modulators as
+        // the shape ran them, then this note's own in their order (each hearing those before it
+        // now and the rest a block ago).
+        let mut sources = [0.0f32; MAX_SOURCES];
+        let per_note = |src: Src| match src {
+            Src::Lfo(m) => self.spec.mods.lfo_per_note(m),
+            Src::Dist(m) => self.spec.mods.dist_per_note(m),
+            Src::Hit(_) => true,
+            _ => false,
+        };
+        for s in 0..self.n_src {
+            sources[s] = match self.src[s] {
+                Src::Env(e) => sc.env[e][BLOCK - 1],
+                Src::None => 0.0,
+                src if per_note(src) => n.src_prev[s],
+                _ => self.shared_now[s],
+            };
+        }
+        let mcx = ModCx { start_sample: cx.start_sample, tempo: cx.tempo, world: cx.world, shape: self.spec.thing };
+        for &m in &self.order {
+            if !per_note(m) {
+                continue;
+            }
+            let (lo, hi) = knob_range(m);
+            self.spec.matrix.apply_range(&sources, &self.now, &mut moved, lo, hi);
+            let (value, s) = match m {
+                Src::Lfo(j) => {
+                    n.lfo[j].set_params(lfo_params(&self.spec.mods.lfos[j], j, &moved, cx.tempo));
+                    n.lfo[j].next_block(&mcx);
+                    (n.lfo[j].value(), self.lfo_src[j])
+                }
+                Src::Dist(j) => {
+                    n.dist[j].set_params(dist_params(&self.spec.mods.dists[j], j, &moved));
+                    n.dist[j].next_block(&mcx);
+                    (n.dist[j].value(), self.dist_src[j])
+                }
+                Src::Hit(j) => {
+                    set_hit(&mut n.hit[j], &self.spec.mods.hits[j], j, &moved);
+                    n.hit[j].next_block(&mcx);
+                    (n.hit[j].value(), self.hit_src[j])
+                }
+                _ => continue,
+            };
+            if let Some(s) = s {
+                sources[s] = value;
             }
         }
-        let mut moved = [0.0f32; KNOBS];
+        // Each source sample by sample: envelopes as they ran, the rest across the block.
+        for s in 0..self.n_src {
+            let (from, to) = match self.src[s] {
+                Src::Env(e) => {
+                    sc.src[s] = sc.env[e];
+                    continue;
+                }
+                Src::None => (0.0, 0.0),
+                src if per_note(src) => (n.src_prev[s], sources[s]),
+                _ => (self.shared_prev[s], self.shared_now[s]),
+            };
+            for (j, v) in sc.src[s].iter_mut().enumerate() {
+                *v = from + (to - from) * (j + 1) as f32 / BLOCK as f32;
+            }
+            self.note_max_next[s] = self.note_max_next[s].max(sources[s]);
+        }
+        n.src_prev = sources;
         if self.spec.matrix.is_empty() {
             moved = self.now;
         } else {
             self.spec.matrix.apply(&sources, &self.now, &mut moved);
+        }
+        if let Some(place) = self.watch {
+            self.watched[i] = moved[place];
         }
 
         // Glide.
@@ -836,7 +1384,7 @@ impl ShapeVoice {
                 sc.gain[s] = sc.smooth[3 * o][s] * sc.fade[s];
             }
             if self.routed[3 * o] {
-                scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, g_place, &mut sc.gain);
+                scale_by_routes(&self.spec.matrix, &sc.src, g_place, &mut sc.gain);
             }
             let semis = 12.0 * at(k::OCTAVE).round() + at(k::SEMI).round() + at(k::CENTS) / 100.0;
             pitch[o] = n.pitch + semis;
@@ -879,7 +1427,7 @@ impl ShapeVoice {
                         sc.sub_gain[s] = sc.gain[s] * sc.smooth[3 * o + 2][s];
                     }
                     if self.routed[3 * o + 2] {
-                        scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, s_place, &mut sc.sub_gain);
+                        scale_by_routes(&self.spec.matrix, &sc.src, s_place, &mut sc.sub_gain);
                     }
                     n.sub[o].render(square, &sc.sub_gain, lane_l, lane_r);
                 }
@@ -895,7 +1443,7 @@ impl ShapeVoice {
             let (pl, pr) = pan_gains(self.pans[o].value());
             let mut lv = sc.smooth[3 * o + 1];
             if self.routed[3 * o + 1] {
-                scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, k::osc(o, k::LEVEL), &mut lv);
+                scale_by_routes(&self.spec.matrix, &sc.src, k::osc(o, k::LEVEL), &mut lv);
             }
             let [out_l, out_r] = &sc.lanes[self.spec.chain.out[o]];
             for s in 0..BLOCK {
@@ -908,7 +1456,7 @@ impl ShapeVoice {
         let (ol, or) = pan_gains(self.pans[2].value() + follow * n.across);
         let mut vol = sc.smooth[6];
         if self.routed[6] {
-            scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, k::VOLUME, &mut vol);
+            scale_by_routes(&self.spec.matrix, &sc.src, k::VOLUME, &mut vol);
         }
         for s in 0..BLOCK {
             sc.shape_l[s] += sc.note_l[s] * vol[s] * ol;
@@ -920,7 +1468,9 @@ impl ShapeVoice {
         if n.fade <= 0.0 {
             return false;
         }
-        if n.fade_step == 0.0 {
+        // A held note (a drone) waits, silent, for the next hit however low its sustain.
+        let held = self.spec.play_when != PlayWhen::OnHit && (0..envs).any(|e| n.gate[e] == u64::MAX);
+        if n.fade_step == 0.0 && !held {
             let mut any_level = false;
             let mut all_done = true;
             let mut every_done = true;
@@ -947,24 +1497,32 @@ impl ShapeVoice {
     }
 }
 
-fn params_velocity(now: &Values, e: usize) -> f32 {
+/// Envelope `e`'s settings from the knobs `kv`.
+pub(crate) fn env_params_of(kv: &[f32], e: usize) -> EnvParams {
+    let at = |key: usize| kv[k::env(e, key)];
+    EnvParams {
+        delay: at(k::DELAY) / 1000.0,
+        attack: at(k::ATTACK) / 1000.0,
+        hold: at(k::HOLD) / 1000.0,
+        decay: at(k::DECAY) / 1000.0,
+        sustain: at(k::SUSTAIN) / 100.0,
+        release: at(k::RELEASE) / 1000.0,
+        curves: [at(k::ATTACK_CURVE) / 100.0, at(k::DECAY_CURVE) / 100.0, at(k::RELEASE_CURVE) / 100.0],
+    }
+}
+
+pub(crate) fn params_velocity(now: &Values, e: usize) -> f32 {
     (now[k::env(e, k::VELOCITY)] / 100.0).clamp(0.0, 1.0)
 }
 
-/// Scales `out` by every scaling route on the knob at `target`, sample by sample (a route
-/// whose source runs no envelope reads 0, as [`ModMatrix::factor`] does).
-fn scale_by_routes(
-    matrix: &ModMatrix,
-    source_env: &[usize; MAX_ENVS],
-    env: &[[f32; BLOCK]; MAX_ENVS],
-    target: usize,
-    out: &mut [f32; BLOCK],
-) {
+/// Scales `out` by every scaling route on the knob at `target`, sample by sample, its sources
+/// read from `src` (a source past the last reads 0, as [`ModMatrix::factor`] does).
+fn scale_by_routes(matrix: &ModMatrix, src: &[[f32; BLOCK]; MAX_SOURCES], target: usize, out: &mut [f32; BLOCK]) {
     for (source, amount, invert) in matrix.scaling(target as u16) {
         let a = amount.abs();
-        match source_env.get(source as usize).copied().filter(|e| *e != usize::MAX) {
-            Some(e) => {
-                for (o, m) in out.iter_mut().zip(&env[e]) {
+        match src.get(source as usize) {
+            Some(buf) => {
+                for (o, m) in out.iter_mut().zip(buf) {
                     let m = if invert { 1.0 - m } else { *m };
                     *o *= (1.0 - a * (1.0 - m.clamp(0.0, 1.0))).max(0.0);
                 }
@@ -999,18 +1557,21 @@ impl VoiceSource for ShapeVoice {
         if self.leave_step == 0.0 {
             self.take_hits(cx, hits);
         }
+        self.run_shared(cx);
         self.scratch.shape_l = [0.0; BLOCK];
         self.scratch.shape_r = [0.0; BLOCK];
+        self.note_max_next = [0.0; MAX_SOURCES];
         for i in 0..CAPACITY {
             if !self.notes.meta[i].active {
                 continue;
             }
-            if !self.render_note(i) {
+            if !self.render_note(cx, i) {
                 self.notes.free(i);
             } else if self.notes.slots[i].fade_step > 0.0 {
                 self.notes.fade(i);
             }
         }
+        self.note_max = self.note_max_next;
         let mut peak = 0.0f32;
         for s in 0..BLOCK {
             let g = self.leaving;
@@ -1041,6 +1602,16 @@ impl VoiceSource for ShapeVoice {
         self.slot_hits = 0;
         self.slot_turn = 0;
         self.n_strums = 0;
+        self.n_held = 0;
+        for m in &mut self.lfo {
+            m.reset();
+        }
+        for m in &mut self.dist {
+            m.reset();
+        }
+        self.shared_prev = [0.0; MAX_SOURCES];
+        self.shared_now = [0.0; MAX_SOURCES];
+        self.note_max = [0.0; MAX_SOURCES];
         self.n_auditions = 0;
         self.peak = 0.0;
         self.read_keys(0.0);
@@ -1059,6 +1630,9 @@ impl VoiceSource for ShapeVoice {
         }
         self.strums = old.strums;
         self.n_strums = old.n_strums;
+        self.recent = old.recent;
+        self.heard = old.heard;
+        let keep_held = self.spec.play_when != PlayWhen::OnHit && self.spec.play_when == old.spec.play_when;
         // The smoothers glide on from where the old ones were.
         for (new, prev) in self.smooth.iter_mut().zip(&old.smooth) {
             let target = new.target();
@@ -1070,6 +1644,45 @@ impl VoiceSource for ShapeVoice {
             new.reset(prev.value());
             new.set_target(target);
         }
+        // Shared modulators carry on where they were, by layer.
+        for (i, l) in self.spec.mods.lfos.iter().enumerate() {
+            if let Some(j) = old.spec.mods.lfos.iter().position(|o| o.id == l.id) {
+                self.lfo[i].take_over(&old.lfo[j]);
+            }
+        }
+        for (i, d) in self.spec.mods.dists.iter().enumerate() {
+            if let Some(j) = old.spec.mods.dists.iter().position(|o| o.id == d.id) {
+                self.dist[i].take_over(&old.dist[j]);
+            }
+        }
+        // Each source's values, by layer.
+        let old_src: Vec<Option<usize>> = self
+            .spec
+            .matrix
+            .sources()
+            .iter()
+            .take(MAX_SOURCES)
+            .map(|id| old.spec.matrix.sources().iter().take(MAX_SOURCES).position(|o| o == id))
+            .collect();
+        for (s, o) in old_src.iter().enumerate() {
+            if let Some(o) = *o {
+                self.shared_prev[s] = old.shared_prev[o];
+                self.shared_now[s] = old.shared_now[o];
+                self.note_max[s] = old.note_max[o];
+            }
+        }
+        let lfo_from: [Option<usize>; MAX_EACH] = std::array::from_fn(|i| {
+            let id = self.spec.mods.lfos.get(i)?.id;
+            old.spec.mods.lfos.iter().position(|o| o.id == id)
+        });
+        let dist_from: [Option<usize>; MAX_EACH] = std::array::from_fn(|i| {
+            let id = self.spec.mods.dists.get(i)?.id;
+            old.spec.mods.dists.iter().position(|o| o.id == id)
+        });
+        let hit_from: [Option<usize>; MAX_EACH] = std::array::from_fn(|i| {
+            let id = self.spec.mods.hits.get(i)?.id;
+            old.spec.mods.hits.iter().position(|o| o.id == id)
+        });
         self.notes.meta = old.notes.meta;
         let ids: [LayerId; MAX_ENVS] =
             std::array::from_fn(|e| self.spec.envs.get(e).map(|s| s.id).unwrap_or(LayerId(u32::MAX)));
@@ -1096,7 +1709,41 @@ impl VoiceSource for ShapeVoice {
             }
             n.env_ids = ids;
             n.n_events = 0;
+            // The note's own modulators follow their layers too; new ones start afresh.
+            for i in 0..MAX_EACH {
+                n.lfo[i] = match lfo_from[i] {
+                    Some(j) => prev.lfo[j].clone(),
+                    None => LfoMod::new(0),
+                };
+                n.dist[i] = match dist_from[i] {
+                    Some(j) => prev.dist[j].clone(),
+                    None => new.dist[i].clone(),
+                };
+                n.hit[i] = match hit_from[i] {
+                    Some(j) => prev.hit[j].clone(),
+                    None => HitMod::default(),
+                };
+            }
+            let mut src_prev = [0.0; MAX_SOURCES];
+            for (s, o) in old_src.iter().enumerate() {
+                if let Some(o) = *o {
+                    src_prev[s] = prev.src_prev[o];
+                }
+            }
+            n.src_prev = src_prev;
             *new = n;
+        }
+        // Held notes stay held while the shape still holds notes, and let go when it plays on
+        // hits again (the slots came across one for one).
+        if keep_held {
+            self.held = old.held;
+            self.held_notes = old.held_notes;
+            self.n_held = old.n_held;
+        } else if old.n_held > 0 {
+            self.held = old.held;
+            self.held_notes = old.held_notes;
+            self.n_held = old.n_held;
+            self.release_held();
         }
         self.auditions = old.auditions;
         self.n_auditions = old.n_auditions;
@@ -1134,6 +1781,21 @@ impl VoiceSource for ShapeVoice {
         if let Some(noted) = self.noted.as_mut() {
             out.append(noted);
         }
+    }
+
+    fn each_mod(&self, f: &mut dyn FnMut(LayerId, f32)) {
+        let m = &self.spec.mods;
+        let envs = self.spec.envs.iter().take(MAX_ENVS).map(|e| e.id);
+        let others = m.lfos.iter().map(|x| x.id).chain(m.dists.iter().map(|x| x.id)).chain(m.hits.iter().map(|x| x.id));
+        for layer in envs.chain(others) {
+            if let Some(v) = self.mod_value(layer) {
+                f(layer, v);
+            }
+        }
+    }
+
+    fn recent_hits(&self) -> (&[HitValues], u32) {
+        (&self.recent, self.heard)
     }
 
     fn playing_slot(&self) -> Option<usize> {

@@ -6,13 +6,14 @@ use crate::grid::snap_point;
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame_with, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
 pub mod world_view;
+pub mod zones;
 
 pub use world_view::{PreviewMode, WorldNav};
 
@@ -68,6 +69,8 @@ pub enum Handle {
     CameraZoom(ThingId),
     /// Turn the camera by the handle above its frame.
     CameraTurn(ThingId),
+    /// Set a shape's Distance's Far (true) or Near by its dotted line.
+    Zone(ThingId, bpe_core::LayerId, bool),
 }
 
 impl Handle {
@@ -81,7 +84,8 @@ impl Handle {
             | Handle::Radius(id)
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
-            | Handle::CameraTurn(id) => id,
+            | Handle::CameraTurn(id)
+            | Handle::Zone(id, _, _) => id,
         }
     }
 
@@ -318,7 +322,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         // Each drag is its own undo step.
         studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
-        outcome.keep_playhead = handle.is_camera() || handle.is_mould();
+        outcome.keep_playhead = handle.is_camera() || handle.is_mould() || matches!(handle, Handle::Zone(..));
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -463,13 +467,14 @@ fn draw_picture(
         look,
     };
     if drawn.as_ref() != Some(&now) {
-        build_frame(
+        build_frame_with(
             &studio.scene,
             &studio.resolved,
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
             &studio.kit.draws,
+            studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
             frame,
         );
         // The World view looks through its own camera at a picture the panel's shape, and
@@ -518,7 +523,8 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
 }
 
 /// What is under `pos`: the selected balls' arrow tip first, then a ball, then a selected thing
-/// with nothing of its own to show, then the selected shape's handles, then any shape itself.
+/// with nothing of its own to show, then the selected shape's handles, then the Sound tab's zone
+/// lines, then any shape itself.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     // Each thing through its own view: stuck things aren't seen through the camera.
@@ -563,6 +569,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         && let Some(handle) = shape_handles::hit_handle(world, &v, id, pos)
     {
         return Some(handle);
+    }
+    // The Sound tab's zone lines come after the balls and the shape's own handles.
+    if let Some(zone) = zones::hit(studio, view, pos) {
+        return Some(zone);
     }
     world
         .walls
@@ -611,6 +621,7 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
         Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
             shape_handles::apply(scene, drag, pointer, step);
         }
+        Handle::Zone(shape, layer, far) => zones::apply(scene, world, shape, layer, far, pointer),
     }
 }
 
@@ -640,6 +651,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         let lit = bus.is_some_and(|n| plays_into(&studio.scene, *id, n));
         shape_handles::draw(&painter, &studio.scene, world, &view, *id, selected == Some(*id), active, lit);
     }
+    zones::draw(&painter, studio, view);
 
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
     // name, so it can still be found and dragged.
@@ -812,6 +824,55 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, tip), None, "an unselected ball shows no arrow");
         studio.selection.set(ThingId(2));
         assert_eq!(hit_test(&studio, &view, tip), Some(Handle::Aim(ThingId(2))));
+    }
+
+    #[test]
+    fn dragging_the_far_line_sets_far() {
+        let mut studio = Studio::headless();
+        let reg = bpe_kit::registry();
+        let shape = ThingId(1);
+        assert!(crate::sound_tab::write::enable(&mut studio.scene, &reg, shape));
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Sound).unwrap();
+        let distance = card.layers.iter().find(|l| l.kind == bpe_kit::sound::DISTANCE).unwrap().id;
+        bpe_kit::sound::turn_on_distance(card, distance);
+        studio.selection.set(shape);
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        };
+        let on_far = view.to_screen(Vec2::new(200.0, 0.0));
+        assert_ne!(
+            hit_test(&studio, &view, on_far),
+            Some(Handle::Zone(shape, distance, true)),
+            "only on the Sound tab"
+        );
+        studio.panels.inspector.tab.insert(shape, crate::inspector::InspectorTab::Sound);
+        assert_eq!(hit_test(&studio, &view, on_far), Some(Handle::Zone(shape, distance, true)));
+        let middle = view.to_screen(Vec2::new(0.0, 0.0));
+        assert_ne!(
+            hit_test(&studio, &view, middle),
+            Some(Handle::Zone(shape, distance, false)),
+            "Near is 0 (the middle): not drawn, so nothing to grab"
+        );
+        // A ball, or the shape's own handles, come before a zone line on them.
+        let key = format!("{distance}/far");
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Sound).unwrap();
+        card.params.set(&key, Value::Number(508.0));
+        let edge = view.to_screen(Vec2::new(508.0, 0.0));
+        assert_eq!(hit_test(&studio, &view, edge), Some(Handle::Radius(shape)), "the shape's edge handle wins");
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Sound).unwrap();
+        card.params.set(&key, Value::Number(200.0));
+        let on_near = view.to_screen(Vec2::new(0.0, 50.0));
+        card.params.set(&format!("{distance}/near"), Value::Number(50.0));
+        assert_eq!(hit_test(&studio, &view, on_near), Some(Handle::Zone(shape, distance, false)));
+        let world = studio.playback.world().clone();
+        let drag = Drag::new(Handle::Zone(shape, distance, true), Vec2::ZERO);
+        apply_drag(&mut studio.scene, &world, &drag, Vec2::new(0.0, 300.0), None);
+        let far =
+            studio.scene.card(shape, bpe_core::SlotId::Sound).unwrap().params.get(&format!("{distance}/far")).cloned();
+        assert_eq!(far, Some(Value::Number(300.0)));
     }
 
     /// A drag on the blank project's circle by its edge.

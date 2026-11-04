@@ -8,7 +8,7 @@
 pub mod adsr_view;
 pub mod chain_box;
 pub mod keys;
-pub mod mod_row;
+pub mod mods;
 pub mod notes;
 pub mod osc;
 pub mod output;
@@ -19,11 +19,12 @@ pub mod wave_view;
 pub mod write;
 
 use crate::inspector::Inspector;
-use crate::style::{self, Knob};
+use crate::style::{self, Knob, ModRing};
 use crate::widgets::{self, KeyMark, TargetChoices, ValueMenu};
-use bpe_core::{Address, Choice, Scene, SettingDef, SlotId, ThingId, Value, ValueType};
+use bpe_core::{Address, Choice, ROUTES_KEY, Scene, SettingDef, SlotId, ThingId, Value, ValueType};
 use bpe_kit::Kit;
 use bpe_kit::sound::VOICE;
+use bpe_sound::modmatrix::{Combine, combine_of};
 use eframe::egui::{self, Color32, RichText, Ui};
 
 /// The Sound tab's own state, kept in the inspector.
@@ -39,6 +40,8 @@ pub struct SoundTab {
     pub can_paste_layer: bool,
     /// The Notes panel's state.
     pub notes: notes::NotesState,
+    /// The modulator whose rings are lit (its tile hovered or its handle dragged).
+    pub hot: Option<bpe_core::LayerId>,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -72,8 +75,16 @@ pub enum TabEdit {
         after: Option<bpe_core::LayerId>,
     },
     DeleteLayer(bpe_core::LayerId),
+    /// Another modulator of this kind at the end of its kind's tiles (it is picked).
+    AddMod(&'static str),
+    /// Turns a modulator on or off (a Distance never routed is turned on with its gain routes).
+    ModOn(bpe_core::LayerId, bool),
+    /// A copy of a modulator, named as a new one of its kind, without its routes.
+    DuplicateMod(bpe_core::LayerId),
     /// A slot's notes onto the clipboard.
     CopyNotes(Vec<u8>),
+    /// The setting stops following this shape's sound.
+    Unfollow(Address),
     /// The edits made with this one are an undo step of their own (a preset, a key change, a
     /// row's edit), never merged with a knob turned just before.
     OwnStep,
@@ -91,6 +102,8 @@ pub struct TabCx<'a> {
     pub colour: Color32,
     /// Notes copied from a slot (any shape's), for Paste notes.
     pub notes_clip: Option<Vec<u8>>,
+    /// The modulator whose rings are lit.
+    pub hot: Option<bpe_core::LayerId>,
     pub edits: Vec<TabEdit>,
 }
 
@@ -134,6 +147,23 @@ impl TabCx<'_> {
         self.edits.push(TabEdit::Set(a, v));
     }
 
+    /// The card's modulation routes, with the ones this frame already changed.
+    pub fn routes(&self) -> Vec<bpe_core::ModRoute> {
+        let a = self.at(ROUTES_KEY);
+        let pending = self.edits.iter().rev().find_map(|e| match e {
+            TabEdit::Set(at, Value::Routes(r)) if *at == a => Some(r.clone()),
+            _ => None,
+        });
+        pending.unwrap_or_else(|| match self.get(ROUTES_KEY) {
+            Value::Routes(r) => r,
+            _ => Vec::new(),
+        })
+    }
+
+    pub fn set_routes(&mut self, routes: Vec<bpe_core::ModRoute>) {
+        self.set(ROUTES_KEY, Value::Routes(routes));
+    }
+
     /// A knob on the number setting `key`, labelled `label`, its value read by `format`, with
     /// the usual right-click menu (Copy Value, Paste Value, Create Keyframe).
     pub fn knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
@@ -161,17 +191,88 @@ impl TabCx<'_> {
         let now = self.get(key);
         let mut v = number(&now).unwrap_or(default);
         let bipolar = lo < 0.0 && hi > 0.0 && !is_db(def);
-        let r =
-            Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).log(log).width(KNOB_W).show(ui);
-        if r.changed {
+        // A ring for each route reaching the knob.
+        let mut routes = self.routes();
+        let reaching: Vec<usize> = (0..routes.len()).filter(|i| routes[*i].target == key).collect();
+        let rings: Vec<ModRing> = reaching
+            .iter()
+            .map(|i| mods::ring(&routes[*i], v, (lo, hi), self.hot == Some(routes[*i].source)))
+            .collect();
+        let r = Knob::new(&mut v, lo..=hi, default, label)
+            .format(format)
+            .bipolar(bipolar)
+            .log(log)
+            .width(KNOB_W)
+            .rings(&rings)
+            .colour(self.colour)
+            .show(ui);
+        if !rings.is_empty() {
+            let words: Vec<String> = reaching
+                .iter()
+                .zip(&rings)
+                .map(|(i, ring)| {
+                    let name = mods::name_of(self, routes[*i].source);
+                    if ring.lit { format!("{name} (lit)") } else { name }
+                })
+                .collect();
+            let text = format!("Modulated by {}", words.join(", "));
+            ui.ctx().accesskit_node_builder(r.response.id, |node| node.set_description(text));
+        }
+        if let Some(drag) = r.ring
+            && let Some(&i) = reaching.get(drag.ring)
+        {
+            let mut route = routes[i].clone();
+            route.amount = mods::amount_for(&route, v, (lo, hi), drag.to);
+            if drag.alt && combine_of(key) == Combine::Add && !route.bipolar {
+                route.bipolar = true;
+            }
+            if route != routes[i] {
+                routes[i] = route;
+                self.set_routes(routes);
+            }
+        } else if r.changed {
             let value = match def.ty {
                 ValueType::Int => Value::Int(v.round() as i64),
                 _ => Value::Number(v),
             };
             self.set(key, value);
         }
-        self.menu(&r.response, key, def, &now);
+        mods::drag::on_knob(self, &r.response, key);
+        self.knob_menu(&r.response, key, def, &now);
         r.response
+    }
+
+    /// A knob's value menu: Copy Value, Paste Value, Create Keyframe and Modulate by.
+    fn knob_menu(&mut self, response: &egui::Response, key: &str, def: &SettingDef, now: &Value) {
+        let a = self.at(key);
+        let mark = Some(KeyMark { can_key: def.flags.keyframe, keyed: self.scene.keyed(&a), pulsed: false });
+        let offers: Vec<(bpe_core::LayerId, String, bool)> = mods::list(self)
+            .into_iter()
+            .map(|m| {
+                let ok = mods::drag::check(self, &mods::ModDrag { thing: self.id, layer: m.id }, key).is_ok();
+                (m.id, m.name, ok)
+            })
+            .collect();
+        let mut chosen = None;
+        let mut extra = |ui: &mut Ui| {
+            ui.separator();
+            ui.menu_button("Modulate by", |ui| {
+                for (id, name, ok) in &offers {
+                    if ui.add_enabled(*ok, egui::Button::new(name)).clicked() {
+                        chosen = Some(*id);
+                        ui.close();
+                    }
+                }
+            });
+        };
+        match widgets::value_menu_with(response, def, def.unit, now, mark, self.choices, Some(&mut extra)) {
+            ValueMenu::Nothing => {}
+            ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
+            ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+        }
+        if let Some(layer) = chosen {
+            mods::add_route(self, layer, key);
+        }
     }
 
     /// The value menu on any control for the setting `key`.
@@ -193,6 +294,7 @@ impl TabCx<'_> {
             for (choice, name) in choices {
                 let on = now == *choice;
                 let chip = ui.add(style::toggle_button(name, on).min_size(egui::vec2(0.0, 22.0)));
+                mods::drag::refuse(&chip);
                 if chip.clicked() && !on {
                     self.set(key, Value::Choice(choice.name().into()));
                 }
@@ -205,6 +307,7 @@ impl TabCx<'_> {
         let mut on = self.flag(key);
         let r = style::switch(ui, &mut on);
         name_it(ui, &r, name);
+        mods::drag::refuse(&r);
         if r.changed() {
             self.set(key, Value::Bool(on));
         }
@@ -267,7 +370,8 @@ pub fn show(
     let edits = {
         let scene: &Scene = scene;
         let notes_clip = inspector.clipboard.notes.clone();
-        let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, edits: Vec::new() };
+        let hot = inspector.sound.hot;
+        let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, hot, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -329,16 +433,8 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         osc::show(&mut cols[1], cx, osc::Osc::B, &mut inspector.sound);
     });
     ui.add_space(8.0);
-    panel(ui, |ui| {
-        if let Some(layer) = mod_row::show(ui, cx, &mut inspector.sound) {
-            let name = cx
-                .scene
-                .card(cx.id, SlotId::Sound)
-                .and_then(|c| c.layer(layer))
-                .map_or_else(|| "Envelope".to_owned(), |l| l.name.clone());
-            adsr_view::show(ui, cx, layer, &name);
-        }
-    });
+    let meters = inspector.meters.clone();
+    panel(ui, |ui| mods::show(ui, cx, &mut inspector.sound, meters.as_deref()));
     ui.add_space(8.0);
     let playing = match (&inspector.meters, inspector.playing) {
         (Some(m), true) => m.shape_slot(cx.id.0),
@@ -371,6 +467,7 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 }
                 write::WriteOutcome::Failed => false,
             },
+            TabEdit::Unfollow(a) => scene.remove_pulse(&a),
             TabEdit::NewKey(a) => match scene.value_at_time(reg, &a, time) {
                 Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
                 None => false,
@@ -424,6 +521,42 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 }
                 scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
             }
+            TabEdit::AddMod(kind) => match bpe_kit::sound::add_modulator(scene, reg, id, kind) {
+                Ok(layer) => {
+                    inspector.sound.picked.insert(id, layer);
+                    true
+                }
+                Err(_) => false,
+            },
+            TabEdit::ModOn(layer, on) => {
+                let card = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Sound));
+                match card {
+                    Some(card) if card.layer(layer).is_some() => {
+                        let routed = matches!(card.params.get(ROUTES_KEY),
+                            Some(Value::Routes(r)) if r.iter().any(|r| r.source == layer));
+                        let distance = card.layer(layer).is_some_and(|l| l.kind == bpe_kit::sound::DISTANCE);
+                        if on && distance && !routed {
+                            bpe_kit::sound::turn_on_distance(card, layer);
+                            true
+                        } else {
+                            scene.set_layer_enabled(reg, id, SlotId::Sound, layer, on).is_ok()
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            TabEdit::DuplicateMod(layer) => match scene.duplicate_layer(reg, id, SlotId::Sound, layer) {
+                Ok(copy) => {
+                    let kind = scene.card(id, SlotId::Sound).and_then(|c| c.layer(copy)).map(|l| l.kind.clone());
+                    if let (Some(kind), Some(card)) = (kind, scene.card(id, SlotId::Sound)) {
+                        let name = bpe_kit::sound::numbered_name(card, &kind);
+                        let _ = scene.rename_layer(reg, id, SlotId::Sound, copy, &name);
+                    }
+                    inspector.sound.picked.insert(id, copy);
+                    true
+                }
+                Err(_) => false,
+            },
             TabEdit::CopyNotes(notes) => {
                 inspector.clipboard.notes = Some(notes);
                 false

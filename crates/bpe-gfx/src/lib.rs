@@ -31,7 +31,8 @@ mod util;
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
     LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, PathInstance, Place, ShapeInstance, Stage,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
+    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
+    thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};

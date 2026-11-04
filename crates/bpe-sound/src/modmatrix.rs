@@ -152,6 +152,42 @@ impl ModMatrix {
         }
     }
 
+    /// [`ModMatrix::apply`] for the knobs at places `lo..hi` only: `out[lo..hi]` is `base`'s
+    /// with the routes reaching those knobs applied, the rest of `out` is left alone.
+    pub fn apply_range(&self, sources: &[f32], base: &[f32], out: &mut [f32], lo: usize, hi: usize) {
+        out[lo..hi].copy_from_slice(&base[lo..hi]);
+        let mine = |r: &&Route| (lo..hi).contains(&(r.target as usize));
+        for r in self.routes.iter().filter(mine) {
+            let (t, s) = (r.target as usize, sources.get(r.source as usize).copied().unwrap_or(0.0));
+            let m = if r.invert { 1.0 - s } else { s };
+            match r.combine {
+                Combine::Add => {
+                    let m = if r.bipolar { 2.0 * m - 1.0 } else { m };
+                    if r.log {
+                        let span = (r.hi / r.lo).ln();
+                        let v = (out[t].max(r.lo) / r.lo).ln() + r.amount * m * span;
+                        out[t] = r.lo * v.exp();
+                    } else {
+                        out[t] += r.amount * m * (r.hi - r.lo);
+                    }
+                }
+                Combine::Scale => {
+                    let f = 1.0 - r.amount.abs() * (1.0 - m.clamp(0.0, 1.0));
+                    out[t] += 20.0 * f.max(0.0).log10();
+                }
+            }
+        }
+        for r in self.routes.iter().filter(mine).filter(|r| r.combine == Combine::Add) {
+            let t = r.target as usize;
+            out[t] = out[t].clamp(r.lo, r.hi);
+        }
+    }
+
+    /// Whether any route reaches a knob at places `lo..hi`.
+    pub fn reaches_range(&self, lo: usize, hi: usize) -> bool {
+        self.routes.iter().any(|r| (lo..hi).contains(&(r.target as usize)))
+    }
+
     /// The linear gain the scaling routes on `target` multiply its level by, with the
     /// modulators at `sources` (for working per sample).
     #[inline]
@@ -180,6 +216,22 @@ impl ModMatrix {
     pub fn targets(&self) -> usize {
         self.targets
     }
+}
+
+/// Where route `r` takes its knob (set at `base`, over `range`) with its modulator at 0 and at
+/// 1: the ends of its ring. A scaling route's silent end reads as the bottom of the range.
+pub fn route_ends(r: &ModRoute, base: f64, range: (f64, f64)) -> (f64, f64) {
+    let mut table = TargetTable::default();
+    table.insert(r.target.clone(), TargetInfo { index: 0, range, log: false });
+    let one = ModRoute { source: LayerId(0), ..r.clone() };
+    let m = ModMatrix::build(std::slice::from_ref(&one), &table);
+    let at = |s: f32| {
+        let mut out = [0.0f32];
+        m.apply(&[s], &[base as f32], &mut out);
+        let v = out[0] as f64;
+        if v.is_finite() { v.clamp(range.0, range.1) } else { range.0 }
+    };
+    (at(0.0), at(1.0))
 }
 
 #[cfg(test)]
@@ -216,6 +268,20 @@ mod tests {
         // Half the amount never goes silent.
         let half = ModMatrix::build(&[route(4, "a_gain", 0.5)], &table());
         assert!((half.factor(0, &[0.0]) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_route_s_ends_are_the_knob_at_0_and_1() {
+        let r = route(4, "a_cents", 0.5);
+        assert_eq!(route_ends(&r, 0.0, (-100.0, 100.0)), (0.0, 100.0));
+        let r = ModRoute { bipolar: true, ..route(4, "a_cents", 0.25) };
+        assert_eq!(route_ends(&r, 10.0, (-100.0, 100.0)), (-40.0, 60.0));
+        let r = ModRoute { invert: true, ..route(4, "a_cents", 1.0) };
+        assert_eq!(route_ends(&r, 0.0, (-100.0, 100.0)), (100.0, 0.0), "inverted runs the other way");
+        let (silent, full) = route_ends(&route(4, "a_gain", 1.0), -3.0, (-60.0, 12.0));
+        assert_eq!((silent, full), (-60.0, -3.0), "a gain's ring runs from silence up to the knob");
+        let (half, _) = route_ends(&route(4, "a_gain", 0.5), 0.0, (-60.0, 12.0));
+        assert!((half + 6.0206).abs() < 1e-3);
     }
 
     #[test]

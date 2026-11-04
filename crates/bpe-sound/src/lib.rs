@@ -6,6 +6,7 @@
 pub mod buses;
 pub mod chain;
 pub mod chain_graph;
+pub mod control;
 pub mod engine;
 pub mod fx_chain;
 pub mod hits;
@@ -14,6 +15,7 @@ pub mod master;
 pub mod meters;
 pub mod midi;
 pub mod modmatrix;
+pub mod mods;
 pub mod music;
 pub mod offline;
 pub mod patch;
@@ -24,6 +26,7 @@ mod wav;
 
 pub use bpe_dsp::{BLOCK, SAMPLE_RATE};
 pub use buses::{BusesSpec, ShapeRoute, sends, would_loop};
+pub use control::{ControlSampler, FollowSound, follows_sound};
 pub use engine::{Engine, PRE_ROLL, SAMPLES_PER_BLOCK_TIME};
 pub use hits::{BlockHit, HitCursor};
 pub use master::{Master, MasterKeys};
@@ -34,3 +37,11 @@ pub use patch::{SoundPatch, Tables};
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
 pub use voices::{ShapeVoice, note_hz};
+
+/// The kit, its worlds following sound: what the editor and the export run, so a physics
+/// setting that follows a shape's sound moves the same everywhere.
+pub fn kit() -> bpe_kit::Kit {
+    let mut sims = bpe_kit::sims();
+    sims.sound = Some(std::sync::Arc::new(FollowSound));
+    bpe_kit::Kit { registry: bpe_kit::registry(), sims: std::sync::Arc::new(sims), draws: bpe_kit::draws() }
+}

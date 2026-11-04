@@ -98,6 +98,8 @@ pub struct Studio {
     pub playback: Playback,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
+    /// The scene's sound as the picture reads it, while some setting follows sound.
+    pub follow: Option<std::sync::Arc<bpe_sound::ControlSampler>>,
     /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
     /// preview knows its picture is out of date. The scene itself can be mid-edit during a
     /// frame, ahead of both, so the preview never compares scenes.
@@ -180,7 +182,7 @@ impl Studio {
 
     /// The state without a window, open on the blank project the editor always starts with.
     pub fn blank() -> Self {
-        let kit = Arc::new(bpe_kit::kit());
+        let kit = Arc::new(bpe_sound::kit());
         let scene = bpe_kit::new_studio_scene(&kit.registry);
         Self::with_scene(kit, scene)
     }
@@ -188,7 +190,7 @@ impl Studio {
     /// The state without a window for tests: the test scene with an arena and a ball.
     #[cfg(test)]
     pub fn headless() -> Self {
-        let kit = Arc::new(bpe_kit::kit());
+        let kit = Arc::new(bpe_sound::kit());
         let scene = bpe_kit::new_scene(&kit.registry);
         Self::with_scene(kit, scene)
     }
@@ -199,6 +201,7 @@ impl Studio {
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        let follow = follow_of(&scene, &resolved);
         Self {
             saved: scene.clone(),
             scene,
@@ -206,6 +209,7 @@ impl Studio {
             path: None,
             playback,
             fingerprint,
+            follow,
             revision: 0,
             kit,
             time: 0.0,
@@ -303,6 +307,7 @@ impl Studio {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         let rebuilt = fingerprint != self.fingerprint;
+        self.follow = follow_of(&self.scene, &self.resolved);
         if rebuilt {
             self.fingerprint = fingerprint;
             self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
@@ -340,6 +345,7 @@ impl Studio {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+        self.follow = follow_of(&self.scene, &self.resolved);
         self.revision += 1;
         if let Some(job) = &mut self.sound {
             job.rebuild(&self.scene, &self.resolved);
@@ -1098,6 +1104,11 @@ const MIN_SAVE_STATUS_WIDTH: f32 = 90.0;
 
 fn file_label(path: &Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// The scene's sound for the picture, when any setting follows it.
+fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
+    bpe_sound::follows_sound(scene).then(|| std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, resolved)))
 }
 
 #[cfg(test)]

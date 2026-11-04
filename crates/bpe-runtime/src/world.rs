@@ -88,6 +88,8 @@ pub struct World {
     animated: Option<Animated>,
     /// Which substep of how many is running, so a hit knows where in the step it happened.
     substep: (u32, u32),
+    /// The scene's sound, when a physics setting follows it.
+    sound: Option<std::sync::Arc<dyn crate::SoundAt>>,
 }
 
 /// See [`World::animated`].
@@ -140,6 +142,7 @@ impl World {
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
             animated: None,
+            sound: None,
         };
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
@@ -185,16 +188,26 @@ impl World {
         }
         world.animated = physics_animation(scene, resolved, sims)
             .map(|animation| Animated { animation, resolved: resolved.clone() });
+        if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
+            && follows_sound(scene, &a.animation)
+        {
+            world.sound = Some(maker.make(scene, resolved));
+        }
         world
     }
 
     /// Writes this step's keyframed physics settings and hands them to the sims: Motion and
     /// Bounce modules are prepared again, things hear `settings_changed`. Hits never move the
-    /// physics, so pulses add nothing here.
-    fn animate(&mut self, sims: &Sims) {
+    /// physics; a setting that follows sound reads it as it was at the end of the step before
+    /// (the world and `log` as they are now), so the physics never waits on itself.
+    fn animate(&mut self, sims: &Sims, log: &Log) {
         let Some(mut animated) = self.animated.take() else { return };
         let time = self.time();
-        animated.animation.apply(&mut animated.resolved, time, &Inputs::NONE);
+        {
+            let levels = self.sound.as_deref().map(|sound| crate::LevelsAt { sound, world: self, log });
+            let inputs = Inputs { sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels), ..Inputs::NONE };
+            animated.animation.apply(&mut animated.resolved, time, &inputs);
+        }
         let mut done = BTreeSet::new();
         for (thing, slot, _) in animated.animation.destinations() {
             if !done.insert((thing, slot)) {
@@ -338,7 +351,7 @@ impl World {
         self.step += 1;
         self.walls_before.clear();
         self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
-        self.animate(sims);
+        self.animate(sims, log);
         let limits = self.limits();
         let dt = self.dt();
         // Things take their turns in tree order: parents go first, so riders see where their
@@ -577,6 +590,14 @@ fn respond(
     }
 }
 
+/// Whether any of `animation`'s pulses follows sound.
+fn follows_sound(scene: &Scene, animation: &Animation) -> bool {
+    animation
+        .addresses()
+        .iter()
+        .any(|a| scene.pulses.get(*a).is_some_and(|p| matches!(p.source, bpe_core::PulseSource::Sound { .. })))
+}
+
 /// A hash of everything about a scene that changes how it simulates. Scenes that differ only
 /// in how they look fingerprint the same, so the editor can keep playing through
 /// those edits.
@@ -647,6 +668,12 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
             if let Some(pulse) = scene.pulses.get(a) {
                 h.bytes(format!("{pulse:?}").as_bytes());
             }
+        }
+        // A physics setting that follows sound moves with what of the sound it reads.
+        if let Some(maker) = &sims.sound
+            && follows_sound(scene, &animation)
+        {
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
     }
     h.0

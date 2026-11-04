@@ -313,23 +313,37 @@ impl Default for Pulse {
     }
 }
 
-/// Everything a pulse can read at one moment.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Inputs {
-    /// How hard things are hitting right now, 0 to 1. The runtime always passes 0.
-    pub hits: f32,
+/// A shape's sound as a picture or the physics reads it (Follow sound): each part's level at a
+/// moment, 0 to 1. The sound crate works it out from the physics alone.
+pub trait SoundLevels {
+    /// How far `source` of shape `shape` is up at `time`, 0 to 1 (0 for a part it hasn't got).
+    fn level(&self, shape: ThingId, source: &SoundSource, time: f64) -> f32;
 }
 
-impl Inputs {
-    pub const NONE: Inputs = Inputs { hits: 0.0 };
+/// Everything a pulse can read at one moment.
+#[derive(Clone, Copy, Default)]
+pub struct Inputs<'a> {
+    /// How hard things are hitting right now, 0 to 1. The runtime always passes 0.
+    pub hits: f32,
+    /// The shapes' sound, for pulses that follow it (none: they don't move).
+    pub sound: Option<&'a dyn SoundLevels>,
+}
+
+impl std::fmt::Debug for Inputs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inputs").field("hits", &self.hits).field("sound", &self.sound.is_some()).finish()
+    }
+}
+
+impl Inputs<'static> {
+    pub const NONE: Inputs<'static> = Inputs { hits: 0.0, sound: None };
 }
 
 /// How strongly `pulse` pushes at `time`, 0 to 1.
-pub fn pulse_strength(pulse: &Pulse, _time: f64, inputs: &Inputs) -> f32 {
+pub fn pulse_strength(pulse: &Pulse, time: f64, inputs: &Inputs) -> f32 {
     let s = match pulse.source {
         PulseSource::Hits => inputs.hits,
-        // Follow sound arrives with the modulators (sound part 4).
-        PulseSource::Sound { .. } => 0.0,
+        PulseSource::Sound { shape, source } => inputs.sound.map_or(0.0, |sound| sound.level(shape, &source, time)),
     };
     if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 }
 }
@@ -413,7 +427,8 @@ impl Scene {
         }
     }
 
-    /// Makes the setting at `a` pulse. The setting must have the pulse flag.
+    /// Makes the setting at `a` pulse. The setting must have the pulse flag (or, following
+    /// sound, the keyframe flag).
     pub fn set_pulse(
         &mut self,
         reg: &Registry,
@@ -422,7 +437,11 @@ impl Scene {
         amount: Value,
         decay: f32,
     ) -> Result<(), EditError> {
-        let def = self.animatable(reg, a, true)?;
+        // Follow sound may move any setting that can take keys; the hits only those that pulse.
+        let def = match source {
+            PulseSource::Sound { .. } => self.animatable(reg, a, false).or_else(|_| self.animatable(reg, a, true))?,
+            PulseSource::Hits => self.animatable(reg, a, true)?,
+        };
         if !def.ty.accepts(&amount) && !matches!((&def.ty, &amount), (crate::ValueType::Int, Value::Number(_))) {
             return Err(EditError::WrongType);
         }
@@ -729,13 +748,13 @@ mod tests {
         let mut r = resolved.clone();
         anim.apply(&mut r, 1.0, &Inputs::NONE);
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(1.8)));
-        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0, ..Inputs::NONE });
         match r.things[&a].slots[&SlotId::Look].params.get("glow") {
             Some(Value::Number(x)) => assert!((x - 1.9).abs() < 1e-9, "{x}"),
             other => panic!("{other:?}"),
         }
         // Applying to the same copy twice does not add the pulse twice.
-        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0, ..Inputs::NONE });
         match r.things[&a].slots[&SlotId::Look].params.get("glow") {
             Some(Value::Number(x)) => assert!((x - 1.9).abs() < 1e-9, "{x}"),
             other => panic!("{other:?}"),
@@ -744,10 +763,51 @@ mod tests {
         scene.set_pulse(&reg, &glow, PulseSource::Hits, key(0.5), 0.25).unwrap();
         let anim = Animation::new(&scene, &resolve(&scene, &reg));
         let mut r = resolved.clone();
-        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0 });
+        anim.apply(&mut r, 1.0, &Inputs { hits: 1.0, ..Inputs::NONE });
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(2.0)));
         assert!(scene.remove_pulse(&glow));
         assert!(!scene.remove_pulse(&glow));
+    }
+
+    /// A shape's sound as a fixed table of levels, for the tests.
+    struct Levels(f32);
+
+    impl SoundLevels for Levels {
+        fn level(&self, shape: ThingId, source: &SoundSource, time: f64) -> f32 {
+            match source {
+                SoundSource::Modulator(LayerId(1)) if shape == ThingId(7) => self.0 * time as f32,
+                _ => 0.0,
+            }
+        }
+    }
+
+    #[test]
+    fn a_pulse_following_sound_reads_its_level() {
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
+        let source = PulseSource::Sound { shape: ThingId(7), source: SoundSource::Modulator(LayerId(1)) };
+        scene.set_pulse(&reg, &glow, source, key(1.0), 0.25).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let anim = Animation::new(&scene, &resolved);
+        let mut r = resolved.clone();
+        anim.apply(&mut r, 0.5, &Inputs::NONE);
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.0)), "no sound: no pulse");
+        let levels = Levels(1.0);
+        anim.apply(&mut r, 0.5, &Inputs { sound: Some(&levels), ..Inputs::NONE });
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.5)));
+        // Hits don't move it; another shape's or modulator's sound doesn't either.
+        anim.apply(&mut r, 0.5, &Inputs { hits: 1.0, sound: None });
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.0)));
+    }
+
+    #[test]
+    fn a_sound_pulse_fits_any_keyframed_setting() {
+        let (reg, mut scene, a, _) = scene();
+        let size = Address::own(a, "radius");
+        assert!(scene.set_pulse(&reg, &size, PulseSource::Hits, key(1.0), 0.25).is_err(), "no Hits pulse");
+        let source = PulseSource::Sound { shape: ThingId(7), source: SoundSource::Level };
+        scene.set_pulse(&reg, &size, source, key(1.0), 0.25).unwrap();
+        assert_eq!(scene.pulses[&size].source, source);
     }
 
     #[test]

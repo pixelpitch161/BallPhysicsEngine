@@ -49,6 +49,13 @@ pub trait VoiceSource: Send {
     fn playing_slot(&self) -> Option<usize> {
         None
     }
+    /// Hands every modulator it runs and its value now (0..1) to `f`, for the editor.
+    fn each_mod(&self, _f: &mut dyn FnMut(bpe_core::LayerId, f32)) {}
+    /// The numbers of its last accepted hits (a ring written at `heard % RECENT_HITS`) and how
+    /// many it has heard, for the editor's Hit view.
+    fn recent_hits(&self) -> (&[crate::mods::HitValues], u32) {
+        (&[], 0)
+    }
     /// The loudest sample of the last block, for its meter.
     fn level(&self) -> f32 {
         0.0

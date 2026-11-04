@@ -128,6 +128,12 @@ impl Engine {
         self.out_pos as f64 / SAMPLE_RATE as f64
     }
 
+    /// Where the voices have got to (ahead of [`Engine::time`] by the master's delay): the
+    /// moment the meters' modulator readings are from.
+    pub fn voice_time(&self) -> f64 {
+        self.voice_pos as f64 / SAMPLE_RATE as f64
+    }
+
     /// The step the engine's own physics is at.
     pub fn physics_step(&self) -> u64 {
         self.physics.world().step
@@ -513,6 +519,9 @@ impl Engine {
         for (i, v) in self.voices.iter().enumerate() {
             self.meters.write_shape(i, v.thing().0, gain_to_db(v.level()));
             self.meters.write_slot(i, v.playing_slot());
+            self.meters.write_mods(i, &mut |f| v.each_mod(f));
+            let (recent, heard) = v.recent_hits();
+            self.meters.write_hits(i, recent, heard);
         }
         self.meters.clear_shapes_from(self.voices.len());
     }

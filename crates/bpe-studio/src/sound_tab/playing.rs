@@ -4,7 +4,7 @@
 use super::{TabCx, panel};
 use crate::style;
 use bpe_core::Value;
-use bpe_kit::sound::PlayMode;
+use bpe_kit::sound::{DISTANCE, PlayMode, PlayWhen};
 use eframe::egui::{RichText, Ui};
 
 fn plain(v: f64) -> String {
@@ -40,6 +40,17 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                 .on_hover_text("A ball hitting again sooner than this plays no new note");
         });
         ui.horizontal(|ui| {
+            ui.label(RichText::new("Plays").small().color(style::MUTED));
+            cx.chips(
+                ui,
+                "play_when",
+                &[(PlayWhen::OnHit, "On hit"), (PlayWhen::Always, "Always"), (PlayWhen::InRange, "In range")],
+            );
+        });
+        if cx.choice::<PlayWhen>("play_when") == PlayWhen::InRange {
+            zone_menu(ui, cx);
+        }
+        ui.horizontal(|ui| {
             let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
             let mut target = match cx.get("play_heard_from") {
                 Value::Target(t) => t,
@@ -53,6 +64,39 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
     });
 }
 
+/// In range of which Distance (the first that is on when none is named).
+fn zone_menu(ui: &mut Ui, cx: &mut TabCx) {
+    let Some(card) = cx.scene.card(cx.id, bpe_core::SlotId::Sound) else { return };
+    let dists: Vec<(bpe_core::LayerId, String, bool)> =
+        card.layers.iter().filter(|l| l.kind == DISTANCE).map(|l| (l.id, l.name.clone(), l.enabled)).collect();
+    let named = match cx.get("play_zone") {
+        Value::Text(t) => t.trim().parse::<u32>().ok(),
+        _ => None,
+    };
+    let now = dists
+        .iter()
+        .find(|(id, _, _)| Some(id.0) == named)
+        .or_else(|| dists.iter().find(|(_, _, on)| *on))
+        .map(|(_, name, _)| name.clone());
+    ui.horizontal(|ui| {
+        let label = ui.label(RichText::new("In range of").small().color(style::MUTED));
+        let shown = now.unwrap_or_else(|| "No Distance is on".into());
+        let r = ui.menu_button(shown, |ui| {
+            for (id, name, on) in &dists {
+                let text = if *on { name.clone() } else { format!("{name} (off)") };
+                if ui.button(text).clicked() {
+                    cx.set("play_zone", Value::Text(id.0.to_string()));
+                    ui.close();
+                }
+            }
+        });
+        let _ = r.response.labelled_by(label.id);
+        if !dists.iter().any(|(_, _, on)| *on) {
+            ui.label(RichText::new("Turn a Distance on to hold notes in its range").small().color(style::FAINT));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::sounding;
@@ -60,10 +104,29 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn plays_always_and_in_range_of_a_distance() {
+        let mut h = sounding();
+        let get = |h: &egui_kittest::Harness<'_, (crate::app::Studio, f32)>, k: &str| {
+            h.state().0.scene.card(super::super::tests::SHAPE, bpe_core::SlotId::Sound).unwrap().params.get(k).cloned()
+        };
+        h.get_by_label("Always").scroll_to_me();
+        h.run();
+        h.get_by_label("Always").click();
+        h.run();
+        assert_eq!(get(&h, "play_when"), Some(bpe_core::Value::Choice("always".into())));
+        h.get_by_label("In range").click();
+        h.run();
+        assert!(h.query_by_label("Turn a Distance on to hold notes in its range").is_some(), "none on yet");
+        assert!(h.query_by_label("In range of").is_some());
+    }
+
+    #[test]
     fn mono_shows_glide() {
         let mut h = sounding();
         assert!(h.query_by_role_and_label(Role::Slider, "Glide").is_none());
         assert!(h.query_by_role_and_label(Role::Slider, "Voices").is_some());
+        h.get_by_label("Mono").scroll_to_me();
+        h.run();
         h.get_by_label("Mono").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Slider, "Glide").is_some());

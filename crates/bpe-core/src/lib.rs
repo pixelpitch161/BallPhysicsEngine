@@ -27,7 +27,9 @@ pub mod testkit;
 pub mod value;
 
 pub use address::Address;
-pub use animation::{Animation, Ease, Inputs, Key, Pulse, PulseSource, SAME_TIME, SoundSource, Track, pulse_strength};
+pub use animation::{
+    Animation, Ease, Inputs, Key, Pulse, PulseSource, SAME_TIME, SoundLevels, SoundSource, Track, pulse_strength,
+};
 pub use blend::Blend;
 pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;

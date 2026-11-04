@@ -4,6 +4,7 @@
 //! [`super::adsr`]).
 
 use super::adsr::{ADSR, AdsrSettings};
+use super::mods::{DISTANCE, LFO};
 use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
 use bpe_core::{
     Choice, GroupOpts, Layer, LayerId, ModRoute, ModuleKind, NoteSlot, Params, ROUTES_KEY, Registry, SettingDef,
@@ -135,6 +136,18 @@ pub enum PlayMode {
     #[default]
     Poly,
     Mono,
+}
+
+/// When a shape's notes sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum PlayWhen {
+    /// Each accepted hit plays its notes.
+    #[default]
+    OnHit,
+    /// The slot's notes are held from the start, a drone; hits retrigger its envelopes.
+    Always,
+    /// The slot's notes are held while a ball is in range of a Distance.
+    InRange,
 }
 
 /// How long an envelope's note is held.
@@ -363,6 +376,12 @@ pub struct VoiceSettings {
     /// Which balls' hits play notes.
     #[setting(label = "Heard from", group = "Playing")]
     pub play_heard_from: Target,
+    /// When the notes sound: on each hit, always (held), or while a ball is in range.
+    #[setting(label = "Plays", group = "Playing")]
+    pub play_when: PlayWhen,
+    /// The Distance whose range holds the notes, by its layer id ("" for the first).
+    #[setting(label = "In range of", group = "Playing", when = "play_when=in_range")]
+    pub play_zone: String,
     /// The notes, slot by slot (part 2 plays slot 1).
     #[setting(label = "Notes", group = "Notes")]
     pub notes_slots: Vec<NoteSlot>,
@@ -457,6 +476,8 @@ impl Default for VoiceSettings {
             play_min_strength: 0.0,
             play_retrigger: 30.0,
             play_heard_from: Target::Anything,
+            play_when: PlayWhen::OnHit,
+            play_zone: String::new(),
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
             notes_low_octave: 4,
             notes_octaves: 3,
@@ -510,19 +531,26 @@ impl ModuleKind for VoiceKind {
     }
 }
 
-/// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2 off),
-/// note C5, Bus 1.
+/// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2,
+/// Distance 1 and 2 and LFO 1 and 2 off), note C5, Bus 1.
 pub fn starter_voice(reg: &Registry) -> Slot {
     debug_assert!(reg.layer(ADSR).is_some(), "the kit has the ADSR layer");
-    let layer = |id: u32, enabled: bool| Layer {
+    let layer = |id: u32, kind: &str, name: &str, enabled: bool| Layer {
         id: LayerId(id),
-        kind: ADSR.into(),
-        name: format!("ADSR {}", id + 1),
+        kind: kind.into(),
+        name: name.into(),
         enabled,
         ..Layer::default()
     };
     let mut card = Slot::new(VOICE);
-    card.layers = vec![layer(0, true), layer(1, false)];
+    card.layers = vec![
+        layer(0, ADSR, "ADSR 1", true),
+        layer(1, ADSR, "ADSR 2", false),
+        layer(2, DISTANCE, "Distance 1", false),
+        layer(3, DISTANCE, "Distance 2", false),
+        layer(4, LFO, "LFO 1", false),
+        layer(5, LFO, "LFO 2", false),
+    ];
     let route = ModRoute { source: LayerId(0), target: "a_gain".into(), amount: 1.0, bipolar: false, invert: false };
     card.params.set(ROUTES_KEY, Value::Routes(vec![route]));
     let _ = AdsrSettings::default();
@@ -556,9 +584,9 @@ mod tests {
             (r.source, r.target.as_str(), r.amount, r.bipolar, r.invert),
             (LayerId(0), "a_gain", 1.0, false, false)
         );
-        let names: Vec<(&str, bool)> = card.layers.iter().map(|l| (l.name.as_str(), l.enabled)).collect();
+        let names: Vec<(&str, bool)> = card.layers.iter().take(2).map(|l| (l.name.as_str(), l.enabled)).collect();
         assert_eq!(names, [("ADSR 1", true), ("ADSR 2", false)]);
-        assert!(card.layers.iter().all(|l| l.kind == ADSR));
+        assert!(card.layers.iter().take(2).all(|l| l.kind == ADSR));
         let kind = reg.layer(ADSR).unwrap();
         assert_eq!(kind.section(), LayerSection::Modulator);
         let adsr = AdsrSettings::from_params(&Params::default());

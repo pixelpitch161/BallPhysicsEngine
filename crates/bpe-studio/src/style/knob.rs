@@ -7,11 +7,23 @@ use super::tokens::*;
 use eframe::egui::{self, Color32, Response, Sense, Shape, Stroke, Ui, Vec2, Widget};
 use std::ops::RangeInclusive;
 
-/// A modulation range drawn as a ring around the dial, in the knob's own units.
+/// A modulation range drawn as a ring around the dial, in the knob's own units: from where
+/// the knob sits to `to`, the end that can be dragged.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModRing {
     pub from: f64,
     pub to: f64,
+    /// Drawn bright (its modulator's tile is hovered); the others dim while one is lit.
+    pub lit: bool,
+}
+
+/// A ring's end being dragged: which ring, the knob value its end is at now, and whether Alt
+/// is held (the range then spreads both ways).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingDrag {
+    pub ring: usize,
+    pub to: f64,
+    pub alt: bool,
 }
 
 /// What a knob did this frame.
@@ -23,6 +35,8 @@ pub struct KnobResponse {
     /// The dial was right-clicked: the caller opens its value menu.
     #[allow(dead_code)]
     pub context: bool,
+    /// A ring's end is being dragged this frame.
+    pub ring: Option<RingDrag>,
 }
 
 /// A round knob over `range`.
@@ -47,6 +61,15 @@ const WIDTH: f32 = 64.0;
 const FULL_DRAG: f64 = 200.0;
 /// The dial sweeps this many degrees.
 const SWEEP: f32 = 270.0;
+/// How far out the first two rings sit (more share the second).
+const RING_R: [f32; 2] = [18.5, 20.5];
+/// How near a press must be to a ring's end to drag it.
+const RING_GRAB: f32 = 6.0;
+
+/// Ring `i`'s radius.
+fn ring_radius(i: usize) -> f32 {
+    RING_R[i.min(RING_R.len() - 1)]
+}
 
 impl<'a> Knob<'a> {
     pub fn new(value: &'a mut f64, range: RangeInclusive<f64>, default: f64, label: &'a str) -> Self {
@@ -77,14 +100,12 @@ impl<'a> Knob<'a> {
     }
 
     /// Modulation rings around the dial.
-    #[allow(dead_code)]
     pub fn rings(mut self, rings: &'a [ModRing]) -> Self {
         self.rings = rings;
         self
     }
 
     /// The colour of the rings: the thing's track colour.
-    #[allow(dead_code)]
     pub fn colour(mut self, colour: Color32) -> Self {
         self.colour = colour;
         self
@@ -141,7 +162,40 @@ impl<'a> Knob<'a> {
                 let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(DIAL), Sense::click_and_drag());
                 response = response.labelled_by(label.id).on_hover_cursor(egui::CursorIcon::ResizeVertical);
 
-                if response.dragged_by(egui::PointerButton::Primary) {
+                // A press on a ring's end drags that end, not the knob.
+                let grab_id = response.id.with("ring end");
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    let origin = ui.input(|i| i.pointer.press_origin());
+                    let c = rect.center();
+                    let grabbed = origin.and_then(|o| {
+                        (0..self.rings.len())
+                            .map(|i| (i, (self.ring_end(c, i) - o).length()))
+                            .filter(|(_, d)| *d <= RING_GRAB)
+                            .min_by(|a, b| a.1.total_cmp(&b.1))
+                            .map(|(i, _)| i)
+                    });
+                    match grabbed {
+                        Some(i) => ui.data_mut(|d| {
+                            d.insert_temp(grab_id, i);
+                        }),
+                        None => ui.data_mut(|d| {
+                            d.remove::<usize>(grab_id);
+                        }),
+                    }
+                }
+                let grabbed: Option<usize> = ui.data(|d| d.get_temp(grab_id));
+                let mut ring = None;
+                if let Some(i) = grabbed {
+                    if response.dragged_by(egui::PointerButton::Primary) {
+                        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                            let to = self.value_at_turn(turn_at(rect.center(), p) as f64);
+                            ring = Some(RingDrag { ring: i, to, alt: ui.input(|i| i.modifiers.alt) });
+                        }
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    } else {
+                        ui.data_mut(|d| d.remove::<usize>(grab_id));
+                    }
+                } else if response.dragged_by(egui::PointerButton::Primary) {
                     let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
                     let dy = response.drag_delta().y as f64;
                     let t = self.to_turn(*self.value) - dy / FULL_DRAG * fine;
@@ -221,11 +275,16 @@ impl<'a> Knob<'a> {
                 if value != before {
                     response.mark_changed();
                 }
-                (response, context)
+                (response, context, ring)
             },
         );
-        let (response, context) = inner.inner;
-        KnobResponse { changed: *self.value != before, response, context }
+        let (response, context, ring) = inner.inner;
+        KnobResponse { changed: *self.value != before, response, context, ring }
+    }
+
+    /// Where ring `i`'s draggable end is drawn, around the dial's middle `c`.
+    fn ring_end(&self, c: egui::Pos2, i: usize) -> egui::Pos2 {
+        c + direction(self.to_turn(self.rings[i].to) as f32) * ring_radius(i)
     }
 
     /// Draws the dial: the track, the value arc, the pointer and the modulation rings.
@@ -238,11 +297,17 @@ impl<'a> Knob<'a> {
         if (t - start).abs() > 1e-4 {
             painter.add(Shape::line(arc(c, 15.0, start.min(t), start.max(t)), Stroke::new(3.0, MUTED)));
         }
-        for ring in self.rings {
+        let any_lit = self.rings.iter().any(|r| r.lit);
+        for (i, ring) in self.rings.iter().enumerate() {
             let (a, b) = (self.to_turn(ring.from) as f32, self.to_turn(ring.to) as f32);
+            let colour = if any_lit && !ring.lit { self.colour.gamma_multiply(0.35) } else { self.colour };
+            let width = if ring.lit { 3.0 } else { 2.0 };
+            let r = ring_radius(i);
             if (a - b).abs() > 1e-4 {
-                painter.add(Shape::line(arc(c, 18.5, a.min(b), a.max(b)), Stroke::new(2.0, self.colour)));
+                painter.add(Shape::line(arc(c, r, a.min(b), a.max(b)), Stroke::new(width, colour)));
             }
+            // The end that drags.
+            painter.circle_filled(c + direction(b) * r, if hot || ring.lit { 2.5 } else { 1.5 }, colour);
         }
         let dir = direction(t);
         painter.line_segment([c + dir * 5.0, c + dir * 13.0], Stroke::new(2.0, TEXT_STRONG));
@@ -253,6 +318,21 @@ impl<'a> Knob<'a> {
 fn direction(t: f32) -> Vec2 {
     let a = (135.0 + SWEEP * t).to_radians();
     Vec2::new(a.cos(), a.sin())
+}
+
+/// The turn (0..1) pointing from the dial's middle `c` towards `p`; the gap at the bottom goes
+/// to the nearer end.
+fn turn_at(c: egui::Pos2, p: egui::Pos2) -> f32 {
+    let v = p - c;
+    let deg = v.y.atan2(v.x).to_degrees();
+    let t = (deg - 135.0).rem_euclid(360.0) / SWEEP;
+    if t <= 1.0 {
+        t
+    } else if t < (1.0 + 360.0 / SWEEP) / 2.0 {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Points along the dial's circle of radius `r` from turn `t0` to `t1`.
