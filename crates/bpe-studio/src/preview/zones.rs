@@ -198,19 +198,38 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// [`lines`], reusing the last tracing of the same outline at the same distance.
+/// `o` in its own frame (middle at 0, not turned), with where its middle is and how far it is
+/// turned: a shape that moves or spins keeps the same lines.
+fn own_frame(o: &Outline) -> (Outline, Vec2, f32) {
+    let mut own = o.clone();
+    let (center, angle) = match &mut own {
+        Outline::Ring { center, angle, .. }
+        | Outline::Box { center, angle, .. }
+        | Outline::Path { center, angle, .. } => (std::mem::take(center), std::mem::take(angle)),
+    };
+    (own, center, angle)
+}
+
+/// [`lines`], reusing the last tracing of the same outline (wherever it is and however it is
+/// turned) at the same distance.
 fn lines_kept(o: &Outline, measure: Measure, d: f32) -> Vec<Vec<Vec2>> {
+    let (own, center, angle) = own_frame(o);
+    let turn = Vec2::from_angle(angle);
+    let place = |runs: &[Vec<Vec2>]| -> Vec<Vec<Vec2>> {
+        runs.iter().map(|r| r.iter().map(|p| center + turn.rotate(*p)).collect()).collect()
+    };
     TRACED.with(|t| {
         let mut t = t.borrow_mut();
-        if let Some((.., kept)) = t.iter().find(|(ko, km, kd, _)| ko == o && *km == measure && *kd == d) {
-            return kept.clone();
+        if let Some((.., kept)) = t.iter().find(|(ko, km, kd, _)| *ko == own && *km == measure && *kd == d) {
+            return place(kept);
         }
-        let made = lines(o, measure, d);
+        let made = lines(&own, measure, d);
         if t.len() >= 16 {
             t.remove(0);
         }
-        t.push((o.clone(), measure, d, made.clone()));
-        made
+        let placed = place(&made);
+        t.push((own, measure, d, made));
+        placed
     })
 }
 

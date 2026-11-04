@@ -1079,9 +1079,13 @@ impl ShapeVoice {
             let started = self.start_note(cx, 0, note, AUDITION_STRENGTH, AUDITION_BALL, Vec2::ZERO, seed, &hv);
             self.own_voice = false;
             if let Some(slot) = started {
+                // A gate that waits for the next hit would never close on a key: it closes after
+                // a short press. A Fixed gate plays as set.
                 let most = (AUDITION_GATE_S * crate::SAMPLE_RATE) as u64;
                 for g in &mut self.notes.slots[slot].gate {
-                    *g = (*g).min(most);
+                    if *g == u64::MAX {
+                        *g = most;
+                    }
                 }
             }
         }
@@ -1091,12 +1095,12 @@ impl ShapeVoice {
     /// to the slot's notes when they change (Mono glides) and letting go when nothing is held.
     fn hold(&mut self, cx: &BlockCx) {
         if !cx.playing && self.n_held > 0 {
-            // Stopped (a seek's pre-roll may have started the drone): its notes go at once, with
-            // no release tail under the keys clicked by hand.
+            // Stopped: Pause has already faded what was heard, so these were started unheard by a
+            // seek's pre-roll. They go at once, with nothing under the keys clicked by hand.
             for i in 0..std::mem::take(&mut self.n_held) {
                 let s = self.held[i];
                 if self.notes.meta[s].active && self.notes.slots[s].note == self.held_notes[i] {
-                    self.notes.slots[s].fade_out(STEAL_MS);
+                    self.notes.free(s);
                 }
             }
             return;

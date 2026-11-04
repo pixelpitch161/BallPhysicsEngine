@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
 /// How often missing speakers are looked for again.
 const SPEAKERS_RETRY: Duration = Duration::from_secs(2);
+/// The longest wait between looks for speakers (each look waits twice the last).
+const SPEAKERS_RETRY_MOST: Duration = Duration::from_secs(30);
 
 /// Something that would throw away unsaved changes.
 pub enum Pending {
@@ -151,6 +153,10 @@ pub struct Studio {
     pub sound: Option<SoundJob>,
     /// When to look for the speakers again (they failed, or there were none at the start).
     speakers_retry: Option<Instant>,
+    /// How long the next look for speakers waits.
+    speakers_wait: Duration,
+    /// The sound thread itself stopped (not the speakers): it isn't started again by itself.
+    sound_broken: bool,
     /// The listening volume changed and is saved once it has rested (not on every frame of a
     /// drag).
     listen_unsaved: Option<Instant>,
@@ -246,6 +252,8 @@ impl Studio {
             clicked: None,
             sound: None,
             speakers_retry: None,
+            speakers_wait: SPEAKERS_RETRY,
+            sound_broken: false,
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
@@ -443,19 +451,30 @@ impl Studio {
             // Tests (and anything without a window) never open a device.
             return;
         }
-        if self.sound.as_ref().is_some_and(SoundJob::failed) {
+        if let Some(job) = &self.sound
+            && job.failed()
+        {
+            if job.device_failed() {
+                self.status = "The speakers stopped working. Looking for them again…".into();
+            } else {
+                // A sound thread that stopped by itself would stop again: no looping restarts.
+                self.status = "The sound stopped working. Save, then close and reopen Ball Studio.".into();
+                self.sound_broken = true;
+            }
             self.sound = None;
-            self.status = "The speakers stopped working. Looking for them again…".into();
+            self.speakers_wait = SPEAKERS_RETRY;
             self.speakers_retry = Some(now + SPEAKERS_RETRY);
         }
-        if self.sound.is_some() {
+        if self.sound.is_some() || self.sound_broken {
             return;
         }
-        let due = self.speakers_retry.get_or_insert(now + SPEAKERS_RETRY);
+        let due = self.speakers_retry.get_or_insert(now + self.speakers_wait);
         if now < *due {
             return;
         }
-        *due = now + SPEAKERS_RETRY;
+        // Opening a device can take a moment: look less and less often while there is none.
+        self.speakers_wait = (self.speakers_wait * 2).min(SPEAKERS_RETRY_MOST);
+        *due = now + self.speakers_wait;
         let Some(mut job) =
             AudioOut::open().and_then(|out| SoundJob::start(&self.scene, &self.resolved, self.kit.clone(), out))
         else {
@@ -463,10 +482,14 @@ impl Studio {
         };
         if self.playing {
             job.play(self.time);
+        } else {
+            // Keys clicked while stopped read the settings at the playhead.
+            job.seek(self.time);
         }
         self.sound = Some(job);
         self.apply_listen();
         self.speakers_retry = None;
+        self.speakers_wait = SPEAKERS_RETRY;
         self.status = "The speakers are back.".into();
     }
 

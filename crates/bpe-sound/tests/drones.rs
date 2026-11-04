@@ -272,6 +272,36 @@ fn a_drone_waits_while_stopped_and_a_clicked_key_ends() {
 }
 
 #[test]
+fn a_drone_a_seek_started_is_never_heard_while_stopped() {
+    let kit = kit();
+    let scene = scene_with(&kit, PlayWhen::Always, &[&[60]], |_| {});
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    // A seek's pre-roll plays (unheard) and starts the drone...
+    let (peak, _) = run(&mut v, &w, 0, 50, &[]);
+    assert!(peak > 0.01);
+    // ...then the editor, still stopped, renders for a clicked key: no burst of the drone.
+    let (peak, playing) = run_as(&mut v, &w, 50, 1, &[], false);
+    assert_eq!(peak, 0.0, "the drone stays quiet while stopped");
+    assert!(playing.is_empty());
+}
+
+#[test]
+fn a_clicked_key_plays_a_fixed_gate_as_set() {
+    let kit = kit();
+    let mut scene = scene_with(&kit, PlayWhen::OnHit, &[&[60]], |_| {});
+    let shape = shape_of(&scene);
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set(&layered_key(LayerId(0), "gate_ms"), Value::Number(1000.0));
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    v.audition(64);
+    // 0.6 s on, past the 0.4 s a key that waits for a hit gets, the 1 s gate still holds it.
+    let (_, playing) = run_as(&mut v, &w, 0, 450, &[], false);
+    assert_eq!(playing, [64]);
+    let _ = run_as(&mut v, &w, 450, 600, &[], false);
+    assert_eq!(v.sounding(), 0, "and it ends after its gate");
+}
+
+#[test]
 fn a_mono_drone_moves_to_the_next_slot_legato() {
     let kit = kit();
     let mut scene = scene_with(&kit, PlayWhen::Always, &[&[60], &[67]], |v| {

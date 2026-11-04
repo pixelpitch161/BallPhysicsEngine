@@ -5,6 +5,7 @@ use super::{TabCx, panel};
 use crate::style;
 use bpe_core::Value;
 use bpe_kit::sound::{ADSR, DISTANCE, PlayMode, PlayWhen};
+use bpe_sound::modmatrix::{Combine, combine_of};
 use eframe::egui::{RichText, Ui};
 
 fn plain(v: f64) -> String {
@@ -51,15 +52,22 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
         if when == PlayWhen::InRange {
             zone_menu(ui, cx);
         }
-        if when != PlayWhen::OnHit && fades_while_held(cx) {
-            let name = first_envelope_name(cx);
-            ui.label(
-                RichText::new(format!(
-                    "{name}'s Sustain is 0, so a held note dies away after its Decay. Raise Sustain to drone."
-                ))
-                .small()
-                .color(style::FAINT),
-            );
+        if when != PlayWhen::OnHit
+            && let Some((id, name)) = deciding_envelope(cx)
+            && cx.number(&bpe_core::layered_key(id, "sustain")) <= 0.0
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("{name}'s Sustain is 0, so a held note dies away after its Decay."))
+                        .small()
+                        .color(style::FAINT),
+                );
+                let raise =
+                    ui.small_button("Raise Sustain").on_hover_text("Sets its Sustain to 70 % so the note drones");
+                if raise.clicked() {
+                    cx.set(&bpe_core::layered_key(id, "sustain"), Value::Number(70.0));
+                }
+            });
         }
         ui.horizontal(|ui| {
             let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
@@ -75,20 +83,15 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
     });
 }
 
-/// Whether the first envelope (the notes' level) is on with its Sustain at 0: a held note then
-/// dies away after its Decay.
-fn fades_while_held(cx: &TabCx) -> bool {
-    let Some(card) = cx.scene.card(cx.id, bpe_core::SlotId::Sound) else { return false };
-    let Some(env) = card.layers.iter().find(|l| l.kind == ADSR && l.enabled) else { return false };
-    super::number(&cx.get(&bpe_core::layered_key(env.id, "sustain"))).is_some_and(|v| v <= 0.0)
-}
-
-/// The first envelope's name ("ADSR 1" on the starter sound).
-fn first_envelope_name(cx: &TabCx) -> String {
-    cx.scene
-        .card(cx.id, bpe_core::SlotId::Sound)
-        .and_then(|c| c.layers.iter().find(|l| l.kind == ADSR && l.enabled))
-        .map_or_else(|| "The envelope".into(), |l| l.name.clone())
+/// The envelope that decides when a held note fades: the first one on that scales a level (as the
+/// sound works it out), else the first one on.
+fn deciding_envelope(cx: &TabCx) -> Option<(bpe_core::LayerId, String)> {
+    let card = cx.scene.card(cx.id, bpe_core::SlotId::Sound)?;
+    let routes = cx.routes();
+    let mut on = card.layers.iter().filter(|l| l.kind == ADSR && l.enabled);
+    let scales =
+        |id: bpe_core::LayerId| routes.iter().any(|r| r.source == id && combine_of(&r.target) == Combine::Scale);
+    on.clone().find(|l| scales(l.id)).or_else(|| on.next()).map(|l| (l.id, l.name.clone()))
 }
 
 /// In range of which Distance (the first that is on when none is named).

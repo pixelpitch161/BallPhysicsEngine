@@ -220,6 +220,11 @@ impl SoundJob {
         &self.shared
     }
 
+    /// The speakers stopped working (the sound thread may still be fine).
+    pub fn device_failed(&self) -> bool {
+        self.shared.failed()
+    }
+
     /// The speakers stopped working, or the sound thread did.
     pub fn failed(&self) -> bool {
         let thread_gone = match &self.outbox {

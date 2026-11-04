@@ -76,13 +76,9 @@ impl LfoParams {
 }
 
 /// The value an LFO with `p` has `since` seconds after it started, at `cycles` cycles in
-/// (not counting Phase): the same sum the engine and Follow sound both use. During Delay it
-/// rests in the middle (0.5) and Fade-in grows the wave out from there, so a two-way route
-/// (vibrato) stays on its knob's value until the wave comes in.
+/// (not counting Phase): the same sum the engine and Follow sound both use.
 pub fn lfo_value(p: &LfoParams, cycles: f64, since: f64, seed: u64) -> f32 {
-    let wave = shape_at(p.wave, cycles + p.phase, seed);
-    let fade = fade_at(since, p.delay, p.fade_in);
-    if fade >= 1.0 { wave } else { 0.5 + (wave - 0.5) * fade }
+    shape_at(p.wave, cycles + p.phase, seed) * fade_at(since, p.delay, p.fade_in)
 }
 
 /// The random seed of LFO `layer` on shape `shape`.

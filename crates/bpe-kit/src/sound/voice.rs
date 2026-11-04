@@ -144,7 +144,7 @@ pub enum PlayWhen {
     /// Each accepted hit plays its notes.
     #[default]
     OnHit,
-    /// The slot's notes are held from the start, a drone; hits retrigger its envelopes.
+    /// The slot's notes are held from the start, a drone; hits never play them again.
     Always,
     /// The slot's notes are held while a ball is in range of a Distance.
     InRange,
