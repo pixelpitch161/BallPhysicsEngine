@@ -66,6 +66,20 @@ impl HitCursor {
 
     /// Moves the hits that land before `start + len` into `out` (cleared first), with their
     /// offsets in the block that starts at `start`; any that are already past land at 0.
+    /// Starts over at sound sample `from`: the hits in `log` from there on wait, the earlier
+    /// ones are passed over.
+    pub fn seek(&mut self, log: &Log, from: u64) {
+        let events = log.events();
+        // Step k's hits land in ((k - 1) × sps, k × sps], so steps before this one end earlier.
+        let first_step = (from as f64 / self.samples_per_step).floor() as u64;
+        self.read = events.partition_point(|e| e.step < first_step);
+        self.waiting.clear();
+        self.read(log);
+        while self.waiting.front().is_some_and(|(at, _)| *at < from) {
+            self.waiting.pop_front();
+        }
+    }
+
     pub fn take_block(&mut self, start: u64, len: u64, out: &mut Vec<BlockHit>) {
         out.clear();
         while let Some((at, _)) = self.waiting.front() {

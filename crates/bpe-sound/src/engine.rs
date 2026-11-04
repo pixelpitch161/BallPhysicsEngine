@@ -81,6 +81,39 @@ impl Engine {
         self.meters.clone()
     }
 
+    /// Writes the meters into `meters` from now on (the editor keeps one set across rebuilds).
+    pub fn share_meters(&mut self, meters: Arc<Meters>) {
+        self.meters = meters;
+    }
+
+    /// Goes to `time` (rounded down to a block): every voice and the master start over, the
+    /// physics goes back to [`PRE_ROLL`] seconds earlier and the sound from there to `time` is
+    /// rendered and thrown away, so tails and drones are already ringing at `time`.
+    pub fn seek(&mut self, time: f64) {
+        let block = BLOCK as u64;
+        let rate = SAMPLE_RATE as f64;
+        let target = (time.max(0.0) * rate) as u64 / block * block;
+        let start = ((target as f64 / rate - PRE_ROLL).max(0.0) * rate) as u64 / block * block;
+        for v in &mut self.voices {
+            v.reset();
+        }
+        self.master.reset();
+        let steps = self.physics.world().steps_per_second as f64;
+        let start_step = (start as f64 / self.cursor.samples_per_step()).floor();
+        self.physics.seek(start_step / steps);
+        self.cursor.seek(self.physics.log(), start);
+        self.voice_pos = start;
+        self.out_pos = start;
+        self.discard = self.master.latency();
+        self.queue_head = 0;
+        self.queue_len = 0;
+        let mut scratch = [0.0f32; BLOCK * 2];
+        while self.out_pos < target {
+            self.render(&mut scratch);
+        }
+        self.loudness.reset();
+    }
+
     pub fn tempo(&self) -> &TempoMap {
         &self.tempo
     }

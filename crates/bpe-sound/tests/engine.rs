@@ -69,3 +69,49 @@ fn silence_without_sound_cards() {
     let scene = new_scene(&kit.registry);
     assert!(render(&scene, &kit, 3.0).iter().all(|&v| v == 0.0));
 }
+
+#[test]
+fn seek_with_pre_roll_matches_a_straight_render() {
+    let kit = kit();
+    let (scene, _) = toned(&kit, "test-tone-decay=2");
+    let straight = render(&scene, &kit, 10.0);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    // Somewhere else first, so the seek goes back as well as forward.
+    let mut block = [0.0f32; BLOCK * 2];
+    for _ in 0..2000 {
+        e.render(&mut block);
+    }
+    e.seek(6.0);
+    let from = e.sample_position() as usize;
+    assert_eq!(from, 6 * 48_000, "6 s is a block boundary");
+    let mut sought = Vec::new();
+    while (e.sample_position() as usize) < straight.len() / 2 {
+        e.render(&mut block);
+        sought.extend_from_slice(&block);
+    }
+    let tail = &straight[from * 2..];
+    assert!(tail.iter().any(|&v| v.abs() > 0.01), "there is sound after 6 s");
+    let worst = tail.iter().zip(&sought).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+    assert!(worst < bpe_dsp::db_to_gain(-120.0), "worst difference {} dB", bpe_dsp::gain_to_db(worst));
+}
+
+#[test]
+fn seeking_back_to_the_start_matches_a_fresh_engine() {
+    let kit = kit();
+    let (scene, _) = toned(&kit, "test-tone");
+    let fresh = render(&scene, &kit, 3.0);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    let mut block = [0.0f32; BLOCK * 2];
+    for _ in 0..1500 {
+        e.render(&mut block);
+    }
+    e.seek(0.0);
+    let mut again = Vec::new();
+    while again.len() < fresh.len() {
+        e.render(&mut block);
+        again.extend_from_slice(&block);
+    }
+    assert!(fresh.iter().zip(&again).all(|(a, b)| a.to_bits() == b.to_bits()));
+}
