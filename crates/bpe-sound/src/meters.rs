@@ -49,6 +49,8 @@ pub struct Meters {
     slots: [AtomicU32; SHAPE_METERS],
     buses: [BusMeter; 3],
     fx: Box<[FxMeter; FX_METERS]>,
+    /// Each of those shapes' modulators and recent hits, for the Sound tab.
+    mods: Vec<ShapeMods>,
 }
 
 /// One bus's levels: its output peaks (held until read) and the most any of its compressors or
@@ -127,8 +129,6 @@ pub struct BusReading {
 
 impl BusReading {
     pub const SILENT: BusReading = BusReading { peak_l: f32::NEG_INFINITY, peak_r: f32::NEG_INFINITY, reduction: 0.0 };
-    /// Each of those shapes' modulators and recent hits, for the Sound tab.
-    mods: Vec<ShapeMods>,
 }
 
 /// Takes one modulator's layer and value.
