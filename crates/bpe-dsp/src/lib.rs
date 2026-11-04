@@ -24,7 +24,7 @@ pub use limiter::TruePeakLimiter;
 pub use loudness::LoudnessMeter;
 pub use noise::Noise;
 pub use osc::{MAX_UNISON, SubOsc, SubWaveId, UnisonOsc, UnisonParams};
-pub use oversample::{Halfband, Oversampler, true_peak};
+pub use oversample::{Halfband, Oversampler, StereoOversampler, true_peak};
 pub use pm_delay::{PmDelay, am, fm_index_of, ring};
 pub use shaper::{Shaper, ShaperParams, ShaperType, transfer};
 pub use smooth::Smoother;

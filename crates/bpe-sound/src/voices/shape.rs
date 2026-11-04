@@ -13,7 +13,7 @@ use super::alloc::{CAPACITY, MAX_VOICES, STEAL_MS, Voices};
 use super::hit_filter::HitFilter;
 use super::knobs::{self as k, KNOBS, MAX_ENVS, Values};
 use super::notes::{NotePicker, PickCx, RandomPick, mix};
-use crate::chain::Chain;
+use crate::chain::{Buf, ChainSpec, VoiceChain};
 use crate::modmatrix::{Combine, ModMatrix};
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ThingId, Track};
@@ -78,6 +78,8 @@ pub struct ShapeSpec {
     pub square: Option<Arc<TableSet>>,
     /// The picture's width in scene pixels (Follow hit pans across it).
     pub width: f32,
+    /// Both oscillators' layer chains.
+    pub chain: Arc<ChainSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,7 +97,7 @@ struct Note {
     osc: [UnisonOsc; 2],
     sub: [SubOsc; 2],
     noise: [Noise; 2],
-    chain: [Chain; 2],
+    chain: VoiceChain,
     env: [Envelope; MAX_ENVS],
     env_ids: [LayerId; MAX_ENVS],
     /// Samples until each envelope's gate closes (`u64::MAX`: not by time).
@@ -122,7 +124,7 @@ struct Note {
 }
 
 impl Note {
-    fn new() -> Self {
+    fn new(chain: &ChainSpec) -> Self {
         Note {
             note: 60,
             strength: 1.0,
@@ -130,7 +132,7 @@ impl Note {
             osc: [UnisonOsc::new(), UnisonOsc::new()],
             sub: [SubOsc::default(), SubOsc::default()],
             noise: [Noise::new(0), Noise::new(1)],
-            chain: [Chain::empty(), Chain::empty()],
+            chain: VoiceChain::new(chain),
             env: std::array::from_fn(|_| Envelope::new()),
             env_ids: [LayerId(u32::MAX); MAX_ENVS],
             gate: [u64::MAX; MAX_ENVS],
@@ -173,8 +175,6 @@ struct Scratch {
     sub_gain: [f32; BLOCK],
     warp: [f32; BLOCK],
     fade: [f32; BLOCK],
-    osc_l: [f32; BLOCK],
-    osc_r: [f32; BLOCK],
     note_l: [f32; BLOCK],
     note_r: [f32; BLOCK],
     shape_l: [f32; BLOCK],
@@ -182,23 +182,24 @@ struct Scratch {
     /// The shape's smoothed knobs, sample by sample: Gain, Level, Sub level of each oscillator,
     /// then Volume (linear gains).
     smooth: [[f32; BLOCK]; 7],
+    /// The oscillators' sound reaching their chains, then each chain layer's sound.
+    lanes: Vec<Buf>,
 }
 
 impl Scratch {
-    fn new() -> Box<Self> {
+    fn new(buffers: usize) -> Box<Self> {
         Box::new(Scratch {
             env: [[0.0; BLOCK]; MAX_ENVS],
             gain: [0.0; BLOCK],
             sub_gain: [0.0; BLOCK],
             warp: [0.0; BLOCK],
             fade: [0.0; BLOCK],
-            osc_l: [0.0; BLOCK],
-            osc_r: [0.0; BLOCK],
             note_l: [0.0; BLOCK],
             note_r: [0.0; BLOCK],
             shape_l: [0.0; BLOCK],
             shape_r: [0.0; BLOCK],
             smooth: [[0.0; BLOCK]; 7],
+            lanes: vec![[[0.0; BLOCK]; 2]; buffers.max(crate::chain::RAW_BUFFERS)],
         })
     }
 }
@@ -236,6 +237,8 @@ pub struct ShapeVoice {
     level_envs: [bool; MAX_ENVS],
     /// Whether each of Gain, Level, Sub level (per oscillator) and Volume has routes.
     routed: [bool; 7],
+    /// Whether each oscillator runs: it is on, or the other's layers tap it.
+    plays: [bool; 2],
     scratch: Box<Scratch>,
     /// Fading out because the shape went away (1 while it plays).
     leaving: f32,
@@ -290,14 +293,15 @@ impl ShapeVoice {
         let mut v = ShapeVoice {
             filter,
             picker: RandomPick,
-            notes: Voices::new(Note::new),
+            notes: Voices::new(|| Note::new(&spec.chain)),
             now,
             smooth: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
             pans: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
             source_env,
             level_envs,
             routed,
-            scratch: Scratch::new(),
+            plays: std::array::from_fn(|o| spec.osc[o].on || spec.chain.raw_needed[o]),
+            scratch: Scratch::new(spec.chain.buffers()),
             leaving: 1.0,
             leave_step: 0.0,
             auditions: [0; MAX_AUDITIONS],
@@ -454,7 +458,7 @@ impl ShapeVoice {
         let params: [EnvParams; MAX_ENVS] =
             std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
         let unison = self.unison_params(note as f32);
-        let osc_on: [bool; 2] = [self.spec.osc[0].on, self.spec.osc[1].on];
+        let osc_on = self.plays;
         let subs: [(SubWaveId, u8); 2] = std::array::from_fn(|o| {
             let spec = &self.spec.osc[o];
             let wave = match spec.sub {
@@ -481,8 +485,8 @@ impl ShapeVoice {
         n.n_events = 0;
         n.age = 0;
         n.env_ids = ids;
+        n.chain.reset();
         for o in 0..2 {
-            n.chain[o].reset();
             n.noise[o].seed(mix(seed ^ (o as u64 + 1)));
             if !osc_on[o] {
                 continue;
@@ -639,32 +643,36 @@ impl ShapeVoice {
 
         sc.note_l = [0.0; BLOCK];
         sc.note_r = [0.0; BLOCK];
+        // Each oscillator's sound (after its Gain) into its lane's buffer.
+        let mut pitch = [n.pitch; 2];
         for o in 0..2 {
             let spec = &self.spec.osc[o];
-            if !spec.on {
+            if !self.plays[o] {
                 continue;
             }
             let at = |key: usize| moved[k::osc(o, key)];
             // Gain: the shape's smoothed knob, scaled by its routes sample by sample.
-            let (g_place, l_place, s_place) = (k::osc(o, k::GAIN), k::osc(o, k::LEVEL), k::osc(o, k::SUB_LEVEL));
+            let (g_place, s_place) = (k::osc(o, k::GAIN), k::osc(o, k::SUB_LEVEL));
             for s in 0..BLOCK {
                 sc.gain[s] = sc.smooth[3 * o][s] * sc.fade[s];
             }
             if self.routed[3 * o] {
                 scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, g_place, &mut sc.gain);
             }
-            sc.osc_l = [0.0; BLOCK];
-            sc.osc_r = [0.0; BLOCK];
+            let semis = 12.0 * at(k::OCTAVE).round() + at(k::SEMI).round() + at(k::CENTS) / 100.0;
+            pitch[o] = n.pitch + semis;
+            let [lane_l, lane_r] = &mut sc.lanes[o];
+            *lane_l = [0.0; BLOCK];
+            *lane_r = [0.0; BLOCK];
             if spec.wave == Wave::Noise {
                 let pink = spec.noise == NoiseColour::Pink;
                 for s in 0..BLOCK {
                     let v = if pink { n.noise[o].pink() } else { n.noise[o].white() } * sc.gain[s];
-                    sc.osc_l[s] = v;
-                    sc.osc_r[s] = v;
+                    lane_l[s] = v;
+                    lane_r[s] = v;
                 }
             } else if let Some(table) = &spec.table {
-                let semis = 12.0 * at(k::OCTAVE).round() + at(k::SEMI).round() + at(k::CENTS) / 100.0;
-                let freq = note_hz(n.pitch + semis);
+                let freq = note_hz(pitch[o]);
                 n.osc[o].set(&UnisonParams {
                     freq_hz: freq,
                     unison: at(k::UNISON).round().clamp(1.0, 16.0) as u8,
@@ -681,7 +689,7 @@ impl ShapeVoice {
                     sc.warp[s] = from + (warp - from) * (s + 1) as f32 / BLOCK as f32;
                 }
                 n.warp_prev[o] = warp;
-                n.osc[o].render(table, &sc.warp, &sc.gain, &mut sc.osc_l, &mut sc.osc_r);
+                n.osc[o].render(table, &sc.warp, &sc.gain, lane_l, lane_r);
                 if spec.sub != SubWave::Off
                     && let Some(square) = &self.spec.square
                 {
@@ -694,19 +702,26 @@ impl ShapeVoice {
                     if self.routed[3 * o + 2] {
                         scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, s_place, &mut sc.sub_gain);
                     }
-                    n.sub[o].render(square, &sc.sub_gain, &mut sc.osc_l, &mut sc.osc_r);
+                    n.sub[o].render(square, &sc.sub_gain, lane_l, lane_r);
                 }
             }
-            n.chain[o].process(&mut sc.osc_l, &mut sc.osc_r);
+        }
+        // The layers, top to bottom (and across, where one taps the other oscillator).
+        n.chain.render(&self.spec.chain, &moved, pitch, &mut sc.lanes);
+        for o in 0..2 {
+            if !self.spec.osc[o].on {
+                continue;
+            }
             // Level and the oscillator's pan.
             let (pl, pr) = pan_gains(self.pans[o].value());
             let mut lv = sc.smooth[3 * o + 1];
             if self.routed[3 * o + 1] {
-                scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, l_place, &mut lv);
+                scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, k::osc(o, k::LEVEL), &mut lv);
             }
+            let [out_l, out_r] = &sc.lanes[self.spec.chain.out[o]];
             for s in 0..BLOCK {
-                sc.note_l[s] += sc.osc_l[s] * lv[s] * pl;
-                sc.note_r[s] += sc.osc_r[s] * lv[s] * pr;
+                sc.note_l[s] += out_l[s] * lv[s] * pl;
+                sc.note_r[s] += out_r[s] * lv[s] * pr;
             }
         }
         // The output: Volume and Pan, pulled across by Follow hit.
@@ -865,8 +880,14 @@ impl VoiceSource for ShapeVoice {
         self.notes.meta = old.notes.meta;
         let ids: [LayerId; MAX_ENVS] =
             std::array::from_fn(|e| self.spec.envs.get(e).map(|s| s.id).unwrap_or(LayerId(u32::MAX)));
-        for (new, prev) in self.notes.slots.iter_mut().zip(old.notes.slots.iter()) {
+        for (new, prev) in self.notes.slots.iter_mut().zip(old.notes.slots.iter_mut()) {
+            // Cloned without its chain (which would allocate); the chain's layers take over
+            // their memories one by one.
+            let old_chain = std::mem::take(&mut prev.chain);
             let mut n = prev.clone();
+            prev.chain = old_chain;
+            n.chain = std::mem::take(&mut new.chain);
+            n.chain.adopt(&prev.chain);
             // Envelopes follow their layers; a new one starts silent.
             for (e, id) in ids.iter().enumerate() {
                 match prev.env_ids.iter().position(|x| x == id) {

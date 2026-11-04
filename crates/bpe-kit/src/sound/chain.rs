@@ -13,7 +13,8 @@ pub const FILTER: &str = "chain.filter";
 pub const DISTORTION: &str = "chain.distortion";
 /// Every chain layer kind, in the "+ Add layer" menu's order.
 pub const CHAIN_KINDS: [&str; 3] = [MODULATION, FILTER, DISTORTION];
-/// The most layers one oscillator's chain runs (more are let through untouched).
+/// The most chain layers a sound runs, both oscillators together (more are let through
+/// untouched).
 pub const MAX_CHAIN: usize = 32;
 
 /// How a Modulation layer moves the sound reaching it.
@@ -530,9 +531,9 @@ mod tests {
             lane: Some(0),
             ..Layer::default()
         };
-        assert_eq!(layer_summary(&layer, &Params::default(), &[layer.clone()]), "FM from Osc B");
+        assert_eq!(layer_summary(&layer, &Params::default(), std::slice::from_ref(&layer)), "FM from Osc B");
         let b = Layer { lane: Some(1), ..layer.clone() };
-        assert_eq!(layer_summary(&b, &Params::default(), &[b.clone()]), "FM from Osc A");
+        assert_eq!(layer_summary(&b, &Params::default(), std::slice::from_ref(&b)), "FM from Osc A");
     }
 
     #[test]
@@ -578,7 +579,7 @@ mod tests {
         assert_eq!(layer_summary(&filter, &formant, &[]), "Formant · I");
         // A source that went away reads as the layer's own oscillator.
         let gone = p(&[("source", Value::Text("99".into()))]);
-        assert_eq!(layer_summary(&m, &gone, &[m.clone()]), "FM from Osc A");
+        assert_eq!(layer_summary(&m, &gone, std::slice::from_ref(&m)), "FM from Osc A");
     }
 
     #[test]

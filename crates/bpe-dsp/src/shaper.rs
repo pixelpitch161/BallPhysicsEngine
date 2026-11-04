@@ -3,7 +3,8 @@
 //! as little as they can. Bias leans the curve before it (taken back out, so silence stays
 //! silent); a 5 Hz DC blocker, the Tone tilt and the Output gain come after.
 
-use crate::{BLOCK, Oversampler, SAMPLE_RATE, db_to_gain};
+use crate::{BLOCK, SAMPLE_RATE, StereoOversampler, db_to_gain};
+use wide::{CmpGe, CmpLe, CmpLt, f32x4};
 
 /// A distortion's type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,50 +80,133 @@ fn smoothed(kind: ShaperType) -> bool {
     )
 }
 
-/// The antiderivative of one overdrive stage.
-fn overdrive_area(x: f64) -> f64 {
-    let a = x.abs();
-    if a >= 1.0 { a - 0.375 } else { 0.75 * x * x - 0.125 * x * x * x * x }
+fn splat(v: f32) -> f32x4 {
+    f32x4::splat(v)
 }
 
-/// The antiderivative of `curve` (one overdrive stage for Overdrive; Rectify's blend by `bias`).
-fn area(kind: ShaperType, u: f64, bias: f64) -> f64 {
+/// `e^w − 1 − w`, without losing the small values to rounding.
+#[inline]
+fn exp_less_line(w: f32x4) -> f32x4 {
+    // The series up to w^10 for |w| < 0.5 (error under 1e-11), the exponential otherwise.
+    let mut series = splat(1.0 / 3_628_800.0);
+    for d in [362_880.0f32, 40_320.0, 5040.0, 720.0, 120.0, 24.0, 6.0, 2.0] {
+        series = series * w + splat(1.0 / d);
+    }
+    let series = series * w * w;
+    let big = w.exp() - splat(1.0) - w;
+    w.abs().cmp_lt(splat(0.5)).blend(series, big)
+}
+
+/// `|u| − ln(1 + |u|)`, the Tube curve's antiderivative, without losing small values.
+#[inline]
+fn tube_area(u: f32x4) -> f32x4 {
+    let a = u.abs();
+    // Σ (−1)^k a^k / k from k = 2 to 13 for a < 0.25 (error under 1e-9).
+    let mut series = splat(-1.0 / 13.0);
+    for k in (2..13).rev() {
+        let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+        series = series * a + splat(sign / k as f32);
+    }
+    let series = series * a * a;
+    let big = a - (splat(1.0) + a).ln();
+    a.cmp_lt(splat(0.25)).blend(series, big)
+}
+
+#[inline]
+fn overdrive4(x: f32x4) -> f32x4 {
+    let c = x.max(splat(-1.0)).min(splat(1.0));
+    splat(1.5) * c - splat(0.5) * c * c * c
+}
+
+#[inline]
+fn overdrive_area4(x: f32x4) -> f32x4 {
+    let a = x.abs();
+    let inside = splat(0.75) * x * x - splat(0.125) * x * x * x * x;
+    a.cmp_ge(splat(1.0)).blend(a - splat(0.375), inside)
+}
+
+#[inline]
+fn rectified4(u: f32x4, bias: f32) -> f32x4 {
+    let t = splat(bias.abs().min(1.0));
+    let half = if bias >= 0.0 { u.max(f32x4::ZERO) } else { (-u).max(f32x4::ZERO) };
+    (splat(1.0) - t) * u.abs() + t * half
+}
+
+/// The curve on four values at once (one overdrive stage for Overdrive).
+#[inline]
+fn curve4(kind: ShaperType, u: f32x4, bias: f32) -> f32x4 {
     match kind {
-        ShaperType::HardClip => {
-            if u.abs() <= 1.0 {
-                0.5 * u * u
-            } else {
-                u.abs() - 0.5
-            }
+        ShaperType::SoftClip => {
+            // 1 − 2/(e^{2u} + 1), kept where e^{2u} stays finite.
+            let c = u.max(splat(-9.0)).min(splat(9.0));
+            splat(1.0) - splat(2.0) / ((c + c).exp() + splat(1.0))
         }
-        ShaperType::Tube => u.abs() - u.abs().ln_1p(),
+        ShaperType::HardClip => u.max(splat(-1.0)).min(splat(1.0)),
+        ShaperType::Tube => u / (splat(1.0) + u.abs()),
+        ShaperType::Tape => u / (splat(1.0) + u * u).sqrt(),
         ShaperType::Diode => {
-            if u >= 0.0 {
-                u + (-u).exp() - 1.0
-            } else {
-                let c = DIODE_FLOOR as f64;
-                c * c * ((u / c).exp() - 1.0) - c * u
-            }
+            let pos = splat(1.0) - (-u.max(f32x4::ZERO)).exp();
+            let neg = splat(DIODE_FLOOR) * ((u.min(f32x4::ZERO) / splat(DIODE_FLOOR)).exp() - splat(1.0));
+            u.cmp_ge(f32x4::ZERO).blend(pos, neg)
         }
-        ShaperType::Overdrive => overdrive_area(u),
-        ShaperType::Rectify => {
-            let t = bias.abs().min(1.0);
-            let full = 0.5 * u * u.abs();
-            let half = if bias >= 0.0 { 0.5 * u.max(0.0).powi(2) } else { -0.5 * u.min(0.0).powi(2) };
-            (1.0 - t) * full + t * half
-        }
-        _ => 0.0,
+        ShaperType::Overdrive => overdrive4(u),
+        ShaperType::Wavefold => (splat(std::f32::consts::FRAC_PI_2) * u).sin(),
+        ShaperType::Rectify => rectified4(u, bias),
+        ShaperType::Bitcrush | ShaperType::Downsample => u,
     }
 }
 
-/// The curve between the last input and this one, by its antiderivative: `(F(u) − F(u1)) /
-/// (u − u1)`, or the curve at the middle when they are too close to tell apart.
+/// The antiderivative of [`curve4`] (one overdrive stage for Overdrive).
 #[inline]
-fn antialiased(kind: ShaperType, u: f64, prev: &mut f64, bias: f64, direct: impl Fn(f64) -> f64) -> f64 {
-    let u1 = *prev;
-    *prev = u;
-    let d = u - u1;
-    if d.abs() < 1e-6 { direct(0.5 * (u + u1)) } else { (area(kind, u, bias) - area(kind, u1, bias)) / d }
+fn area4(kind: ShaperType, u: f32x4, bias: f32) -> f32x4 {
+    match kind {
+        ShaperType::HardClip => {
+            let a = u.abs();
+            a.cmp_le(splat(1.0)).blend(splat(0.5) * u * u, a - splat(0.5))
+        }
+        ShaperType::Tube => tube_area(u),
+        ShaperType::Diode => {
+            let c = DIODE_FLOOR;
+            let pos = exp_less_line(-u.max(f32x4::ZERO));
+            let neg = splat(c * c) * exp_less_line(u.min(f32x4::ZERO) / splat(c));
+            u.cmp_ge(f32x4::ZERO).blend(pos, neg)
+        }
+        ShaperType::Overdrive => overdrive_area4(u),
+        ShaperType::Rectify => {
+            let t = splat(bias.abs().min(1.0));
+            let full = splat(0.5) * u * u.abs();
+            let half = if bias >= 0.0 {
+                let p = u.max(f32x4::ZERO);
+                splat(0.5) * p * p
+            } else {
+                let n = u.min(f32x4::ZERO);
+                splat(-0.5) * n * n
+            };
+            (splat(1.0) - t) * full + t * half
+        }
+        _ => f32x4::ZERO,
+    }
+}
+
+/// Antiderivative antialiasing on four values in a row, `n` of them real (the rest repeat the
+/// last): `(F(u) − F(u_before)) / (u − u_before)`, or the curve at the middle where the two are
+/// too close to tell apart. `prev` and `prev_area` carry the last value on.
+#[inline]
+fn antialiased4(kind: ShaperType, u: f32x4, n: usize, prev: &mut f32, prev_area: &mut f32, bias: f32) -> f32x4 {
+    let ua = u.to_array();
+    let f = area4(kind, u, bias);
+    let fa = f.to_array();
+    let before = f32x4::from([*prev, ua[0], ua[1], ua[2]]);
+    let f_before = f32x4::from([*prev_area, fa[0], fa[1], fa[2]]);
+    *prev = ua[n - 1];
+    *prev_area = fa[n - 1];
+    let d = u - before;
+    let ratio = (f - f_before) / d;
+    let close = d.abs().cmp_lt(splat(1e-3) * (splat(1.0) + u.abs()));
+    if close.none() {
+        return ratio;
+    }
+    close.blend(curve4(kind, splat(0.5) * (u + before), bias), ratio)
 }
 
 /// The curve itself at `u` (already driven and biased). Bitcrush steps by `q` levels.
@@ -204,7 +288,6 @@ fn targets(kind: ShaperType, p: &ShaperParams) -> [f32; NP] {
 /// One channel's memory.
 #[derive(Clone, Debug)]
 struct Channel {
-    over: Oversampler,
     /// Tape's gentle low pass at the higher rate.
     tape: f32,
     /// The DC blocker's last input and output.
@@ -214,31 +297,15 @@ struct Channel {
     /// Downsample: the held value and the hold clock.
     held: f32,
     clock: f32,
-    /// The antialiasing's last inputs (two for Overdrive's two stages).
-    prev: [f64; 2],
+    /// The antialiasing's last inputs and their antiderivatives (two of each for Overdrive's
+    /// two stages).
+    prev: [f32; 2],
+    prev_area: [f32; 2],
 }
 
 impl Channel {
-    fn new(factor: u8) -> Self {
-        Channel {
-            over: Oversampler::new(factor),
-            tape: 0.0,
-            dc: (0.0, 0.0),
-            tilt: 0.0,
-            held: 0.0,
-            clock: 1.0,
-            prev: [0.0; 2],
-        }
-    }
-
-    fn reset(&mut self) {
-        self.over.reset();
-        self.tape = 0.0;
-        self.dc = (0.0, 0.0);
-        self.tilt = 0.0;
-        self.held = 0.0;
-        self.clock = 1.0;
-        self.prev = [0.0; 2];
+    fn new() -> Self {
+        Channel { tape: 0.0, dc: (0.0, 0.0), tilt: 0.0, held: 0.0, clock: 1.0, prev: [0.0; 2], prev_area: [0.0; 2] }
     }
 }
 
@@ -251,6 +318,7 @@ pub struct Shaper {
     step: [f32; NP],
     left: u32,
     fresh: bool,
+    over: StereoOversampler,
     ch: [Channel; 2],
     /// Coefficients: DC blocker pole, tilt low-pass, tape low-pass at the higher rate.
     dc_r: f32,
@@ -269,8 +337,8 @@ impl Shaper {
     /// `factor` 1, 2, 4 or 8 (Bitcrush and Downsample always run at 1×).
     pub fn new(kind: ShaperType, factor: u8) -> Self {
         let factor = if kind.oversampled() { factor } else { 1 };
-        let ch = [Channel::new(factor), Channel::new(factor)];
-        let factor = ch[0].over.factor();
+        let over = StereoOversampler::new(factor);
+        let factor = over.factor();
         Shaper {
             kind,
             factor,
@@ -278,7 +346,8 @@ impl Shaper {
             step: [0.0; NP],
             left: 0,
             fresh: true,
-            ch,
+            over,
+            ch: [Channel::new(), Channel::new()],
             dc_r: 1.0 - std::f32::consts::TAU * 5.0 / SAMPLE_RATE,
             tilt_a: one_pole(1000.0, SAMPLE_RATE),
             tape_a: one_pole(9000.0, SAMPLE_RATE * factor as f32),
@@ -296,11 +365,12 @@ impl Shaper {
 
     /// How many samples late the sound comes out (the higher rate's filters).
     pub fn latency(&self) -> usize {
-        self.ch[0].over.latency()
+        self.over.latency()
     }
 
     pub fn reset(&mut self) {
-        self.ch.iter_mut().for_each(Channel::reset);
+        self.over.reset();
+        self.ch = [Channel::new(), Channel::new()];
         self.fresh = true;
         self.left = 0;
     }
@@ -315,6 +385,7 @@ impl Shaper {
         self.step = other.step;
         self.left = other.left;
         self.fresh = other.fresh;
+        self.over = other.over.clone();
         self.ch = other.ch.clone();
     }
 
@@ -326,9 +397,14 @@ impl Shaper {
             self.left = 0;
             self.fresh = false;
             // The antialiasing starts from silence as this curve sees it.
-            let u = if self.kind == ShaperType::Rectify { 0.0 } else { t[1] as f64 };
+            let u = if self.kind == ShaperType::Rectify { 0.0 } else { t[1] };
+            let stage = if self.kind == ShaperType::Overdrive { ShaperType::Overdrive } else { self.kind };
+            let first = area4(stage, splat(u), t[1]).to_array()[0];
+            let second_in = overdrive_stage(u);
+            let second = overdrive_area4(splat(second_in)).to_array()[0];
             for ch in &mut self.ch {
-                ch.prev = [u, overdrive_stage(u as f32) as f64];
+                ch.prev = [u, second_in];
+                ch.prev_area = [first, second];
             }
             return;
         }
@@ -338,58 +414,59 @@ impl Shaper {
         self.left = BLOCK as u32;
     }
 
+    /// The curve on one channel's samples at the higher rate.
     #[inline]
-    fn channel(&mut self, c: usize, x: f32) -> f32 {
-        let [g, bias, offset, q, hold, lo, hi, out] = self.cur;
-        let kind = self.kind;
+    fn shape(&mut self, c: usize, buf: &mut [f32; 8]) {
+        let [g, bias, offset, ..] = self.cur;
+        let (kind, f) = (self.kind, self.factor);
         let ch = &mut self.ch[c];
-        let shaped = match kind {
-            ShaperType::Downsample => {
-                ch.clock += hold;
-                if ch.clock >= 1.0 {
-                    ch.clock -= 1.0;
-                    ch.held = x;
-                }
-                ch.held
+        for v in &mut buf[..f] {
+            *v *= g;
+            if kind == ShaperType::Tape {
+                ch.tape += self.tape_a * (*v - ch.tape);
+                *v = ch.tape;
             }
-            ShaperType::Bitcrush => curve(kind, x + bias, q) - offset,
-            _ => {
-                let mut buf = [0.0f32; 8];
-                let f = self.factor;
-                ch.over.up_one(x, &mut buf[..f]);
-                for u in &mut buf[..f] {
-                    let mut v = g * *u;
-                    if kind == ShaperType::Tape {
-                        ch.tape += self.tape_a * (v - ch.tape);
-                        v = ch.tape;
+        }
+        let shift = if kind == ShaperType::Rectify { 0.0 } else { bias };
+        let mut start = 0;
+        while start < f {
+            let n = (f - start).min(4);
+            let mut lanes = [buf[start + n - 1] + shift; 4];
+            for (l, v) in lanes.iter_mut().zip(&buf[start..start + n]) {
+                *l = v + shift;
+            }
+            let u = f32x4::from(lanes);
+            let y = if self.smooth {
+                if kind == ShaperType::Overdrive {
+                    let (p, a) = (&mut ch.prev, &mut ch.prev_area);
+                    let one = antialiased4(kind, u, n, &mut p[0], &mut a[0], bias);
+                    // The second stage's input repeats past `n` too.
+                    let mut o = one.to_array();
+                    for k in n..4 {
+                        o[k] = o[n - 1];
                     }
-                    *u = if self.smooth {
-                        let b = bias as f64;
-                        let y = match kind {
-                            ShaperType::Rectify => {
-                                antialiased(kind, v as f64, &mut ch.prev[0], b, |m| rectified(m as f32, bias) as f64)
-                            }
-                            ShaperType::Overdrive => {
-                                let one = antialiased(kind, (v + bias) as f64, &mut ch.prev[0], b, |m| {
-                                    overdrive_stage(m as f32) as f64
-                                });
-                                antialiased(kind, one, &mut ch.prev[1], b, |m| overdrive_stage(m as f32) as f64)
-                            }
-                            _ => antialiased(kind, (v + bias) as f64, &mut ch.prev[0], b, |m| {
-                                curve(kind, m as f32, q) as f64
-                            }),
-                        };
-                        y as f32 - offset
-                    } else if kind == ShaperType::Rectify {
-                        rectified(v, bias)
-                    } else {
-                        curve(kind, v + bias, q) - offset
-                    };
+                    antialiased4(kind, f32x4::from(o), n, &mut p[1], &mut a[1], bias)
+                } else {
+                    antialiased4(kind, u, n, &mut ch.prev[0], &mut ch.prev_area[0], bias)
                 }
-                ch.over.down_one(&buf[..f])
+            } else if kind == ShaperType::Overdrive {
+                overdrive4(overdrive4(u))
+            } else {
+                curve4(kind, u, bias)
+            };
+            let y = y.to_array();
+            for k in 0..n {
+                buf[start + k] = y[k] - offset;
             }
-        };
-        // DC blocker, then the tilt round 1 kHz, then the output.
+            start += 4;
+        }
+    }
+
+    /// DC blocker, the tilt round 1 kHz and the output, on one channel.
+    #[inline]
+    fn after(&mut self, c: usize, shaped: f32) -> f32 {
+        let [.., lo, hi, out] = self.cur;
+        let ch = &mut self.ch[c];
         let y = shaped - ch.dc.0 + self.dc_r * ch.dc.1;
         ch.dc = (shaped, if y.abs() < 1e-20 { 0.0 } else { y });
         ch.tilt += self.tilt_a * (y - ch.tilt);
@@ -408,7 +485,31 @@ impl Shaper {
             }
             self.left -= 1;
         }
-        (self.channel(0, l), self.channel(1, r))
+        let [_, bias, offset, q, hold, ..] = self.cur;
+        let (sl, sr) = match self.kind {
+            ShaperType::Downsample => {
+                let mut held = [0.0; 2];
+                for (c, x) in [l, r].into_iter().enumerate() {
+                    let ch = &mut self.ch[c];
+                    ch.clock += hold;
+                    if ch.clock >= 1.0 {
+                        ch.clock -= 1.0;
+                        ch.held = x;
+                    }
+                    held[c] = ch.held;
+                }
+                (held[0], held[1])
+            }
+            ShaperType::Bitcrush => (curve(self.kind, l + bias, q) - offset, curve(self.kind, r + bias, q) - offset),
+            _ => {
+                let (mut bl, mut br) = ([0.0f32; 8], [0.0f32; 8]);
+                self.over.up(l, r, &mut bl, &mut br);
+                self.shape(0, &mut bl);
+                self.shape(1, &mut br);
+                self.over.down(&bl, &br)
+            }
+        };
+        (self.after(0, sl), self.after(1, sr))
     }
 
     /// One block in place.

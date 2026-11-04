@@ -302,8 +302,8 @@ impl StereoFilter {
             self.fresh = false;
             return;
         }
-        for i in 0..NC {
-            self.step[i] = (target[i] - self.cur[i]) / BLOCK as f32;
+        for ((s, t), c) in self.step.iter_mut().zip(target).zip(self.cur) {
+            *s = (t - c) / BLOCK as f32;
         }
         self.left = BLOCK as u32;
     }
@@ -312,8 +312,8 @@ impl StereoFilter {
     #[inline]
     pub fn tick(&mut self, l: f32, r: f32) -> (f32, f32) {
         if self.left > 0 {
-            for i in 0..NC {
-                self.cur[i] += self.step[i];
+            for (c, s) in self.cur.iter_mut().zip(self.step) {
+                *c += s;
             }
             self.left -= 1;
         }
