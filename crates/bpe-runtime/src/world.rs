@@ -672,6 +672,26 @@ impl Hasher {
                     self.f32(*y);
                 }
             }
+            Value::Path(p) => {
+                self.bytes(&[10]);
+                self.bytes(&(p.points.len() as u64).to_le_bytes());
+                for [x, y] in &p.points {
+                    self.f32(*x);
+                    self.f32(*y);
+                }
+                for b in &p.bends {
+                    match b {
+                        None => self.bytes(&[0]),
+                        Some(hs) => {
+                            self.bytes(&[1]);
+                            for [x, y] in hs {
+                                self.f32(*x);
+                                self.f32(*y);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

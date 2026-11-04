@@ -1,6 +1,6 @@
 //! The data model of the modular Ball Studio.
 //!
-//! A scene is a tree of things (balls, folders, arenas and so on). Each thing has its own settings
+//! A scene is a tree of things (balls, folders, shapes and so on). Each thing has its own settings
 //! and its own cards of settings (Look, Trail, Bounce...), which nothing else shares. Every setting
 //! is described once by a settings schema, which drives the inspector, keyframes and pulses.
 //! Nothing here simulates, or draws.
@@ -20,6 +20,7 @@ pub mod resolve;
 pub mod save;
 pub mod scene;
 pub mod settings;
+pub mod shape_path;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod value;
@@ -40,6 +41,7 @@ pub use settings::{
     Choice, Depth, FOLDED_SECTIONS, Flags, GroupOpts, SECTION_ORDER, SettingDef, SettingGroup, SettingValue, Settings,
     section_rank,
 };
+pub use shape_path::ShapePath;
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.
