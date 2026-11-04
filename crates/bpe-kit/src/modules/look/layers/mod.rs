@@ -102,6 +102,8 @@ pub struct Kind {
     pub section: LayerSection,
     pub repeats: bool,
     pub base: bool,
+    /// The card kind its layers belong to.
+    pub card: &'static str,
     /// Whether layers of this kind may carry masks.
     pub maskable: bool,
     pub settings: fn() -> &'static [SettingDef],
@@ -110,7 +112,7 @@ pub struct Kind {
 }
 
 /// No settings beyond the kind's own.
-fn no_more(_: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
+pub(crate) fn no_more(_: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
     &[]
 }
 
@@ -134,7 +136,7 @@ impl LayerKind for Kind {
         self.repeats
     }
     fn card(&self) -> &'static str {
-        CARD
+        self.card
     }
     fn base(&self) -> bool {
         self.base
@@ -145,8 +147,9 @@ impl LayerKind for Kind {
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
     }
+    /// Only a ball's drawn layers but Blend can be given to some balls of a group.
     fn per_ball(&self) -> bool {
-        self.id != BLEND
+        self.card == CARD && self.id != BLEND
     }
 }
 
@@ -178,6 +181,7 @@ pub fn kinds() -> Vec<Kind> {
         section: Drawn,
         repeats: true,
         base: false,
+        card: CARD,
         maskable: true,
         settings,
         dynamic: no_more,
@@ -189,6 +193,7 @@ pub fn kinds() -> Vec<Kind> {
         section: Reaction,
         repeats: false,
         base: false,
+        card: CARD,
         maskable: false,
         settings,
         dynamic: no_more,
@@ -201,6 +206,7 @@ pub fn kinds() -> Vec<Kind> {
             section: Drawn,
             repeats: false,
             base: true,
+            card: CARD,
             maskable: false,
             settings: BodyLayer::defs,
             dynamic: no_more,
@@ -233,6 +239,7 @@ pub fn kinds() -> Vec<Kind> {
             section: Mask,
             repeats: true,
             base: false,
+            card: CARD,
             maskable: false,
             settings: MaskLayer::defs,
             dynamic: no_more,
@@ -244,6 +251,7 @@ pub fn kinds() -> Vec<Kind> {
             section: LayerSection::Group,
             repeats: false,
             base: false,
+            card: CARD,
             maskable: false,
             settings: GroupGradient::defs,
             dynamic: no_more,
@@ -255,6 +263,7 @@ pub fn kinds() -> Vec<Kind> {
             section: LayerSection::Group,
             repeats: true,
             base: false,
+            card: CARD,
             maskable: false,
             settings: group_shader::defs,
             dynamic: shader::dynamic_defs,

@@ -303,6 +303,8 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
 }
 
 pub const IN_BALL: &str = include_str!("in_ball.wgsl");
+/// What effects call for a Shader layer inside a shape; follows [`IN_BALL`].
+pub const IN_SHAPE: &str = include_str!("in_shape.wgsl");
 
 /// Names the in-ball prelude gives effects, which `prefixed` leaves as they are.
 const PRELUDE_NAMES: &[&str] = &[
@@ -430,6 +432,7 @@ pub fn prefixed(wgsl: &str, n: usize) -> Result<String, String> {
 /// list, then `run_effect(slot, uv, l)`, which runs effect `slot` on layer record `l`.
 pub fn in_ball_effects(sources: &[&str]) -> Result<String, String> {
     let mut out = String::from(IN_BALL);
+    out.push_str(IN_SHAPE);
     let mut run =
         String::from("\nfn run_effect(slot: u32, uv: vec2<f32>, l: LayerGpu) -> vec3<f32> {\n    switch slot {\n");
     for (n, source) in sources.iter().enumerate() {

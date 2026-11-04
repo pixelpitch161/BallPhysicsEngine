@@ -103,6 +103,9 @@ pub fn registry() -> Registry {
     }
     r.add_module(modules::look::ShapeLookKind);
     r.add_layer(modules::look::shape::ShapeBody);
+    for k in modules::look::shape::kinds() {
+        r.add_layer(k);
+    }
     r.add_module(StreakTrailKind);
     r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);

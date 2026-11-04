@@ -1,15 +1,20 @@
 
 // ---- Shapes: closed outlines, a circle or a list of points, filled or as a band ----
-// Appended to scene.wgsl's module. The points live in a storage buffer of their own (group 3).
+// Appended to scene.wgsl's module. The points live in a storage buffer beside the layer records
+// (group 2, binding 4). A shape with layers walks its records (see shape_layers.wgsl); one with
+// none is drawn plain in its colour.
 
 struct PathIn {
     // Centre xy, angle, scale (world pixels per shape unit).
     @location(0) a: vec4<f32>,
     // Half thickness (0 = filled), kind (0 circle, 1 points), first point, point count.
     @location(1) b: vec4<f32>,
-    // Thing code, reach from the centre (shape units).
+    // Thing code, reach from the centre (shape units), how far its layers reach past the outline
+    // (world pixels), the reach again for layers running from the middle.
     @location(2) c: vec4<f32>,
     @location(3) color: vec4<f32>,
+    // First record, how many (0: plain), program (CPU only), spare.
+    @location(4) layers: vec4<u32>,
 };
 
 struct PathOut {
@@ -19,15 +24,15 @@ struct PathOut {
     @location(2) @interpolate(flat) b: vec4<f32>,
     @location(3) @interpolate(flat) c: vec4<f32>,
     @location(4) @interpolate(flat) color: vec4<f32>,
+    @location(5) @interpolate(flat) layers: vec4<u32>,
 };
 
-@group(3) @binding(0) var<storage, read> path_points: array<vec4<f32>>;
+@group(2) @binding(4) var<storage, read> path_points: array<vec4<f32>>;
 
 @vertex
 fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     let corner = quad_corner(i);
-    let px = g.view.z;
-    let reach = s.c.y * s.a.w + max(s.b.x, 0.5 * px) + 2.0 * px;
+    let reach = path_quad_reach(s.a, s.b, s.c);
     let turned = rotate(corner * reach, s.a.z);
     let world = s.a.xy + turned;
     var out: PathOut;
@@ -37,7 +42,15 @@ fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     out.b = s.b;
     out.c = s.c;
     out.color = s.color;
+    out.layers = s.layers;
     return out;
+}
+
+// Half the side of a shape's quad, in world pixels: its outline's reach, its band, what its
+// layers reach past it, and two pixels for the soft edge.
+fn path_quad_reach(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>) -> f32 {
+    let px = g.view.z;
+    return c.y * a.w + max(b.x, 0.5 * px) + max(c.z, 0.0) + 2.0 * px;
 }
 
 // The point in the shape's own units.
@@ -88,6 +101,9 @@ fn path_cover(in: PathOut) -> f32 {
 }
 
 fn shade_path(in: PathOut) -> vec4<f32> {
+    if in.layers.y > 0u {
+        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers);
+    }
     let cover = path_cover(in) * abs(in.color.a);
     if cover <= 0.0 {
         discard;

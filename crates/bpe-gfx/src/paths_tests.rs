@@ -76,3 +76,154 @@ fn culling_keeps_a_shape_whose_reach_touches_the_view() {
     assert_eq!(frame.paths.len(), 1, "the big one reaches into the view, the small far one doesn't");
     assert_eq!(frame.paths[0].c[0], 2.0);
 }
+
+// ---- Shapes with layers (shape_walk.wgsl) ----
+
+use crate::{LayerGpu, PaintGpu, PathInstance};
+use bpe_core::{Color, Gradient};
+
+const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+
+fn body_record() -> LayerGpu {
+    LayerGpu { amount: [1.0, 0.0, 0.0, 0.0], colour: WHITE, ..LayerGpu::ZERO }
+}
+
+/// A Colour and gradient record of one colour.
+fn paint_record(colour: [f32; 4]) -> LayerGpu {
+    LayerGpu { head: [LayerGpu::SHAPE_PAINT, 0, 0, 0], amount: [1.0, 0.0, 0.0, 0.0], colour, ..LayerGpu::ZERO }
+}
+
+/// A gradient from red to blue, running by `runs`, across along x from -1 to 1.
+fn red_to_blue(frame: &mut Frame, code: u32, runs: f32) -> LayerGpu {
+    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
+    LayerGpu {
+        head: [code, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [runs, 0.0, 0.0, 0.0],
+        p1: [1.0, 0.0, -1.0, 1.0],
+        paint: PaintGpu { row: row as f32, ..PaintGpu::default() },
+        ..LayerGpu::ZERO
+    }
+}
+
+/// Gives the frame's shape `i` the records `records`, reaching `past` pixels past its outline.
+fn wear(frame: &mut Frame, i: usize, records: Vec<LayerGpu>, past: f32) {
+    let first = frame.look_layers.len() as u32;
+    frame.paths[i].layers = [first, records.len() as u32, PathInstance::NO_PROGRAM, 0];
+    frame.paths[i].c[2] = past;
+    frame.look_layers.extend(records);
+}
+
+fn reddish(p: [u8; 4]) -> bool {
+    p[0] > 150 && p[0] as i32 > p[2] as i32 + 80 && p[1] < 60
+}
+
+fn bluish(p: [u8; 4]) -> bool {
+    p[2] > 150 && p[2] as i32 > p[0] as i32 + 80 && p[1] < 60
+}
+
+/// A 400 × 200 rectangle's corners in units of 200 px.
+fn wide() -> Vec<Vec2> {
+    vec![Vec2::new(-1.0, -0.5), Vec2::new(1.0, -0.5), Vec2::new(1.0, 0.5), Vec2::new(-1.0, 0.5)]
+}
+
+#[test]
+fn a_gradient_runs_across_a_shape_from_edge_to_edge_and_along_its_edge() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let rect_at = Vec2::new(0.0, -500.0);
+    let ring_at = Vec2::new(0.0, 400.0);
+    frame.push_path(rect_at, 0.0, 200.0, 0.0, Some(&wide()), WHITE, 2.0);
+    frame.push_path(ring_at, 0.0, 300.0, 10.0, None, WHITE, 3.0);
+    let across = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 0.0);
+    wear(&mut frame, 0, vec![body_record(), across], 0.0);
+    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 2.0);
+    wear(&mut frame, 1, vec![body_record(), along], 0.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("shape-gradients", &pixels, W, H);
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    assert!(reddish(at(rect_at + Vec2::new(-190.0, 0.5))), "{:?}", at(rect_at + Vec2::new(-190.0, 0.5)));
+    assert!(bluish(at(rect_at + Vec2::new(190.0, 0.5))), "{:?}", at(rect_at + Vec2::new(190.0, 0.5)));
+    let middle = at(rect_at + Vec2::new(0.5, 0.5));
+    assert!(middle[0] > 60 && middle[2] > 60, "purple in the middle: {middle:?}");
+    assert!(dark(at(rect_at + Vec2::new(0.5, 110.0))), "nothing past the edge");
+    // Along the edge: red at the top, purple at the bottom, blue towards the left (three quarters round).
+    let top = at(ring_at + Vec2::new(4.0, -300.0));
+    let left = at(ring_at + Vec2::new(-300.0, 0.5));
+    assert!(reddish(top), "{top:?}");
+    assert!(left[2] > left[0] + 40, "{left:?}");
+    assert!(dark(at(ring_at)), "the ring's hole");
+}
+
+#[test]
+fn an_outline_sits_on_the_edge_in_its_own_colour_or_the_colour_under_it() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let own_at = Vec2::new(-250.0, -400.0);
+    let same_at = Vec2::new(250.0, -400.0);
+    frame.push_path(own_at, 0.0, 100.0, 0.0, Some(&square()), WHITE, 2.0);
+    frame.push_path(same_at, 0.0, 100.0, 0.0, Some(&square()), WHITE, 3.0);
+    // An own green line 10 px wide outside a red square.
+    let outside = LayerGpu {
+        head: [LayerGpu::OUTLINE, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [10.0, 2.0, 0.0, 0.0],
+        colour: GREEN,
+        ..LayerGpu::ZERO
+    };
+    wear(&mut frame, 0, vec![body_record(), paint_record(RED), outside], 10.0);
+    // A line inside the edge taking the red under it, darker.
+    let same = LayerGpu { head: [LayerGpu::OUTLINE, 0, LayerGpu::FLAG, 0], p0: [10.0, 0.0, 0.0, 0.0], ..outside };
+    wear(&mut frame, 1, vec![body_record(), paint_record(RED), same], 0.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("shape-outlines", &pixels, W, H);
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    let line = at(own_at + Vec2::new(105.0, 0.5));
+    assert!(line[1] > 200 && line[0] < 40, "the green line outside the edge: {line:?}");
+    assert!(reddish(at(own_at)), "the red paint inside");
+    assert!(dark(at(own_at + Vec2::new(125.0, 0.5))), "past the line");
+    let darker = at(same_at + Vec2::new(95.0, 0.5));
+    let inside = at(same_at);
+    assert!(reddish(inside) && darker[1] < 30, "{inside:?} {darker:?}");
+    assert!(darker[0] + 20 < inside[0] && darker[0] > 60, "a darker red line: {darker:?} vs {inside:?}");
+}
+
+#[test]
+fn a_glow_lights_outside_the_edge_and_fades_out() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    frame.push_path(Vec2::ZERO, 0.0, 100.0, 0.0, None, WHITE, 2.0);
+    let glow = LayerGpu {
+        head: [LayerGpu::GLOW, 0, 0, 0],
+        amount: [1.0, 1.0, 0.0, 0.0],
+        p0: [30.0, 0.0, 0.0, 0.0],
+        colour: RED,
+        ..LayerGpu::ZERO
+    };
+    wear(&mut frame, 0, vec![body_record(), glow], 66.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("shape-glow", &pixels, W, H);
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    let near = at(Vec2::new(110.0, 0.5));
+    assert!(near[0] > 100 && near[1] < 40, "red light just outside: {near:?}");
+    assert!(bright(at(Vec2::new(0.5, 0.5))), "the white body inside");
+    assert!(dark(at(Vec2::new(165.0, 0.5))), "gone by the quad's edge");
+}
+
+#[test]
+fn a_body_alone_draws_the_same_band_as_the_plain_shape() {
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let mut plain = Frame { bloom: 0.0, ..Frame::default() };
+    plain.push_path(Vec2::ZERO, 0.4, 200.0, 8.0, Some(&square()), WHITE, 2.0);
+    let mut layered = plain.clone();
+    wear(&mut layered, 0, vec![body_record()], 0.0);
+    let Some(a) = render_sized(&plain, W, H) else { return };
+    let b = render_sized(&layered, W, H).unwrap();
+    let differs = a.iter().zip(&b).filter(|(x, y)| x.abs_diff(**y) > 2).count();
+    assert!(differs < 20, "{differs} values differ");
+}

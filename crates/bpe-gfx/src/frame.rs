@@ -112,6 +112,22 @@ pub struct LookInstance {
 /// (its variation comes from the ball's instance); `extra` a shader layer's effect settings. A
 /// mask's target is a record index within the ball's range; a brush tile indexes
 /// [`Frame::mask_tiles`] (-1 none).
+///
+/// A shape ([`PathInstance::layers`]) names records of its own, walked by shape_walk.wgsl, the
+/// Body's first. Lengths are world pixels; `lo`, `hi` are where Across starts and ends along
+/// `dir`, in shape units; runs are 0 across, 1 from the middle (across the band of a hollow
+/// shape), 2 along the edge, 3 across the line (outline) or out from the edge (glow):
+///
+/// | code | layer               | `amount`           | `p0`                                         | `p1`           | flag 1                   |
+/// | ---- | ------------------- | ------------------ | -------------------------------------------- | -------------- | ------------------------ |
+/// | 0    | body                | opacity            | -                                            | -              | -                        |
+/// | 10   | colour and gradient | opacity            | runs                                         | dir xy, lo, hi | -                        |
+/// | 2    | outline             | opacity            | width, sits (0 in, 1 centre, 2 out), runs    | dir xy, lo, hi | the colour under it      |
+/// | 4    | glow                | opacity, strength  | size, -, runs                                | dir xy, lo, hi | the colour under it      |
+/// | 6    | shader              | opacity            | speed, scale, space (0 shape, 1 screen), effect slot | -      | -                        |
+///
+/// A shape record's `colour` is its own (one) colour and `paint` its gradient, read straight
+/// along its run (`paint.row` -1 for one colour).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct LayerGpu {
@@ -154,6 +170,8 @@ impl LayerGpu {
     pub const SHADING: u32 = 5;
     pub const SHADER: u32 = 6;
     pub const MASK: u32 = 7;
+    /// A shape's Colour and gradient layer (shape records only, see below).
+    pub const SHAPE_PAINT: u32 = 10;
     /// A radial shading darkens the middle instead of the outside.
     pub const INVERT: u32 = 2;
     /// The editor's view shows this layer's masks alone: white where they let it show.
@@ -216,21 +234,31 @@ pub struct PathInstance {
     /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points), the
     /// first point in `Frame::path_points`, how many points.
     pub b: [f32; 4],
-    /// Thing code, how far the outline reaches from the centre (shape units), two spare.
+    /// Thing code, how far the outline reaches from the centre (shape units), how far its layers
+    /// reach past its outline (world pixels: an outline outside it, a glow), and how far the
+    /// outline reaches from the middle for layers running from the middle (shape units).
     pub c: [f32; 4],
-    /// Linear-light colour.
+    /// Linear-light colour, when it draws plain (no records).
     pub color: [f32; 4],
+    /// Its layers: the first record in `Frame::look_layers`, how many (0 draws it plain in
+    /// `color`), the in-ball program its Shader layers run in (an index into `Frame::programs`,
+    /// [`PathInstance::NO_PROGRAM`] for none; read on the CPU only), spare. See the shape records
+    /// table on [`LayerGpu`].
+    pub layers: [u32; 4],
 }
 
 impl PathInstance {
+    /// `layers[2]` of a shape with no program: its Shader layers, if any, are left out.
+    pub const NO_PROGRAM: u32 = u32::MAX;
+
     /// Whether it draws a filled shape rather than a band.
     pub fn solid(&self) -> bool {
         self.b[0] <= 0.0
     }
 
-    /// How far it reaches from its centre, in world pixels.
+    /// How far it reaches from its centre, in world pixels, its layers included.
     pub fn reach(&self) -> f32 {
-        self.c[1] * self.a[3] + self.b[0]
+        self.c[1] * self.a[3] + self.b[0] + self.c[2].max(0.0)
     }
 }
 
@@ -874,7 +902,8 @@ impl Frame {
 
     /// Adds a shape: a circle of radius `scale` when `points` is None, else the closed outline
     /// through `points` (shape units, turned by `angle`, scaled by `scale`). `half_thickness` 0
-    /// fills it.
+    /// fills it. It draws plain in `color` until its `layers` name records. Gives its index in
+    /// `paths`.
     #[allow(clippy::too_many_arguments)]
     pub fn push_path(
         &mut self,
@@ -885,7 +914,7 @@ impl Frame {
         points: Option<&[Vec2]>,
         color: [f32; 4],
         code: f32,
-    ) {
+    ) -> usize {
         let first = self.path_points.len();
         let (kind, reach) = match points {
             None => (0.0, 1.0),
@@ -898,9 +927,11 @@ impl Frame {
         self.paths.push(PathInstance {
             a: [center.x, center.y, angle, scale],
             b: [half_thickness.max(0.0), kind, first as f32, count as f32],
-            c: [code, reach, 0.0, 0.0],
+            c: [code, reach, 0.0, reach],
             color,
+            layers: [0, 0, PathInstance::NO_PROGRAM, 0],
         });
+        self.paths.len() - 1
     }
 
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and

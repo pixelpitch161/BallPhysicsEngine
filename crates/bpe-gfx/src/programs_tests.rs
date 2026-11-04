@@ -320,3 +320,63 @@ fn programs_built_in_the_background_draw_without_the_effect_until_ready_and_are_
     assert!(!store.pending());
     assert!(other.read_output(&device, &queue).unwrap() == ready);
 }
+
+// ---- Shader layers inside shapes ----
+
+/// A filled 400 px square at the centre wearing `records`, its Shader layers run by a program of
+/// `sources` (none: no program).
+fn shape_with(records: Vec<LayerGpu>, sources: &[Cow<'static, str>]) -> Frame {
+    let mut frame = Frame { bloom: 0.0, time: 1.3, ..Frame::default() };
+    let square = [Vec2::new(-1.0, -1.0), Vec2::new(1.0, -1.0), Vec2::new(1.0, 1.0), Vec2::new(-1.0, 1.0)];
+    let i = frame.push_path(Vec2::ZERO, 0.0, 200.0, 0.0, Some(&square), WHITE, 2.0);
+    frame.paths[i].layers = [0, records.len() as u32, crate::PathInstance::NO_PROGRAM, 0];
+    frame.look_layers = records;
+    if !sources.is_empty() {
+        frame.programs.push(LookProgram::new(sources.to_vec()));
+        frame.paths[i].layers[2] = 0;
+    }
+    frame
+}
+
+fn red_paint() -> LayerGpu {
+    LayerGpu {
+        head: [LayerGpu::SHAPE_PAINT, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        colour: [1.0, 0.0, 0.0, 1.0],
+        ..LayerGpu::ZERO
+    }
+}
+
+/// Own code that swaps the picture under it round: red becomes blue.
+const SWAP: &str = "// name: Swap\n// simple amount = 1.0 [0, 1] How much\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv).bgr * p.amount; }\n";
+
+#[test]
+fn a_shader_layer_inside_a_shape_runs_on_the_layers_under_it() {
+    let mut swap = shader("lava", 0, 1.0);
+    swap.extra = [[1.0, 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4], [0.0; 4]];
+    let with = shape_with(vec![body(), red_paint(), swap], &[Cow::Borrowed(SWAP)]);
+    let Some((px, errors)) = draw(&with) else { return };
+    save("program-shape-swap", &px, W, H);
+    assert!(errors.is_empty(), "{errors:?}");
+    let middle = at(&px, 0.0, 0.0);
+    assert!(middle[2] > 240 && middle[0] < 10 && middle[1] < 10, "the red paint swapped to blue: {middle:?}");
+    assert!(at(&px, 0.0, 300.0)[2] < 10, "nothing outside the shape");
+    // With no program its shader record is left out: the paint shows.
+    let mut bare = with.clone();
+    bare.paths[0].layers[2] = crate::PathInstance::NO_PROGRAM;
+    let (b, _) = draw(&bare).unwrap();
+    let plain = at(&b, 0.0, 0.0);
+    assert!(plain[0] > 240 && plain[2] < 10, "{plain:?}");
+    // A lava layer in a shape changes it, and a ball and a shape running lava share one program.
+    let mut lava = shape_with(vec![body(), red_paint(), shader("lava", 0, 1.0)], &[builtin("lava")]);
+    let (c, errors) = draw(&lava).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_ne!(at(&c, 0.0, 0.0), plain, "lava paints the shape");
+    let first = lava.look_layers.len() as u32;
+    lava.look_layers.extend([body(), shader("lava", 0, 1.0)]);
+    lava.layered.push(ball(-300.0, first, 2));
+    lava.layered_runs.push(LayeredRun { program: Some(0), start: 0, end: 1 });
+    let (_, errors) = draw(&lava).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(lava.programs.len(), 1);
+}

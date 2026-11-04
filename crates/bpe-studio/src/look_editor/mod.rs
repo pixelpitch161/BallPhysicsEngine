@@ -651,8 +651,7 @@ mod tests {
         assert!(h.query_by_label("Hide Body").is_none(), "the Body can't be hidden");
         assert!(h.query_by_label("Moving").is_none(), "no ball view");
         assert!(h.query_by_label("+ Add reaction").is_none(), "no reactions");
-        let add = h.get_by_label("+ Add layer");
-        assert!(add.accesskit_node().is_disabled(), "nothing to add yet");
+        assert!(!h.get_by_label("+ Add layer").accesskit_node().is_disabled(), "paint layers to add");
         for shown in ["Start from", "Size", "Fill", "Thickness", "Shape settings", "Spin"] {
             assert!(label_shown(&h, shown), "{shown} is missing");
         }
@@ -701,6 +700,45 @@ mod tests {
         let mut scene = h.state().scene.clone();
         assert!(history.undo(&mut scene));
         assert_eq!(scene, before, "the moulded outline and the old Sides together");
+    }
+
+    #[test]
+    fn a_shape_s_add_menu_offers_its_paint_layers_and_each_shows_its_settings() {
+        use bpe_kit::modules::look::shape as look;
+        let mut h = shape_harness(|_| {});
+        add(&mut h, "+ Add layer", "Colour and gradient");
+        assert_eq!(kinds_of(&h, SHAPE), [look::BODY, look::PAINT], "above the Body");
+        for shown in ["Colours", "Opacity", "Blend"] {
+            assert!(label_shown(&h, shown), "{shown} is missing");
+        }
+        assert!(!label_shown(&h, "Flow"), "one colour doesn't flow");
+        assert!(!label_shown(&h, "Start from"), "the new layer is picked, not the Body");
+        // Two colours show how they run.
+        let id = card(&h, SHAPE).layers[1].id;
+        let two = bpe_core::Gradient::even(&[bpe_core::Color::WHITE, bpe_core::Color::rgb(255, 0, 0)]);
+        let s = h.state_mut();
+        let look = s.scene.things.get_mut(&SHAPE).unwrap().slots.get_mut(&bpe_core::SlotId::Look).unwrap();
+        look.params.set(&bpe_core::layered_key(id, "colours"), Value::Gradient(two));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(label_shown(&h, "Gradient") && label_shown(&h, "Flow") && label_shown(&h, "Direction"));
+        add(&mut h, "+ Add layer", "Outline");
+        assert!(label_shown(&h, "Width") && label_shown(&h, "Sits"));
+        add(&mut h, "+ Add layer", "Glow");
+        assert!(label_shown(&h, "Amount"));
+        add(&mut h, "+ Add layer", "Shader");
+        assert!(label_shown(&h, "Effect"), "a shader's Effect menu");
+        assert!(label_shown(&h, "Stays with"));
+        add(&mut h, "+ Add layer", "Blend");
+        assert!(label_shown(&h, "Blend amount"));
+        assert_eq!(
+            kinds_of(&h, SHAPE),
+            [look::BODY, look::PAINT, look::OUTLINE, look::GLOW, look::SHADER, look::BLEND]
+        );
+        h.get_by_label("+ Add layer").click();
+        h.run();
+        let second = h.query_all_by_label("Blend").find(|n| n.accesskit_node().role() == Role::Button);
+        assert!(second.is_some_and(|n| n.accesskit_node().is_disabled()), "one Blend only");
     }
 
     #[test]
