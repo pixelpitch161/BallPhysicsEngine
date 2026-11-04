@@ -256,6 +256,37 @@ mod tests {
         }
     }
 
+    /// The blank test scene's shape with `settings`, its Size jumping from `from` to `to` at 0.5 s
+    /// (a Hold key), and the ball resting at `at` with no gravity.
+    fn jumping(settings: ShapeSettings, from: f64, to: f64, at: glam::Vec2) -> Scene {
+        let kit = kit();
+        let mut scene = with(settings);
+        scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let ball = scene.things.get_mut(&crate::testing::BALLS).unwrap();
+        ball.transform.position = at;
+        ball.params.set("velocity", Value::Vec2([0.0, 0.0]));
+        let size = Address { thing: SHAPE, slot: None, key: "size".into() };
+        scene.set_key(&kit.registry, &size, 0.0, Value::Number(from)).unwrap();
+        scene.set_key(&kit.registry, &size, 0.5, Value::Number(to)).unwrap();
+        assert!(scene.set_ease(&size, 0, bpe_core::Ease::Hold));
+        scene
+    }
+
+    #[test]
+    fn a_ball_inside_stays_inside_when_the_shape_jumps_smaller() {
+        // A ring and a moulded outline: a ball between the old and the new size is pulled in.
+        let mut moulded = ShapeSettings::polygon(6, 500.0, 4.0);
+        moulded.path = ShapePath::even(7);
+        for settings in [ShapeSettings::circle(500.0, 4.0), moulded] {
+            let scene = jumping(settings, 500.0, 250.0, glam::Vec2::new(0.0, 380.0));
+            let mut w = world(&scene);
+            w.advance_to(1.0, &kit().sims, &mut Log::default());
+            let p = w.bodies[&crate::testing::BALLS].position[0];
+            assert!(w.walls[&SHAPE].outline.inside(p), "the ball was left outside, at {p}");
+            assert!(p.length() < 250.0, "{p}");
+        }
+    }
+
     #[test]
     fn a_shrinking_moulded_shape_stops_at_its_smallest_size() {
         let mut s = ShapeSettings::polygon(6, 400.0, 3.0);

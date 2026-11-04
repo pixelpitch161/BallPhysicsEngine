@@ -156,6 +156,17 @@ impl Outline {
         }
     }
 
+    /// How far the outline's centre line reaches from its middle at most.
+    pub fn reach(&self) -> f32 {
+        match self {
+            Outline::Ring { radius, .. } => *radius,
+            Outline::Box { half, .. } => half.length(),
+            Outline::Path { scale, points, .. } => {
+                points.iter().map(|p| p.length_squared()).fold(0.0, f32::max).sqrt() * *scale
+            }
+        }
+    }
+
     /// A polygon's or box's corners in the world, in order around it; empty for a round ring or
     /// a free outline.
     pub fn corners(&self) -> Vec<Vec2> {
@@ -265,7 +276,22 @@ fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wa
 // Inlined so a loop over every ball works out a box's or polygon's directions only once.
 #[inline(always)]
 pub fn keep_clear(position: &mut Vec2, previous: Vec2, velocity: Vec2, radius: f32, wall: &Wall) -> Option<Contact> {
-    if !wall.solid && wall.outline.inside(previous) {
+    keep_clear_from(position, previous, &wall.outline, velocity, radius, wall)
+}
+
+/// [`keep_clear`], judging the ball's side by where `previous` was against `before`: the wall's
+/// outline as the step began, before keys and scripts moved it. A wall that jumps smaller keeps
+/// the balls that were inside it.
+#[inline(always)]
+pub fn keep_clear_from(
+    position: &mut Vec2,
+    previous: Vec2,
+    before: &Outline,
+    velocity: Vec2,
+    radius: f32,
+    wall: &Wall,
+) -> Option<Contact> {
+    if !wall.solid && before.inside(previous) {
         match &wall.outline {
             Outline::Path { thickness, .. } => {
                 keep_on_side(position, velocity, radius, radius + thickness * 0.5, true, wall)
@@ -292,8 +318,13 @@ fn keep_on_side(
     // A push off one side can leave the ball too close to the next one near a corner, so it is
     // repeated a few times. A settled ball (a hair's breadth counts) stays put.
     const SETTLED: f32 = 1e-3;
+    // A ball outside and further than the outline reaches is nowhere near it.
+    if !inside && (*position - wall.outline.center()).length() > wall.outline.reach() + limit {
+        return None;
+    }
     let mut p = *position;
-    let mut pushed = None;
+    let mut pushed: Option<Vec2> = None;
+    let mut first: Option<(Vec2, Vec2)> = None;
     for _ in 0..4 {
         let (near, line) = wall.outline.nearest_and_line(p);
         let away = p - near;
@@ -311,6 +342,18 @@ fn keep_on_side(
                 if wall.outline.inside(probe) == inside { line } else { -line }
             }
         };
+        // Pushed straight back the way it came by a side across from the first: the ball is too
+        // big to fit between them, so it is held halfway between, touching neither (as a ring or
+        // box too small for it holds it at its middle).
+        if let Some((first_side, first_near)) = first
+            && inside
+            && side.dot(first_side) < -0.9
+            && (near - first_near).length() < 2.0 * limit
+        {
+            *position = (first_near + near) * 0.5;
+            return None;
+        }
+        first.get_or_insert((side, near));
         p = near + side * limit;
         pushed = Some(side);
     }
@@ -485,6 +528,38 @@ mod tests {
         let c = keep_inside(&mut p, Vec2::new(50.0, 0.0), 20.0, &ring(10.0));
         assert!(p.is_finite() && p.length() < 1e-3);
         assert!(c.is_none_or(|c| c.point.is_finite() && c.normal.is_finite()));
+    }
+
+    #[test]
+    fn a_ball_too_big_for_a_free_outline_is_held_between_its_sides_without_hits() {
+        // A rectangle 40 px across (scale 100, half width 0.2) and a ball 60 across.
+        let strip = vec![Vec2::new(-0.2, -1.0), Vec2::new(0.2, -1.0), Vec2::new(0.2, 1.0), Vec2::new(-0.2, 1.0)];
+        let wall = hollow(Outline::Path {
+            center: Vec2::ZERO,
+            angle: 0.0,
+            scale: 100.0,
+            points: strip.into(),
+            thickness: 2.0,
+        });
+        let mut p = Vec2::new(5.0, 10.0);
+        for _ in 0..10 {
+            let previous = p;
+            let c = keep_clear(&mut p, previous, Vec2::new(30.0, 0.0), 30.0, &wall);
+            assert!(c.is_none(), "it can't touch both sides at once: {c:?} at {p}");
+            assert!(p.is_finite() && wall.outline.inside(p), "{p}");
+        }
+        assert!(p.x.abs() < 1e-3, "held on the middle line, at {p}");
+    }
+
+    #[test]
+    fn a_ball_far_from_a_free_outline_is_left_alone() {
+        let wall = hollow(path(l_shape(), 100.0, 0.2, 2.0));
+        for at in [Vec2::new(900.0, 0.0), Vec2::new(-400.0, 500.0)] {
+            let mut p = at;
+            assert!(keep_clear(&mut p, at, Vec2::new(-100.0, 0.0), 10.0, &wall).is_none());
+            assert_eq!(p, at);
+        }
+        assert_eq!(wall.outline.reach(), Vec2::new(1.3, 0.7).length() * 100.0);
     }
 
     #[test]

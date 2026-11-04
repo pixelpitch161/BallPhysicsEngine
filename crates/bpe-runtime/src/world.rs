@@ -15,7 +15,7 @@ use crate::events::HASH_OFFSET;
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
-use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_clear, reflect};
+use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_clear_from, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -76,6 +76,9 @@ pub struct World {
     pub(crate) order: Vec<ThingId>,
     /// Scratch space for the ball-to-ball stage.
     pairs: Pairs,
+    /// Every wall's outline as the step began, before keys and scripts moved it: which side of
+    /// a wall a ball is on is judged against it, so a wall that jumps keeps its balls.
+    walls_before: BTreeMap<ThingId, crate::Outline>,
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce).
@@ -130,6 +133,7 @@ impl World {
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
+            walls_before: BTreeMap::new(),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
             animated: None,
@@ -329,6 +333,8 @@ impl World {
     /// One step: every stage, in order.
     pub fn step(&mut self, sims: &Sims, log: &mut Log) {
         self.step += 1;
+        self.walls_before.clear();
+        self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
         self.animate(sims);
         let limits = self.limits();
         let dt = self.dt();
@@ -429,7 +435,7 @@ impl World {
     /// Collide and Respond, then the Hit events: first the walls around the balls, then the
     /// balls against each other. What each ball touched holds it up in the pair solve.
     fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, steps_per_second, bodies, walls, modules, kinds, tags, pairs, seed, .. } = self;
+        let World { step, steps_per_second, bodies, walls, walls_before, modules, kinds, tags, pairs, seed, .. } = self;
         let step = *step;
         let seed = *seed;
         let time = step as f32 / *steps_per_second as f32;
@@ -440,6 +446,7 @@ impl World {
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
             for (wall_id, wall) in walls.iter() {
+                let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
                 let special = is_special(own, &matcher, *mover, *wall_id);
@@ -450,7 +457,8 @@ impl World {
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let previous = bodies.previous[i];
-                    let Some(contact) = keep_clear(&mut bodies.position[i], previous, velocity, radius, wall) else {
+                    let at = &mut bodies.position[i];
+                    let Some(contact) = keep_clear_from(at, previous, before, velocity, radius, wall) else {
                         continue;
                     };
                     supports.push(Support {
