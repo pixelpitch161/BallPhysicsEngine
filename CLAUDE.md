@@ -134,7 +134,13 @@ Dependencies go bottom to top:
   first use into the shared `WaveBank`; `octaves`/`mips_at` pick the copies, crossfading only over the top quarter
   of an octave, `XFADE_FROM`), `osc.rs` (the unison oscillator: up to 16 copies, Detune/Spread/Blend, f64 phase
   between blocks and u32 fixed-point inside one, 4-point Lagrange four samples at a time), `noise.rs` (seeded
-  white and pink) and `envelope.rs` (DAHDSR with a curve per segment).
+  white and pink) and `envelope.rs` (DAHDSR with a curve per segment). For the chain layers: `filter/` (`StereoFilter`:
+  Cytomic SVF low/high/band pass, notch, peak and shelves at 12 or 24 dB, a ZDF ladder, a comb and a three-band
+  formant, coefficients glided over a block; `response_db` draws the real curve), `shaper.rs` (`Shaper`: the ten
+  distortion curves through a `StereoOversampler`, four sub-samples at a time in `f32x4`, first-order antiderivative
+  antialiasing on the cornered curves at 2× and up, bias taken back out, a 5 Hz DC blocker and the Tone tilt;
+  `transfer` draws the curve) and `pm_delay.rs` (`PmDelay`: FM and PD as a moving Hermite delay of at most 2 ms,
+  `am`, `ring`).
 - `bpe-sound`: the sound engine. `Engine` runs its own `Playback` of the physics and renders 64-frame blocks with
   every hit on its exact sample (`Event.at` is where in the step a hit happened, never hashed; `hits.rs`
   `HitCursor`), the voices (`VoiceSource`, built per scene by `SoundPatch::build`; `swap_patch` keeps ringing notes
@@ -145,15 +151,25 @@ Dependencies go bottom to top:
   WAV) and `has_sound`. The `test-tone` feature gives a thing tagged `test-tone` (or `test-tone-decay=<s>`) a test
   blip voice; tests use it, the program never does. **Shape voice** (part 2): a shape's `sound.voice` card
   (`bpe-kit/src/sound/voice.rs`: `VoiceSettings` with Osc A/B as prefixed `OscSettings` (`a_`/`b_` keys), Playing,
-  Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds)
-  becomes a `ShapeVoice` (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength,
-  retrigger, Heard from), `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to
-  16, the oldest fading in 5 ms; Mono glides). Every number knob has a place in `knobs::layout` (keys read once a
-  block from `ShapeSpec.keyed`), `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample,
-  `scale_by_routes`), `chain.rs` is the (still empty) layer chain. The Master's Input/Output keys are read every
-  block too (`MasterKeys`). `Engine::audition`, `stop_notes` and `render_paused` (stopped: no hits or physics) play
+  Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds;
+  the chain layers `chain.modulation`, `chain.filter` and `chain.distortion` are in `bpe-kit/src/sound/chain.rs`,
+  a Modulation's `source` text being "" (the other osc), "a", "b" or a layer id) becomes a `ShapeVoice`
+  (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, retrigger, Heard from),
+  `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to 16, the oldest fading in 5 ms;
+  Mono glides). Every number knob has a place in `knobs::layout` (keys read once a block from `ShapeSpec.keyed`),
+  `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample, `scale_by_routes`), the
+  oscillator layer chains (part 3) are `chain_graph.rs` (`ChainGraph`: which layer reads which, by lane; a Modulation
+  layer's source is an oscillator raw or the sound after any layer; a tap that would close a circle is a loop and
+  reads one sample late, the first layer in card order hearing on time; `loops_of` for the editor's loop mark) and
+  `chain.rs` (`ChainSpec` built per patch, `VoiceChain` per note: Osc → Gain → layers → Level → Pan, Solo cuts a lane
+  at its layer, a tapped oscillator that is off still runs unheard, `adopt` keeps ringing filters by layer id). Chain
+  knobs have fixed places (`knobs::chain(place, key)`, 14 keys, `MAX_CHAIN` 32 layers a card) so keys and routes reach
+  them. The Master's Input/Output keys are read every block too (`MasterKeys`). `Engine::audition`, `stop_notes` and
+  `render_paused` (stopped: no hits or physics) play
   keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id).
-  Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch), blessed like the physics goldens.
+  Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch; `golden-sound-chain*` a patch with
+  layers on both oscillators), blessed like the physics goldens. `tests/ab_clips.rs` (ignored) renders the FM/PD A/B
+  clips.
 - `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
@@ -193,6 +209,12 @@ Dependencies go bottom to top:
   (paste renumbers layers), `osc.rs` the Osc A/B panels with `wave_view.rs`, `mod_row.rs` the modulator tiles,
   `adsr_view.rs` the draggable envelope and what it modulates, `keys.rs` the keyboard (FL names: C5 = MIDI 60; a
   click toggles the note and auditions it, also while stopped), `playing.rs` and `output.rs` (per-shape meter).
+  Each oscillator's layer box is `chain_box.rs` ("+ Add layer" with Paste layer, drag a strip's row to reorder in
+  its lane, `paste` keeps a Modulation's source when the card has it), `strip.rs` (a folded row: arrow, on switch,
+  name and `layer_summary`, a 76×32 mini view, the Mix mini-knob, the loop mark; open: type, slope or quality chips,
+  Solo "S", the 64 px view and the knobs; right-click Rename in place / Duplicate / Copy layer / Paste layer /
+  Delete; open strips in `SoundTab.open_strips`) and `strip_views.rs` (filter response with its cutoff/reso
+  handle, transfer curve, modulated wave). The copied chain layer is `Clipboard.chain_layer`.
 
 ## Working rules
 
