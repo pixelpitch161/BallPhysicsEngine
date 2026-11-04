@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 /// ahead on a huge scene, is worked out over several frames by the preview instead of
 /// freezing the editor.
 pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
+/// How often missing speakers are looked for again.
+const SPEAKERS_RETRY: Duration = Duration::from_secs(2);
 
 /// Something that would throw away unsaved changes.
 pub enum Pending {
@@ -147,6 +149,11 @@ pub struct Studio {
     /// The sound thread and the speakers; `None` without a sound device (or in tests), when
     /// the playhead follows the wall clock.
     pub sound: Option<SoundJob>,
+    /// When to look for the speakers again (they failed, or there were none at the start).
+    speakers_retry: Option<Instant>,
+    /// The listening volume changed and is saved once it has rested (not on every frame of a
+    /// drag).
+    listen_unsaved: Option<Instant>,
     /// The speaker button and the listening volume (only what you hear).
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
@@ -238,6 +245,8 @@ impl Studio {
             last_tick: None,
             clicked: None,
             sound: None,
+            speakers_retry: None,
+            listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
             tables_baked: WaveBank::baked(),
@@ -412,8 +421,53 @@ impl Studio {
         self.listen = listen;
         self.apply_listen();
         if self.persist_settings {
-            settings::save_listen(listen);
+            self.listen_unsaved = Some(Instant::now());
         }
+    }
+
+    /// Saves the listening settings once they have rested half a second, and on the way out.
+    fn save_listen_if_rested(&mut self, now: Option<Instant>) {
+        if let Some(changed) = self.listen_unsaved
+            && now.is_none_or(|t| t.duration_since(changed) >= Duration::from_millis(500))
+        {
+            settings::save_listen(self.listen);
+            self.listen_unsaved = None;
+        }
+    }
+
+    /// The speakers: after they fail (unplugged, or the default output changed) or when there
+    /// were none at the start, they are looked for again every two seconds, and the sound picks
+    /// up where the playhead is.
+    fn keep_speakers(&mut self, now: Instant) {
+        if !self.persist_settings {
+            // Tests (and anything without a window) never open a device.
+            return;
+        }
+        if self.sound.as_ref().is_some_and(SoundJob::failed) {
+            self.sound = None;
+            self.status = "The speakers stopped working. Looking for them again…".into();
+            self.speakers_retry = Some(now + SPEAKERS_RETRY);
+        }
+        if self.sound.is_some() {
+            return;
+        }
+        let due = self.speakers_retry.get_or_insert(now + SPEAKERS_RETRY);
+        if now < *due {
+            return;
+        }
+        *due = now + SPEAKERS_RETRY;
+        let Some(mut job) =
+            AudioOut::open().and_then(|out| SoundJob::start(&self.scene, &self.resolved, self.kit.clone(), out))
+        else {
+            return;
+        };
+        if self.playing {
+            job.play(self.time);
+        }
+        self.sound = Some(job);
+        self.apply_listen();
+        self.speakers_retry = None;
+        self.status = "The speakers are back.".into();
     }
 
     fn apply_listen(&self) {
@@ -428,12 +482,10 @@ impl Studio {
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
+        self.save_listen_if_rested(Some(now));
+        self.keep_speakers(now);
         if !self.playing {
             return;
-        }
-        if self.sound.as_ref().is_some_and(SoundJob::failed) {
-            self.sound = None;
-            self.status = "The speakers stopped working, so it plays on without sound.".into();
         }
         let duration = self.duration();
         let next = match &self.sound {
@@ -966,6 +1018,7 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
+        self.save_listen_if_rested(None);
         self.sound = None;
     }
 

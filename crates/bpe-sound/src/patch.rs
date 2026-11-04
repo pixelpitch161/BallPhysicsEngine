@@ -193,7 +193,13 @@ fn spec_with(
             scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).map(|t| (*i, t.clone()))
         })
         .collect();
-    let matrix = ModMatrix::build(&v.routes, &knobs::targets(&layout));
+    // Only modulators that run move knobs: a switched-off one's routes rest (kept on the card for
+    // when it is on again), instead of reading as 0 and, on a gain, silencing the shape.
+    let runs = |l: &LayerId| {
+        ids.contains(l) || mod_ids.lfos.contains(l) || mod_ids.dists.contains(l) || mod_ids.hits.contains(l)
+    };
+    let routes: Vec<_> = v.routes.iter().filter(|r| runs(&r.source)).cloned().collect();
+    let matrix = ModMatrix::build(&routes, &knobs::targets(&layout));
     Some(ShapeSpec {
         thing: id,
         index,

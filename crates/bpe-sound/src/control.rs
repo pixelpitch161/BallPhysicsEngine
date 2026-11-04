@@ -202,7 +202,10 @@ impl ControlSampler {
             .and_then(|r| r.slots.get(&SlotId::Mixer))
             .map(|s| MixerSettings::from_params(&s.params))
             .unwrap_or_default();
-        let any_solo = (1..=BUSES as u8).any(|n| mixer.bus(n).solo);
+        let any_solo = (1..=BUSES as u8).any(|n| {
+            let b = mixer.bus(n);
+            b.on && b.solo
+        });
         let buses = std::array::from_fn(|i| {
             let n = i as u8 + 1;
             let b = mixer.bus(n);
@@ -314,11 +317,14 @@ impl Shape {
         }
         let per_step = SAMPLE_RATE as f64 / world.steps_per_second.max(1) as f64;
         let thing = self.spec.thing;
-        for e in &events[h.done..] {
-            if e.kind != EventKind::Hit || e.b.map(|b| b.thing) != Some(thing) {
-                continue;
-            }
-            let sample = hit_sample(e, per_step);
+        // In sample order, as the engine hears them (hits can land out of order within a step).
+        let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
+            .iter()
+            .filter(|e| e.kind == EventKind::Hit && e.b.map(|b| b.thing) == Some(thing))
+            .map(|e| (hit_sample(e, per_step), e))
+            .collect();
+        new.sort_by_key(|(sample, _)| *sample);
+        for (sample, e) in new {
             let time = sample as f64 / SAMPLE_RATE as f64;
             let knob = |place: usize| {
                 self.spec
@@ -446,10 +452,8 @@ impl Shape {
                 if !has_notes || (spec.play_when == PlayWhen::InRange && !self.in_range(kv, world)) {
                     return Vec::new();
                 }
-                // Held from the start at full strength; every hit starts the envelopes again.
-                let mut triggers = vec![(0, 1.0)];
-                triggers.extend(past[upto.saturating_sub(CHAIN - 1)..].iter().map(|h| (h.sample, h.strength)));
-                let (env, _) = self.chain(tempo, kv, &triggers, true, t);
+                // Held from the start at full strength; hits don't play a held note again.
+                let (env, _) = self.chain(tempo, kv, &[(0, 1.0)], true, t);
                 vec![NoteAt { on: 0, hit: past.last().cloned(), env }]
             }
         }

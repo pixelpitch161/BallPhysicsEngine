@@ -43,10 +43,10 @@ fn card_knob(
     log: bool,
     time: f64,
     width: f32,
-) {
+) -> bool {
     let reg = &kit.registry;
     let a = address(key);
-    let Some(def) = scene.def_at(reg, &a) else { return };
+    let Some(def) = scene.def_at(reg, &a) else { return false };
     let (lo, hi) = match def.range {
         Some((lo, hi)) => (lo, hi),
         None => (0.0, 1.0),
@@ -71,19 +71,21 @@ fn card_knob(
             let _ = scene.set_key(reg, &a, time, now);
         }
     }
+    keyed
 }
 
 /// The Master's knobs, in the order the strips show them.
 pub const KNOBS: [&str; 4] = ["master_input", "master_output", "master_ceiling", "master_release"];
 
-/// The Master's knob for setting `key` (one of [`KNOBS`]), `width` wide.
-pub fn knob(ui: &mut Ui, scene: &mut Scene, kit: &Kit, key: &str, time: f64, width: f32) {
+/// The Master's knob for setting `key` (one of [`KNOBS`]), `width` wide. Returns whether a keyed
+/// setting was edited (the studio pauses, so a drag keys one place).
+pub fn knob(ui: &mut Ui, scene: &mut Scene, kit: &Kit, key: &str, time: f64, width: f32) -> bool {
     match key {
         "master_input" => card_knob(ui, scene, kit, key, "Input", &db, "dB", true, false, time, width),
         "master_output" => card_knob(ui, scene, kit, key, "Output", &db, "dB", true, false, time, width),
         "master_ceiling" => card_knob(ui, scene, kit, key, "Ceiling", &dbtp, "dBTP", false, false, time, width),
         "master_release" => card_knob(ui, scene, kit, key, "Release", &ms, "ms", false, true, time, width),
-        _ => {}
+        _ => false,
     }
 }
 

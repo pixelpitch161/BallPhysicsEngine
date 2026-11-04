@@ -97,6 +97,7 @@ pub fn show(
         mixer.pick = None;
     }
     let mut edits = Vec::new();
+    let mut master_keyed = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         tempo_row(ui, scene, kit, time);
         style::divider(ui);
@@ -107,7 +108,7 @@ pub fn show(
             let mut cx = MixCx { scene, kit, choices: &choices, time, layer: None, edits: Vec::new() };
             strips::buses(ui, &mut cx, mixer, bus_meters, width);
             edits = cx.edits;
-            strips::master(ui, scene, kit, mixer, &reading, time, width);
+            master_keyed = strips::master(ui, scene, kit, mixer, &reading, time, width);
         });
         style::divider(ui);
         master::loudness(ui, &reading, &mixer.loudness);
@@ -116,7 +117,7 @@ pub fn show(
     if let Some(pick) = applied.pick {
         mixer.pick = pick;
     }
-    applied.keyed
+    applied.keyed || master_keyed
 }
 
 /// A number setting's value as a number.

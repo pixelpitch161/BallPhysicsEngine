@@ -20,15 +20,25 @@ pub struct Run {
 }
 
 impl Run {
+    /// `notes` and their copies up to `octave_range` octaves higher, each pitch once, in pitch
+    /// order.
     pub fn new(notes: &[u8], octave_range: u8) -> Run {
+        Run::make(notes, octave_range, true)
+    }
+
+    /// As [`Run::new`], or (`sorted` false) in the order given, each pitch where it first comes.
+    fn make(notes: &[u8], octave_range: u8, sorted: bool) -> Run {
         let mut run = Run { notes: [0; MAX_RUN], len: 0 };
         for k in 0..=octave_range.min(3) as u16 {
             for &n in notes {
                 let n = n as u16 + 12 * k;
-                if n <= 127 && run.len < MAX_RUN {
-                    run.notes[run.len] = n as u8;
-                    run.len += 1;
+                if n > 127 || run.len >= MAX_RUN || run.notes[..run.len].contains(&(n as u8)) {
+                    continue;
                 }
+                let at = if sorted { run.notes[..run.len].partition_point(|&m| m < n as u8) } else { run.len };
+                run.notes.copy_within(at..run.len, at + 1);
+                run.notes[at] = n as u8;
+                run.len += 1;
             }
         }
         run
@@ -61,7 +71,7 @@ fn run_of(cx: &PickCx, clicked: bool) -> Run {
             len += 1;
         }
     }
-    Run::new(&order[..len], cx.octave_range)
+    Run::make(&order[..len], cx.octave_range, false)
 }
 
 /// The step of this hit: hits since the slot began, held for Repeat each.
@@ -178,7 +188,12 @@ impl NotePicker for WalkPick {
                 let pos = pos.min(len - 1);
                 // At either end it turns back, so it never stands still.
                 let up = (up || pos == 0) && pos + 1 < len;
-                if up { pos + 1 } else { pos - 1 }
+                if up {
+                    pos + 1
+                } else {
+                    // One note only: it stays.
+                    pos.saturating_sub(1)
+                }
             }
             // A new slot (the step starts again) or a jump: from the lowest.
             _ => 0,

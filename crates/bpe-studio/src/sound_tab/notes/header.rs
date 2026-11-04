@@ -1,7 +1,7 @@
 //! The Notes header: Notes, the key (Root and Scale), Chord presets, and the keyboard's range
-//! with − and +.
+//! with − and + and < and > to move it an octave lower or higher.
 
-use super::{NotesState, OCTAVES, choice_menu, key, octaves, presets_menu};
+use super::{LOW, NotesState, OCTAVES, choice_menu, key, octaves, presets_menu};
 use crate::sound_tab::keys::note_name;
 use crate::sound_tab::{TabCx, name_it};
 use crate::style;
@@ -26,11 +26,29 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState) -> Option<(Root
         }
         presets_menu::show(ui, cx, state);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Right to left: Higher, Lower, +, −, then the range.
             let (low, n) = octaves(cx);
             let top = low + n;
-            let more = ui.add_enabled(n < 8 && top < 10, egui::Button::new("+")).on_hover_text("One octave more");
+            let higher =
+                ui.add_enabled(top < 10 && low < 8, egui::Button::new(">")).on_hover_text("Show one octave higher");
+            name_it(ui, &higher, "Show one octave higher");
+            if higher.clicked() {
+                cx.set(LOW, Value::Int(low as i64 + 1));
+            }
+            let lower = ui.add_enabled(low > 0, egui::Button::new("<")).on_hover_text("Show one octave lower");
+            name_it(ui, &lower, "Show one octave lower");
+            if lower.clicked() {
+                cx.set(LOW, Value::Int(low as i64 - 1));
+            }
+            ui.add_space(4.0);
+            // One octave more: on top while there is room above B9, otherwise underneath.
+            let more =
+                ui.add_enabled(n < 8 && (top < 10 || low > 0), egui::Button::new("+")).on_hover_text("One octave more");
             name_it(ui, &more, "One octave more");
             if more.clicked() {
+                if top >= 10 {
+                    cx.set(LOW, Value::Int(low as i64 - 1));
+                }
                 cx.set(OCTAVES, Value::Int(n as i64 + 1));
             }
             let fewer = ui.add_enabled(n > 1, egui::Button::new("-")).on_hover_text("One octave fewer");

@@ -243,24 +243,33 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
         // From where the drag started, at the scale it started with, so the view rescaling under
         // the pointer doesn't run away with it.
         let d = now - origin;
-        let set = |cx: &mut TabCx, k: &str, v: f32| {
-            let def = cx.def(&layered_key(layer, k));
+        // A setting is written only along the way the pointer moved, and only when its value
+        // changes (a sideways drag of the corner leaves Sustain, and its keys, alone).
+        let set = |cx: &mut TabCx, k: &str, v: f32, moved: f32| {
+            if moved == 0.0 {
+                return;
+            }
+            let key = layered_key(layer, k);
+            let def = cx.def(&key);
             let (lo, hi) = def.and_then(|d| d.range).unwrap_or((0.0, 10_000.0));
-            cx.set(&layered_key(layer, k), Value::Number((v as f64).clamp(lo, hi).round()));
+            let v = (v as f64).clamp(lo, hi).round();
+            if (cx.number(&key) - v).abs() > 1e-9 {
+                cx.set(&key, Value::Number(v));
+            }
         };
         let h = l.rect.height();
         match grab {
-            Grab::Peak => set(cx, "attack", start.attack + d.x / scale),
+            Grab::Peak => set(cx, "attack", start.attack + d.x / scale, d.x),
             Grab::Decayed => {
-                set(cx, "decay", start.decay + d.x / scale);
-                set(cx, "sustain", start.sustain - d.y / h * 100.0);
+                set(cx, "decay", start.decay + d.x / scale, d.x);
+                set(cx, "sustain", start.sustain - d.y / h * 100.0, d.y);
             }
-            Grab::End => set(cx, "release", start.release + d.x / scale),
+            Grab::End => set(cx, "release", start.release + d.x / scale, d.x),
             Grab::Curve(i) => {
                 let k = ["attack_curve", "decay_curve", "release_curve"][i];
                 // Up bows the segment up: the attack rises sooner, the decay and release fall later.
                 let sign = if i == 0 { 1.0 } else { -1.0 };
-                set(cx, k, start.curves[i] - sign * d.y * CURVE_PER_PX);
+                set(cx, k, start.curves[i] - sign * d.y * CURVE_PER_PX, d.y);
             }
         }
     }

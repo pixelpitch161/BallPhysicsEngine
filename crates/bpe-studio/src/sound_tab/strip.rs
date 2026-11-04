@@ -288,9 +288,29 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, settings: &Settings) {
         painter.circle_stroke(at, 5.5, Stroke::new(1.0, style::OUTLINE));
     }
     let r = r.on_hover_text("Drag sideways for Cutoff, up and down for Reso");
-    if (r.dragged() || r.clicked())
-        && let Some(p) = r.interact_pointer_pos()
+    // Only a drag that starts on the handle moves it, and by how far the pointer moved (a click
+    // elsewhere on the view, or grabbing it a little off its middle, changes nothing).
+    let grab_id = r.id.with("grab");
+    if r.drag_started() {
+        let origin = ui.input(|i| i.pointer.press_origin());
+        match origin.filter(|o| (*o - at).length() <= HANDLE_GRAB) {
+            Some(o) => ui.data_mut(|d| {
+                d.insert_temp(grab_id, at - o);
+            }),
+            None => {
+                ui.data_mut(|d| d.remove::<Vec2>(grab_id));
+            }
+        }
+    }
+    let grab: Option<Vec2> = ui.data(|d| d.get_temp(grab_id));
+    if !r.dragged() {
+        ui.data_mut(|d| d.remove::<Vec2>(grab_id));
+    }
+    if r.dragged()
+        && let Some(offset) = grab
+        && let Some(pointer) = r.interact_pointer_pos()
     {
+        let p = pointer + offset;
         let (x, reso) = strip_views::handle_values(rect, p);
         if f.kind == FilterKind::Formant {
             let vowel = (x * 4.0 * 100.0).round() / 100.0;
@@ -303,11 +323,14 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, settings: &Settings) {
                 cx.set(&key("cutoff"), Value::Number(hz));
             }
         }
-        if (reso - f.reso as f64).abs() > 1e-6 {
+        if (reso - f.reso as f64).abs() > 1e-3 {
             cx.set(&key("reso"), Value::Number(reso));
         }
     }
 }
+
+/// How near the filter view's handle a press must be to drag it.
+const HANDLE_GRAB: f32 = 10.0;
 
 /// A menu of a layer's types, named `name`.
 fn kind_menu<T: Choice + Copy + PartialEq>(
@@ -435,15 +458,23 @@ fn mini_knob(ui: &mut Ui, cx: &mut TabCx, key: &str, name: &str) {
     let (rect, r) = ui.allocate_exact_size(Vec2::splat(MINI_KNOB), Sense::click_and_drag());
     let r = r.on_hover_cursor(egui::CursorIcon::ResizeVertical);
     let mut next = v;
+    // The value is kept unrounded while dragging, so a slow drag still gets somewhere.
+    let held_id = r.id.with("held");
     if r.dragged_by(egui::PointerButton::Primary) {
         let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
-        next = (v - r.drag_delta().y as f64 / 150.0 * (hi - lo) * fine).clamp(lo, hi);
+        let held: Option<f64> = ui.data(|d| d.get_temp(held_id));
+        let from = held.filter(|h| (h.round() - v).abs() < 0.5).unwrap_or(v);
+        let moved = (from - r.drag_delta().y as f64 / 150.0 * (hi - lo) * fine).clamp(lo, hi);
+        ui.data_mut(|d| d.insert_temp(held_id, moved));
+        next = moved.round();
+    } else {
+        ui.data_mut(|d| d.remove::<f64>(held_id));
     }
     if r.double_clicked() {
         next = default;
     }
     if (next - v).abs() > 1e-9 {
-        cx.set(key, Value::Number(next.round()));
+        cx.set(key, Value::Number(next));
     }
     let label = name.to_owned();
     r.widget_info(|| egui::WidgetInfo::slider(true, v, &label));
@@ -452,7 +483,9 @@ fn mini_knob(ui: &mut Ui, cx: &mut TabCx, key: &str, name: &str) {
     if ui.is_rect_visible(rect) {
         paint_mini(ui, rect, ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32, r.hovered() || r.dragged());
     }
-    cx.menu(&r, key, def, &now);
+    // A modulator dropped on it routes there; the menu offers Modulate by too.
+    super::mods::drag::on_knob(cx, &r, key);
+    cx.knob_menu(&r, key, def, &now);
 }
 
 fn paint_mini(ui: &Ui, rect: Rect, t: f32, hot: bool) {

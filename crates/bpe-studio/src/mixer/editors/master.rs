@@ -9,11 +9,13 @@ use bpe_kit::Kit;
 use bpe_sound::MeterReading;
 use eframe::egui::{RichText, Ui};
 
-pub fn show(ui: &mut Ui, scene: &mut Scene, kit: &Kit, reading: &MeterReading, loudness: &[f32], time: f64) {
+/// Returns whether a keyed setting was edited.
+pub fn show(ui: &mut Ui, scene: &mut Scene, kit: &Kit, reading: &MeterReading, loudness: &[f32], time: f64) -> bool {
+    let mut keyed = false;
     panel(ui, |ui| {
         ui.horizontal_top(|ui| {
             for key in strip::KNOBS {
-                strip::knob(ui, scene, kit, key, time, 64.0);
+                keyed |= strip::knob(ui, scene, kit, key, time, 64.0);
             }
             ui.add_space(10.0);
             style::level_meter(ui, reading.peak_l, reading.peak_r, 72.0).on_hover_text("Peak level, left and right");
@@ -25,4 +27,5 @@ pub fn show(ui: &mut Ui, scene: &mut Scene, kit: &Kit, reading: &MeterReading, l
         });
         strip::loudness(ui, reading, loudness);
     });
+    keyed
 }

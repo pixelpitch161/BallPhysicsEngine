@@ -113,11 +113,12 @@ fn restart_lfo_starts_from_phase_on_each_hit_and_fades_in() {
     let hit = HitValues::default();
     m.note_on(&NoteCx { sample: 100 * BLOCK as u64, hit: &hit, ball: None });
     let v = run(&mut m, &pb, shape, 100, 400);
-    assert_eq!(v[0], 0.0, "inside the delay");
-    // 0.2 s after the hit (half way through the fade), the saw is at 0.2.
+    assert_eq!(v[0], 0.5, "inside the delay it rests in the middle");
+    // 0.2 s after the hit (half way through the fade), the saw (at 0.2) is half grown out from
+    // the middle.
     let b = (0.2 * SAMPLE_RATE as f64 / BLOCK as f64) as usize - 1;
     let t = (b + 1) as f64 * BLOCK as f64 / SAMPLE_RATE as f64;
-    let want = (t as f32) * ((t as f32 - 0.1) / 0.2);
+    let want = 0.5 + (t as f32 - 0.5) * ((t as f32 - 0.1) / 0.2);
     assert!((v[b] - want).abs() < 1e-4, "{} against {want}", v[b]);
 }
 

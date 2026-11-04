@@ -663,6 +663,9 @@ struct Slot {
     on: Smoother,
     /// It was bypassed and silent: its memory is cleared before it comes back.
     asleep: bool,
+    /// Samples the switch-on fade waits after waking, while a lookahead effect (the Limiter)
+    /// fills its delay: fading in before then would fade the dry out into silence.
+    wake_wait: usize,
     dry: [[f32; BLOCK]; 2],
     /// Lines the dry sound up with the wet when the effect delays it.
     dry_lag: Lag,
@@ -719,6 +722,7 @@ impl FxChain {
                 mix,
                 on,
                 asleep: !layer.enabled,
+                wake_wait: 0,
                 dry: [[0.0; BLOCK]; 2],
                 dry_lag,
             });
@@ -778,6 +782,7 @@ impl FxChain {
             s.on.reset(o.on.value());
             s.on.set_target(on);
             s.asleep = o.asleep;
+            s.wake_wait = o.wake_wait;
         }
         // The adopted parts take on the new settings.
         let time = old.time;
@@ -806,6 +811,7 @@ impl FxChain {
             if s.asleep {
                 s.fx.reset(cx.time);
                 s.asleep = false;
+                s.wake_wait = s.fx.latency();
             }
             s.dry[0] = *l;
             s.dry[1] = *r;
@@ -815,7 +821,12 @@ impl FxChain {
             reduction = reduction.min(gr);
             for i in 0..BLOCK {
                 let m = s.mix.next();
-                let on = s.on.next();
+                let on = if s.wake_wait > 0 {
+                    s.wake_wait -= 1;
+                    s.on.value()
+                } else {
+                    s.on.next()
+                };
                 let w = m * on;
                 let (gd, gw) = match s.law {
                     MixLaw::Gain => (1.0 - w, w),

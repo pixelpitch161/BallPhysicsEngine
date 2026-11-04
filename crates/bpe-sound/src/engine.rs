@@ -481,8 +481,10 @@ impl Engine {
     /// Every voice's block into its buses, and the buses into the master's input (`bus_l`,
     /// `bus_r`). With `hits` false the voices hear no hits (stopped). Never allocates.
     fn run_voices(&mut self, start_sample: u64, time: f64, hits: bool) {
+        let playing = hits;
         let hits = if hits { &self.hits[..] } else { &[] };
-        let cx = BlockCx { start_sample, time, tempo: &self.tempo, world: self.physics.world() };
+        // Stopped (no hits): only the keys clicked by hand sound.
+        let cx = BlockCx { start_sample, time, tempo: &self.tempo, world: self.physics.world(), playing };
         self.buses.begin(time);
         let voices = self.voices.iter_mut().zip(self.routes.iter_mut());
         let leaving = self.leaving.iter_mut().zip(self.leaving_routes.iter_mut());

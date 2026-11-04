@@ -253,7 +253,11 @@ mod tests {
         h.get_by_label("Filter strip").click();
         h.run();
         let rect = h.get_by_label("Filter view").rect();
-        let from = rect.center();
+        // A drag away from the handle moves nothing.
+        let before = (value(&h, f, "cutoff"), value(&h, f, "reso"));
+        drag(&mut h, egui::pos2(rect.right() - 8.0, rect.bottom() - 8.0), rect.center());
+        assert_eq!((value(&h, f, "cutoff"), value(&h, f, "reso")), before, "a drag off the handle changes nothing");
+        let from = super::super::strip_views::handle_at(rect, &bpe_kit::sound::chain::FilterSettings::default());
         let to = egui::pos2(rect.left() + rect.width() * 0.2, rect.top() + 8.0);
         drag(&mut h, from, to);
         let cutoff = match value(&h, f, "cutoff") {

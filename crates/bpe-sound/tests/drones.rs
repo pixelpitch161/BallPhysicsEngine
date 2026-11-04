@@ -81,6 +81,11 @@ fn hit(ball: ThingId, shape: ThingId) -> BlockHit {
 /// Runs blocks `from..from + n` with `hits` (by block). Returns the loudest sample and what
 /// sounded after the last block.
 fn run(v: &mut ShapeVoice, w: &World, from: u64, n: u64, hits: &[(u64, BlockHit)]) -> (f32, Vec<u8>) {
+    run_as(v, w, from, n, hits, true)
+}
+
+/// As [`run`], playing or (`playing` false) stopped.
+fn run_as(v: &mut ShapeVoice, w: &World, from: u64, n: u64, hits: &[(u64, BlockHit)], playing: bool) -> (f32, Vec<u8>) {
     let tempo = TempoMap::default();
     let mut peak = 0.0f32;
     for b in from..from + n {
@@ -90,6 +95,7 @@ fn run(v: &mut ShapeVoice, w: &World, from: u64, n: u64, hits: &[(u64, BlockHit)
             time: (b * BLOCK as u64) as f64 / 48_000.0,
             tempo: &tempo,
             world: w,
+            playing,
         };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
         v.on_block(&cx, &theirs, &mut l, &mut r);
@@ -112,7 +118,7 @@ fn always_drones_from_the_start() {
     let (peak, playing) = run(&mut v, &w, 4, 7500, &[]);
     assert!(peak > 0.01);
     assert_eq!(playing, [60, 64]);
-    // A hit retriggers but starts no notes of its own.
+    // A hit starts no notes of its own.
     let h = [(7600, hit(ball_of(&scene), shape_of(&scene)))];
     let (_, playing) = run(&mut v, &w, 7504, 200, &h);
     assert_eq!(playing, [60, 64]);
@@ -190,7 +196,7 @@ fn drone_follows_slot_changes() {
 }
 
 #[test]
-fn a_drone_on_the_starter_envelope_rings_once_and_waits_for_hits() {
+fn a_drone_on_the_starter_envelope_rings_once_and_stays_held() {
     let kit = kit();
     let mut scene = scene_with(&kit, PlayWhen::Always, &[&[60]], |_| {});
     // The starter ADSR: Sustain 0, so the note dies away after its decay.
@@ -205,9 +211,105 @@ fn a_drone_on_the_starter_envelope_rings_once_and_waits_for_hits() {
     let (peak, playing) = run(&mut v, &w, 754, 1500, &[]);
     assert!(peak < 1e-4, "silent after its decay, not plucked again: {peak}");
     assert_eq!(playing, [60], "still held");
-    // A hit plays it again.
+    // A hit doesn't play it again: the note is only held.
     let h = [(2300, hit(ball_of(&scene), shape))];
     let (peak, playing) = run(&mut v, &w, 2254, 100, &h);
-    assert!(peak > 0.01, "a hit plays the held note: {peak}");
+    assert!(peak < 1e-4, "a hit doesn't pluck the held note: {peak}");
     assert_eq!(playing, [60]);
+}
+
+/// The loudest sample of each run of four blocks in `from..from + n` (four blocks hold more than
+/// a whole wave of the notes played here).
+fn block_peaks(v: &mut ShapeVoice, w: &World, from: u64, n: u64, hits: &[(u64, BlockHit)]) -> Vec<f32> {
+    (from..from + n).step_by(4).map(|b| run(v, w, b, 4, hits).0).collect()
+}
+
+#[test]
+fn hits_dont_retrigger_a_held_note() {
+    let kit = kit();
+    // Sustain 50 %: a retrigger would jump back up to full before falling to the sustain again.
+    let mut scene = scene_with(&kit, PlayWhen::Always, &[&[60]], |_| {});
+    let (ball, shape) = (ball_of(&scene), shape_of(&scene));
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set(&layered_key(LayerId(0), "sustain"), Value::Number(50.0));
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    run(&mut v, &w, 0, 1500, &[]);
+    let before = block_peaks(&mut v, &w, 1500, 100, &[]);
+    let hits: Vec<(u64, BlockHit)> = (0..10).map(|k| (1600 + 10 * k, hit(ball, shape))).collect();
+    let after = block_peaks(&mut v, &w, 1600, 200, &hits);
+    let steady = before.iter().cloned().fold(0.0f32, f32::max);
+    assert!(steady > 0.01, "it sounds at its sustain: {steady}");
+    for (b, p) in after.iter().enumerate() {
+        assert!((p - steady).abs() < steady * 0.02, "block {b} after the hits: {p} against {steady}");
+    }
+    assert_eq!(v.sounding(), 1, "one note, held");
+}
+
+#[test]
+fn a_drone_waits_while_stopped_and_a_clicked_key_ends() {
+    let kit = kit();
+    let scene = scene_with(&kit, PlayWhen::Always, &[&[60]], |_| {});
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    // Stopped: no drone.
+    let (peak, playing) = run_as(&mut v, &w, 0, 200, &[], false);
+    assert_eq!(peak, 0.0, "a drone doesn't play while stopped");
+    assert!(playing.is_empty());
+    // A key clicked while stopped plays, then lets go by itself (its sustain is 100 %).
+    v.audition(64);
+    let (peak, _) = run_as(&mut v, &w, 200, 10, &[], false);
+    assert!(peak > 0.01, "the clicked key sounds: {peak}");
+    let _ = run_as(&mut v, &w, 210, 600, &[], false);
+    assert_eq!(v.sounding(), 0, "the clicked key ended instead of ringing forever");
+    // Playing again: the drone holds.
+    let (peak, playing) = run(&mut v, &w, 810, 50, &[]);
+    assert!(peak > 0.01);
+    assert_eq!(playing, [60]);
+    // And a key clicked while it plays ends too, leaving the drone.
+    v.audition(67);
+    let _ = run(&mut v, &w, 860, 600, &[]);
+    assert_eq!(v.playing_notes(), [60]);
+    assert_eq!(v.sounding(), 1);
+}
+
+#[test]
+fn a_mono_drone_moves_to_the_next_slot_legato() {
+    let kit = kit();
+    let mut scene = scene_with(&kit, PlayWhen::Always, &[&[60], &[67]], |v| {
+        v.notes_change = Change::ByHits;
+        v.notes_every_hits = 1;
+        v.play_mode = bpe_kit::sound::PlayMode::Mono;
+    });
+    let (ball, shape) = (ball_of(&scene), shape_of(&scene));
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set(&layered_key(LayerId(0), "sustain"), Value::Number(50.0));
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    run(&mut v, &w, 0, 1500, &[]);
+    let steady = block_peaks(&mut v, &w, 1500, 50, &[]).into_iter().fold(0.0f32, f32::max);
+    let after = block_peaks(&mut v, &w, 1550, 100, &[(1560, hit(ball, shape))]);
+    assert_eq!(v.playing_notes(), [67]);
+    assert!(after.iter().all(|p| (p - steady).abs() < steady * 0.05), "no new attack: {after:?} against {steady}");
+}
+
+#[test]
+fn a_switched_off_modulator_leaves_its_knobs_alone() {
+    let kit = kit();
+    // A Distance scaling Osc A's Gain all the way, then switched off: Gain should be as set,
+    // not silenced by a Distance that reads nothing.
+    let mut scene = scene_with(&kit, PlayWhen::OnHit, &[&[60]], |v| {
+        v.routes.push(bpe_core::ModRoute {
+            source: LayerId(2),
+            target: "a_gain".into(),
+            amount: 1.0,
+            bipolar: false,
+            invert: false,
+        });
+    });
+    let (ball, shape) = (ball_of(&scene), shape_of(&scene));
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.layers.iter_mut().find(|l| l.id == LayerId(2)).unwrap().enabled = false;
+    let (mut v, mut w) = (voice(&scene, &kit), world(&scene, &kit));
+    // The ball far away: the Distance, were it on, would read 0.
+    put(&mut w, ball, Vec2::new(0.0, -2000.0));
+    let (peak, _) = run(&mut v, &w, 0, 40, &[(2, hit(ball, shape))]);
+    assert!(peak > 0.01, "the hit sounds: {peak}");
 }
