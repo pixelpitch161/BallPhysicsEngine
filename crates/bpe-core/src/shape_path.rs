@@ -500,10 +500,7 @@ mod tests {
         assert!(!h.straighten(1));
         assert_eq!(h.curve_count(), 0);
         // A side through the middle bulges to its left.
-        let mut odd = ShapePath {
-            points: vec![[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-            bends: vec![None; 3],
-        };
+        let mut odd = ShapePath { points: vec![[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], bends: vec![None; 3] };
         assert!(odd.create_curve(0));
         assert!(odd.side_point(0, 0.5).dot(Vec2::X.perp()) > 0.0);
     }
@@ -556,10 +553,7 @@ mod tests {
 
     #[test]
     fn axis_rectangles_are_found() {
-        let r = ShapePath {
-            points: vec![[-0.5, -0.8], [0.5, -0.8], [0.5, 0.8], [-0.5, 0.8]],
-            bends: vec![None; 4],
-        };
+        let r = ShapePath { points: vec![[-0.5, -0.8], [0.5, -0.8], [0.5, 0.8], [-0.5, 0.8]], bends: vec![None; 4] };
         assert_eq!(r.is_axis_rectangle(), Some(Vec2::new(0.5, 0.8)));
         assert_eq!(ShapePath::even(4).is_axis_rectangle().map(|h| (h.x - h.y).abs() < 1e-6), Some(true));
         let mut bow = r.clone();

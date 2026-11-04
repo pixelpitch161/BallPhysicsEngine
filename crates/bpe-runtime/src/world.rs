@@ -15,7 +15,7 @@ use crate::events::HASH_OFFSET;
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
-use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, reflect};
+use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_clear, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -449,7 +449,10 @@ impl World {
                     }
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
-                    let Some(contact) = keep_inside(&mut bodies.position[i], velocity, radius, wall) else { continue };
+                    let previous = bodies.previous[i];
+                    let Some(contact) = keep_clear(&mut bodies.position[i], previous, velocity, radius, wall) else {
+                        continue;
+                    };
                     supports.push(Support {
                         thing: *mover,
                         item: i as u32,
@@ -944,8 +947,43 @@ mod tests {
     }
 
     #[test]
+    fn a_fast_ball_never_crosses_a_thin_band_from_either_side() {
+        for start_outside in [false, true] {
+            let (mut scene, _, sims) = dots_in_ring(1);
+            scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+            scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(100.0));
+            let dots = scene.things.get_mut(&DOTS).unwrap();
+            let velocity = if start_outside { [-6000.0, 1300.0] } else { [6000.0, 2500.0] };
+            dots.params.set("velocity", Value::Vec2(velocity));
+            if start_outside {
+                dots.transform.position = Vec2::new(300.0, 0.0);
+            }
+            let resolved = resolve(&scene, &reg());
+            let mut w = World::build(&scene, &resolved, &sims);
+            let mut log = Log::default();
+            let mut hits = 0;
+            for k in 1..=480 {
+                w.advance_to(k as f64 / 240.0, &sims, &mut log);
+                let p = w.bodies[&DOTS].position[0];
+                // The ring is 2 px thick at radius 100 and the dot's radius is 5.
+                if start_outside {
+                    assert!(p.length() >= 106.0 - 1e-2, "step {k}: the dot got in, at {p}");
+                } else {
+                    assert!(p.length() <= 94.0 + 1e-2, "step {k}: the dot got out, at {p}");
+                }
+                hits = log.events().len();
+            }
+            assert!(hits > 0, "it hit the band (outside {start_outside})");
+        }
+    }
+
+    #[test]
     fn pair_collisions_are_deterministic_in_a_pile() {
-        let (scene, resolved, sims) = dots_pile(400);
+        let (mut scene, _, sims) = dots_pile(400);
+        // Wide enough that the whole block of dots starts inside it: a dot that starts outside a
+        // hollow wall stays outside.
+        scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(175.0));
+        let resolved = resolve(&scene, &reg());
         let run = || {
             let mut w = World::build(&scene, &resolved, &sims);
             let mut log = Log::default();
@@ -957,7 +995,7 @@ mod tests {
         assert_eq!(l1.hash(), l2.hash());
         assert_eq!(w1.bodies[&DOTS].position, w2.bodies[&DOTS].position);
         assert!(l1.events().iter().any(|e| e.b.is_some_and(|b| b.thing == DOTS)), "balls hit each other");
-        assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 160.0));
+        assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 175.0));
         assert!(l1.events().windows(2).all(|p| p[0].step <= p[1].step));
     }
 
