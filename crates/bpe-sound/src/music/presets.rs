@@ -210,20 +210,31 @@ fn parsed(p: &Preset) -> &'static [Parsed] {
     &all[i]
 }
 
-/// Whether a scale sounds minor (its third is a minor third).
-fn minor_scale(scale: Scale) -> bool {
-    let steps = scale_steps(scale);
-    steps.contains(&3) && !steps.contains(&4)
+/// How far above a key's root its parent major scale starts: a mode is the major scale of
+/// another root (D Dorian is C major from D), a minor-sounding scale its relative major's.
+/// `None` for Chromatic, where every chord is in the key.
+fn parent_major(scale: Scale) -> Option<u8> {
+    Some(match scale {
+        Scale::Major | Scale::MajorPentatonic => 0,
+        Scale::Minor | Scale::HarmonicMinor | Scale::MelodicMinor | Scale::MinorPentatonic | Scale::Blues => 3,
+        Scale::Dorian => 10,
+        Scale::Phrygian => 8,
+        Scale::Lydian => 7,
+        Scale::Mixolydian => 5,
+        Scale::Chromatic => return None,
+    })
 }
 
-/// The preset's tonic (a pitch class) in a shape's key: the key's root, or its relative major
-/// or minor when the preset's mode and the key's differ.
+/// The preset's tonic (a pitch class) in a shape's key. A major preset starts on the key's
+/// parent major, a minor one on that major's relative minor, so the chords use the key's own
+/// notes (in C major Night drive plays from A; in D Dorian Axis plays C G Am F). In Chromatic
+/// the preset starts on the root.
 pub fn tonic(p: &Preset, root: Root, scale: Scale) -> u8 {
     let r = root.semitone();
-    match (p.minor, minor_scale(scale)) {
-        (false, true) => (r + 3) % 12,
-        (true, false) => (r + 9) % 12,
-        _ => r,
+    match parent_major(scale) {
+        Some(up) if p.minor => (r + up + 9) % 12,
+        Some(up) => (r + up) % 12,
+        None => r,
     }
 }
 
@@ -289,6 +300,18 @@ mod tests {
         let night = PRESETS.iter().find(|p| p.name == "Night drive").unwrap();
         assert_eq!(chord_labels(night, Root::A, Scale::Minor), ["Am", "F", "C", "G"]);
         assert_eq!(chord_labels(night, Root::C, Scale::Major), ["Am", "F", "C", "G"]);
+        // A mode plays from its parent major (D Dorian and G Mixolydian are C major's notes).
+        assert_eq!(chord_labels(axis, Root::D, Scale::Dorian), ["C", "G", "Am", "F"]);
+        assert_eq!(chord_labels(axis, Root::G, Scale::Mixolydian), ["C", "G", "Am", "F"]);
+        assert_eq!(chord_labels(night, Root::E, Scale::Phrygian), ["Am", "F", "C", "G"]);
+        assert_eq!(chord_labels(axis, Root::F, Scale::Lydian), ["C", "G", "Am", "F"]);
+        assert_eq!(chord_labels(axis, Root::D, Scale::Chromatic), ["D", "A", "Bm", "G"]);
+        // Every note of Axis is in the key in every seven-note mode.
+        for (root, scale) in [(Root::D, Scale::Dorian), (Root::E, Scale::Phrygian), (Root::F, Scale::Lydian)] {
+            for slot in realise(axis, root, scale, 48..=83, Voicing::Triads, false) {
+                assert!(slot.notes.iter().all(|&n| super::super::in_scale(root, scale, n)), "{scale:?} {slot:?}");
+            }
+        }
         let study = PRESETS.iter().find(|p| p.name == "Study").unwrap();
         assert_eq!(chord_labels(study, Root::C, Scale::Major), ["Fmaj7", "Em7", "Am7", "Cmaj7"]);
         let minor25 = PRESETS.iter().find(|p| p.name == "Minor two-five").unwrap();

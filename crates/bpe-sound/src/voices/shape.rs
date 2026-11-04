@@ -642,7 +642,7 @@ impl ShapeVoice {
             let seed = mix(sample
                 ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
                 ^ ((self.spec.thing.0 as u64) << 48));
-            self.hit_arrives(at);
+            self.hit_arrives(at, sample);
             let pick = self.pick_for(cx, hit, cx.time);
             self.clock.hit(&self.spec.notes);
             let gap = (pick.strum as f64 * crate::SAMPLE_RATE as f64).max(0.0);
@@ -724,11 +724,14 @@ impl ShapeVoice {
         }
     }
 
-    /// A new hit closes the Until-next-hit gates of the notes sounding.
-    fn hit_arrives(&mut self, at: u32) {
+    /// A new hit at sample `sample` (offset `at` in the block) closes the Until-next-hit gates
+    /// of the notes sounding. A strummed note starting on this sample or later in the block has
+    /// not sounded yet, so the hit after this one closes it.
+    fn hit_arrives(&mut self, at: u32, sample: u64) {
         let envs = self.envs();
         for (i, n) in self.notes.slots.iter_mut().enumerate() {
-            if !self.notes.meta[i].active {
+            let meta = &self.notes.meta[i];
+            if !meta.active || meta.started >= sample {
                 continue;
             }
             for e in 0..envs {
@@ -1039,7 +1042,7 @@ impl VoiceSource for ShapeVoice {
         let Some(old) = old.as_any_mut().downcast_mut::<ShapeVoice>() else { return };
         self.filter.take_memory(&old.filter);
         // The slots and the play order carry on where they were.
-        self.clock.take_over(&old.clock);
+        self.clock.take_over(&old.clock, &self.spec.notes);
         self.slot_turn = old.slot_turn;
         self.slot_hits = old.slot_hits;
         if self.spec.notes.plays == old.spec.notes.plays {

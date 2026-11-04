@@ -396,6 +396,8 @@ fn changes(ui: &mut Ui, cx: &mut TabCx) {
                 "Right-click, Create Keyframe: the shape jumps to this slot there, whatever Slots change says",
             );
         }
+        // Without keys the number does nothing, so say so.
+        ui.label(RichText::new("keys only: right-click it, Create Keyframe").small().color(style::FAINT));
     });
 }
 

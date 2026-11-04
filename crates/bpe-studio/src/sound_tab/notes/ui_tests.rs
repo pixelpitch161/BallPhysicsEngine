@@ -289,3 +289,10 @@ fn preset_labels_use_the_shapes_key() {
     assert!(h.query_by_label("Axis I–V–vi–IV   G D Em C").is_some());
     assert!(h.query_by_label("Axis I–V–vi–IV   C G Am F").is_none());
 }
+
+#[test]
+fn jump_to_slot_says_it_works_by_keys() {
+    let h = sounding();
+    assert!(h.query_by_label("Jump to slot").is_some());
+    assert!(h.query_by_label("keys only: right-click it, Create Keyframe").is_some(), "the plain value does nothing");
+}

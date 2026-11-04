@@ -308,3 +308,89 @@ fn up_order_after_a_seek_matches_from_the_start() {
     assert!(diff < 1e-3, "the same sound after the seek ({diff})");
     let _ = render(None);
 }
+
+#[test]
+fn a_strummed_note_after_a_hit_still_ends_at_the_next_hit() {
+    let kit = kit();
+    let mut scene = voiced(&kit, |v| {
+        v.notes_slots = vec![NoteSlot { notes: vec![60, 64, 67], order_clicked: vec![] }];
+        v.notes_plays = Plays::AllAtOnce;
+        v.notes_strum = 100.0;
+        v.play_voices = 16;
+        v.play_retrigger = 0.0;
+    });
+    // Every envelope holds at full level until the next hit.
+    let shape = shape_of(&scene);
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    for id in card.layers.iter().filter(|l| l.kind == "mod.adsr").map(|l| l.id).collect::<Vec<_>>() {
+        card.params.set(&bpe_core::layered_key(id, "gate_mode"), Value::Choice("until_next_hit".into()));
+        card.params.set(&bpe_core::layered_key(id, "sustain"), Value::Number(100.0));
+    }
+    let p = world(&scene, &kit);
+    let mut v = voice(&scene, &kit);
+    // Hit A strums C E G 50 ms apart: E starts on sample 2400 (block 37, offset 32). Hit B
+    // lands in that block before E has started.
+    block(&mut v, p.world(), 0, &[hit(&scene, 0, 1500.0, true)]);
+    for b in 1..37 {
+        block(&mut v, p.world(), b, &[]);
+    }
+    block(&mut v, p.world(), 37, &[hit(&scene, 0, 1500.0, true)]);
+    for b in 38..400 {
+        block(&mut v, p.world(), b, &[]);
+    }
+    // Hit C closes every gate still open; after the release only C's own chord is left.
+    block(&mut v, p.world(), 400, &[hit(&scene, 0, 1500.0, true)]);
+    for b in 401..1200 {
+        block(&mut v, p.world(), b, &[]);
+    }
+    assert_eq!(v.playing_notes(), [60, 64, 67], "no note of A's strum is left holding");
+}
+
+/// `scene` with Jump to slot keys at `keys` (seconds, slot).
+fn with_jumps(mut scene: Scene, kit: &Kit, keys: &[(f64, i64)]) -> Scene {
+    let a = bpe_core::Address::on(shape_of(&scene), SlotId::Sound, "notes_jump");
+    scene.tracks.remove(&a);
+    for &(time, slot) in keys {
+        scene.set_key(&kit.registry, &a, time, Value::Int(slot)).unwrap();
+    }
+    scene
+}
+
+fn three_slots(v: &mut VoiceSettings) {
+    v.notes_slots = (0..3).map(|i| NoteSlot { notes: vec![60 + i], order_clicked: vec![] }).collect();
+    v.notes_change = Change::OnlyKeyframes;
+}
+
+#[test]
+fn editing_jump_keys_while_playing_keeps_the_next_jump() {
+    let kit = kit();
+    let base = voiced(&kit, three_slots);
+    let p = world(&base, &kit);
+    // 0.5 s is block 375; 1 s is block 750.
+    let run = |v: &mut ShapeVoice, from: u64, to: u64| {
+        for b in from..to {
+            block(v, p.world(), b, &[]);
+        }
+    };
+    // A past key is deleted: the next one still comes.
+    let before = with_jumps(base.clone(), &kit, &[(0.2, 2), (1.0, 3)]);
+    let mut old = voice(&before, &kit);
+    run(&mut old, 0, 375);
+    assert_eq!(old.slot(), 1);
+    let after = with_jumps(base.clone(), &kit, &[(1.0, 3)]);
+    let mut new = voice(&after, &kit);
+    new.adopt(&mut old);
+    run(&mut new, 375, 760);
+    assert_eq!(new.slot(), 2, "the key at 1 s still jumps to slot 3");
+    // A key added before the playhead does not fire at once.
+    let before = with_jumps(base.clone(), &kit, &[(1.0, 3)]);
+    let mut old = voice(&before, &kit);
+    run(&mut old, 0, 375);
+    let after = with_jumps(base.clone(), &kit, &[(0.2, 2), (1.0, 3)]);
+    let mut new = voice(&after, &kit);
+    new.adopt(&mut old);
+    run(&mut new, 375, 376);
+    assert_eq!(new.slot(), 0, "a key behind the playhead waits for the next pass");
+    run(&mut new, 376, 760);
+    assert_eq!(new.slot(), 2);
+}

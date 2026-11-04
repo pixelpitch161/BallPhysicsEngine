@@ -143,8 +143,9 @@ pub struct SlotClock {
     bag_at: usize,
     /// The tempo or time line the last block ended on, and the period it was counted in.
     line: Option<(u64, f64)>,
-    /// The next jump key not yet passed.
+    /// The next jump key not yet passed, and the sample the clock has counted up to.
     next_key: usize,
+    passed: u64,
     /// Where the block's samples begin, and its changes still to apply.
     start: u64,
     pending: [Pending; MAX_PENDING],
@@ -166,6 +167,7 @@ impl SlotClock {
             bag_at: MAX_SLOTS,
             line: None,
             next_key: 0,
+            passed: 0,
             start: 0,
             pending: [Pending { offset: 0, jump: None }; MAX_PENDING],
             n_pending: 0,
@@ -184,12 +186,15 @@ impl SlotClock {
         self.bag_at = MAX_SLOTS;
         self.line = None;
         self.next_key = 0;
+        self.passed = 0;
         self.n_pending = 0;
         self.changed = false;
     }
 
-    /// Takes over another clock's place (a patch swap), with this one's slot count.
-    pub fn take_over(&mut self, old: &SlotClock) {
+    /// Takes over another clock's place (a patch swap), with this one's slot count. The jump
+    /// keys are `spec`'s: those before where the old clock got to count as passed, so editing
+    /// keys while playing neither skips the next jump nor fires one behind the playhead.
+    pub fn take_over(&mut self, old: &SlotClock, spec: &NotesSpec) {
         let n = self.n;
         let seed = self.seed;
         *self = old.clone();
@@ -198,6 +203,8 @@ impl SlotClock {
         self.current = self.current.min(n - 1);
         self.bag_at = MAX_SLOTS;
         self.n_pending = 0;
+        self.next_key =
+            spec.jump.as_ref().map_or(0, |t| (0..t.keys.len()).take_while(|&i| jump_key(t, i).0 < self.passed).count());
     }
 
     /// The slot playing now, 0 first.
@@ -283,6 +290,7 @@ impl SlotClock {
         self.start = start;
         self.n_pending = 0;
         let end = start + len as u64;
+        self.passed = end;
         let mut n = 0;
         let push = |p: Pending, n: &mut usize, pending: &mut [Pending; MAX_PENDING]| {
             if *n < MAX_PENDING {
