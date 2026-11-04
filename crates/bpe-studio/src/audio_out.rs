@@ -143,6 +143,7 @@ impl Feeder {
     }
 
     /// 48 kHz frames waiting in the ring.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn buffered_frames(&self) -> usize {
         self.ring.slots() / 2
     }
@@ -249,6 +250,7 @@ impl Feeder {
 }
 
 /// The open output device.
+#[allow(dead_code)]
 pub struct AudioOut {
     _stream: cpal::Stream,
     shared: Arc<Shared>,
@@ -256,6 +258,8 @@ pub struct AudioOut {
     rate: u32,
 }
 
+// The volume, mute and rate calls are the device's own; the editor goes through `Shared`.
+#[allow(dead_code)]
 impl AudioOut {
     /// Opens the default output device. `None` when there is none or it won't start; never
     /// panics.
@@ -317,7 +321,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let channels = config.channels as usize;
     device
         .build_output_stream(
-            config.clone(),
+            *config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| feeder.fill(data, channels),
             move |_| shared.failed.store(true, Ordering::Relaxed),
             None,

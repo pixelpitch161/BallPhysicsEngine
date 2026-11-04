@@ -10,6 +10,8 @@ mod track;
 
 pub use controls::*;
 pub use fonts::{medium, mono, semibold};
+// The knob's rings, response and plain form are for the sound parts after this one.
+#[allow(unused_imports)]
 pub use knob::{Knob, KnobResponse, ModRing, knob};
 pub use meter::{level_meter, loudness_graph, loudness_row};
 pub use tokens::*;

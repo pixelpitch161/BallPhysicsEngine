@@ -21,6 +21,7 @@ pub struct KnobResponse {
     /// The value changed this frame.
     pub changed: bool,
     /// The dial was right-clicked: the caller opens its value menu.
+    #[allow(dead_code)]
     pub context: bool,
 }
 
@@ -64,12 +65,14 @@ impl<'a> Knob<'a> {
     }
 
     /// Modulation rings around the dial.
+    #[allow(dead_code)]
     pub fn rings(mut self, rings: &'a [ModRing]) -> Self {
         self.rings = rings;
         self
     }
 
     /// The colour of the rings: the thing's track colour.
+    #[allow(dead_code)]
     pub fn colour(mut self, colour: Color32) -> Self {
         self.colour = colour;
         self
@@ -92,7 +95,7 @@ impl<'a> Knob<'a> {
     }
 
     /// The value at turn `t`.
-    fn from_turn(&self, t: f64) -> f64 {
+    fn value_at_turn(&self, t: f64) -> f64 {
         let (lo, hi) = (*self.range.start(), *self.range.end());
         let t = t.clamp(0.0, 1.0);
         if self.log { lo * (hi / lo).powf(t) } else { lo + (hi - lo) * t }
@@ -123,7 +126,7 @@ impl<'a> Knob<'a> {
                     let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
                     let dy = response.drag_delta().y as f64;
                     let t = self.to_turn(*self.value) - dy / FULL_DRAG * fine;
-                    *self.value = self.from_turn(t);
+                    *self.value = self.value_at_turn(t);
                 }
                 if response.hovered() {
                     // Each wheel notch nudges 1 %; the scroll is kept from the panel underneath.
@@ -140,7 +143,7 @@ impl<'a> Knob<'a> {
                     });
                     if notches != 0.0 {
                         let t = self.to_turn(*self.value) + 0.01 * notches;
-                        *self.value = self.from_turn(t);
+                        *self.value = self.value_at_turn(t);
                     }
                     ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
                 }
@@ -254,6 +257,7 @@ fn parse(text: &str) -> Option<f64> {
 }
 
 /// A knob with a plain number readout.
+#[allow(dead_code)]
 pub fn knob(ui: &mut Ui, value: &mut f64, range: RangeInclusive<f64>, default: f64, label: &str) -> Response {
     ui.add(Knob::new(value, range, default, label))
 }

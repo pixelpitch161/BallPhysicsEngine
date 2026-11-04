@@ -55,7 +55,7 @@ const BAR_NUMBER_PX: f32 = 28.0;
 fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
     let beat = tempo.beat_seconds();
     let per_bar = tempo.top().max(1);
-    if !(beat > 0.0) || ruler.duration <= 0.0 {
+    if beat.is_nan() || beat <= 0.0 || ruler.duration <= 0.0 {
         return Vec::new();
     }
     let px = |seconds: f64| (seconds / ruler.duration) as f32 * ruler.track.width();
@@ -72,12 +72,12 @@ fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
     let beats = (ruler.duration / beat + 1e-9).floor() as u64;
     let mut lines = Vec::new();
     for n in 0..=beats {
-        let is_bar = n % per_bar as u64 == 0;
+        let is_bar = n.is_multiple_of(per_bar as u64);
         let bar = (n / per_bar as u64) as u32;
-        if is_bar && bar % bar_every != 0 || !is_bar && !show_beats {
+        if is_bar && !bar.is_multiple_of(bar_every) || !is_bar && !show_beats {
             continue;
         }
-        let number = (is_bar && bar % number_every == 0).then_some(bar + 1);
+        let number = (is_bar && bar.is_multiple_of(number_every)).then_some(bar + 1);
         lines.push((ruler.x_of(n as f64 * beat), is_bar, number));
     }
     lines

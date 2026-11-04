@@ -13,6 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The thread keeps at least this many frames in the ring while playing (50 ms)...
+#[cfg_attr(not(test), allow(dead_code))]
 pub const AHEAD_FRAMES: usize = 2_400;
 /// ...by filling it up to this many (100 ms) whenever it looks.
 const FILL_FRAMES: usize = 4_800;
@@ -20,6 +21,7 @@ const FILL_FRAMES: usize = 4_800;
 const CLEAR_WAIT: Duration = Duration::from_millis(250);
 
 /// A note played by hand from the editor (part 2's keyboard and pads).
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Audition {
     pub thing: ThingId,
@@ -39,6 +41,7 @@ pub enum Command {
     Patch(Box<SoundPatch>),
     /// The physics changed: a new engine from the start.
     Rebuild(Box<Scene>, Box<Resolved>),
+    #[allow(dead_code)]
     Audition(Audition),
     Quit,
 }
@@ -178,6 +181,7 @@ impl SoundJob {
         self.send(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())));
     }
 
+    #[allow(dead_code)]
     pub fn audition(&mut self, audition: Audition) {
         self.send(Command::Audition(audition));
     }
@@ -206,6 +210,8 @@ impl SoundJob {
 }
 
 impl Drop for SoundJob {
+    // Without tests the outbox is always the thread.
+    #[allow(irrefutable_let_patterns)]
     fn drop(&mut self) {
         if let Outbox::Thread { tx, thread } = &mut self.outbox {
             let _ = tx.send(Command::Quit);
