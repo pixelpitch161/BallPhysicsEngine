@@ -7,6 +7,7 @@ use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
 use crate::voices::shape::{EnvSpec, OscSpec, ShapeSpec};
+use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
@@ -14,6 +15,7 @@ use bpe_kit::sound::{
     ADSR, AdsrSettings, DistortionSettings, FILTER, FilterSettings, MODULATION, MixerSettings, ModulationSettings,
     OscSettings, Slope, VOICE, VoiceSettings, Wave,
 };
+use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
 use std::sync::Arc;
 
@@ -82,18 +84,37 @@ fn osc_spec(o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> 
 /// The voice of the shape `id` from its resolved Sound card, or `None` when its sound is off.
 /// Its wavetables are baked if need be.
 pub fn shape_voice(scene: &Scene, id: ThingId, card: &ResolvedSlot, index: usize, width: f32) -> Option<ShapeVoice> {
-    voice_with(scene, id, card, index, width, Tables::Bake, &mut false)
+    let shape = shape_settings(scene, id);
+    let top = scene_top(scene);
+    voice_with(scene, id, card, &Build { index, width, shape: &shape, tempo_top: top }, Tables::Bake, &mut false)
+}
+
+/// The shape's own settings as set (its outline is all the voice reads of them).
+fn shape_settings(scene: &Scene, id: ThingId) -> ShapeSettings {
+    scene.things.get(&id).map(|t| ShapeSettings::from_params(&t.params)).unwrap_or_default()
+}
+
+fn scene_top(scene: &Scene) -> u32 {
+    scene.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params).time_top).unwrap_or(4)
+}
+
+/// What a voice is built with besides its card.
+struct Build<'a> {
+    index: usize,
+    width: f32,
+    shape: &'a ShapeSettings,
+    tempo_top: u32,
 }
 
 fn voice_with(
     scene: &Scene,
     id: ThingId,
     card: &ResolvedSlot,
-    index: usize,
-    width: f32,
+    b: &Build,
     tables: Tables,
     pending: &mut bool,
 ) -> Option<ShapeVoice> {
+    let Build { index, width, shape, tempo_top } = *b;
     if card.kind != VOICE {
         return None;
     }
@@ -111,6 +132,10 @@ fn voice_with(
             EnvSpec { id: l.id, gate_mode: a.gate_mode, gate_unit: a.gate_unit }
         })
         .collect();
+    let track = |key: &str| {
+        let a = Address { thing: id, slot: Some(SlotId::Sound), key: key.into() };
+        scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
+    };
     let ids: Vec<_> = envs.iter().map(|e| e.id).collect();
     let (graph, chain) = chain_of(scene, id, card, [v.a.on, v.b.on]);
     let chain_ids: Vec<(LayerId, &str)> = graph.layers.iter().map(|l| (l.id, l.kind.as_str())).collect();
@@ -135,6 +160,12 @@ fn voice_with(
         play_mode: v.play_mode,
         heard_from: v.play_heard_from.clone(),
         slots: v.notes_slots.clone(),
+        notes: NotesSpec::from_settings(
+            &v,
+            tempo_top,
+            [track("notes_strum"), track("notes_every_seconds"), track("notes_jump")],
+        ),
+        side_path: (v.notes_plays == bpe_kit::sound::Plays::BySide).then(|| shape.outline_path()),
         bus: v.out_bus.clamp(1, 3) as u8,
         base,
         keyed,
@@ -212,8 +243,10 @@ impl SoundPatch {
         let mut voices: Vec<Box<dyn VoiceSource>> = Vec::new();
         for id in &scene.order {
             let Some(thing) = resolved.things.get(id) else { continue };
+            let shape = ShapeSettings::from_params(&thing.params);
+            let b = Build { index: voices.len(), width: settings.width as f32, shape: &shape, tempo_top: tempo.top() };
             if let Some(card) = thing.slots.get(&SlotId::Sound)
-                && let Some(v) = voice_with(scene, *id, card, voices.len(), settings.width as f32, tables, &mut pending)
+                && let Some(v) = voice_with(scene, *id, card, &b, tables, &mut pending)
             {
                 voices.push(Box::new(v));
             }

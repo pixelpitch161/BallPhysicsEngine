@@ -70,6 +70,14 @@ fn render_does_not_allocate() {
     v.b.on = true;
     v.b.unison = 16;
     v.a.sub = SubWave::Square;
+    // Chords strummed over three slots that change every beat, and Slot keys.
+    v.notes_slots = (0..3)
+        .map(|i| bpe_core::NoteSlot { notes: vec![60 + i, 64 + i, 67 + i, 71 + i], order_clicked: vec![] })
+        .collect();
+    v.notes_plays = bpe_kit::sound::Plays::AllAtOnce;
+    v.notes_strum = 150.0;
+    v.notes_octave_range = 1;
+    v.notes_every_unit = bpe_kit::sound::BeatsOrBars::Beats;
     card.params = v.to_params();
     scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
     // Keys on a knob and on the Master, read every block.
@@ -77,10 +85,16 @@ fn render_does_not_allocate() {
     for (a, t, v) in [
         (bpe_core::Address::on(shape, SlotId::Sound, "a_gain"), 0.0, -6.0),
         (bpe_core::Address::on(shape, SlotId::Sound, "a_gain"), 5.0, 0.0),
+        (bpe_core::Address::on(shape, SlotId::Sound, "notes_strum"), 0.0, 20.0),
+        (bpe_core::Address::on(shape, SlotId::Sound, "notes_strum"), 5.0, 200.0),
         (bpe_core::Address::on(bpe_core::ThingId::ROOT, SlotId::Mixer, "master_output"), 0.0, -3.0),
         (bpe_core::Address::on(bpe_core::ThingId::ROOT, SlotId::Mixer, "master_output"), 5.0, 0.0),
     ] {
         scene.set_key(&kit.registry, &a, t, bpe_core::Value::Number(v)).unwrap();
+    }
+    for t in [1.0, 2.5, 4.0] {
+        let a = bpe_core::Address::on(shape, SlotId::Sound, "notes_jump");
+        scene.set_key(&kit.registry, &a, t, bpe_core::Value::Int(3)).unwrap();
     }
     let resolved = resolve_scene(&scene, &kit.registry);
     let mut e = Engine::new(&scene, &resolved, &kit);
@@ -98,6 +112,23 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "the shape voice was heard while counting");
+    // By side reads the side of each hit (the outline was made when the patch was built).
+    let mut by_side = scene.clone();
+    let card = by_side.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set("notes_plays", bpe_core::Value::Choice("by_side".into()));
+    let resolved = resolve_scene(&by_side, &kit.registry);
+    let mut side = Engine::new(&by_side, &resolved, &kit);
+    let mut heard = false;
+    for _ in 0..1_200 {
+        side.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        side.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a By side block allocated");
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "By side was heard while counting");
     e.stop_notes();
     e.audition(shape, 64);
     ALLOCATIONS.store(0, Ordering::SeqCst);

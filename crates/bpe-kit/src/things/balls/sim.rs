@@ -40,6 +40,12 @@ pub fn numbers(world: &World, thing: ThingId) -> Option<&[u32]> {
     st.as_any().downcast_ref::<BallsState>().map(|s| s.numbers.as_slice())
 }
 
+/// The group number of `thing`'s ball in body row `item` (the row itself when `thing` is not a
+/// Balls thing).
+pub fn ball_number(world: &World, thing: ThingId, item: u32) -> u32 {
+    numbers(world, thing).and_then(|n| n.get(item as usize).copied()).unwrap_or(item)
+}
+
 /// What Variety rolls for: a ball's size, its launch speed, its colour and its turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Roll {

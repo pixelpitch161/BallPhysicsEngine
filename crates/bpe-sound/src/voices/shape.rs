@@ -12,11 +12,13 @@
 use super::alloc::{CAPACITY, MAX_VOICES, STEAL_MS, Voices};
 use super::hit_filter::HitFilter;
 use super::knobs::{self as k, KNOBS, MAX_ENVS, Values};
-use super::notes::{NotePicker, PickCx, RandomPick, mix};
+use super::notes::{NotePicker, PickCx, mix};
+use super::pick::AnyPick;
+use super::slots::{NotesSpec, SlotClock};
 use crate::chain::{Buf, ChainSpec, VoiceChain};
 use crate::modmatrix::{Combine, ModMatrix};
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
-use bpe_core::{LayerId, NoteSlot, ThingId, Track};
+use bpe_core::{LayerId, NoteSlot, ShapePath, ThingId, Track};
 use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
 use bpe_kit::sound::{GateMode, GateUnit, NoiseColour, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, Wave};
 use bpe_runtime::Party;
@@ -36,6 +38,19 @@ const PLAIN_NOTE_S: f32 = 0.1;
 const AUDITION_BALL: Party = Party { thing: ThingId::ROOT, item: u32::MAX };
 /// Auditions waiting for the next block.
 const MAX_AUDITIONS: usize = 8;
+/// Strummed notes waiting for their start.
+const MAX_STRUMS: usize = 64;
+
+/// A strummed note still to start.
+#[derive(Clone, Copy, Debug)]
+struct Strum {
+    sample: u64,
+    note: u8,
+    strength: f32,
+    ball: Party,
+    point: Vec2,
+    seed: u64,
+}
 
 /// One oscillator's settings that are not knobs.
 #[derive(Clone, Debug)]
@@ -68,6 +83,10 @@ pub struct ShapeSpec {
     pub play_mode: PlayMode,
     pub heard_from: bpe_core::Target,
     pub slots: Vec<NoteSlot>,
+    /// How hits pick notes and how the slots take turns.
+    pub notes: NotesSpec,
+    /// The shape's outline in shape units, for By side (`None` otherwise).
+    pub side_path: Option<ShapePath>,
     pub bus: u8,
     /// The knobs as set.
     pub base: Values,
@@ -224,7 +243,14 @@ pub fn note_hz(pitch: f32) -> f32 {
 pub struct ShapeVoice {
     spec: ShapeSpec,
     filter: HitFilter,
-    picker: RandomPick,
+    picker: AnyPick,
+    clock: SlotClock,
+    /// Accepted hits since the slot began (the play order's step).
+    slot_hits: u64,
+    /// The slot's turn those hits count from.
+    slot_turn: u64,
+    strums: [Strum; MAX_STRUMS],
+    n_strums: usize,
     notes: Voices<Note>,
     /// The knobs this block (keys read).
     now: Values,
@@ -292,7 +318,13 @@ impl ShapeVoice {
         }
         let mut v = ShapeVoice {
             filter,
-            picker: RandomPick,
+            picker: AnyPick::new(spec.notes.plays),
+            clock: SlotClock::new(spec.slots.len(), mix(0x5107 ^ ((spec.thing.0 as u64) << 20))),
+            slot_hits: 0,
+            slot_turn: 0,
+            strums: [Strum { sample: 0, note: 0, strength: 0.0, ball: AUDITION_BALL, point: Vec2::ZERO, seed: 0 };
+                MAX_STRUMS],
+            n_strums: 0,
             notes: Voices::new(|| Note::new(&spec.chain)),
             now,
             smooth: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
@@ -322,6 +354,26 @@ impl ShapeVoice {
     /// Notes sounding now (not fading).
     pub fn sounding(&self) -> usize {
         self.notes.sounding()
+    }
+
+    /// The slot playing now, 0 first.
+    pub fn slot(&self) -> usize {
+        self.clock.current()
+    }
+
+    /// Whether the slot changed during the last block.
+    pub fn slot_changed(&self) -> bool {
+        self.clock.changed()
+    }
+
+    /// The notes sounding now (not fading), lowest first. For tests and the editor; allocates.
+    pub fn playing_notes(&self) -> Vec<u8> {
+        let mut v: Vec<u8> = (0..CAPACITY)
+            .filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading)
+            .map(|i| self.notes.slots[i].note)
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// The loudest sample of the last block (for the shape's meter).
@@ -532,28 +584,143 @@ impl ShapeVoice {
         })
     }
 
-    /// Every hit on this shape that plays, and the auditions, start their notes.
+    /// The slot playing and its notes (`None` past the last slot, which plays nothing).
+    fn slot_now(&mut self) -> usize {
+        let turn = self.clock.turn();
+        if turn != self.slot_turn {
+            // A new slot: the play order starts again.
+            self.slot_turn = turn;
+            self.slot_hits = 0;
+            self.picker.reset();
+        }
+        self.clock.current()
+    }
+
+    /// Hit `hit` (accepted) at `sample` picks its notes. Returns them, the strum and the seed.
+    fn pick_for(&mut self, cx: &BlockCx, hit: &BlockHit, time: f64) -> super::notes::NotePick {
+        let slot = self.slot_now();
+        let Some(notes) = self.spec.slots.get(slot) else { return Default::default() };
+        let ball = hit.event.a;
+        let n = &self.spec.notes;
+        let ball_number = if n.plays == bpe_kit::sound::Plays::ByBall {
+            bpe_kit::things::balls::sim::ball_number(cx.world, ball.thing, ball.item)
+        } else {
+            0
+        };
+        let side = match &self.spec.side_path {
+            Some(path) => bpe_kit::things::shape::side_on(cx.world, self.spec.thing, path, hit.event.point),
+            None => 0,
+        };
+        let pcx = PickCx {
+            slot: notes,
+            hit_index: self.slot_hits,
+            ball_number,
+            side,
+            seed: mix(((self.spec.thing.0 as u64) << 32) ^ mix(self.slot_turn ^ 0x9A7E)),
+            repeat: n.repeat,
+            octave_range: n.octave_range,
+            strum_s: n.strum_s(time),
+            strum_dir: n.strum_dir,
+        };
+        let pick = self.picker.pick(&pcx);
+        self.slot_hits += 1;
+        pick
+    }
+
+    /// Every hit on this shape that plays, and the auditions, start their notes. The slot
+    /// changes landing in the block come before the hits on their samples.
     fn take_hits(&mut self, cx: &BlockCx, hits: &[BlockHit]) {
         self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0);
+        self.clock.begin_block(cx.start_sample, BLOCK as u32, cx.time, &self.spec.notes, cx.tempo);
+        self.start_strums(cx);
         for hit in hits {
             let at = hit.offset.min(BLOCK as u32 - 1);
             let sample = cx.start_sample + at as u64;
+            self.clock.until(at, &self.spec.notes);
             let Some(strength) = self.filter.accept(hit, sample, cx.world) else { continue };
             let ball = hit.event.a;
             let seed = mix(sample
                 ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
                 ^ ((self.spec.thing.0 as u64) << 48));
             self.hit_arrives(at);
-            let pick = self.picker.pick(&PickCx { slots: &self.spec.slots, seed });
-            for &note in pick.notes() {
-                self.start_note(cx, at, note, strength, ball, hit.event.point, mix(seed ^ note as u64));
+            let pick = self.pick_for(cx, hit, cx.time);
+            self.clock.hit(&self.spec.notes);
+            let gap = (pick.strum as f64 * crate::SAMPLE_RATE as f64).max(0.0);
+            for (i, &note) in pick.notes().iter().enumerate() {
+                let note_seed = mix(seed ^ note as u64);
+                let delay = (i as f64 * gap).round() as u64;
+                if at as u64 + delay < BLOCK as u64 {
+                    self.start_note(cx, at + delay as u32, note, strength, ball, hit.event.point, note_seed);
+                } else if self.n_strums < MAX_STRUMS {
+                    self.strums[self.n_strums] =
+                        Strum { sample: sample + delay, note, strength, ball, point: hit.event.point, seed: note_seed };
+                    self.n_strums += 1;
+                }
             }
         }
+        self.clock.end_block(&self.spec.notes);
         for i in 0..std::mem::take(&mut self.n_auditions) {
             let note = self.auditions[i];
             self.audition_count += 1;
             let seed = mix(self.audition_count ^ ((self.spec.thing.0 as u64) << 40));
             self.start_note(cx, 0, note, AUDITION_STRENGTH, AUDITION_BALL, Vec2::ZERO, seed);
+        }
+    }
+
+    /// Starts the strummed notes whose time comes in this block.
+    fn start_strums(&mut self, cx: &BlockCx) {
+        let end = cx.start_sample + BLOCK as u64;
+        let mut i = 0;
+        while i < self.n_strums {
+            let s = self.strums[i];
+            if s.sample < end {
+                let at = s.sample.saturating_sub(cx.start_sample) as u32;
+                self.start_note(cx, at, s.note, s.strength, s.ball, s.point, s.seed);
+                self.n_strums -= 1;
+                self.strums[i] = self.strums[self.n_strums];
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Runs the hit counting (the hit filter's memory, the slot clock and the play order) over
+    /// the clip's hits before sound sample `upto`, without making sound: after a seek the voice
+    /// then plays as it would have from the start. `hits` are every hit before `upto` in sample
+    /// order, with their samples. Allocates nothing but may take a while on a long clip, so it
+    /// runs in [`crate::Engine::seek`], off the steady sound path.
+    pub fn catch_up(
+        &mut self,
+        hits: &[(u64, BlockHit)],
+        upto: u64,
+        tempo: &crate::TempoMap,
+        world: &bpe_runtime::World,
+    ) {
+        let block = BLOCK as u64;
+        let mut next = 0;
+        let mut start = 0;
+        while start < upto {
+            let time = start as f64 / crate::SAMPLE_RATE as f64;
+            self.clock.begin_block(start, BLOCK as u32, time, &self.spec.notes, tempo);
+            let end = start + block;
+            if next < hits.len() && hits[next].0 < end {
+                self.read_keys(time);
+                self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0);
+                let cx = BlockCx { start_sample: start, time, tempo, world };
+                while next < hits.len() && hits[next].0 < end {
+                    let (sample, hit) = &hits[next];
+                    next += 1;
+                    let at = (sample - start) as u32;
+                    self.clock.until(at, &self.spec.notes);
+                    if self.filter.accept(hit, *sample, world).is_none() {
+                        continue;
+                    }
+                    let _ = self.pick_for(&cx, hit, time);
+                    self.clock.hit(&self.spec.notes);
+                }
+            }
+            self.clock.end_block(&self.spec.notes);
+            start = end;
         }
     }
 
@@ -857,6 +1024,11 @@ impl VoiceSource for ShapeVoice {
             }
         }
         self.filter.reset();
+        self.clock.reset();
+        self.picker.reset();
+        self.slot_hits = 0;
+        self.slot_turn = 0;
+        self.n_strums = 0;
         self.n_auditions = 0;
         self.peak = 0.0;
         self.read_keys(0.0);
@@ -866,6 +1038,15 @@ impl VoiceSource for ShapeVoice {
     fn adopt(&mut self, old: &mut dyn VoiceSource) {
         let Some(old) = old.as_any_mut().downcast_mut::<ShapeVoice>() else { return };
         self.filter.take_memory(&old.filter);
+        // The slots and the play order carry on where they were.
+        self.clock.take_over(&old.clock);
+        self.slot_turn = old.slot_turn;
+        self.slot_hits = old.slot_hits;
+        if self.spec.notes.plays == old.spec.notes.plays {
+            self.picker = old.picker;
+        }
+        self.strums = old.strums;
+        self.n_strums = old.n_strums;
         // The smoothers glide on from where the old ones were.
         for (new, prev) in self.smooth.iter_mut().zip(&old.smooth) {
             let target = new.target();
@@ -923,6 +1104,10 @@ impl VoiceSource for ShapeVoice {
 
     fn audition(&mut self, note: u8) {
         ShapeVoice::audition(self, note);
+    }
+
+    fn catch_up(&mut self, hits: &[(u64, BlockHit)], upto: u64, tempo: &crate::TempoMap, world: &bpe_runtime::World) {
+        ShapeVoice::catch_up(self, hits, upto, tempo, world);
     }
 
     fn level(&self) -> f32 {

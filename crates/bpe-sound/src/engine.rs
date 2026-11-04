@@ -139,6 +139,7 @@ impl Engine {
         }
         self.voice_pos = start;
         self.sync_physics();
+        self.catch_up(start);
         self.out_pos = start;
         self.discard = self.master.latency();
         self.queue_head = 0;
@@ -148,6 +149,30 @@ impl Engine {
             self.render(&mut scratch);
         }
         self.loudness.reset();
+    }
+
+    /// Every voice counts the clip's hits before sound sample `upto` (the physics has run that
+    /// far), so slots and play orders are where playing from the start would have put them.
+    fn catch_up(&mut self, upto: u64) {
+        if upto == 0 {
+            return;
+        }
+        let sps = self.cursor.samples_per_step();
+        let mut hits: Vec<(u64, BlockHit)> = self
+            .physics
+            .log()
+            .events()
+            .iter()
+            .filter(|e| e.kind == bpe_runtime::EventKind::Hit)
+            .map(|e| (crate::hits::hit_sample(e, sps), e))
+            .filter(|(at, _)| *at < upto)
+            .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() }))
+            .collect();
+        hits.sort_by_key(|(at, _)| *at);
+        let world = self.physics.world();
+        for v in &mut self.voices {
+            v.catch_up(&hits, upto, &self.tempo, world);
+        }
     }
 
     pub fn tempo(&self) -> &TempoMap {
