@@ -225,6 +225,8 @@ Dependencies go bottom to top:
   the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (older files with bare names open with new colours); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
+  "+ Add slot" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
   Shift mirrors across the shape's middle line, right-click Add point / Create curve / Straighten / Delete point /
   Turn into points); a `look.shape` card shows the Look editor without the ball view or Reactions, and its Body

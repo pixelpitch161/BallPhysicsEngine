@@ -78,6 +78,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Inside each one",
     "Light",
     "Motion",
+    "Bounce",
     "Growing",
     "Other balls",
     "Against some things",

@@ -1484,7 +1484,7 @@ mod tests {
         let trail = bpe_kit::modules::trail::StreakTrail::defs();
         assert_eq!(headings(&rows_for(trail, &|_| true)), ["Shape", "Colours", "Light", "Variation", "Blending"]);
         let bounce = bpe_kit::BasicBounce::defs();
-        assert_eq!(headings(&rows_for(bounce, &|_| true)), ["Basics", "Growing", "Other balls", "Against some things"]);
+        assert_eq!(headings(&rows_for(bounce, &|_| true)), ["Bounce", "Growing", "Other balls", "Against some things"]);
     }
 
     /// A grid of `defs` at their defaults, every section open, in a panel 420 wide.

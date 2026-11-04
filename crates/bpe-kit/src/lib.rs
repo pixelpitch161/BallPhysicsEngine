@@ -342,7 +342,7 @@ mod tests {
             v.sort_unstable();
             v
         };
-        assert_eq!(keys_in("Basics"), sorted(vec!["bounciness", "speed_gain", "top_speed", "friction", "takes_over"]));
+        assert_eq!(keys_in("Bounce"), sorted(vec!["bounciness", "speed_gain", "top_speed", "friction", "takes_over"]));
         assert_eq!(keys_in("Growing"), sorted(vec!["grow", "max_size", "pops_after"]));
         assert_eq!(keys_in("Other balls"), sorted(vec!["hit_balls", "balls_to_hit"]));
     }
