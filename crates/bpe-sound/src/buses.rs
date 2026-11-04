@@ -422,7 +422,7 @@ impl Buses {
                             r[i] += br[i];
                         }
                     }
-                    let cx = FxCx { time, tempo, hits, buses: &self.last, meters };
+                    let cx = FxCx { time, tempo, hits, buses: &self.last, bus: b, meters };
                     reduction = bus.chain.process(&mut l, &mut r, &cx);
                     for i in 0..BLOCK {
                         let g = bus.fader.next() * bus.audible.next();

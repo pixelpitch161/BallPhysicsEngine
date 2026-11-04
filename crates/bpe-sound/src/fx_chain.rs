@@ -6,14 +6,22 @@
 use crate::hits::BlockHit;
 use crate::lag::Lag;
 use crate::voices::knobs::track_value;
+use crate::voices::strength;
 use crate::{BLOCK, FxReading, Meters, TempoMap};
 use bpe_core::Settings;
-use bpe_core::{Address, LayerId, Params, Scene, SettingDef, SlotId, ThingId, Track, Value, layered_key};
+use bpe_core::{Address, LayerId, Params, Scene, SettingDef, SlotId, Target, ThingId, Track, Value, layered_key};
+use bpe_dsp::fx::analyser::Analyser;
+use bpe_dsp::fx::compressor::{CompParams, Compressor, Key};
+use bpe_dsp::fx::eq::{BandParams, BandShape, Eq8, Place};
 use bpe_dsp::fx::modfx::{Chorus, Flanger, ModParams, Phaser};
 use bpe_dsp::fx::width::{Correlation, Width};
 use bpe_dsp::{Smoother, TruePeakLimiter};
-use bpe_kit::sound::fx::{self, Feel, LimiterSettings, ModFxSettings, NoteLength, WidthSettings};
+use bpe_kit::sound::fx::{
+    self, AnalyserMode, BandKind, CompressorSettings, EqBand, EqSettings, Feel, LimiterSettings, ModFxSettings,
+    NoteLength, Sidechain, StereoPlace, WidthSettings,
+};
 use bpe_kit::sound::{BUSES, MIXER};
+use bpe_kit::things::shape::KIND as SHAPE;
 
 /// What an effect can read while it runs one block.
 pub struct FxCx<'a> {
@@ -24,6 +32,8 @@ pub struct FxCx<'a> {
     pub hits: &'a [BlockHit],
     /// Each bus's output from its last block, for a Bus sidechain.
     pub buses: &'a [[[f32; BLOCK]; 2]; BUSES],
+    /// The bus running (0..2).
+    pub bus: usize,
     pub meters: &'a Meters,
 }
 
@@ -88,6 +98,53 @@ pub fn note_seconds(note: NoteLength, feel: Feel, tempo: &TempoMap) -> f64 {
     base * feel.factor()
 }
 
+/// The keys of each EQ band's numbers, so reading keys never builds a string.
+const BAND_KEYS: [[&str; 3]; 8] = [
+    ["band1_freq", "band1_gain", "band1_q"],
+    ["band2_freq", "band2_gain", "band2_q"],
+    ["band3_freq", "band3_gain", "band3_q"],
+    ["band4_freq", "band4_gain", "band4_q"],
+    ["band5_freq", "band5_gain", "band5_q"],
+    ["band6_freq", "band6_gain", "band6_q"],
+    ["band7_freq", "band7_gain", "band7_q"],
+    ["band8_freq", "band8_gain", "band8_q"],
+];
+
+/// An EQ band's settings for the sound-making part.
+pub fn band_params(b: &EqBand, freq: f32, gain: f32, q: f32) -> BandParams {
+    BandParams {
+        on: b.on,
+        shape: match b.kind {
+            BandKind::LowCut => BandShape::LowCut,
+            BandKind::LowShelf => BandShape::LowShelf,
+            BandKind::Bell => BandShape::Bell,
+            BandKind::Notch => BandShape::Notch,
+            BandKind::HighShelf => BandShape::HighShelf,
+            BandKind::HighCut => BandShape::HighCut,
+        },
+        freq,
+        gain_db: gain,
+        q,
+        sections: b.slope.sections() as u8,
+        place: match b.place {
+            StereoPlace::Both => Place::Both,
+            StereoPlace::Mid => Place::Mid,
+            StereoPlace::Side => Place::Side,
+        },
+    }
+}
+
+/// Every band of an EQ as set (no keys), for the editor's curve.
+pub fn eq_bands(s: &EqSettings) -> [BandParams; 8] {
+    let b = s.bands();
+    std::array::from_fn(|i| band_params(b[i], b[i].freq, b[i].gain, b[i].q))
+}
+
+/// The most hits one block hands a Hits sidechain.
+const MAX_KEY_HITS: usize = 64;
+/// Blocks between two analyser readings written to the meters.
+const ANALYSER_EVERY: u32 = 4;
+
 /// A Chorus, Phaser or Flanger.
 enum ModDsp {
     Chorus(Box<Chorus>),
@@ -128,16 +185,54 @@ impl ModDsp {
 
 /// One effect's sound-making part, with its settings as set (keys read on top).
 enum Fx {
-    Limiter { dsp: Box<TruePeakLimiter>, set: LimiterSettings },
-    Mod { dsp: ModDsp, set: ModFxSettings, rate_hz: f64 },
-    Width { dsp: Box<Width>, corr: Box<Correlation>, set: WidthSettings },
+    Limiter {
+        dsp: Box<TruePeakLimiter>,
+        set: LimiterSettings,
+    },
+    Mod {
+        dsp: ModDsp,
+        set: ModFxSettings,
+        rate_hz: f64,
+    },
+    Width {
+        dsp: Box<Width>,
+        corr: Box<Correlation>,
+        set: WidthSettings,
+    },
+    Eq {
+        dsp: Box<Eq8>,
+        analyser: Box<Analyser>,
+        set: Box<EqSettings>,
+        count: u32,
+    },
+    Comp {
+        dsp: Box<Compressor>,
+        set: CompressorSettings,
+        /// The shape a Hits sidechain listens to; `None` (none chosen, or deleted) listens
+        /// to itself.
+        shape: Option<ThingId>,
+        hits: Box<[(u32, f32); MAX_KEY_HITS]>,
+    },
 }
 
 impl Fx {
     /// The effect for a layer of `kind` with these settings, or `None` for a kind this build
     /// doesn't know (it is passed over).
-    fn build(kind: &str, p: &Params) -> Option<(Fx, MixLaw)> {
+    fn build(kind: &str, p: &Params, scene: &Scene) -> Option<(Fx, MixLaw)> {
         Some(match kind {
+            fx::EQ => {
+                let set = Box::new(EqSettings::from_params(p));
+                (Fx::Eq { dsp: Box::default(), analyser: Box::default(), set, count: 0 }, MixLaw::Gain)
+            }
+            fx::COMPRESSOR => {
+                let set = CompressorSettings::from_params(p);
+                let shape = match set.sc_shape {
+                    Target::Thing(id) if scene.things.get(&id).is_some_and(|t| t.kind == SHAPE) => Some(id),
+                    _ => None,
+                };
+                let hits = Box::new([(0, 0.0); MAX_KEY_HITS]);
+                (Fx::Comp { dsp: Box::default(), set, shape, hits }, MixLaw::Gain)
+            }
             fx::LIMITER => {
                 let set = LimiterSettings::from_params(p);
                 (Fx::Limiter { dsp: Box::new(TruePeakLimiter::new()), set }, MixLaw::Gain)
@@ -178,6 +273,11 @@ impl Fx {
                 dsp.reset();
                 corr.reset();
             }
+            Fx::Eq { dsp, analyser, .. } => {
+                dsp.reset();
+                analyser.reset();
+            }
+            Fx::Comp { dsp, .. } => dsp.reset(),
         }
     }
 
@@ -193,6 +293,11 @@ impl Fx {
                 std::mem::swap(dsp, o);
                 std::mem::swap(corr, oc);
             }
+            (Fx::Eq { dsp, analyser, .. }, Fx::Eq { dsp: o, analyser: oa, .. }) => {
+                std::mem::swap(dsp, o);
+                std::mem::swap(analyser, oa);
+            }
+            (Fx::Comp { dsp, .. }, Fx::Comp { dsp: o, .. }) => std::mem::swap(dsp, o),
             _ => {}
         }
     }
@@ -221,6 +326,27 @@ impl Fx {
             Fx::Width { dsp, set, .. } => {
                 dsp.set(k.get("width", set.width) / 100.0, k.get("mono_below", set.mono_below));
             }
+            Fx::Eq { dsp, set, .. } => {
+                let b = set.bands();
+                let bands = std::array::from_fn(|i| {
+                    let [f, g, q] = BAND_KEYS[i];
+                    band_params(b[i], k.get(f, b[i].freq), k.get(g, b[i].gain), k.get(q, b[i].q))
+                });
+                dsp.set(&bands);
+                dsp.set_output_db(k.get("output", set.output));
+            }
+            Fx::Comp { dsp, set, .. } => {
+                dsp.set(&CompParams {
+                    threshold_db: k.get("threshold", set.threshold),
+                    ratio: k.get("ratio", set.ratio),
+                    attack_ms: k.get("attack", set.attack),
+                    release_ms: k.get("release", set.release),
+                    knee_db: k.get("knee", set.knee),
+                    makeup_db: k.get("makeup", set.makeup),
+                    sc_low_cut_hz: k.get("sc_low_cut", set.sc_low_cut),
+                    sc_high_cut_hz: k.get("sc_high_cut", set.sc_high_cut),
+                });
+            }
         }
     }
 
@@ -243,6 +369,47 @@ impl Fx {
                 corr.push(l, r);
                 cx.meters.write_fx(id.0, &FxReading { value: corr.value(), ..FxReading::SILENT });
                 0.0
+            }
+            Fx::Eq { dsp, analyser, set, count } => {
+                if set.analyser == AnalyserMode::Pre {
+                    analyser.push(l, r);
+                }
+                dsp.process(l, r);
+                if set.analyser == AnalyserMode::Post {
+                    analyser.push(l, r);
+                }
+                *count += 1;
+                if set.analyser != AnalyserMode::Off && *count % ANALYSER_EVERY == 0 {
+                    cx.meters.write_fx_bins(id.0, analyser.bins());
+                }
+                0.0
+            }
+            Fx::Comp { dsp, set, shape, hits } => {
+                let own = cx.bus;
+                match (set.sidechain, shape) {
+                    (Sidechain::Bus, _)
+                        if (1..=BUSES as i32).contains(&set.sc_bus) && set.sc_bus as usize - 1 != own =>
+                    {
+                        let [kl, kr] = &cx.buses[set.sc_bus as usize - 1];
+                        dsp.process(l, r, Key::External(kl, kr));
+                    }
+                    (Sidechain::Hits, Some(shape)) => {
+                        let mut n = 0;
+                        for h in cx.hits {
+                            let on_shape = h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape);
+                            if on_shape && n < MAX_KEY_HITS {
+                                hits[n] = (h.offset, strength(h.event.speed));
+                                n += 1;
+                            }
+                        }
+                        dsp.process(l, r, Key::Hits(&hits[..n]));
+                    }
+                    _ => dsp.process(l, r, Key::SelfInput),
+                }
+                let gr = dsp.gain_reduction_db();
+                let reading = FxReading { reduction: gr, input: dsp.input_db(), output: dsp.output_db(), value: 0.0 };
+                cx.meters.write_fx(id.0, &reading);
+                gr
             }
         }
     }
@@ -297,7 +464,7 @@ impl FxChain {
                     p.set(d.key, v.clone());
                 }
             }
-            let Some((fx, law)) = Fx::build(&layer.kind, &p) else { continue };
+            let Some((fx, law)) = Fx::build(&layer.kind, &p, scene) else { continue };
             let mix_base = match p.get("mix") {
                 Some(Value::Number(m)) => (*m as f32 / 100.0).clamp(0.0, 1.0),
                 _ => 1.0,
@@ -464,8 +631,14 @@ mod tests {
                 l[i] = phase.sin() * 0.5;
                 r[i] = (phase * 1.3).sin() * 0.3;
             }
-            let cx =
-                FxCx { time: b as f64 * 64.0 / 48_000.0, tempo: &tempo, hits: &[], buses: &buses, meters: &meters };
+            let cx = FxCx {
+                time: b as f64 * 64.0 / 48_000.0,
+                tempo: &tempo,
+                hits: &[],
+                buses: &buses,
+                bus: 0,
+                meters: &meters,
+            };
             chain.process(&mut l, &mut r, &cx);
             out.extend(l.iter().zip(&r).map(|(a, b)| (*a, *b)));
         }
@@ -498,5 +671,46 @@ mod tests {
         let a = run(&mut c, 10);
         let b = run(&mut plain, 10);
         assert!(a.iter().zip(&b).all(|(x, y)| (x.0 - y.0).abs() < 1e-6), "Mix 0 is dry");
+    }
+
+    #[test]
+    fn missing_sidechain_shape_falls_back_to_self() {
+        let loud = [("threshold", Value::Number(-40.0)), ("ratio", Value::Number(10.0))];
+        let mut own = chain_with(fx::COMPRESSOR, &loud, true);
+        let mut gone = chain_with(
+            fx::COMPRESSOR,
+            &[
+                loud[0].clone(),
+                loud[1].clone(),
+                ("sidechain", Value::Choice("hits".into())),
+                ("sc_shape", Value::Target(Target::Thing(ThingId(999)))),
+            ],
+            true,
+        );
+        let a = run(&mut own, 40);
+        let b = run(&mut gone, 40);
+        assert_eq!(a, b, "the deleted shape's compressor listens to itself");
+        let mut plain = FxChain::default();
+        let dry = run(&mut plain, 40);
+        let level = |x: &[(f32, f32)]| x[BLOCK * 20..].iter().fold(0.0f32, |m, v| m.max(v.0.abs()));
+        assert!(level(&a) < level(&dry) * 0.5, "and it does compress");
+    }
+
+    #[test]
+    fn an_eq_bell_cuts_its_band() {
+        let mut c = chain_with(
+            fx::EQ,
+            &[
+                ("band1_on", Value::Bool(false)),
+                ("band5_on", Value::Bool(true)),
+                ("band5_freq", Value::Number(382.0)),
+                ("band5_gain", Value::Number(-12.0)),
+            ],
+            true,
+        );
+        // The test signal's left channel is a sine at 0.05 rad a sample: 382 Hz.
+        let out = run(&mut c, 60);
+        let peak = out[BLOCK * 40..].iter().fold(0.0f32, |m, v| m.max(v.0.abs()));
+        assert!((peak - 0.5 * bpe_dsp::db_to_gain(-12.0)).abs() < 0.02, "{peak}");
     }
 }
