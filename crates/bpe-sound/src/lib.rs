@@ -7,6 +7,7 @@ pub mod engine;
 pub mod hits;
 pub mod master;
 pub mod meters;
+pub mod modmatrix;
 pub mod offline;
 pub mod patch;
 pub mod tempo;
