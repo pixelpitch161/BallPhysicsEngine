@@ -38,6 +38,9 @@ pub struct Engine {
     queue: [[f32; 2]; QUEUE],
     queue_head: usize,
     queue_len: usize,
+    /// The physics is where the voices are. A scene with no voices runs no physics (it would
+    /// only hold the playhead back); the first voice brings it up to date.
+    physics_synced: bool,
 }
 
 impl Engine {
@@ -64,6 +67,7 @@ impl Engine {
             queue: [[0.0; 2]; QUEUE],
             queue_head: 0,
             queue_len: 0,
+            physics_synced: true,
         }
     }
 
@@ -75,6 +79,11 @@ impl Engine {
     /// Where the next block starts, in seconds.
     pub fn time(&self) -> f64 {
         self.out_pos as f64 / SAMPLE_RATE as f64
+    }
+
+    /// The step the engine's own physics is at.
+    pub fn physics_step(&self) -> u64 {
+        self.physics.world().step
     }
 
     pub fn meters(&self) -> Arc<Meters> {
@@ -98,11 +107,19 @@ impl Engine {
             v.reset();
         }
         self.master.reset();
-        let steps = self.physics.world().steps_per_second as f64;
-        let start_step = (start as f64 / self.cursor.samples_per_step()).floor();
-        self.physics.seek(start_step / steps);
-        self.cursor.seek(self.physics.log(), start);
+        if self.voices.is_empty() {
+            // Silence needs no pre-roll and no physics.
+            self.voice_pos = target;
+            self.out_pos = target;
+            self.discard = self.master.latency();
+            self.queue_head = 0;
+            self.queue_len = 0;
+            self.physics_synced = false;
+            self.loudness.reset();
+            return;
+        }
         self.voice_pos = start;
+        self.sync_physics();
         self.out_pos = start;
         self.discard = self.master.latency();
         self.queue_head = 0;
@@ -155,6 +172,13 @@ impl Engine {
     /// does this itself; it is apart so the physics, which may allocate, can be kept out of a
     /// check on the sound path.
     pub fn step_physics(&mut self) {
+        if self.voices.is_empty() {
+            self.physics_synced = false;
+            return;
+        }
+        if !self.physics_synced {
+            self.sync_physics();
+        }
         let end = self.voice_pos + self.blocks_needed() * BLOCK as u64;
         let sps = self.cursor.samples_per_step();
         let target = (end as f64 / sps).ceil() as u64;
@@ -163,6 +187,15 @@ impl Engine {
             self.physics.seek((target as f64 + 0.5) / rate);
             self.cursor.read(self.physics.log());
         }
+    }
+
+    /// Puts the physics (and the hits waiting) at the voices' place in sound time.
+    fn sync_physics(&mut self) {
+        let steps = self.physics.world().steps_per_second as f64;
+        let step = (self.voice_pos as f64 / self.cursor.samples_per_step()).floor();
+        self.physics.seek((step + 0.5) / steps);
+        self.cursor.seek(self.physics.log(), self.voice_pos);
+        self.physics_synced = true;
     }
 
     /// Renders the next block, the physics already stepped by [`Engine::step_physics`]. Never

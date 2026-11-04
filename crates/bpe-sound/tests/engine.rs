@@ -115,3 +115,79 @@ fn seeking_back_to_the_start_matches_a_fresh_engine() {
     }
     assert!(fresh.iter().zip(&again).all(|(a, b)| a.to_bits() == b.to_bits()));
 }
+
+/// The scene with the Master's output turned down to `db`.
+fn with_output(mut scene: Scene, kit: &Kit, db: f64) -> Scene {
+    bpe_kit::ensure_mixer(&mut scene, &kit.registry);
+    let a =
+        bpe_core::Address { thing: ThingId::ROOT, slot: Some(bpe_core::SlotId::Mixer), key: "master_output".into() };
+    scene.set_at(&kit.registry, &a, bpe_core::Value::Number(db)).unwrap();
+    scene
+}
+
+#[test]
+fn a_master_change_while_stopped_holds_after_a_seek() {
+    let kit = kit();
+    let (scene, _) = toned(&kit, "test-tone-decay=1");
+    let quieter = with_output(scene.clone(), &kit, -6.0);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let quiet_resolved = resolve_scene(&quieter, &kit.registry);
+    // Turned while stopped: nothing renders between the patch and the seek that Play sends.
+    let mut a = Engine::new(&scene, &resolved, &kit);
+    a.swap_patch(bpe_sound::SoundPatch::build(&quieter, &quiet_resolved, &kit));
+    a.seek(1.0);
+    let mut b = Engine::new(&quieter, &quiet_resolved, &kit);
+    b.seek(1.0);
+    let mut x = [0.0f32; BLOCK * 2];
+    let mut y = [0.0f32; BLOCK * 2];
+    let mut worst = 0.0f32;
+    for _ in 0..2000 {
+        a.render(&mut x);
+        b.render(&mut y);
+        worst = x.iter().zip(&y).fold(worst, |m, (p, q)| m.max((p - q).abs()));
+    }
+    assert!(worst < 1e-6, "the -6 dB output holds after Play: {worst}");
+}
+
+#[test]
+fn a_silent_scene_runs_no_physics() {
+    let kit = kit();
+    let scene = new_scene(&kit.registry);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    let mut block = [0.0f32; BLOCK * 2];
+    for _ in 0..100 {
+        e.render(&mut block);
+    }
+    e.seek(30.0);
+    e.render(&mut block);
+    assert_eq!(e.physics_step(), 0, "no sound, so the engine's own physics stays put");
+    assert_eq!(e.sample_position(), 30 * 48_000 + BLOCK as u64);
+}
+
+#[test]
+fn the_first_voice_of_a_silent_scene_picks_up_where_the_sound_is() {
+    let kit = kit();
+    let plain = new_scene(&kit.registry);
+    let (toned_scene, _) = toned(&kit, "test-tone");
+    let straight = render(&toned_scene, &kit, 4.0);
+    let resolved = resolve_scene(&plain, &kit.registry);
+    let mut e = Engine::new(&plain, &resolved, &kit);
+    let mut block = [0.0f32; BLOCK * 2];
+    for _ in 0..750 {
+        e.render(&mut block);
+    }
+    let swapped = e.sample_position() as usize;
+    let toned_resolved = resolve_scene(&toned_scene, &kit.registry);
+    e.swap_patch(bpe_sound::SoundPatch::build(&toned_scene, &toned_resolved, &kit));
+    let mut after = Vec::new();
+    while (e.sample_position() as usize) < straight.len() / 2 {
+        e.render(&mut block);
+        after.extend_from_slice(&block);
+    }
+    // Past the master's delay and any blip that started before the swap.
+    let skip = 400;
+    let tail = &straight[(swapped + skip) * 2..];
+    assert!(tail.iter().any(|&v| v != 0.0), "the ball hits after 1 s");
+    assert!(tail.iter().zip(&after[skip * 2..]).all(|(a, b)| (a - b).abs() < 1e-6));
+}

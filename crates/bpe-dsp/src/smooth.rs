@@ -23,6 +23,11 @@ impl Smoother {
         self.target = target;
     }
 
+    /// Where it is gliding to.
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
     /// Jumps straight to `value`, with nothing to glide.
     pub fn reset(&mut self, value: f32) {
         self.value = value;

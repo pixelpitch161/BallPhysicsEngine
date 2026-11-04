@@ -17,6 +17,16 @@ impl AtomicF32 {
     fn get(&self) -> f32 {
         f32::from_bits(self.0.load(Ordering::Relaxed))
     }
+    /// Keeps the larger of what it holds and `v`.
+    fn raise(&self, v: f32) {
+        let _ = self.0.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+            (f32::from_bits(bits) < v || f32::from_bits(bits).is_nan()).then_some(v.to_bits())
+        });
+    }
+    /// What it holds, leaving silence.
+    fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(f32::NEG_INFINITY.to_bits(), Ordering::Relaxed))
+    }
 }
 
 /// The master's levels as the sound thread last wrote them.
@@ -74,8 +84,9 @@ impl Default for Meters {
 
 impl Meters {
     pub fn write(&self, r: &MeterReading) {
-        self.peak_l.set(r.peak_l);
-        self.peak_r.set(r.peak_r);
+        // Peaks hold until they are read, so a short hit between two looks still shows.
+        self.peak_l.raise(r.peak_l);
+        self.peak_r.raise(r.peak_r);
         self.momentary.set(r.momentary);
         self.short_term.set(r.short_term);
         self.integrated.set(r.integrated);
@@ -83,10 +94,11 @@ impl Meters {
         self.reduction.set(r.reduction);
     }
 
+    /// The meters now, with the loudest peaks since the last read.
     pub fn read(&self) -> MeterReading {
         MeterReading {
-            peak_l: self.peak_l.get(),
-            peak_r: self.peak_r.get(),
+            peak_l: self.peak_l.take(),
+            peak_r: self.peak_r.take(),
             momentary: self.momentary.get(),
             short_term: self.short_term.get(),
             integrated: self.integrated.get(),
@@ -98,6 +110,19 @@ impl Meters {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_peak_holds_until_it_is_read() {
+        let m = Meters::default();
+        let loud = MeterReading { peak_l: -3.0, peak_r: -4.0, ..MeterReading::SILENT };
+        let quiet = MeterReading { peak_l: -20.0, peak_r: -30.0, ..MeterReading::SILENT };
+        m.write(&loud);
+        m.write(&quiet);
+        let r = m.read();
+        assert_eq!((r.peak_l, r.peak_r), (-3.0, -4.0), "the loudest block since the last look");
+        let r = m.read();
+        assert_eq!(r.peak_l, f32::NEG_INFINITY, "nothing played since");
+    }
+
     use super::*;
 
     #[test]

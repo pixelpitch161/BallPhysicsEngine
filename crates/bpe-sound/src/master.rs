@@ -41,7 +41,7 @@ impl Master {
     /// Silence, as new, with the gains where they are headed.
     pub fn reset(&mut self) {
         self.limiter.reset();
-        let (i, o) = (self.input.value(), self.output.value());
+        let (i, o) = (self.input.target(), self.output.target());
         self.input.reset(i);
         self.output.reset(o);
     }
