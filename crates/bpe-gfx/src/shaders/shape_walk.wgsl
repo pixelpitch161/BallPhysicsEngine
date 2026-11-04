@@ -1,20 +1,32 @@
 // One walk over a shape's layer records, bottom to top, at world point `world` (`s` where it is
-// against the outline): records `first` to `first + count`. Pasted in by `layers::source` with
-// SHAPE_WALK named and SHAPE_SHADER_CASE either empty or the shader layers' case: a scene
-// without shader layers, and the walk shader layers sample (which can't call itself), leave
-// shader records out.
+// against the outline): records `first` to `first + count`. `split` draws one part of a shape
+// split by its Blend layer, as balls are (see layers_walk.wgsl): 0 the whole shape; else its low
+// 16 bits are the first record above the Blend layer, and with bit 16 clear the walk draws the
+// layers under it (and leaves how much the layers above cover in TOP_COVER), with bit 16 set the
+// layers from there up as they show over the rest. Pasted in by `layers::source` with SHAPE_WALK
+// named and SHAPE_SHADER_CASE either empty or the shader layers' case: a scene without shader
+// layers, and the walk shader layers sample (which can't call itself), leave shader records out.
 
-fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32) -> Walked {
+fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u32) -> Walked {
     // One output pixel, in world pixels.
     let aa = g.view.z;
+    let cut = split & 0xffffu;
+    let upper = cut > 0u && (split & 0x10000u) != 0u;
+    let lower = cut > 0u && !upper;
     var inner = vec4<f32>(0.0);
     var outer = vec4<f32>(0.0);
+    // The layers above the Blend layer, as they show over the rest (upper part only), and how
+    // much they cover (lower part only).
+    var top_in = vec4<f32>(0.0);
+    var top_out = vec4<f32>(0.0);
+    var cover_top = vec2<f32>(0.0);
     let count = min(count_in, MAX_LAYERS);
     for (var k = 0u; k < count; k++) {
         let l = look_layers[first + k];
         let mode = l.head.y;
         let flag = (l.head.z & 1u) != 0u;
         let opacity = clamp(l.amount.x, 0.0, 1.0);
+        let above = cut > 0u && k >= cut;
         // The colour of the layers under this one here, as if wholly inside the shape.
         let under = select(vec3<f32>(1.0), inner.rgb / inner.a, inner.a > 1e-5);
         var c = vec3<f32>(0.0);
@@ -56,6 +68,29 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32) -> Walked
             //SHAPE_SHADER_CASE
             default: {}
         }
+        if lower && above {
+            // Left out of the lower part; only how much it covers counts (light covers nothing).
+            if l.head.x != 4u {
+                cover_top = vec2<f32>(a_in, a_out) + cover_top * (vec2<f32>(1.0) - vec2<f32>(a_in, a_out));
+            }
+            continue;
+        }
+        if upper && above {
+            if l.head.x == 4u {
+                var mixed = c;
+                if mode != 0u && outer.a > 1e-5 {
+                    mixed = (1.0 - outer.a) * c + outer.a * blended(mode, outer.rgb / outer.a, c);
+                }
+                top_out = vec4<f32>(top_out.rgb + mixed * a_out, top_out.a);
+            } else {
+                if a_in > 0.0 {
+                    top_in = top_over(top_in, inner, c, a_in, mode);
+                }
+                if a_out > 0.0 {
+                    top_out = top_over(top_out, outer, c, a_out, mode);
+                }
+            }
+        }
         if l.head.x == 4u {
             // Light, covering nothing: mixed with what reaches past the edge, then added.
             var mixed = c;
@@ -71,6 +106,10 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32) -> Walked
                 outer = layer_over(outer, c, a_out, mode);
             }
         }
+    }
+    TOP_COVER = cover_top;
+    if upper {
+        return Walked(top_in, top_out);
     }
     return Walked(inner, outer);
 }

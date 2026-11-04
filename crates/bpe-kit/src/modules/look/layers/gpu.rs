@@ -14,7 +14,7 @@ use super::{
     BLEND, BODY, BlendLayer, BodyLayer, Changes, ColourFrom, ColourOnHit, ColourOverTime, FLASH, FlashOnHit, GLOW,
     GROUP_GRADIENT, GROUP_SHADER, GlowLayer, GroupGradient, GroupMix, GroupShader, HUE, MASK, MaskLayer, OUTLINE,
     OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE, STRETCH, ShaderLayer,
-    ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
+    ShadingLayer, ShineLayer, ShineLight, StretchWhenFast, TURNING, Turning,
 };
 use super::{GradientShape, MaskFrom, ShadingKind};
 use crate::modules::look::BallShape;
@@ -313,13 +313,23 @@ impl Stack {
                     paint: own_paint(&o.colour, o.gradient, o.direction, atlas),
                     ..LayerGpu::ZERO
                 },
-                Drawn::Shine(s) => LayerGpu {
-                    head: [LayerGpu::SHINE, blend(s.blend), 0, 0],
-                    amount: [s.opacity, s.strength, 0.0, 0.0],
-                    p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
-                    p1: [s.sharpness(), 0.0, 0.0, 0.0],
-                    ..LayerGpu::ZERO
-                },
+                Drawn::Shine(s) => {
+                    // White light is the classic shine; own colours tint its light.
+                    let own = s.light == ShineLight::Own;
+                    LayerGpu {
+                        head: [LayerGpu::SHINE, blend(s.blend), flag(own), 0],
+                        amount: [s.opacity, s.strength, 0.0, 0.0],
+                        p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
+                        p1: [s.sharpness(), 0.0, 0.0, 0.0],
+                        colour: if own { s.colour.sample(0.5) } else { [1.0; 4] },
+                        paint: if own {
+                            own_paint(&s.colour, s.gradient, s.direction, atlas)
+                        } else {
+                            bpe_gfx::PaintGpu::default()
+                        },
+                        ..LayerGpu::ZERO
+                    }
+                }
                 Drawn::Glow(g) => LayerGpu {
                     head: [LayerGpu::GLOW, blend(g.blend), flag(g.colour_from == ColourFrom::SameAsBody), 0],
                     amount: [g.opacity, g.strength, 0.0, 0.0],
@@ -1098,5 +1108,24 @@ mod fixes_tests {
         let gs = records.iter().find(|r| r.head[0] == LayerGpu::GROUP_SHADER).unwrap();
         assert_eq!(gs.p1[1], 0.75, "three quarters uncovered");
         assert!((gs.p1[2] - 90f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_shine_s_light_is_white_or_its_own_colours() {
+        let white = stack_after(|reg, s, b| {
+            s.add_layer(reg, b, SlotId::Look, SHINE).unwrap();
+        });
+        let mut atlas = GradientAtlas::default();
+        let r = white.records(&mut atlas, &mut Vec::new(), 0.0)[1];
+        assert_eq!((r.head[2], r.colour, r.paint.row), (0, [1.0; 4], -1.0), "white light, the classic shine");
+        let own = stack_after(|reg, s, b| {
+            let shine = s.add_layer(reg, b, SlotId::Look, SHINE).unwrap();
+            set(reg, s, b, shine, "light", Value::Choice("own".into()));
+            let colours = bpe_core::Gradient::even(&[bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255)]);
+            set(reg, s, b, shine, "colour", Value::Gradient(colours));
+        });
+        let r = own.records(&mut atlas, &mut Vec::new(), 0.0)[1];
+        assert_eq!(r.head[2], LayerGpu::FLAG, "its own colours");
+        assert!(r.paint.row >= 0.0, "a gradient runs across the ball");
     }
 }

@@ -30,8 +30,8 @@ mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, PathInstance, ShapeInstance, Stage, ThingDraw,
-    TrailVertex, blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, PathInstance, Place, ShapeInstance, Stage,
+    ThingDraw, TrailVertex, blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};
@@ -1146,6 +1146,10 @@ impl Renderer {
             pass.set_pipeline(&self.background);
             pass.draw(0..3, 0..1);
         }
+        // Things of a z-order below 0 draw under everything else.
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| l.z < 0) {
+            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, None);
+        }
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
@@ -1154,11 +1158,9 @@ impl Renderer {
         }
         // Blended things behind the balls (shapes) mix with what is behind them before the balls
         // are drawn over them.
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| l.behind) {
-            let effects = Some((frame, i, None));
-            let through = self.layer_through(device, queue, frame, l, Some(i), &world);
-            self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, effects);
-            slot += 1;
+        let behind = |l: &BlendLayer| l.z == 0 && l.behind();
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| behind(l)) {
+            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, None);
         }
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
@@ -1173,11 +1175,12 @@ impl Renderer {
             pass.set_bind_group(1, &self.paint.group, &[]);
             // Blended things behind the balls go under the rest; other blended things are drawn
             // above the rest, so they are on top here too.
-            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| l.behind) {
+            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| l.z < 0 || behind(l)) {
                 self.draw_objects(&mut pass, &l.frame, b);
             }
             self.draw_objects(&mut pass, frame, &self.buffers);
-            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| !l.behind) {
+            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| l.z > 0 || (l.z == 0 && !l.behind()))
+            {
                 self.draw_objects(&mut pass, &l.frame, b);
             }
         }
@@ -1198,11 +1201,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
         }
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| !l.behind) {
-            let effects = Some((frame, i, object_view.as_ref()));
-            let through = self.layer_through(device, queue, frame, l, Some(i), &world);
-            self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, effects);
-            slot += 1;
+        // Then the blended things of z-order 0 and everything of a higher z-order, in order.
+        let above = |l: &BlendLayer| l.z > 0 || (l.z == 0 && !l.behind());
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| above(l)) {
+            let objects = object_view.as_ref();
+            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, objects);
         }
         if let Some(o) = overlay {
             let screen = Through {
@@ -1423,6 +1426,33 @@ impl Renderer {
         pass.set_bind_group(1, &through.paint, &[]);
         self.draw_balls(&mut pass, f, b, through);
         self.draw_front(&mut pass, f, b, through);
+    }
+
+    /// Draws `frame`'s layer `l` (its `index`th): a plain one straight into the HDR picture, a
+    /// blended one through [`Renderer::draw_layer`], counting it in `slot`. `objects` is the object
+    /// picture for its effects.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_any_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        index: usize,
+        l: &BlendLayer,
+        b: &FrameBuffers,
+        world: &Through,
+        slot: &mut usize,
+        objects: Option<&wgpu::TextureView>,
+    ) {
+        if l.plain() {
+            let hdr = self.targets.hdr.clone();
+            self.draw_things(encoder, &l.frame, b, world, &hdr);
+            return;
+        }
+        let through = self.layer_through(device, queue, frame, l, Some(index), world);
+        self.draw_layer(device, queue, encoder, l, b, &through, *slot, Some((frame, index, objects)));
+        *slot += 1;
     }
 
     /// How `l` is drawn: as `through` says, or, when its things blend with each other, through

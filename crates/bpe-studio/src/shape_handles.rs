@@ -424,8 +424,10 @@ pub fn act(scene: &mut Scene, target: MenuTarget, action: MenuAction) -> bool {
     changed
 }
 
-/// Draws shape `id`'s outline and, when it is `selected`, its handles, with `active` (dragged or
-/// under the pointer) brighter.
+/// Draws shape `id`'s outline and, when it is `selected`, the handle under the pointer or being
+/// dragged (`active`): a side lights with its two corners, a corner with its two sides, a circle's
+/// edge with its radius dot. The rest of a selected shape shows only its faint outline, its middle
+/// ring and the bend handles of its curved sides, so the handles never cover the shape.
 pub fn draw(
     painter: &Painter,
     scene: &Scene,
@@ -439,37 +441,32 @@ pub fn draw(
     let on_screen = |p: Vec2| view.to_screen(s.frame.to_world(p));
     let mark = style::colour_of(scene, id);
     let outline: Vec<Pos2> = s.path.flatten(FLATTEN).into_iter().map(on_screen).collect();
+    painter.add(egui::Shape::closed_line(outline.clone(), Stroke::new(1.0, style::FAINT_MARK)));
     if !selected {
-        painter.add(egui::Shape::closed_line(outline, Stroke::new(1.0, style::FAINT_MARK)));
         return;
     }
     let is_active = |h: Handle| active == Some(h);
-    let body_active = is_active(Handle::Body(id)) || is_active(Handle::Radius(id));
-    painter.add(egui::Shape::closed_line(
-        outline,
-        Stroke::new(if body_active { 2.5 } else { 1.5 }, if body_active { style::TEXT_STRONG } else { mark }),
-    ));
-    // The middle, which moves the shape: a ring like a ball's.
     let moving = is_active(Handle::Body(id));
+    if moving {
+        painter.add(egui::Shape::closed_line(outline, Stroke::new(2.0, style::TEXT_STRONG)));
+    }
+    // The middle, which moves the shape: a ring like a ball's.
     painter.circle_stroke(
         view.to_screen(s.frame.centre),
         6.0,
         Stroke::new(if moving { 2.0 } else { 1.2 }, if moving { style::TEXT_STRONG } else { mark }),
     );
     if s.circle {
-        let dot = on_screen(Vec2::X);
-        let lit = is_active(Handle::Radius(id));
-        painter.circle(
-            dot,
-            if lit { 6.5 } else { 5.0 },
-            if lit { style::TEXT_STRONG } else { mark },
-            Stroke::new(1.5, style::OUTLINE),
-        );
+        if is_active(Handle::Radius(id)) {
+            let ring: Vec<Pos2> = s.path.flatten(FLATTEN).into_iter().map(on_screen).collect();
+            painter.add(egui::Shape::closed_line(ring, Stroke::new(2.0, mark)));
+            painter.circle(on_screen(Vec2::X), 5.5, style::TEXT_STRONG, Stroke::new(1.5, style::OUTLINE));
+        }
         return;
     }
     let path = &s.path;
     let n = path.side_count();
-    // The bend handles, dashed to their corners.
+    // The bend handles, dashed to their corners: they sit off the shape, so they always show.
     for side in 0..n {
         let Some(bends) = path.bends[side] else { continue };
         let (a, b) = path.side_ends(side);
@@ -488,19 +485,20 @@ pub fn draw(
             painter.add(egui::Shape::closed_line(diamond, Stroke::new(1.5, ink)));
         }
     }
-    // A dot at each side's middle.
-    for side in 0..n {
+    // The side and corners the pointer is on.
+    let (sides, corners): (Vec<usize>, Vec<usize>) = match active {
+        Some(Handle::Side(h, side)) if h == id && side < n => (vec![side], vec![side, (side + 1) % n]),
+        Some(Handle::Corner(h, i)) if h == id && i < n => (vec![(i + n - 1) % n, i], vec![i]),
+        Some(Handle::Bend(h, side, _)) if h == id && side < n => (vec![side], vec![]),
+        _ => (vec![], vec![]),
+    };
+    for side in sides {
         let lit = is_active(Handle::Side(id, side));
-        let middle = on_screen(path.side_point(side, 0.5));
-        painter.circle_filled(middle, if lit { 4.0 } else { 2.25 }, if lit { style::TEXT_STRONG } else { mark });
-        if lit {
-            let line: Vec<Pos2> =
-                (0..=FLATTEN).map(|k| on_screen(path.side_point(side, k as f32 / FLATTEN as f32))).collect();
-            painter.add(egui::Shape::line(line, Stroke::new(2.5, style::TEXT_STRONG)));
-        }
+        let line: Vec<Pos2> =
+            (0..=FLATTEN).map(|k| on_screen(path.side_point(side, k as f32 / FLATTEN as f32))).collect();
+        painter.add(egui::Shape::line(line, Stroke::new(if lit { 2.5 } else { 2.0 }, mark)));
     }
-    // The corners: white squares with a track-colour border.
-    for i in 0..n {
+    for i in corners {
         let lit = is_active(Handle::Corner(id, i));
         let half = if lit { 5.5 } else { 4.5 };
         let square = Rect::from_center_size(on_screen(path.point(i)), egui::Vec2::splat(half * 2.0));

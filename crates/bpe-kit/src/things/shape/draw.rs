@@ -27,38 +27,61 @@ impl ThingDraw for ShapeDraw {
         true
     }
 
-    /// How the whole shape mixes with what is behind it: its Blend layer's.
+    /// How the shape mixes with what is behind it: its Blend layer's (for the layers under it).
     fn blend(&self, resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         ShapeStack::of(resolved.slots.get(&SlotId::Look)?).map(|s| s.whole_blend())
     }
 
-    /// The shape where its wall is this frame, wearing its Look's layers. A shape with no Look
-    /// card draws nothing; a card of another kind draws it plain white.
+    /// The shape where its wall is this frame, wearing its Look's layers: all of them, or, when
+    /// its Blend layer splits it, the ones under the Blend layer. A shape with no Look card draws
+    /// nothing; a card of another kind draws it plain white.
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        let Some(look) = cx.resolved.slots.get(&SlotId::Look) else { return };
-        let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
-        let form = wall_form(wall);
-        let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
-        let Some(stack) = ShapeStack::of(look) else { return };
-        let geometry = Geometry { points: form.points.clone(), half: form.half / form.scale.max(1e-3) };
-        let records = stack.records(&geometry, &mut frame.gradients);
-        let first = frame.look_layers.len() as u32;
-        let count = records.len() as u32;
-        frame.look_layers.extend(records);
-        // Its Shader layers' program, named once per frame, as balls name theirs.
-        let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
-            match frame.programs.iter().position(|q| q.key == p.key) {
-                Some(i) => i as u32,
-                None => {
-                    frame.programs.push(p);
-                    frame.programs.len() as u32 - 1
-                }
-            }
-        });
-        let path = &mut frame.paths[index];
-        path.layers = [first, count, program, 0];
-        path.c[2] = stack.reach_past();
+        let part = shape_stack(cx).and_then(|s| s.split()).unwrap_or(0);
+        draw_part(cx, frame, part);
     }
+
+    /// The layers above the Blend layer, painted normally over the blended rest.
+    fn draw_over(&self, cx: &DrawCx, frame: &mut Frame) {
+        if let Some(cut) = shape_stack(cx).and_then(|s| s.split()) {
+            draw_part(cx, frame, cut | OVER);
+        }
+    }
+}
+
+/// The bit of a shape instance's `layers[3]` that draws the layers above its Blend layer.
+const OVER: u32 = 0x1_0000;
+
+/// The stack of the shape `cx` is drawing, when its Look card is a shape one.
+fn shape_stack(cx: &DrawCx) -> Option<ShapeStack> {
+    ShapeStack::of(cx.resolved.slots.get(&SlotId::Look)?)
+}
+
+/// Draws the shape `cx` is drawing: whole (`part` 0), the layers under its Blend layer (`part`
+/// the first record above it), or the layers above it (that with [`OVER`]): see shape_walk.wgsl.
+fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
+    let Some(look) = cx.resolved.slots.get(&SlotId::Look) else { return };
+    let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
+    let form = wall_form(wall);
+    let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
+    let Some(stack) = ShapeStack::of(look) else { return };
+    let geometry = Geometry { points: form.points.clone(), half: form.half / form.scale.max(1e-3) };
+    let records = stack.records(&geometry, &mut frame.gradients);
+    let first = frame.look_layers.len() as u32;
+    let count = records.len() as u32;
+    frame.look_layers.extend(records);
+    // Its Shader layers' program, named once per frame, as balls name theirs.
+    let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
+        match frame.programs.iter().position(|q| q.key == p.key) {
+            Some(i) => i as u32,
+            None => {
+                frame.programs.push(p);
+                frame.programs.len() as u32 - 1
+            }
+        }
+    });
+    let path = &mut frame.paths[index];
+    path.layers = [first, count, program, part];
+    path.c[2] = stack.reach_past();
 }
 
 /// A wall as it is drawn, in the shape's own frame, so its layers turn with it.
@@ -259,6 +282,52 @@ mod tests {
         assert!(frame.paths.is_empty(), "drawn into its blend layer");
         assert_eq!(frame.layers.len(), 1);
         assert_eq!(frame.layers[0].frame.paths.len(), 1);
-        assert!(frame.layers[0].behind, "mixed in before the balls are drawn");
+        assert!(frame.layers[0].behind(), "mixed in before the balls are drawn");
+    }
+
+    #[test]
+    fn a_blend_layer_blends_only_the_layers_under_it() {
+        use crate::modules::look::shape as look;
+        let mut scene = with(ShapeSettings::circle(300.0, 12.0));
+        add(&mut scene, look::PAINT);
+        add(&mut scene, look::BLEND);
+        add(&mut scene, look::OUTLINE);
+        let resolved = resolve_of(&scene);
+        let stack = ShapeStack::of(&resolved.things[&SHAPE].slots[&SlotId::Look]).unwrap();
+        assert_eq!(stack.split(), Some(2), "the outline's record, after the body's and the paint's");
+        let frame = frame_of(&scene);
+        assert!(frame.paths.is_empty());
+        let places: Vec<bpe_gfx::Place> = frame.layers.iter().map(|l| l.place).collect();
+        assert_eq!(places, [bpe_gfx::Place::Behind, bpe_gfx::Place::BehindOver], "both behind the balls");
+        assert_eq!(frame.layers[0].blend, bpe_core::Blend::Add);
+        assert_eq!(frame.layers[0].frame.paths[0].layers[3], 2, "the lower part: the layers under the Blend layer");
+        assert_eq!(frame.layers[1].blend, bpe_core::Blend::Normal);
+        assert_eq!(frame.layers[1].frame.paths[0].layers[3], 2 | OVER, "the upper part, painted normally");
+        // With nothing drawn above it, the Blend layer mixes the whole shape.
+        let mut top = with(ShapeSettings::circle(300.0, 12.0));
+        add(&mut top, look::PAINT);
+        add(&mut top, look::BLEND);
+        let frame = frame_of(&top);
+        assert_eq!(frame.layers.len(), 1);
+        assert_eq!(frame.layers[0].frame.paths[0].layers[3], 0);
+    }
+
+    #[test]
+    fn a_raised_shape_draws_over_the_balls_and_a_lowered_ball_under_everything() {
+        let mut scene = with(ShapeSettings::circle(300.0, 12.0));
+        scene.things.get_mut(&SHAPE).unwrap().z_order = 2;
+        let frame = frame_of(&scene);
+        assert!(frame.paths.is_empty(), "not with the things at 0");
+        assert!(!frame.layered.is_empty(), "the balls stay at 0");
+        let (z, place) = (frame.layers[0].z, frame.layers[0].place);
+        assert_eq!((z, place, frame.layers[0].frame.paths.len()), (2, bpe_gfx::Place::Back, 1));
+        assert!(frame.layers[0].plain());
+        // A lowered ball goes to a plain layer below, its trail and particles with it.
+        let ball = crate::testing::BALLS;
+        scene.things.get_mut(&ball).unwrap().z_order = -1;
+        let frame = frame_of(&scene);
+        let zs: Vec<(i32, bpe_gfx::Place)> = frame.layers.iter().map(|l| (l.z, l.place)).collect();
+        assert_eq!(zs, [(-1, bpe_gfx::Place::Front), (2, bpe_gfx::Place::Back)], "in drawing order");
+        assert!(frame.layered.is_empty() && !frame.layers[0].frame.layered.is_empty());
     }
 }

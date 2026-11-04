@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn a_clip_mixes_22_percent_over_the_panel() {
         let mix = |p: u8, c: u8| (p as f32 + (c as f32 - p as f32) * 0.22).round() as u8;
-        let pink = track_color(TrackColour::Pink);
+        let pink = track_color(TrackColour::PINK);
         let want = Color32::from_rgb(mix(0x28, pink.r()), mix(0x28, pink.g()), mix(0x28, pink.b()));
         assert_eq!(track::mix_over_panel(pink), want);
         assert_eq!(want, Color32::from_rgb(0x57, 0x38, 0x44));
@@ -141,18 +141,20 @@ mod tests {
 
     #[test]
     fn the_track_picker_picks() {
-        let mut h = Harness::builder().with_context_setup(apply).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(apply).allow_missing_glyphs().build_ui_state(
             |ui, picked: &mut Option<TrackColour>| {
-                if let Some(c) = track_picker(ui, Some(TrackColour::Pink)) {
+                if let Some(c) = track_picker(ui, Some(TrackColour::PINK)) {
                     *picked = Some(c);
                 }
             },
             None,
         );
         h.run();
-        h.get_by_label("Track colour Teal").click();
+        h.get_by_label("Colour hex").click();
         h.run();
-        assert_eq!(*h.state(), Some(TrackColour::Teal));
+        h.get_by_label("Colour hex").type_text("#3fd6b5");
+        h.run();
+        assert_eq!(*h.state(), Some(TrackColour::TEAL));
     }
 
     /// Panels draw through this module: no other editor file makes up a colour. A line that shows

@@ -67,7 +67,7 @@ impl Scene {
         }
         let id = ThingId(self.next_thing);
         self.next_thing += 1;
-        let colour = Some(self.colour_for(Some(k)));
+        let colour = Some(self.new_colour());
         let thing = Thing {
             id,
             name: self.free_name(k.name()),

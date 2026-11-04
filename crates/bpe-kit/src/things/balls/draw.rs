@@ -234,14 +234,13 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         return;
     }
 
-    // Recent hits, for the flashes here and for the particle and shader modules. Only the
+    // Recent hits, for the flashes here and for the particles and the scene's effects. Only the
     // flashes' worth is scanned when nothing else wants them.
     let rate = cx.world.steps_per_second;
     let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
     // The scene settings' effects aren't passed down but still pulse on every hit.
     let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
-    let wants_hits =
-        scene_effects || [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
+    let wants_hits = scene_effects || cx.resolved.slots.contains_key(&SlotId::Particles);
     let memory = if wants_hits {
         HIT_MEMORY
     } else if let Some(f) = flash {

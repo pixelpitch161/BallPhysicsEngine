@@ -452,7 +452,8 @@ mod tests {
         assert!(h.query_by_label("Hide Body").is_none(), "the Body can't be hidden");
         assert!(h.query_by_label("None yet: add one to change the ball as it moves or hits.").is_some());
         // The Body's settings show under the lists, its Size first.
-        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Size").count(), 2, "on the Balls card and the Body");
+        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Size").count(), 1, "on the Body");
+        assert_eq!(h.get_all_by_role_and_label(Role::Slider, "Ball size").count(), 1, "by the Ball / Group switch");
         assert!(h.query_by_role_and_label(Role::Label, "Shape").is_some());
         assert!(h.query_by_label("Add a colour").is_some());
     }
@@ -460,7 +461,7 @@ mod tests {
     #[test]
     fn the_body_s_size_is_the_ball_s_own_radius() {
         let mut h = harness();
-        let body_size = h.get_all_by_role_and_label(Role::SpinButton, "Size").nth(1).unwrap();
+        let body_size = h.get_all_by_role_and_label(Role::SpinButton, "Size").next().unwrap();
         body_size.set_value_accesskit(40.0);
         h.run();
         assert_eq!(h.state().scene.things[&BALL].params.get("radius"), Some(&bpe_core::Value::Number(40.0)));

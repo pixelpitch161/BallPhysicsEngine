@@ -91,6 +91,8 @@ pub(crate) enum Edit {
     /// Drawn on the screen or in the world; `None` is the kind's own choice.
     Screen(Option<bool>),
     Transform(Transform),
+    /// What draws over what: higher over lower.
+    ZOrder(i32),
     Attach(Attach),
     /// One of the kind's own settings, for every selected thing of the kind.
     SetOwn(String, Value),
@@ -208,15 +210,16 @@ pub fn show(
                             edits.push(Edit::Enabled(!thing.enabled));
                         }
                         ui.label(RichText::new(kind.name()).small().color(style::MUTED)).on_hover_text(kind.help());
-                        // The track colour, which opens the eight colours to pick from.
+                        // The track colour, which opens a colour picker.
                         let swatch = style::swatch_button(ui, thing.colour, "Track colour")
                             .on_hover_text("This thing's colour in the tree, the preview and the timeline");
-                        egui::Popup::menu(&swatch).show(|ui| {
-                            if let Some(colour) = style::track_picker(ui, thing.colour) {
-                                edits.push(Edit::Colour(colour));
-                                ui.close();
-                            }
-                        });
+                        egui::Popup::menu(&swatch).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(
+                            |ui| {
+                                if let Some(colour) = style::track_picker(ui, thing.colour) {
+                                    edits.push(Edit::Colour(colour));
+                                }
+                            },
+                        );
                     }
                     let mut name = thing.name.clone();
                     let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
@@ -255,6 +258,9 @@ pub fn show(
                 }
                 root_card(ui, inspector, &cx, name, &mut edits);
             }
+        } else if kind.id() == BALLS && layered_look(&thing) {
+            // A Balls thing's own settings show elsewhere: Ball size by the Look card's Ball /
+            // Group switch, Launch speed under Placement, the group's in Group mode.
         } else {
             card(ui, |ui| {
                 // The kind's name alone: "Balls", "Folder". A shape's outline is under its Look's
@@ -269,24 +275,11 @@ pub fn show(
                 card_header(ui, inspector, Card::Thing, &header.response);
                 if header.inner {
                     if kind.id() == BALLS {
-                        // The group's settings show in Group mode instead.
-                        let defs: Vec<SettingDef> = kind
-                            .settings()
-                            .iter()
-                            .filter(|d| !bpe_kit::things::balls::GROUP_HEADINGS.contains(&d.group))
-                            .cloned()
-                            .collect();
-                        own_grid(ui, inspector, &cx, ("kind", id), &defs, &mut edits);
-                        // With no layered Look card, Group mode shows here.
-                        let layered = thing
-                            .slots
-                            .get(&SlotId::Look)
-                            .is_some_and(|c| c.kind == bpe_kit::modules::look::layers::CARD);
-                        if !layered {
-                            ui.add_space(6.0);
-                            look_mode_switch(ui, inspector, id, lw);
-                        }
-                        if group_mode(inspector, id) && !layered {
+                        // With no layered Look card, the Ball / Group switch (and Ball size) and
+                        // Group mode show here; the other settings are under Placement and in
+                        // Group mode.
+                        look_mode_switch(ui, inspector, &cx, &mut edits);
+                        if group_mode(inspector, id) {
                             let look = crate::look_editor::LookCx {
                                 scene,
                                 kit,
@@ -328,10 +321,17 @@ pub fn show(
                 card_header(ui, inspector, Card::Placement, &header.response);
                 if header.inner {
                     let mut placed = Vec::new();
-                    placement_rows(ui, scene, kind, &thing, lw, &mut placed);
+                    let z = kit.draws.thing(kind.id()).is_some();
+                    placement_rows(ui, scene, kind, &thing, lw, z, &mut placed);
                     // Number boxes move under any mouse button; a right-click changes nothing.
                     if !crate::widgets::right_button_busy(ui) {
                         edits.extend(placed);
+                    }
+                    // Balls are launched from where they are placed.
+                    let launch: Vec<SettingDef> =
+                        kind.settings().iter().filter(|d| PLACEMENT_KEYS.contains(&d.key)).cloned().collect();
+                    if !launch.is_empty() {
+                        own_grid(ui, inspector, &cx, ("placement own", id), &launch, &mut edits);
                     }
                 }
             });
@@ -406,7 +406,7 @@ pub fn show(
                 if card_now.kind == bpe_kit::modules::look::layers::CARD {
                     ui.add_space(4.0);
                     if kind.id() == BALLS {
-                        look_mode_switch(ui, inspector, id, lw);
+                        look_mode_switch(ui, inspector, &cx, &mut edits);
                         ui.add_space(4.0);
                     }
                     let look =
@@ -493,6 +493,7 @@ pub fn show(
             Edit::Enabled(enabled) => set_thing(scene, id, |t| t.enabled = enabled),
             Edit::Screen(screen) => set_thing(scene, id, |t| t.screen = screen),
             Edit::Transform(t) => set_thing(scene, id, |thing| thing.transform = t),
+            Edit::ZOrder(z) => set_thing(scene, id, |thing| thing.z_order = z),
             Edit::Attach(attach) => crate::tree::reattach(scene, id, attach).is_ok(),
             Edit::SetOwn(key, value) => {
                 let mut any = false;
@@ -573,10 +574,11 @@ fn shape_afresh(scene: &mut Scene, id: ThingId, key: &str) -> bool {
     }
 }
 
-/// The Ball / Group switch of a Balls thing: its look on one ball, or across the whole group.
-/// It heads the Look card (or, with no layered Look card, sits in the Balls card).
-fn look_mode_switch(ui: &mut Ui, inspector: &mut Inspector, id: ThingId, lw: f32) {
+/// The Ball / Group switch of a Balls thing's look, with its Ball size under it (shown in both
+/// modes).
+fn look_mode_switch(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, edits: &mut Vec<Edit>) {
     use crate::look_editor::LookMode;
+    let (id, lw) = (cx.id, cx.label_width);
     let mut mode = inspector.look_mode.get(&id).copied().unwrap_or_default();
     settings_like_grid(("look mode", id)).show(ui, |ui| {
         let label = grid_label(ui, lw, "Edit")
@@ -596,7 +598,26 @@ fn look_mode_switch(ui: &mut Ui, inspector: &mut Inspector, id: ThingId, lw: f32
         ui.end_row();
     });
     inspector.look_mode.insert(id, mode);
+    if let Some(kind) = cx.kit.registry.thing(&cx.thing.kind) {
+        let size: Vec<SettingDef> = kind
+            .settings()
+            .iter()
+            .filter(|d| d.key == BALL_SIZE)
+            .map(|d| SettingDef { label: "Ball size", ..d.clone() })
+            .collect();
+        own_grid(ui, inspector, cx, ("ball size", id), &size, edits);
+    }
 }
+
+/// Whether `thing`'s Look card is a layered one (the Ball Look editor).
+fn layered_look(thing: &bpe_core::Thing) -> bool {
+    thing.slots.get(&SlotId::Look).is_some_and(|c| c.kind == bpe_kit::modules::look::layers::CARD)
+}
+
+/// A Balls thing's size setting, shown beside its Ball / Group switch.
+const BALL_SIZE: &str = "radius";
+/// A thing's own settings shown under Placement: where balls are launched.
+const PLACEMENT_KEYS: [&str; 1] = ["velocity"];
 
 /// Whether thing `id`'s look shows across its group.
 fn group_mode(inspector: &Inspector, id: ThingId) -> bool {
@@ -682,11 +703,24 @@ fn placement_rows(
     kind: &dyn bpe_core::ThingKind,
     thing: &bpe_core::Thing,
     lw: f32,
+    z_order: bool,
     edits: &mut Vec<Edit>,
 ) {
     let right = ui.available_rect_before_wrap().right();
     settings_like_grid(("placement", thing.id)).show(ui, |ui| {
         position_rows(ui, scene, thing, lw, right, edits);
+        if z_order {
+            let label = grid_label(ui, lw, "Z-order").on_hover_text(
+                "What draws on top: a thing with a higher z-order draws over one with a lower z-order. \
+                 At the same z-order, shapes draw under balls",
+            );
+            let mut z = thing.z_order;
+            let range = bpe_core::Thing::Z_ORDER_RANGE;
+            if ui.add(DragValue::new(&mut z).speed(0.1).range(range)).labelled_by(label.id).changed() {
+                edits.push(Edit::ZOrder(z));
+            }
+            ui.end_row();
+        }
         if kind.can_stick_to_screen() {
             let label = grid_label(ui, lw, "Stick to screen")
                 .on_hover_text("Stay put on the screen while the camera moves, like a title");
@@ -1148,9 +1182,11 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         h.get_by_label("Track colour").click();
         h.run();
-        h.get_by_label("Track colour Lime").click();
+        h.get_by_label("Colour hex").click();
         h.run();
-        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour::Lime));
+        h.get_by_label("Colour hex").type_text("#12abef");
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour([0x12, 0xab, 0xef])));
     }
 
     #[test]
@@ -1234,13 +1270,12 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
         assert!(h.query_by_role_and_label(Role::Label, "Columns").is_none(), "a single ball has no columns");
         assert!(h.query_by_role_and_label(Role::Label, "Friction").is_some(), "settings once under More show too");
-        let before = h.get_all_by_role(Role::Slider).count();
-        h.get_by_label("Hide Balls").click();
+        h.get_by_label("Hide Placement").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_none());
-        assert!(h.get_all_by_role(Role::Slider).count() < before);
-        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None, "")));
-        h.get_by_label("Show Balls").click();
+        assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_none());
+        assert!(h.state().inspector.collapsed.contains(&(ThingId(2), None, "placement")));
+        h.get_by_label("Show Placement").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "Launch speed").is_some());
     }
@@ -1441,8 +1476,8 @@ mod tests {
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_a_starter() {
         let mut h = harness(Some(ThingId(2)));
-        // Trail, Particles and Shader have card kinds and aren't shown on a new ball, so there
-        // is something to add.
+        // Trail and Particles have card kinds and aren't shown on a new ball, so there is
+        // something to add.
         assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.get_by_label("+ Add slot").click();
         h.run();
@@ -1452,7 +1487,7 @@ mod tests {
         h.get_by_label("+ Add slot").click();
         h.run();
         assert!(h.query_by_label("Trail").is_some());
-        assert!(h.query_by_label("Shader").is_some());
+        assert!(h.query_all_by_label("Shader").next().is_none(), "a ball's shaders are layers of its Look");
         // The menu's Motion, not the look's Motion heading.
         h.get_all_by_label("Motion").last().expect("the Motion slot").click();
         h.run();
@@ -1747,21 +1782,21 @@ mod tests {
         h.run();
     }
 
-    /// A new scene whose ball has its own effect in its Shader slot, with one of its number
+    /// A new scene whose settings have an effect in their Shader slot (only the scene has one), with one of its number
     /// settings moved off its default, and that setting's address. The other effect kinds named
     /// come back too: those that lack the setting.
-    fn ball_with_an_effect() -> (Scene, Address, Vec<&'static str>) {
+    fn scene_with_an_effect() -> (Scene, Address, Vec<&'static str>) {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), SlotId::Shader).unwrap();
-        let kind = reg.module(&scene.things[&ThingId(2)].slots[&SlotId::Shader].kind).unwrap();
+        bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        let kind = reg.module(&scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind).unwrap();
         let def = kind
             .settings()
             .iter()
             .find(|d| d.key != "blend" && matches!(d.default, Value::Number(_)))
             .expect("an effect with a number setting of its own");
         let (Value::Number(n), Some((low, high))) = (&def.default, def.range) else { unreachable!() };
-        let a = Address::on(ThingId(2), SlotId::Shader, def.key);
+        let a = Address::on(ThingId::ROOT, SlotId::Shader, def.key);
         scene.set_at(&reg, &a, Value::Number(if *n == low { high } else { low })).unwrap();
         let others = reg
             .modules_for(SlotId::Shader)
@@ -1802,68 +1837,47 @@ mod tests {
 
     #[test]
     fn picking_a_type_switches_the_card_and_back_restores_it() {
-        let (scene, moved, others) = ball_with_an_effect();
+        let (scene, moved, others) = scene_with_an_effect();
         let reg = bpe_kit::registry();
         let value = scene.value_at(&reg, &moved);
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        let first = effect_name(h.state(), ThingId(2));
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        let first = effect_name(h.state(), ThingId::ROOT);
         let other = *others.first().expect("an effect without the moved setting");
         open_type_menu(&mut h);
         h.get_all_by_label(other).last().unwrap().click();
         h.run();
         {
             let s = h.state();
-            assert_eq!(effect_name(s, ThingId(2)), other);
-            assert!(s.scene.things[&ThingId(2)].slots[&SlotId::Shader].params.get(&moved.key).is_none());
+            assert_eq!(effect_name(s, ThingId::ROOT), other);
+            assert!(s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].params.get(&moved.key).is_none());
         }
         open_type_menu(&mut h);
         h.get_all_by_label(first).last().unwrap().click();
         h.run();
         let s = h.state();
-        assert_eq!(effect_name(s, ThingId(2)), first);
+        assert_eq!(effect_name(s, ThingId::ROOT), first);
         assert_eq!(s.scene.value_at(&s.kit.registry, &moved), value, "the moved setting is back");
     }
 
     #[test]
     fn undo_after_a_type_switch_restores_the_card() {
-        let (scene, _, others) = ball_with_an_effect();
+        let (scene, _, others) = scene_with_an_effect();
         let before = scene.clone();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        let first = effect_name(h.state(), ThingId(2));
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        let first = effect_name(h.state(), ThingId::ROOT);
         open_type_menu(&mut h);
         h.get_all_by_label(others[0]).last().unwrap().click();
         h.run();
-        assert_eq!(effect_name(h.state(), ThingId(2)), others[0]);
+        assert_eq!(effect_name(h.state(), ThingId::ROOT), others[0]);
         // The studio records any frame that changed the scene as an undo step.
         let mut history = crate::history::History::default();
         history.record(before.clone(), false);
         let s = h.state_mut();
         assert!(history.undo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId(2)), first);
+        assert_eq!(effect_name(s, ThingId::ROOT), first);
         assert_eq!(s.scene, before);
         assert!(history.redo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId(2)), others[0]);
-    }
-
-    #[test]
-    fn a_type_switch_reaches_each_selected_thing_with_the_same_kind() {
-        let (mut scene, _, others) = ball_with_an_effect();
-        let reg = bpe_kit::registry();
-        let kind = scene.things[&ThingId(2)].slots[&SlotId::Shader].kind.clone();
-        let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.add_slot(&reg, other, SlotId::Shader, &kind).unwrap();
-        let unselected = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        scene.add_slot(&reg, unselected, SlotId::Shader, &kind).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        h.state_mut().selection.toggle(other);
-        h.run();
-        open_type_menu(&mut h);
-        h.get_all_by_label(others[0]).last().unwrap().click();
-        h.run();
-        let s = h.state();
-        assert_eq!(effect_name(s, ThingId(2)), others[0]);
-        assert_eq!(effect_name(s, other), others[0]);
-        assert_eq!(s.scene.things[&unselected].slots[&SlotId::Shader].kind, kind, "each thing's card is its own");
+        assert_eq!(effect_name(s, ThingId::ROOT), others[0]);
     }
 
     #[test]
@@ -1883,9 +1897,15 @@ mod tests {
             let r = h.get_by_role_and_label(Role::Label, row).rect();
             assert!(heading.top() < r.top(), "{row} is under Placement");
         }
-        // The kind's card is titled by the kind alone.
-        assert!(h.query_by_label("Hide Balls").is_some());
+        // A ball's own settings sit by its Look's Ball / Group switch and under Placement: no
+        // Balls card.
+        assert!(h.query_by_label("Hide Balls").is_none());
         assert!(h.query_by_label_contains("Balls settings").is_none());
+        // Launch speed and Z-order are under Placement.
+        for row in ["Launch speed", "Z-order"] {
+            let r = h.get_by_role_and_label(Role::Label, row).rect();
+            assert!(heading.top() < r.top(), "{row} is under Placement");
+        }
     }
 
     #[test]
@@ -1951,7 +1971,7 @@ mod tests {
     fn a_ball_with_every_slot() -> Scene {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        for slot in [SlotId::Trail, SlotId::Particles, SlotId::Shader] {
+        for slot in [SlotId::Trail, SlotId::Particles] {
             bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), slot).unwrap();
         }
         scene
@@ -1965,7 +1985,7 @@ mod tests {
         h.get_by_label("Trail").click();
         h.run();
         // The Look's Size, under its layer lists, and the Trail's Length.
-        let size = h.get_all_by_role_and_label(Role::Slider, "Size").nth(1).unwrap().rect();
+        let size = h.get_all_by_role_and_label(Role::Slider, "Size").next().unwrap().rect();
         let length = slider_rect(&h, "Length");
         assert!(
             (size.left() - length.left()).abs() <= 1.0,
@@ -1996,7 +2016,7 @@ mod tests {
     fn the_jump_bar_lists_thing_then_the_slots_in_order() {
         let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
-        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Particles", "Shader"]);
+        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Particles"]);
         assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
     }
 
@@ -2135,16 +2155,16 @@ mod tests {
 
     #[test]
     fn a_short_last_card_stays_marked_after_jumping_to_it() {
-        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
-        the_bar_button(&h, "Shader").click();
+        let mut h = harness_sized(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)), 600.0);
+        the_bar_button(&h, "Bounce").click();
         h.run();
         let tops = &h.state().inspector.card_tops;
-        let shader = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Shader)).expect("Shader's top").1;
-        assert!(shader > 1.0, "Shader is too short to reach the top, at {shader}");
-        assert_eq!(selected_in_bar(&h), ["Shader"], "the card jumped to stays marked");
+        let last = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Bounce)).expect("Bounce's top").1;
+        assert!(last > 1.0, "Bounce is too short to reach the top, at {last}");
+        assert_eq!(selected_in_bar(&h), ["Bounce"], "the card jumped to stays marked");
         // A scroll hands the mark back to the card at the top.
         wheel(&mut h, 40.0);
-        assert_ne!(selected_in_bar(&h), ["Shader"]);
+        assert_ne!(selected_in_bar(&h), ["Bounce"]);
         assert!(h.state().inspector.jumped.is_none());
     }
 

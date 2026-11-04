@@ -1,50 +1,55 @@
-//! Every thing but the scene settings carries an editor track colour: new things take the next
-//! free one, the shape and camera start with their own, and old files get theirs on opening.
+//! Every thing but the scene settings carries an editor track colour: any colour, a random
+//! readable one for a new thing, spread round the colour wheel; old files get theirs on opening.
 
 use bpe_core::{Scene, ThingId, TrackColour, load, save};
 use bpe_kit::{registry, starters::add_thing};
 
-fn colours(scene: &Scene) -> Vec<Option<TrackColour>> {
-    scene.order.iter().map(|id| scene.things[id].colour).collect()
+/// sRGB bytes to HSL lightness and saturation.
+fn lightness_saturation(c: TrackColour) -> (f32, f32) {
+    let [r, g, b] = c.0.map(|v| v as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let s = if max == min { 0.0 } else { (max - min) / (1.0 - (2.0 * l - 1.0).abs()) };
+    (l, s)
 }
 
 #[test]
-fn colours_go_in_order() {
+fn new_things_take_readable_colours_spread_round_the_wheel() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
-    for _ in 0..3 {
-        add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+    let ids: Vec<ThingId> = (0..4).map(|_| add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap()).collect();
+    assert_eq!(scene.things[&ThingId::ROOT].colour, None, "the scene settings have none");
+    let hues: Vec<f32> = ids
+        .iter()
+        .map(|id| {
+            let c = scene.things[id].colour.expect("a new thing has a colour");
+            let (l, s) = lightness_saturation(c);
+            assert!((0.58..=0.74).contains(&l), "{} is readable: lightness {l}", c.hex());
+            assert!((0.5..=0.9).contains(&s), "{} is colourful: saturation {s}", c.hex());
+            c.hue().unwrap()
+        })
+        .collect();
+    // The best of 16 random hues is never close to the ones in use: four things spread out.
+    for (i, a) in hues.iter().enumerate() {
+        for b in &hues[i + 1..] {
+            let d = (a - b).rem_euclid(1.0);
+            assert!(d.min(1.0 - d) > 0.04, "hues {a} and {b} are too close");
+        }
     }
-    use TrackColour::*;
-    assert_eq!(colours(&scene), [None, Some(Pink), Some(Cyan), Some(Lime)]);
 }
 
 #[test]
-fn shapes_and_cameras_take_their_own() {
+fn shapes_and_cameras_take_colours_too() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
-    let camera = add_thing(&mut scene, &reg, "camera", ThingId::ROOT).unwrap();
-    let arena = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
-    let second = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
-    assert_eq!(scene.things[&camera].colour, Some(TrackColour::Violet));
-    assert_eq!(scene.things[&arena].colour, Some(TrackColour::Orange));
-    assert_eq!(scene.things[&second].colour, Some(TrackColour::Pink), "orange is taken");
+    for kind in ["camera", "shape", "folder"] {
+        let id = add_thing(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
+        assert!(scene.things[&id].colour.is_some(), "{kind}");
+    }
 }
 
 #[test]
-fn the_ninth_thing_takes_the_least_used() {
-    let reg = registry();
-    let mut scene = Scene::empty(&reg);
-    let ids: Vec<ThingId> = (0..9).map(|_| add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap()).collect();
-    assert_eq!(scene.things[&ids[8]].colour, Some(TrackColour::Pink));
-    // Cyan is now used once and every other colour but Pink once too; take Cyan away.
-    scene.things.get_mut(&ids[1]).unwrap().colour = Some(TrackColour::Lime);
-    let next = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-    assert_eq!(scene.things[&next].colour, Some(TrackColour::Cyan));
-}
-
-#[test]
-fn old_scenes_get_colours_in_tree_order() {
+fn old_scenes_get_colours() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
     for kind in ["balls", "shape", "balls", "camera"] {
@@ -53,19 +58,30 @@ fn old_scenes_get_colours_in_tree_order() {
     for thing in scene.things.values_mut() {
         thing.colour = None;
     }
-    scene.things.get_mut(&ThingId::ROOT).unwrap().colour = Some(TrackColour::Red);
-    let text = save(&scene);
-    let opened = load(&text, &reg).unwrap();
-    use TrackColour::*;
-    assert_eq!(colours(&opened), [None, Some(Pink), Some(Orange), Some(Cyan), Some(Violet)]);
+    scene.things.get_mut(&ThingId::ROOT).unwrap().colour = Some(TrackColour::RED);
+    let opened = load(&save(&scene), &reg).unwrap();
+    for id in &opened.order {
+        assert_eq!(opened.things[id].colour.is_some(), *id != ThingId::ROOT);
+    }
 }
 
 #[test]
-fn a_colour_survives_save_and_load() {
+fn a_colour_survives_save_and_load_and_old_names_read() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
     let id = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-    scene.things.get_mut(&id).unwrap().colour = Some(TrackColour::Teal);
-    let opened = load(&save(&scene), &reg).unwrap();
-    assert_eq!(opened.things[&id].colour, Some(TrackColour::Teal));
+    scene.things.get_mut(&id).unwrap().colour = Some(TrackColour([0x12, 0xab, 0xef]));
+    let text = save(&scene);
+    assert!(text.contains("\"#12abef\""), "saved as hex");
+    let opened = load(&text, &reg).unwrap();
+    assert_eq!(opened.things[&id].colour, Some(TrackColour([0x12, 0xab, 0xef])));
+    // A file from before the picker names one of the eight colours bare, as it was saved: it
+    // opens, and the thing takes a new colour.
+    let old = text.replace("\"#12abef\"", "teal");
+    assert!(old.contains("Some(teal)"), "{old}");
+    assert!(load(&old, &reg).unwrap().things[&id].colour.is_some());
+    let quoted = text.replace("\"#12abef\"", "\"teal\"");
+    assert_eq!(load(&quoted, &reg).unwrap().things[&id].colour, Some(TrackColour::TEAL));
+    assert_eq!(TrackColour::parse("nope"), None);
+    assert_eq!(TrackColour::parse("#12abef"), Some(TrackColour([0x12, 0xab, 0xef])));
 }

@@ -53,7 +53,7 @@ pub const LANE_H: f32 = 23.0;
 pub const GROUP_H: f32 = 22.0;
 pub const TOOLBAR_H: f32 = 40.0;
 pub const STATUS_H: f32 = 24.0;
-pub const TREE_W: f32 = 230.0;
+pub const TREE_W: f32 = 480.0;
 pub const INSPECTOR_W: f32 = 370.0;
 /// The inspector's label column.
 pub const LABEL_W: f32 = 108.0;

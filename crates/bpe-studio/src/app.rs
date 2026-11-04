@@ -428,6 +428,11 @@ impl Studio {
         if pressed(Modifiers::COMMAND, Key::N) {
             self.guard(Pending::New, ctx);
         }
+        // F11: fully fullscreen (no title bar), and back to the window.
+        if pressed(Modifiers::NONE, Key::F11) {
+            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
         if typing {
             return;
         }
@@ -1060,7 +1065,13 @@ mod tests {
     #[test]
     fn the_editor_starts_on_the_blank_project_and_new_makes_another() {
         let studio = Studio::blank();
-        assert_eq!(studio.scene, bpe_kit::new_studio_scene(&studio.kit.registry));
+        // A new thing's colour is picked at random, so compare the two with colours left out.
+        let uncoloured = |mut scene: Scene| {
+            scene.things.values_mut().for_each(|t| t.colour = None);
+            scene
+        };
+        let blank = bpe_kit::new_studio_scene(&studio.kit.registry);
+        assert_eq!(uncoloured(studio.scene.clone()), uncoloured(blank));
         assert!(!studio.unsaved());
         let mut studio = Studio::headless();
         studio.new_scene();

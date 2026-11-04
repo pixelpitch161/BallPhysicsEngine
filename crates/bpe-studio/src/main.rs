@@ -28,6 +28,8 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 960.0])
             .with_min_inner_size([1000.0, 640.0])
+            // Opens filling the screen; F11 goes fully fullscreen and back.
+            .with_maximized(true)
             .with_title("Ball Studio Next"),
         ..Default::default()
     };

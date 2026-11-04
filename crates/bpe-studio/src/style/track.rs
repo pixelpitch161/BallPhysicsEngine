@@ -7,16 +7,13 @@ use eframe::egui::Color32;
 
 /// The colour on screen for `c`.
 pub fn track_color(c: TrackColour) -> Color32 {
-    match c {
-        TrackColour::Pink => Color32::from_rgb(0xff, 0x6f, 0xa8),
-        TrackColour::Cyan => Color32::from_rgb(0x4f, 0xc3, 0xf0),
-        TrackColour::Lime => Color32::from_rgb(0xa8, 0xd8, 0x4a),
-        TrackColour::Orange => Color32::from_rgb(0xff, 0xaa, 0x45),
-        TrackColour::Violet => Color32::from_rgb(0xa9, 0x8b, 0xff),
-        TrackColour::Yellow => Color32::from_rgb(0xf2, 0xd2, 0x4b),
-        TrackColour::Red => Color32::from_rgb(0xff, 0x70, 0x70),
-        TrackColour::Teal => Color32::from_rgb(0x3f, 0xd6, 0xb5),
-    }
+    let [r, g, b] = c.0;
+    Color32::from_rgb(r, g, b) // scene colour
+}
+
+/// The track colour `color` is on screen.
+pub fn track_of(color: Color32) -> TrackColour {
+    TrackColour([color.r(), color.g(), color.b()])
 }
 
 /// `color` mixed 22% over the panel grey: the fill of a timeline clip.

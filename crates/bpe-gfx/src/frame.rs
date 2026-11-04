@@ -742,6 +742,26 @@ impl Grade {
     }
 }
 
+/// Where a layer's things draw among the others of their z-order, in drawing order. At z-order 0
+/// the frame's own lists are its plain things: trails and shapes, then the `Behind` and
+/// `BehindOver` layers, then its balls and flashes, then the `Blend` and `Over` layers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Place {
+    /// Plain shapes of a z-order other than 0 (drawn straight in, not mixed).
+    Back,
+    /// Blended things that sit behind the balls (shapes): mixed with what is behind them only.
+    Behind,
+    /// What a split shape paints normally over its blended part, still behind the balls.
+    BehindOver,
+    /// Plain balls, trails and particles of a z-order other than 0 (drawn straight in).
+    Front,
+    /// Other blended things.
+    #[default]
+    Blend,
+    /// What a split ball paints normally over its blended part.
+    Over,
+}
+
 /// What things with one blend and amount drew, mixed into the picture under them as one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlendLayer {
@@ -753,13 +773,28 @@ pub struct BlendLayer {
     /// the layer then counts as covering everywhere one drew. Only for a blend that
     /// [combines with itself](Blend::combines_with_itself).
     pub each: bool,
-    /// Its things sit behind the balls (shapes): it is mixed in right after the frame's trails
-    /// and shapes, before its balls are drawn, so it mixes with what is behind it only.
-    pub behind: bool,
+    /// The z-order of its things: layers below 0 are drawn before the frame's own lists, above
+    /// 0 after everything at 0.
+    pub z: i32,
+    /// Where it draws among the layers of its z-order.
+    pub place: Place,
     /// The layer's own lists. Its globals follow the frame it belongs to; it paints from that
     /// frame's gradient atlas, so its own `gradients` stay empty, and the hits and effects drawn
     /// into it are handed to that frame.
     pub frame: Frame,
+}
+
+impl BlendLayer {
+    /// Its things sit behind the balls of its z-order (shapes).
+    pub fn behind(&self) -> bool {
+        matches!(self.place, Place::Back | Place::Behind | Place::BehindOver)
+    }
+
+    /// A layer of things drawn straight into the picture, not mixed (things at a z-order
+    /// other than 0 that don't blend).
+    pub fn plain(&self) -> bool {
+        matches!(self.place, Place::Back | Place::Front)
+    }
 }
 
 impl Default for Frame {
@@ -835,21 +870,39 @@ impl Frame {
     }
 
     /// [`Frame::layer_mut`] for things that sit behind the balls when `behind` (see
-    /// [`BlendLayer::behind`]): a layer of their own, mixed in before the balls are drawn.
+    /// [`Place::Behind`]): a layer of their own, mixed in before the balls are drawn.
     pub fn layer_behind_mut(&mut self, blend: Blend, amount: f32, each: bool, behind: bool) -> &mut Frame {
+        self.target_mut(0, blend, amount, each, behind)
+    }
+
+    /// The frame a thing of z-order `z` drawn with `blend` at `amount` goes into: at z-order 0
+    /// as [`Frame::layer_behind_mut`]; at another, a plain layer of that z-order (`Back` for
+    /// things `behind` the balls, `Front` for the rest) when it doesn't blend, else its blend
+    /// layer of that z-order.
+    pub fn target_mut(&mut self, z: i32, blend: Blend, amount: f32, each: bool, behind: bool) -> &mut Frame {
         if !layered(blend, amount) {
-            return self;
+            if z == 0 {
+                return self;
+            }
+            let place = if behind { Place::Back } else { Place::Front };
+            return self.layer_at(z, place, Blend::Normal, 1.0, false);
         }
         // -0 and 0 are one amount (their bits differ).
         let amount = amount + 0.0;
         let each = each && blend.combines_with_itself();
+        self.layer_at(z, if behind { Place::Behind } else { Place::Blend }, blend, amount, each)
+    }
+
+    /// The layer of z-order `z` at `place` with exactly `blend`, `amount` and `each`, made on
+    /// first use, with this frame's size, moment, camera and picture settings.
+    fn layer_at(&mut self, z: i32, place: Place, blend: Blend, amount: f32, each: bool) -> &mut Frame {
         let same = |l: &BlendLayer| {
-            l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each && l.behind == behind
+            l.z == z && l.place == place && l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each
         };
         let i = match self.layers.iter().position(same) {
             Some(i) => i,
             None => {
-                self.layers.push(BlendLayer { blend, amount, each, behind, frame: Frame::default() });
+                self.layers.push(BlendLayer { blend, amount, each, z, place, frame: Frame::default() });
                 self.layers.len() - 1
             }
         };
@@ -863,29 +916,23 @@ impl Frame {
 
     /// The layer of what things paint normally over their blended parts (the layers of a ball
     /// above its Blend layer): a Normal layer at full amount, which [`Frame::layer_mut`] never
-    /// makes. [`build_frame`] moves it after every other layer, so it is mixed in last.
+    /// makes. [`build_frame`] sorts it after every other layer of z-order 0, so it is mixed in
+    /// last.
     pub fn over_layer_mut(&mut self) -> &mut Frame {
-        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each && !l.behind;
-        if !self.layers.iter().any(over) {
-            let frame = Frame::default();
-            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, behind: false, frame });
-        }
-        let i = self.layers.iter().position(over).expect("just made");
-        let (width, height, time, video, camera) = (self.width, self.height, self.time, self.video, self.camera);
-        let (bloom, exposure, on_screen) = (self.bloom, self.exposure, self.background_on_screen);
-        let f = &mut self.layers[i].frame;
-        (f.width, f.height, f.time, f.video, f.camera) = (width, height, time, video, camera);
-        (f.bloom, f.exposure, f.background_on_screen) = (bloom, exposure, on_screen);
-        f
+        self.over_mut(0, false)
     }
 
-    /// Moves the over layer (see [`Frame::over_layer_mut`]) after every other layer.
-    fn over_layer_last(&mut self) {
-        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each;
-        if let Some(i) = self.layers.iter().position(over) {
-            let l = self.layers.remove(i);
-            self.layers.push(l);
-        }
+    /// The layer of what things of z-order `z` paint normally over their blended parts: `Over`,
+    /// or `BehindOver` for things `behind` the balls (a shape's layers above its Blend layer).
+    pub fn over_mut(&mut self, z: i32, behind: bool) -> &mut Frame {
+        let place = if behind { Place::BehindOver } else { Place::Over };
+        self.layer_at(z, place, Blend::Normal, 1.0, false)
+    }
+
+    /// Puts the layers in drawing order: by z-order, then by [`Place`], keeping the order they
+    /// were first drawn into otherwise.
+    fn sort_layers(&mut self) {
+        self.layers.sort_by_key(|l| (l.z, l.place));
     }
 
     /// Whether this frame's own lists (not its layers') draw the thing with `code` (see
@@ -1063,40 +1110,42 @@ impl Frame {
     }
 }
 
+/// The z-order `thing` draws at: its own, within [`Thing::Z_ORDER_RANGE`]; things stuck to the
+/// screen draw over the world anyway and keep 0.
+fn z_order(thing: &Thing, r: &ResolvedThing) -> i32 {
+    if r.screen { 0 } else { thing.z_order.clamp(*Thing::Z_ORDER_RANGE.start(), *Thing::Z_ORDER_RANGE.end()) }
+}
+
 /// Whether things drawn with `blend` at `amount` need a layer of their own.
 fn layered(blend: Blend, amount: f32) -> bool {
     !(blend == Blend::Normal && amount >= 1.0)
 }
 
-/// Runs `draw` on what things with `blend` at `amount` (blending with each other when `each`)
-/// draw into: `target` itself, or its layer (see [`Frame::layer_mut`]). A layer borrows
-/// `target`'s gradient atlas, hits and effects while it is drawn into, so its paint rows are the
-/// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
-/// not kept.
-fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
-    draw_routed_behind(target, blend, amount, each, false, draw);
-}
-
-/// [`draw_routed`] into a layer behind the balls when `behind` (see [`BlendLayer::behind`]).
-fn draw_routed_behind(
+/// Runs `draw` on what a thing of z-order `z` drawn with `blend` at `amount` (blending with
+/// each other when `each`, behind the balls of its z-order when `behind`) draws into: `target`
+/// itself, or its layer (see [`Frame::target_mut`]). A layer borrows `target`'s gradient atlas,
+/// hits and effects while it is drawn into, so its paint rows are the rows the renderer uploads
+/// and every module reads every hit. A layer nothing was drawn into is not kept.
+fn draw_routed_at(
     target: &mut Frame,
+    z: i32,
     blend: Blend,
     amount: f32,
     each: bool,
     behind: bool,
     draw: impl FnOnce(&mut Frame),
 ) {
-    if !layered(blend, amount) {
+    if z == 0 && !layered(blend, amount) {
         draw(target);
         return;
     }
-    draw_into_layer(target, |t| t.layer_behind_mut(blend, amount, each, behind), draw);
+    draw_into_layer(target, |t| t.target_mut(z, blend, amount, each, behind), draw);
 }
 
-/// Runs `draw` on the frame's over layer (see [`Frame::over_layer_mut`]), borrowing `target`'s
-/// atlas, hits and effects as [`draw_routed`] does.
-fn draw_over_routed(target: &mut Frame, draw: impl FnOnce(&mut Frame)) {
-    draw_into_layer(target, Frame::over_layer_mut, draw);
+/// Runs `draw` on the over layer of z-order `z` (see [`Frame::over_mut`]), borrowing `target`'s
+/// atlas, hits and effects as [`draw_routed_at`] does.
+fn draw_over_routed(target: &mut Frame, z: i32, behind: bool, draw: impl FnOnce(&mut Frame)) {
+    draw_into_layer(target, |t| t.over_mut(z, behind), draw);
 }
 
 fn draw_into_layer(target: &mut Frame, layer: impl FnOnce(&mut Frame) -> &mut Frame, draw: impl FnOnce(&mut Frame)) {
@@ -1232,12 +1281,13 @@ pub fn build_frame(
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
-        draw_routed_behind(target, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
-        // Only a thing that blends has parts to paint over the blend: into the over layer, which
-        // is mixed in after every blend layer.
+        let z = z_order(thing, r);
+        draw_routed_at(target, z, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
+        // Only a thing that blends has parts to paint over the blend: into the over layer of its
+        // z-order, which is mixed in after its blend layers (a shape's before the balls).
         if layered(blend, amount) {
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            draw_over_routed(target, |into| d.draw_over(&cx, into));
+            draw_over_routed(target, z, d.behind(), |into| d.draw_over(&cx, into));
         }
     }
     for (id, r) in &resolved.things {
@@ -1252,12 +1302,13 @@ pub fn build_frame(
             let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
             let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
-            draw_routed(target, blend, amount, each, |into| d.draw(&cx, slot, into));
+            let z = z_order(thing, r);
+            draw_routed_at(target, z, blend, amount, each, false, |into| d.draw(&cx, slot, into));
         }
     }
-    frame.over_layer_last();
+    frame.sort_layers();
     if let Some(o) = frame.overlay.as_deref_mut() {
-        o.over_layer_last();
+        o.sort_layers();
     }
     frame.camera = world.camera;
     for l in &mut frame.layers {

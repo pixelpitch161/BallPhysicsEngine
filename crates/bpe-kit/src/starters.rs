@@ -109,7 +109,7 @@ mod tests {
             (s.start, s.fill, s.size, s.thickness, s.spin, s.shrink),
             (ShapeStart::Circle, ShapeFill::Hollow, 400.0, 8.0, 0.0, 0.0)
         );
-        assert_eq!(scene.things[&a].colour, Some(bpe_core::TrackColour::Orange));
+        assert!(scene.things[&a].colour.is_some());
     }
 
     #[test]
@@ -144,9 +144,8 @@ mod tests {
     fn effects_have_no_starter_so_the_first_fitting_kind_fills_the_slot() {
         let reg = registry();
         let mut scene = Scene::empty(&reg);
-        let a = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
-        fill_slot(&mut scene, &reg, a, SlotId::Shader).unwrap();
-        let first = reg.kinds_fitting(SlotId::Shader, reg.thing("balls").unwrap()).next().unwrap().id();
-        assert_eq!(scene.things[&a].slots[&SlotId::Shader].kind, first);
+        fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        let first = reg.kinds_fitting(SlotId::Shader, reg.thing("scene").unwrap()).next().unwrap().id();
+        assert_eq!(scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind, first);
     }
 }

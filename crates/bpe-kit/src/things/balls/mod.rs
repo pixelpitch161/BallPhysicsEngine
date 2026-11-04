@@ -17,6 +17,8 @@ pub enum GroupShape {
     Grid,
     Line,
     Ring,
+    /// Rings of balls inside one another, the outer one at Radius, filling it to the middle.
+    FilledRing,
     FilledCircle,
     Triangle,
     Honeycomb,
@@ -72,10 +74,10 @@ pub const GROUP_HEADINGS: [&str; 4] = [GROUP, VARIETY, RELEASE, LAUNCH];
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BallsSettings {
-    /// How big each ball is.
+    /// How big each ball is. Shown beside the Ball / Group switch.
     #[setting(label = "Size", range(0.5, 200), unit = "px", simple, keyframe)]
     pub radius: f32,
-    /// How fast, and which way, the balls start moving.
+    /// How fast, and which way, the balls start moving. Shown in the Placement card.
     #[setting(label = "Launch speed", unit = "px/s", simple, span(100, 900))]
     pub velocity: Vec2,
     /// Off, one ball; on, a group of them in a shape.
@@ -85,7 +87,13 @@ pub struct BallsSettings {
     #[setting(label = "Shape", group = "Group", when = "group", simple)]
     pub shape: GroupShape,
     /// How many balls the group has.
-    #[setting(label = "How many", group = "Group", when = "group and shape!=word|custom", range(1, 5000), simple)]
+    #[setting(
+        label = "How many",
+        group = "Group",
+        when = "group and shape!=word|custom|filled_ring",
+        range(1, 5000),
+        simple
+    )]
     pub count: u32,
     /// How many balls across each row.
     #[setting(label = "Columns", group = "Group", when = "group and shape=grid|honeycomb", range(1, 500))]
@@ -101,7 +109,13 @@ pub struct BallsSettings {
     )]
     pub space: f32,
     /// How far the ring's balls are from its middle.
-    #[setting(label = "Radius", group = "Group", when = "group and shape=ring", range(1, 4000), unit = "px")]
+    #[setting(
+        label = "Radius",
+        group = "Group",
+        when = "group and shape=ring|filled_ring",
+        range(1, 4000),
+        unit = "px"
+    )]
     pub ring_radius: f32,
     /// The letters the balls spell out.
     #[setting(label = "Word", group = "Group", when = "group and shape=word")]
@@ -216,8 +230,7 @@ impl BallsSettings {
     }
 }
 
-const SLOTS: &[SlotId] =
-    &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles, SlotId::Shader];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Trail, SlotId::Motion, SlotId::Bounce, SlotId::Particles];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
 
 impl ThingKind for BallsKind {

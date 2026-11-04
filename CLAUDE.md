@@ -14,7 +14,7 @@ windows, the canvas and paint marks, the whole sound and chords system (`bpe-syn
 Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. Exports carry a silent audio track.
 
 Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
-Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }`; nothing is shared,
+Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Trail, Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects); nothing is shared,
 linked, inherited from a folder or locked, and there is no Library, presets or randomize (dice). Right-clicking a
 setting opens Copy Value / Paste Value (…) / Create Keyframe; there are no keyframe diamonds in the inspector.
 
@@ -88,14 +88,14 @@ Dependencies go bottom to top:
   `layers_group_shaded.wgsl` mixes a group shader into the layers that name it (`amount.z/w` of their records).
   A ball with a Blend layer under other drawn layers draws in two parts (`LayeredInstance.range.z`: the first record
   above the Blend layer, bit 16 for the upper part): the layers under it go through the blend, the ones above paint
-  normally over them (`ThingDraw::draw_over`, `Stack::split`). A record whose own colours are a gradient carries a
+  normally over them (`ThingDraw::draw_over`, `Stack::split`). Shapes split the same way (`PathInstance.layers[3]`, `ShapeStack::split`), and the lower part rescales its soft edge by the upper part's cover (`TOP_COVER`, `split_lower_mixed`) so the two parts add up to the whole at the edge. **Z-order**: `Thing.z_order` (-100..100, default 0, in the Placement card) sorts a thing's drawing: every `BlendLayer` has a `z` and a `Place` (Back, Behind, BehindOver, Front, Blend, Over) and `Frame::sort_layers` orders them; z < 0 draws under the scene's back, z > 0 over the balls. A record whose own colours are a gradient carries a
   `paint` (pattern 1 straight across the ball, 2 outward), the Body's too when its colours follow Each ball
   (`Follow::EachBall`, the Body's default). In-ball programs live in a `ProgramStore`; the editor shares one between
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
-  `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Shading, Shader, Blend, the reactions
+  `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions
   Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, Mask, and the group layers Gradient
   (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
   layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
@@ -110,7 +110,7 @@ Dependencies go bottom to top:
   turns them into records and `things/shape/draw.rs::wall_form` draws every wall form in the shape's own frame. `look.basic`
   fits no thing kind now. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
   into layers (`layers_from_basic`). Balls (`things/balls/`) are one ball or, with `group` on, a group in a
-  `shape` (`shapes.rs`: Grid, Line, Ring, Filled circle, Triangle, Honeycomb, Spiral, Heart, Scatter, Word from
+  `shape` (`shapes.rs`: Grid, Line, Ring, Filled ring (rings of balls from the middle out, `filled_ring`), Filled circle, Triangle, Honeycomb, Spiral, Heart, Scatter, Word from
   the IBM Plex font, Custom points), with Variety (size, speed, colour, turn spread by `seed`), Release (all at
   once, one by one, waves, via `ThingSim::spawn`) and Launch (same, fan, outward, random). A ball's number in the
   group (`sim::numbers`) is its place in the shape, not its row. Test scenes use `BallsSettings::block`/`ring`,
@@ -125,7 +125,7 @@ Dependencies go bottom to top:
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
   fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
   file may make up a colour (a test checks; a real scene colour line ends in `// scene colour`). Every thing but
-  the scene settings has a `Thing.colour` (`TrackColour`, editor only, never read by physics or export). Its layout has the tree on the left, the inspector on the right, the preview
+  the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (older files with bare names open with new colours); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,

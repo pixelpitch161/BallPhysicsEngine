@@ -517,21 +517,21 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
         .unwrap_or_default()
 }
 
-/// What is under `pos`: an arrow tip first, then a ball, then a selected thing with nothing of its
-/// own to show, then the selected shape's handles, then any shape itself.
+/// What is under `pos`: the selected balls' arrow tip first, then a ball, then a selected thing
+/// with nothing of its own to show, then the selected shape's handles, then any shape itself.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
     // Each thing through its own view: stuck things aren't seen through the camera.
     let seen = |id: &ThingId| {
         if studio.scene.things.get(id).is_some_and(|t| t.enabled) { view.of(studio, *id) } else { None }
     };
-    for id in studio.resolved.things.keys() {
-        if let Some(v) = seen(id)
-            && let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
-            && (v.to_screen(tip) - pos).length() <= TIP_GRAB
-        {
-            return Some(Handle::Aim(*id));
-        }
+    // Only the selected thing shows its launch arrow.
+    if let Some(id) = studio.selection.primary.as_ref()
+        && let Some(v) = seen(id)
+        && let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
+        && (v.to_screen(tip) - pos).length() <= TIP_GRAB
+    {
+        return Some(Handle::Aim(*id));
     }
     let mut best: Option<(f32, ThingId)> = None;
     for (id, bodies) in world.bodies.iter() {
@@ -657,9 +657,13 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         let color = if highlighted { mark } else { faint };
         let center = view.to_screen(place_of(&studio.scene, world, *id).unwrap_or(thing.transform.position));
         painter.circle_stroke(center, 6.0, Stroke::new(1.2, color));
+        // The launch arrow shows only on the selected balls (or while it is being dragged).
+        let aim_active = active == Some(Handle::Aim(*id));
+        if selected != Some(*id) && !aim_active {
+            continue;
+        }
         let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id) else { continue };
         let tip = view.to_screen(tip);
-        let aim_active = active == Some(Handle::Aim(*id));
         let arrow_color = if aim_active {
             style::TEXT_STRONG
         } else if highlighted {
@@ -775,7 +779,7 @@ mod tests {
 
     #[test]
     fn hit_testing_finds_balls_before_shapes() {
-        let studio = Studio::headless();
+        let mut studio = Studio::headless();
         let view = View {
             rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
             scale: 0.25,
@@ -785,8 +789,13 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(508.0, 0.0))), Some(Handle::Body(ThingId(1))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, 300.0))), None);
-        // The arrow tip sits a quarter second of launch speed from the ball.
-        assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(75.0, -250.0))), Some(Handle::Aim(ThingId(2))));
+        // The arrow tip sits a quarter second of launch speed from the ball, and only the
+        // selected balls show it.
+        let tip = view.to_screen(Vec2::new(75.0, -250.0));
+        studio.selection.clear();
+        assert_eq!(hit_test(&studio, &view, tip), None, "an unselected ball shows no arrow");
+        studio.selection.set(ThingId(2));
+        assert_eq!(hit_test(&studio, &view, tip), Some(Handle::Aim(ThingId(2))));
     }
 
     /// A drag on the blank project's circle by its edge.

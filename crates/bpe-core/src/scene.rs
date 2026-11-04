@@ -28,46 +28,140 @@ pub enum Target {
 }
 
 /// The colour that marks a thing in the editor (its tree tag, timeline group and selection), like
-/// a track colour in a DAW. Only the editor reads it; it never changes the video.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TrackColour {
-    Pink,
-    Cyan,
-    Lime,
-    Orange,
-    Violet,
-    Yellow,
-    Red,
-    Teal,
-}
+/// a track colour in a DAW: any sRGB colour, picked with a colour picker. Only the editor reads it;
+/// it never changes the video. Saved as `"#rrggbb"`; a file saved before the picker (a bare
+/// `pink`) opens with new colours (`saved_colour`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TrackColour(pub [u8; 3]);
 
 impl TrackColour {
-    /// Every colour, in the order new things take them.
-    pub const ALL: [TrackColour; 8] = [
-        TrackColour::Pink,
-        TrackColour::Cyan,
-        TrackColour::Lime,
-        TrackColour::Orange,
-        TrackColour::Violet,
-        TrackColour::Yellow,
-        TrackColour::Red,
-        TrackColour::Teal,
+    pub const PINK: TrackColour = TrackColour([0xff, 0x6f, 0xa8]);
+    pub const CYAN: TrackColour = TrackColour([0x4f, 0xc3, 0xf0]);
+    pub const LIME: TrackColour = TrackColour([0xa8, 0xd8, 0x4a]);
+    pub const ORANGE: TrackColour = TrackColour([0xff, 0xaa, 0x45]);
+    pub const VIOLET: TrackColour = TrackColour([0xa9, 0x8b, 0xff]);
+    pub const YELLOW: TrackColour = TrackColour([0xf2, 0xd2, 0x4b]);
+    pub const RED: TrackColour = TrackColour([0xff, 0x70, 0x70]);
+    pub const TEAL: TrackColour = TrackColour([0x3f, 0xd6, 0xb5]);
+
+    /// The old eight colours by their saved names.
+    const NAMED: [(&'static str, TrackColour); 8] = [
+        ("pink", Self::PINK),
+        ("cyan", Self::CYAN),
+        ("lime", Self::LIME),
+        ("orange", Self::ORANGE),
+        ("violet", Self::VIOLET),
+        ("yellow", Self::YELLOW),
+        ("red", Self::RED),
+        ("teal", Self::TEAL),
     ];
 
-    /// What the editor calls it: "Pink".
-    pub fn name(self) -> &'static str {
-        match self {
-            TrackColour::Pink => "Pink",
-            TrackColour::Cyan => "Cyan",
-            TrackColour::Lime => "Lime",
-            TrackColour::Orange => "Orange",
-            TrackColour::Violet => "Violet",
-            TrackColour::Yellow => "Yellow",
-            TrackColour::Red => "Red",
-            TrackColour::Teal => "Teal",
+    /// `"#rrggbb"`.
+    pub fn hex(self) -> String {
+        let [r, g, b] = self.0;
+        format!("#{r:02x}{g:02x}{b:02x}")
+    }
+
+    /// Reads `"#rrggbb"` (the `#` optional) or an old colour's name.
+    pub fn parse(text: &str) -> Option<TrackColour> {
+        let t = text.trim();
+        if let Some((_, c)) = Self::NAMED.iter().find(|(n, _)| n.eq_ignore_ascii_case(t)) {
+            return Some(*c);
+        }
+        let h = t.strip_prefix('#').unwrap_or(t);
+        if h.len() != 6 || !h.is_ascii() {
+            return None;
+        }
+        let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+        Some(TrackColour([byte(0)?, byte(2)?, byte(4)?]))
+    }
+
+    /// A readable colour (bright enough to read on the editor's dark greys, not washed out) of
+    /// `hue` (turns, 0 to 1), with `saturation` and `lightness` (0 to 1) picked by `pick`
+    /// (0 to 1 each) within readable bounds.
+    pub fn readable(hue: f32, pick: [f32; 2]) -> TrackColour {
+        let s = 0.55 + 0.30 * pick[0].clamp(0.0, 1.0);
+        let l = 0.60 + 0.12 * pick[1].clamp(0.0, 1.0);
+        TrackColour(hsl_to_rgb(hue.rem_euclid(1.0), s, l))
+    }
+
+    /// The colour's hue, in turns (0 to 1); `None` for a grey.
+    pub fn hue(self) -> Option<f32> {
+        let [r, g, b] = self.0.map(|c| c as f32 / 255.0);
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let d = max - min;
+        if d < 1e-3 {
+            return None;
+        }
+        let h = if max == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+        Some(h / 6.0)
+    }
+}
+
+/// HSL (each 0 to 1) to sRGB bytes.
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h * 6.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h * 6.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [r, g, b].map(|v| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+impl Serialize for TrackColour {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for TrackColour {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        TrackColour::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("not a colour: {text}")))
+    }
+}
+
+/// A thing's saved colour: `"#rrggbb"` or an old colour's name. A file from before the picker
+/// names its colours bare (`pink`), which reads as no colour: the thing gets a new one on opening.
+fn saved_colour<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<TrackColour>, D::Error> {
+    struct Lenient(Option<TrackColour>);
+    impl<'de> Deserialize<'de> for Lenient {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Any;
+            impl<'de> serde::de::Visitor<'de> for Any {
+                type Value = Lenient;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a colour as \"#rrggbb\"")
+                }
+                fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Lenient, E> {
+                    Ok(Lenient(TrackColour::parse(text)))
+                }
+                fn visit_unit<E: serde::de::Error>(self) -> Result<Lenient, E> {
+                    Ok(Lenient(None))
+                }
+                fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Lenient, A::Error> {
+                    use serde::de::VariantAccess;
+                    let (name, rest): (String, _) = data.variant()?;
+                    rest.unit_variant()?;
+                    Ok(Lenient(TrackColour::parse(&name)))
+                }
+            }
+            d.deserialize_any(Any)
         }
     }
+    Ok(Option::<Lenient>::deserialize(d)?.and_then(|l| l.0))
 }
 
 /// Where a thing sits and how it is turned, relative to its parent.
@@ -174,11 +268,19 @@ pub struct Thing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<bool>,
     /// The thing's colour in the editor. `None` only for the scene settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "saved_colour")]
     pub colour: Option<TrackColour>,
+    /// What draws over what: a thing with a higher z-order draws over one with a lower one. At
+    /// the same z-order things draw as they always have (shapes under balls). In
+    /// [`Thing::Z_ORDER_RANGE`].
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub z_order: i32,
 }
 
 impl Thing {
+    /// The z-orders a thing can have.
+    pub const Z_ORDER_RANGE: std::ops::RangeInclusive<i32> = -100..=100;
+
     /// Whether this thing sits on its parent instead of keeping its own place.
     pub fn rides(&self) -> bool {
         matches!(self.attach, Attach::Ride { .. })
@@ -206,6 +308,7 @@ impl Default for Thing {
             slots: BTreeMap::new(),
             screen: None,
             colour: None,
+            z_order: 0,
         }
     }
 }
@@ -254,25 +357,31 @@ impl Scene {
         Scene { things: BTreeMap::from([(ThingId::ROOT, root)]), order: vec![ThingId::ROOT], ..Scene::default() }
     }
 
-    /// The colour a new thing takes: the first nobody uses yet, or once all are taken, the one
-    /// the fewest things use (earliest first on a tie).
-    pub fn next_colour(&self) -> TrackColour {
-        let used = |c: TrackColour| self.things.values().filter(|t| t.colour == Some(c)).count();
-        TrackColour::ALL.into_iter().min_by_key(|&c| used(c)).expect("there are eight colours")
-    }
-
-    /// The colour a new thing of `kind` takes: the kind's own when nobody has it yet, else the
-    /// next free one.
-    pub fn colour_for(&self, kind: Option<&dyn crate::ThingKind>) -> TrackColour {
-        match kind.and_then(|k| k.track_colour()) {
-            Some(own) if !self.things.values().any(|t| t.colour == Some(own)) => own,
-            _ => self.next_colour(),
+    /// The colour a new thing takes: a random readable colour, its hue the one of a few random
+    /// tries furthest round the colour wheel from the hues already in use.
+    pub fn new_colour(&self) -> TrackColour {
+        let used: Vec<f32> = self.things.values().filter_map(|t| t.colour.and_then(TrackColour::hue)).collect();
+        let mut random = random_numbers(u64::from(self.next_thing));
+        let mut best = (f32::MIN, 0.0);
+        for _ in 0..16 {
+            let hue = random();
+            let gap = used
+                .iter()
+                .map(|u| {
+                    let d = (hue - u).rem_euclid(1.0);
+                    d.min(1.0 - d)
+                })
+                .fold(1.0, f32::min);
+            if gap > best.0 {
+                best = (gap, hue);
+            }
         }
+        TrackColour::readable(best.1, [random(), random()])
     }
 
     /// Gives every thing but the scene settings a colour if it has none, in tree order (scenes
     /// saved before colours existed), and takes the scene settings' away.
-    pub fn give_colours(&mut self, reg: &Registry) {
+    pub fn give_colours(&mut self) {
         if let Some(root) = self.things.get_mut(&ThingId::ROOT) {
             root.colour = None;
         }
@@ -281,7 +390,7 @@ impl Scene {
             if id == ThingId::ROOT || thing.colour.is_some() {
                 continue;
             }
-            let colour = self.colour_for(reg.thing(&thing.kind));
+            let colour = self.new_colour();
             self.things.get_mut(&id).expect("looked up above").colour = Some(colour);
         }
     }
@@ -423,6 +532,21 @@ impl Scene {
             }
         }
         reached
+    }
+}
+
+/// Numbers from 0 to 1 that differ every time the program runs (the standard library's random
+/// hash keys), mixed with `salt`.
+fn random_numbers(salt: u64) -> impl FnMut() -> f32 {
+    use std::hash::{BuildHasher, Hasher};
+    let state = std::collections::hash_map::RandomState::new();
+    let mut n = 0u64;
+    move || {
+        let mut h = state.build_hasher();
+        h.write_u64(salt);
+        h.write_u64(n);
+        n += 1;
+        (h.finish() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 

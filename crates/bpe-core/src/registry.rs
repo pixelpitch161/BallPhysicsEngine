@@ -33,11 +33,6 @@ pub trait ThingKind: Send + Sync + 'static {
     fn single(&self) -> bool {
         false
     }
-    /// The editor track colour a new one of these starts with, when the kind has its own (the
-    /// shape is orange); `None` takes the next free colour.
-    fn track_colour(&self) -> Option<crate::TrackColour> {
-        None
-    }
     /// The heading the editor's "Add thing" menu lists this kind under.
     fn family(&self) -> &'static str {
         "Other"
@@ -225,7 +220,8 @@ impl Registry {
         slot: SlotId,
         thing: &'a dyn ThingKind,
     ) -> impl Iterator<Item = &'a dyn ModuleKind> {
-        self.modules().filter(move |m| m.slot() == slot && m.fits(thing.id()))
+        let has = thing.slots().contains(&slot);
+        self.modules().filter(move |m| has && m.slot() == slot && m.fits(thing.id()))
     }
 }
 
