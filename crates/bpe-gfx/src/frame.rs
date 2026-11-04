@@ -482,6 +482,41 @@ pub struct TrailVertex {
     pub edge: [f32; 2],
     /// Linear light; alpha -1 is additive (the light itself fades along the streak).
     pub color: [f32; 4],
+    /// How soft its edges are and how much of it shows (see [`StreakStyle`]).
+    pub style: [f32; 2],
+}
+
+/// How a streak's edges look: its own, a soft glow, or only a band along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StreakStyle {
+    /// 0 keeps a crisp one-pixel edge; 1 is soft from the centre line out to twice the width.
+    pub softness: f32,
+    /// 0 fills it; otherwise only the outer `band` share of its half width shows (an outline).
+    pub band: f32,
+}
+
+/// Appends a strip through `points` (newest first) as a triangle list, two triangles per
+/// segment, `half_widths[i]` wide and coloured `colors[i]` at `points[i]` (a point past the end
+/// of either takes the last one), drawn as `style` says. Nothing fades or narrows here: the
+/// caller has done that. `pixel` is a pixel in world units, the anti-aliasing margin each edge
+/// keeps. Fewer than two points draw nothing.
+pub fn push_trail(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_widths: &[f32],
+    colors: &[[f32; 4]],
+    style: StreakStyle,
+    pixel: f32,
+) {
+    let (Some(&w), Some(&c)) = (half_widths.last(), colors.last()) else { return };
+    strip(
+        out,
+        points,
+        |i| half_widths.get(i).copied().unwrap_or(w),
+        |i| colors.get(i).copied().unwrap_or(c),
+        style,
+        pixel,
+    );
 }
 
 /// Appends a streak through `points` (newest first) as a triangle list: two triangles per
@@ -525,6 +560,35 @@ fn streak(
     if n < 2 || half_width <= 0.0 {
         return;
     }
+    let taper = taper.clamp(0.0, 1.0);
+    let along = |i: usize| i as f32 / (n - 1) as f32;
+    let width_at = |i: usize| half_width * (1.0 - along(i) * taper);
+    let faded = |i: usize| {
+        let fade = (1.0 - along(i)) * (1.0 - along(i));
+        let color = color_at(i);
+        if color[3] < 0.0 {
+            [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
+        } else {
+            [color[0], color[1], color[2], color[3] * fade]
+        }
+    };
+    strip(out, points, width_at, faded, StreakStyle::default(), pixel);
+}
+
+/// The strip under [`push_trail`] and [`push_streak`]: each point `width_at` wide and `color_at`.
+fn strip(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    width_at: impl Fn(usize) -> f32,
+    color_at: impl Fn(usize) -> [f32; 4],
+    style: StreakStyle,
+    pixel: f32,
+) {
+    let n = points.len();
+    if n < 2 {
+        return;
+    }
+    let (softness, band) = (style.softness.clamp(0.0, 1.0), style.band.clamp(0.0, 1.0));
     // Each segment's direction, worked out once: every segment's corners need its neighbours' too.
     let directions: Vec<Option<Vec2>> = points.windows(2).map(|w| (w[1] - w[0]).try_normalize()).collect();
     let direction = |i: usize| directions[i];
@@ -543,19 +607,16 @@ fn streak(
             _ => own.perp(),
         }
     };
-    let taper = taper.clamp(0.0, 1.0);
     let vertex = |i: usize, side: Vec2, sign: f32| {
-        let t = i as f32 / (n - 1) as f32;
-        let width = half_width * (1.0 - t * taper);
-        let reach = width + pixel;
-        let fade = (1.0 - t) * (1.0 - t);
-        let color = color_at(i);
-        let color = if color[3] < 0.0 {
-            [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
-        } else {
-            [color[0], color[1], color[2], color[3] * fade]
-        };
-        TrailVertex { position: (points[i] + side * reach * sign).into(), edge: [reach * sign, width], color }
+        let width = width_at(i).max(0.0);
+        // A soft edge reaches out past the width.
+        let reach = width * (1.0 + softness) + pixel;
+        TrailVertex {
+            position: (points[i] + side * reach * sign).into(),
+            edge: [reach * sign, width],
+            color: color_at(i),
+            style: [softness, band],
+        }
     };
     for i in 0..n - 1 {
         let Some(own) = direction(i) else { continue };
@@ -602,6 +663,37 @@ pub struct Burst {
     /// How much of a colour painted on the GPU (`follow` 1 and 2) shows, 0 to 1: its alpha, or
     /// for added light its light, is scaled by this. `color` comes faded already.
     pub amount: f32,
+}
+
+/// One particle (or a round bit of a trail) as the GPU draws it: the CPU has worked out where it
+/// is and how it looks. Matches `SpriteIn` in sprites.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct Particle {
+    /// Centre (world pixels), turn (radians), half size (pixels; a ring's radius).
+    pub place: [f32; 4],
+    /// Linear light. A negative alpha adds `|alpha|` of the light and covers nothing.
+    pub color: [f32; 4],
+    /// Half length along the turn (sparks, streaks, confetti, shards), shade (1 as it is),
+    /// softness 0 to 1 (see [`StreakStyle`]), band 0 to 1 (0 filled, else only the outer share
+    /// of its size shows).
+    pub style: [f32; 4],
+    /// Its shape: 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings, 6 dots, 7 hearts,
+    /// 8 bubbles, 9 streaks; three spare.
+    pub shape: [u32; 4],
+}
+
+impl Particle {
+    /// A particle of `shape` at `at`, turned `angle` radians, `size` pixels (half size), in
+    /// `color`, shaded 1, crisp and filled.
+    pub fn new(shape: u32, at: Vec2, angle: f32, size: f32, color: [f32; 4]) -> Self {
+        Self { place: [at.x, at.y, angle, size], color, style: [size, 1.0, 0.0, 0.0], shape: [shape, 0, 0, 0] }
+    }
+
+    /// Where it is.
+    pub fn at(&self) -> Vec2 {
+        Vec2::new(self.place[0], self.place[1])
+    }
 }
 
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.
@@ -725,6 +817,12 @@ pub struct Frame {
     pub layered_runs: Vec<crate::LayeredRun>,
     pub trails: Vec<TrailVertex>,
     pub bursts: Vec<Burst>,
+    /// Particles and trail bits behind the balls, drawn right after `trails`.
+    pub particles: Vec<Particle>,
+    /// Trails and particles in front of the balls, drawn after them (and after the effects on
+    /// things), trails first.
+    pub trails_front: Vec<TrailVertex>,
+    pub particles_front: Vec<Particle>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
@@ -883,6 +981,9 @@ impl Default for Frame {
             layered_runs: Vec::new(),
             trails: Vec::new(),
             bursts: Vec::new(),
+            particles: Vec::new(),
+            trails_front: Vec::new(),
+            particles_front: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
             gradients: GradientAtlas::default(),
@@ -912,6 +1013,9 @@ impl Frame {
         self.layered_runs.clear();
         self.trails.clear();
         self.bursts.clear();
+        self.particles.clear();
+        self.trails_front.clear();
+        self.particles_front.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1020,6 +1124,9 @@ impl Frame {
             && self.layered.is_empty()
             && self.trails.is_empty()
             && self.bursts.is_empty()
+            && self.particles.is_empty()
+            && self.trails_front.is_empty()
+            && self.particles_front.is_empty()
             && self.layers.is_empty()
     }
 
@@ -1108,6 +1215,9 @@ impl Frame {
                 && o.looks.is_empty()
                 && o.layered.is_empty()
                 && o.trails.is_empty()
+                && o.particles.is_empty()
+                && o.trails_front.is_empty()
+                && o.particles_front.is_empty()
                 && o.layers.is_empty())
         })
     }
@@ -1169,6 +1279,9 @@ impl Frame {
             seen[i - 1]
         });
         self.flashes.retain(|f| sees(f.center, f.size));
+        let reach = |p: &Particle| p.place[3].max(p.style[0]) * (1.0 + p.style[2]) + 4.0;
+        self.particles.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
+        self.particles_front.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
         for l in &mut self.layers {
             l.frame.cull_through(camera, (width, height));
         }

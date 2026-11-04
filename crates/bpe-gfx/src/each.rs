@@ -29,7 +29,7 @@ impl Kind {
 
     fn used_by(self, f: &Frame) -> bool {
         match self {
-            Kind::Trail => !f.trails.is_empty(),
+            Kind::Trail => !f.trails.is_empty() || !f.trails_front.is_empty(),
             Kind::Shape => !f.shapes.is_empty(),
             Kind::Path => !f.paths.is_empty(),
             Kind::Ball => !f.balls.is_empty(),

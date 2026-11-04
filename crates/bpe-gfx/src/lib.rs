@@ -26,15 +26,18 @@ mod pictures;
 mod programs;
 #[cfg(test)]
 mod programs_tests;
+pub mod sprites;
+#[cfg(test)]
+mod sprites_tests;
 #[cfg(test)]
 mod sub_layers_tests;
 mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, PathInstance, Place, ShapeInstance, Stage,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
-    thing_code,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, Particle, PathInstance, Place,
+    ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with,
+    hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -59,8 +62,8 @@ const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4
 ];
-const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2];
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
@@ -309,6 +312,7 @@ pub struct Renderer {
     layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     particles: particles::Particles,
+    sprites: sprites::Sprites,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -340,6 +344,9 @@ struct FrameBuffers {
     fx: Option<wgpu::Buffer>,
     flashes: GrowableBuffer,
     bursts: particles::BurstList,
+    particles: GrowableBuffer,
+    trails_front: GrowableBuffer,
+    particles_front: GrowableBuffer,
 }
 
 impl Default for FrameBuffers {
@@ -358,6 +365,9 @@ impl Default for FrameBuffers {
             fx: None,
             flashes: GrowableBuffer::new("flash instances"),
             bursts: particles::BurstList::default(),
+            particles: GrowableBuffer::new("particles behind"),
+            trails_front: GrowableBuffer::new("trail vertices in front"),
+            particles_front: GrowableBuffer::new("particles in front"),
         }
     }
 }
@@ -417,6 +427,9 @@ impl FrameBuffers {
             }
         }
         self.flashes.upload(device, queue, bytemuck::cast_slice(&f.flashes));
+        self.particles.upload(device, queue, bytemuck::cast_slice(&f.particles));
+        self.trails_front.upload(device, queue, bytemuck::cast_slice(&f.trails_front));
+        self.particles_front.upload(device, queue, bytemuck::cast_slice(&f.particles_front));
         particles.fill(&mut self.bursts, device, queue, particles::pick(&f.bursts, f.time));
     }
 }
@@ -986,6 +999,7 @@ impl Renderer {
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
+        let sprites = sprites::Sprites::new(device, &globals_layout);
         Self {
             globals,
             globals_group,
@@ -1021,6 +1035,7 @@ impl Renderer {
             layered_object,
             chain: effects::chain::Chain::new(device),
             particles,
+            sprites,
             downsample,
             upsample,
             composite,
@@ -1207,7 +1222,11 @@ impl Renderer {
             &self.targets.hdr,
             object_view.as_ref(),
         );
-        if !frame.flashes.is_empty() || !frame.bursts.is_empty() {
+        if !frame.flashes.is_empty()
+            || !frame.bursts.is_empty()
+            || !frame.trails_front.is_empty()
+            || !frame.particles_front.is_empty()
+        {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
@@ -1300,6 +1319,11 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails.slice());
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
+        if !f.particles.is_empty() {
+            self.sprites.draw(pass, &b.particles, f.particles.len() as u32);
+            // The sprites bind only the globals: put the paint back for what follows.
+            pass.set_bind_group(1, &through.paint, &[]);
+        }
         if !f.shapes.is_empty() {
             pass.set_pipeline(self.pipeline(&self.shape, Kind::Shape, through));
             pass.set_vertex_buffer(0, b.shapes.slice());
@@ -1382,6 +1406,15 @@ impl Renderer {
             pass.draw(0..4, 0..f.flashes.len() as u32);
         }
         self.particles.draw_list(pass, &through.paint, &b.bursts);
+        if !f.trails_front.is_empty() {
+            pass.set_pipeline(self.pipeline(&self.trail, each::Kind::Trail, through));
+            pass.set_bind_group(1, &through.paint, &[]);
+            pass.set_vertex_buffer(0, b.trails_front.slice());
+            pass.draw(0..f.trails_front.len() as u32, 0..1);
+        }
+        if !f.particles_front.is_empty() {
+            self.sprites.draw(pass, &b.particles_front, f.particles_front.len() as u32);
+        }
     }
 
     /// Where `f`'s shapes, balls and styled balls are, for effects on things.
