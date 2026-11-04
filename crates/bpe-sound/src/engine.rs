@@ -48,10 +48,15 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// The engine for `scene`, its wavetables baked if need be.
     pub fn new(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Engine {
+        Self::with_patch(scene, resolved, kit, SoundPatch::build(scene, resolved, kit))
+    }
+
+    /// The engine for `scene` playing `patch` (built from the same scene).
+    pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
         let physics = Playback::new(scene, resolved, kit.sims.clone());
         let cursor = HitCursor::new(physics.world().steps_per_second);
-        let patch = SoundPatch::build(scene, resolved, kit);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);
         master.at(0.0);

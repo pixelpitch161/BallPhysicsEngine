@@ -9,7 +9,7 @@
 // The sample loops walk several buffers in step by index, which reads clearest as it is.
 #![allow(clippy::needless_range_loop)]
 
-use super::alloc::{CAPACITY, STEAL_MS, Voices};
+use super::alloc::{CAPACITY, MAX_VOICES, STEAL_MS, Voices};
 use super::hit_filter::HitFilter;
 use super::knobs::{self as k, KNOBS, MAX_ENVS, Values};
 use super::notes::{NotePicker, PickCx, RandomPick, mix};
@@ -74,8 +74,8 @@ pub struct ShapeSpec {
     /// The knobs with keys, by place.
     pub keyed: Vec<(usize, Track)>,
     pub matrix: ModMatrix,
-    /// The band-limited square the subs read.
-    pub square: Arc<TableSet>,
+    /// The band-limited square the subs read (`None` with no sub, or while it bakes).
+    pub square: Option<Arc<TableSet>>,
     /// The picture's width in scene pixels (Follow hit pans across it).
     pub width: f32,
 }
@@ -441,8 +441,8 @@ impl ShapeVoice {
             self.notes.meta[0] = super::alloc::Meta { active: true, fading: false, started: sample };
             (0, None)
         } else {
-            let limit = (self.now[k::VOICES].round() as usize).clamp(1, CAPACITY);
-            let s = self.notes.start(limit, sample);
+            let limit = (self.now[k::VOICES].round() as usize).clamp(1, MAX_VOICES);
+            let Some(s) = self.notes.start(limit, sample, cx.start_sample) else { return };
             (s.slot, s.steal)
         };
         if let Some(s) = steal {
@@ -682,7 +682,9 @@ impl ShapeVoice {
                 }
                 n.warp_prev[o] = warp;
                 n.osc[o].render(table, &sc.warp, &sc.gain, &mut sc.osc_l, &mut sc.osc_r);
-                if spec.sub != SubWave::Off {
+                if spec.sub != SubWave::Off
+                    && let Some(square) = &self.spec.square
+                {
                     let wave = if spec.sub == SubWave::Sine { SubWaveId::Sine } else { SubWaveId::Square };
                     let octave = if spec.sub_octave == SubOctave::Two { 2 } else { 1 };
                     n.sub[o].set(freq, wave, octave, 1.0);
@@ -692,7 +694,7 @@ impl ShapeVoice {
                     if self.routed[3 * o + 2] {
                         scale_by_routes(&self.spec.matrix, &self.source_env, &sc.env, s_place, &mut sc.sub_gain);
                     }
-                    n.sub[o].render(&self.spec.square, &sc.sub_gain, &mut sc.osc_l, &mut sc.osc_r);
+                    n.sub[o].render(square, &sc.sub_gain, &mut sc.osc_l, &mut sc.osc_r);
                 }
             }
             n.chain[o].process(&mut sc.osc_l, &mut sc.osc_r);

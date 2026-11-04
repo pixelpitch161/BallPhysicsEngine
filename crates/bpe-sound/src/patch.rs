@@ -18,10 +18,36 @@ pub struct SoundPatch {
     pub master_keys: MasterKeys,
     pub tempo: TempoMap,
     pub voices: Vec<Box<dyn VoiceSource>>,
+    /// Some wavetable was still baking ([`Tables::Ready`]): those oscillators are silent until
+    /// the patch is built again.
+    pub pending: bool,
+}
+
+/// How a patch gets its wavetables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tables {
+    /// Baked there and then if need be (the export and tests).
+    Bake,
+    /// Only those already baked; the rest start baking in the background (the editor, which
+    /// must never wait).
+    Ready,
+}
+
+impl Tables {
+    fn get(self, wave: WaveShape, mode: WarpModeId, pending: &mut bool) -> Option<Arc<TableSet>> {
+        match self {
+            Tables::Bake => Some(WaveBank::get(wave, mode)),
+            Tables::Ready => {
+                let set = WaveBank::ready(wave, mode);
+                *pending |= set.is_none();
+                set
+            }
+        }
+    }
 }
 
 /// The table a wave reads, for a tabled wave.
-fn table_of(o: &OscSettings) -> Option<Arc<TableSet>> {
+fn table_of(o: &OscSettings, tables: Tables, pending: &mut bool) -> Option<Arc<TableSet>> {
     if !o.on {
         return None;
     }
@@ -32,10 +58,10 @@ fn table_of(o: &OscSettings) -> Option<Arc<TableSet>> {
         Wave::Square => WaveShape::Square,
         Wave::Noise => return None,
     };
-    Some(WaveBank::get(wave, WarpModeId::from_index(o.warp_mode.index())))
+    tables.get(wave, WarpModeId::from_index(o.warp_mode.index()), pending)
 }
 
-fn osc_spec(o: &OscSettings) -> OscSpec {
+fn osc_spec(o: &OscSettings, tables: Tables, pending: &mut bool) -> OscSpec {
     OscSpec {
         on: o.on,
         wave: o.wave,
@@ -43,12 +69,25 @@ fn osc_spec(o: &OscSettings) -> OscSpec {
         phase_mode: o.phase_mode,
         sub: o.sub,
         sub_octave: o.sub_octave,
-        table: table_of(o),
+        table: table_of(o, tables, pending),
     }
 }
 
 /// The voice of the shape `id` from its resolved Sound card, or `None` when its sound is off.
+/// Its wavetables are baked if need be.
 pub fn shape_voice(scene: &Scene, id: ThingId, card: &ResolvedSlot, index: usize, width: f32) -> Option<ShapeVoice> {
+    voice_with(scene, id, card, index, width, Tables::Bake, &mut false)
+}
+
+fn voice_with(
+    scene: &Scene,
+    id: ThingId,
+    card: &ResolvedSlot,
+    index: usize,
+    width: f32,
+    tables: Tables,
+    pending: &mut bool,
+) -> Option<ShapeVoice> {
     if card.kind != VOICE {
         return None;
     }
@@ -80,7 +119,7 @@ pub fn shape_voice(scene: &Scene, id: ThingId, card: &ResolvedSlot, index: usize
     Some(ShapeVoice::new(ShapeSpec {
         thing: id,
         index,
-        osc: [osc_spec(&v.a), osc_spec(&v.b)],
+        osc: [osc_spec(&v.a, tables, pending), osc_spec(&v.b, tables, pending)],
         envs,
         play_mode: v.play_mode,
         heard_from: v.play_heard_from.clone(),
@@ -89,13 +128,28 @@ pub fn shape_voice(scene: &Scene, id: ThingId, card: &ResolvedSlot, index: usize
         base,
         keyed,
         matrix,
-        square: WaveBank::get(WaveShape::Square, WarpModeId::Sync),
+        square: if [&v.a, &v.b].iter().any(|o| o.on && o.sub != bpe_kit::sound::SubWave::Off) {
+            tables.get(WaveShape::Square, WarpModeId::Sync, pending)
+        } else {
+            None
+        },
         width,
     }))
 }
 
 impl SoundPatch {
-    pub fn build(scene: &Scene, resolved: &Resolved, _kit: &Kit) -> SoundPatch {
+    /// The patch, its wavetables baked if need be.
+    pub fn build(scene: &Scene, resolved: &Resolved, kit: &Kit) -> SoundPatch {
+        Self::build_with(scene, resolved, kit, Tables::Bake)
+    }
+
+    /// The patch with only the wavetables already baked ([`Tables::Ready`]); never waits.
+    pub fn build_ready(scene: &Scene, resolved: &Resolved, kit: &Kit) -> SoundPatch {
+        Self::build_with(scene, resolved, kit, Tables::Ready)
+    }
+
+    pub fn build_with(scene: &Scene, resolved: &Resolved, _kit: &Kit, tables: Tables) -> SoundPatch {
+        let mut pending = false;
         let root = resolved.things.get(&ThingId::ROOT);
         let master = root
             .and_then(|r| r.slots.get(&SlotId::Mixer))
@@ -112,7 +166,7 @@ impl SoundPatch {
         for id in &scene.order {
             let Some(thing) = resolved.things.get(id) else { continue };
             if let Some(card) = thing.slots.get(&SlotId::Sound)
-                && let Some(v) = shape_voice(scene, *id, card, voices.len(), settings.width as f32)
+                && let Some(v) = voice_with(scene, *id, card, voices.len(), settings.width as f32, tables, &mut pending)
             {
                 voices.push(Box::new(v));
             }
@@ -127,7 +181,7 @@ impl SoundPatch {
                 voices.push(Box::new(tone));
             }
         }
-        SoundPatch { master, master_keys, tempo, voices }
+        SoundPatch { master, master_keys, tempo, voices, pending }
     }
 
     /// Whether anything in it makes sound.

@@ -14,6 +14,7 @@ use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
+use bpe_dsp::{WarpModeId, WaveBank, WaveShape};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use bpe_sound::SoundPatch;
@@ -146,6 +147,9 @@ pub struct Studio {
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
     pub left: LeftPanel,
+    /// Wavetables baked in the background when the sound was last built
+    /// ([`WaveBank::baked`]); more means it is built again.
+    tables_baked: u64,
 }
 
 impl Studio {
@@ -160,6 +164,11 @@ impl Studio {
         studio.listen = settings::load_listen();
         if let Some(path) = scene_path {
             studio.open_path(&path);
+        }
+        // The starter sound's wavetables (Triangle, and the subs' Square), so Enable sound is
+        // heard at once.
+        for wave in [WaveShape::Triangle, WaveShape::Square] {
+            WaveBank::ready(wave, WarpModeId::Sync);
         }
         studio.sound =
             AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
@@ -224,6 +233,7 @@ impl Studio {
             sound: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
+            tables_baked: WaveBank::baked(),
         }
     }
 
@@ -305,7 +315,7 @@ impl Studio {
                     job.seek(self.time);
                 }
             } else {
-                job.patch(SoundPatch::build(&self.scene, &self.resolved, &self.kit));
+                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
     }
@@ -807,6 +817,22 @@ impl Studio {
 
     /// Plays the notes clicked on a Sound tab's keyboard, after this frame's edit has reached
     /// the sound (a key that was just turned on plays with its new note list).
+    /// When wavetables finish baking in the background, the sound is built again with them
+    /// (until then the oscillators that need them are silent). Looks again shortly while a bake
+    /// is under way.
+    fn follow_bakes(&mut self, ctx: &egui::Context) {
+        let baked = WaveBank::baked();
+        if baked != self.tables_baked {
+            self.tables_baked = baked;
+            if let Some(job) = &mut self.sound {
+                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
+            }
+        }
+        if WaveBank::busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn send_auditions(&mut self) {
         let auditions = std::mem::take(&mut self.panels.inspector.auditions);
         if let Some(job) = &mut self.sound {
@@ -989,6 +1015,7 @@ impl eframe::App for Studio {
             self.after_edit(before);
         }
         self.send_auditions();
+        self.follow_bakes(&ctx);
         if self.revision != revision {
             // The preview drew this frame before the edit was resolved; draw it again now.
             ctx.request_repaint();

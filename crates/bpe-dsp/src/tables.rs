@@ -9,6 +9,7 @@
 
 use crate::warp::{WarpModeId, WaveShape, warped};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Samples one cycle is drawn at before it is band-limited.
@@ -275,11 +276,19 @@ pub fn octaves(freq_hz: f32) -> f64 {
     (f * TOP_HARMONICS as f64 / NYQUIST).log2()
 }
 
-/// Keeps the sets baked so far (the last [`BANK_SIZE`] used) and hands them out shared.
+/// Keeps the sets baked so far and hands them out shared. A set some voice still holds is always
+/// kept; of the rest, only the last [`BANK_SIZE`] used stay. Baking (about a tenth of a second)
+/// never happens with the bank locked, and [`WaveBank::ready`] bakes on a thread of its own, so
+/// the editor and the sound thread never wait for it.
 #[derive(Default)]
 pub struct WaveBank {
     sets: VecDeque<Arc<TableSet>>,
+    /// Sets being baked in the background.
+    baking: Vec<(WaveShape, WarpModeId)>,
 }
+
+/// Counts the sets baked in the background, so the editor knows to build its sound again.
+static BAKED: AtomicU64 = AtomicU64::new(0);
 
 impl WaveBank {
     pub fn new() -> Self {
@@ -292,24 +301,86 @@ impl WaveBank {
         BANK.get_or_init(|| Mutex::new(WaveBank::new()))
     }
 
-    /// The set for `wave` bent by `mode`, baked now if the bank doesn't have it.
-    pub fn prepare(&mut self, wave: WaveShape, mode: WarpModeId) -> Arc<TableSet> {
-        if let Some(i) = self.sets.iter().position(|s| s.wave == wave && s.mode == mode) {
-            let set = self.sets.remove(i).expect("just found");
-            self.sets.push_back(set.clone());
-            return set;
-        }
-        let set = Arc::new(TableSet::bake(wave, mode));
+    fn lock() -> std::sync::MutexGuard<'static, WaveBank> {
+        Self::shared().lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The set for `wave` bent by `mode` if the bank has it (it becomes the latest used).
+    pub fn find(&mut self, wave: WaveShape, mode: WarpModeId) -> Option<Arc<TableSet>> {
+        let i = self.sets.iter().position(|s| s.wave == wave && s.mode == mode)?;
+        let set = self.sets.remove(i).expect("just found");
         self.sets.push_back(set.clone());
-        while self.sets.len() > BANK_SIZE {
-            self.sets.pop_front();
+        Some(set)
+    }
+
+    /// Puts a baked set in (or hands back the one already there) and lets go of the oldest sets
+    /// nobody holds beyond [`BANK_SIZE`].
+    pub fn insert(&mut self, set: Arc<TableSet>) -> Arc<TableSet> {
+        if let Some(there) = self.find(set.wave, set.mode) {
+            return there;
+        }
+        self.sets.push_back(set.clone());
+        let mut i = 0;
+        while self.sets.len() > BANK_SIZE && i < self.sets.len() {
+            // Only the bank holds it (the set just put in is held by `set` too).
+            if Arc::strong_count(&self.sets[i]) == 1 {
+                self.sets.remove(i);
+            } else {
+                i += 1;
+            }
         }
         set
     }
 
-    /// From the shared bank.
+    /// The set for `wave` bent by `mode`, baked now if the bank doesn't have it.
+    pub fn prepare(&mut self, wave: WaveShape, mode: WarpModeId) -> Arc<TableSet> {
+        match self.find(wave, mode) {
+            Some(set) => set,
+            None => self.insert(Arc::new(TableSet::bake(wave, mode))),
+        }
+    }
+
+    /// From the shared bank, baked now (without holding the bank) if it isn't there. For the
+    /// export and tests; the editor uses [`WaveBank::ready`].
     pub fn get(wave: WaveShape, mode: WarpModeId) -> Arc<TableSet> {
-        Self::shared().lock().unwrap_or_else(|e| e.into_inner()).prepare(wave, mode)
+        if let Some(set) = Self::lock().find(wave, mode) {
+            return set;
+        }
+        let set = Arc::new(TableSet::bake(wave, mode));
+        Self::lock().insert(set)
+    }
+
+    /// From the shared bank if it is there; otherwise `None`, and the set starts baking on a
+    /// thread of its own ([`WaveBank::baked`] counts up when it is in).
+    pub fn ready(wave: WaveShape, mode: WarpModeId) -> Option<Arc<TableSet>> {
+        let mut bank = Self::lock();
+        if let Some(set) = bank.find(wave, mode) {
+            return Some(set);
+        }
+        if !bank.baking.contains(&(wave, mode)) {
+            bank.baking.push((wave, mode));
+            let started = std::thread::Builder::new().name("wavetable bake".into()).spawn(move || {
+                let set = Arc::new(TableSet::bake(wave, mode));
+                let mut bank = Self::lock();
+                bank.insert(set);
+                bank.baking.retain(|b| *b != (wave, mode));
+                BAKED.fetch_add(1, Ordering::SeqCst);
+            });
+            if started.is_err() {
+                bank.baking.retain(|b| *b != (wave, mode));
+            }
+        }
+        None
+    }
+
+    /// Whether some set is baking in the background.
+    pub fn busy() -> bool {
+        !Self::lock().baking.is_empty()
+    }
+
+    /// How many sets [`WaveBank::ready`] has baked so far.
+    pub fn baked() -> u64 {
+        BAKED.load(Ordering::SeqCst)
     }
 
     pub fn len(&self) -> usize {
@@ -485,14 +556,46 @@ mod tests {
         let a = bank.prepare(WaveShape::Sine, WarpModeId::Sync);
         let b = bank.prepare(WaveShape::Sine, WarpModeId::Sync);
         assert!(Arc::ptr_eq(&a, &b));
+        assert!(a.memory() < 13 << 20, "{} bytes", a.memory());
+        let first = Arc::downgrade(&a);
+        drop((a, b));
         for mode in WarpModeId::ALL {
             bank.prepare(WaveShape::Saw, mode);
         }
         bank.prepare(WaveShape::Square, WarpModeId::Flip);
         bank.prepare(WaveShape::Square, WarpModeId::Pwm);
         assert_eq!(bank.len(), BANK_SIZE);
-        let c = bank.prepare(WaveShape::Sine, WarpModeId::Sync);
-        assert!(!Arc::ptr_eq(&a, &c), "the oldest was let go and baked again");
-        assert!(a.memory() < 13 << 20, "{} bytes", a.memory());
+        assert!(first.upgrade().is_none(), "the oldest, held by nobody, was let go");
+    }
+
+    #[test]
+    fn a_set_in_use_is_never_let_go() {
+        let mut bank = WaveBank::new();
+        let held: Vec<_> = WarpModeId::ALL.iter().map(|&m| bank.prepare(WaveShape::Saw, m)).collect();
+        let more: Vec<_> = WarpModeId::ALL[..3].iter().map(|&m| bank.prepare(WaveShape::Square, m)).collect();
+        assert_eq!(bank.len(), held.len() + more.len(), "every set is held, so all stay");
+        for (i, &m) in WarpModeId::ALL.iter().enumerate() {
+            assert!(Arc::ptr_eq(&held[i], &bank.prepare(WaveShape::Saw, m)), "no bake again");
+        }
+        drop((held, more));
+        bank.prepare(WaveShape::Sine, WarpModeId::Sync);
+        assert_eq!(bank.len(), BANK_SIZE, "once let go, the bank shrinks back");
+    }
+
+    #[test]
+    fn ready_bakes_in_the_background() {
+        let (wave, mode) = (WaveShape::Triangle, WarpModeId::Mirror);
+        let before = WaveBank::baked();
+        assert!(WaveBank::ready(wave, mode).is_none(), "nothing else bakes this one");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let set = loop {
+            if let Some(set) = WaveBank::ready(wave, mode) {
+                break set;
+            }
+            assert!(std::time::Instant::now() < deadline, "the bake finishes");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(WaveBank::baked() > before, "counted");
+        assert!(Arc::ptr_eq(&set, &WaveBank::get(wave, mode)));
     }
 }

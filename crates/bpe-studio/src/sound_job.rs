@@ -301,7 +301,8 @@ impl Worker {
             }
             Command::Rebuild(scene, resolved) => {
                 if !comes(&["rebuild"]) {
-                    self.engine = Engine::new(&scene, &resolved, &self.kit);
+                    let patch = SoundPatch::build_ready(&scene, &resolved, &self.kit);
+                    self.engine = Engine::with_patch(&scene, &resolved, &self.kit, patch);
                     self.engine.share_meters(self.meters.clone());
                     // It starts at 0; the editor's seek to the playhead follows.
                     self.held = true;
@@ -366,7 +367,9 @@ fn run(
     resolved: Resolved,
     meters: Arc<Meters>,
 ) {
-    let mut engine = Engine::new(&scene, &resolved, &kit);
+    // Wavetables not yet baked start baking elsewhere; the editor builds the sound again then.
+    let patch = SoundPatch::build_ready(&scene, &resolved, &kit);
+    let mut engine = Engine::with_patch(&scene, &resolved, &kit, patch);
     engine.share_meters(meters.clone());
     let mut w = Worker { engine, kit, meters, shared, ring, playing: false, held: false, tail: 0 };
     let mut batch = Vec::new();

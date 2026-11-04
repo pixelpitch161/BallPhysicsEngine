@@ -22,7 +22,7 @@ pub use hits::{BlockHit, HitCursor};
 pub use master::{Master, MasterKeys};
 pub use meters::{MeterReading, Meters};
 pub use offline::{has_sound, render_samples, render_to_wav};
-pub use patch::SoundPatch;
+pub use patch::{SoundPatch, Tables};
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
 pub use voices::{ShapeVoice, note_hz};

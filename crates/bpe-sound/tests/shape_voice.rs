@@ -430,3 +430,60 @@ fn a_key_on_the_master_output_is_heard() {
     let db = 20.0 * (b / a).log10();
     assert!((db + 20.0).abs() < 1.5, "the keyed Output takes 20 dB off: {db:.1} dB");
 }
+
+/// Notes ringing at the voice limit, then a burst of more hits than the limit in one block: every
+/// note that is cut fades (5 ms), at 16 and at 32 voices.
+#[test]
+fn a_burst_over_ringing_notes_never_clicks() {
+    let kit = kit();
+    for limit in [16, 32] {
+        let scene = voiced(&kit, |v, a| {
+            v.play_voices = limit;
+            a.attack = 20.0;
+            a.sustain = 100.0;
+            a.gate_ms = 50_000.0;
+        });
+        let (shape, ball) = (shape_of(&scene), ball_of(&scene));
+        let p = world(&scene, &kit);
+        let mut v = voice(&scene, &kit);
+        let mut hits: Vec<(u64, BlockHit)> = (0..limit as u32).map(|i| (0, hit(ball, i, shape, 0, 1500.0))).collect();
+        hits.extend((0..40).map(|i| (40, hit(ball, 100 + i, shape, i % 64, 1500.0))));
+        let out = run(&mut v, p.world(), 0, 60, &hits);
+        let steady = &out[20 * BLOCK..40 * BLOCK];
+        let peak = steady.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05, "the notes ring: {peak}");
+        let step = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        let worst = step(&out[39 * BLOCK..50 * BLOCK]);
+        assert!(worst < 0.1 * peak + step(steady), "Voices {limit}: a step of {worst} against a peak of {peak}");
+        assert!(v.sounding() <= limit as usize);
+    }
+}
+
+/// The editor's build never waits for a wavetable: one not yet baked starts baking elsewhere and
+/// the patch says so; built again once it is in, the oscillator plays.
+#[test]
+fn building_for_the_editor_never_bakes() {
+    let kit = kit();
+    let scene = voiced(&kit, |v, _| {
+        v.a.wave = Wave::Sine;
+        v.a.warp_mode = bpe_kit::sound::WarpMode::Quantize;
+    });
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let t = Instant::now();
+    let first = SoundPatch::build_ready(&scene, &resolved, &kit);
+    assert!(first.pending, "Sine bent by Quantize is used by no other test, so it isn't baked yet");
+    assert!(t.elapsed().as_secs_f64() < 0.05, "no bake: {:?}", t.elapsed());
+    let deadline = Instant::now() + std::time::Duration::from_secs(120);
+    while SoundPatch::build_ready(&scene, &resolved, &kit).pending {
+        assert!(Instant::now() < deadline, "the bake finishes");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut e = Engine::with_patch(&scene, &resolved, &kit, SoundPatch::build_ready(&scene, &resolved, &kit));
+    let mut block = [0.0f32; BLOCK * 2];
+    let mut heard = false;
+    for _ in 0..(3 * 48_000 / BLOCK) {
+        e.render(&mut block);
+        heard |= block.iter().any(|v| v.abs() > 1e-3);
+    }
+    assert!(heard, "plays once baked");
+}
