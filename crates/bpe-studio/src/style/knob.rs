@@ -119,7 +119,7 @@ impl<'a> Knob<'a> {
                 let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(DIAL), Sense::click_and_drag());
                 response = response.labelled_by(label.id).on_hover_cursor(egui::CursorIcon::ResizeVertical);
 
-                if response.dragged() {
+                if response.dragged_by(egui::PointerButton::Primary) {
                     let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
                     let dy = response.drag_delta().y as f64;
                     let t = self.to_turn(*self.value) - dy / FULL_DRAG * fine;

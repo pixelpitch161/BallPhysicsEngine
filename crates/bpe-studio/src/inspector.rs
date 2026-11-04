@@ -678,7 +678,7 @@ fn apply_layer_edit(
 
 /// Writes `value` to `a`: as a key at `time` when the setting has keys (and notes so in
 /// `keyed`), else as its plain value.
-fn set_or_key(
+pub(crate) fn set_or_key(
     scene: &mut Scene,
     reg: &bpe_core::Registry,
     a: &Address,

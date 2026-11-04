@@ -11,6 +11,7 @@ mod grid;
 mod history;
 mod inspector;
 mod look_editor;
+mod mixer;
 mod palettes;
 mod preview;
 mod selection;
