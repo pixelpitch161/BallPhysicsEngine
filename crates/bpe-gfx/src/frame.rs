@@ -1454,6 +1454,7 @@ mod tests {
             point: glam::Vec2::ZERO,
             normal: glam::Vec2::X,
             speed,
+            at: 0.0,
         };
         let mut log = Log::default();
         log.push(hit(240, 600.0));

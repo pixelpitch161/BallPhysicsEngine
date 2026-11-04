@@ -161,6 +161,7 @@ pub fn build_view_frame(
                 point: Vec2::new(0.0, radius),
                 normal: Vec2::new(0.0, -1.0),
                 speed: HIT_SPEED,
+                at: 0.0,
             });
         }
     }

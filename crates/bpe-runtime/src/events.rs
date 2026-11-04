@@ -51,13 +51,38 @@ pub struct Event {
     pub normal: Vec2,
     /// The speed into the contact for hits, in pixels per second; 0 when it doesn't apply.
     pub speed: f32,
+    /// How far through its step a hit happened, 0 (the start) to 1, so sound can place it on
+    /// its exact sample; 0 for other events. Not part of [`Log::hash`].
+    pub at: f32,
 }
 
 impl Event {
+    /// The sample within its step that the event happened on, for steps `samples_per_step` long.
+    pub fn sample_in_step(&self, samples_per_step: f64) -> f64 {
+        self.at as f64 * samples_per_step
+    }
+
     /// Seconds from the start of the clip.
     pub fn time(&self, steps_per_second: u32) -> f64 {
         self.step as f64 / steps_per_second as f64
     }
+}
+
+/// How far through a move a contact happened, 0 to 1, from the gap to it at the start (`d0`) and
+/// at the end (`d1`, negative once past it), the move taken as straight and steady. A contact
+/// that was already touching at the start, or a move that didn't close the gap, gives 0.
+pub(crate) fn crossing(d0: f32, d1: f32) -> f32 {
+    let closed = d0 - d1;
+    if !(d0 > 0.0) || !(closed > 1e-6) {
+        return 0.0;
+    }
+    (d0 / closed).clamp(0.0, 1.0)
+}
+
+/// The fraction of a step that `within` (0..1) of substep `index` of `count` is at.
+pub(crate) fn step_fraction(index: u32, count: u32, within: f32) -> f32 {
+    let count = count.max(1);
+    ((index as f32 + within) / count as f32).clamp(0.0, 1.0)
 }
 
 /// The FNV-1a offset basis: the hash of an empty log.
@@ -183,6 +208,7 @@ mod tests {
             point: Vec2::new(1.0, 2.0),
             normal: Vec2::Y,
             speed: 1.0,
+            at: 0.0,
         }
     }
 
@@ -207,6 +233,9 @@ mod tests {
         let mut c = Log::default();
         c.push(hit());
         assert_eq!(a.hash(), c.hash());
+        let mut d = Log::default();
+        d.push(Event { at: 0.75, ..hit() });
+        assert_eq!(a.hash(), d.hash(), "where in the step a hit happened is not hashed");
         assert_eq!(Log::default().hash(), 0xcbf2_9ce4_8422_2325);
     }
 

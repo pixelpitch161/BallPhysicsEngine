@@ -8,6 +8,7 @@ use std::ops::Range;
 use bpe_core::{SlotId, Target, ThingId};
 use glam::Vec2;
 
+use crate::events::{crossing, step_fraction};
 use crate::plugins::{Limits, ModuleSim, PairRule, Sims, ThingState};
 use crate::world::Prepared;
 use crate::{Bodies, Event, EventKind, Log, Party};
@@ -149,6 +150,8 @@ struct Ball {
     /// Index into `rules`.
     rule: usize,
     position: Vec2,
+    /// Where it was before this substep moved it.
+    start: Vec2,
     velocity: Vec2,
     /// Where the overlap solve moves the ball this substep, as a speed that is never kept.
     shift: Vec2,
@@ -175,6 +178,8 @@ struct ContactPair {
     push_impulse: f32,
     /// How fast they were closing before anything was done, when that counts as a hit.
     hit_speed: Option<f32>,
+    /// How far through the step they touched (see [`Event::at`]).
+    at: f32,
 }
 
 /// One real hit between two balls, to log and to hand to the modules.
@@ -185,6 +190,7 @@ struct PairHit {
     /// Pointing at `a`, like a wall contact's normal points at the ball.
     normal: Vec2,
     speed: f32,
+    at: f32,
 }
 
 /// Runs the ball-to-ball stage: every alive ball of every thing whose Bounce module wants pairs
@@ -204,6 +210,7 @@ pub(crate) fn collide_pairs(
     pairs: &mut Pairs,
     supports: &[Support],
     step: u64,
+    substep: (u32, u32),
     dt: f32,
     limits: &Limits,
     log: &mut Log,
@@ -227,6 +234,7 @@ pub(crate) fn collide_pairs(
                     item: i as u32,
                     rule,
                     position: b.position[i],
+                    start: b.start[i],
                     velocity: b.velocity[i],
                     shift: Vec2::ZERO,
                     radius: b.radius[i],
@@ -276,6 +284,9 @@ pub(crate) fn collide_pairs(
         let closing = (balls[i].velocity - balls[j].velocity).dot(normal);
         // Slow touches don't bounce back: they stick, so piles settle.
         let real_hit = closing >= limits.resting;
+        let reach = balls[i].radius + balls[j].radius;
+        let within = crossing((balls[j].start - balls[i].start).length() - reach, -overlap);
+        let at = step_fraction(substep.0, substep.1, within);
         let bounce = if real_hit { closing * (rules[ri].4 + rules[rj].4) * 0.5 } else { 0.0 };
         let push = (overlap - PAIR_SLOP).max(0.0) * PAIR_BIAS / dt;
         contacts.push(ContactPair {
@@ -291,6 +302,7 @@ pub(crate) fn collide_pairs(
             tangent_impulse: 0.0,
             push_impulse: 0.0,
             hit_speed: real_hit.then_some(closing),
+            at,
         });
     });
 
@@ -371,7 +383,7 @@ pub(crate) fn collide_pairs(
         .filter_map(|c| {
             let speed = c.hit_speed?;
             let point = balls[c.a].position + c.normal * balls[c.a].radius;
-            Some(PairHit { a: c.a, b: c.b, point, normal: -c.normal, speed })
+            Some(PairHit { a: c.a, b: c.b, point, normal: -c.normal, speed, at: c.at })
         })
         .collect();
 
@@ -401,6 +413,7 @@ pub(crate) fn collide_pairs(
             point: hit.point,
             normal: hit.normal,
             speed: hit.speed,
+            at: hit.at,
         });
         for side in [a, b] {
             let (_, sim, state, _, _) = &rules[side.rule];
@@ -428,6 +441,7 @@ pub(crate) fn pop(bodies: &mut Bodies, item: usize, thing: ThingId, step: u64, l
         point: bodies.position[item],
         normal: Vec2::ZERO,
         speed: 0.0,
+        at: 0.0,
     });
 }
 
