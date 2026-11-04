@@ -5,6 +5,7 @@
 
 use super::adsr::{ADSR, AdsrSettings};
 use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
+use super::mods::{DISTANCE, LFO};
 use bpe_core::{
     Choice, GroupOpts, Layer, LayerId, ModRoute, ModuleKind, NoteSlot, Params, ROUTES_KEY, Registry, SettingDef,
     SettingGroup, Settings, Slot, SlotId, Target, Value,
@@ -510,19 +511,26 @@ impl ModuleKind for VoiceKind {
     }
 }
 
-/// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2 off),
-/// note C5, Bus 1.
+/// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2,
+/// Distance 1 and 2 and LFO 1 and 2 off), note C5, Bus 1.
 pub fn starter_voice(reg: &Registry) -> Slot {
     debug_assert!(reg.layer(ADSR).is_some(), "the kit has the ADSR layer");
-    let layer = |id: u32, enabled: bool| Layer {
+    let layer = |id: u32, kind: &str, name: &str, enabled: bool| Layer {
         id: LayerId(id),
-        kind: ADSR.into(),
-        name: format!("ADSR {}", id + 1),
+        kind: kind.into(),
+        name: name.into(),
         enabled,
         ..Layer::default()
     };
     let mut card = Slot::new(VOICE);
-    card.layers = vec![layer(0, true), layer(1, false)];
+    card.layers = vec![
+        layer(0, ADSR, "ADSR 1", true),
+        layer(1, ADSR, "ADSR 2", false),
+        layer(2, DISTANCE, "Distance 1", false),
+        layer(3, DISTANCE, "Distance 2", false),
+        layer(4, LFO, "LFO 1", false),
+        layer(5, LFO, "LFO 2", false),
+    ];
     let route = ModRoute { source: LayerId(0), target: "a_gain".into(), amount: 1.0, bipolar: false, invert: false };
     card.params.set(ROUTES_KEY, Value::Routes(vec![route]));
     let _ = AdsrSettings::default();
@@ -556,9 +564,9 @@ mod tests {
             (r.source, r.target.as_str(), r.amount, r.bipolar, r.invert),
             (LayerId(0), "a_gain", 1.0, false, false)
         );
-        let names: Vec<(&str, bool)> = card.layers.iter().map(|l| (l.name.as_str(), l.enabled)).collect();
+        let names: Vec<(&str, bool)> = card.layers.iter().take(2).map(|l| (l.name.as_str(), l.enabled)).collect();
         assert_eq!(names, [("ADSR 1", true), ("ADSR 2", false)]);
-        assert!(card.layers.iter().all(|l| l.kind == ADSR));
+        assert!(card.layers.iter().take(2).all(|l| l.kind == ADSR));
         let kind = reg.layer(ADSR).unwrap();
         assert_eq!(kind.section(), LayerSection::Modulator);
         let adsr = AdsrSettings::from_params(&Params::default());

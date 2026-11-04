@@ -296,8 +296,9 @@ impl Scene {
         Ok(id)
     }
 
-    /// Takes layer `id` out of the card with its settings, keyframes and pulses, and every
-    /// modulation route from it or to one of its settings. The base layer stays.
+    /// Takes layer `id` out of the card with its settings, keyframes and pulses, every
+    /// modulation route from it or to one of its settings, and every setting's Follow sound on
+    /// it. The base layer stays.
     pub fn remove_layer(&mut self, reg: &Registry, thing: ThingId, slot: SlotId, id: LayerId) -> Result<(), EditError> {
         let card = self.layer_card(thing, slot)?;
         let index = card.layer_index(id).ok_or(EditError::NoLayer(id))?;
@@ -312,6 +313,13 @@ impl Scene {
                 self.pulses.remove(&a);
             }
         }
+        // Settings anywhere that follow a modulator going away stop following it.
+        self.pulses.retain(|_, p| match p.source {
+            crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(l) } => {
+                shape != thing || !gone.contains(&l)
+            }
+            _ => true,
+        });
         let card = self.layer_card_mut(thing, slot);
         card.layers.retain(|l| !gone.contains(&l.id));
         card.params.0.retain(|k, _| !gone.iter().any(|&g| of_layer(k, g)));
