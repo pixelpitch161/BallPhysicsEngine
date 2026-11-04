@@ -42,6 +42,8 @@ struct InBall {
     scale: f32,
     screen: f32,
     group: f32,
+    // 1 for a shader layer inside a shape (see in_shape.wgsl).
+    shape: f32,
 };
 
 var<private> in_ball: InBall;
@@ -49,7 +51,7 @@ var<private> in_ball: InBall;
 // Sets up the effect of shader record `l`, the `k`th record of a ball whose records start at
 // `first`, and gives the uv of ball point `q` (turning with it) or `screen` (upright).
 fn in_ball_begin(l: LayerGpu, first: u32, k: u32, q: vec2<f32>, screen: vec2<f32>) -> vec2<f32> {
-    in_ball = InBall(first, k, max(l.p0.y, 0.1), l.p0.z, 0.0);
+    in_ball = InBall(first, k, max(l.p0.y, 0.1), l.p0.z, 0.0, 0.0);
     fx = fx_frame;
     fx.time = fx_frame.time * l.p0.x;
     let side = max(2.0 * layered_ball.radius.x, 1.0);
@@ -66,7 +68,7 @@ fn in_ball_begin(l: LayerGpu, first: u32, k: u32, q: vec2<f32>, screen: vec2<f32
 // records under it for `sample`, and gives the uv of upright ball point `screen` (in radii) in
 // the group's square.
 fn group_begin(l: LayerGpu, first: u32, below: u32, screen: vec2<f32>) -> vec2<f32> {
-    in_ball = InBall(first, below, max(l.p0.y, 0.1), 1.0, 1.0);
+    in_ball = InBall(first, below, max(l.p0.y, 0.1), 1.0, 1.0, 0.0);
     fx = fx_frame;
     fx.time = fx_frame.time * l.p0.x;
     let side = max(layered_ball.place.z, 1e-3);
@@ -130,6 +132,9 @@ fn fold_uv(uv: vec2<f32>) -> vec2<f32> {
 // The layers under the shader layer at `uv`. A group shader sees them as if the ball's shape
 // went on past its edge, so a ring Around it is lit by the ball's own colours.
 fn sample(uv: vec2<f32>) -> vec3<f32> {
+    if in_ball.shape > 0.5 {
+        return shape_sample(uv);
+    }
     let local = in_ball_local(uv);
     let w = walk_plain(local, in_ball.first, in_ball.below, 0u);
     if in_ball.group > 0.5 {
@@ -232,6 +237,9 @@ fn treble() -> f32 {
 // The ball itself at `uv`: its own position there (-1 to 1, turning with it), its thing code and
 // number, and how much its shape covers.
 fn object_at(uv: vec2<f32>) -> vec4<f32> {
+    if in_ball.shape > 0.5 {
+        return shape_object_at(uv);
+    }
     let local = in_ball_local(uv);
     let q = rotate(local, -layered_ball.form.z);
     return vec4<f32>(q, layered_ball.misc.y, in_ball_cover(local));

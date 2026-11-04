@@ -272,7 +272,11 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
         inspector.clipboard.look = cx.scene.copy_look(cx.reg(), cx.id, slot);
         ui.close();
     }
-    let look = inspector.clipboard.look.clone().filter(|_| card.kind == kinds::CARD);
+    // A look pastes onto a card of its own kind: balls' onto balls, shapes' onto shapes.
+    let fits = |look: &bpe_core::CopiedLook| {
+        look.layers.iter().all(|l| cx.reg().layer(&l.kind).is_some_and(|k| k.card() == card.kind))
+    };
+    let look = inspector.clipboard.look.clone().filter(fits);
     let paste = ui.add_enabled(look.is_some(), egui::Button::new("Paste whole look"));
     if let Some(look) = look
         && paste.clicked()
@@ -381,6 +385,34 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     match layer.kind.as_str() {
         shape_look::BODY => shape_words(cx),
+        shape_look::PAINT => {
+            let l = shape_look::PaintLayer::from_params(&p);
+            let stops = &l.colours.stops;
+            let words = if stops.len() > 1 {
+                format!("{} colours · {}", stops.len(), choice_label(l.runs))
+            } else {
+                colour_word(l.colours.first())
+            };
+            with_blend(words, l.blend)
+        }
+        shape_look::OUTLINE => {
+            let l = shape_look::ShapeOutline::from_params(&p);
+            with_blend(format!("{:.0} px · {}", l.width, choice_label(l.sits)), l.blend)
+        }
+        shape_look::GLOW => {
+            let l = shape_look::ShapeGlow::from_params(&p);
+            with_blend(format!("{:.1} · {:.0} px", l.strength, l.size), l.blend)
+        }
+        shape_look::SHADER => {
+            let l = kinds::ShaderLayer::from_params(&p);
+            let broken = l.effect == kinds::shader::OWN && super::code_box::problem(&l.source).is_some();
+            let name = if broken { "Own code that doesn't run".to_owned() } else { l.effect_name() };
+            with_blend(name, l.blend)
+        }
+        shape_look::BLEND => {
+            let l = kinds::BlendLayer::from_params(&p);
+            format!("{} {}", choice_label(l.blend), percent(l.blend_amount))
+        }
         kinds::BODY => {
             let b = kinds::BodyLayer::from_params(&p);
             let stops = &b.fill.colours.stops;
@@ -518,9 +550,47 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
         }
         shape_look::BODY => {
             // A hexagon outline: the shape, plain white.
-            let corners: Vec<Pos2> =
-                (0..6).map(|k| c + Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_3) * r).collect();
-            painter.add(egui::Shape::closed_line(corners, Stroke::new(1.5, fade(style::TEXT_STRONG))));
+            painter.add(egui::Shape::closed_line(hexagon(c, r), Stroke::new(1.5, fade(style::TEXT_STRONG))));
+        }
+        shape_look::PAINT => {
+            // A hexagon in its colours, in bands from top to bottom.
+            let l = shape_look::PaintLayer::from_params(&p);
+            painter.add(egui::Shape::convex_polygon(hexagon(c, r), fade(shown(l.colours.first())), Stroke::NONE));
+            if l.colours.stops.len() > 1 {
+                let last = shown(l.colours.stops.last().map_or(l.colours.first(), |s| s.color));
+                let lower: Vec<Pos2> = hexagon(c, r).into_iter().filter(|p| p.y >= c.y - 0.01).collect();
+                painter.add(egui::Shape::convex_polygon(lower, fade(last), Stroke::NONE));
+            }
+        }
+        shape_look::OUTLINE => {
+            let l = shape_look::ShapeOutline::from_params(&p);
+            let col =
+                if l.colour_from == kinds::ColourFrom::Own { shown(l.colour.first()) } else { style::TEXT_STRONG };
+            painter.add(egui::Shape::closed_line(hexagon(c, r - 1.0), Stroke::new(2.0, fade(col))));
+        }
+        shape_look::GLOW => {
+            let l = shape_look::ShapeGlow::from_params(&p);
+            let col =
+                if l.colour_from == kinds::ColourFrom::Own { shown(l.colour.first()) } else { style::TEXT_STRONG };
+            for (k, a) in [(1.0, 0.25), (0.7, 0.45), (0.4, 1.0)] {
+                painter.add(egui::Shape::convex_polygon(hexagon(c, r * k), fade(col.gamma_multiply(a)), Stroke::NONE));
+            }
+        }
+        shape_look::SHADER => {
+            // A wave over a hexagon.
+            painter.add(egui::Shape::convex_polygon(hexagon(c, r), fade(style::RAISED), Stroke::NONE));
+            let points: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let t = i as f32 / 8.0;
+                    c + Vec2::new((t - 0.5) * 1.6 * r, (t * std::f32::consts::TAU).sin() * r * 0.35)
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(1.3, fade(style::TEXT_STRONG))));
+        }
+        shape_look::BLEND => {
+            let stroke = Stroke::new(1.3, fade(style::TEXT));
+            painter.circle_stroke(c + Vec2::new(-r * 0.3, 0.0), r * 0.6, stroke);
+            painter.circle_stroke(c + Vec2::new(r * 0.3, 0.0), r * 0.6, stroke);
         }
         kinds::OUTLINE => {
             let l = kinds::OutlineLayer::from_params(&p);
@@ -607,6 +677,11 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
             }
         }
     }
+}
+
+/// The corners of a hexagon around `c` reaching `r`, a corner on each side.
+fn hexagon(c: Pos2, r: f32) -> Vec<Pos2> {
+    (0..6).map(|k| c + Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_3) * r).collect()
 }
 
 /// A small black disc, white where the mask lets its layer show.

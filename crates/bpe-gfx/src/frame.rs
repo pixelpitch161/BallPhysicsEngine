@@ -112,6 +112,22 @@ pub struct LookInstance {
 /// (its variation comes from the ball's instance); `extra` a shader layer's effect settings. A
 /// mask's target is a record index within the ball's range; a brush tile indexes
 /// [`Frame::mask_tiles`] (-1 none).
+///
+/// A shape ([`PathInstance::layers`]) names records of its own, walked by shape_walk.wgsl, the
+/// Body's first. Lengths are world pixels; `lo`, `hi` are where Across starts and ends along
+/// `dir`, in shape units; runs are 0 across, 1 from the middle (across the band of a hollow
+/// shape), 2 along the edge, 3 across the line (outline) or out from the edge (glow):
+///
+/// | code | layer               | `amount`           | `p0`                                         | `p1`           | flag 1                   |
+/// | ---- | ------------------- | ------------------ | -------------------------------------------- | -------------- | ------------------------ |
+/// | 0    | body                | opacity            | -                                            | -              | -                        |
+/// | 10   | colour and gradient | opacity            | runs                                         | dir xy, lo, hi | -                        |
+/// | 2    | outline             | opacity            | width, sits (0 in, 1 centre, 2 out), runs    | dir xy, lo, hi | the colour under it      |
+/// | 4    | glow                | opacity, strength  | size, -, runs                                | dir xy, lo, hi | the colour under it      |
+/// | 6    | shader              | opacity            | speed, scale, space (0 shape, 1 screen), effect slot | -      | -                        |
+///
+/// A shape record's `colour` is its own (one) colour and `paint` its gradient, read straight
+/// along its run (`paint.row` -1 for one colour).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct LayerGpu {
@@ -154,6 +170,8 @@ impl LayerGpu {
     pub const SHADING: u32 = 5;
     pub const SHADER: u32 = 6;
     pub const MASK: u32 = 7;
+    /// A shape's Colour and gradient layer (shape records only, see below).
+    pub const SHAPE_PAINT: u32 = 10;
     /// A radial shading darkens the middle instead of the outside.
     pub const INVERT: u32 = 2;
     /// The editor's view shows this layer's masks alone: white where they let it show.
@@ -216,21 +234,31 @@ pub struct PathInstance {
     /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points), the
     /// first point in `Frame::path_points`, how many points.
     pub b: [f32; 4],
-    /// Thing code, how far the outline reaches from the centre (shape units), two spare.
+    /// Thing code, how far the outline reaches from the centre (shape units), how far its layers
+    /// reach past its outline (world pixels: an outline outside it, a glow), and how far the
+    /// outline reaches from the middle for layers running from the middle (shape units).
     pub c: [f32; 4],
-    /// Linear-light colour.
+    /// Linear-light colour, when it draws plain (no records).
     pub color: [f32; 4],
+    /// Its layers: the first record in `Frame::look_layers`, how many (0 draws it plain in
+    /// `color`), the in-ball program its Shader layers run in (an index into `Frame::programs`,
+    /// [`PathInstance::NO_PROGRAM`] for none; read on the CPU only), spare. See the shape records
+    /// table on [`LayerGpu`].
+    pub layers: [u32; 4],
 }
 
 impl PathInstance {
+    /// `layers[2]` of a shape with no program: its Shader layers, if any, are left out.
+    pub const NO_PROGRAM: u32 = u32::MAX;
+
     /// Whether it draws a filled shape rather than a band.
     pub fn solid(&self) -> bool {
         self.b[0] <= 0.0
     }
 
-    /// How far it reaches from its centre, in world pixels.
+    /// How far it reaches from its centre, in world pixels, its layers included.
     pub fn reach(&self) -> f32 {
-        self.c[1] * self.a[3] + self.b[0]
+        self.c[1] * self.a[3] + self.b[0] + self.c[2].max(0.0)
     }
 }
 
@@ -725,6 +753,9 @@ pub struct BlendLayer {
     /// the layer then counts as covering everywhere one drew. Only for a blend that
     /// [combines with itself](Blend::combines_with_itself).
     pub each: bool,
+    /// Its things sit behind the balls (shapes): it is mixed in right after the frame's trails
+    /// and shapes, before its balls are drawn, so it mixes with what is behind it only.
+    pub behind: bool,
     /// The layer's own lists. Its globals follow the frame it belongs to; it paints from that
     /// frame's gradient atlas, so its own `gradients` stay empty, and the hits and effects drawn
     /// into it are handed to that frame.
@@ -800,17 +831,25 @@ impl Frame {
     /// itself](Blend::combines_with_itself)), made on first use. The layer takes this frame's
     /// size, moment, camera and picture settings.
     pub fn layer_mut(&mut self, blend: Blend, amount: f32, each: bool) -> &mut Frame {
+        self.layer_behind_mut(blend, amount, each, false)
+    }
+
+    /// [`Frame::layer_mut`] for things that sit behind the balls when `behind` (see
+    /// [`BlendLayer::behind`]): a layer of their own, mixed in before the balls are drawn.
+    pub fn layer_behind_mut(&mut self, blend: Blend, amount: f32, each: bool, behind: bool) -> &mut Frame {
         if !layered(blend, amount) {
             return self;
         }
         // -0 and 0 are one amount (their bits differ).
         let amount = amount + 0.0;
         let each = each && blend.combines_with_itself();
-        let same = |l: &BlendLayer| l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each;
+        let same = |l: &BlendLayer| {
+            l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each && l.behind == behind
+        };
         let i = match self.layers.iter().position(same) {
             Some(i) => i,
             None => {
-                self.layers.push(BlendLayer { blend, amount, each, frame: Frame::default() });
+                self.layers.push(BlendLayer { blend, amount, each, behind, frame: Frame::default() });
                 self.layers.len() - 1
             }
         };
@@ -826,9 +865,10 @@ impl Frame {
     /// above its Blend layer): a Normal layer at full amount, which [`Frame::layer_mut`] never
     /// makes. [`build_frame`] moves it after every other layer, so it is mixed in last.
     pub fn over_layer_mut(&mut self) -> &mut Frame {
-        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each;
+        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each && !l.behind;
         if !self.layers.iter().any(over) {
-            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, frame: Frame::default() });
+            let frame = Frame::default();
+            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, behind: false, frame });
         }
         let i = self.layers.iter().position(over).expect("just made");
         let (width, height, time, video, camera) = (self.width, self.height, self.time, self.video, self.camera);
@@ -874,7 +914,8 @@ impl Frame {
 
     /// Adds a shape: a circle of radius `scale` when `points` is None, else the closed outline
     /// through `points` (shape units, turned by `angle`, scaled by `scale`). `half_thickness` 0
-    /// fills it.
+    /// fills it. It draws plain in `color` until its `layers` name records. Gives its index in
+    /// `paths`.
     #[allow(clippy::too_many_arguments)]
     pub fn push_path(
         &mut self,
@@ -885,7 +926,7 @@ impl Frame {
         points: Option<&[Vec2]>,
         color: [f32; 4],
         code: f32,
-    ) {
+    ) -> usize {
         let first = self.path_points.len();
         let (kind, reach) = match points {
             None => (0.0, 1.0),
@@ -898,9 +939,11 @@ impl Frame {
         self.paths.push(PathInstance {
             a: [center.x, center.y, angle, scale],
             b: [half_thickness.max(0.0), kind, first as f32, count as f32],
-            c: [code, reach, 0.0, 0.0],
+            c: [code, reach, 0.0, reach],
             color,
+            layers: [0, 0, PathInstance::NO_PROGRAM, 0],
         });
+        self.paths.len() - 1
     }
 
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
@@ -1031,11 +1074,23 @@ fn layered(blend: Blend, amount: f32) -> bool {
 /// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
 /// not kept.
 fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
+    draw_routed_behind(target, blend, amount, each, false, draw);
+}
+
+/// [`draw_routed`] into a layer behind the balls when `behind` (see [`BlendLayer::behind`]).
+fn draw_routed_behind(
+    target: &mut Frame,
+    blend: Blend,
+    amount: f32,
+    each: bool,
+    behind: bool,
+    draw: impl FnOnce(&mut Frame),
+) {
     if !layered(blend, amount) {
         draw(target);
         return;
     }
-    draw_into_layer(target, |t| t.layer_mut(blend, amount, each), draw);
+    draw_into_layer(target, |t| t.layer_behind_mut(blend, amount, each, behind), draw);
 }
 
 /// Runs `draw` on the frame's over layer (see [`Frame::over_layer_mut`]), borrowing `target`'s
@@ -1083,6 +1138,11 @@ pub trait ThingDraw: Send + Sync + 'static {
     /// says so itself rather than through its Look card's `blend` settings.
     fn blend(&self, _resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         None
+    }
+    /// Whether the thing sits behind the balls (a shape): when it blends, its layer is mixed in
+    /// before the balls are drawn, so it never tints them.
+    fn behind(&self) -> bool {
+        false
     }
     /// What the thing draws over its blended part, painted normally whatever its blend: the
     /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
@@ -1172,7 +1232,7 @@ pub fn build_frame(
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
-        draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
+        draw_routed_behind(target, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
         // Only a thing that blends has parts to paint over the blend: into the over layer, which
         // is mixed in after every blend layer.
         if layered(blend, amount) {

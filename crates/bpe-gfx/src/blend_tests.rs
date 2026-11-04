@@ -46,7 +46,7 @@ fn square(half: f32, colour: [f32; 4]) -> Vec<TrailVertex> {
 /// `frame` with one layer holding `trails`.
 fn with_layer(mut frame: Frame, blend: Blend, amount: f32, trails: Vec<TrailVertex>) -> Frame {
     let layer = Frame { trails, ..flat([0.0; 3]) };
-    frame.layers.push(BlendLayer { blend, amount, each: false, frame: layer });
+    frame.layers.push(BlendLayer { blend, amount, each: false, behind: false, frame: layer });
     frame
 }
 
@@ -240,7 +240,7 @@ fn a_stuck_layer_blends_over_the_overlay() {
 /// `frame` with one layer holding `layer`'s lists, its things blending with each other when
 /// `each` is set.
 fn with_each(mut frame: Frame, blend: Blend, amount: f32, each: bool, layer: Frame) -> Frame {
-    frame.layers.push(BlendLayer { blend, amount, each, frame: layer });
+    frame.layers.push(BlendLayer { blend, amount, each, behind: false, frame: layer });
     frame
 }
 

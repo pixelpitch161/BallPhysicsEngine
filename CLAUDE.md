@@ -66,7 +66,13 @@ Dependencies go bottom to top:
   (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
   shader effects, particles and trails. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
-  `Frame.push_path`: a filled or banded outline from `Frame.path_points`, bind group 3, or a circle with no points).
+  `Frame.push_path`: a filled or banded outline from `Frame.path_points`, group 2 binding 4 beside the layer records,
+  or a circle with no points). A shape with paint layers names its records in `PathInstance.layers` (first, count,
+  program); `shaders/shape_layers.wgsl` works out where a pixel is against the outline (`shape_at`: distance, edge,
+  position along the edge) and the `shape_walk.wgsl` template walks the shape records (table on `LayerGpu`: body 0,
+  colour and gradient 10, outline 2, glow 4, shader 6). Shader layers in shapes run in the same in-ball programs as
+  balls' (`Made.shape`, `effects/in_shape.wgsl`; `sample` dispatches on `in_ball.shape`). Paths and layered balls
+  share one pipeline layout.
   Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
   its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
   older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
@@ -99,7 +105,9 @@ Dependencies go bottom to top:
   off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from, Sides, Size, Fill, Thickness and
   the Corners `path`, plus Spin, Shrink, Smallest size); `sim.rs::base_outline` picks the exact Ring or Box form for
   circles, even polygons and axis rectangles and an `Outline::Path` otherwise. Its Look is `look.shape`
-  (`modules/look/shape.rs`) whose only layer in part 1 is the base `shape.body`, drawn plain white. `look.basic`
+  (`modules/look/shape/`): the base `shape.body` (plain white) and the paint layers Colour and gradient (Across /
+  From the middle / Along the edge, Flow), Outline, Glow, Shader and Blend (whole-shape); `shape/gpu.rs::ShapeStack`
+  turns them into records and `things/shape/draw.rs::wall_form` draws every wall form in the shape's own frame. `look.basic`
   fits no thing kind now. Test scenes are still written with `look.basic` on balls and `classic_cards` turns it
   into layers (`layers_from_basic`). Balls (`things/balls/`) are one ball or, with `group` on, a group in a
   `shape` (`shapes.rs`: Grid, Line, Ring, Filled circle, Triangle, Honeycomb, Spiral, Heart, Scatter, Word from

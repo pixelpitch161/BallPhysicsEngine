@@ -312,9 +312,16 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert!(frame.layered.is_empty() && frame.look_layers.is_empty(), "no look, nothing to draw them with");
+        assert!(frame.layered.is_empty(), "no look, nothing to draw them with");
+        assert_eq!(frame.look_layers.len(), 1, "only the shape's Body record");
         assert_eq!(frame.paths.len(), 1, "the shape still draws");
         assert_eq!((frame.width, frame.height), (1080, 1920));
+    }
+
+    /// The records of the frame's first layered ball (the shape's come before them).
+    fn ball_records(frame: &Frame) -> &[LayerGpu] {
+        let r = frame.layered[0].range;
+        &frame.look_layers[r[0] as usize..(r[0] + r[1]) as usize]
     }
 
     /// The frame at `time` for the new scene's ball after `f`'s changes, played to `time`.
@@ -336,9 +343,9 @@ mod tests {
         let frame = frame_after(0.0, |_| {});
         assert!(frame.balls.is_empty() && frame.looks.is_empty(), "the old paths draw no ball");
         assert_eq!(frame.layered.len(), 1);
-        let codes: Vec<u32> = frame.look_layers.iter().map(|l| l.head[0]).collect();
+        let codes: Vec<u32> = ball_records(&frame).iter().map(|l| l.head[0]).collect();
         assert_eq!(codes, [LayerGpu::BODY, LayerGpu::SHINE, LayerGpu::GLOW]);
-        assert_eq!(frame.layered[0].range[..2], [0, 3]);
+        assert_eq!(frame.layered[0].range[1], 3);
         let pink = bpe_core::Color::rgb(0xff, 0x5c, 0xa8).to_linear();
         assert_eq!(frame.layered[0].body, pink);
     }
@@ -381,8 +388,8 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
         assert_eq!(frame.layered.len(), 1);
-        assert_eq!(frame.layered[0].range[..2], [0, 1], "the body alone");
-        assert_eq!(frame.look_layers[0].head[0], LayerGpu::BODY);
+        assert_eq!(frame.layered[0].range[1], 1, "the body alone");
+        assert_eq!(ball_records(&frame)[0].head[0], LayerGpu::BODY);
         assert_eq!(frame.layered[0].body, [1.0; 4], "white");
         assert!(!frame.hits.is_empty(), "the ball hit the arena");
         assert!(frame.flashes.is_empty(), "no Flash on hit, no flash");
@@ -641,8 +648,9 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert!(frame.look_layers.iter().all(|l| l.head[0] != LayerGpu::PATTERN));
-        assert_eq!(frame.look_layers.len(), 3, "one stack of records shared by the three balls");
-        assert!(frame.layered.iter().all(|b| b.range[..2] == [0, 3]));
+        // The shape's Body record, then one stack shared by the three balls.
+        assert_eq!(frame.look_layers.len(), 1 + 3, "one stack of records shared by the three balls");
+        assert!(frame.layered.iter().all(|b| b.range[..2] == [1, 3]));
         assert!(frame.gradients.len() == 1, "nothing is baked for a plain look");
 
         set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
@@ -834,10 +842,8 @@ mod tests {
             set_layer(s, BALL, GROUP_GRADIENT, "changes", Value::Choice("choose".into()));
             set_layer(s, BALL, GROUP_GRADIENT, "chosen", Value::Text(outline.0.to_string()));
         });
-        let flagged: Vec<(u32, bool)> = frame.look_layers[..frame.layered[0].range[1] as usize]
-            .iter()
-            .map(|r| (r.head[0], r.head[2] & LayerGpu::GROUPED != 0))
-            .collect();
+        let flagged: Vec<(u32, bool)> =
+            ball_records(&frame).iter().map(|r| (r.head[0], r.head[2] & LayerGpu::GROUPED != 0)).collect();
         assert!(flagged.contains(&(LayerGpu::OUTLINE, true)), "{flagged:?}");
         assert!(flagged.iter().filter(|(_, g)| *g).count() == 1, "{flagged:?}");
         assert!(!flagged.iter().any(|(c, _)| *c == LayerGpu::GROUP), "no whole-ball record for Choose");

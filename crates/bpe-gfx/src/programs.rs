@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
-use crate::{Frame, HDR_FORMAT, LAYERED_ATTRIBUTES, LayeredInstance};
+use crate::{Frame, HDR_FORMAT, LAYERED_ATTRIBUTES, LayeredInstance, PATH_ATTRIBUTES, PathInstance};
 
 /// The most programs kept; past it, the ones the last frame didn't use go.
 const KEEP_PROGRAMS: usize = 64;
@@ -46,11 +46,20 @@ pub struct LayeredRun {
 }
 
 /// One built program: its module and pipelines, normal and for each blend things blend with
-/// each other by.
+/// each other by, for layered balls and for shapes with layers.
 struct Made {
     module: wgpu::ShaderModule,
     normal: wgpu::RenderPipeline,
     each: BTreeMap<u32, wgpu::RenderPipeline>,
+    shape: wgpu::RenderPipeline,
+    shape_each: BTreeMap<u32, wgpu::RenderPipeline>,
+}
+
+/// What a pipeline draws: layered balls or shapes.
+#[derive(Clone, Copy)]
+enum Draws {
+    Balls,
+    Shapes,
 }
 
 #[derive(Default)]
@@ -104,20 +113,37 @@ fn pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
-    fs: &str,
+    draws: Draws,
+    each: bool,
     blend: wgpu::BlendState,
 ) -> wgpu::RenderPipeline {
+    let (label, vs, fs, stride, attributes): (_, _, _, _, &[wgpu::VertexAttribute]) = match (draws, each) {
+        (Draws::Balls, each) => (
+            "layered balls with shader layers",
+            "vs_layers",
+            if each { "fs_layers_each" } else { "fs_layers" },
+            std::mem::size_of::<LayeredInstance>(),
+            &LAYERED_ATTRIBUTES,
+        ),
+        (Draws::Shapes, each) => (
+            "shapes with shader layers",
+            "vs_path",
+            if each { "fs_path_each" } else { "fs_path" },
+            std::mem::size_of::<PathInstance>(),
+            &PATH_ATTRIBUTES,
+        ),
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("layered balls with shader layers"),
+        label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module,
-            entry_point: Some("vs_layers"),
+            entry_point: Some(vs),
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<LayeredInstance>() as u64,
+                array_stride: stride as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &LAYERED_ATTRIBUTES,
+                attributes,
             })],
         },
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
@@ -148,9 +174,11 @@ fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, program: &LookPro
         label: Some("layered balls with shader layers"),
         source: wgpu::ShaderSource::Wgsl(full.into()),
     });
-    let normal = pipeline(device, layout, &module, "fs_layers", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+    let over = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
+    let normal = pipeline(device, layout, &module, Draws::Balls, false, over);
+    let shape = pipeline(device, layout, &module, Draws::Shapes, false, over);
     match pollster::block_on(scope.pop()) {
-        None => Ok(Made { module, normal, each: BTreeMap::new() }),
+        None => Ok(Made { module, normal, each: BTreeMap::new(), shape, shape_each: BTreeMap::new() }),
         Some(error) => Err(first_line(&error.to_string())),
     }
 }
@@ -234,10 +262,13 @@ impl Programs {
                 let made = self.made.entry(program.key).or_insert_with(|| build(device, layout, program));
                 if let (Ok(made), Some(blend)) = (made, each) {
                     let code = blend.shader_code();
+                    let state = crate::each::blend_state(blend);
                     if !made.each.contains_key(&code) {
-                        let p =
-                            pipeline(device, layout, &made.module, "fs_layers_each", crate::each::blend_state(blend));
-                        made.each.insert(code, p);
+                        made.each.insert(code, pipeline(device, layout, &made.module, Draws::Balls, true, state));
+                    }
+                    if !made.shape_each.contains_key(&code) {
+                        let p = pipeline(device, layout, &made.module, Draws::Shapes, true, state);
+                        made.shape_each.insert(code, p);
                     }
                 }
             }
@@ -257,6 +288,16 @@ impl Programs {
         match each {
             Some(code) => made.each.get(&code).cloned(),
             None => Some(made.normal.clone()),
+        }
+    }
+
+    /// The pipeline shapes with program `key` draw with (in a layer whose things blend with each
+    /// other by `each`), when it is built.
+    pub(crate) fn shape_pipeline(&self, key: u64, each: Option<u32>) -> Option<wgpu::RenderPipeline> {
+        let made = self.made.get(&key)?.as_ref().ok()?;
+        match each {
+            Some(code) => made.shape_each.get(&code).cloned(),
+            None => Some(made.shape.clone()),
         }
     }
 

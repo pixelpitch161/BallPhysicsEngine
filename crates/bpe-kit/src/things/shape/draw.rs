@@ -1,11 +1,16 @@
-//! Drawing a shape: plain white for now (its paint layers come later), filled or as a band.
+//! Drawing a shape: its plain white Body, filled or as a band, with the paint layers of its Look
+//! (see `modules::look::shape`) walked over it on the GPU.
 
-use bpe_core::SlotId;
-use bpe_gfx::{DrawCx, Frame, ThingDraw, thing_code};
+use std::f32::consts::FRAC_PI_2;
+
+use bpe_core::{Blend, ResolvedThing, ShapePath, SlotId};
+use bpe_gfx::{DrawCx, Frame, PathInstance, ThingDraw, thing_code};
 use bpe_runtime::{Outline, Wall};
 use glam::Vec2;
 
 use super::KIND;
+use crate::modules::look::shape::ShapeStack;
+use crate::modules::look::shape::gpu::Geometry;
 
 /// A shape's body colour in linear light.
 pub const BODY_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -17,40 +22,94 @@ impl ThingDraw for ShapeDraw {
         KIND
     }
 
-    /// The shape where its wall is this frame. A shape with no Look card draws nothing.
+    /// A shape is a wall the balls play in front of: a blended one never tints them.
+    fn behind(&self) -> bool {
+        true
+    }
+
+    /// How the whole shape mixes with what is behind it: its Blend layer's.
+    fn blend(&self, resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
+        ShapeStack::of(resolved.slots.get(&SlotId::Look)?).map(|s| s.whole_blend())
+    }
+
+    /// The shape where its wall is this frame, wearing its Look's layers. A shape with no Look
+    /// card draws nothing; a card of another kind draws it plain white.
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        if !cx.resolved.slots.contains_key(&SlotId::Look) {
-            return;
-        }
+        let Some(look) = cx.resolved.slots.get(&SlotId::Look) else { return };
         let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
-        push_wall(wall, BODY_WHITE, thing_code(cx.thing.id), frame);
+        let form = wall_form(wall);
+        let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
+        let Some(stack) = ShapeStack::of(look) else { return };
+        let geometry = Geometry { points: form.points.clone(), half: form.half / form.scale.max(1e-3) };
+        let records = stack.records(&geometry, &mut frame.gradients);
+        let first = frame.look_layers.len() as u32;
+        let count = records.len() as u32;
+        frame.look_layers.extend(records);
+        // Its Shader layers' program, named once per frame, as balls name theirs.
+        let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
+            match frame.programs.iter().position(|q| q.key == p.key) {
+                Some(i) => i as u32,
+                None => {
+                    frame.programs.push(p);
+                    frame.programs.len() as u32 - 1
+                }
+            }
+        });
+        let path = &mut frame.paths[index];
+        path.layers = [first, count, program, 0];
+        path.c[2] = stack.reach_past();
     }
 }
 
-/// Adds `wall` to `frame` as one shape. A round ring is a circle; a ring polygon and a box are
-/// their corners, already turned (angle 0, scaled by the ring's radius or the box's half
-/// diagonal); a free outline keeps its own points, angle and scale.
-pub fn push_wall(wall: &Wall, color: [f32; 4], code: f32, frame: &mut Frame) {
+/// A wall as it is drawn, in the shape's own frame, so its layers turn with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallForm {
+    pub center: Vec2,
+    /// How far the shape has turned, in radians clockwise.
+    pub turn: f32,
+    /// World pixels per shape unit.
+    pub scale: f32,
+    /// Half the band's thickness in world pixels (0 filled).
+    pub half: f32,
+    /// The outline's points in shape units, from the top (an even polygon's top-most corner, the
+    /// left of two; a rectangle's top-left corner) going clockwise; `None` for a circle of radius
+    /// 1, which starts at its top.
+    pub points: Option<Vec<Vec2>>,
+}
+
+/// How `wall` is drawn: a round ring is a circle; a ring polygon is an even polygon's corners
+/// (`ShapePath::even`, the corners its Ring has) turned by the ring's angle less the quarter turn
+/// `base_outline` adds; a box is its corners over its half diagonal; a free outline keeps its own
+/// points, angle and scale.
+pub fn wall_form(wall: &Wall) -> WallForm {
     let half = if wall.solid { 0.0 } else { wall.outline.thickness() * 0.5 };
     match &wall.outline {
-        &Outline::Ring { center, radius, sides, .. } if sides < 3 => {
-            frame.push_path(center, 0.0, radius, half, None, color, code);
+        &Outline::Ring { center, radius, sides, angle, .. } if sides < 3 => {
+            WallForm { center, turn: angle, scale: radius, half, points: None }
+        }
+        &Outline::Ring { center, radius, sides, angle, .. } => {
+            let even = ShapePath::even(sides);
+            let points = (0..even.points.len()).map(|k| even.point(k)).collect();
+            WallForm { center, turn: angle - FRAC_PI_2, scale: radius, half, points: Some(points) }
+        }
+        &Outline::Box { center, half: size, angle, .. } => {
+            let scale = size.length().max(1e-3);
+            let corner = size / scale;
+            let points = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                .into_iter()
+                .map(|(sx, sy)| Vec2::new(corner.x * sx, corner.y * sy))
+                .collect();
+            WallForm { center, turn: angle, scale, half, points: Some(points) }
         }
         Outline::Path { center, angle, scale, points, .. } => {
-            frame.push_path(*center, *angle, *scale, half, Some(points), color, code);
-        }
-        outline => {
-            let center = outline.center();
-            let scale = match *outline {
-                Outline::Box { half, .. } => half.length(),
-                Outline::Ring { radius, .. } => radius,
-                Outline::Path { scale, .. } => scale,
-            }
-            .max(1e-3);
-            let corners: Vec<Vec2> = outline.corners().into_iter().map(|c| (c - center) / scale).collect();
-            frame.push_path(center, 0.0, scale, half, Some(&corners), color, code);
+            WallForm { center: *center, turn: *angle, scale: *scale, half, points: Some(points.to_vec()) }
         }
     }
+}
+
+/// Adds `form` to `frame` as one plain shape in `color`, giving its index in `frame.paths`.
+fn push_form(form: &WallForm, color: [f32; 4], code: f32, frame: &mut Frame) -> usize {
+    frame.push_path(form.center, form.turn, form.scale, form.half, form.points.as_deref(), color, code)
 }
 
 #[cfg(test)]
@@ -126,5 +185,80 @@ mod tests {
         let mut scene = with(ShapeSettings::circle(300.0, 3.0));
         scene.things.get_mut(&SHAPE).unwrap().slots.remove(&SlotId::Look);
         assert!(frame_of(&scene).paths.is_empty());
+    }
+
+    #[test]
+    fn a_spinning_hexagon_turns_its_instance_not_its_points() {
+        let mut s = ShapeSettings::polygon(6, 300.0, 8.0);
+        s.spin = 90.0;
+        let scene = with(s);
+        let kit = crate::kit();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let before = wall_form(&world.walls[&SHAPE]);
+        world.advance_to(1.0, &kit.sims, &mut Log::default());
+        let after = wall_form(&world.walls[&SHAPE]);
+        assert!(before.turn.abs() < 1e-6, "{}", before.turn);
+        assert!((after.turn - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "{}", after.turn);
+        assert_eq!(before.points, after.points, "the corners stay put in the shape's own frame");
+        // A hexagon has a flat top: its first corner is the left of the two up there.
+        let ps = before.points.as_ref().unwrap();
+        let top = ps.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!((ps[0].y - top).abs() < 1e-6 && ps[0].x < 0.0 && ps[1].x > 0.0, "{ps:?}");
+    }
+
+    #[test]
+    fn a_box_draws_its_corners_from_the_top_left() {
+        let scene = with(ShapeSettings::rectangle(300.0, 100.0, 2.0));
+        let form = wall_form(&World::build(&scene, &resolve_of(&scene), &crate::kit().sims).walls[&SHAPE]);
+        let ps = form.points.unwrap();
+        assert_eq!(ps.len(), 4);
+        assert!(ps[0].x < 0.0 && ps[0].y < 0.0 && ps[2].x > 0.0 && ps[2].y > 0.0);
+        assert!((ps[0] * form.scale).abs_diff_eq(Vec2::new(-150.0, -50.0), 1e-3), "{}", ps[0] * form.scale);
+    }
+
+    fn resolve_of(scene: &Scene) -> bpe_core::Resolved {
+        bpe_core::resolve(scene, &crate::kit().registry)
+    }
+
+    fn add(scene: &mut Scene, kind: &str) -> bpe_core::LayerId {
+        let kit = crate::kit();
+        scene.add_layer(&kit.registry, SHAPE, SlotId::Look, kind).unwrap()
+    }
+
+    #[test]
+    fn a_shape_names_its_records_and_its_shader_program() {
+        use crate::modules::look::shape as look;
+        let mut scene = with(ShapeSettings::circle(300.0, 12.0));
+        let frame = frame_of(&scene);
+        assert_eq!(frame.paths[0].layers, [0, 1, PathInstance::NO_PROGRAM, 0], "the Body alone");
+        assert_eq!(frame.look_layers[0].head[0], bpe_gfx::LayerGpu::BODY);
+        add(&mut scene, look::PAINT);
+        add(&mut scene, look::GLOW);
+        add(&mut scene, look::SHADER);
+        let frame = frame_of(&scene);
+        let p = frame.paths[0];
+        assert_eq!((p.layers[0], p.layers[1], p.layers[2]), (0, 4, 0));
+        assert_eq!(frame.programs.len(), 1);
+        let own = &frame.look_layers[p.layers[0] as usize..(p.layers[0] + p.layers[1]) as usize];
+        let codes: Vec<u32> = own.iter().map(|l| l.head[0]).collect();
+        assert_eq!(codes, [0, bpe_gfx::LayerGpu::SHAPE_PAINT, 4, 6]);
+        assert_eq!(p.c[2], crate::modules::look::shape::gpu::GLOW_REACH * 30.0, "the glow widens its quad");
+        assert!(p.reach() > 300.0 + 6.0 + 60.0);
+    }
+
+    #[test]
+    fn a_blend_layer_mixes_the_whole_shape_with_what_is_behind() {
+        use crate::modules::look::shape as look;
+        let mut scene = with(ShapeSettings::circle(300.0, 12.0));
+        assert!(frame_of(&scene).layers.is_empty());
+        add(&mut scene, look::BLEND);
+        let resolved = resolve_of(&scene);
+        assert_eq!(ShapeDraw.blend(&resolved.things[&SHAPE]).map(|b| b.0), Some(bpe_core::Blend::Add));
+        let frame = frame_of(&scene);
+        assert!(frame.paths.is_empty(), "drawn into its blend layer");
+        assert_eq!(frame.layers.len(), 1);
+        assert_eq!(frame.layers[0].frame.paths.len(), 1);
+        assert!(frame.layers[0].behind, "mixed in before the balls are drawn");
     }
 }
