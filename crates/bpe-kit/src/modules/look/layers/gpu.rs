@@ -1037,9 +1037,13 @@ mod fixes_tests {
         let added = frame.layers.iter().find(|l| l.blend == Blend::Add).expect("an Add layer");
         assert_eq!(added.frame.layered.len(), 1);
         assert_eq!(added.frame.layered[0].range[2], 1);
-        assert_eq!(frame.layered.len(), 1);
-        assert_eq!(frame.layered[0].range[2], 1 | 0x1_0000);
-        assert_eq!(frame.look_layers.len(), 2, "the upper part walks the whole stack");
+        assert!(frame.layered.is_empty(), "nothing of the ball in the frame's own lists");
+        // The over layer comes last, so the outline is mixed in after the blended body.
+        let over = frame.layers.last().unwrap();
+        assert_eq!((over.blend, over.amount, over.each), (Blend::Normal, 1.0, false));
+        assert_eq!(over.frame.layered.len(), 1);
+        assert_eq!(over.frame.layered[0].range[2], 1 | 0x1_0000);
+        assert_eq!(over.frame.look_layers.len(), 2, "the upper part walks the whole stack");
     }
 
     #[test]

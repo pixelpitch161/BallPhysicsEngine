@@ -301,11 +301,15 @@ fn programs_built_in_the_background_draw_without_the_effect_until_ready_and_are_
     let without = r.read_output(&device, &queue).unwrap();
     r.render(&device, &queue, &lava);
     let first = r.read_output(&device, &queue).unwrap();
+    if first == without {
+        assert!(r.programs_waiting(), "a frame without its effect says so, to be drawn again");
+    }
     // The first frame may only miss the effect: it never stalls to build it.
     store.wait();
     assert!(!store.pending());
     r.render(&device, &queue, &lava);
     let ready = r.read_output(&device, &queue).unwrap();
+    assert!(!r.programs_waiting());
     assert!(first == without || first == ready, "a frame draws with or without the effect, nothing else");
     assert!(ready != without, "once built, the effect shows");
     assert!(r.program_errors().is_empty(), "{:?}", r.program_errors());

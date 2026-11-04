@@ -96,10 +96,10 @@ fn group_covers(l: LayerGpu, screen: vec2<f32>) -> f32 {
     // 0 on the side it covers from to 1 on the far side, across the group's square.
     let t = dot(at, dir) / max(abs(dir.x) + abs(dir.y), 1e-3) + 0.5;
     let e = max(0.5 * clamp(l.p1.w, 0.0, 1.0), 1e-3);
-    if covers <= 0.0 {
-        return 0.0;
-    }
-    return 1.0 - smoothstep(covers - e, covers + e, t);
+    // The edge runs from wholly before the group (covers 0) to wholly past it (covers 1), so
+    // animating Covers wipes smoothly from end to end.
+    let cut = mix(-e, 1.0 + e, covers);
+    return 1.0 - smoothstep(cut - e, cut + e, t);
 }
 
 // The quad point (see layers_walk.wgsl) a shader uv stands for.

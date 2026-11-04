@@ -373,10 +373,10 @@ pub fn shared_programs() -> &'static bpe_gfx::ProgramStore {
     STORE.get_or_init(bpe_gfx::ProgramStore::in_background)
 }
 
-/// True while `renderer` has a shader program building: its picture is drawn again in a moment,
-/// so the effect shows as soon as it is ready.
+/// True when `renderer`'s last picture left out shader layers whose program was still building:
+/// it is drawn again in a moment, so the effect shows as soon as it is ready.
 pub fn redraw_when_built(renderer: &Renderer, ctx: &egui::Context) -> bool {
-    let pending = renderer.programs().pending();
+    let pending = renderer.programs_waiting();
     if pending {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }

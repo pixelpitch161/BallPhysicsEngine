@@ -205,13 +205,13 @@ impl Programs {
 
     /// Builds every program `frames` name that isn't built yet (or starts building it, in the
     /// background), with the pipelines for blending with each other by `each` where a frame
-    /// needs them.
+    /// needs them. True when one of them is still being built, so the frame draws without it.
     pub(crate) fn ensure<'a>(
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         frames: impl IntoIterator<Item = (&'a Frame, Option<bpe_core::Blend>)>,
-    ) {
+    ) -> bool {
         self.collect();
         let mut used = Vec::new();
         for (frame, each) in frames {
@@ -245,7 +245,9 @@ impl Programs {
         if self.made.len() > KEEP_PROGRAMS {
             self.made.retain(|k, _| used.contains(k));
         }
+        let waiting = used.iter().any(|k| self.pending.contains_key(k));
         self.used = used;
+        waiting
     }
 
     /// The pipeline program `key` draws with (in a layer whose things blend with each other by

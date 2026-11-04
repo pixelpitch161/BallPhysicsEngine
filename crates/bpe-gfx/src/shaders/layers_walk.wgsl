@@ -30,6 +30,10 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         let v = layered_ball.vary;
         bp.paint.vary = vec4<f32>(v.x + v.w, v.y, v.z, 0.0);
         body_c = own_colour(bp, p, length(p), body.rgb);
+        // The group colour reaches a gradient body here, so layers the same as the body follow.
+        if (body_rec.head.z & 8u) != 0u {
+            body_c = with_group(body_c);
+        }
     }
     let base_c = vec4<f32>(body_c, 1.0);
     let cut = split & 0xffffu;
@@ -141,7 +145,8 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             }
             default: {}
         }
-        if grouped {
+        // (A gradient body already has the group colour in `body_c`.)
+        if grouped && !(l.head.x == 0u && l.paint.row >= 0.0) {
             c = with_group(c);
         }
         //GROUP_SHADED

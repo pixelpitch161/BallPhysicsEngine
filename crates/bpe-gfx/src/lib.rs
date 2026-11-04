@@ -281,6 +281,8 @@ pub struct Renderer {
     layered_pipeline_layout: wgpu::PipelineLayout,
     /// The pipelines of stacks with shader layers, maybe shared with other renderers.
     programs: ProgramStore,
+    /// The last frame drew some balls without their shader layers, their program still building.
+    waiting: bool,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
@@ -913,6 +915,7 @@ impl Renderer {
             layers_layout,
             layered_pipeline_layout: layered_pipeline_layout.clone(),
             programs: ProgramStore::default(),
+            waiting: false,
             sampler,
             background,
             trail,
@@ -980,6 +983,12 @@ impl Renderer {
         self.programs = store.clone();
     }
 
+    /// Whether the last frame drew some balls without their shader layers because their program
+    /// was still building: draw it again soon and they show.
+    pub fn programs_waiting(&self) -> bool {
+        self.waiting
+    }
+
     /// The renderer's program store.
     pub fn programs(&self) -> &ProgramStore {
         &self.programs
@@ -1024,7 +1033,7 @@ impl Renderer {
         let frames = std::iter::once((frame, None))
             .chain(overlay.map(|o| (o, None)))
             .chain(layers.iter().map(|l| (&l.frame, l.each.then_some(l.blend))));
-        self.programs.lock().ensure(device, &self.layered_pipeline_layout, frames);
+        self.waiting = self.programs.lock().ensure(device, &self.layered_pipeline_layout, frames);
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
         self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
