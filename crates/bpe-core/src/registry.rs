@@ -66,13 +66,18 @@ pub trait ModuleKind: Send + Sync + 'static {
 /// the reactions, which change the whole finished stack when something happens, as a mask
 /// under the drawn layer it limits (its `Layer::parent`), or with the group layers, which spread
 /// one look across every ball of the thing (applied in their order, after the reactions and
-/// masks in the card's list).
+/// masks in the card's list). A sound card's layers are chain layers (in an oscillator's lane,
+/// top to bottom), modulators (in tile order, after the chains), and a mixer's are bus effects
+/// (in a bus's lane); see [`crate::Layer::lane`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerSection {
     Drawn,
     Reaction,
     Mask,
     Group,
+    Chain,
+    Modulator,
+    Effect,
 }
 
 /// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline

@@ -11,7 +11,9 @@ version before that is **Version 1**, kept on the `version-1` branch (with its e
 `bin\version-1\` folder). Removed in that pass: the old engine (`bpe-app`, `bpe-scene`, `bpe-sim`, `bpe-audio`,
 `bpe-render`, `bpe-export`, `bpe-music`), node graphs and rules (`bpe-graph`, `bpe-vm`), the Explore and Batch
 windows, the canvas and paint marks, the whole sound and chords system (`bpe-synth`, `bpe-mix`), and the Obstacle,
-Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. Exports carry a silent audio track.
+Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. A new sound system is being built in six parts
+(spec `docs/superpowers/specs/2026-11-04-sound-system-design.md`, plans in `docs/superpowers/plans/sound-system/`,
+decisions log `decisions.md` there); part 1 (engine, playback, export audio, Master) is in.
 
 Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
 Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Trail, Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects); nothing is shared,
@@ -57,7 +59,11 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). Scene files are format 7.
+  partners). Scene files are format 8 (format 7 files still load and are upgraded). Sound data: `SlotId::Sound` and
+  `SlotId::Mixer` (last in `SlotId::ALL`, `in_card_list()` false: the inspector doesn't list them), layer sections
+  `Chain`/`Modulator`/`Effect` (`Layer.lane` puts chain and effect layers in lanes; `move_layer` keeps them in
+  their lane; `add_layer_in`), `Value::Routes` (`ModRoute`, key `ROUTES_KEY`; removing a modulator drops its
+  routes) and `Value::Slots` (`NoteSlot`, key `SLOTS_KEY`) in `sound_values.rs`, and `PulseSource::Sound`.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
@@ -120,7 +126,20 @@ Dependencies go bottom to top:
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
   the old look/motion values with `classic_*` helpers so goldens don't move. Never add built-in or example scenes
   to the program unless the owner asks.
-- `bpe-cli`: headless export.
+- `bpe-dsp`: sound building blocks at 48 kHz in 64-frame blocks (`SAMPLE_RATE`, `BLOCK`): dB helpers, a
+  `Smoother`, `FlushGuard` (denormals off), polyphase IIR halfband oversamplers (2/4/8×), a 4× true-peak detector,
+  the two-stage lookahead `TruePeakLimiter` (3.4 ms) and an EBU R128 `LoudnessMeter`.
+- `bpe-sound`: the sound engine. `Engine` runs its own `Playback` of the physics and renders 64-frame blocks with
+  every hit on its exact sample (`Event.at` is where in the step a hit happened, never hashed; `hits.rs`
+  `HitCursor`), the voices (`VoiceSource`, built per scene by `SoundPatch::build`; `swap_patch` keeps ringing notes
+  via `adopt`) and the `Master` (input, output, true-peak ceiling -1 dBTP, release) from the scene's `sound.mixer`
+  card (`bpe-kit/src/sound/mixer.rs`; `ensure_mixer` puts it on every scene). `Engine::seek` goes back
+  `PRE_ROLL` (4 s) and renders silently so tails ring. `render` never allocates (a counting-allocator test).
+  `TempoMap` reads the scene's Tempo / Beats in a bar / Beat note. `offline.rs`: `render_to_wav` (streamed float
+  WAV) and `has_sound`. The `test-tone` feature gives a thing tagged `test-tone` (or `test-tone-decay=<s>`) a test
+  blip voice; tests use it, the program never does.
+- `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
+  48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
   fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
@@ -142,7 +161,16 @@ Dependencies go bottom to top:
   and the gradient's line drag there; balls can be picked for layers of their own), the shape chips and group
   settings, Across the group (the group layers: gradient and shaders) and folds for Variety, Release, Launch and
   Odd ones out. Those settings are left off the Balls card itself (`GROUP_HEADINGS`). The
-  timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open.
+  timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open,
+  over a bars-and-beats grid from the tempo (`beat_lines`, thinned under 4 px; keys snap to beats when the grid
+  snaps). Sound: `audio_out.rs` opens the default device with cpal (`AudioOut::open`, `None` without one: the
+  playhead then follows the wall clock) and feeds it from an rtrb ring (`Feeder`, resampling with rubato when the
+  device isn't 48 kHz); `sound_job.rs` is the sound thread (`SoundJob`: Play, Pause, Seek, Patch, Rebuild; the
+  editor never waits on it) and `SoundJob::clock` is the playhead while playing. A physics edit rebuilds the
+  sound, anything else patches it; a seek clears the speakers' ring with a 2 ms fade-in. The transport has the
+  speaker button and listening volume (`settings::ListenSettings`, never in the scene). The left panel switches
+  Things / Mixer (`LeftPanel`; `mixer/`: the tempo row and `master::strip` with `style::Knob` knobs, the level
+  meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`).
 
 ## Working rules
 

@@ -14,7 +14,10 @@ bpe-core.workspace = true
 bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 bpe-kit.workspace = true
+bpe-sound.workspace = true
 anyhow.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
+bpe-sound = { workspace = true, features = ["test-tone"] }

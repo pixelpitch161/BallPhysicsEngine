@@ -405,7 +405,7 @@ mod tests {
 
     fn ev(step: u64, kind: EventKind, a: (u32, u32), b: Option<(u32, u32)>) -> Event {
         let party = |(t, item)| Party { thing: ThingId(t), item };
-        Event { step, kind, a: party(a), b: b.map(party), point: Vec2::ZERO, normal: Vec2::ZERO, speed: 0.0 }
+        Event { step, kind, a: party(a), b: b.map(party), point: Vec2::ZERO, normal: Vec2::ZERO, speed: 0.0, at: 0.0 }
     }
 
     #[test]

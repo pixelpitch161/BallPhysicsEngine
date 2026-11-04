@@ -338,7 +338,7 @@ pub fn show(
         }
 
         // ---------- one card per slot ----------
-        for slot in SlotId::ALL {
+        for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
             let Some(card_now) = thing.slots.get(&slot) else { continue };
             ui.add_space(6.0);
             card(ui, |ui| {
@@ -678,7 +678,7 @@ fn apply_layer_edit(
 
 /// Writes `value` to `a`: as a key at `time` when the setting has keys (and notes so in
 /// `keyed`), else as its plain value.
-fn set_or_key(
+pub(crate) fn set_or_key(
     scene: &mut Scene,
     reg: &bpe_core::Registry,
     a: &Address,
@@ -1002,7 +1002,10 @@ fn jump_bar(
         vec![(Card::Thing, "Thing")]
     };
     let cards = own.into_iter().chain(
-        SlotId::ALL.into_iter().filter(|s| thing.slots.contains_key(s)).map(|s| (Card::Slot(s), kind.slot_label(s))),
+        SlotId::ALL
+            .into_iter()
+            .filter(|s| s.in_card_list() && thing.slots.contains_key(s))
+            .map(|s| (Card::Slot(s), kind.slot_label(s))),
     );
     ui.horizontal_wrapped(|ui| {
         for (card, label) in cards {
@@ -1935,7 +1938,7 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 12] = [
+    const BAR_LABELS: [&str; 14] = [
         "Thing",
         "Look",
         "Trail",
@@ -1948,6 +1951,8 @@ mod tests {
         "World",
         "Background",
         "Picture",
+        "Sound",
+        "Mixer",
     ];
 
     /// The jump bar's buttons, in order, each with whether it is selected.
@@ -2048,6 +2053,8 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        // The mixer is there too, but has a panel of its own, not a card here.
+        bpe_kit::ensure_mixer(&mut scene, &reg);
         scene
     }
 

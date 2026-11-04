@@ -511,6 +511,31 @@ fn row_menu(
     pick
 }
 
+/// What the value menu on a control outside a settings grid (a knob) asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ValueMenu {
+    Nothing,
+    Paste(Value),
+    CreateKey,
+}
+
+/// The same right-click menu as a settings row's (Copy Value, Paste Value, Create Keyframe), on
+/// any control.
+pub(crate) fn value_menu(
+    response: &Response,
+    def: &SettingDef,
+    unit: &str,
+    value: &Value,
+    mark: Option<KeyMark>,
+    choices: &TargetChoices,
+) -> ValueMenu {
+    match row_menu(response, def, unit, value, mark, choices) {
+        MenuPick::Nothing => ValueMenu::Nothing,
+        MenuPick::Paste(v) => ValueMenu::Paste(v),
+        MenuPick::CreateKey => ValueMenu::CreateKey,
+    }
+}
+
 /// `copied` as a value of `def`, kept inside its range, or `None` when it is another kind of
 /// value or a choice this setting doesn't have.
 fn pasted(def: &SettingDef, copied: &Value) -> Option<Value> {
@@ -559,6 +584,10 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Points(ps) if ps.len() == 1 => "1 point".to_owned(),
         Value::Points(ps) => format!("{} points", ps.len()),
         Value::Path(p) => path_words(p),
+        Value::Routes(r) if r.len() == 1 => "1 route".to_owned(),
+        Value::Routes(r) => format!("{} routes", r.len()),
+        Value::Slots(n) if n.len() == 1 => "1 slot".to_owned(),
+        Value::Slots(n) => format!("{} slots", n.len()),
     }
 }
 

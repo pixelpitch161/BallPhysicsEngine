@@ -80,6 +80,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Against some things",
     "Variation",
     "Blending",
+    "Master",
 ];
 
 /// The sections that stay folded until opened.
@@ -308,6 +309,30 @@ impl SettingValue for Target {
     }
 }
 
+impl SettingValue for Vec<crate::ModRoute> {
+    fn value_type() -> ValueType {
+        ValueType::Routes
+    }
+    fn to_value(&self) -> Value {
+        Value::Routes(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Routes(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
+impl SettingValue for Vec<crate::NoteSlot> {
+    fn value_type() -> ValueType {
+        ValueType::Slots
+    }
+    fn to_value(&self) -> Value {
+        Value::Slots(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Slots(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Strokes {
     fn value_type() -> ValueType {
         ValueType::Strokes
@@ -375,6 +400,8 @@ fn is_on(v: &Value) -> bool {
         Value::Gradient(g) => g.stops.len() > 1,
         Value::Points(ps) => !ps.is_empty(),
         Value::Path(p) => !p.is_empty(),
+        Value::Routes(rs) => !rs.is_empty(),
+        Value::Slots(ss) => !ss.is_empty(),
         _ => true,
     }
 }

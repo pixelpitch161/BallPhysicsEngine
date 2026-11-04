@@ -476,6 +476,7 @@ mod tests {
             point: Vec2::ZERO,
             normal: Vec2::Y,
             speed: 3000.0,
+            at: 0.0,
         });
         world.step(&kit.sims, &mut log);
         assert!(state::<CameraState>(world.states[&cam].as_ref()).trauma > 0.0);

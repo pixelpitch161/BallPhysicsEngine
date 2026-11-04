@@ -11,7 +11,7 @@ use bpe_core::{Animation, Attach, Inputs, Params, Resolved, Scene, SlotId, Targe
 use glam::Vec2;
 
 use crate::camera::CameraView;
-use crate::events::HASH_OFFSET;
+use crate::events::{HASH_OFFSET, crossing, step_fraction};
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
@@ -86,6 +86,8 @@ pub struct World {
     /// The keyframes and pulses that move physics settings, with the resolved scene they are
     /// written into step by step. `None` when nothing physical is animated.
     animated: Option<Animated>,
+    /// Which substep of how many is running, so a hit knows where in the step it happened.
+    substep: (u32, u32),
 }
 
 /// See [`World::animated`].
@@ -134,6 +136,7 @@ impl World {
             order: Vec::new(),
             pairs: Pairs::default(),
             walls_before: BTreeMap::new(),
+            substep: (0, 1),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
             animated: None,
@@ -375,7 +378,8 @@ impl World {
             }
         }
 
-        for _ in 0..substeps {
+        for k in 0..substeps {
+            self.substep = (k, substeps);
             self.substep(sims, &order, sub_dt, &limits, log);
         }
 
@@ -435,8 +439,22 @@ impl World {
     /// Collide and Respond, then the Hit events: first the walls around the balls, then the
     /// balls against each other. What each ball touched holds it up in the pair solve.
     fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, steps_per_second, bodies, walls, walls_before, modules, kinds, tags, pairs, seed, .. } = self;
+        let World {
+            step,
+            steps_per_second,
+            bodies,
+            walls,
+            walls_before,
+            modules,
+            kinds,
+            tags,
+            pairs,
+            seed,
+            substep,
+            ..
+        } = self;
         let step = *step;
+        let (sub_index, sub_count) = *substep;
         let seed = *seed;
         let time = step as f32 / *steps_per_second as f32;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
@@ -457,10 +475,18 @@ impl World {
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let previous = bodies.previous[i];
+                    let start = bodies.start[i];
                     let at = &mut bodies.position[i];
+                    let moved_to = *at;
                     let Some(contact) = keep_clear_from(at, previous, before, velocity, radius, wall) else {
                         continue;
                     };
+                    // The ball was moved back to just touching: the gap to there along the
+                    // normal, at the start of the substep and where it had moved to.
+                    let touching = *at;
+                    let gap = |p: Vec2| (p - touching).dot(contact.normal);
+                    let within = crossing(gap(start), gap(moved_to));
+                    let hit_at = step_fraction(sub_index, sub_count, within);
                     supports.push(Support {
                         thing: *mover,
                         item: i as u32,
@@ -478,6 +504,7 @@ impl World {
                             point: contact.point,
                             normal: contact.normal,
                             speed: contact.speed,
+                            at: hit_at,
                         });
                         if let Some((sim, state)) = own
                             && sim.effects(state, bodies, i, contact.speed, limits)
@@ -490,7 +517,8 @@ impl World {
         }
 
         // Balls against balls.
-        collide_pairs(bodies, modules, &matcher, sims, pairs, &supports, step, dt, limits, log);
+        let substep = (sub_index, sub_count);
+        collide_pairs(bodies, modules, &matcher, sims, pairs, &supports, step, substep, dt, limits, log);
     }
 }
 
@@ -671,6 +699,14 @@ impl Hasher {
                 self.bytes(&[7]);
                 self.bytes(format!("{t:?}").as_bytes());
             }
+            Value::Routes(r) => {
+                self.bytes(&[11]);
+                self.bytes(format!("{r:?}").as_bytes());
+            }
+            Value::Slots(n) => {
+                self.bytes(&[12]);
+                self.bytes(format!("{n:?}").as_bytes());
+            }
             Value::Strokes(s) => {
                 self.bytes(&[8]);
                 self.bytes(&s.hash64().to_le_bytes());
@@ -741,6 +777,39 @@ mod tests {
         assert_eq!(w1.step, 1200);
         assert_eq!(w1.time(), 5.0);
         assert_eq!(w1.bodies[&DOTS].hits[0] as usize, log1.len());
+    }
+
+    #[test]
+    fn hit_fraction_matches_where_the_ball_crossed() {
+        // A ring of radius 100 (2 px thick): a 5 px dot touches it with its centre at 94. It starts
+        // 4 px short of that and moves 10 px a step, so it touches 0.4 of the way through.
+        let (mut scene, _, sims) = dots_in_ring(1);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+        let dots = scene.things.get_mut(&DOTS).unwrap();
+        dots.transform.position = glam::Vec2::new(90.0, 0.0);
+        dots.params.set("velocity", Value::Vec2([2400.0, 0.0]));
+        let resolved = resolve(&scene, &reg());
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.step(&sims, &mut log);
+        let hit = log.events().iter().find(|e| e.kind == EventKind::Hit).expect("it hits in the first step");
+        assert!((hit.at - 0.4).abs() < 0.02, "at = {}", hit.at);
+    }
+
+    #[test]
+    fn a_ball_pair_hit_knows_where_in_the_step_it_was() {
+        // Two 5 px dots with centres 31 px apart, closing at 200 px/s: they touch 21 px of
+        // closing later, 25.2 steps in (each step closes 200/240 px).
+        let (scene, resolved, sims) = dots_pair(15.5, Target::Anything);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &sims, &mut log);
+        let hit = log.events().iter().find(|e| e.kind == EventKind::Hit && e.b.is_some_and(|b| b.thing == DOTS2));
+        let hit = hit.expect("the dots meet");
+        let closing = 200.0 / 240.0;
+        let exact = 21.0 / closing;
+        let expected = exact - (hit.step - 1) as f32;
+        assert!((hit.at - expected).abs() < 0.05, "step {} at {} expected {expected}", hit.step, hit.at);
     }
 
     #[test]

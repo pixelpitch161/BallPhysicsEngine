@@ -220,6 +220,7 @@ impl ThingSim for TestCounter {
             point: Vec2::ZERO,
             normal: Vec2::ZERO,
             speed: 0.0,
+            at: 0.0,
         });
     }
 }

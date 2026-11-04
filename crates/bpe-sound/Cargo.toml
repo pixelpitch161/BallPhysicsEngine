@@ -1,0 +1,34 @@
+[package]
+name = "bpe-sound"
+description = "Ball Studio's sound engine: its own physics world in step with the audio, voices, the master and the offline renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# A simple blip on each hit on a thing tagged "test-tone", for tests of the engine and export.
+test-tone = []
+
+[dependencies]
+bpe-core.workspace = true
+bpe-runtime.workspace = true
+bpe-kit.workspace = true
+bpe-dsp.workspace = true
+glam.workspace = true
+anyhow.workspace = true
+hound.workspace = true
+
+[dev-dependencies]
+bpe-kit = { workspace = true, features = ["test-scenes"] }
+
+[[test]]
+name = "engine"
+required-features = ["test-tone"]
+
+[[test]]
+name = "alloc"
+required-features = ["test-tone"]
+
+[[test]]
+name = "offline"
+required-features = ["test-tone"]

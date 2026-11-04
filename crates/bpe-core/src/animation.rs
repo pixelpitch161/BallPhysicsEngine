@@ -7,7 +7,9 @@
 //! or reordered. Nothing here needs the registry once the keys are in: the editor checks them
 //! when they are made, and the runtime and the renderer only read them.
 
-use crate::{Address, Color, EditError, Gradient, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId, Value};
+use crate::{
+    Address, Color, EditError, Gradient, LayerId, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId, Value,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -256,20 +258,35 @@ impl Value {
     }
 }
 
-/// What a pulse follows. Only the hits for now; more sources can be added later.
+/// What a pulse follows: the hits, or a shape's sound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PulseSource {
     /// The bounces. Never allowed on a setting that moves the physics.
     #[default]
     Hits,
+    /// One part of a shape's sound (Follow sound). Worked out from the physics alone, so it
+    /// needs no sound to be playing; a setting that moves the physics reads it as it was at the
+    /// end of the previous step.
+    Sound { shape: ThingId, source: SoundSource },
+}
+
+/// Which part of a shape's sound a pulse follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SoundSource {
+    /// One of the shape's modulators.
+    Modulator(LayerId),
+    /// How loud the shape is.
+    Level,
 }
 
 impl PulseSource {
+    /// The sources that need nothing chosen; sound sources are listed per scene.
     pub const NAMED: [PulseSource; 1] = [PulseSource::Hits];
 
     pub fn name(self) -> &'static str {
         match self {
             PulseSource::Hits => "Hits",
+            PulseSource::Sound { .. } => "Sound",
         }
     }
 }
@@ -308,6 +325,8 @@ impl Inputs {
 pub fn pulse_strength(pulse: &Pulse, _time: f64, inputs: &Inputs) -> f32 {
     let s = match pulse.source {
         PulseSource::Hits => inputs.hits,
+        // Follow sound arrives with the modulators (sound part 4).
+        PulseSource::Sound { .. } => 0.0,
     };
     if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 }
 }

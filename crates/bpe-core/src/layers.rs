@@ -46,11 +46,23 @@ pub struct Layer {
     /// Numbers past the group's last ball do nothing, and come back if it grows.
     #[serde(skip_serializing_if = "is_empty")]
     pub only: Vec<u32>,
+    /// For a sound chain layer, which oscillator's chain it is in (0 = Osc A, 1 = Osc B); for a
+    /// bus effect, which bus (0..2). Layers of a lane keep their order within it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<u8>,
 }
 
 impl Default for Layer {
     fn default() -> Self {
-        Self { id: LayerId(0), kind: KindId::new(), name: String::new(), enabled: true, parent: None, only: Vec::new() }
+        Self {
+            id: LayerId(0),
+            kind: KindId::new(),
+            name: String::new(),
+            enabled: true,
+            parent: None,
+            only: Vec::new(),
+            lane: None,
+        }
     }
 }
 
@@ -82,6 +94,8 @@ pub struct CopiedLayer {
     pub masks: Vec<CopiedLayer>,
     /// The balls it applies to (see [`Layer::only`]).
     pub only: Vec<u32>,
+    /// The chain or bus it was in (see [`Layer::lane`]).
+    pub lane: Option<u8>,
 }
 
 /// A whole stack as copied, bottom first, without the group layers; masks ride with their layers.
@@ -137,6 +151,31 @@ fn drawn_end(reg: &Registry, card: &Slot) -> usize {
         .unwrap_or(card.layers.len())
 }
 
+/// Where a new layer of `section` in `lane` goes among the sound sections (chains, modulators,
+/// bus effects): after the layers of the same section in a lane up to `lane`, before those of
+/// later lanes and of later sections.
+fn sound_end(reg: &Registry, card: &Slot, section: LayerSection, lane: Option<u8>) -> usize {
+    let rank = |s: LayerSection| match s {
+        LayerSection::Chain => 0,
+        LayerSection::Modulator => 1,
+        LayerSection::Effect => 2,
+        _ => 3,
+    };
+    let (r, lane) = (rank(section), lane.unwrap_or(0));
+    card.layers
+        .iter()
+        .position(|l| {
+            let lr = rank(section_of(reg, l));
+            lr > r || (lr == r && l.lane.unwrap_or(0) > lane)
+        })
+        .unwrap_or(card.layers.len())
+}
+
+/// Whether layers of `section` sit in lanes and stay in their own (see [`Layer::lane`]).
+fn has_lanes(section: LayerSection) -> bool {
+    matches!(section, LayerSection::Chain | LayerSection::Effect)
+}
+
 /// Where the group layers start: the index of the first one, or the length.
 fn group_start(reg: &Registry, card: &Slot) -> usize {
     card.layers.iter().position(|l| section_of(reg, l) == LayerSection::Group).unwrap_or(card.layers.len())
@@ -177,6 +216,20 @@ impl Scene {
         slot: SlotId,
         kind: &str,
     ) -> Result<LayerId, EditError> {
+        self.add_layer_in(reg, thing, slot, kind, None)
+    }
+
+    /// [`Scene::add_layer`] into `lane` (see [`Layer::lane`]): a chain layer or bus effect goes at
+    /// the end of its lane, a modulator after the other modulators. Layers of other sections take
+    /// no lane.
+    pub fn add_layer_in(
+        &mut self,
+        reg: &Registry,
+        thing: ThingId,
+        slot: SlotId,
+        kind: &str,
+        lane: Option<u8>,
+    ) -> Result<LayerId, EditError> {
         let card = self.layer_card(thing, slot)?;
         let k = reg.layer(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
         if k.card() != card.kind {
@@ -193,10 +246,19 @@ impl Scene {
                 LayerSection::Reaction => group_start(reg, card),
                 LayerSection::Group => card.layers.len(),
                 LayerSection::Mask => return Err(EditError::NotAccepted),
+                s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect) => {
+                    sound_end(reg, card, s, lane)
+                }
             }
         };
-        let layer =
-            Layer { id: card.next_layer_id(), kind: kind.into(), name: free_name(card, k.name()), ..Layer::default() };
+        let lane = if has_lanes(k.section()) { Some(lane.unwrap_or(0)) } else { None };
+        let layer = Layer {
+            id: card.next_layer_id(),
+            kind: kind.into(),
+            name: free_name(card, k.name()),
+            lane,
+            ..Layer::default()
+        };
         let id = layer.id;
         self.layer_card_mut(thing, slot).layers.insert(at, layer);
         Ok(id)
@@ -234,8 +296,8 @@ impl Scene {
         Ok(id)
     }
 
-    /// Takes layer `id` out of the card with its settings, keyframes and pulses. The base layer
-    /// stays.
+    /// Takes layer `id` out of the card with its settings, keyframes and pulses, and every
+    /// modulation route from it or to one of its settings. The base layer stays.
     pub fn remove_layer(&mut self, reg: &Registry, thing: ThingId, slot: SlotId, id: LayerId) -> Result<(), EditError> {
         let card = self.layer_card(thing, slot)?;
         let index = card.layer_index(id).ok_or(EditError::NoLayer(id))?;
@@ -253,13 +315,17 @@ impl Scene {
         let card = self.layer_card_mut(thing, slot);
         card.layers.retain(|l| !gone.contains(&l.id));
         card.params.0.retain(|k, _| !gone.iter().any(|&g| of_layer(k, g)));
+        if let Some(crate::Value::Routes(routes)) = card.params.0.get_mut(crate::ROUTES_KEY) {
+            routes.retain(|r| !gone.contains(&r.source) && !gone.iter().any(|&g| of_layer(&r.target, g)));
+        }
         Ok(())
     }
 
     /// Moves drawn layer `id`, with its masks, to `to` in the stack, counting layers from the
     /// bottom and leaving masks out of the count. Drawn layers stay above the base layer and under
     /// the reactions; reactions and masks have no order to change; group layers move among the
-    /// group layers only.
+    /// group layers only. Chain layers and bus effects move only within their own lane, and
+    /// modulators among the modulators.
     pub fn move_layer(
         &mut self,
         reg: &Registry,
@@ -274,6 +340,19 @@ impl Scene {
             return Err(EditError::BaseLayer);
         }
         let section = reg.layer(&card.layers[index].kind).map(|k| k.section());
+        if let Some(s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect)) = section {
+            let lane = card.layers[index].lane;
+            let same = |l: &Layer| section_of(reg, l) == s && (!has_lanes(s) || l.lane == lane);
+            let lo = card.layers.iter().position(same).expect("the layer itself");
+            let hi = card.layers.iter().rposition(same).expect("the layer itself");
+            if to < lo || to > hi {
+                return Err(EditError::NotAccepted);
+            }
+            let card = self.layer_card_mut(thing, slot);
+            let layer = card.layers.remove(index);
+            card.layers.insert(to, layer);
+            return Ok(());
+        }
         let group = section == Some(LayerSection::Group);
         let drawn = section == Some(LayerSection::Drawn) && card.layers[index].parent.is_none();
         // Where the layers it may sit among end.
@@ -420,6 +499,7 @@ impl Scene {
             params,
             masks,
             only: layer.only.clone(),
+            lane: layer.lane,
         })
     }
 
@@ -489,7 +569,7 @@ impl Scene {
                 id
             }
             None => {
-                let id = self.add_layer(reg, thing, slot, &copied.kind)?;
+                let id = self.add_layer_in(reg, thing, slot, &copied.kind, copied.lane)?;
                 let card = self.layer_card_mut(thing, slot);
                 let name = copied.name.trim();
                 if !name.is_empty()
@@ -607,7 +687,7 @@ impl Scene {
                 l.only.clone()
             };
             let enabled = l.enabled || kind.base();
-            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled, parent, only });
+            card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled, parent, only, lane: l.lane });
             for (k, v) in l.params.iter() {
                 if let Some(mut v) = fitted_in(kind, &l.params, k, v) {
                     // A mask names a layer of the copy by the id it had there.
@@ -1093,5 +1173,70 @@ mod tests {
         let mut hidden = card.clone();
         hidden.layers[0].enabled = false;
         assert_eq!(ron::from_str::<Slot>(&ron::to_string(&hidden).unwrap()).unwrap(), hidden);
+    }
+
+    /// A folder whose Sound card holds chain layers in lanes 0, 0, 1 and one modulator.
+    fn sounding() -> (Registry, Scene, ThingId, [LayerId; 4]) {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let f = s.add_thing(&r, "folder", ThingId::ROOT).unwrap();
+        s.add_slot(&r, f, SlotId::Sound, "sound.test").unwrap();
+        let m = s.add_layer(&r, f, SlotId::Sound, "mod.test").unwrap();
+        let b = s.add_layer_in(&r, f, SlotId::Sound, "chain.test", Some(1)).unwrap();
+        let a1 = s.add_layer_in(&r, f, SlotId::Sound, "chain.test", Some(0)).unwrap();
+        let a2 = s.add_layer_in(&r, f, SlotId::Sound, "chain.test", Some(0)).unwrap();
+        (r, s, f, [a1, a2, b, m])
+    }
+
+    fn order(s: &Scene, f: ThingId) -> Vec<(LayerId, Option<u8>)> {
+        s.card(f, SlotId::Sound).unwrap().layers.iter().map(|l| (l.id, l.lane)).collect()
+    }
+
+    #[test]
+    fn chain_layers_sit_in_lanes_before_the_modulators() {
+        let (_, s, f, [a1, a2, b, m]) = sounding();
+        assert_eq!(order(&s, f), [(a1, Some(0)), (a2, Some(0)), (b, Some(1)), (m, None)]);
+    }
+
+    #[test]
+    fn moving_a_chain_layer_stays_in_its_lane() {
+        let (r, mut s, f, [a1, a2, b, m]) = sounding();
+        assert_eq!(s.move_layer(&r, f, SlotId::Sound, b, 0), Err(EditError::NotAccepted));
+        assert_eq!(s.move_layer(&r, f, SlotId::Sound, a1, 2), Err(EditError::NotAccepted));
+        assert_eq!(s.move_layer(&r, f, SlotId::Sound, m, 2), Err(EditError::NotAccepted));
+        s.move_layer(&r, f, SlotId::Sound, a1, 1).unwrap();
+        assert_eq!(order(&s, f), [(a2, Some(0)), (a1, Some(0)), (b, Some(1)), (m, None)]);
+    }
+
+    #[test]
+    fn a_copied_chain_layer_keeps_its_lane() {
+        let (r, mut s, f, [_, _, b, _]) = sounding();
+        let copied = s.copy_layer(f, SlotId::Sound, b).unwrap();
+        let new = s.paste_layer(&r, f, SlotId::Sound, &copied).unwrap();
+        let dup = s.duplicate_layer(&r, f, SlotId::Sound, b).unwrap();
+        let card = s.card(f, SlotId::Sound).unwrap();
+        assert_eq!(card.layer(new).unwrap().lane, Some(1));
+        assert_eq!(card.layer(dup).unwrap().lane, Some(1));
+    }
+
+    #[test]
+    fn removing_a_modulator_drops_its_routes() {
+        let (r, mut s, f, [a1, _, _, m]) = sounding();
+        let m2 = s.add_layer(&r, f, SlotId::Sound, "mod.test").unwrap();
+        let route = |source: LayerId, target: String| crate::ModRoute {
+            source,
+            target,
+            amount: 0.5,
+            bipolar: false,
+            invert: false,
+        };
+        let second = route(m2, layered_key(a1, "cutoff"));
+        let routes = vec![route(m, "a_gain".into()), second.clone()];
+        s.card_mut(f, SlotId::Sound).unwrap().params.set(crate::ROUTES_KEY, Value::Routes(routes));
+        let get = |s: &Scene| s.card(f, SlotId::Sound).unwrap().params.get(crate::ROUTES_KEY).cloned();
+        s.remove_layer(&r, f, SlotId::Sound, m).unwrap();
+        assert_eq!(get(&s), Some(Value::Routes(vec![second])));
+        s.remove_layer(&r, f, SlotId::Sound, a1).unwrap();
+        assert_eq!(get(&s), Some(Value::Routes(vec![])));
     }
 }

@@ -1,17 +1,22 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
+use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
+use crate::mixer::{self, Mixer};
 use crate::preview::Preview;
 use crate::selection::Selection;
+use crate::settings::ListenSettings;
+use crate::sound_job::SoundJob;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
+use bpe_sound::SoundPatch;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +45,35 @@ pub struct Panels {
     pub preview: Option<Preview>,
     pub export: ExportWindow,
     pub timeline: Timeline,
+    pub mixer: Mixer,
+}
+
+/// What the left panel shows: the things in the scene, or the Mixer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeftPanel {
+    #[default]
+    Things,
+    Mixer,
+}
+
+/// The Mixer's width when it opens.
+pub const MIXER_W: f32 = 420.0;
+
+/// The two chips on top of the left panel.
+fn left_switch(ui: &mut egui::Ui, left: &mut LeftPanel) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (panel, name) in [(LeftPanel::Things, "Things"), (LeftPanel::Mixer, "Mixer")] {
+            let hint = match panel {
+                LeftPanel::Things => "The things in the scene",
+                LeftPanel::Mixer => "Tempo, the Master and the meters",
+            };
+            if ui.add(style::toggle_button(name, *left == panel)).on_hover_text(hint).clicked() {
+                *left = panel;
+            }
+        }
+    });
+    ui.add_space(6.0);
 }
 
 enum ToolbarClick {
@@ -101,6 +135,13 @@ pub struct Studio {
     closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
+    /// The sound thread and the speakers; `None` without a sound device (or in tests), when
+    /// the playhead follows the wall clock.
+    pub sound: Option<SoundJob>,
+    /// The speaker button and the listening volume (only what you hear).
+    pub listen: ListenSettings,
+    /// The left panel's face (not saved in the scene).
+    pub left: LeftPanel,
 }
 
 impl Studio {
@@ -111,9 +152,13 @@ impl Studio {
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
         studio.persist_settings = true;
+        studio.listen = settings::load_listen();
         if let Some(path) = scene_path {
             studio.open_path(&path);
         }
+        studio.sound =
+            AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
+        studio.apply_listen();
         studio
     }
 
@@ -132,7 +177,9 @@ impl Studio {
         Self::with_scene(kit, scene)
     }
 
-    fn with_scene(kit: Arc<Kit>, scene: Scene) -> Self {
+    fn with_scene(kit: Arc<Kit>, mut scene: Scene) -> Self {
+        // Every scene the editor holds has its sound's Master.
+        bpe_kit::ensure_mixer(&mut scene, &kit.registry);
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
@@ -167,6 +214,9 @@ impl Studio {
             closing: false,
             last_tick: None,
             clicked: None,
+            sound: None,
+            listen: ListenSettings::default(),
+            left: LeftPanel::Things,
         }
     }
 
@@ -232,18 +282,33 @@ impl Studio {
     fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        if fingerprint != self.fingerprint {
+        let rebuilt = fingerprint != self.fingerprint;
+        if rebuilt {
             self.fingerprint = fingerprint;
             self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         }
         self.time = self.time.min(self.duration());
         self.revision += 1;
+        // The sound follows: a physics change starts its world over (no hits from the old
+        // layout), anything else swaps the settings in where it is.
+        if let Some(job) = &mut self.sound {
+            if rebuilt {
+                job.rebuild(&self.scene, &self.resolved);
+                if self.playing {
+                    job.seek(self.time);
+                }
+            } else {
+                job.patch(SoundPatch::build(&self.scene, &self.resolved, &self.kit));
+            }
+        }
     }
 
     pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
         // Every scene the editor holds has a camera; an older file gets one at the identity, so
         // it looks as it always did.
         bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
+        // And a mixer card, for its sound.
+        bpe_kit::ensure_mixer(&mut scene, &self.kit.registry);
         self.saved = scene.clone();
         self.scene = scene;
         self.path = path;
@@ -256,6 +321,9 @@ impl Studio {
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.revision += 1;
+        if let Some(job) = &mut self.sound {
+            job.rebuild(&self.scene, &self.resolved);
+        }
     }
 
     pub fn new_scene(&mut self) {
@@ -290,29 +358,69 @@ impl Studio {
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
         self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
+        if self.playing
+            && let Some(job) = &mut self.sound
+        {
+            job.seek(self.time);
+        }
     }
 
     pub fn set_playing(&mut self, playing: bool) {
         if playing && self.time >= self.duration() {
             self.time = 0.0;
         }
+        if let Some(job) = &mut self.sound
+            && playing != self.playing
+        {
+            if playing { job.play(self.time) } else { job.pause() }
+        }
         self.playing = playing;
         self.last_tick = None;
     }
 
-    /// Moves the playhead while playing, with the wall clock.
+    /// Sets the speaker button and listening volume, and remembers them.
+    pub fn set_listen(&mut self, listen: ListenSettings) {
+        if listen == self.listen {
+            return;
+        }
+        self.listen = listen;
+        self.apply_listen();
+        if self.persist_settings {
+            settings::save_listen(listen);
+        }
+    }
+
+    fn apply_listen(&self) {
+        if let Some(job) = &self.sound {
+            job.shared().set_volume(self.listen.volume);
+            job.shared().set_muted(!self.listen.on);
+        }
+    }
+
+    /// Moves the playhead while playing: with the sound the speakers have played, or with the
+    /// wall clock when there are no speakers.
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
         if !self.playing {
             return;
         }
+        if self.sound.as_ref().is_some_and(SoundJob::failed) {
+            self.sound = None;
+            self.status = "The speakers stopped working, so it plays on without sound.".into();
+        }
         let duration = self.duration();
-        let next = self.time + dt;
+        let next = match &self.sound {
+            Some(job) => job.clock(),
+            None => self.time + dt,
+        };
         if next < duration {
             self.time = next;
         } else if self.looping {
             self.time = 0.0;
+            if let Some(job) = &mut self.sound {
+                job.seek(0.0);
+            }
         } else {
             self.time = duration;
             self.set_playing(false);
@@ -553,6 +661,76 @@ impl Studio {
     }
 
     /// The inspector on the right, as wide as the user last dragged it. Returns its width.
+    /// The left panel, Things or Mixer, with the switch on top. Each face keeps its own width.
+    /// Returns the width it was drawn at.
+    fn left_panel(&mut self, ui: &mut egui::Ui, before: &Scene) -> f32 {
+        let mut left = self.left;
+        let width = match self.left {
+            LeftPanel::Things => {
+                let shown = egui::Panel::left("tree")
+                    .default_size(style::TREE_W)
+                    .min_size(180.0)
+                    .max_size(480.0)
+                    .resizable(true)
+                    .frame(side_frame().inner_margin(egui::Margin::symmetric(8, 10)))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        left_switch(ui, &mut left);
+                        tree::show(
+                            ui,
+                            &mut self.panels.tree,
+                            &mut self.scene,
+                            &self.kit,
+                            &self.resolved,
+                            &mut self.selection,
+                        )
+                    });
+                let tree = shown.inner;
+                if let Some(message) = tree.message {
+                    self.status = message;
+                }
+                if let Some(id) = tree.added {
+                    self.place_added(id);
+                }
+                if tree.removed.is_some() {
+                    // Deleting is always its own undo step.
+                    self.recorded = true;
+                    self.after_separate_edit(before.clone());
+                }
+                shown.response.rect.width()
+            }
+            LeftPanel::Mixer => {
+                let reading = self.sound.as_ref().map(|job| job.meters().read());
+                let shown = egui::Panel::left("mixer")
+                    .default_size(MIXER_W)
+                    .min_size(360.0)
+                    .max_size(960.0)
+                    .resizable(true)
+                    .frame(side_frame().inner_margin(egui::Margin::symmetric(10, 10)))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        left_switch(ui, &mut left);
+                        mixer::show(
+                            ui,
+                            &mut self.panels.mixer,
+                            &mut self.scene,
+                            &self.kit,
+                            &self.resolved,
+                            reading.as_ref(),
+                            self.time,
+                        );
+                    });
+                if self.playing {
+                    // The meters move while the sound plays.
+                    ui.ctx().request_repaint();
+                }
+                shown.response.rect.width()
+            }
+        };
+        self.left = left;
+        width
+    }
+
     fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
         let panel = egui::Panel::right("inspector")
             .default_size(self.inspector_width)
@@ -679,6 +857,7 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
+        self.sound = None;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -721,28 +900,7 @@ impl eframe::App for Studio {
             .min_size(110.0)
             .max_size(520.0)
             .show(ui, |ui| timeline::show(ui, self));
-        let tree = egui::Panel::left("tree")
-            .default_size(style::TREE_W)
-            .min_size(180.0)
-            .max_size(480.0)
-            .resizable(true)
-            .frame(side_frame().inner_margin(egui::Margin::symmetric(8, 10)))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                tree::show(ui, &mut self.panels.tree, &mut self.scene, &self.kit, &self.resolved, &mut self.selection)
-            })
-            .inner;
-        if let Some(message) = tree.message {
-            self.status = message;
-        }
-        if let Some(id) = tree.added {
-            self.place_added(id);
-        }
-        if tree.removed.is_some() {
-            // Deleting is always its own undo step.
-            self.recorded = true;
-            self.after_separate_edit(before.clone());
-        }
+        self.left_panel(ui, &before);
         self.inspector_panel(ui);
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
@@ -849,6 +1007,149 @@ mod tests {
         Harness,
         kittest::{NodeT, Queryable},
     };
+
+    #[test]
+    fn no_device_falls_back_to_the_wall_clock() {
+        let mut studio = Studio::headless();
+        assert!(studio.sound.is_none(), "no speakers in tests");
+        studio.set_playing(true);
+        studio.tick();
+        std::thread::sleep(Duration::from_millis(30));
+        studio.tick();
+        assert!(studio.time > 0.02, "the wall clock moves the playhead: {}", studio.time);
+    }
+
+    #[test]
+    fn a_physics_edit_rebuilds_and_a_tempo_edit_patches() {
+        let mut studio = Studio::headless();
+        studio.sound = Some(SoundJob::recording());
+        studio.set_playing(true);
+        let ball = studio.scene.order.iter().copied().find(|id| studio.scene.things[id].kind == "balls").unwrap();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ball).unwrap().transform.position.x += 40.0;
+        studio.after_edit(before);
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("tempo", Value::Number(97.0));
+        studio.after_edit(before);
+        studio.set_playing(false);
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["seek", "play", "rebuild", "seek", "patch", "pause"]);
+    }
+
+    #[test]
+    fn seeking_while_playing_tells_the_sound() {
+        let mut studio = Studio::headless();
+        studio.sound = Some(SoundJob::recording());
+        studio.seek(1.0);
+        studio.set_playing(true);
+        studio.seek(2.0);
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["seek", "play", "seek"], "a seek while stopped waits for play");
+        assert_eq!(studio.sound.as_ref().unwrap().clock(), 2.0, "the clock holds at the seek");
+    }
+
+    /// The studio's left panel beside an empty middle; each frame's change is recorded as the
+    /// editor does. The state keeps the panel's width as drawn.
+    fn left_harness() -> Harness<'static, (Studio, f32)> {
+        let studio = Studio::headless();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, (studio, width): &mut (Studio, f32)| {
+                    let before = studio.scene.clone();
+                    studio.recorded = false;
+                    *width = studio.left_panel(ui, &before);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    if !std::mem::take(&mut studio.recorded) {
+                        studio.after_edit(before);
+                    }
+                },
+                (studio, 0.0),
+            );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn switching_to_mixer_shows_tempo_and_master() {
+        let mut h = left_harness();
+        assert!(h.query_by_label("Tempo").is_none());
+        h.get_by_label("Mixer").click();
+        h.run();
+        assert_eq!(h.state().0.left, LeftPanel::Mixer);
+        for name in ["Tempo", "Beats in a bar", "Beat note", "Master", "Input", "Output", "Release", "Whole clip"] {
+            assert!(h.query_by_label(name).is_some(), "{name} is shown");
+        }
+        assert!((h.state().1 - MIXER_W).abs() < 1.0, "the Mixer opens 420 wide: {}", h.state().1);
+    }
+
+    #[test]
+    fn turning_the_ceiling_knob_edits_the_mixer_card_and_undoes() {
+        let mut h = left_harness();
+        h.get_by_label("Mixer").click();
+        h.run();
+        let dial = h
+            .query_all_by_label("Ceiling")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+            .unwrap()
+            .rect()
+            .center();
+        h.hover_at(dial);
+        h.run();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(press(dial, true));
+        h.step();
+        for k in 1..=4 {
+            h.event(egui::Event::PointerMoved(dial + egui::vec2(0.0, 50.0 * k as f32 / 4.0)));
+            h.step();
+        }
+        h.event(press(dial + egui::vec2(0.0, 50.0), false));
+        h.run();
+        let ceiling =
+            |s: &Studio| s.scene.card(ThingId::ROOT, SlotId::Mixer).unwrap().params.get("master_ceiling").cloned();
+        // 50 px down of a 200 px turn over 12 dB.
+        assert_eq!(ceiling(&h.state().0), Some(Value::Number(-4.0)));
+        assert!(h.state_mut().0.undo());
+        assert_eq!(ceiling(&h.state().0), None, "back to the -1 dBTP default");
+    }
+
+    #[test]
+    fn master_knobs_offer_no_keyframes_yet() {
+        let mut h = left_harness();
+        h.get_by_label("Mixer").click();
+        h.run();
+        h.query_all_by_label("Output")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+            .unwrap()
+            .click_secondary();
+        h.run();
+        let key = h.get_by_label("Create Keyframe");
+        assert!(key.accesskit_node().is_disabled(), "the Master's keys come with part 2's keyed sound settings");
+        assert!(h.query_by_label("Copy Value").is_some(), "the rest of the value menu is there");
+    }
+
+    #[test]
+    fn switching_back_restores_the_tree_width() {
+        let mut h = left_harness();
+        let tree = h.state().1;
+        assert!((tree - MIXER_W).abs() > 10.0, "the tree is not already 420 wide: {tree}");
+        h.get_by_label("Mixer").click();
+        h.run();
+        assert!((h.state().1 - MIXER_W).abs() < 1.0);
+        h.get_by_label("Things").click();
+        h.run();
+        assert_eq!(h.state().0.left, LeftPanel::Things);
+        assert!((h.state().1 - tree).abs() < 0.5, "{} back to {tree}", h.state().1);
+    }
 
     /// The studio's inspector beside an empty middle, in a wide window. The state keeps the
     /// inspector's width as drawn.
