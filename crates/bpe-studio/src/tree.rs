@@ -504,10 +504,24 @@ fn row(ui: &mut Ui, tree: &mut Tree, scene: &Scene, thing: &Thing, cx: &RowCx, a
                 *action = Some(Action::Collapse(id, !collapsed));
             }
         }
-        // The track colour tag; the scene settings has none, but keeps its place.
-        let (tag, _) = ui.allocate_exact_size(Vec2::new(4.0, 16.0), Sense::hover());
+        // The track colour tag, which opens a colour picker; the scene settings has none, but
+        // keeps its place.
+        let sense = if track.is_some() { Sense::click() } else { Sense::hover() };
+        let (spot, tag_response) = ui.allocate_exact_size(Vec2::new(8.0, 18.0), sense);
         if let Some(track) = track {
+            let wide = if tag_response.hovered() { 6.0 } else { 4.0 };
+            let tag = Rect::from_center_size(spot.center(), Vec2::new(wide, 16.0));
             ui.painter().rect_filled(tag, 2.0, if thing.enabled { track } else { track.gamma_multiply(0.45) });
+            let name = format!("Colour of {}", thing.name);
+            tag_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
+            let tag_response = tag_response.on_hover_text("Click to change this thing's colour");
+            egui::Popup::menu(&tag_response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(
+                |ui| {
+                    if let Some(colour) = style::track_picker(ui, thing.colour) {
+                        *action = Some(Action::Colour(id, colour));
+                    }
+                },
+            );
         }
         if thing.rides() {
             let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
@@ -631,11 +645,11 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
         ui.close();
     }
     if id != ThingId::ROOT {
-        ui.label(RichText::new("Track colour").small().color(style::MUTED));
-        if let Some(colour) = style::track_picker(ui, thing.colour) {
-            *action = Some(Action::Colour(id, colour));
-            ui.close();
-        }
+        ui.menu_button("Colour", |ui| {
+            if let Some(colour) = style::track_picker(ui, thing.colour) {
+                *action = Some(Action::Colour(id, colour));
+            }
+        });
         ui.separator();
         if !single && ui.button("Duplicate").clicked() {
             *action = Some(Action::Duplicate(id));
@@ -1398,13 +1412,18 @@ mod tests {
     fn a_row_menu_changes_the_track_colour() {
         let mut h = harness();
         let before = h.state().scene.clone();
-        assert_ne!(before.things[&ThingId(2)].colour, Some(TrackColour::Teal));
+        let teal = TrackColour([0x3f, 0xd6, 0xb5]);
+        assert_ne!(before.things[&ThingId(2)].colour, Some(teal));
         h.get_by_label("Ball").click_secondary();
         h.run();
-        h.get_by_label("Track colour Teal").click();
+        h.get_by_label("Colour").hover();
+        h.run();
+        h.get_by_label("Colour hex").click();
+        h.run();
+        h.get_by_label("Colour hex").type_text("#3fd6b5");
         h.run();
         let s = h.state_mut();
-        assert_eq!(s.scene.things[&ThingId(2)].colour, Some(TrackColour::Teal));
+        assert_eq!(s.scene.things[&ThingId(2)].colour, Some(teal));
         assert_eq!(s.history.undo.len(), 1, "one undo step");
         assert!(s.history.undo(&mut s.scene));
         assert_eq!(s.scene, before);

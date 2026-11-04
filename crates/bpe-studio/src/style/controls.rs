@@ -100,25 +100,32 @@ pub fn bar_separator(ui: &mut Ui) {
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, LINE));
 }
 
-/// The eight track colours as square swatches, `current` outlined. Each is a button named
-/// "Track colour {name}". The picked colour comes back.
+/// A colour picker for a thing's track colour, showing `current`: the hue and shade square, the
+/// hue strip and a hex box named "Colour hex". The colour comes back when it is changed.
 pub fn track_picker(ui: &mut Ui, current: Option<TrackColour>) -> Option<TrackColour> {
     let mut picked = None;
+    let mut color = track_color(current.unwrap_or(TrackColour::PINK));
+    ui.spacing_mut().slider_width = 180.0;
+    if egui::color_picker::color_picker_color32(ui, &mut color, egui::color_picker::Alpha::Opaque) {
+        picked = Some(super::track::track_of(color));
+    }
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        for c in TrackColour::ALL {
-            let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-            let name = format!("Track colour {}", c.name());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-            ui.painter().rect_filled(rect, 0.0, track_color(c));
-            if current == Some(c) {
-                ui.painter().rect_stroke(rect.expand(2.0), 0.0, Stroke::new(1.5, TEXT), egui::StrokeKind::Outside);
-            } else if response.hovered() {
-                ui.painter().rect_stroke(rect.expand(2.0), 0.0, Stroke::new(1.0, MUTED), egui::StrokeKind::Outside);
-            }
-            if response.on_hover_text(c.name()).clicked() {
-                picked = Some(c);
-            }
+        let label = ui.label(RichText::new("Hex").small().color(MUTED));
+        // The box keeps what is being typed until it reads as a colour.
+        let id = ui.make_persistent_id("track colour hex");
+        let shown = current.map(|c| c.hex()).unwrap_or_default();
+        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
+        let edit = ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0)).labelled_by(label.id);
+        edit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Colour hex"));
+        if edit.changed()
+            && let Some(c) = TrackColour::parse(&text)
+        {
+            picked = Some(c);
+        }
+        if edit.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(id));
         }
     });
     picked

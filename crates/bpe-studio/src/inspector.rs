@@ -208,15 +208,16 @@ pub fn show(
                             edits.push(Edit::Enabled(!thing.enabled));
                         }
                         ui.label(RichText::new(kind.name()).small().color(style::MUTED)).on_hover_text(kind.help());
-                        // The track colour, which opens the eight colours to pick from.
+                        // The track colour, which opens a colour picker.
                         let swatch = style::swatch_button(ui, thing.colour, "Track colour")
                             .on_hover_text("This thing's colour in the tree, the preview and the timeline");
-                        egui::Popup::menu(&swatch).show(|ui| {
-                            if let Some(colour) = style::track_picker(ui, thing.colour) {
-                                edits.push(Edit::Colour(colour));
-                                ui.close();
-                            }
-                        });
+                        egui::Popup::menu(&swatch).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(
+                            |ui| {
+                                if let Some(colour) = style::track_picker(ui, thing.colour) {
+                                    edits.push(Edit::Colour(colour));
+                                }
+                            },
+                        );
                     }
                     let mut name = thing.name.clone();
                     let edit = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
@@ -1148,9 +1149,11 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         h.get_by_label("Track colour").click();
         h.run();
-        h.get_by_label("Track colour Lime").click();
+        h.get_by_label("Colour hex").click();
         h.run();
-        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour::Lime));
+        h.get_by_label("Colour hex").type_text("#12abef");
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].colour, Some(TrackColour([0x12, 0xab, 0xef])));
     }
 
     #[test]

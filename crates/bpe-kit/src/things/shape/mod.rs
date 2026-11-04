@@ -127,13 +127,10 @@ impl ShapeSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Particles, SlotId::Shader];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Particles];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce];
 
 impl ThingKind for ShapeKind {
-    fn track_colour(&self) -> Option<bpe_core::TrackColour> {
-        Some(bpe_core::TrackColour::Orange)
-    }
     fn id(&self) -> &'static str {
         KIND
     }

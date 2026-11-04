@@ -380,7 +380,7 @@ pub fn registry() -> Registry {
 pub fn push(scene: &mut Scene, kind: &str, parent: ThingId) -> ThingId {
     let id = ThingId(scene.next_thing);
     scene.next_thing += 1;
-    let colour = Some(scene.next_colour());
+    let colour = Some(scene.new_colour());
     let thing = Thing {
         id,
         name: format!("{kind} {}", id.0),

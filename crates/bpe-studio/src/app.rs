@@ -428,6 +428,11 @@ impl Studio {
         if pressed(Modifiers::COMMAND, Key::N) {
             self.guard(Pending::New, ctx);
         }
+        // F11: fully fullscreen (no title bar), and back to the window.
+        if pressed(Modifiers::NONE, Key::F11) {
+            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
         if typing {
             return;
         }

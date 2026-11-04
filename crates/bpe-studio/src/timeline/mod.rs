@@ -69,6 +69,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.curve_open = false;
     }
     let mut picked = None;
+    let mut recoloured = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         hits_lane(ui, studio, &ruler);
@@ -81,8 +82,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         for group in &groups {
             let colour = studio.scene.things.get(&group.thing).and_then(|t| t.colour).map(style::track_color);
             let is_open = group.thing == open;
-            if group_header(ui, studio, group, colour, is_open, &ruler) {
+            let (clicked, colour_now) = group_header(ui, studio, group, colour, is_open, &ruler);
+            if clicked {
                 picked = Some(group.thing);
+            }
+            if let Some(c) = colour_now {
+                recoloured = Some((group.thing, c));
             }
             if !is_open {
                 index += group.lanes.len();
@@ -100,6 +105,11 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     });
     if let Some(id) = picked {
         studio.selection.set(id);
+    }
+    if let Some((id, colour)) = recoloured
+        && let Some(thing) = studio.scene.things.get_mut(&id)
+    {
+        thing.colour = Some(colour);
     }
     // Delete removes the selected key, and is used up so the tree keeps its thing.
     if let Some((a, i)) = timeline.selected.clone()
@@ -151,7 +161,7 @@ fn group_header(
     colour: Option<Color32>,
     open: bool,
     ruler: &Ruler,
-) -> bool {
+) -> (bool, Option<bpe_core::TrackColour>) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), GROUP_HEIGHT), Sense::click());
     let name = format!("{} lanes", group.name);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
@@ -184,7 +194,20 @@ fn group_header(
         }
     }
     playhead(&painter, studio, ruler, rect);
-    response.on_hover_text(if open { "This thing's lanes" } else { "Click to open this thing's lanes" }).clicked()
+    // The colour square opens a colour picker for the thing's colour.
+    let mut recoloured = None;
+    if colour.is_some() {
+        let current = studio.scene.things.get(&group.thing).and_then(|t| t.colour);
+        let square = ui.interact(swatch.expand(3.0), response.id.with("colour"), Sense::click());
+        let words = format!("Colour of {}", group.name);
+        square.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, words.clone()));
+        let square = square.on_hover_text("Click to change this thing's colour");
+        egui::Popup::menu(&square).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            recoloured = style::track_picker(ui, current);
+        });
+    }
+    let hint = if open { "This thing's lanes" } else { "Click to open this thing's lanes" };
+    (response.on_hover_text(hint).clicked(), recoloured)
 }
 
 /// A lane's name, at the left of its column and centred up and down.
