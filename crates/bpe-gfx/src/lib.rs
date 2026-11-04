@@ -18,6 +18,8 @@ mod layers_tests;
 mod masks;
 #[cfg(test)]
 mod paint_tests;
+#[cfg(test)]
+mod paths_tests;
 pub mod particles;
 #[cfg(test)]
 mod pictures;
@@ -28,8 +30,8 @@ mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, ShapeInstance, Stage, ThingDraw, TrailVertex,
-    blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, PathInstance, ShapeInstance, Stage, ThingDraw,
+    TrailVertex, blend_alpha, build_frame, hit_strength, push_streak, push_streak_colours, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};
@@ -64,6 +66,8 @@ pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Uint32x4, 9 => Float32x4, 10 => Float32x4
 ];
+const PATH_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
 const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
 #[repr(C)]
@@ -293,6 +297,10 @@ pub struct Renderer {
     flash: wgpu::RenderPipeline,
     /// What is where, for effects on things (see object.wgsl).
     shape_object: wgpu::RenderPipeline,
+    /// Shapes (see paths.wgsl), and where they are for effects on things.
+    path: wgpu::RenderPipeline,
+    path_object: wgpu::RenderPipeline,
+    paths_layout: wgpu::BindGroupLayout,
     ball_object: wgpu::RenderPipeline,
     look_object: wgpu::RenderPipeline,
     layered_object: wgpu::RenderPipeline,
@@ -312,6 +320,11 @@ pub struct Renderer {
 struct FrameBuffers {
     trails: GrowableBuffer,
     shapes: GrowableBuffer,
+    /// Shapes, the points their outlines run through and the bind group reading those, remade
+    /// when the buffer grows.
+    paths: GrowableBuffer,
+    path_points: GrowableBuffer,
+    paths_group: Option<wgpu::BindGroup>,
     balls: GrowableBuffer,
     looks: GrowableBuffer,
     layered: GrowableBuffer,
@@ -332,6 +345,9 @@ impl Default for FrameBuffers {
         Self {
             trails: GrowableBuffer::new("trail vertices"),
             shapes: GrowableBuffer::new("shape instances"),
+            paths: GrowableBuffer::new("path instances"),
+            path_points: GrowableBuffer::storage("path points"),
+            paths_group: None,
             balls: GrowableBuffer::new("ball instances"),
             looks: GrowableBuffer::new("styled ball instances"),
             layered: GrowableBuffer::new("layered ball instances"),
@@ -353,12 +369,27 @@ impl FrameBuffers {
         queue: &wgpu::Queue,
         particles: &particles::Particles,
         layers_layout: &wgpu::BindGroupLayout,
+        paths_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         fx: &effects::chain::Fx,
         f: &Frame,
     ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
         self.shapes.upload(device, queue, bytemuck::cast_slice(&f.shapes));
+        self.paths.upload(device, queue, bytemuck::cast_slice(&f.paths));
+        if !f.paths.is_empty() {
+            // Circles name no points, but the buffer is still bound.
+            let points: &[[f32; 4]] = if f.path_points.is_empty() { &[[0.0; 4]] } else { &f.path_points };
+            let grown = self.path_points.upload(device, queue, bytemuck::cast_slice(points));
+            if grown || self.paths_group.is_none() {
+                let buffer = self.path_points.buffer.as_ref().expect("just uploaded");
+                self.paths_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("path points"),
+                    layout: paths_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                }));
+            }
+        }
         self.balls.upload(device, queue, bytemuck::cast_slice(&f.balls));
         self.looks.upload(device, queue, bytemuck::cast_slice(&f.looks));
         self.layered.upload(device, queue, bytemuck::cast_slice(&f.layered));
@@ -408,6 +439,7 @@ pub(crate) fn scene_source(effects: Option<&str>) -> String {
         include_str!("shaders/styled.wgsl"),
         include_str!("shaders/trail.wgsl"),
         include_str!("shaders/each.wgsl"),
+        include_str!("shaders/paths.wgsl"),
         include_str!("shaders/blend_maths.wgsl"),
         layers_source(effects).as_str(),
     ]
@@ -581,6 +613,25 @@ impl Renderer {
                 },
             ],
         });
+        let paths_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("path points layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        // Group 2 is the layered balls' records; shapes leave it empty.
+        let paths_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("path pipeline layout"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout), None, Some(&paths_layout)],
+            immediate_size: 0,
+        });
         let layered_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layered ball pipeline layout"),
             bind_group_layouts: &[Some(&globals_layout), Some(&paint_layout), Some(&layers_layout)],
@@ -666,6 +717,28 @@ impl Renderer {
             TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
+        );
+        let path = make(
+            "paths",
+            &paths_pipeline_layout,
+            &scene_shader,
+            "vs_path",
+            "fs_path",
+            &[Some(instances(std::mem::size_of::<PathInstance>() as u64, &PATH_ATTRIBUTES))],
+            TriangleStrip,
+            HDR_FORMAT,
+            Some(premultiplied),
+        );
+        let path_object = make(
+            "path objects",
+            &paths_pipeline_layout,
+            &scene_shader,
+            "vs_path",
+            "fs_path_object",
+            &[Some(instances(std::mem::size_of::<PathInstance>() as u64, &PATH_ATTRIBUTES))],
+            TriangleStrip,
+            OBJECT_FORMAT,
+            None,
         );
         let ball = make(
             "balls",
@@ -842,6 +915,20 @@ impl Renderer {
                     ),
                 ),
                 (
+                    Kind::Path,
+                    Recipe {
+                        layout: paths_pipeline_layout.clone(),
+                        ..recipe(
+                            "vs_path",
+                            "fs_path_each",
+                            size_of::<PathInstance>(),
+                            Instance,
+                            &PATH_ATTRIBUTES,
+                            TriangleStrip,
+                        )
+                    },
+                ),
+                (
                     Kind::Ball,
                     recipe(
                         "vs_ball",
@@ -925,6 +1012,9 @@ impl Renderer {
             layered,
             flash,
             shape_object,
+            path,
+            path_object,
+            paths_layout,
             ball_object,
             look_object,
             layered_object,
@@ -1018,16 +1108,43 @@ impl Renderer {
                 0,
                 bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
             );
-            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, o);
+            self.overlay.upload(
+                device,
+                queue,
+                &self.particles,
+                &self.layers_layout,
+                &self.paths_layout,
+                &self.sampler,
+                &fx,
+                o,
+            );
         }
-        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, frame);
+        self.buffers.upload(
+            device,
+            queue,
+            &self.particles,
+            &self.layers_layout,
+            &self.paths_layout,
+            &self.sampler,
+            &fx,
+            frame,
+        );
         // Every blend layer's lists, the frame's then the overlay's, each in its own buffers.
         let overlay_layers = overlay.map_or(&[][..], |o| &o.layers[..]);
         let layers: Vec<&BlendLayer> = frame.layers.iter().chain(overlay_layers).collect();
         let mut layer_buffers = std::mem::take(&mut self.layer_buffers);
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
-            b.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, &l.frame);
+            b.upload(
+                device,
+                queue,
+                &self.particles,
+                &self.layers_layout,
+                &self.paths_layout,
+                &self.sampler,
+                &fx,
+                &l.frame,
+            );
         }
         // The programs of stacks with shader layers, built the first time a frame names them.
         let frames = std::iter::once((frame, None))
@@ -1199,6 +1316,12 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.shapes.slice());
             pass.draw(0..4, 0..f.shapes.len() as u32);
         }
+        if let Some(group) = b.paths_group.as_ref().filter(|_| !f.paths.is_empty()) {
+            pass.set_pipeline(self.pipeline(&self.path, Kind::Path, through));
+            pass.set_bind_group(3, group, &[]);
+            pass.set_vertex_buffer(0, b.paths.slice());
+            pass.draw(0..4, 0..f.paths.len() as u32);
+        }
     }
 
     /// `normal`, or in a layer whose things blend with each other, that layer's pipeline for
@@ -1265,6 +1388,12 @@ impl Renderer {
             pass.set_pipeline(&self.shape_object);
             pass.set_vertex_buffer(0, b.shapes.slice());
             pass.draw(0..4, 0..f.shapes.len() as u32);
+        }
+        if let Some(group) = b.paths_group.as_ref().filter(|_| !f.paths.is_empty()) {
+            pass.set_pipeline(&self.path_object);
+            pass.set_bind_group(3, group, &[]);
+            pass.set_vertex_buffer(0, b.paths.slice());
+            pass.draw(0..4, 0..f.paths.len() as u32);
         }
         if !f.balls.is_empty() {
             pass.set_pipeline(&self.ball_object);

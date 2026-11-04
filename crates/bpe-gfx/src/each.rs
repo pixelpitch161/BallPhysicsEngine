@@ -17,6 +17,7 @@ use crate::{Frame, HDR_FORMAT};
 pub(crate) enum Kind {
     Trail,
     Shape,
+    Path,
     Ball,
     Look,
     Layered,
@@ -24,12 +25,13 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 6] = [Kind::Trail, Kind::Shape, Kind::Ball, Kind::Look, Kind::Layered, Kind::Flash];
+    const ALL: [Kind; 7] = [Kind::Trail, Kind::Shape, Kind::Path, Kind::Ball, Kind::Look, Kind::Layered, Kind::Flash];
 
     fn used_by(self, f: &Frame) -> bool {
         match self {
             Kind::Trail => !f.trails.is_empty(),
             Kind::Shape => !f.shapes.is_empty(),
+            Kind::Path => !f.paths.is_empty(),
             Kind::Ball => !f.balls.is_empty(),
             Kind::Look => !f.looks.is_empty(),
             Kind::Layered => !f.layered.is_empty(),
