@@ -8,18 +8,21 @@
 
 pub mod blend;
 pub mod body;
+pub mod cards_to_layers;
 pub mod cut;
 pub mod glow;
 pub mod gpu;
 pub mod group;
 pub mod group_shader;
 pub mod outline;
+pub mod particles;
 pub mod pattern;
 pub mod reactions;
 pub mod shader;
 pub mod shading;
 pub mod shine;
 pub mod subs;
+pub mod trail;
 
 use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value};
 
@@ -152,6 +155,9 @@ impl LayerKind for Kind {
     /// A Shader layer takes no Shader sub-layer: the picture a shader sub-layer reads is its
     /// layer worked out without effects.
     fn takes_sub(&self, sub: &str) -> bool {
+        if self.section == LayerSection::Around {
+            return AROUND_SUBS.contains(&sub);
+        }
         !((self.id == SHADER && sub == SUB_SHADER)
             || (self.id == super::shape::SHADER && sub == super::shape::SUB_SHADER))
     }
@@ -182,6 +188,48 @@ pub const SUB_SHADER: &str = "sub.shader";
 pub const SUB_RECOLOUR: &str = "sub.recolour";
 pub const SUB_FLASH: &str = "sub.flash";
 pub const SUB_HUE: &str = "sub.hue";
+pub use particles::{PARTICLES, SHAPE_PARTICLES};
+pub use trail::TRAIL;
+
+/// The sub-layers a trail or particles layer takes, on balls and on shapes: those that change its
+/// colours or add a glow, an outline or a shadow round what it draws.
+pub const AROUND_SUBS: [&str; 12] = [
+    SUB_GLOW,
+    SUB_OUTLINE,
+    SUB_SHADOW,
+    SUB_RECOLOUR,
+    SUB_FLASH,
+    SUB_HUE,
+    super::shape::SUB_GLOW,
+    super::shape::SUB_OUTLINE,
+    super::shape::SUB_SHADOW,
+    super::shape::SUB_RECOLOUR,
+    super::shape::SUB_FLASH,
+    super::shape::SUB_HUE,
+];
+
+/// A trail or particles layer kind of `card`: in the "Trails and particles" list, repeating,
+/// carrying the [`AROUND_SUBS`].
+pub(crate) fn around_kind(
+    card: &'static str,
+    id: &'static str,
+    name: &'static str,
+    help: &'static str,
+    settings: fn() -> &'static [SettingDef],
+) -> Kind {
+    Kind {
+        id,
+        name,
+        help,
+        section: LayerSection::Around,
+        repeats: true,
+        base: false,
+        card,
+        takes_subs: true,
+        settings,
+        dynamic: no_more,
+    }
+}
 /// The kind id masks had before sub-layers (scene format 8): they open as Cut sub-layers.
 pub const OLD_MASK: &str = "layer.mask";
 pub const FLASH: &str = "react.flash";
@@ -249,6 +297,20 @@ pub fn kinds() -> Vec<Kind> {
             takes_subs: false,
             ..drawn(BLEND, "Blend", "How the whole finished ball mixes with what is behind it.", BlendLayer::defs)
         },
+        around_kind(
+            CARD,
+            TRAIL,
+            "Trail",
+            "Something left behind each ball along where it has been: a streak, ribbon, ghosts, dots, a line or smoke.",
+            trail::TrailLayer::defs,
+        ),
+        around_kind(
+            CARD,
+            PARTICLES,
+            "Particles",
+            "Bits let off by each ball: on hits, while it moves, when it pops or steadily.",
+            particles::ParticlesLayer::defs,
+        ),
         reaction(FLASH, "Flash on hit", "A flash of light where the ball hits something.", FlashOnHit::defs),
         reaction(HUE, "Colour on hit", "Every hit turns the ball's colour round the colour wheel.", ColourOnHit::defs),
         reaction(STRETCH, "Stretch when fast", "Fast balls stretch along their path.", StretchWhenFast::defs),
@@ -369,6 +431,8 @@ mod tests {
                 SHADING,
                 SHADER,
                 BLEND,
+                TRAIL,
+                PARTICLES,
                 FLASH,
                 HUE,
                 STRETCH,
@@ -417,7 +481,7 @@ mod tests {
     #[test]
     fn drawn_layers_but_body_and_blend_have_opacity_and_blend_and_body_has_opacity() {
         let reg = registry();
-        for k in reg.layers_for(CARD) {
+        for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {
             let has = |key: &str| k.settings().iter().any(|d| d.key == key);
             let drawn = k.section() == LayerSection::Drawn && !matches!(k.id(), BODY | BLEND);
             let sub = k.section() == LayerSection::Sub;
@@ -448,14 +512,14 @@ mod tests {
         let cut = scene.add_sub_layer(&reg, ball, slot, outline, SUB_CUT).unwrap();
         let size = bpe_core::Address::on(ball, slot, &bpe_core::layered_key(cut, "size"));
         scene.set_at(&reg, &size, Value::Number(0.25)).unwrap();
-        let text = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 9", "format: 8");
+        let text = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 10", "format: 8");
         assert!(text.contains("layer.mask"));
         let back = bpe_core::load(&text, &reg).unwrap();
         let layer = back.card(ball, slot).unwrap().layer(cut).unwrap();
         assert_eq!((layer.kind.as_str(), layer.parent), (SUB_CUT, Some(outline)));
         assert_eq!(back.value_at(&reg, &size), Some(Value::Number(0.25)));
         // A format 9 file keeps whatever it says.
-        let nine = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"");
+        let nine = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 10", "format: 9");
         let back = bpe_core::load(&nine, &reg).unwrap();
         assert_eq!(back.card(ball, slot).unwrap().layer(cut).unwrap().kind, OLD_MASK);
     }
@@ -469,5 +533,47 @@ mod tests {
         assert!(layers.fits("balls") && !layers.fits("shape"));
         assert!(shape.fits("shape") && !shape.fits("balls"));
         assert!(["balls", "shape", "scene", "folder", "camera"].iter().all(|k| !basic.fits(k)));
+    }
+
+    #[test]
+    fn trails_and_particles_take_only_the_six_sub_layers_that_fit_them() {
+        let reg = registry();
+        let shape = crate::modules::look::shape::CARD;
+        for (card, id) in [(CARD, TRAIL), (CARD, PARTICLES), (shape, SHAPE_PARTICLES)] {
+            let k = reg.layer(id).unwrap();
+            assert_eq!(k.section(), LayerSection::Around, "{id}");
+            assert_eq!(k.card(), card, "{id}");
+            assert!(k.repeats() && k.takes_subs(), "{id}");
+            let subs: Vec<&str> = reg
+                .layers_for(card)
+                .filter(|s| s.section() == LayerSection::Sub && k.takes_sub(s.id()))
+                .map(|s| s.name())
+                .collect();
+            assert_eq!(subs, ["Glow", "Outline", "Shadow", "Recolour", "Flash on hit", "Colour on hit"], "{id}");
+        }
+        assert!(reg.layers_for(shape).all(|k| k.id() != TRAIL), "no trails on shapes");
+    }
+
+    #[test]
+    fn a_trail_s_settings_follow_its_kind() {
+        use bpe_core::{Params, Value};
+        let reg = registry();
+        let k = reg.layer(TRAIL).unwrap();
+        let shown = |kind: &str| -> Vec<&str> {
+            let mut p = Params::default();
+            p.set("kind", Value::Choice(kind.into()));
+            let get = |key: &str| {
+                p.get(key).cloned().or_else(|| k.settings().iter().find(|d| d.key == key).map(|d| d.default.clone()))
+            };
+            k.settings().iter().filter(|d| bpe_core::settings::applies(d.when, None, &get)).map(|d| d.key).collect()
+        };
+        let streak = shown("streak");
+        assert!(streak.contains(&"width") && streak.contains(&"tail_width") && !streak.contains(&"thickness"));
+        let line = shown("line");
+        assert!(line.contains(&"thickness") && line.contains(&"forever") && !line.contains(&"width"));
+        let ghosts = shown("ghosts");
+        assert!(ghosts.contains(&"ghosts") && !ghosts.contains(&"seconds") && !ghosts.contains(&"blend"));
+        assert!(shown("smoke").contains(&"puffs") && !streak.contains(&"puffs"));
+        assert!(shown("ribbon").contains(&"twist") && !streak.contains(&"twist"));
     }
 }

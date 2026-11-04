@@ -106,6 +106,13 @@ pub fn kinds() -> Vec<Kind> {
                 crate::modules::look::layers::BlendLayer::defs,
             )
         },
+        crate::modules::look::layers::around_kind(
+            CARD,
+            crate::modules::look::layers::SHAPE_PARTICLES,
+            "Particles",
+            "Bits let off when a ball hits the shape, or steadily along its edge.",
+            crate::modules::look::layers::particles::ShapeParticlesLayer::defs,
+        ),
     ]
     .into_iter()
     .chain(sub_kinds())
@@ -231,6 +238,7 @@ mod tests {
                 GLOW,
                 SHADER,
                 BLEND,
+                crate::modules::look::layers::SHAPE_PARTICLES,
                 SUB_CUT,
                 SUB_GLOW,
                 SUB_OUTLINE,
@@ -243,7 +251,7 @@ mod tests {
                 SUB_HUE
             ]
         );
-        for k in reg.layers_for(CARD) {
+        for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {
             assert_eq!(k.card(), CARD);
             let sub = k.section() == LayerSection::Sub;
             let painted = !sub && !matches!(k.id(), BODY | BLEND);

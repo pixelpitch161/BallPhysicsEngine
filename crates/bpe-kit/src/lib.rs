@@ -117,6 +117,8 @@ pub fn registry() -> Registry {
     sound::register(&mut r);
     // Format 8 masks open as Cut sub-layers.
     r.add_upgrade(9, modules::look::layers::masks_to_cuts);
+    // Trail and Particles cards before format 10 open as layers of the Look.
+    r.add_upgrade(10, modules::look::layers::cards_to_layers::cards_to_layers);
     r
 }
 
