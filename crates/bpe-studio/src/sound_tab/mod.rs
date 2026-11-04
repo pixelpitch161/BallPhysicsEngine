@@ -596,6 +596,9 @@ pub(crate) mod tests {
     fn shape_output_warns_when_its_bus_is_off() {
         let mut h = sounding();
         assert!(h.query_by_label_contains("is off").is_none(), "Bus 1 is on");
+        // The Output panel sits below the chains and the notes.
+        h.get_by_label("Bus 2").scroll_to_me();
+        h.run();
         h.get_by_label("Bus 2").click();
         h.run();
         let card = card(&h, SHAPE).unwrap();
